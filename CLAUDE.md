@@ -261,6 +261,19 @@ asset's (future) per-asset config seat; if both declare (`url` + local file), th
 wins with a warning. Auto-reimport watches sidecar mtimes too, and a failed remote fetch
 during auto-reimport keeps the existing manifest (offline must not strip clip constants).
 
+**Run a game's inline `expect` tests.** `test` typechecks the project (the `build` gate), then
+evaluates every `expect` in the entry and its siblings under the ENGINE prelude — headlessly, no
+GPU/window/game loop. Failures print at their `file:line:col` with the source line and both sides
+of a failed comparison; exit is non-zero if any expect failed. Prefer this over
+`cargo run -p functor-lang -- test` for anything in a game directory: the language crate's command
+runs under the plain prelude, so `file = module` makes it fail on the first `Scene.*`/`Color.*` in
+ANY sibling.
+
+```sh
+./target/debug/functor -d examples/counter test
+./target/debug/functor -d examples/mp test --entry server   # multi-entry: pick the role
+```
+
 **Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|test|parse|ir <file.fun>`
 drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the
 `functor-lang` skill.

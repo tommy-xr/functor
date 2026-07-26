@@ -290,6 +290,70 @@ impl FunctorLangProject {
         Ok(())
     }
 
+    /// Run the project's inline `expect` tests headlessly under the ENGINE
+    /// prelude (no GL context, no window, no game loop) — the thin CLI shell
+    /// over [`functor_runtime_common::functor_lang_test::run_project_expects`].
+    ///
+    /// Callers run [`Self::build`] first, so by here the project typechecks;
+    /// a remaining failure is a *runtime* one and renders as a positioned
+    /// diagnostic at the `expect` that produced it.
+    pub fn test(&self, working_directory: &str) -> Result<(), Error> {
+        let path = self.entry_path(working_directory)?;
+        let run = match functor_runtime_common::functor_lang_test::run_project_expects(&path) {
+            Ok(run) => run,
+            Err(e) => {
+                emit(Event::Diagnostic {
+                    severity: Severity::Error,
+                    file: Some(e.file.display().to_string()),
+                    line: Some(e.line),
+                    col: Some(e.col),
+                    message: e.message,
+                    source_line: std::fs::read_to_string(&e.file)
+                        .ok()
+                        .and_then(|src| nth_line(&src, e.line)),
+                });
+                return Err(Error::other(format!(
+                    "cannot run the {} tests",
+                    path.display()
+                )));
+            }
+        };
+
+        for case in &run.cases {
+            let Some(message) = &case.failure else {
+                continue;
+            };
+            emit(Event::Diagnostic {
+                severity: Severity::Error,
+                file: Some(case.file.display().to_string()),
+                line: Some(case.line),
+                col: Some(case.col),
+                message: message.clone(),
+                source_line: std::fs::read_to_string(&case.file)
+                    .ok()
+                    .and_then(|src| nth_line(&src, case.line)),
+            });
+        }
+
+        if run.total() == 0 {
+            emit(Event::Info {
+                message: "no `expect` tests found".to_string(),
+            });
+            return Ok(());
+        }
+        let (passed, failed) = (run.passed(), run.failed());
+        if failed > 0 {
+            return Err(Error::other(format!(
+                "{} expect(s): {passed} passed, {failed} failed",
+                run.total()
+            )));
+        }
+        emit(Event::Info {
+            message: format!("{} expect(s): {passed} passed", run.total()),
+        });
+        Ok(())
+    }
+
     /// Spawn the runner on the entry (`run` and `develop` — hot reload is
     /// built into the producer, so there is no separate watch loop).
     pub async fn run(

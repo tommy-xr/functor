@@ -336,8 +336,8 @@ expect (                                      // any expression works — a
 - The expression must CHECK as `bool` (`check`: "an `expect` test:
   expected bool, got …").
 - **Inert in the game loop**: `run native`/`run wasm`/`Session::load`
-  never evaluate expects — only `functor-lang test <entry.fun>` does (defs
-  load first, then each expect independently; one failure never stops the
+  never evaluate expects — only the test commands below do (defs load
+  first, then each expect independently; one failure never stops the
   rest; exit 1 on any failure). Sibling-module expects load and run with
   the project.
 - A failed TOP-LEVEL comparison (`==`/`<`/`>`) is decomposed: the report
@@ -347,8 +347,34 @@ expect (                                      // any expression works — a
   the pipe's argument.
 - Floats compare exactly; for computed floats prefer
   `Math.abs(a - b) < 0.001` over `==`.
-- Under plain `functor-lang test` the engine prelude doesn't exist —
-  expects calling `Scene.*` etc. error at runtime. Test pure logic:
+### Running them: `functor test` (a GAME) vs `functor-lang test` (pure logic)
+
+```sh
+functor -d examples/counter test          # a game project, under the ENGINE prelude
+functor -d examples/mp test --entry server   # multi-entry: pick the role
+cargo run -q -p functor-lang -- test file.fun   # a plain .fun, no engine
+```
+
+**Use `functor test` for anything in a game directory.** It typechecks the
+project (the `build` gate), then evaluates every expect in the entry and
+its siblings under the real engine host — headlessly: no GPU, no window,
+no game loop. Each failure prints at its `file:line:col` with the source
+line and, for a top-level comparison, both sides' values; the command
+exits non-zero if any expect failed. A project with no expects is a pass.
+
+`functor-lang test` is the LANGUAGE crate's dev command and runs under the
+plain `NoHost` prelude, where `Scene.*` / `Color.*` / `Physics.*` don't
+exist. Because `file = module` loads every sibling, pointing it at a game
+directory fails on the first engine call in ANY sibling — typically a
+top-level def like `let sky = Color.rgb(…)`, which aborts the def load
+before a single expect runs. Reach for it only for engine-free `.fun`
+files. Don't copy pure modules to a scratch directory to work around this;
+that's what `functor test` is for.
+
+- Expects may freely call engine externals under `functor test`
+  (`Scene.*`, `Color.*`, …) — they are pure constructors over protocol
+  values. `Effect.*` builds a *descriptor*; nothing is performed, so a
+  test never does IO. Still, the highest-value tests are pure logic:
   model/`tick`/`update` math.
 
 ## Semantics rules that WILL bite you
