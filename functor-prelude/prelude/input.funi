@@ -35,8 +35,13 @@ type xr = {
   right: controller
 }
 
-/// Mouse position in shell-provided surface coordinates.
-type mouse = { x: float, y: float }
+/// Which mouse buttons are held right now — the level complement of the
+/// `mouseButton(model, button, isDown)` edge hook, and what continuous
+/// behavior (full-auto fire, drag) should read.
+type mouseButtons = { left: bool, right: bool, middle: bool }
+
+/// Mouse position in shell-provided surface coordinates, plus held buttons.
+type mouse = { x: float, y: float, buttons: mouseButtons }
 
 /// Held and continuously sampled input for one simulation tick.
 type snapshot = {

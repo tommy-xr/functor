@@ -635,6 +635,24 @@ fn service_debug_request(
                     game.mouse_wheel(delta);
                     Ok(())
                 }
+                // Edge + held level, mirroring the injected-key discipline: a
+                // release only reaches the game if it saw the press. There is
+                // no cursor capture to respect on this runtime.
+                InputCommand::MouseButton { button, down } => {
+                    match functor_runtime_common::MouseButton::from_name(&button) {
+                        Some(b) => {
+                            if down {
+                                debug.input.mouse.buttons.set(b, true);
+                                game.mouse_button(b as i32, true);
+                            } else if debug.input.mouse.buttons.is_down(b) {
+                                debug.input.mouse.buttons.set(b, false);
+                                game.mouse_button(b as i32, false);
+                            }
+                            Ok(())
+                        }
+                        None => Err(format!("unknown mouse button: {button}")),
+                    }
+                }
                 InputCommand::UiEvent { slot, kind } => {
                     game.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())

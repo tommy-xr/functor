@@ -2,6 +2,7 @@ import type { HttpClient } from "./client.js";
 import type {
   InputCommand,
   KeyName,
+  MouseButtonName,
   ProjectAssets,
   ProjectSources,
   RuntimeState,
@@ -148,6 +149,23 @@ export class FunctorClient {
   /** Scroll the mouse wheel. */
   mouseWheel(delta: number): Promise<void> {
     return this.input({ type: "mouse_wheel", delta });
+  }
+
+  /** Press or release a mouse button.
+   *
+   * Both an edge and level state, like {@link key}: the `mouseButton` hook
+   * fires, and the button stays held in later steps' `sampledInput` until
+   * released — so holding one across several `step()`s scripts full-auto fire. */
+  mouseButton(button: MouseButtonName, down: boolean): Promise<void> {
+    return this.input({ type: "mouse_button", button, down });
+  }
+
+  mouseDown(button: MouseButtonName = "left"): Promise<void> {
+    return this.mouseButton(button, true);
+  }
+
+  mouseUp(button: MouseButtonName = "left"): Promise<void> {
+    return this.mouseButton(button, false);
   }
 
   /** Set the XR sample the next fixed step's `sampledInput` sees — tracked

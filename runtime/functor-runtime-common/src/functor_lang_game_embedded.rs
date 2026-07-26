@@ -103,6 +103,7 @@ pub struct FunctorLangEmbeddedGame {
     pending_sampled_input: Option<crate::InputSnapshot>,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
+    has_mouse_button: bool,
     has_subscriptions: bool,
     /// The previous frame's total-time, the left edge of the `(prev, tts]`
     /// window subscriptions fire over. `None` until the first frame has run
@@ -210,6 +211,7 @@ struct Loaded {
     has_sampled_input: bool,
     has_mouse_move: bool,
     has_mouse_wheel: bool,
+    has_mouse_button: bool,
     has_subscriptions: bool,
     has_physics: bool,
     has_soundscape: bool,
@@ -297,6 +299,11 @@ return them beside the model as `(model, effect)`"
     if has_mouse_wheel {
         require_function(&path, &session, "mouseWheel", 2)?;
     }
+    // `mouseButton(model, button, isDown)` — the `input` twin for the pointer.
+    let has_mouse_button = session.global("mouseButton").is_some();
+    if has_mouse_button {
+        require_function(&path, &session, "mouseButton", 3)?;
+    }
     // The MVU pair: `subscriptions(model)` declares timers whose fired
     // messages fold through `update(model, msg)` — so subscriptions
     // without an update have nowhere to deliver.
@@ -348,6 +355,7 @@ return them beside the model as `(model, effect)`"
         has_sampled_input,
         has_mouse_move,
         has_mouse_wheel,
+        has_mouse_button,
         has_subscriptions,
         has_physics,
         has_soundscape,
@@ -395,6 +403,7 @@ impl FunctorLangEmbeddedGame {
             pending_sampled_input: None,
             has_mouse_move: loaded.has_mouse_move,
             has_mouse_wheel: loaded.has_mouse_wheel,
+            has_mouse_button: loaded.has_mouse_button,
             has_subscriptions: loaded.has_subscriptions,
             prev_tts: None,
             effect_runner: RealEffects::new(),
@@ -463,6 +472,7 @@ impl FunctorLangEmbeddedGame {
         self.pending_sampled_input = None;
         self.has_mouse_move = loaded.has_mouse_move;
         self.has_mouse_wheel = loaded.has_mouse_wheel;
+        self.has_mouse_button = loaded.has_mouse_button;
         self.has_subscriptions = loaded.has_subscriptions;
         self.has_physics = loaded.has_physics;
         if !self.has_physics {
@@ -553,6 +563,7 @@ impl FunctorLangEmbeddedGame {
         self.pending_sampled_input = None;
         self.has_mouse_move = loaded.has_mouse_move;
         self.has_mouse_wheel = loaded.has_mouse_wheel;
+        self.has_mouse_button = loaded.has_mouse_button;
         self.has_subscriptions = loaded.has_subscriptions;
         self.prev_tts = None;
         self.asset_progress = None;
@@ -877,6 +888,25 @@ impl GameProducer for FunctorLangEmbeddedGame {
         }
         self.input_buf
             .push(crate::RecordedInput::MouseWheel { delta });
+    }
+
+    fn mouse_button(&mut self, button: i32, is_down: bool) {
+        // The optional `mouseButton` entry point: (model, button, isDown) =>
+        // model. Buttons cross as the built-in `Mouse` module's variants
+        // (`Mouse.Left`) — mirrors the other producers.
+        if !self.has_mouse_button {
+            return;
+        }
+        let Some(button_value) = crate::mouse_button_input_value(button) else {
+            return; // unrecognized code / MouseButton::Unknown — never delivered.
+        };
+        let args = vec![self.model.clone(), button_value, Value::Bool(is_down)];
+        match self.session.call("mouseButton", args, &mut FunctorHost) {
+            Ok(returned) => self.ctx().absorb(returned),
+            Err(err) => self.reporter.frame_error("mouseButton", &err),
+        }
+        self.input_buf
+            .push(crate::RecordedInput::MouseButton { button, is_down });
     }
 
     fn ui_event(&mut self, event: crate::ui::UiEvent) {
@@ -1291,7 +1321,11 @@ let draw = (model, tts) =>
 
         let snapshot = crate::InputSnapshot {
             held_keys: vec![crate::Key::W, crate::Key::Space],
-            mouse: crate::MouseSnapshot { x: 42, y: 9 },
+            mouse: crate::MouseSnapshot {
+                x: 42,
+                y: 9,
+                ..Default::default()
+            },
             xr: Some(crate::XrInputSnapshot {
                 right: crate::XrControllerSnapshot {
                     active: true,
@@ -1333,7 +1367,11 @@ let draw = (model, tts) =>
         )
         .expect("sampled-input game loads");
         let snapshot = |x| crate::InputSnapshot {
-            mouse: crate::MouseSnapshot { x, y: 0 },
+            mouse: crate::MouseSnapshot {
+                    x,
+                    y: 0,
+                    ..Default::default()
+                },
             ..crate::InputSnapshot::default()
         };
 
@@ -1443,7 +1481,11 @@ let draw = (model, tts) =>
         .expect("sampled-input game loads");
         for (frame, x) in [1, 2, 3].into_iter().enumerate() {
             game.sampled_input(&crate::InputSnapshot {
-                mouse: crate::MouseSnapshot { x, y: 0 },
+                mouse: crate::MouseSnapshot {
+                    x,
+                    y: 0,
+                    ..Default::default()
+                },
                 ..crate::InputSnapshot::default()
             });
             game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
@@ -1494,7 +1536,11 @@ let draw = (model, tts) =>
 
         for (frame, x) in [1, 2].into_iter().enumerate() {
             game.sampled_input(&crate::InputSnapshot {
-                mouse: crate::MouseSnapshot { x, y: 0 },
+                mouse: crate::MouseSnapshot {
+                    x,
+                    y: 0,
+                    ..Default::default()
+                },
                 ..crate::InputSnapshot::default()
             });
             game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));
@@ -1534,7 +1580,11 @@ let draw = (model, tts) =>
         .expect("sampled-input game loads");
         for (frame, x) in [1, 2, 3].into_iter().enumerate() {
             game.sampled_input(&crate::InputSnapshot {
-                mouse: crate::MouseSnapshot { x, y: 0 },
+                mouse: crate::MouseSnapshot {
+                    x,
+                    y: 0,
+                    ..Default::default()
+                },
                 ..crate::InputSnapshot::default()
             });
             game.tick(frame_time((frame + 1) as f32 / 60.0, 1.0 / 60.0));

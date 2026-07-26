@@ -71,10 +71,15 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `init` — the initial model, a plain Functor Lang value
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as the built-in
   `Key` module's variants (`Key.W`, `Key.Up`, `Key.Space`, `Key.Num0`..`Key.Num9`).
-  `mouseMove`/`mouseWheel` are the analogous optional entry points
+  `mouseMove`/`mouseWheel`/`mouseButton` are the analogous optional entry points
+- `mouseButton = (model, button, isDown) => model'` — OPTIONAL; mouse-button edges, buttons as
+  the built-in `Mouse` module's variants (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`).
+  Delivered **while the cursor is captured** (the rule `mouseMove`/`mouseWheel` already follow),
+  so click-to-shoot works under free-look; a held button is swept released on focus loss
 - `sampledInput = (model, snapshot: Input.snapshot) => model'` — OPTIONAL; per-fixed-step
-  held/device state. `snapshot` has keyboard/mouse plus typed device domains (`xr` first;
-  gamepad and mobile touch extend it as siblings)
+  held/device state. `snapshot` has keyboard/mouse (`mouse.buttons.left`/`.right`/`.middle` for
+  held buttons — the level twin of `mouseButton`'s edges, so full-auto fire is a `sampledInput`
+  read) plus typed device domains (`xr` first; gamepad and mobile touch extend it as siblings)
 - `tick = (model, dt, tts) => model'` — per-frame simulation step
 - `update = (model, msg) => model'` — OPTIONAL; handles messages (ADT variants) from subscriptions/effects
 - `subscriptions = (model) => Sub.every(...)` — OPTIONAL declarative timers, polled each frame (requires `update`)
@@ -82,7 +87,8 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `physics = (model) => Physics.scene(...)`, `soundScape = (model) => AudioScene.create(...)`,
   `ui = (model) => …` — OPTIONAL hooks
 
-The model-updating entry points (`tick`, `input`, `sampledInput`, `mouseMove`, `mouseWheel`, `update`) may return
+The model-updating entry points (`tick`, `input`, `sampledInput`, `mouseMove`, `mouseWheel`,
+`mouseButton`, `update`) may return
 a `(model', effect)` tuple instead of a bare model, whose effect result folds back through
 `update`. `init` is a plain value (an Effect in it is rejected at load); `draw`/`physics`/
 `soundScape`/`ui`/`subscriptions` return their own specific values. The model is a plain

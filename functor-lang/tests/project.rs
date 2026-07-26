@@ -811,7 +811,8 @@ fn single_file_project_adds_only_the_core_modules() {
     }
     // The ONLY additions are the core modules': Net's canonicalized
     // `Net.NetEvent` / `Net.HttpResponse`, Random's abstract `Random.Seed`,
-    // the input-key variant `Key.t`, and the stdlib's generic Option/Result.
+    // the input variants `Key.t` / `Mouse.t`, and the stdlib's generic
+    // Option/Result.
     assert!(
         proj_types.contains(&"Net.NetEvent") && proj_types.contains(&"Net.HttpResponse"),
         "the built-in Net module must be injected: {proj_types:?}"
@@ -825,13 +826,17 @@ fn single_file_project_adds_only_the_core_modules() {
         "the built-in Key module must be injected: {proj_types:?}"
     );
     assert!(
+        proj_types.contains(&"Mouse.t"),
+        "the built-in Mouse module must be injected: {proj_types:?}"
+    );
+    assert!(
         proj_types.contains(&"Option.t") && proj_types.contains(&"Result.t"),
         "the bundled stdlib modules must be injected: {proj_types:?}"
     );
     assert_eq!(
         proj_types.len(),
-        plain.types.len() + 6,
-        "no types beyond the entry's + Net(2) + Random + Key + Option + Result"
+        plain.types.len() + 7,
+        "no types beyond the entry's + Net(2) + Random + Key + Mouse + Option + Result"
     );
 }
 

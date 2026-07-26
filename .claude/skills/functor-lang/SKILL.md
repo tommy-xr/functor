@@ -205,7 +205,7 @@ let grab = (s) =>
   (they evaluate first); siblings may reference the entry (`Game.foo`) if
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
-  builtin/prelude or bundled-core namespace (Net, Key, Random, Option, Result,
+  builtin/prelude or bundled-core namespace (Net, Key, Mouse, Random, Option, Result,
   List, Text, Math, Debug, Scene,
   Sprite, Anim, Asset, Camera, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
@@ -236,9 +236,17 @@ let grab = (s) =>
   (`key == Key.Enter`); a typo (`Key.Enterr`) is a load-time error — the
   reason keys stopped being strings. `Random` is likewise built-in (the
   abstract `Random.Seed` — see the Random builtins above).
+- **`Mouse` is a built-in module**: `Mouse.t`, the variant the `mouseButton`
+  hook's `button` parameter carries — `Mouse.Left`, `Mouse.Right`,
+  `Mouse.Middle`. The `Key` story exactly: match constructors
+  (`| Mouse.Left =>`) or compare (`button == Mouse.Right`), and a typo is a
+  load-time error. Buttons the platform reports that Functor does not name are
+  never delivered (no `Unknown` variant reaches game logic).
 - **`Input` is the engine's continuously sampled input module.**
   `Input.snapshot` contains `heldKeys: List<Key.t>`, a pixel-space `mouse`
-  record, and `xr: Option.t<Input.xr>`. XR head/grip/aim poses are rig-local
+  record (`{ x, y, buttons: { left, right, middle } }` — `buttons` is the HELD
+  level state, the complement to `mouseButton`'s edges), and
+  `xr: Option.t<Input.xr>`. XR head/grip/aim poses are rig-local
   plain data: position `{x,y,z}` and quaternion `{x,y,z,w}`, with +X right,
   +Y up, and -Z forward. Each controller also carries `active`, analog
   trigger/squeeze/thumbstick state, and named button booleans. Missing XR,
@@ -246,7 +254,7 @@ let grab = (s) =>
   `Option.None`/`active: false`, never stale values. Future gamepad and mobile
   touch domains belong as typed siblings of `xr` on the snapshot.
 - **Bundled modules use the ordinary module semantics.** The language-owned
-  `Net.fun` / `Key.fun` builtins, `Random.funi` interface, and
+  `Net.fun` / `Key.fun` / `Mouse.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory
   sources distributed with every embedding. Engine hosts additionally bundle
   `Animator.fun`, a pure Functor Lang crossfade helper built on the host's
@@ -1146,6 +1154,12 @@ let sampledInput = (model, snapshot: Input.snapshot) => model'
                                             // before every simulation tick
 let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
 let mouseWheel = (model, delta) => model'   // OPTIONAL
+let mouseButton = (model, button, isDown) => model'
+                                            // OPTIONAL; button: Mouse.t — match
+                                            // | Mouse.Left / Mouse.Right /
+                                            // Mouse.Middle. Delivered while the
+                                            // cursor is captured, so click-to-
+                                            // shoot works under free-look
 let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
                                             // ANY entry point may instead return
                                             // (model', effect) — a 2-tuple whose
@@ -1197,7 +1211,10 @@ debug server's `/time` advance. To *see* colliders, run with
 (collider outlines, contacts, body frames).
 
 `sampledInput` is the level-state complement to the edge-oriented `input` /
-`mouseMove` hooks. Shells sample it once per fixed simulation step; a hook may
+`mouseMove` / `mouseButton` hooks — `mouseButton` tells you a click HAPPENED,
+`snapshot.mouse.buttons.left` tells you it is still held (so a full-auto weapon
+reads the snapshot and a semi-auto one takes the edge). Shells sample it once
+per fixed simulation step; a hook may
 return either a bare model or `(model, effect)` like other model-updating entry
 points. Samples are plain data recorded in the frame input log, so rewind,
 forward ghosting, and counterfactual history replay re-run the same snapshot

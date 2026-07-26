@@ -23,11 +23,53 @@ pub struct InputSnapshot {
     pub xr: Option<XrInputSnapshot>,
 }
 
-/// Last known mouse position in output pixels.
+/// Last known mouse position in output pixels, plus which buttons are held.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseSnapshot {
     pub x: i32,
     pub y: i32,
+    /// Buttons held right now — the level complement of the `mouseButton`
+    /// edges. Defaulted on the wire so an older `/state` capture (and a
+    /// hand-written debug injection) still deserializes.
+    #[serde(default)]
+    pub buttons: MouseButtons,
+}
+
+/// Which mouse buttons are held for one sampled step.
+///
+/// A record rather than a `Vec<MouseButton>`: held buttons are a tiny fixed
+/// set, and a game asks "is fire held?" (`snapshot.mouse.buttons.left`) far
+/// more often than it iterates them — no list-membership helper needed on the
+/// hot path. Further buttons (back/forward) can join as sibling fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MouseButtons {
+    pub left: bool,
+    pub right: bool,
+    pub middle: bool,
+}
+
+impl MouseButtons {
+    /// Fold one button edge into the held set. `MouseButton::Unknown` (a
+    /// platform button Functor does not model) leaves the set untouched — it
+    /// is never delivered as an edge either.
+    pub fn set(&mut self, button: MouseButton, is_down: bool) {
+        match button {
+            MouseButton::Left => self.left = is_down,
+            MouseButton::Right => self.right = is_down,
+            MouseButton::Middle => self.middle = is_down,
+            MouseButton::Unknown => {}
+        }
+    }
+
+    /// Whether `button` is currently held.
+    pub fn is_down(&self, button: MouseButton) -> bool {
+        match button {
+            MouseButton::Left => self.left,
+            MouseButton::Right => self.right,
+            MouseButton::Middle => self.middle,
+            MouseButton::Unknown => false,
+        }
+    }
 }
 
 /// One frame of XR input in the tracking rig's local coordinates.
@@ -127,6 +169,69 @@ pub enum Key {
     Num9,
 }
 
+/// Canonical mouse-button identifier shared across every runtime, mirroring
+/// [`Key`]: shells translate their platform button (GLFW's
+/// `glfw::MouseButton`, the browser's `MouseEvent.button`) into this enum and
+/// pass its `as i32` discriminant across the wasm/producer boundary.
+///
+/// `Unknown = 0` (like `Key`) so an unmodeled platform button decodes to a
+/// value the producers drop rather than mis-delivering as `Left`. New buttons
+/// only ever go at the END — the discriminants are the wire representation.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum MouseButton {
+    Unknown = 0,
+    Left = 1,
+    Right,
+    Middle,
+}
+
+impl MouseButton {
+    /// All button variants in discriminant order (guarded by
+    /// `mouse_button_from_i32_round_trips`).
+    pub const ALL: [MouseButton; 4] = [
+        MouseButton::Unknown,
+        MouseButton::Left,
+        MouseButton::Right,
+        MouseButton::Middle,
+    ];
+
+    /// The button whose `as i32` discriminant equals `value`, if any.
+    pub fn from_i32(value: i32) -> Option<MouseButton> {
+        MouseButton::ALL.into_iter().find(|b| *b as i32 == value)
+    }
+
+    /// Parse the case-insensitive wire spelling used by debug input
+    /// (`"left"`, `"Right"`, `"middle"`), so the desktop and device debug
+    /// servers accept exactly the same button names.
+    pub fn from_name(name: &str) -> Option<MouseButton> {
+        match name.to_ascii_lowercase().as_str() {
+            "left" => Some(MouseButton::Left),
+            "right" => Some(MouseButton::Right),
+            "middle" => Some(MouseButton::Middle),
+            _ => None,
+        }
+    }
+
+    /// The button's short display name (`"Left"`) — for human-facing labels
+    /// like the web timeline's input markers.
+    pub fn name(self) -> String {
+        format!("{self:?}")
+    }
+
+    /// The built-in `Mouse` module's constructor tag (`"Mouse.Left"`) — the
+    /// `Value::Variant` the producers hand a game's `mouseButton` hook. `None`
+    /// for `Unknown`, which is never delivered. Keep in sync with
+    /// `MOUSE_MODULE_SRC` in `functor_lang::project` (guarded by
+    /// `mouse_ctor_tags_cover_the_module` here).
+    pub fn ctor_tag(self) -> Option<String> {
+        match self {
+            MouseButton::Unknown => None,
+            _ => Some(format!("Mouse.{self:?}")),
+        }
+    }
+}
+
 /// One recorded input event at the raw boundary scalars — pre-`Key::from_i32`,
 /// pre-name-formatting — so a replay re-runs the *identical* path the live
 /// frame took (docs/time-travel.md, "The event log"). It is PLAIN DATA — `Copy`
@@ -146,6 +251,9 @@ pub enum RecordedInput {
     MouseMove { x: i32, y: i32 },
     /// A wheel notch (±1 per notch).
     MouseWheel { delta: i32 },
+    /// A mouse-button edge carrying the raw `MouseButton as i32` code, so
+    /// replay re-runs `MouseButton::from_i32` exactly as the live path does.
+    MouseButton { button: i32, is_down: bool },
     /// The continuously sampled input delivered before one simulation tick.
     ///
     /// Unlike edge events above, this is recorded every tick whose game
@@ -282,6 +390,20 @@ impl Key {
 /// `functor_lang_producer`), so live input and replay cannot drift.
 pub fn key_input_value(code: i32) -> Option<functor_lang::Value> {
     let tag = Key::from_i32(code)?.ctor_tag()?;
+    Some(functor_lang::Value::Variant {
+        ctor: std::rc::Rc::from(tag.as_str()),
+        args: std::rc::Rc::new(Vec::new()),
+    })
+}
+
+/// The `Value` a game's `mouseButton` hook receives for a raw button code: the
+/// built-in `Mouse` module's variant (`Mouse.Left`). `None` for an
+/// unrecognized code or `MouseButton::Unknown` — the event is dropped, never
+/// delivered. The mouse twin of [`key_input_value`], and likewise the ONE
+/// conversion every delivery path shares (desktop, web, debug injection, and
+/// the time-travel replay), so live input and replay cannot drift.
+pub fn mouse_button_input_value(code: i32) -> Option<functor_lang::Value> {
+    let tag = MouseButton::from_i32(code)?.ctor_tag()?;
     Some(functor_lang::Value::Variant {
         ctor: std::rc::Rc::from(tag.as_str()),
         args: std::rc::Rc::new(Vec::new()),
@@ -454,6 +576,23 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
             record([
                 ("x", functor_lang::Value::Number(snapshot.mouse.x as f64)),
                 ("y", functor_lang::Value::Number(snapshot.mouse.y as f64)),
+                (
+                    "buttons",
+                    record([
+                        (
+                            "left",
+                            functor_lang::Value::Bool(snapshot.mouse.buttons.left),
+                        ),
+                        (
+                            "right",
+                            functor_lang::Value::Bool(snapshot.mouse.buttons.right),
+                        ),
+                        (
+                            "middle",
+                            functor_lang::Value::Bool(snapshot.mouse.buttons.middle),
+                        ),
+                    ]),
+                ),
             ]),
         ),
         ("xr", option_value(xr)),
@@ -463,8 +602,9 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        input_snapshot_value, tracking_pose_from_value, tracking_pose_value, InputSnapshot, Key,
-        MouseSnapshot, RecordedInput, XrControllerSnapshot, XrInputSnapshot,
+        input_snapshot_value, mouse_button_input_value, tracking_pose_from_value,
+        tracking_pose_value, InputSnapshot, Key, MouseButton, MouseButtons, MouseSnapshot,
+        RecordedInput, XrControllerSnapshot, XrInputSnapshot,
     };
     use crate::TrackingPose;
 
@@ -517,6 +657,84 @@ mod tests {
         assert_eq!(declared, expected, "Key enum and KEY_MODULE_SRC drifted");
     }
 
+    /// The mouse twin of `ctor_tags_cover_the_module`: every deliverable
+    /// `MouseButton` maps to a constructor the built-in `Mouse` module
+    /// declares, and it declares nothing else.
+    #[test]
+    fn mouse_ctor_tags_cover_the_module() {
+        let project = functor_lang::project::load_single_source("game", "let x = 0.0\n")
+            .unwrap_or_else(|e| panic!("empty project loads: {}", e.render()));
+        let mouse_ty = project
+            .module
+            .types
+            .iter()
+            .find(|t| t.name == "Mouse.t")
+            .expect("the built-in Mouse module is injected");
+        let declared: std::collections::BTreeSet<String> = match &mouse_ty.body {
+            functor_lang::ast::TypeBody::Variants(variants) => {
+                variants.iter().map(|v| v.name.clone()).collect()
+            }
+            _ => panic!("Mouse.t must be a variant type"),
+        };
+        let expected: std::collections::BTreeSet<String> = MouseButton::ALL
+            .into_iter()
+            .filter_map(|b| b.ctor_tag())
+            .collect();
+        assert_eq!(
+            declared, expected,
+            "MouseButton enum and MOUSE_MODULE_SRC drifted"
+        );
+    }
+
+    #[test]
+    fn mouse_button_from_i32_round_trips() {
+        for (i, button) in MouseButton::ALL.iter().enumerate() {
+            assert_eq!(
+                *button as i32, i as i32,
+                "MouseButton::ALL must be contiguous from 0"
+            );
+            assert_eq!(MouseButton::from_i32(*button as i32), Some(*button));
+        }
+        assert_eq!(MouseButton::from_i32(MouseButton::ALL.len() as i32), None);
+        assert_eq!(MouseButton::from_i32(-1), None);
+    }
+
+    #[test]
+    fn mouse_button_names_and_wire_spellings_are_canonical() {
+        assert_eq!(MouseButton::Left.name(), "Left");
+        assert_eq!(MouseButton::Left.ctor_tag().as_deref(), Some("Mouse.Left"));
+        assert_eq!(MouseButton::Unknown.ctor_tag(), None);
+        assert_eq!(MouseButton::from_name("left"), Some(MouseButton::Left));
+        assert_eq!(MouseButton::from_name("Right"), Some(MouseButton::Right));
+        assert_eq!(MouseButton::from_name("MIDDLE"), Some(MouseButton::Middle));
+        assert_eq!(MouseButton::from_name("thumb"), None);
+        // Unknown is never delivered as a variant.
+        assert!(mouse_button_input_value(MouseButton::Unknown as i32).is_none());
+        assert_eq!(
+            mouse_button_input_value(MouseButton::Right as i32)
+                .unwrap()
+                .to_string(),
+            "Mouse.Right"
+        );
+    }
+
+    #[test]
+    fn held_buttons_fold_edges_and_ignore_unknown() {
+        let mut buttons = MouseButtons::default();
+        buttons.set(MouseButton::Left, true);
+        buttons.set(MouseButton::Middle, true);
+        assert!(buttons.is_down(MouseButton::Left));
+        assert!(buttons.is_down(MouseButton::Middle));
+        assert!(!buttons.is_down(MouseButton::Right));
+        buttons.set(MouseButton::Left, false);
+        assert!(!buttons.is_down(MouseButton::Left));
+        // An unmodeled platform button cannot corrupt the held set.
+        let before = buttons;
+        buttons.set(MouseButton::Unknown, true);
+        assert_eq!(buttons, before);
+        assert!(!buttons.is_down(MouseButton::Unknown));
+    }
+
     #[test]
     fn from_i32_round_trips() {
         for (i, key) in Key::ALL.iter().enumerate() {
@@ -555,7 +773,11 @@ mod tests {
     fn input_snapshot_omits_absent_xr_and_round_trips_present_xr() {
         let desktop = InputSnapshot {
             held_keys: vec![Key::W],
-            mouse: MouseSnapshot { x: 10, y: 20 },
+            mouse: MouseSnapshot {
+                x: 10,
+                y: 20,
+                ..Default::default()
+            },
             xr: None,
         };
         let desktop_json = serde_json::to_value(&desktop).unwrap();
@@ -563,9 +785,19 @@ mod tests {
             desktop_json,
             serde_json::json!({
                 "held_keys": ["W"],
-                "mouse": { "x": 10, "y": 20 }
+                "mouse": {
+                    "x": 10,
+                    "y": 20,
+                    "buttons": { "left": false, "right": false, "middle": false }
+                }
             })
         );
+        // Mouse buttons are defaulted on the wire, so a capture taken before
+        // they existed (and a hand-written injection) still decodes.
+        let legacy: InputSnapshot =
+            serde_json::from_value(serde_json::json!({ "held_keys": [], "mouse": { "x": 1, "y": 2 } }))
+                .unwrap();
+        assert_eq!(legacy.mouse.buttons, MouseButtons::default());
 
         let xr = InputSnapshot {
             xr: Some(XrInputSnapshot {
@@ -589,7 +821,15 @@ mod tests {
     fn functor_value_preserves_the_typed_snapshot_shape() {
         let snapshot = InputSnapshot {
             held_keys: vec![Key::W, Key::Space],
-            mouse: MouseSnapshot { x: 12, y: -4 },
+            mouse: MouseSnapshot {
+                x: 12,
+                y: -4,
+                buttons: MouseButtons {
+                    left: true,
+                    right: false,
+                    middle: false,
+                },
+            },
             xr: Some(XrInputSnapshot {
                 head: Some(TrackingPose::IDENTITY),
                 left: XrControllerSnapshot::default(),
@@ -607,7 +847,12 @@ mod tests {
             rendered.contains("heldKeys: [Key.W, Key.Space]"),
             "{rendered}"
         );
-        assert!(rendered.contains("mouse: { x: 12, y: -4 }"), "{rendered}");
+        assert!(
+            rendered.contains(
+                "mouse: { x: 12, y: -4, buttons: { left: true, right: false, middle: false } }"
+            ),
+            "{rendered}"
+        );
         assert!(rendered.contains("xr: Option.Some("), "{rendered}");
         assert!(rendered.contains("trigger: 0.75"), "{rendered}");
         assert!(rendered.contains("primaryPressed: true"), "{rendered}");

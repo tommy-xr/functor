@@ -94,9 +94,11 @@ game's perspective this is fully Elm-controlled.
 - **Routing policy.** Pointer: when the cursor is free, events feed egui;
   when egui doesn't want the pointer, a click recaptures for free-look (as
   today). Keyboard: when egui wants keyboard (a text field is focused), key
-  events are suppressed from the game's `input` hook. A raw `mouseButton`
-  game hook (click-to-shoot into the 3D world) is out of scope — a natural
-  follow-up on the same plumbing.
+  events are suppressed from the game's `input` hook. The raw `mouseButton`
+  game hook (click-to-shoot into the 3D world) has since LANDED on this same
+  plumbing: buttons reach the game only **while the cursor is captured**, which
+  is exactly the state in which egui does not want the pointer — so the two
+  consumers never contend for the same click.
 
 - **Headless testability (LLM-native).** Because `UiEvent` is serializable
   and routed through one producer method, the debug server gains

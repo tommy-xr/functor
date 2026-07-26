@@ -13,8 +13,8 @@ use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::{
-    Frame, FrameTime, GameClock, InputSnapshot, MouseSnapshot, RecordedInput, SceneContext,
-    XrInputSnapshot,
+    Frame, FrameTime, GameClock, InputSnapshot, MouseButtons, MouseSnapshot, RecordedInput,
+    SceneContext, XrInputSnapshot,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -82,9 +82,23 @@ fn map_key(key: Key) -> InputKey {
     }
 }
 
+/// Translate a GLFW mouse button into the canonical engine button code passed
+/// across the game boundary. Buttons Functor does not model (4..8) become
+/// `MouseButton::Unknown` and are never delivered.
+fn map_mouse_button(button: glfw::MouseButton) -> functor_runtime_common::MouseButton {
+    use functor_runtime_common::MouseButton as Btn;
+    match button {
+        glfw::MouseButtonLeft => Btn::Left,
+        glfw::MouseButtonRight => Btn::Right,
+        glfw::MouseButtonMiddle => Btn::Middle,
+        _ => Btn::Unknown,
+    }
+}
+
 fn sampled_input_snapshot(
     held_keys: &BTreeSet<InputKey>,
     mouse_pos: (i32, i32),
+    held_buttons: MouseButtons,
     xr: Option<XrInputSnapshot>,
 ) -> InputSnapshot {
     InputSnapshot {
@@ -92,6 +106,7 @@ fn sampled_input_snapshot(
         mouse: MouseSnapshot {
             x: mouse_pos.0,
             y: mouse_pos.1,
+            buttons: held_buttons,
         },
         xr,
     }
@@ -107,6 +122,7 @@ fn sampled_input_snapshot(
 fn desktop_input_snapshot(
     held_keys: &BTreeSet<InputKey>,
     mouse_pos: (i32, i32),
+    held_buttons: MouseButtons,
     emulate_xr: bool,
     xr_primary_down: bool,
     xr_surface: (i32, i32),
@@ -118,16 +134,43 @@ fn desktop_input_snapshot(
             crate::desktop_xr_emulator::sample(held_keys, mouse_pos, xr_primary_down, xr_surface)
         }),
     };
-    sampled_input_snapshot(held_keys, mouse_pos, xr)
+    sampled_input_snapshot(held_keys, mouse_pos, held_buttons, xr)
+}
+
+/// Release every mouse button the game currently holds — the button twin of
+/// the `held_keys` sweep on focus loss. A button held when the window loses
+/// focus (or when the cursor is released, which stops delivering its events)
+/// would otherwise never get its up edge, leaving a game firing forever.
+/// `deliver` is false while the clock is pinned: the level state must still
+/// clear, but an unlogged edge would diverge forward-step replay.
+fn release_held_mouse_buttons(
+    game: &mut dyn Game,
+    held_buttons: &mut MouseButtons,
+    deliver: bool,
+) {
+    for button in [
+        functor_runtime_common::MouseButton::Left,
+        functor_runtime_common::MouseButton::Right,
+        functor_runtime_common::MouseButton::Middle,
+    ] {
+        if held_buttons.is_down(button) {
+            held_buttons.set(button, false);
+            if deliver {
+                game.mouse_button(button as i32, false);
+            }
+        }
+    }
 }
 
 fn refresh_fixed_input_levels(
     snapshot: &mut InputSnapshot,
     held_keys: &BTreeSet<InputKey>,
+    held_buttons: MouseButtons,
     xr_primary_down: bool,
     xr_override: Option<&XrInputSnapshot>,
 ) {
     snapshot.held_keys = held_keys.iter().copied().collect();
+    snapshot.mouse.buttons = held_buttons;
     // An injected sample owns the whole XR domain — window keys must not
     // re-derive its trigger/thumbstick out from under the driver.
     match xr_override {
@@ -574,6 +617,9 @@ fn service_debug_request(
     height: u32,
     held_keys: &mut BTreeSet<InputKey>,
     mouse_pos: &mut (i32, i32),
+    // Held mouse buttons, maintained from the GLFW stream and `POST /input`
+    // the same way `held_keys` is.
+    held_buttons: &mut MouseButtons,
     // The debug-injected XR sample, if any: `{"type":"xr"}` sets it and every
     // later step samples it (see `desktop_input_snapshot`).
     xr_override: &mut Option<XrInputSnapshot>,
@@ -675,6 +721,7 @@ fn service_debug_request(
                 &cmd,
                 debug_server::InputCommand::Key { .. }
                     | debug_server::InputCommand::MouseMove { .. }
+                    | debug_server::InputCommand::MouseButton { .. }
                     | debug_server::InputCommand::Xr(_)
                     | debug_server::InputCommand::XrClear
             );
@@ -728,6 +775,26 @@ fn service_debug_request(
                 debug_server::InputCommand::MouseWheel { delta } => {
                     game.mouse_wheel(delta);
                     Ok(())
+                }
+                debug_server::InputCommand::MouseButton { button, down } => {
+                    // Edge + level, with the same held-state discipline as an
+                    // injected key: a release is delivered only if the game saw
+                    // the press. Unlike window buttons this ignores cursor
+                    // capture — a headless/hidden session has no capture to
+                    // acquire, and scripted clicks are the whole point.
+                    match functor_runtime_common::MouseButton::from_name(&button) {
+                        Some(b) => {
+                            if down {
+                                held_buttons.set(b, true);
+                                game.mouse_button(b as i32, true);
+                            } else if held_buttons.is_down(b) {
+                                held_buttons.set(b, false);
+                                game.mouse_button(b as i32, false);
+                            }
+                            Ok(())
+                        }
+                        None => Err(format!("unknown mouse button: {}", button)),
+                    }
                 }
                 debug_server::InputCommand::UiEvent { slot, kind } => {
                     game.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
@@ -793,6 +860,7 @@ fn run_headless(
     let mut frame_count: u64 = 0;
     let mut clock = GameClock::new(fixed_time);
     let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
+    let mut held_buttons = MouseButtons::default();
     let mut mouse_pos: (i32, i32) = if emulate_xr {
         crate::desktop_xr_emulator::centered_pointer(crate::desktop_xr_emulator::reference_surface())
     } else {
@@ -851,6 +919,7 @@ fn run_headless(
                 let snapshot = desktop_input_snapshot(
                     &held_keys,
                     mouse_pos,
+                    held_buttons,
                     emulate_xr,
                     false,
                     crate::desktop_xr_emulator::reference_surface(),
@@ -874,6 +943,7 @@ fn run_headless(
                 let state_input = desktop_input_snapshot(
                     &held_keys,
                     mouse_pos,
+                    held_buttons,
                     emulate_xr,
                     false,
                     crate::desktop_xr_emulator::reference_surface(),
@@ -889,6 +959,7 @@ fn run_headless(
                     0,
                     &mut held_keys,
                     &mut mouse_pos,
+                    &mut held_buttons,
                     &mut xr_override,
                     state_input,
                     emulate_xr,
@@ -1171,6 +1242,9 @@ pub fn run(args: Args) {
         // GLFW event stream and the debug server's POST /input. Generic and
         // serializable, unlike the game model (which is Debug text only).
         let mut held_keys: BTreeSet<InputKey> = BTreeSet::new();
+        // Held mouse buttons — the level complement of the `mouseButton`
+        // edges, sampled into `Input.snapshot.mouse.buttons`.
+        let mut held_buttons = MouseButtons::default();
         let mut mouse_pos: (i32, i32) = if args.emulate_xr {
             crate::desktop_xr_emulator::centered_pointer(window.get_size())
         } else {
@@ -1187,6 +1261,7 @@ pub fn run(args: Args) {
         let mut fixed_input_snapshot = desktop_input_snapshot(
             &held_keys,
             mouse_pos,
+            held_buttons,
             args.emulate_xr,
             false,
             window.get_size(),
@@ -1390,6 +1465,13 @@ pub fn run(args: Args) {
                     // released quits, preserving the Esc-Esc exit.
                     glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
                         if cursor_captured {
+                            // Releasing the cursor stops delivering button
+                            // events, so anything held must get its up edge now.
+                            release_held_mouse_buttons(
+                                &mut *game,
+                                &mut held_buttons,
+                                !ignore_user_input,
+                            );
                             window.set_cursor_mode(glfw::CursorMode::Normal);
                             cursor_captured = false;
                             println!(
@@ -1412,6 +1494,12 @@ Escape again to quit"
                         if !ui_wants_keyboard && !webview_wants_keyboard =>
                     {
                         scrubber_visible = !scrubber_visible;
+                        // Same reason as Escape: this arm can drop capture.
+                        release_held_mouse_buttons(
+                            &mut *game,
+                            &mut held_buttons,
+                            !ignore_user_input,
+                        );
                         if !hidden {
                             if scrubber_visible {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
@@ -1525,9 +1613,52 @@ Escape again to quit"
                             refresh_fixed_input_levels(
                                 &mut fixed_input_snapshot,
                                 &held_keys,
+                                held_buttons,
                                 xr_primary_down || xr_primary_clicked,
                                 xr_override.as_ref(),
                             );
+                        }
+                    }
+                    // Mouse buttons reach the game only while the cursor is
+                    // CAPTURED — the same rule `CursorPos`/`Scroll` follow
+                    // below. While the cursor is released the pointer belongs
+                    // to the overlays (and the left button recaptures — the
+                    // arm above), so a click there is not a game click.
+                    // Bookkeeping/delivery discipline mirrors keys exactly:
+                    // this sits before the `ignore_user_input` catch-all so a
+                    // button held at a pin transition can't stick, while the
+                    // game only hears edges it may act on.
+                    glfw::WindowEvent::MouseButton(button, action, _) if cursor_captured => {
+                        let mapped = map_mouse_button(button);
+                        if mapped != functor_runtime_common::MouseButton::Unknown {
+                            match action {
+                                Action::Press => {
+                                    // A press the game never saw must not enter
+                                    // the held set, or its release would leak a
+                                    // phantom edge.
+                                    if !ignore_user_input {
+                                        held_buttons.set(mapped, true);
+                                        game.mouse_button(mapped as i32, true);
+                                    }
+                                }
+                                Action::Release => {
+                                    let was_held = held_buttons.is_down(mapped);
+                                    held_buttons.set(mapped, false);
+                                    if was_held && !ignore_user_input {
+                                        game.mouse_button(mapped as i32, false);
+                                    }
+                                }
+                                Action::Repeat => {}
+                            }
+                            if clock.is_fixed_time() {
+                                refresh_fixed_input_levels(
+                                    &mut fixed_input_snapshot,
+                                    &held_keys,
+                                    held_buttons,
+                                    xr_primary_down || xr_primary_clicked,
+                                    xr_override.as_ref(),
+                                );
+                            }
                         }
                     }
                     glfw::WindowEvent::Focus(false) => {
@@ -1547,10 +1678,19 @@ Escape again to quit"
                         mouse_primary_clicked = false;
                         xr_primary_down = false;
                         xr_primary_clicked = false;
+                        // The GAME's held buttons need the same sweep as
+                        // `held_keys` above, or a click held at alt-tab fires
+                        // forever.
+                        release_held_mouse_buttons(
+                            &mut *game,
+                            &mut held_buttons,
+                            !ignore_user_input,
+                        );
                         if clock.is_fixed_time() {
                             refresh_fixed_input_levels(
                                 &mut fixed_input_snapshot,
                                 &held_keys,
+                                held_buttons,
                                 false,
                                 xr_override.as_ref(),
                             );
@@ -1661,6 +1801,7 @@ Escape again to quit"
                         let snapshot = desktop_input_snapshot(
                             &held_keys,
                             mouse_pos,
+                            held_buttons,
                             args.emulate_xr,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
@@ -2447,6 +2588,7 @@ Escape again to quit"
                         desktop_input_snapshot(
                             &held_keys,
                             mouse_pos,
+                            held_buttons,
                             args.emulate_xr,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
@@ -2463,6 +2605,7 @@ Escape again to quit"
                         fb_height as u32,
                         &mut held_keys,
                         &mut mouse_pos,
+                        &mut held_buttons,
                         &mut xr_override,
                         state_input,
                         args.emulate_xr,
@@ -2492,6 +2635,7 @@ Escape again to quit"
                         fixed_input_snapshot = desktop_input_snapshot(
                             &held_keys,
                             mouse_pos,
+                            held_buttons,
                             args.emulate_xr,
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
@@ -2567,18 +2711,36 @@ mod tests {
 
     #[test]
     fn fixed_level_refresh_preserves_mouse_and_tracked_poses() {
-        let mut snapshot =
-            desktop_input_snapshot(&BTreeSet::new(), (100, 200), true, false, (800, 600), None);
+        let mut snapshot = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (100, 200),
+            MouseButtons::default(),
+            true,
+            false,
+            (800, 600),
+            None,
+        );
         let pose = snapshot
             .xr
             .as_ref()
             .and_then(|xr| xr.right.grip)
             .expect("emulated grip");
         let held = BTreeSet::from([InputKey::Space]);
+        // A button held at the fixed-step boundary is level state like a key:
+        // the refresh must carry it, not drop it.
+        let mut buttons = MouseButtons::default();
+        buttons.set(functor_runtime_common::MouseButton::Right, true);
 
-        refresh_fixed_input_levels(&mut snapshot, &held, false, None);
+        refresh_fixed_input_levels(&mut snapshot, &held, buttons, false, None);
 
-        assert_eq!(snapshot.mouse, MouseSnapshot { x: 100, y: 200 });
+        assert_eq!(
+            snapshot.mouse,
+            MouseSnapshot {
+                x: 100,
+                y: 200,
+                buttons
+            }
+        );
         assert_eq!(
             snapshot.xr.as_ref().and_then(|xr| xr.right.grip),
             Some(pose)
@@ -2620,6 +2782,7 @@ mod tests {
         let snapshot = desktop_input_snapshot(
             &held,
             (700, 100),
+            MouseButtons::default(),
             true,
             true,
             (800, 600),
@@ -2628,18 +2791,34 @@ mod tests {
         assert_eq!(snapshot.xr.as_ref(), Some(&injected));
         // Keyboard/mouse domains stay live alongside it.
         assert_eq!(snapshot.held_keys, vec![InputKey::Space]);
-        assert_eq!(snapshot.mouse, MouseSnapshot { x: 700, y: 100 });
+        assert_eq!(
+            snapshot.mouse,
+            MouseSnapshot {
+                x: 700,
+                y: 100,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]
     fn an_injected_xr_sample_supplies_the_domain_without_emulate_xr() {
         let injected = injected_sample();
-        let plain = desktop_input_snapshot(&BTreeSet::new(), (0, 0), false, false, (800, 600), None);
+        let plain = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (0, 0),
+            MouseButtons::default(),
+            false,
+            false,
+            (800, 600),
+            None,
+        );
         assert_eq!(plain.xr, None, "no XR domain without a device or injection");
 
         let snapshot = desktop_input_snapshot(
             &BTreeSet::new(),
             (0, 0),
+            MouseButtons::default(),
             false,
             false,
             (800, 600),
@@ -2654,6 +2833,7 @@ mod tests {
         let mut snapshot = desktop_input_snapshot(
             &BTreeSet::new(),
             (100, 200),
+            MouseButtons::default(),
             true,
             false,
             (800, 600),
@@ -2663,7 +2843,13 @@ mod tests {
         // owns the XR domain, so window keys must leave it alone.
         let held = BTreeSet::from([InputKey::Enter]);
 
-        refresh_fixed_input_levels(&mut snapshot, &held, true, Some(&injected));
+        refresh_fixed_input_levels(
+            &mut snapshot,
+            &held,
+            MouseButtons::default(),
+            true,
+            Some(&injected),
+        );
 
         assert_eq!(snapshot.xr.as_ref(), Some(&injected));
         assert_eq!(snapshot.xr.as_ref().unwrap().right.squeeze, 0.0);

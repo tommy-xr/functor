@@ -200,6 +200,13 @@ pub fn functor_lang_mouse_wheel(delta: i32) {
     push_input(InputEvent::MouseWheel { delta });
 }
 
+/// Deliver a mouse-button edge (`button` = `functor_runtime_common::MouseButton`
+/// as i32). The page maps the browser's `MouseEvent.button` before calling.
+#[wasm_bindgen]
+pub fn functor_lang_mouse_button(button: i32, is_down: bool) {
+    push_input(InputEvent::MouseButton { button, is_down });
+}
+
 thread_local! {
     /// The page's UNLOCKED pointer over the canvas — `(pos in CSS px,
     /// primary button down, press latched since last sample)` — for the
@@ -370,13 +377,32 @@ pub fn drain_input(
             }
             InputEvent::MouseMove { x, y } => {
                 if deliver {
-                    snapshot.mouse = functor_runtime_common::MouseSnapshot { x, y };
+                    // x/y only — a move must not clear the held buttons.
+                    snapshot.mouse.x = x;
+                    snapshot.mouse.y = y;
                     game.mouse_move(x, y);
                 }
             }
             InputEvent::MouseWheel { delta } => {
                 if deliver {
                     game.mouse_wheel(delta);
+                }
+            }
+            InputEvent::MouseButton { button, is_down } => {
+                // Same level/edge split as keys: the held set tracks physical
+                // state (so a release while paused can't stick), the hook only
+                // sees edges we actually deliver.
+                if let Some(mapped) = functor_runtime_common::MouseButton::from_i32(button)
+                    .filter(|b| *b != functor_runtime_common::MouseButton::Unknown)
+                {
+                    if is_down && deliver {
+                        snapshot.mouse.buttons.set(mapped, true);
+                    } else if !is_down && (deliver || recover_releases) {
+                        snapshot.mouse.buttons.set(mapped, false);
+                    }
+                }
+                if deliver {
+                    game.mouse_button(button, is_down);
                 }
             }
             // Only the time-travel recorder creates snapshots; the page input
@@ -550,6 +576,20 @@ fn input_marker(input: &InputEvent) -> Option<(&'static str, String)> {
         }
         InputEvent::MouseMove { x, y } => Some(("mouse-move", format!("mouse move ({x}, {y})"))),
         InputEvent::MouseWheel { delta } => Some(("mouse-wheel", format!("mouse wheel {delta:+}"))),
+        InputEvent::MouseButton { button, is_down } => {
+            let name = functor_runtime_common::MouseButton::from_i32(*button)
+                .map(|b| b.name())
+                .unwrap_or_else(|| format!("button {button}"));
+            let edge = if *is_down { "down" } else { "up" };
+            Some((
+                if *is_down {
+                    "mouse-button-down"
+                } else {
+                    "mouse-button-up"
+                },
+                format!("mouse {name} {edge}"),
+            ))
+        }
         InputEvent::Snapshot(_) => None,
         InputEvent::UiEvent(event) => Some(("ui-input", format!("UI {event:?}"))),
         InputEvent::WebviewEvent(event) => Some(("webview-input", format!("webview {event:?}"))),

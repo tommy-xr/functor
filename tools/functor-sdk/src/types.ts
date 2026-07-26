@@ -36,6 +36,16 @@ export interface XrInputSnapshot {
   right: XrControllerSnapshot;
 }
 
+/** Wire spelling of a mouse button for `POST /input`. */
+export type MouseButtonName = "left" | "right" | "middle";
+
+/** Which mouse buttons are held, as reported in an `InputSnapshot`. */
+export interface MouseButtons {
+  left: boolean;
+  right: boolean;
+  middle: boolean;
+}
+
 /** Runtime-owned input sampled independently of the game model.
  *
  * Typed device domains extend this record: XR is available today; gamepad and
@@ -44,8 +54,11 @@ export interface XrInputSnapshot {
 export interface InputSnapshot {
   /** Keys currently held, by canonical name. */
   held_keys: KeyName[];
-  /** Last known cursor position in window pixels. */
-  mouse: { x: number; y: number };
+  /** Last known cursor position in window pixels, plus the buttons held.
+   *
+   * `buttons` is absent from older runtimes' `/state`; treat a missing field
+   * as "no button held". */
+  mouse: { x: number; y: number; buttons?: MouseButtons };
   /** Present while an XR target has valid head tracking. */
   xr?: XrInputSnapshot;
 }
@@ -98,6 +111,7 @@ export type InputCommand =
   | { type: "key"; key: string; down: boolean }
   | { type: "mouse_move"; x: number; y: number }
   | { type: "mouse_wheel"; delta: number }
+  | { type: "mouse_button"; button: MouseButtonName; down: boolean }
   | { type: "ui_event"; slot: number; kind: UiEventKind }
   | { type: "webview_event"; slot: number; kind: UiEventKind }
   | ({ type: "xr" } & XrInputSample)

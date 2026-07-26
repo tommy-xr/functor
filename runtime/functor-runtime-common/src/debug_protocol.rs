@@ -80,7 +80,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/input",
-        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device)",
+        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device)",
     },
     DebugRoute {
         method: "POST",
@@ -193,6 +193,14 @@ pub enum InputCommand {
     Key { key: String, down: bool },
     MouseMove { x: i32, y: i32 },
     MouseWheel { delta: i32 },
+    /// A mouse-button edge, `button` spelled `"left"` / `"right"` /
+    /// `"middle"` (the [`crate::MouseButton::from_name`] wire spelling).
+    ///
+    /// Both an edge AND level state, exactly like `key`: it calls the game's
+    /// `mouseButton` hook and updates the held buttons the next step's
+    /// `sampledInput` samples — so full-auto fire is scriptable by holding
+    /// `down: true` across several `/time advance` steps.
+    MouseButton { button: String, down: bool },
     UiEvent { slot: u32, kind: UiEventKind },
     WebviewEvent { slot: u32, kind: UiEventKind },
     /// Set the XR device sample the next fixed step's `sampledInput` sees, so
@@ -356,7 +364,11 @@ mod tests {
             model: "Model {\n  label: \"hello\"\n}".into(),
             input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
-                mouse: crate::MouseSnapshot { x: 10, y: 20 },
+                mouse: crate::MouseSnapshot {
+                    x: 10,
+                    y: 20,
+                    ..Default::default()
+                },
                 xr: None,
             },
         };
@@ -375,7 +387,11 @@ mod tests {
                 "model": "Model {\n  label: \"hello\"\n}",
                 "input": {
                     "held_keys": ["W", "Up"],
-                    "mouse": { "x": 10, "y": 20 }
+                    "mouse": {
+                        "x": 10,
+                        "y": 20,
+                        "buttons": { "left": false, "right": false, "middle": false }
+                    }
                 }
             })
         );
@@ -430,6 +446,16 @@ mod tests {
             InputCommand::UiEvent {
                 slot: 3,
                 kind: UiEventKind::SliderChanged(0.5)
+            }
+        );
+        assert_eq!(
+            serde_json::from_str::<InputCommand>(
+                r#"{"type":"mouse_button","button":"left","down":true}"#
+            )
+            .unwrap(),
+            InputCommand::MouseButton {
+                button: "left".into(),
+                down: true
             }
         );
         assert_eq!(
