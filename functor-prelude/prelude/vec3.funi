@@ -1,7 +1,94 @@
 //! Branded 3D vectors used for positions, directions, velocities, and gravity.
+//!
+//! Vectors are **opaque** — like `Angle` and `Color`, a `Vec3` is built once
+//! (`Vec3.make`) and passed as a value, so three interleaved bare floats can
+//! never be mistaken for a position. Read components back with `Vec3.x` /
+//! `Vec3.y` / `Vec3.z`, and combine vectors with the arithmetic below rather
+//! than unpacking to a record and rebuilding.
+//!
+//! **Argument order is thread-last**, matching the rest of the prelude
+//! (`Scene.translate(v, scene)`): the *subject* is the LAST parameter, so a
+//! pipeline reads left-to-right as the subject being acted on.
+//!
+//! ```
+//! // v - origin, scaled by 2, then normalized
+//! let dir = v |> Vec3.sub(origin) |> Vec3.scale(2.0) |> Vec3.normalize()
+//! ```
+//!
+//! For the non-commutative operations this means `Vec3.sub(b, a)` computes
+//! `a - b`, so `v |> Vec3.sub(origin)` reads as "v minus origin"; likewise
+//! `a |> Vec3.cross(b)` is `a × b`, and `from |> Vec3.lerp(target, t)` moves
+//! `from` toward `target`.
+//!
+//! Components are 32-bit floats and every vector is **finite**: an operation
+//! whose result would overflow that range is an error naming the operation,
+//! rather than an infinity that becomes a NaN and silently blanks the scene.
 
 /// An opaque 3D vector.
 type t
 
 /// Construct a vector from X, Y, and Z components.
 let make : (float, float, float) => t
+
+/// The X component of a vector.
+///
+/// Components are stored as 32-bit floats, so a value that is not exactly
+/// representable comes back rounded (`Vec3.x(Vec3.make(0.1, 0.0, 0.0))` is
+/// `0.10000000149011612`). Compare components with a tolerance, not `==`.
+let x : (t) => float
+
+/// The Y component of a vector. Rounded to 32-bit like `Vec3.x`.
+let y : (t) => float
+
+/// The Z component of a vector. Rounded to 32-bit like `Vec3.x`.
+let z : (t) => float
+
+/// Componentwise sum. `Vec3.add(b, a)` is `a + b`, so `a |> Vec3.add(b)`
+/// reads as "a plus b" (addition is commutative, so the order is free).
+let add : (t, t) => t
+
+/// Componentwise difference. `Vec3.sub(b, a)` is `a - b`, so
+/// `v |> Vec3.sub(origin)` reads as "v minus origin".
+let sub : (t, t) => t
+
+/// Multiply every component by a scalar: `v |> Vec3.scale(2.0)` doubles `v`.
+/// Scaling by a negative number negates: `v |> Vec3.scale(0.0 - 1.0)`.
+let scale : (float, t) => t
+
+/// The dot product `a · b` — commutative, so argument order does not matter.
+/// Zero when the vectors are perpendicular.
+let dot : (t, t) => float
+
+/// The cross product. `Vec3.cross(b, a)` is `a × b`, so `a |> Vec3.cross(b)`
+/// reads as "a cross b" — the result is perpendicular to both, right-handed:
+/// `X × Y = Z`.
+///
+/// Mind the order for a strafe axis. In Functor's Y-up right-handed frame the
+/// world-space "right" of a gaze is `up × forward`, which in this argument
+/// order is `up |> Vec3.cross(forward)` — with `forward = +Z` and `up = +Y`
+/// that is `+X`. The other order gives `-X`.
+let cross : (t, t) => t
+
+/// The Euclidean length (magnitude) of a vector.
+let length : (t) => float
+
+/// A unit vector pointing the same way.
+///
+/// **A zero-length vector normalizes to zero**, not an error and not NaN —
+/// `Vec3.normalize(Vec3.make(0.0, 0.0, 0.0))` is the zero vector. Per-frame
+/// code normalizes a velocity or an input direction that is legitimately
+/// zero all the time, so this must not fault the frame; test the length
+/// first when you need a fallback direction. Zero is the ONLY input that
+/// yields a non-unit result — the length is computed with enough range that
+/// even the largest representable vector normalizes correctly.
+let normalize : (t) => t
+
+/// The distance between two points — symmetric, so argument order is free.
+/// `a |> Vec3.distance(b)` is the length of `a - b`.
+let distance : (t, t) => float
+
+/// Linear interpolation. `Vec3.lerp(target, t, from)` moves `from` toward
+/// `target` by fraction `t`, so `from |> Vec3.lerp(target, 0.5)` is the
+/// midpoint. `t` is NOT clamped: `0.0` yields `from`, `1.0` yields `target`,
+/// and values outside `0..1` extrapolate.
+let lerp : (t, float, t) => t
