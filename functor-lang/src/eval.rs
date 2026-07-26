@@ -1967,11 +1967,15 @@ most 1000000 cells"
             // closure O(n log n) times would make sorting the dominant cost
             // of a frame. So it is n key calls + O(n log n) f64 comparisons.
             //
-            // Ordering uses `f64::total_cmp`, a TOTAL order over all f64 —
-            // NaN keys sort to the end (positive NaN) or the start (negative
-            // NaN) instead of making the comparator inconsistent, which for
-            // a normal `partial_cmp`-with-fallback sort silently scrambles
-            // unrelated elements.
+            // Ordering is [`sort_key_cmp`]: ascending, with NaN keys last.
+            // It deliberately does NOT use `f64::total_cmp`, which orders by
+            // the SIGN BIT and so puts a negative NaN first and a positive
+            // NaN last — and the sign of a COMPUTED NaN is not specified by
+            // IEEE 754. `0.0 / 0.0` is `-NaN` on x86 (`divsd` returns the
+            // "QNaN floating-point indefinite") but `+NaN` on aarch64, so a
+            // total_cmp sort put the same list in different orders on Linux
+            // and macOS. In an engine that promises deterministic replay,
+            // that is a correctness bug, not a curiosity.
             Builtin::ListSortBy => match args.as_slice() {
                 [f, Value::List(items)] => {
                     // O(n log n) over already-paid elements, plus the n key
@@ -1998,7 +2002,7 @@ most 1000000 cells"
                         }
                     }
                     // `sort_by` is a stable merge sort — the guarantee above.
-                    keyed.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+                    keyed.sort_by(|(a, _), (b, _)| sort_key_cmp(*a, *b));
                     Ok(Value::List(Rc::new(
                         keyed.into_iter().map(|(_, v)| v).collect(),
                     )))
@@ -2771,6 +2775,40 @@ pub(crate) fn callee_label(callee: &Expr) -> String {
     }
 }
 
+/// The ordering `List.sortBy` imposes on its float keys: **ascending, with
+/// every NaN key last**.
+///
+/// It exists because neither obvious choice is acceptable:
+///
+///   * `f64::total_cmp` is a total order, but it orders by the SIGN BIT, so
+///     a negative NaN sorts first and a positive NaN sorts last. IEEE 754
+///     does not specify the sign of a COMPUTED NaN — `0.0 / 0.0` is `-NaN`
+///     on x86 and `+NaN` on aarch64 — so the same program sorted the same
+///     list differently on Linux and macOS. For an engine whose replay is
+///     supposed to be deterministic, that is a bug.
+///   * `partial_cmp(..).unwrap_or(Equal)` is an INCONSISTENT comparator when
+///     NaN is present (NaN compares Equal to everything while the non-NaN
+///     elements still order among themselves), which lets a merge sort
+///     scramble unrelated elements.
+///
+/// So NaN is normalized: all NaNs compare Equal to each other and Greater
+/// than every real number, whatever their sign bit. Because they compare
+/// Equal, the stable sort keeps NaN-keyed elements in their input order too.
+///
+/// `-0.0` and `+0.0` compare EQUAL here (they are numerically equal, and
+/// `total_cmp` would have split them) — so stability, not the sign of zero,
+/// decides their order.
+fn sort_key_cmp(a: f64, b: f64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        // Neither is NaN, so `partial_cmp` is always `Some`.
+        (false, false) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+    }
+}
+
 /// Wrap a "maybe absent" result as the language's `Option.t` — the shared
 /// answer of every PARTIAL builtin (`List.nth`/`head`/`last`/`find`).
 ///
@@ -3325,6 +3363,67 @@ pub fn render_trace(events: &[TraceEvent]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod sort_key_tests {
+    use super::sort_key_cmp;
+    use std::cmp::Ordering;
+
+    /// THE CROSS-PLATFORM LOCK. `List.sortBy`'s order must not depend on a
+    /// NaN's sign bit — the exact bug that made CI green on macOS (aarch64,
+    /// where `0.0 / 0.0` is `+NaN`) and red on Linux (x86, `-NaN`), because
+    /// `f64::total_cmp` sorts by that bit.
+    ///
+    /// This test builds BOTH signed NaNs explicitly from their bit patterns,
+    /// so it fails on every platform if the sign ever leaks back into the
+    /// ordering — rather than depending on whatever `0.0 / 0.0` happens to
+    /// produce on the machine running it.
+    #[test]
+    fn nan_keys_sort_last_regardless_of_sign_bit() {
+        let pos_nan = f64::from_bits(0x7ff8_0000_0000_0000);
+        let neg_nan = f64::from_bits(0xfff8_0000_0000_0000);
+        assert!(pos_nan.is_nan() && neg_nan.is_nan());
+        assert!(neg_nan.is_sign_negative() && !pos_nan.is_sign_negative());
+
+        for nan in [pos_nan, neg_nan] {
+            // Greater than everything real, including the infinities.
+            for other in [0.0, -0.0, 1.0, -1.0, f64::INFINITY, f64::NEG_INFINITY] {
+                assert_eq!(sort_key_cmp(nan, other), Ordering::Greater, "{nan} vs {other}");
+                assert_eq!(sort_key_cmp(other, nan), Ordering::Less, "{other} vs {nan}");
+            }
+            // Both NaNs sort to the same place as each other.
+            assert_eq!(sort_key_cmp(nan, pos_nan), Ordering::Equal);
+            assert_eq!(sort_key_cmp(nan, neg_nan), Ordering::Equal);
+        }
+
+        // A whole sort agrees for either NaN sign — the CI failure, pinned.
+        for nan in [pos_nan, neg_nan] {
+            let mut v = vec![3.0, nan, 1.0, 2.0];
+            v.sort_by(|a, b| sort_key_cmp(*a, *b));
+            assert_eq!(&v[..3], &[1.0, 2.0, 3.0]);
+            assert!(v[3].is_nan(), "the NaN must land last, got {v:?}");
+        }
+    }
+
+    /// `-0.0` and `+0.0` are numerically equal, so the sort must treat them
+    /// as ties and let STABILITY order them — `total_cmp` would have split
+    /// them, silently reordering elements whose keys are `==` in the
+    /// language.
+    #[test]
+    fn signed_zeros_are_ties() {
+        assert_eq!(sort_key_cmp(-0.0, 0.0), Ordering::Equal);
+        assert_eq!(sort_key_cmp(0.0, -0.0), Ordering::Equal);
+    }
+
+    /// Ordinary ordering is untouched.
+    #[test]
+    fn real_numbers_order_ascending() {
+        assert_eq!(sort_key_cmp(1.0, 2.0), Ordering::Less);
+        assert_eq!(sort_key_cmp(2.0, 1.0), Ordering::Greater);
+        assert_eq!(sort_key_cmp(2.0, 2.0), Ordering::Equal);
+        assert_eq!(sort_key_cmp(f64::NEG_INFINITY, f64::INFINITY), Ordering::Less);
+    }
 }
 
 #[cfg(test)]

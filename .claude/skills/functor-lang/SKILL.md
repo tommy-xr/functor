@@ -580,7 +580,11 @@ collapse with `Option.defaultValue(fallback)`. (`List.maximum` predates
 because changing it would break existing games.) ·
 `List.indexedMap(fn, list)` (like `map`, but `fn(index, element)` — index
 FIRST, 0-based) · `List.sortBy(fn, list)` (ascending by the Float the key
-returns; **stable**, and the key runs exactly once per element) ·
+returns; **stable**, and the key runs exactly once per element. **NaN keys
+sort LAST**, all tied with each other and independent of the NaN's sign —
+so the order is the same on every platform, which `f64::total_cmp` would
+NOT be, since `0.0 / 0.0` is `-NaN` on x86 and `+NaN` on ARM. `-0.0` and
+`0.0` are ties) ·
 `List.zip(other, list)` (→ `List<('a, 'b)>`; the PIPED list is the first
 tuple slot, and it truncates to the shorter side) ·
 `List.take(count, list)` / `List.drop(count, list)` (both SATURATE: past the

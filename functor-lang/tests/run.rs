@@ -532,17 +532,40 @@ fn list_sort_by_is_ascending_and_stable() {
         .filter(|line| line.contains("List.sortBy["))
         .count();
     assert_eq!(key_calls, 8, "the key must run once per element, ran {key_calls}");
-    // A NaN key does not corrupt the sort. `total_cmp` is a TOTAL order, so
-    // NaN sorts to one end (positive NaN last) and every non-NaN element
-    // keeps its correct relative position — whereas a `partial_cmp`-with-
-    // fallback comparator is inconsistent and can scramble unrelated pairs.
-    assert_eq!(
-        main_result(
-            "let main = () => [3.0, 0.0 / 0.0, 1.0, 2.0] |> List.sortBy((v) => v) \
-             |> List.take(3.0)"
-        ),
-        "[1, 2, 3]"
-    );
+    // A NaN key does not corrupt the sort: NaN sorts LAST and every real
+    // element keeps its correct position. This assertion is deliberately
+    // written to be platform-independent — an earlier version expected
+    // `[1, 2, 3]` from the first three elements, which held on aarch64
+    // (`0.0 / 0.0` is `+NaN`) but not on x86 (`-NaN`), because the old
+    // `total_cmp` comparator ordered by the NaN's SIGN BIT. The sort itself
+    // is now sign-independent (see `eval::sort_key_cmp`); the sign-agnostic
+    // unit tests live in `eval::sort_key_tests`.
+    //
+    // Both NaN spellings must land in the same place, whatever sign the host
+    // CPU gives them. `-(0.0 / 0.0)` is the load-bearing one: unary minus
+    // flips the sign BIT (subtraction does not), so on any given machine the
+    // two spellings have OPPOSITE signs — which means this loop reproduces
+    // the Linux CI failure locally on macOS too, instead of only on the
+    // architecture that happens to expose it.
+    for nan in ["0.0 / 0.0", "-(0.0 / 0.0)"] {
+        assert_eq!(
+            main_result(&format!(
+                "let main = () => [3.0, {nan}, 1.0, 2.0] |> List.sortBy((v) => v) \
+                 |> List.take(3.0)"
+            )),
+            "[1, 2, 3]",
+            "the three real keys must sort ascending ahead of the NaN ({nan})"
+        );
+        // …and the NaN is genuinely at the end, not merely absent.
+        assert_eq!(
+            main_result(&format!(
+                "let main = () => [3.0, {nan}, 1.0, 2.0] |> List.sortBy((v) => v) \
+                 |> List.drop(3.0) |> List.all((v) => v != v)"
+            )),
+            "true",
+            "the NaN key must sort last ({nan})"
+        );
+    }
     let (message, _, _) = run_err("let main = () => [1.0] |> List.sortBy((v) => \"s\")");
     assert!(message.contains("must return a number"), "unexpected: {message}");
 }
