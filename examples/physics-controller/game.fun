@@ -16,7 +16,7 @@
 //
 //   read   Physics.position / linearVelocity / castExcluding   (synchronous)
 //   decide Control.sense / desiredVelocity                     (pure)
-//   write  Physics.setVelocity                                 (same-frame)
+//   write  Physics.setVelocityXZ (+ setVelocityY on a jump)     (same-frame)
 //
 // The reads see the PREVIOUS step (physics runs after `tick`) and the command
 // applies at the step that immediately follows this `tick`, so the loop closes
@@ -90,7 +90,7 @@ let physics = (model) =>
       // Non-negotiable for a character. Without it the capsule picks up
       // angular velocity from any glancing contact and topples — and a tipped
       // capsule's lowest point is no longer `feetOffset` below its center, so
-      // the grounding probe and the ground clamp both start lying.
+      // the grounding probe starts lying about how far down the ground is.
       |> Physics.upright,
   ])
 
@@ -164,14 +164,13 @@ let tick = (model, dt, tts) =>
     let pos = Physics.position(playerTag) in
     let vel = Physics.linearVelocity(playerTag) in
     let probe = groundProbe(pos) in
-    // The observation handed to the pure controller. `groundDistance` is what
-    // the probe measured and `standHeight` is where the feet belong, so the
-    // controller can hold its standing height itself (see `verticalVelocity`).
+    // The observation handed to the pure controller. It needs no probe
+    // distance and no rest height: the controller never writes the vertical
+    // axis, so it has no standing height to hold. `vy` is here only so a
+    // landing's impact can scale the squash.
     let obs = {
       grounded: probe.hit,
       vx: vel.x, vy: vel.y, vz: vel.z,
-      standHeight: feetOffset,
-      groundDistance: probe.distance,
     } in
     let carry = surfaceVelocity(probe) in
     let sensed = Control.sense(dt, obs, m.jumpEdge, m.ctl) in
@@ -212,8 +211,17 @@ let tick = (model, dt, tts) =>
         carry: carry.x, deckVx: World.deckVx(m.clock),
         coy: ctl.coyote, sq: ctl.squash, impact: ctl.landImpact,
       } in
+      // Steer the horizontal plane and leave the vertical axis to the solver,
+      // which owns the ground contact, the landing impulse, and gravity. The
+      // ONLY frame that writes vy is the one a jump fires on — `Control.
+      // verticalCommand` is `Some` exactly then, and its expects pin that.
+      // The two writes touch disjoint axes, so the pair applies as one
+      // whole-vector write without either clobbering the other.
+      let steer = Physics.setVelocityXZ(playerTag, want.x, want.z) in
       (trace(row, next),
-       Physics.setVelocity(playerTag, Vec3.make(want.x, want.y, want.z)))
+       match Control.verticalCommand(carry, sensed) with
+       | Option.Some(vy) => Effect.batch([steer, Physics.setVelocityY(playerTag, vy)])
+       | Option.None => steer)
 
 let input = (model, key, isDown) =>
   match key with

@@ -59,12 +59,32 @@ const FRAMES: u64 = 120;
 /// The frame's full command list — the declared scene, plus (at frame 45) an
 /// impulse kicking crate "a", exercising the Phase 3 command path: queued,
 /// applied after reconcile, replayed like any other input.
+///
+/// Frames 60 and 61 add the per-axis writes. Unlike every other command these
+/// are **state-dependent** — they read the axes they preserve off the live
+/// body when they apply — so seek-then-replay equivalence is a stronger claim
+/// for them than for a pure input, and worth pinning here: a replay resuming
+/// from a slightly different world would diverge on the preserved axis
+/// instead of reproducing it.
 fn commands_at(frame: u64) -> Vec<Command> {
     let mut cmds = vec![Command::DeclareScene(scene_at(frame))];
     if frame == 45 {
         cmds.push(Command::Apply(PhysicsCommand::ApplyImpulse {
             tag: "a".to_string(),
             impulse: [0.0, 4.0, 1.5],
+        }));
+    }
+    if frame == 60 {
+        cmds.push(Command::Apply(PhysicsCommand::SetVelocityXZ {
+            tag: "a".to_string(),
+            x: 1.5,
+            z: -0.75,
+        }));
+    }
+    if frame == 61 {
+        cmds.push(Command::Apply(PhysicsCommand::SetVelocityY {
+            tag: "a".to_string(),
+            y: 2.25,
         }));
     }
     cmds

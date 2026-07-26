@@ -116,8 +116,32 @@ let transformed : (tag, Scene.t) => Scene.t
 let applyImpulse : (tag, Vec3.t) => Effect.t
 /// Apply a continuous force to a body for the next step.
 let applyForce : (tag, Vec3.t) => Effect.t
-/// Replace a body's linear velocity.
+/// Replace a body's linear velocity — all three axes.
+///
+/// For a character controller prefer `Physics.setVelocityXZ`: writing the
+/// vertical axis every frame fights the solver's own ground contact.
 let setVelocity : (tag, Vec3.t) => Effect.t
+
+/// Replace a body's HORIZONTAL velocity, leaving the vertical axis alone.
+///
+/// The character-controller command. Steering owns x and z while the solver
+/// keeps the y it is using to resolve the ground contact, so the game never
+/// has to author a vertical velocity it has no opinion about — with
+/// `Physics.setVelocity` it must write all three every frame, and the only
+/// values available to it are a one-step-stale read or a guess.
+///
+/// The preserved axis is read from the live world when the command applies —
+/// after reconcile, and after any command queued earlier the same frame. So
+/// velocity commands in one frame compose as last-write-wins per axis, and an
+/// axis nobody wrote is left exactly as the solver left it.
+let setVelocityXZ : (tag, float, float) => Effect.t
+
+/// Replace a body's VERTICAL velocity, leaving the horizontal plane alone.
+///
+/// A jump that keeps the run: unlike `Physics.applyImpulse` the result does
+/// not depend on the body's mass, and unlike `Physics.setVelocity` it does not
+/// discard the horizontal momentum the character arrived with.
+let setVelocityY : (tag, float) => Effect.t
 /// Move a body immediately to a world position.
 let teleport : (tag, Vec3.t) => Effect.t
 
