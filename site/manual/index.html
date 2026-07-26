@@ -414,7 +414,7 @@ let pos = model.pos |> Vec3.add(step)</pre>
               <tr><td><code>v |&gt; Vec3.sub(origin)</code></td><td><code>v - origin</code>; direct-call form is <code>Vec3.sub(origin, v)</code></td></tr>
               <tr><td><code>v |&gt; Vec3.scale(k)</code></td><td>multiply every component; negate with <code>Vec3.scale(0.0 - 1.0)</code></td></tr>
               <tr><td><code>a |&gt; Vec3.dot(b)</code></td><td><code>a · b</code> — commutative; zero when perpendicular</td></tr>
-              <tr><td><code>a |&gt; Vec3.cross(b)</code></td><td><code>a × b</code>, right-handed — <code>Vec3.cross(up, forward)</code> is screen-right in Functor's Y-up frame</td></tr>
+              <tr><td><code>a |&gt; Vec3.cross(b)</code></td><td><code>a × b</code>, right-handed (<code>X × Y = Z</code>). For a strafe axis mind the order: world-space "right" is <code>up × forward</code>, i.e. <code>up |&gt; Vec3.cross(forward)</code> — with <code>forward = +Z</code>, <code>up = +Y</code> that is <code>+X</code>; the other order gives <code>-X</code></td></tr>
               <tr><td><code>v |&gt; Vec3.length()</code></td><td>magnitude</td></tr>
               <tr><td><code>v |&gt; Vec3.normalize()</code></td><td>unit vector. <strong>The zero vector normalizes to zero</strong> — not NaN, not an error, because per-frame code normalizes an idle velocity constantly. Test the length first if you need a fallback direction</td></tr>
               <tr><td><code>a |&gt; Vec3.distance(b)</code></td><td><code>|a - b|</code> — symmetric, so the order is free</td></tr>
@@ -425,6 +425,14 @@ let pos = model.pos |> Vec3.add(step)</pre>
             Reads that come <em>back</em> from the engine (<code>Physics.position</code>, a ray
             hit) still hand you a plain <code>{x, y, z}</code> record; wrap one with
             <code>Vec3.make</code> to bring it into the arithmetic above.
+          </p>
+          <p>
+            Components are 32-bit floats, so <code>Vec3.x</code> and friends return a
+            <em>rounded</em> value (<code>Vec3.x(Vec3.make(0.1, 0.0, 0.0))</code> is
+            <code>0.10000000149011612</code>) — compare with a tolerance, not <code>==</code>.
+            Every vector is also <strong>finite</strong>: an operation whose result would
+            overflow the 32-bit range is an error naming the operation, rather than an infinity
+            that becomes a NaN and silently blanks the scene.
           </p>
 
           <h3>Scene</h3>

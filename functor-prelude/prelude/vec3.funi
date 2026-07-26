@@ -19,6 +19,10 @@
 //! `a - b`, so `v |> Vec3.sub(origin)` reads as "v minus origin"; likewise
 //! `a |> Vec3.cross(b)` is `a × b`, and `from |> Vec3.lerp(target, t)` moves
 //! `from` toward `target`.
+//!
+//! Components are 32-bit floats and every vector is **finite**: an operation
+//! whose result would overflow that range is an error naming the operation,
+//! rather than an infinity that becomes a NaN and silently blanks the scene.
 
 /// An opaque 3D vector.
 type t
@@ -27,12 +31,16 @@ type t
 let make : (float, float, float) => t
 
 /// The X component of a vector.
+///
+/// Components are stored as 32-bit floats, so a value that is not exactly
+/// representable comes back rounded (`Vec3.x(Vec3.make(0.1, 0.0, 0.0))` is
+/// `0.10000000149011612`). Compare components with a tolerance, not `==`.
 let x : (t) => float
 
-/// The Y component of a vector.
+/// The Y component of a vector. Rounded to 32-bit like `Vec3.x`.
 let y : (t) => float
 
-/// The Z component of a vector.
+/// The Z component of a vector. Rounded to 32-bit like `Vec3.x`.
 let z : (t) => float
 
 /// Componentwise sum. `Vec3.add(b, a)` is `a + b`, so `a |> Vec3.add(b)`
@@ -52,8 +60,13 @@ let scale : (float, t) => t
 let dot : (t, t) => float
 
 /// The cross product. `Vec3.cross(b, a)` is `a × b`, so `a |> Vec3.cross(b)`
-/// reads as "a cross b" — the result is perpendicular to both, right-handed
-/// (`Vec3.cross(up, forward)` yields screen-right in Functor's Y-up frame).
+/// reads as "a cross b" — the result is perpendicular to both, right-handed:
+/// `X × Y = Z`.
+///
+/// Mind the order for a strafe axis. In Functor's Y-up right-handed frame the
+/// world-space "right" of a gaze is `up × forward`, which in this argument
+/// order is `up |> Vec3.cross(forward)` — with `forward = +Z` and `up = +Y`
+/// that is `+X`. The other order gives `-X`.
 let cross : (t, t) => t
 
 /// The Euclidean length (magnitude) of a vector.
@@ -65,7 +78,9 @@ let length : (t) => float
 /// `Vec3.normalize(Vec3.make(0.0, 0.0, 0.0))` is the zero vector. Per-frame
 /// code normalizes a velocity or an input direction that is legitimately
 /// zero all the time, so this must not fault the frame; test the length
-/// first when you need a fallback direction.
+/// first when you need a fallback direction. Zero is the ONLY input that
+/// yields a non-unit result — the length is computed with enough range that
+/// even the largest representable vector normalizes correctly.
 let normalize : (t) => t
 
 /// The distance between two points — symmetric, so argument order is free.
