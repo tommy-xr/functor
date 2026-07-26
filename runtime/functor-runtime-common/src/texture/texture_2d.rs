@@ -9,9 +9,9 @@ use super::{PixelFormat, RuntimeTexture, TextureData};
 
 pub struct Texture2D {
     ora: RuntimeRenderableAsset<TextureData>,
+    average: [f32; 3],
 }
 
-#[derive(Default)]
 pub struct TextureOptions {
     pub wrap: bool,
     pub linear: bool,
@@ -22,13 +22,43 @@ pub struct TextureOptions {
     /// level-0 texels they were authored as. Turn it on for textures that
     /// minify, where the alternative is aliasing.
     pub mipmap: bool,
+    /// Anisotropic taps to request, clamped to what the device supports. Only
+    /// meaningful with `mipmap`, since anisotropy samples mip levels.
+    ///
+    /// Costs bandwidth in proportion to the taps, and it is charged per
+    /// fragment at grazing angles — which is most of a terrain. Surfaces that
+    /// are mostly grazing and mostly tiled want fewer taps than the default.
+    pub anisotropy: f32,
+    /// Compute the image's mean color at load (see [`Texture2D::average_color`]).
+    ///
+    /// Off by default: it is an O(pixels) scan that only terrain detail maps
+    /// consume, and every sprite and UI texture would otherwise pay it.
+    pub compute_average: bool,
 }
 
-/// Anisotropic taps to request when a mip chain is built.
+/// Taps for textures that do not say otherwise. Hardware commonly reports 16;
+/// the visible gain past 8 is slight and the bandwidth cost is not.
+pub const DEFAULT_ANISOTROPY: f32 = 8.0;
+
+/// Taps for tiled terrain detail maps.
 ///
-/// Hardware commonly reports 16; the visible gain past 8 on terrain-angle
-/// surfaces is slight and the bandwidth cost is not, which matters on Quest.
-const ANISOTROPY_TAPS: f32 = 8.0;
+/// Terrain is overwhelmingly grazing-angle, so anisotropy is charged over
+/// almost the whole surface. Measured on a Quest 3: 8 taps on these four maps
+/// cost 8.9-13.6 ms of a 13.8 ms frame; 2 taps still missed 72 Hz. The
+/// distance fade already limits how far the detail is asked to hold up.
+pub const TERRAIN_DETAIL_ANISOTROPY: f32 = 1.0;
+
+impl Default for TextureOptions {
+    fn default() -> Self {
+        Self {
+            wrap: false,
+            linear: false,
+            mipmap: false,
+            anisotropy: DEFAULT_ANISOTROPY,
+            compute_average: false,
+        }
+    }
+}
 
 /// The device's anisotropy limit, or `None` where the extension is absent.
 ///
@@ -47,10 +77,51 @@ fn max_anisotropy(gl: &glow::Context) -> Option<f32> {
 
 impl Texture2D {
     pub fn init_from_data(data: TextureData, opts: TextureOptions) -> Texture2D {
+        let average = opts
+            .compute_average
+            .then(|| average_color(&data))
+            .unwrap_or([1.0; 3]);
         Texture2D {
             ora: RuntimeRenderableAsset::new(data, opts),
+            average,
         }
     }
+
+    /// The image's mean RGB, computed once at load, or white when
+    /// `compute_average` was not requested.
+    ///
+    /// Terrain detail maps divide each sample by this to contribute structure
+    /// rather than color; reading it from the texture's top mip instead would
+    /// cost a fetch per map per fragment to recover a constant.
+    ///
+    /// Deliberately in the same (non-linear) space as the samples that divide
+    /// by it: textures upload as `RGB`/`RGBA`, never `SRGB8_*`, and
+    /// `FRAMEBUFFER_SRGB` is never enabled, so `texture()` returns the stored
+    /// bytes unmodified. Switching either of those would silently invalidate
+    /// this divisor.
+    pub fn average_color(&self) -> [f32; 3] {
+        self.average
+    }
+}
+
+/// Mean RGB over every texel. Ignores alpha: these are albedo maps, and a
+/// transparent texel's color still contributes to what the eye averages.
+fn average_color(data: &TextureData) -> [f32; 3] {
+    let stride = match data.format {
+        PixelFormat::RGB => 3,
+        PixelFormat::RGBA => 4,
+    };
+    let texels = data.bytes.len() / stride;
+    if texels == 0 {
+        return [1.0, 1.0, 1.0];
+    }
+    let mut totals = [0u64; 3];
+    for texel in data.bytes.chunks_exact(stride) {
+        for channel in 0..3 {
+            totals[channel] += texel[channel] as u64;
+        }
+    }
+    std::array::from_fn(|channel| totals[channel] as f32 / texels as f32 / 255.0)
 }
 
 /// The minification filter for `options` — a pure function so the mip/filter
@@ -136,12 +207,16 @@ impl RenderableAsset for TextureData {
                 gl.generate_mipmap(glow::TEXTURE_2D);
                 // Anisotropy only samples levels a mip chain provides, so it
                 // is meaningless (and on some drivers ignored) without one.
-                if let Some(device_max) = max_anisotropy(gl) {
-                    gl.tex_parameter_f32(
-                        glow::TEXTURE_2D,
-                        glow::TEXTURE_MAX_ANISOTROPY,
-                        ANISOTROPY_TAPS.min(device_max),
-                    );
+                // 1.0 is the GL default, so skip the probe and the set when
+                // nothing is being asked for.
+                if options.anisotropy > 1.0 {
+                    if let Some(device_max) = max_anisotropy(gl) {
+                        gl.tex_parameter_f32(
+                            glow::TEXTURE_2D,
+                            glow::TEXTURE_MAX_ANISOTROPY,
+                            options.anisotropy.min(device_max),
+                        );
+                    }
                 }
             }
 
@@ -160,7 +235,50 @@ mod tests {
             wrap: true,
             linear,
             mipmap,
+            ..TextureOptions::default()
         }
+    }
+
+    fn rgba(texels: &[[u8; 4]]) -> TextureData {
+        TextureData {
+            bytes: texels.iter().flatten().copied().collect(),
+            width: texels.len() as u32,
+            height: 1,
+            format: PixelFormat::RGBA,
+        }
+    }
+
+    #[test]
+    fn average_color_is_the_mean_over_texels() {
+        // Half black, half white: the mean is the midpoint, and alpha is
+        // deliberately ignored.
+        let data = rgba(&[[0, 0, 0, 0], [255, 255, 255, 255]]);
+        let average = average_color(&data);
+        for channel in average {
+            assert!((channel - 0.5).abs() < 0.01, "{average:?}");
+        }
+    }
+
+    #[test]
+    fn average_color_reads_three_byte_texels_at_the_right_stride() {
+        let data = TextureData {
+            bytes: vec![255, 0, 0, 0, 0, 255],
+            width: 2,
+            height: 1,
+            format: PixelFormat::RGB,
+        };
+        let average = average_color(&data);
+        assert!((average[0] - 0.5).abs() < 0.01, "{average:?}");
+        assert!(average[1].abs() < 0.01, "{average:?}");
+        assert!((average[2] - 0.5).abs() < 0.01, "{average:?}");
+    }
+
+    // The mean is only paid for when a consumer asks for it.
+    #[test]
+    fn textures_without_compute_average_report_white() {
+        let opaque_black = rgba(&[[0, 0, 0, 255]]);
+        let texture = Texture2D::init_from_data(opaque_black, TextureOptions::default());
+        assert_eq!(texture.average_color(), [1.0, 1.0, 1.0]);
     }
 
     // The default must stay mip-free: sprites, UI, and the fallback
