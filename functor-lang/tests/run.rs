@@ -382,6 +382,495 @@ fn list_length_isempty_reverse() {
     assert_eq!(main_result("let main = () => List.reverse([])"), "[]");
 }
 
+// ── the stdlib gap the game jam found (List / Math / Text) ───────────────
+//
+// Each group asserts the happy path, the EDGE case (empty list, out of
+// range, no match), and — for every multi-argument addition — the
+// thread-last PIPELINE form, which is the one games actually write.
+
+/// The partial accessors, and the absence value they answer with. Displayed
+/// as `Option.Some(x)` / `Option.None`, matchable, never a sentinel.
+#[test]
+fn list_partial_accessors_return_option() {
+    // nth: in range, out of range, negative, and the pipeline form.
+    assert_eq!(
+        main_result("let main = () => List.nth(1.0, [10.0, 20.0, 30.0])"),
+        "Option.Some(20)"
+    );
+    assert_eq!(
+        main_result("let main = () => [10.0, 20.0, 30.0] |> List.nth(0.0)"),
+        "Option.Some(10)"
+    );
+    assert_eq!(
+        main_result("let main = () => List.nth(3.0, [10.0, 20.0, 30.0])"),
+        "Option.None"
+    );
+    assert_eq!(
+        main_result("let main = () => List.nth(-1.0, [10.0])"),
+        "Option.None"
+    );
+    assert_eq!(main_result("let main = () => List.nth(0.0, [])"), "Option.None");
+    // A fractional index is a CALLER BUG, not an absence — it errors rather
+    // than quietly reading as "not found".
+    let (message, _, _) = run_err("let main = () => List.nth(0.5, [1.0])");
+    assert!(
+        message.contains("whole, finite index"),
+        "unexpected: {message}"
+    );
+
+    // head / last, including on the empty list.
+    assert_eq!(
+        main_result("let main = () => List.head([10.0, 20.0])"),
+        "Option.Some(10)"
+    );
+    assert_eq!(
+        main_result("let main = () => List.last([10.0, 20.0])"),
+        "Option.Some(20)"
+    );
+    assert_eq!(main_result("let main = () => List.head([])"), "Option.None");
+    assert_eq!(main_result("let main = () => List.last([])"), "Option.None");
+
+    // find: first match wins, no match is None, empty is None.
+    assert_eq!(
+        main_result("let main = () => [1.0, 5.0, 9.0] |> List.find((v) => v > 3.0)"),
+        "Option.Some(5)"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.find((v) => v > 90.0)"),
+        "Option.None"
+    );
+    assert_eq!(
+        main_result("let main = () => [] |> List.find((v) => true)"),
+        "Option.None"
+    );
+    let (message, _, _) = run_err("let main = () => List.find((v) => 1.0, [1.0])");
+    assert!(message.contains("must return a bool"), "unexpected: {message}");
+}
+
+/// `indexedMap` — the builtin that retires the O(n²) hand-rolled indexing.
+#[test]
+fn list_indexed_map_passes_the_index_first() {
+    assert_eq!(
+        main_result("let main = () => List.indexedMap((i, v) => i * 100.0 + v, [7.0, 8.0])"),
+        "[7, 108]"
+    );
+    // Subject-LAST.
+    assert_eq!(
+        main_result("let main = () => [7.0, 8.0] |> List.indexedMap((i, v) => i)"),
+        "[0, 1]"
+    );
+    assert_eq!(
+        main_result("let main = () => [] |> List.indexedMap((i, v) => i)"),
+        "[]"
+    );
+    // It agrees with `List.map` when the index is ignored.
+    assert_eq!(
+        main_result(
+            "let xs = [3.0, 4.0]
+let main = () =>
+  List.indexedMap((i, v) => v * 2.0, xs) == List.map((v) => v * 2.0, xs)"
+        ),
+        "true"
+    );
+}
+
+/// `sortBy` is ascending, STABLE, and calls its key once per element.
+#[test]
+fn list_sort_by_is_ascending_and_stable() {
+    assert_eq!(
+        main_result("let main = () => [3.0, 1.0, 2.0] |> List.sortBy((v) => v)"),
+        "[1, 2, 3]"
+    );
+    // Descending is the negated key.
+    assert_eq!(
+        main_result("let main = () => [3.0, 1.0, 2.0] |> List.sortBy((v) => 0.0 - v)"),
+        "[3, 2, 1]"
+    );
+    assert_eq!(main_result("let main = () => [] |> List.sortBy((v) => v)"), "[]");
+    assert_eq!(
+        main_result("let main = () => [1.0] |> List.sortBy((v) => v)"),
+        "[1]"
+    );
+    // STABILITY: every element shares one key, so a stable sort must return
+    // the list untouched. (An unstable sort is free to permute it.)
+    assert_eq!(
+        main_result("let main = () => [3.0, 1.0, 2.0, 5.0, 4.0] |> List.sortBy((v) => 0.0)"),
+        "[3, 1, 2, 5, 4]"
+    );
+    // Ties keep their input order relative to each other: sorting pairs by
+    // the first slot leaves the second slots in their original sequence.
+    assert_eq!(
+        main_result(
+            "let main = () =>
+  [(1.0, \"a\"), (0.0, \"b\"), (1.0, \"c\"), (0.0, \"d\")]
+    |> List.sortBy((p) => match p with | (k, _) => k)
+    |> List.map((p) => match p with | (_, tag) => tag)
+    |> Text.join(\"\")"
+        ),
+        "\"bdac\""
+    );
+    // The key is evaluated EXACTLY ONCE PER ELEMENT — not once per
+    // comparison — so an interpreted key never costs O(n log n) calls. Each
+    // key call is a traced `List.sortBy[i]` entry, so the trace counts them.
+    // (8 elements: 8 key calls, where per-comparison evaluation would be
+    // ~17 and rising with n.)
+    let record = run_src(
+        "let main = () => [4.0, 3.0, 8.0, 1.0, 7.0, 2.0, 6.0, 5.0] |> List.sortBy((v) => v)",
+        Tracing::On,
+    );
+    let key_calls = functor_lang::eval::render_trace(&record.trace)
+        .lines()
+        .filter(|line| line.contains("List.sortBy["))
+        .count();
+    assert_eq!(key_calls, 8, "the key must run once per element, ran {key_calls}");
+    let (message, _, _) = run_err("let main = () => [1.0] |> List.sortBy((v) => \"s\")");
+    assert!(message.contains("must return a number"), "unexpected: {message}");
+}
+
+/// `zip` pairs the PIPED list first and stops at the shorter one.
+#[test]
+fn list_zip_truncates_and_keeps_the_subject_first() {
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.zip([\"a\", \"b\"])"),
+        "[(1, \"a\"), (2, \"b\")]"
+    );
+    // Truncates to the shorter side, from either direction.
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0, 3.0] |> List.zip([\"a\"])"),
+        "[(1, \"a\")]"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0] |> List.zip([\"a\", \"b\", \"c\"])"),
+        "[(1, \"a\")]"
+    );
+    assert_eq!(main_result("let main = () => [] |> List.zip([\"a\"])"), "[]");
+    assert_eq!(main_result("let main = () => [1.0] |> List.zip([])"), "[]");
+}
+
+/// `take` / `drop` saturate instead of erroring at the edges.
+#[test]
+fn list_take_and_drop_saturate() {
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0, 3.0] |> List.take(2.0)"),
+        "[1, 2]"
+    );
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0, 3.0] |> List.drop(2.0)"),
+        "[3]"
+    );
+    // More than the list holds, and fewer than zero.
+    assert_eq!(
+        main_result("let main = () => [1.0] |> List.take(99.0)"),
+        "[1]"
+    );
+    assert_eq!(main_result("let main = () => [1.0] |> List.drop(99.0)"), "[]");
+    assert_eq!(main_result("let main = () => [1.0] |> List.take(-5.0)"), "[]");
+    assert_eq!(
+        main_result("let main = () => [1.0] |> List.drop(-5.0)"),
+        "[1]"
+    );
+    assert_eq!(main_result("let main = () => [] |> List.take(3.0)"), "[]");
+    // take(n) ++ drop(n) reconstructs the list, for any n.
+    assert_eq!(
+        main_result(
+            "let xs = [1.0, 2.0, 3.0, 4.0]
+let split = (n: float): bool =>
+  (xs |> List.take(n) |> List.append(xs |> List.drop(n))) == xs
+let main = () => List.all(split, [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 9.0])"
+        ),
+        "true"
+    );
+}
+
+/// `sum` is total — an empty list is 0, so there is no Option here.
+#[test]
+fn list_sum_is_total() {
+    assert_eq!(main_result("let main = () => List.sum([1.0, 2.0, 3.5])"), "6.5");
+    assert_eq!(main_result("let main = () => List.sum([])"), "0");
+    assert_eq!(main_result("let main = () => [-1.0, 1.0] |> List.sum"), "0");
+    let (message, _, _) = run_err("let main = () => List.sum([\"s\"])");
+    assert!(message.contains("expects numbers"), "unexpected: {message}");
+}
+
+/// `concatMap` is map-then-flatten in one pass.
+#[test]
+fn list_concat_map_flattens_one_level() {
+    assert_eq!(
+        main_result("let main = () => [1.0, 2.0] |> List.concatMap((v) => [v, v * 10.0])"),
+        "[1, 10, 2, 20]"
+    );
+    // A callback returning `[]` drops the element (the filter shape).
+    assert_eq!(
+        main_result(
+            "let main = () => [1.0, 2.0, 3.0] |> List.concatMap((v) => if v > 1.0 then [v] else [])"
+        ),
+        "[2, 3]"
+    );
+    assert_eq!(
+        main_result("let main = () => [] |> List.concatMap((v) => [v])"),
+        "[]"
+    );
+    // It equals map-then-flatten, which is the workaround it replaces.
+    assert_eq!(
+        main_result(
+            "let xs = [1.0, 2.0]
+let f = (v: float): List<float> => [v, v]
+let main = () => List.concatMap(f, xs) == List.flatten(List.map(f, xs))"
+        ),
+        "true"
+    );
+    let (message, _, _) = run_err("let main = () => [1.0] |> List.concatMap((v) => v)");
+    assert!(message.contains("must return a list"), "unexpected: {message}");
+}
+
+/// `Math.clamp` is the general clamp `Math.clamp01` only looked like, and it
+/// threads last so the pipeline reads "clamp n into low..high".
+#[test]
+fn math_clamp_is_general_and_threads_last() {
+    assert_eq!(
+        main_result("let main = () => Math.clamp(0.0, 10.0, 42.0)"),
+        "10"
+    );
+    assert_eq!(main_result("let main = () => 42.0 |> Math.clamp(0.0, 10.0)"), "10");
+    assert_eq!(main_result("let main = () => -5.0 |> Math.clamp(0.0, 10.0)"), "0");
+    assert_eq!(main_result("let main = () => 5.0 |> Math.clamp(0.0, 10.0)"), "5");
+    // Bounds are inclusive, and a degenerate range pins the value.
+    assert_eq!(main_result("let main = () => 3.0 |> Math.clamp(3.0, 3.0)"), "3");
+    // `Math.clamp01(n)` is exactly `Math.clamp(0.0, 1.0, n)`.
+    assert_eq!(
+        main_result(
+            "let agree = (n: float): bool => Math.clamp01(n) == Math.clamp(0.0, 1.0, n)
+let main = () => List.all(agree, [-2.0, -0.5, 0.0, 0.25, 1.0, 7.0])"
+        ),
+        "true"
+    );
+    // An inverted range is a caller bug, not a silent swap.
+    let (message, _, _) = run_err("let main = () => Math.clamp(10.0, 0.0, 5.0)");
+    assert!(message.contains("low <= high"), "unexpected: {message}");
+}
+
+/// `Math.round` is HALF AWAY FROM ZERO, and symmetric about it.
+#[test]
+fn math_round_is_half_away_from_zero() {
+    assert_eq!(
+        main_result("let main = () => [0.5, 1.5, 2.5, 1.4, 1.6] |> List.map(Math.round)"),
+        "[1, 2, 3, 1, 2]"
+    );
+    // The negatives mirror exactly — NOT banker's rounding, which would send
+    // 0.5 and 2.5 to 0 and 2.
+    assert_eq!(
+        main_result("let main = () => [-0.5, -1.5, -2.5, -1.4, -1.6] |> List.map(Math.round)"),
+        "[-1, -2, -3, -1, -2]"
+    );
+    assert_eq!(
+        main_result(
+            "let mirrors = (n: float): bool => Math.round(0.0 - n) == 0.0 - Math.round(n)
+let main = () => List.all(mirrors, [0.5, 1.5, 2.5, 3.7, 0.0])"
+        ),
+        "true"
+    );
+}
+
+/// `Math.sign` answers 0 at zero (unlike Rust's `signum`).
+#[test]
+fn math_sign_is_zero_at_zero() {
+    assert_eq!(
+        main_result("let main = () => [5.0, -5.0, 0.0, 0.0 - 0.0] |> List.map(Math.sign)"),
+        "[1, -1, 0, 0]"
+    );
+}
+
+/// The remaining single-argument math additions.
+#[test]
+fn math_transcendental_additions() {
+    assert_eq!(main_result("let main = () => Math.ceil(1.2)"), "2");
+    assert_eq!(main_result("let main = () => Math.ceil(-1.2)"), "-1");
+    assert_eq!(main_result("let main = () => Math.exp(0.0)"), "1");
+    assert_eq!(main_result("let main = () => Math.log(1.0)"), "0");
+    // log is the NATURAL log — the inverse of exp.
+    assert_eq!(
+        main_result("let main = () => Math.abs(Math.log(Math.exp(2.0)) - 2.0) < 0.0000001"),
+        "true"
+    );
+    // tan/asin/acos/atan agree with their identities.
+    assert_eq!(
+        main_result("let main = () => Math.abs(Math.tan(0.0)) < 0.0000001"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => Math.abs(Math.asin(0.0)) < 0.0000001"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => Math.abs(Math.acos(1.0)) < 0.0000001"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => Math.abs(Math.atan(0.0)) < 0.0000001"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => Math.abs(Math.acos(0.0) - Math.pi / 2.0) < 0.0000001"),
+        "true"
+    );
+    // asin/acos are NaN outside [-1, 1] rather than clamping — the
+    // documented trap, whose fix is an explicit clamp first.
+    assert_eq!(
+        main_result("let main = () => Math.acos(1.5) == Math.acos(1.5)"),
+        "false"
+    );
+    assert_eq!(
+        main_result("let main = () => 1.5 |> Math.clamp(-1.0, 1.0) |> Math.acos"),
+        "0"
+    );
+}
+
+/// `Text.length` / `Text.chars` count UNICODE SCALAR VALUES, and agree.
+#[test]
+fn text_length_and_chars_are_scalar_values() {
+    assert_eq!(main_result("let main = () => Text.length(\"abc\")"), "3");
+    assert_eq!(main_result("let main = () => Text.length(\"\")"), "0");
+    assert_eq!(
+        main_result("let main = () => Text.chars(\"abc\")"),
+        "[\"a\", \"b\", \"c\"]"
+    );
+    assert_eq!(main_result("let main = () => Text.chars(\"\")"), "[]");
+
+    // MULTIBYTE: these are 2- and 3-byte UTF-8 sequences, and each counts
+    // as ONE — the count is not bytes.
+    assert_eq!(main_result("let main = () => Text.length(\"héllo\")"), "5");
+    assert_eq!(main_result("let main = () => Text.length(\"日本語\")"), "3");
+    assert_eq!(
+        main_result("let main = () => Text.chars(\"日本\")"),
+        "[\"日\", \"本\"]"
+    );
+
+    // …but it is scalar values, NOT grapheme clusters: an "e" followed by a
+    // combining acute (U+0301) is honestly reported as 2, not 1. Documented
+    // behavior, pinned here so a change is deliberate.
+    // (The escape is Rust's — the `.fun` source holds the literal combining
+    // character, since Functor Lang has no `\u{…}` escape.)
+    assert_eq!(
+        main_result(&format!(
+            "let main = () => Text.length(\"e\u{301}\")"
+        )),
+        "2"
+    );
+
+    // The two agree BY CONSTRUCTION, for every string.
+    assert_eq!(
+        main_result(
+            "let agree = (s: string): bool => Text.length(s) == List.length(Text.chars(s))
+let main = () => List.all(agree, [\"\", \"a\", \"héllo\", \"日本語\", \"  x  \"])"
+        ),
+        "true"
+    );
+    // Round-trip: chars then rejoin is the identity.
+    assert_eq!(
+        main_result("let main = () => \"héllo\" |> Text.chars |> Text.join(\"\")"),
+        "\"héllo\""
+    );
+}
+
+/// The remaining Text additions, all subject-last where multi-argument.
+#[test]
+fn text_case_contains_replace_trim() {
+    assert_eq!(
+        main_result("let main = () => \"aBc\" |> Text.toUpper"),
+        "\"ABC\""
+    );
+    assert_eq!(
+        main_result("let main = () => \"aBc\" |> Text.toLower"),
+        "\"abc\""
+    );
+    // Case mapping is Unicode-aware, and MAY change the length ("ß" -> "SS").
+    assert_eq!(
+        main_result("let main = () => \"straße\" |> Text.toUpper"),
+        "\"STRASSE\""
+    );
+    assert_eq!(
+        main_result("let main = () => \"ÉCOLE\" |> Text.toLower"),
+        "\"école\""
+    );
+
+    // contains — subject-LAST, so the pipeline asks "does s contain x?".
+    assert_eq!(
+        main_result("let main = () => \"hello\" |> Text.contains(\"ell\")"),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => \"hello\" |> Text.contains(\"xyz\")"),
+        "false"
+    );
+    // The needle order is not accidentally swapped: "hello" is NOT inside "ell".
+    assert_eq!(
+        main_result("let main = () => Text.contains(\"hello\", \"ell\")"),
+        "false"
+    );
+    assert_eq!(
+        main_result("let main = () => \"\" |> Text.contains(\"\")"),
+        "true"
+    );
+
+    // replace — every occurrence, subject last.
+    assert_eq!(
+        main_result("let main = () => \"a-b-a\" |> Text.replace(\"a\", \"z\")"),
+        "\"z-b-z\""
+    );
+    assert_eq!(
+        main_result("let main = () => \"aaa\" |> Text.replace(\"aa\", \"b\")"),
+        "\"ba\""
+    );
+    // Growing replacements terminate (no re-scan of what was written).
+    assert_eq!(
+        main_result("let main = () => \"a\" |> Text.replace(\"a\", \"aa\")"),
+        "\"aa\""
+    );
+    assert_eq!(
+        main_result("let main = () => \"abc\" |> Text.replace(\"z\", \"y\")"),
+        "\"abc\""
+    );
+    let (message, _, _) = run_err("let main = () => \"a\" |> Text.replace(\"\", \"z\")");
+    assert!(message.contains("non-empty"), "unexpected: {message}");
+
+    // trim — both ends, whitespace only, interior untouched.
+    assert_eq!(
+        main_result("let main = () => \"  a b  \" |> Text.trim"),
+        "\"a b\""
+    );
+    assert_eq!(main_result("let main = () => \"\\n\\tx \" |> Text.trim"), "\"x\"");
+    assert_eq!(main_result("let main = () => \"\" |> Text.trim"), "\"\"");
+    assert_eq!(main_result("let main = () => \"abc\" |> Text.trim"), "\"abc\"");
+}
+
+/// Like the existing list builtins, the additions LOOP in Rust — a game can
+/// index or sort a thousand-element list without touching the eval-depth cap
+/// that a hand-rolled recursion hits around n≈60.
+#[test]
+fn added_list_builtins_do_not_consume_eval_depth() {
+    assert_eq!(
+        main_result(
+            "let main = () =>
+  List.range(1000.0)
+    |> List.sortBy((v) => 0.0 - v)
+    |> List.take(3.0)"
+        ),
+        "[999, 998, 997]"
+    );
+    assert_eq!(
+        main_result("let main = () => List.range(1000.0) |> List.sum"),
+        "499500"
+    );
+    assert_eq!(
+        main_result("let main = () => List.range(1000.0) |> List.nth(999.0)"),
+        "Option.Some(999)"
+    );
+    assert_eq!(
+        main_result("let main = () => List.range(1000.0) |> List.indexedMap((i, v) => i) |> List.last"),
+        "Option.Some(999)"
+    );
+}
+
 #[test]
 fn list_append_threads_last() {
     // Subject-LAST: `xs |> List.append(ys)` yields xs followed by ys.

@@ -421,6 +421,12 @@ pub fn builtin_signature(b: Builtin) -> Type {
     fn seed() -> Type {
         Variant("Random.Seed".to_string(), Vec::new())
     }
+    /// `Option.t<value>` — the bundled `Option` module's type, named exactly
+    /// as its declaration in `stdlib/option.fun` lowers, so a builtin's
+    /// result unifies with a hand-written `Option.Some(x)`.
+    fn option(value: Type) -> Type {
+        Variant("Option.t".to_string(), vec![value])
+    }
     match b {
         // Generic slots are Var(0)/Var(1); every use site instantiates
         // them fresh (B7), so element types genuinely flow through.
@@ -473,6 +479,55 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::ListReverse => func(vec![List(Box::new(Var(0)))], List(Box::new(Var(0)))),
         // List.isEmpty : (List<'a>) => Bool
         Builtin::ListIsEmpty => func(vec![List(Box::new(Var(0)))], Bool),
+        // The PARTIAL accessors answer with the bundled `Option` module's
+        // type (`crate::project`'s `stdlib/option.fun`), so the checker
+        // forces the absent case to be handled instead of letting a sentinel
+        // number flow onward. `option(t)` is `Option.t<t>`.
+        // Subject-LAST. List.nth : (Float, List<'a>) => Option.t<'a>
+        Builtin::ListNth => func(
+            vec![Float, List(Box::new(Var(0)))],
+            option(Var(0)),
+        ),
+        // List.head / List.last : (List<'a>) => Option.t<'a>
+        Builtin::ListHead | Builtin::ListLast => {
+            func(vec![List(Box::new(Var(0)))], option(Var(0)))
+        }
+        // Subject-LAST. List.find : (('a) => Bool, List<'a>) => Option.t<'a>
+        Builtin::ListFind => func(
+            vec![func(vec![Var(0)], Bool), List(Box::new(Var(0)))],
+            option(Var(0)),
+        ),
+        // Subject-LAST. List.indexedMap : ((Float, 'a) => 'b, List<'a>) => List<'b>
+        Builtin::ListIndexedMap => func(
+            vec![func(vec![Float, Var(0)], Var(1)), List(Box::new(Var(0)))],
+            List(Box::new(Var(1))),
+        ),
+        // Subject-LAST. List.sortBy : (('a) => Float, List<'a>) => List<'a>
+        Builtin::ListSortBy => func(
+            vec![func(vec![Var(0)], Float), List(Box::new(Var(0)))],
+            List(Box::new(Var(0))),
+        ),
+        // Subject-LAST. List.zip : (List<'b>, List<'a>) => List<('a, 'b)> —
+        // (other, list); the PIPED list is the first slot of each pair.
+        Builtin::ListZip => func(
+            vec![List(Box::new(Var(1))), List(Box::new(Var(0)))],
+            List(Box::new(Tuple(vec![Var(0), Var(1)]))),
+        ),
+        // Subject-LAST. List.take / List.drop : (Float, List<'a>) => List<'a>
+        Builtin::ListTake | Builtin::ListDrop => func(
+            vec![Float, List(Box::new(Var(0)))],
+            List(Box::new(Var(0))),
+        ),
+        // List.sum : (List<Float>) => Float
+        Builtin::ListSum => func(vec![List(Box::new(Float))], Float),
+        // Subject-LAST. List.concatMap : (('a) => List<'b>, List<'a>) => List<'b>
+        Builtin::ListConcatMap => func(
+            vec![
+                func(vec![Var(0)], List(Box::new(Var(1)))),
+                List(Box::new(Var(0))),
+            ],
+            List(Box::new(Var(1))),
+        ),
         // Text.concat : (String, String) => String
         Builtin::TextConcat => func(vec![String, String], String),
         // Text.fromFloat : (Float) => String
@@ -487,19 +542,43 @@ pub fn builtin_signature(b: Builtin) -> Type {
         Builtin::TextJoin => func(vec![String, List(Box::new(String))], String),
         // Text.parseFloat : (String) => Float
         Builtin::TextParseFloat => func(vec![String], Float),
-        // Math.clamp01 / sin / cos / sqrt / abs / floor : (Float) => Float
+        // Text.length : (String) => Float — in Unicode scalar values
+        Builtin::TextLength => func(vec![String], Float),
+        // Text.chars : (String) => List<String> — one-character strings
+        Builtin::TextChars => func(vec![String], List(Box::new(String))),
+        // Text.toUpper / toLower / trim : (String) => String
+        Builtin::TextToUpper | Builtin::TextToLower | Builtin::TextTrim => {
+            func(vec![String], String)
+        }
+        // Subject-LAST. Text.contains : (String, String) => Bool — (needle, s)
+        Builtin::TextContains => func(vec![String, String], Bool),
+        // Subject-LAST. Text.replace : (String, String, String) => String — (from, to, s)
+        Builtin::TextReplace => func(vec![String, String, String], String),
+        // Math.clamp01 / sin / cos / sqrt / abs / floor / tan / asin / acos /
+        // atan / round / ceil / log / exp / sign : (Float) => Float
         Builtin::MathClamp01
         | Builtin::MathSin
         | Builtin::MathCos
         | Builtin::MathSqrt
         | Builtin::MathAbs
-        | Builtin::MathFloor => func(vec![Float], Float),
+        | Builtin::MathFloor
+        | Builtin::MathTan
+        | Builtin::MathAsin
+        | Builtin::MathAcos
+        | Builtin::MathAtan
+        | Builtin::MathRound
+        | Builtin::MathCeil
+        | Builtin::MathLog
+        | Builtin::MathExp
+        | Builtin::MathSign => func(vec![Float], Float),
         // Math.atan2 / mod / min / max / pow : (Float, Float) => Float
         Builtin::MathAtan2
         | Builtin::MathMod
         | Builtin::MathMin
         | Builtin::MathMax
         | Builtin::MathPow => func(vec![Float, Float], Float),
+        // Subject-LAST. Math.clamp : (Float, Float, Float) => Float — (low, high, n)
+        Builtin::MathClamp => func(vec![Float, Float, Float], Float),
         // Math.pi : Float — a constant, not a function.
         Builtin::MathPi => Float,
         // Random.* — seeds are BRANDED: `Random.Seed` is the injected

@@ -1863,6 +1863,240 @@ most 1000000 cells"
                 [Value::List(items)] => Ok(Value::Bool(items.is_empty())),
                 _ => err("List.isEmpty(list) expects one list".to_string()),
             },
+            // The PARTIAL list accessors — `nth`/`head`/`last`/`find` all
+            // answer with `Option.t` (`Option.Some(x)` / `Option.None`)
+            // rather than raising or inventing a sentinel. Absence is an
+            // ordinary, matchable value here: game code that used to carry a
+            // `-1.0` / `9999.0` "nothing found" marker can hold an
+            // `Option.None` instead, and the checker forces it to be handled.
+            //
+            // (`List.maximum` predates `Option` and still ERRORS on an empty
+            // list; changing it would break existing games, so it keeps its
+            // behavior and every NEW partial builtin is Option-returning.)
+            //
+            // Subject-LAST — `List.nth(index, list)`, so `xs |> List.nth(2)`.
+            // An index outside the list is absence (`Option.None`); an index
+            // that isn't a whole finite number is a BUG in the caller, so it
+            // errors rather than quietly reading as "not found".
+            Builtin::ListNth => match args.as_slice() {
+                [Value::Number(i), Value::List(items)] if i.is_finite() && i.fract() == 0.0 => {
+                    Ok(option_value(
+                        (*i >= 0.0)
+                            .then(|| items.get(*i as usize).cloned())
+                            .flatten(),
+                    ))
+                }
+                [Value::Number(i), Value::List(_)] => err(format!(
+                    "List.nth needs a whole, finite index, got {i}"
+                )),
+                _ => err("List.nth(index, list) expects a number and a list".to_string()),
+            },
+            Builtin::ListHead => match args.as_slice() {
+                [Value::List(items)] => Ok(option_value(items.first().cloned())),
+                _ => err("List.head(list) expects one list".to_string()),
+            },
+            Builtin::ListLast => match args.as_slice() {
+                [Value::List(items)] => Ok(option_value(items.last().cloned())),
+                _ => err("List.last(list) expects one list".to_string()),
+            },
+            // Subject-LAST — `xs |> List.find(pred)`. The first element the
+            // predicate accepts, as `Option.Some`; `Option.None` when none
+            // match. Short-circuits on the first hit (like `List.any`).
+            Builtin::ListFind => match args.as_slice() {
+                [f, Value::List(items)] => {
+                    for (i, item) in items.iter().enumerate() {
+                        match self.call(
+                            f.clone(),
+                            vec![item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )? {
+                            Value::Bool(true) => return Ok(option_value(Some(item.clone()))),
+                            Value::Bool(false) => {}
+                            other => {
+                                return err(format!(
+                                    "List.find predicate must return a bool, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(option_value(None))
+                }
+                _ => err("List.find(fn, list) expects a function and a list".to_string()),
+            },
+            // Subject-LAST — `xs |> List.indexedMap(fn)`. Like `List.map` but
+            // the callback also receives the 0-based index FIRST:
+            // `fn(index, element)`. This is the builtin that retires the
+            // quadratic hand-rolled idiom (a `List.fold` that re-scanned the
+            // list to recover each element's position).
+            Builtin::ListIndexedMap => match args.as_slice() {
+                [f, Value::List(items)] => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        out.push(self.call(
+                            f.clone(),
+                            vec![Value::Number(i as f64), item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )?);
+                    }
+                    Ok(Value::List(Rc::new(out)))
+                }
+                _ => err("List.indexedMap(fn, list) expects a function and a list".to_string()),
+            },
+            // Subject-LAST — `xs |> List.sortBy(key)`. Ascending by the
+            // NUMBER the key function returns, and STABLE: equal keys keep
+            // their original relative order, so a sort is reproducible frame
+            // to frame (a game sorting sprites by depth must not shimmer).
+            //
+            // The key is evaluated exactly ONCE per element (a decorate–
+            // sort–undecorate pass), not once per comparison: interpreting a
+            // closure O(n log n) times would make sorting the dominant cost
+            // of a frame. So it is n key calls + O(n log n) f64 comparisons.
+            //
+            // Ordering uses `f64::total_cmp`, a TOTAL order over all f64 —
+            // NaN keys sort to the end (positive NaN) or the start (negative
+            // NaN) instead of making the comparator inconsistent, which for
+            // a normal `partial_cmp`-with-fallback sort silently scrambles
+            // unrelated elements.
+            Builtin::ListSortBy => match args.as_slice() {
+                [f, Value::List(items)] => {
+                    // O(n log n) over already-paid elements, plus the n key
+                    // calls (each charged by `call`): charge n, the
+                    // `List.reverse` rule for a whole-list pass.
+                    self.charge(items.len() as u64, span)?;
+                    let mut keyed: Vec<(f64, Value)> = Vec::with_capacity(items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        let key = self.call(
+                            f.clone(),
+                            vec![item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )?;
+                        match key {
+                            Value::Number(n) => keyed.push((n, item.clone())),
+                            other => {
+                                return err(format!(
+                                    "List.sortBy key must return a number, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    // `sort_by` is a stable merge sort — the guarantee above.
+                    keyed.sort_by(|(a, _), (b, _)| a.total_cmp(b));
+                    Ok(Value::List(Rc::new(
+                        keyed.into_iter().map(|(_, v)| v).collect(),
+                    )))
+                }
+                _ => err("List.sortBy(fn, list) expects a function and a list".to_string()),
+            },
+            // Subject-LAST — `xs |> List.zip(ys)` is `List.zip(ys, xs)` and
+            // pairs them as `(x, y)`: the PIPED list stays the first tuple
+            // slot, matching `List.append`'s "the piped list stays the head".
+            // Stops at the shorter list (no padding, no error) — the standard
+            // truncating zip.
+            Builtin::ListZip => match args.as_slice() {
+                [Value::List(other), Value::List(items)] => {
+                    let n = items.len().min(other.len());
+                    // Materializes n tuples: charge the output size.
+                    self.charge(n as u64, span)?;
+                    let pairs: Vec<Value> = items
+                        .iter()
+                        .zip(other.iter())
+                        .map(|(a, b)| Value::Tuple(Rc::new(vec![a.clone(), b.clone()])))
+                        .collect();
+                    Ok(Value::List(Rc::new(pairs)))
+                }
+                _ => err("List.zip(other, list) expects two lists".to_string()),
+            },
+            // Subject-LAST — `xs |> List.take(3)` / `xs |> List.drop(3)`.
+            // The count SATURATES rather than erroring: taking more than the
+            // list holds yields the whole list, dropping more yields `[]`,
+            // and a negative count behaves like 0. Windowing at a list's edge
+            // is normal (a scrolling HUD, the last N scores), so it must not
+            // need a guard at every call site.
+            Builtin::ListTake | Builtin::ListDrop => match args.as_slice() {
+                [Value::Number(n), Value::List(items)] => {
+                    // NaN has no sensible count; treat it as 0 (the same
+                    // "clamp into range" rule the negative case gets).
+                    let k = if n.is_nan() {
+                        0
+                    } else {
+                        n.max(0.0).min(items.len() as f64) as usize
+                    };
+                    let out: Vec<Value> = if b == Builtin::ListTake {
+                        items[..k].to_vec()
+                    } else {
+                        items[k..].to_vec()
+                    };
+                    // O(k) copy of already-paid elements (the reverse rule).
+                    self.charge(out.len() as u64, span)?;
+                    Ok(Value::List(Rc::new(out)))
+                }
+                _ => err(format!(
+                    "{}(count, list) expects a number and a list",
+                    builtin_name(b)
+                )),
+            },
+            // The total counterpart to `List.maximum`: an empty list sums to
+            // 0.0, so there is nothing partial about it and no Option.
+            Builtin::ListSum => match args.as_slice() {
+                [Value::List(items)] => {
+                    // O(n) scan: charge n (the List.maximum rule).
+                    self.charge(items.len() as u64, span)?;
+                    let mut total = 0.0;
+                    for item in items.iter() {
+                        match item {
+                            Value::Number(n) => total += n,
+                            other => {
+                                return err(format!(
+                                    "List.sum expects numbers, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(Value::Number(total))
+                }
+                _ => err("List.sum(list) expects one list".to_string()),
+            },
+            // Subject-LAST — `xs |> List.concatMap(fn)`. Map then flatten one
+            // level, in a single pass (`fn` must return a list per element).
+            Builtin::ListConcatMap => match args.as_slice() {
+                [f, Value::List(items)] => {
+                    let mut out = Vec::new();
+                    for (i, item) in items.iter().enumerate() {
+                        match self.call(
+                            f.clone(),
+                            vec![item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )? {
+                            Value::List(inner) => {
+                                // GROWTH builtin: charge the materialized
+                                // output (the List.flatten rule) — a callback
+                                // returning `[x, x]` doubles per unit charge.
+                                self.charge(inner.len() as u64, span)?;
+                                out.extend(inner.iter().cloned());
+                            }
+                            other => {
+                                return err(format!(
+                                    "List.concatMap function must return a list, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(Value::List(Rc::new(out)))
+                }
+                _ => err("List.concatMap(fn, list) expects a function and a list".to_string()),
+            },
             Builtin::TextConcat => match args.as_slice() {
                 [Value::String(a), Value::String(b)] => {
                     // Growth builtin: charge output BYTES (the List.append
@@ -1974,9 +2208,171 @@ most 1000000 cells"
                 }
                 _ => err("Text.parseFloat(s) expects one string".to_string()),
             },
+            // Text.length / Text.chars count and split by UNICODE SCALAR
+            // VALUE (Rust `char`), not by byte and not by grapheme cluster.
+            // So "héllo" is 5 and "日本" is 2 — but a combining accent
+            // ("e" + U+0301) counts as 2, and an emoji ZWJ sequence splits
+            // into its parts. That is the honest, cheap definition; there is
+            // no char type in the language, so `Text.chars` hands back
+            // one-character STRINGS, which is what a glyph-per-character HUD
+            // wants to feed straight into `List.map`.
+            //
+            // The two agree by construction:
+            // `Text.length(s) == List.length(Text.chars(s))`.
+            Builtin::TextLength => match args.as_slice() {
+                [Value::String(s)] => {
+                    // O(input) scan: charge input bytes (the Text.split rule).
+                    self.charge(s.len() as u64, span)?;
+                    Ok(Value::Number(s.chars().count() as f64))
+                }
+                _ => err("Text.length(s) expects one string".to_string()),
+            },
+            Builtin::TextChars => match args.as_slice() {
+                [Value::String(s)] => {
+                    // O(input) scan + re-materialized pieces: charge input
+                    // bytes (the Text.split rule — output total ≈ input).
+                    self.charge(s.len() as u64, span)?;
+                    let chars: Vec<Value> = s
+                        .chars()
+                        .map(|c| {
+                            let mut buf = [0u8; 4];
+                            Value::String(Rc::from(c.encode_utf8(&mut buf) as &str))
+                        })
+                        .collect();
+                    Ok(Value::List(Rc::new(chars)))
+                }
+                _ => err("Text.chars(s) expects one string".to_string()),
+            },
+            // Unicode-aware case mapping (Rust's `to_uppercase`), so it is
+            // not limited to ASCII. Note the length can CHANGE — "ß"
+            // uppercases to "SS" — which is correct, not a bug.
+            Builtin::TextToUpper | Builtin::TextToLower => match args.as_slice() {
+                [Value::String(s)] => {
+                    // Case mapping can grow the string: charge input bytes
+                    // times the worst-case expansion of 3 (the growth rule).
+                    self.charge(s.len() as u64 * 3, span)?;
+                    let out = if b == Builtin::TextToUpper {
+                        s.to_uppercase()
+                    } else {
+                        s.to_lowercase()
+                    };
+                    Ok(Value::String(Rc::from(out.as_str())))
+                }
+                _ => err(format!("{}(s) expects one string", builtin_name(b))),
+            },
+            // Subject-LAST — `Text.contains(needle, s)`, so
+            // `s |> Text.contains("ab")`. The empty needle is contained in
+            // every string (Rust/`str::contains` semantics).
+            Builtin::TextContains => match args.as_slice() {
+                [Value::String(needle), Value::String(s)] => {
+                    // O(input) scan: charge input bytes (the Text.split rule).
+                    self.charge(s.len() as u64, span)?;
+                    Ok(Value::Bool(s.contains(needle.as_ref())))
+                }
+                _ => err("Text.contains(needle, s) expects two strings".to_string()),
+            },
+            // Subject-LAST — `Text.replace(from, to, s)`, so
+            // `s |> Text.replace("a", "b")`. Replaces EVERY occurrence,
+            // scanning left to right and never re-examining what it just
+            // wrote (so `Text.replace("a", "aa", s)` terminates). An empty
+            // `from` is rejected, like `Text.split`'s empty separator: it
+            // would otherwise match at every boundary.
+            Builtin::TextReplace => match args.as_slice() {
+                [Value::String(from), Value::String(to), Value::String(s)] => {
+                    if from.is_empty() {
+                        return err("Text.replace needs a non-empty string to replace".to_string());
+                    }
+                    // GROWTH builtin: the output can be larger than the input
+                    // when `to` is longer than `from`, so charge the
+                    // MATERIALIZED size (the Text.concat rule), not the input.
+                    let out = s.replace(from.as_ref(), to.as_ref());
+                    self.charge(out.len() as u64, span)?;
+                    Ok(Value::String(Rc::from(out.as_str())))
+                }
+                _ => err("Text.replace(from, to, s) expects three strings".to_string()),
+            },
+            // Strip leading and trailing WHITESPACE (Unicode's definition —
+            // spaces, tabs, newlines), the same trim `Text.parseFloat` does.
+            Builtin::TextTrim => match args.as_slice() {
+                [Value::String(s)] => {
+                    // O(input) scan: charge input bytes (the Text.split rule).
+                    self.charge(s.len() as u64, span)?;
+                    Ok(Value::String(Rc::from(s.trim())))
+                }
+                _ => err("Text.trim(s) expects one string".to_string()),
+            },
             Builtin::MathClamp01 => match args.as_slice() {
                 [Value::Number(n)] => Ok(Value::Number(n.clamp(0.0, 1.0))),
                 _ => err("Math.clamp01(n) expects one number".to_string()),
+            },
+            // Subject-LAST — `Math.clamp(low, high, n)`, so the pipeline form
+            // `n |> Math.clamp(0.0, 10.0)` reads as "clamp n into 0..10".
+            // `Math.clamp01(n)` is exactly `Math.clamp(0.0, 1.0, n)` and is
+            // kept as the ergonomic shorthand.
+            //
+            // An inverted range (`low > high`) is a caller bug — `f64::clamp`
+            // would PANIC on it, and silently swapping the bounds would hide
+            // the mistake — so it is a teaching error.
+            Builtin::MathClamp => match args.as_slice() {
+                [Value::Number(low), Value::Number(high), Value::Number(n)] if low <= high => {
+                    Ok(Value::Number(n.clamp(*low, *high)))
+                }
+                [Value::Number(low), Value::Number(high), Value::Number(_)] => err(format!(
+                    "Math.clamp(low, high, n) needs low <= high, got low {low} and high {high}"
+                )),
+                _ => err("Math.clamp(low, high, n) expects three numbers".to_string()),
+            },
+            // `Math.round` rounds HALF AWAY FROM ZERO (Rust's `f64::round`),
+            // not to even: 0.5 -> 1, 2.5 -> 3, -0.5 -> -1, -2.5 -> -3. That
+            // is the rule people predict when they round a score or a grid
+            // coordinate, and it is symmetric about zero, so rounding a
+            // position and its mirror image stays consistent.
+            Builtin::MathRound => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(n.round())),
+                _ => err("Math.round(n) expects one number".to_string()),
+            },
+            // `Math.sign` answers -1 / 0 / 1 — and crucially 0 FOR ZERO,
+            // unlike Rust's `signum`, which calls -0.0 negative and answers
+            // 1.0 for +0.0. A game asking "which way is this moving?" about
+            // something at rest wants "neither". NaN has no sign, so it
+            // propagates as NaN rather than collapsing to 0.
+            Builtin::MathSign => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(if n.is_nan() {
+                    f64::NAN
+                } else if *n > 0.0 {
+                    1.0
+                } else if *n < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                })),
+                _ => err("Math.sign(n) expects one number".to_string()),
+            },
+            // `Math.asin` / `Math.acos` return NaN OUTSIDE [-1, 1] rather
+            // than clamping, so a genuinely wrong input stays visible. The
+            // common trap is feeding in a dot product that floating-point
+            // error pushed a hair past 1.0; the fix is to say so explicitly:
+            // `dot |> Math.clamp(-1.0, 1.0) |> Math.acos`.
+            //
+            // `Math.log` is the NATURAL logarithm (base e), the inverse of
+            // `Math.exp`; it is NaN below 0 and -inf at 0.
+            Builtin::MathTan
+            | Builtin::MathAsin
+            | Builtin::MathAcos
+            | Builtin::MathAtan
+            | Builtin::MathCeil
+            | Builtin::MathLog
+            | Builtin::MathExp => match args.as_slice() {
+                [Value::Number(n)] => Ok(Value::Number(match b {
+                    Builtin::MathTan => n.tan(),
+                    Builtin::MathAsin => n.asin(),
+                    Builtin::MathAcos => n.acos(),
+                    Builtin::MathAtan => n.atan(),
+                    Builtin::MathCeil => n.ceil(),
+                    Builtin::MathLog => n.ln(),
+                    _ => n.exp(),
+                })),
+                _ => err(format!("{}(n) expects one number", builtin_name(b))),
             },
             Builtin::MathSin => match args.as_slice() {
                 [Value::Number(n)] => Ok(Value::Number(n.sin())),
@@ -2332,6 +2728,28 @@ pub(crate) fn callee_label(callee: &Expr) -> String {
     }
 }
 
+/// Wrap a "maybe absent" result as the language's `Option.t` — the shared
+/// answer of every PARTIAL builtin (`List.nth`/`head`/`last`/`find`).
+///
+/// The constructor names are the QUALIFIED ones the `Option` module's
+/// declarations lower to (`crate::project`'s bundled `stdlib/option.fun`), so
+/// a value built here is indistinguishable from one a `.fun` file wrote as
+/// `Option.Some(x)` — the same `match`, the same `Option.map`/`defaultValue`,
+/// structural equality between the two. Nullary constructors are variants
+/// with no arguments, so `None` is a `Variant`, never a `Ctor`.
+fn option_value(v: Option<Value>) -> Value {
+    match v {
+        Some(v) => Value::Variant {
+            ctor: Rc::from("Option.Some"),
+            args: Rc::new(vec![v]),
+        },
+        None => Value::Variant {
+            ctor: Rc::from("Option.None"),
+            args: Rc::new(Vec::new()),
+        },
+    }
+}
+
 /// The trace label for a builtin invoking its function argument on element
 /// `i` (`List.map[2]`).
 fn element_label(b: Builtin, i: usize) -> String {
@@ -2369,16 +2787,29 @@ fn callee_arity(v: &Value) -> Option<usize> {
 /// [`Interp::call_builtin`] (and [`crate::types::builtin_signature`]).
 pub fn builtin_arity(b: Builtin) -> usize {
     match b {
-        Builtin::ListFold | Builtin::ListGrid | Builtin::RandomRange => 3,
+        Builtin::ListFold
+        | Builtin::ListGrid
+        | Builtin::RandomRange
+        | Builtin::TextReplace
+        | Builtin::MathClamp => 3,
         Builtin::ListMap
         | Builtin::ListFilter
         | Builtin::ListAppend
         | Builtin::ListAny
         | Builtin::ListAll
+        | Builtin::ListNth
+        | Builtin::ListFind
+        | Builtin::ListIndexedMap
+        | Builtin::ListSortBy
+        | Builtin::ListZip
+        | Builtin::ListTake
+        | Builtin::ListDrop
+        | Builtin::ListConcatMap
         | Builtin::TextConcat
         | Builtin::TextFixed
         | Builtin::TextSplit
         | Builtin::TextJoin
+        | Builtin::TextContains
         | Builtin::MathAtan2
         | Builtin::MathMod
         | Builtin::MathMin
@@ -2392,15 +2823,32 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::ListFlatten
         | Builtin::ListReverse
         | Builtin::ListIsEmpty
+        | Builtin::ListHead
+        | Builtin::ListLast
+        | Builtin::ListSum
         | Builtin::TextFromFloat
         | Builtin::TextToBullets
         | Builtin::TextParseFloat
+        | Builtin::TextLength
+        | Builtin::TextChars
+        | Builtin::TextToUpper
+        | Builtin::TextToLower
+        | Builtin::TextTrim
         | Builtin::MathClamp01
         | Builtin::MathSin
         | Builtin::MathCos
         | Builtin::MathSqrt
         | Builtin::MathAbs
-        | Builtin::MathFloor => 1,
+        | Builtin::MathFloor
+        | Builtin::MathTan
+        | Builtin::MathAsin
+        | Builtin::MathAcos
+        | Builtin::MathAtan
+        | Builtin::MathRound
+        | Builtin::MathCeil
+        | Builtin::MathLog
+        | Builtin::MathExp
+        | Builtin::MathSign => 1,
         // `Math.pi` resolves straight to a number in `eval` (it's a constant,
         // never a callable value), so this arity is never consulted.
         Builtin::MathPi => 0,
@@ -2434,6 +2882,17 @@ pub enum Builtin {
     ListAll,
     ListReverse,
     ListIsEmpty,
+    ListNth,
+    ListHead,
+    ListLast,
+    ListFind,
+    ListIndexedMap,
+    ListSortBy,
+    ListZip,
+    ListTake,
+    ListDrop,
+    ListSum,
+    ListConcatMap,
     TextConcat,
     TextFromFloat,
     TextFixed,
@@ -2441,7 +2900,24 @@ pub enum Builtin {
     TextSplit,
     TextJoin,
     TextParseFloat,
+    TextLength,
+    TextChars,
+    TextToUpper,
+    TextToLower,
+    TextContains,
+    TextReplace,
+    TextTrim,
     MathClamp01,
+    MathClamp,
+    MathTan,
+    MathAsin,
+    MathAcos,
+    MathAtan,
+    MathRound,
+    MathCeil,
+    MathLog,
+    MathExp,
+    MathSign,
     RandomSeed,
     RandomStep,
     RandomRange,
@@ -2553,7 +3029,7 @@ pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Text", "Math", "Random", "Deb
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
-pub const ALL_BUILTINS: [Builtin; 37] = [
+pub const ALL_BUILTINS: [Builtin; 65] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
@@ -2567,6 +3043,17 @@ pub const ALL_BUILTINS: [Builtin; 37] = [
     Builtin::ListAll,
     Builtin::ListReverse,
     Builtin::ListIsEmpty,
+    Builtin::ListNth,
+    Builtin::ListHead,
+    Builtin::ListLast,
+    Builtin::ListFind,
+    Builtin::ListIndexedMap,
+    Builtin::ListSortBy,
+    Builtin::ListZip,
+    Builtin::ListTake,
+    Builtin::ListDrop,
+    Builtin::ListSum,
+    Builtin::ListConcatMap,
     Builtin::MathSin,
     Builtin::MathCos,
     Builtin::MathSqrt,
@@ -2585,7 +3072,24 @@ pub const ALL_BUILTINS: [Builtin; 37] = [
     Builtin::TextSplit,
     Builtin::TextJoin,
     Builtin::TextParseFloat,
+    Builtin::TextLength,
+    Builtin::TextChars,
+    Builtin::TextToUpper,
+    Builtin::TextToLower,
+    Builtin::TextContains,
+    Builtin::TextReplace,
+    Builtin::TextTrim,
     Builtin::MathClamp01,
+    Builtin::MathClamp,
+    Builtin::MathTan,
+    Builtin::MathAsin,
+    Builtin::MathAcos,
+    Builtin::MathAtan,
+    Builtin::MathRound,
+    Builtin::MathCeil,
+    Builtin::MathLog,
+    Builtin::MathExp,
+    Builtin::MathSign,
     Builtin::RandomSeed,
     Builtin::RandomStep,
     Builtin::RandomRange,
@@ -2621,6 +3125,17 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.all" => Builtin::ListAll,
         "List.reverse" => Builtin::ListReverse,
         "List.isEmpty" => Builtin::ListIsEmpty,
+        "List.nth" => Builtin::ListNth,
+        "List.head" => Builtin::ListHead,
+        "List.last" => Builtin::ListLast,
+        "List.find" => Builtin::ListFind,
+        "List.indexedMap" => Builtin::ListIndexedMap,
+        "List.sortBy" => Builtin::ListSortBy,
+        "List.zip" => Builtin::ListZip,
+        "List.take" => Builtin::ListTake,
+        "List.drop" => Builtin::ListDrop,
+        "List.sum" => Builtin::ListSum,
+        "List.concatMap" => Builtin::ListConcatMap,
         "Text.concat" => Builtin::TextConcat,
         "Text.fromFloat" => Builtin::TextFromFloat,
         "Text.fixed" => Builtin::TextFixed,
@@ -2628,7 +3143,24 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Text.split" => Builtin::TextSplit,
         "Text.join" => Builtin::TextJoin,
         "Text.parseFloat" => Builtin::TextParseFloat,
+        "Text.length" => Builtin::TextLength,
+        "Text.chars" => Builtin::TextChars,
+        "Text.toUpper" => Builtin::TextToUpper,
+        "Text.toLower" => Builtin::TextToLower,
+        "Text.contains" => Builtin::TextContains,
+        "Text.replace" => Builtin::TextReplace,
+        "Text.trim" => Builtin::TextTrim,
         "Math.clamp01" => Builtin::MathClamp01,
+        "Math.clamp" => Builtin::MathClamp,
+        "Math.tan" => Builtin::MathTan,
+        "Math.asin" => Builtin::MathAsin,
+        "Math.acos" => Builtin::MathAcos,
+        "Math.atan" => Builtin::MathAtan,
+        "Math.round" => Builtin::MathRound,
+        "Math.ceil" => Builtin::MathCeil,
+        "Math.log" => Builtin::MathLog,
+        "Math.exp" => Builtin::MathExp,
+        "Math.sign" => Builtin::MathSign,
         "Math.sin" => Builtin::MathSin,
         "Math.cos" => Builtin::MathCos,
         "Math.sqrt" => Builtin::MathSqrt,
@@ -2665,6 +3197,17 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListAll => "List.all",
         Builtin::ListReverse => "List.reverse",
         Builtin::ListIsEmpty => "List.isEmpty",
+        Builtin::ListNth => "List.nth",
+        Builtin::ListHead => "List.head",
+        Builtin::ListLast => "List.last",
+        Builtin::ListFind => "List.find",
+        Builtin::ListIndexedMap => "List.indexedMap",
+        Builtin::ListSortBy => "List.sortBy",
+        Builtin::ListZip => "List.zip",
+        Builtin::ListTake => "List.take",
+        Builtin::ListDrop => "List.drop",
+        Builtin::ListSum => "List.sum",
+        Builtin::ListConcatMap => "List.concatMap",
         Builtin::TextConcat => "Text.concat",
         Builtin::TextFromFloat => "Text.fromFloat",
         Builtin::TextFixed => "Text.fixed",
@@ -2672,7 +3215,24 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::TextSplit => "Text.split",
         Builtin::TextJoin => "Text.join",
         Builtin::TextParseFloat => "Text.parseFloat",
+        Builtin::TextLength => "Text.length",
+        Builtin::TextChars => "Text.chars",
+        Builtin::TextToUpper => "Text.toUpper",
+        Builtin::TextToLower => "Text.toLower",
+        Builtin::TextContains => "Text.contains",
+        Builtin::TextReplace => "Text.replace",
+        Builtin::TextTrim => "Text.trim",
         Builtin::MathClamp01 => "Math.clamp01",
+        Builtin::MathClamp => "Math.clamp",
+        Builtin::MathTan => "Math.tan",
+        Builtin::MathAsin => "Math.asin",
+        Builtin::MathAcos => "Math.acos",
+        Builtin::MathAtan => "Math.atan",
+        Builtin::MathRound => "Math.round",
+        Builtin::MathCeil => "Math.ceil",
+        Builtin::MathLog => "Math.log",
+        Builtin::MathExp => "Math.exp",
+        Builtin::MathSign => "Math.sign",
         Builtin::MathSin => "Math.sin",
         Builtin::MathCos => "Math.cos",
         Builtin::MathSqrt => "Math.sqrt",
@@ -2773,6 +3333,17 @@ mod builtin_registry_tests {
                 | Builtin::ListAll
                 | Builtin::ListReverse
                 | Builtin::ListIsEmpty
+                | Builtin::ListNth
+                | Builtin::ListHead
+                | Builtin::ListLast
+                | Builtin::ListFind
+                | Builtin::ListIndexedMap
+                | Builtin::ListSortBy
+                | Builtin::ListZip
+                | Builtin::ListTake
+                | Builtin::ListDrop
+                | Builtin::ListSum
+                | Builtin::ListConcatMap
                 | Builtin::MathSin
                 | Builtin::MathCos
                 | Builtin::MathSqrt
@@ -2785,6 +3356,16 @@ mod builtin_registry_tests {
                 | Builtin::MathPow
                 | Builtin::MathPi
                 | Builtin::MathClamp01
+                | Builtin::MathClamp
+                | Builtin::MathTan
+                | Builtin::MathAsin
+                | Builtin::MathAcos
+                | Builtin::MathAtan
+                | Builtin::MathRound
+                | Builtin::MathCeil
+                | Builtin::MathLog
+                | Builtin::MathExp
+                | Builtin::MathSign
                 | Builtin::TextConcat
                 | Builtin::TextFromFloat
                 | Builtin::TextFixed
@@ -2792,6 +3373,13 @@ mod builtin_registry_tests {
                 | Builtin::TextSplit
                 | Builtin::TextJoin
                 | Builtin::TextParseFloat
+                | Builtin::TextLength
+                | Builtin::TextChars
+                | Builtin::TextToUpper
+                | Builtin::TextToLower
+                | Builtin::TextContains
+                | Builtin::TextReplace
+                | Builtin::TextTrim
                 | Builtin::RandomSeed
                 | Builtin::RandomStep
                 | Builtin::RandomRange
@@ -2799,7 +3387,7 @@ mod builtin_registry_tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(ALL_BUILTINS.len(), 37, "ALL_BUILTINS must list every Builtin");
+        assert_eq!(ALL_BUILTINS.len(), 65, "ALL_BUILTINS must list every Builtin");
 
         // The length check alone would accept a DUPLICATE entry standing in
         // for a missing one.
