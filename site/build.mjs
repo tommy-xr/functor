@@ -14,6 +14,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES } from "./src/examples.js";
+import { renderApiReference } from "./src/api-reference-html.mjs";
 import { injectHeader } from "./src/header.js";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
@@ -107,23 +108,107 @@ try {
   if (/^v\d+\.\d+\.\d+$/.test(tag)) badge = `${tag} · alpha`;
 } catch {}
 
+// The API reference is prerendered into its page (see src/api-reference-html.mjs):
+// a no-JS fetch of /docs/ must return the real signatures and docs, not a shell.
+const reference = JSON.parse(await readFile(apiReference, "utf8"));
+const rendered = renderApiReference(reference);
+// An empty reference would prerender an empty page that still "builds" — the
+// exact silent failure this prerender exists to prevent. Refuse it.
+if (rendered.moduleCount === 0 || rendered.itemCount === 0) {
+  console.error(
+    `the generated API reference is empty (${rendered.moduleCount} modules, ` +
+      `${rendered.itemCount} declarations) — refusing to ship a blank reference`
+  );
+  process.exit(1);
+}
+const PRERENDER = {
+  "api-module-nav": rendered.nav,
+  "api-reference": rendered.sections,
+  "api-module-count": String(rendered.moduleCount),
+  "api-item-count": String(rendered.itemCount),
+};
+
 for (const page of PAGES) {
   const target = `${dist}/${page}`;
   await mkdir(dirname(target), { recursive: true });
   if (page.endsWith(".html")) {
-    const html = await readFile(`${site}${page}`, "utf8");
+    let html = await readFile(`${site}${page}`, "utf8");
     // The shared header first (it carries the badge span), then stamp the badge.
-    await writeFile(
-      target,
-      injectHeader(html, page).replace(
-        /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
-        `$1${badge}$2`
-      )
+    html = injectHeader(html, page).replace(
+      /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
+      `$1${badge}$2`
     );
+    if (page === "docs/index.html") {
+      for (const [marker, markup] of Object.entries(PRERENDER)) {
+        const token = `<!--${marker}-->`;
+        // Exactly one slot each: a second occurrence (say, in a comment above
+        // the real slot) would take the markup and leave the slot empty, since
+        // a string `replace` only rewrites the first match.
+        const occurrences = html.split(token).length - 1;
+        if (occurrences !== 1) {
+          console.error(
+            `docs/index.html has ${occurrences} ${token} prerender markers — expected exactly 1`
+          );
+          process.exit(1);
+        }
+        html = html.replace(token, () => markup);
+      }
+      const leftover = html.match(/<!--api-[a-z-]+-->/);
+      if (leftover) {
+        console.error(`docs/index.html still has an unfilled prerender marker: ${leftover[0]}`);
+        process.exit(1);
+      }
+    }
+    await writeFile(target, html);
   } else {
     await cp(`${site}${page}`, target);
   }
 }
+
+// Machine-readable mirrors of the reference, at stable URLs. The JSON is the
+// exact artifact the page was rendered from; the Markdown is written straight
+// to disk by the generator (no piping, so no output-size ceiling).
+await cp(apiReference, `${dist}/docs/api.json`);
+const apiMarkdown = spawnSync(
+  "cargo",
+  [
+    "run",
+    "-q",
+    "-p",
+    "functor-docgen",
+    "--",
+    "--deny-undocumented",
+    "--format",
+    "markdown",
+    "--output",
+    `${dist}/docs/api.md`,
+  ],
+  { cwd: root, stdio: "inherit" },
+);
+if (apiMarkdown.status !== 0) process.exit(apiMarkdown.status ?? 1);
+// llms.txt (llmstxt.org): the entry point an agent fetches to find the rest.
+await writeFile(
+  `${dist}/llms.txt`,
+  `# Functor
+
+> A functional toolkit for building 3D games in Functor Lang — Functor's own
+> interpreted, F#-inspired game-logic language. A game is a \`.fun\` file the
+> Rust runtime interprets directly (native OpenGL, WebGL2, and Quest/OpenXR),
+> with hot-reload and no build step for game logic.
+
+## Docs
+
+- [API reference (Markdown)](https://functor.games/docs/api.md): every engine module, type, and function available to a hosted \`.fun\` game, generated from the \`.funi\` prelude embedded in the runtime.
+- [API reference (JSON)](https://functor.games/docs/api.json): the same reference as structured data (modules → items with \`qualified_name\`, \`kind\`, \`declaration\`, \`docs\`).
+- [API reference (HTML)](https://functor.games/docs/): the searchable rendering of the same data.
+- [Manual](https://functor.games/manual/): getting started, the MVU game contract, language principles, topic guides.
+- [Sandbox](https://functor.games/sandbox.html): run and edit the sample games in the browser.
+
+## Source
+
+- [GitHub repository](https://github.com/tommy-xr/functor): the runtimes, the language crate, and the \`examples/\` games.
+`,
+);
 for (const icon of ICONS) {
   try {
     await cp(`${site}${icon}`, `${dist}/${icon}`);
