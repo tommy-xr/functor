@@ -672,6 +672,12 @@
         let lastModelText = "";
         let modelDue = 0;
         let lastRecordedFrame = -1;
+        // WHICH pane is the authority, derived from the sim's live routing
+        // tables rather than assumed to be pane 0. `start` takes entries in any
+        // order — `["client.fun", "server.fun", "client.fun"]` is valid — and
+        // hard-coding 0 signed the wrong model, measured lag against a client,
+        // and impaired a client-to-client link.
+        let serverIdx = -1;
 
         // ---- REAL lag measurement -----------------------------------------
         // The combs need "the server frame each client last DISPLAYED". No ack
@@ -696,11 +702,16 @@
           while ((m = re.exec(text)) !== null) {
             out.push(m[1] + Math.round(parseFloat(m[2]) * 1000));
           }
-          return out.join(",");
+          // An EMPTY signature is not a measurement. A model with no x/z
+          // fields yields "" for every instance, which would match the newest
+          // server frame and report a confident zero lag for a game this trick
+          // simply cannot measure. Refuse instead.
+          return out.length ? out.join(",") : null;
         };
         const recordServerSig = () => {
           const t = window.__sim.timeline();
-          serverSig.set(t.frame, sigOf(window.__sim.state(0)));
+          if (serverIdx < 0) return;
+          serverSig.set(t.frame, sigOf(window.__sim.state(serverIdx)));
           // Prune to the SEEKABLE floor (`lo`), not a fixed recent window. A
           // 400-frame window silently dropped the sigs for frames a seek can
           // still reach, so the combs vanished the moment you scrubbed further
@@ -727,6 +738,7 @@
           } catch {
             return null;
           }
+          if (sig == null) return null;
           const floor = Math.max(0, window.__sim.timeline().lo ?? 0);
           for (let f = top; f >= floor; f--) {
             if (serverSig.get(f) === sig) return f;
@@ -743,7 +755,8 @@
         // frame late parked, which the wrap-aliasing above then turned into a
         // confident, completely wrong "239 frames behind". Anchoring both ends
         // of the subtraction to the same lookup makes the offset cancel.
-        const referenceFrame = (playhead) => displayedServerFrame(0, playhead + 1);
+        const referenceFrame = (playhead) =>
+          serverIdx < 0 ? null : displayedServerFrame(serverIdx, playhead + 1);
         const behindServer = (id, playhead, ref = referenceFrame(playhead)) => {
           const mine = displayedServerFrame(id, playhead + 1);
           if (ref == null || mine == null) return null;
@@ -824,7 +837,9 @@
           const dpr = window.devicePixelRatio || 1;
           const fbW = canvas.width;
           const fbH = canvas.height;
-          const gap = 2;
+          // Mirrors lib.rs exactly, including dropping the gaps when the
+          // framebuffer is too narrow for them.
+          const gap = fbW >= n * 3 ? 2 : 0;
           const contentW = Math.max(n, fbW - gap * (n - 1));
           const paneW = Math.max(1, Math.floor(contentW / n));
           const out = [];
@@ -839,7 +854,7 @@
         // ---- the link row --------------------------------------------------
         const applyLink = (id) => {
           const [, p] = PRESETS[linkChoice[id]];
-          window.__sim.setLink(0, id, {
+          window.__sim.setLink(serverIdx, id, {
             latencyTicks: toTicks(p.ms),
             jitterTicks: p.jitterMs ? toTicks(p.jitterMs) : 0,
             loss: p.loss,
@@ -915,24 +930,61 @@
           const playhead = t.scrubPos ?? t.frame;
           const hi = Math.max(t.hi ?? 0, playhead);
           const span = Math.max(1, hi - lo);
-          const xOf = (f) => ((Math.min(hi, Math.max(lo, f)) - lo) / span) * w;
-          const xp = xOf(playhead);
-          // The gauge is a MAGNIFIER, so it only earns its place while the rail
-          // is coarser than it is. Early in a session (a few hundred recorded
-          // frames across ~1000px) the rail is already finer than 4px/frame, and
-          // a fixed-scale zone there was a DE-magnifier: a comb 20f behind drew
-          // at xp-80 while frame playhead-20 actually sat at xp-100 on the very
-          // track it was superimposed on — the comb pointed at the wrong place,
-          // and `frameAtX` inherited the same error, so a click in the gauge
-          // sought a different frame than the rail said. Below the crossover the
-          // gauge collapses and everything runs at rail scale.
+
+          // The rail is ONE piecewise-linear mapping with up to three regions,
+          // and `xOf` / `frameAtX` are exact inverses of each other over all of
+          // them. Getting this wrong is subtle and was wrong twice:
+          //
+          //  - the gauge is a MAGNIFIER, so it only earns its place while the
+          //    rail is coarser than it is. Early in a session (a few hundred
+          //    frames across ~1000px) the rail is already finer than 4px/frame,
+          //    and a fixed-scale zone there DE-magnified: a comb 20f behind drew
+          //    at xp-80 while frame playhead-20 sat at xp-100 on the very track
+          //    it was superimposed on.
+          //  - with the gauge simply overlaid at `[xp-144, xp]`, every x to the
+          //    RIGHT of the playhead also took the gauge branch, so while parked
+          //    the recorded future was seeked at 4px/frame — most of it
+          //    unreachable by position, and discontinuous at the seam.
+          //
+          // So the regions are laid out explicitly and they tile the rail:
+          // coarse past | gauge | recorded future. Live, the future span is zero
+          // and the gauge sits flush at the right edge — the design's picture.
           const railPxPerFrame = w / span;
           const magnifies = railPxPerFrame < GAUGE_PX;
-          const pxPerFrame = magnifies ? GAUGE_PX : railPxPerFrame;
-          const gaugeRight = xp;
-          const gaugeLeft = magnifies ? Math.max(0, xp - GAUGE_W) : xp;
+          const gStart = magnifies ? Math.max(lo, playhead - GAUGE_FRAMES) : playhead;
+          const gaugeW = magnifies ? Math.min(GAUGE_W, w * 0.4) : 0;
+          const pastFrames = gStart - lo;
+          const futureFrames = hi - playhead;
+          const restW = Math.max(0, w - gaugeW);
+          const shareTotal = pastFrames + futureFrames;
+          const pastW = shareTotal > 0 ? (restW * pastFrames) / shareTotal : restW;
+          const futureW = restW - pastW;
+          const gaugeLeft = pastW;
+          const gaugeRight = pastW + gaugeW;
+          const gaugeFrames = Math.max(1, playhead - gStart);
+          const pxPerFrame = magnifies ? gaugeW / gaugeFrames : railPxPerFrame;
+
+          const xOf = (f) => {
+            const c = Math.min(hi, Math.max(lo, f));
+            if (!magnifies) return ((c - lo) / span) * w;
+            if (c <= gStart) return pastFrames > 0 ? ((c - lo) / pastFrames) * pastW : 0;
+            if (c <= playhead) return gaugeLeft + ((c - gStart) / gaugeFrames) * gaugeW;
+            return gaugeRight + ((c - playhead) / Math.max(1, futureFrames)) * futureW;
+          };
+          const frameAt = (x) => {
+            if (!magnifies) return Math.round(lo + (x / w) * span);
+            if (x <= gaugeLeft) {
+              return Math.round(pastW > 0 ? lo + (x / pastW) * pastFrames : lo);
+            }
+            if (x <= gaugeRight) {
+              return Math.round(gStart + ((x - gaugeLeft) / Math.max(1, gaugeW)) * gaugeFrames);
+            }
+            return Math.round(
+              playhead + ((x - gaugeRight) / Math.max(1, futureW)) * futureFrames,
+            );
+          };
           return {
-            w, lo, hi, playhead, span, xOf, xp,
+            w, lo, hi, playhead, span, xOf, frameAt, xp: xOf(playhead),
             gaugeLeft, gaugeRight, magnifies, pxPerFrame,
             parked: t.scrubPos != null,
           };
@@ -985,10 +1037,11 @@
             if (p.role === "server") return;
             const behind = behindServer(i, g.playhead, ref);
             if (behind == null) return;
+            // Positioned through the rail's own mapping, so the comb points at
+            // the frame it names. `»` clamps at the seam when the lag exceeds
+            // the gauge's span.
             const over = g.magnifies && behind > GAUGE_FRAMES;
-            const x = over
-              ? g.gaugeLeft + 2
-              : Math.max(0, g.gaugeRight - behind * g.pxPerFrame);
+            const x = over ? g.gaugeLeft + 2 : g.xOf(g.playhead - behind);
             kids.push(svg("line", {
               class: "comb", "data-pane": i, "data-behind": behind,
               x1: x, y1: 16, x2: x, y2: H - 6,
@@ -1015,13 +1068,9 @@
         // dragging there is a genuine frame-stepping affordance the rail alone
         // cannot offer. The gauge anchor is captured at pointerdown, otherwise
         // moving the playhead would move the gauge under the cursor.
-        const frameAtX = (x, anchor) => {
-          if (anchor.magnifies && x >= anchor.gaugeLeft) {
-            const behind = Math.round((anchor.gaugeRight - x) / GAUGE_PX);
-            return Math.max(anchor.lo, Math.min(anchor.hi, anchor.playhead - behind));
-          }
-          return Math.round(anchor.lo + (x / anchor.w) * anchor.span);
-        };
+        // The exact inverse of the anchor's `xOf`, clamped to the seekable range.
+        const frameAtX = (x, anchor) =>
+          Math.max(anchor.lo, Math.min(anchor.hi, anchor.frameAt(Math.max(0, Math.min(anchor.w, x)))));
         const seekTo = (f) => {
           try {
             window.__sim.seek(f);
@@ -1126,6 +1175,23 @@
           } catch {
             live = [];
           }
+          // A NEW SESSION resets the bar. `start` replaces the sim, and a
+          // replacement of the same shape changes neither the pane count nor the
+          // role signature — so without this the bar kept `paused = false` from
+          // the previous session and immediately began auto-stepping a session a
+          // harness had just started and expected to own, on top of stale link
+          // selections and a stale comb ring. Detected by the frame counter
+          // going backwards while not parked, which only a fresh sim does.
+          if (live.length) {
+            const now = window.__sim.timeline();
+            if (now.scrubPos == null && now.frame < lastRecordedFrame) {
+              setPaused(true);
+              serverSig.clear();
+              lastRecordedFrame = -1;
+              paneSig = "";
+            }
+          }
+
           // Rebuild on the ROLE SIGNATURE, not just the pane count. `role` is
           // derived from the sim's LIVE routing tables, so on the first frame —
           // before anyone has connected — the server has no listener yet and
@@ -1138,6 +1204,7 @@
             const fresh = live.length !== panes.length;
             paneSig = sig;
             panes = live;
+            serverIdx = panes.findIndex((p) => p.role === "server");
             if (fresh) {
               linkChoice = panes.map(() => 0);
               serverSig.clear();
@@ -1180,6 +1247,7 @@
           if (legacy) legacy.style.visibility = running ? "hidden" : "";
           if (!running) {
             acc = 0;
+            serverIdx = -1;
             return;
           }
 
@@ -1256,10 +1324,13 @@
           // DOM work the render loop should not pay for. (Throttled in the rAF
           // loop rather than on a setInterval, which the parked branch never
           // cleared on stop.)
-          const modelEl = paneNodes[0] && paneNodes[0].querySelector(".model");
+          const modelEl =
+            serverIdx >= 0 && paneNodes[serverIdx]
+              ? paneNodes[serverIdx].querySelector(".model")
+              : null;
           if (modelEl && now >= modelDue) {
             modelDue = now + 200;
-            const text = window.__sim.state(0);
+            const text = window.__sim.state(serverIdx);
             if (text !== lastModelText) {
               lastModelText = text;
               modelEl.textContent = text;

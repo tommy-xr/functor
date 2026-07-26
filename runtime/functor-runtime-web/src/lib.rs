@@ -1621,7 +1621,11 @@ async fn run_async() -> Result<(), JsValue> {
                 // `pane_w` can floor to 0 outright. The LAST pane absorbs the
                 // remainder so the panes tile the framebuffer exactly, the same
                 // rule the desktop stereo path uses for odd widths.
-                let gap = 2;
+                // Drop the gaps entirely rather than overflow: below
+                // `panes * (1 + gap)` framebuffer px the gaps cannot fit, and
+                // clamping `pane_w` to 1 while `x` kept advancing by `1 + gap`
+                // pushed the later panes off the framebuffer.
+                let gap = if fb_w >= panes * 3 { 2 } else { 0 };
                 let content_w = (fb_w - gap * (panes - 1)).max(panes);
                 let pane_w = (content_w / panes).max(1);
                 for (i, sim_frame) in sim_frames.iter().enumerate() {
