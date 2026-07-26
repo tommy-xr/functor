@@ -1725,24 +1725,26 @@ fn ctor_literal_sub_pattern_does_not_cover_the_ctor() {
 // A BUILTIN namespace's member set is closed (identical in every embedding),
 // so a member the registry has no entry for is a CHECK error — not the
 // gradual-host `Unknown` seam, which only made it fail at `run`
-// ("`List` has no builtin `nth`"). These are the calls games actually reached
-// for.
+// ("`List` has no builtin `tail`").
+//
+// The names this test uses are deliberately ones the registry still has NO
+// entry for. It used to be written against `List.nth` / `Text.length` /
+// `Math.clamp` — the jam's most-reached-for gaps — which now EXIST; the
+// closing of that gap is asserted by `the_jam_reached_for_builtins_exist`.
 #[test]
 fn unknown_builtin_member_is_a_check_error() {
     for (src, expected) in [
         (
-            "let a = List.nth([1.0], 0.0)",
-            "`List` has no builtin `nth` — `List` has: all, any, append, filter, \
-             flatten, fold, grid, isEmpty, length, map, maximum, range, reverse",
+            "let a = List.tail([1.0])",
+            "`List` has no builtin `tail` — `List` has: all, any, append, concatMap, \
+             drop, filter, find, flatten, fold, grid, head, indexedMap, isEmpty, last, \
+             length, map, maximum, nth, range, reverse, sortBy, sum, take, zip",
         ),
         (
-            "let a = Text.length(\"hi\")",
-            "`Text` has no builtin `length` — `Text` has: concat, fixed, fromFloat, \
-             join, parseFloat, split, toBullets",
-        ),
-        (
-            "let a = Math.clamp(0.0, 1.0, 2.0)",
-            "`Math` has no builtin `clamp` — did you mean `Math.clamp01`?",
+            "let a = Text.padLeft(\"hi\")",
+            "`Text` has no builtin `padLeft` — `Text` has: chars, concat, contains, \
+             fixed, fromFloat, join, length, parseFloat, replace, split, toBullets, \
+             toLower, toUpper, trim",
         ),
         (
             "let a = Debug.logg(1.0)",
@@ -1753,14 +1755,102 @@ fn unknown_builtin_member_is_a_check_error() {
         assert_eq!(message, expected, "for {src}");
     }
 
-    // The rest of the empirically-confirmed set: each is flagged, and names
-    // the member the user typed.
-    for member in ["indexedMap", "sortBy", "zip", "find", "take"] {
+    // Still-absent members are flagged, and name what the user typed.
+    for member in ["minimum", "partition", "unzip", "mapMaybe", "chunk"] {
         let src = format!("let a = List.{member}([1.0])");
         let (message, _, _) = single_diag(&src);
         assert!(
             message.starts_with(&format!("`List` has no builtin `{member}`")),
             "unexpected for {src}: {message}"
+        );
+    }
+}
+
+// THE GAP, CLOSED. Every builtin the game jam empirically reached for and
+// did not find now resolves and checks — this is the regression guard that
+// the registry keeps offering them, in the arity and shape games call them
+// with. (`assert_clean` means the CHECKER accepted it, not just the parser.)
+#[test]
+fn the_jam_reached_for_builtins_exist() {
+    assert_clean(
+        "let xs = [3.0, 1.0, 2.0]\n\
+         let a = List.nth(0.0, xs)\n\
+         let b = List.indexedMap((i, v) => i + v, xs)\n\
+         let c = List.sortBy((v) => v, xs)\n\
+         let d = List.zip([\"a\"], xs)\n\
+         let e = List.find((v) => v > 1.0, xs)\n\
+         let f = List.take(2.0, xs)\n\
+         let g = List.last(xs)\n\
+         let h = Math.clamp(0.0, 1.0, 5.0)\n\
+         let i = Math.tan(1.0) + Math.asin(0.5) + Math.acos(0.5) + Math.round(1.5)\n\
+         let j = Text.length(\"hi\")\n\
+         let k = Text.chars(\"hi\")",
+    );
+    // The second cluster: verified absent, shipped for uniformity.
+    assert_clean(
+        "let xs = [3.0, 1.0, 2.0]\n\
+         let a = List.head(xs)\n\
+         let b = List.drop(1.0, xs)\n\
+         let c = List.sum(xs)\n\
+         let d = List.concatMap((v) => [v], xs)\n\
+         let e = Math.ceil(1.2) + Math.atan(1.0) + Math.log(2.0) + Math.exp(1.0) \
+         + Math.sign(-2.0)\n\
+         let f = Text.toUpper(\"a\")\n\
+         let g = Text.toLower(\"A\")\n\
+         let h = Text.contains(\"a\", \"abc\")\n\
+         let i = Text.replace(\"a\", \"b\", \"abc\")\n\
+         let j = Text.trim(\"  a  \")",
+    );
+}
+
+// THREAD-LAST IS LAW. Every multi-argument addition takes its subject as the
+// FINAL parameter, so the pipeline form means what it reads like.
+//
+// This is the check-time half: it catches any flip that changes the TYPES
+// (`List.nth`, `List.indexedMap`, `List.sortBy`, `List.find`, `List.take`,
+// `List.drop`, `List.concatMap`). It cannot catch a flip between same-typed
+// parameters — `List.zip`, `Text.contains`, `Text.replace`, and `Math.clamp`
+// would still check clean reversed — so those four are pinned by VALUE in
+// `tests/run.rs` instead (e.g. `Text.contains` asserts that "hello" is not
+// inside "ell").
+#[test]
+fn the_additions_are_subject_last() {
+    assert_clean(
+        "let xs = [3.0, 1.0, 2.0]\n\
+         let a = xs |> List.nth(0.0)\n\
+         let b = xs |> List.indexedMap((i, v) => i + v)\n\
+         let c = xs |> List.sortBy((v) => v)\n\
+         let d = xs |> List.zip([\"a\"])\n\
+         let e = xs |> List.find((v) => v > 1.0)\n\
+         let f = xs |> List.take(2.0)\n\
+         let g = xs |> List.drop(1.0)\n\
+         let h = xs |> List.concatMap((v) => [v])\n\
+         let i = 5.0 |> Math.clamp(0.0, 1.0)\n\
+         let j = \"abc\" |> Text.contains(\"a\")\n\
+         let k = \"abc\" |> Text.replace(\"a\", \"b\")",
+    );
+}
+
+// The partial accessors answer with an `Option`, not a bare element: using
+// one as a number is a TYPE ERROR. That error is the whole point — it is
+// what a `-1.0` / `9999.0` "nothing found" sentinel could never give you,
+// because a sentinel typechecks as the very thing it stands in for.
+//
+// (Matching a builtin result against `Option.Some` needs the bundled
+// `Option` module, which this single-source harness does not load — that
+// half lives in `tests/project.rs`'s `option_returning_builtins_interop`.)
+#[test]
+fn partial_list_builtins_return_option() {
+    for src in [
+        "let a = List.head([1.0]) + 1.0",
+        "let a = List.last([1.0]) + 1.0",
+        "let a = List.nth(0.0, [1.0]) + 1.0",
+        "let a = List.find((v) => v > 0.0, [1.0]) + 1.0",
+    ] {
+        let (message, _, _) = single_diag(src);
+        assert!(
+            message.contains("Option.t"),
+            "an Option result must not be usable as a float, got: {message} (for {src})"
         );
     }
 }
@@ -1780,9 +1870,14 @@ fn a_suggestion_is_never_ambiguous_or_misleading() {
         ("let a = List.mapIndexed([1.0])", "`List` has:"),
         ("let a = Math.moderate(1.0)", "`Math` has:"),
         // Unambiguous prefix, and typo-scale distance: still suggested.
-        ("let a = Math.clamp(1.0)", "did you mean `Math.clamp01`?"),
         ("let a = Debug.l(1.0)", "did you mean `Debug.log`?"),
         ("let a = Math.sine(1.0)", "did you mean `Math.sin`?"),
+        // `Math.clamp` USED to be the flagship suggestion here ("did you
+        // mean `Math.clamp01`?" — the jam's single most-confusing hint,
+        // since `clamp01` reads like the general clamp it is not). It is a
+        // real builtin now, so that hint is gone entirely; a typo of it
+        // points at the GENERAL function, which is what the user wanted.
+        ("let a = Math.clam(1.0)", "did you mean `Math.clamp`?"),
     ] {
         let (message, _, _) = single_diag(src);
         assert!(
@@ -1795,7 +1890,7 @@ fn a_suggestion_is_never_ambiguous_or_misleading() {
 // The diagnostic carries the reference's own span.
 #[test]
 fn unknown_builtin_member_reports_the_reference_span() {
-    let (_, line, col) = single_diag("let a = 1.0\nlet b = List.nth([1.0], 0.0)");
+    let (_, line, col) = single_diag("let a = 1.0\nlet b = List.tail([1.0])");
     assert_eq!((line, col), (2, 9));
 }
 

@@ -12,8 +12,8 @@ it doesn't parse — do not invent syntax from F#/OCaml habits.
 
 ## Verification loop (always available, no GPU)
 
-Builtin-module MEMBER names are validated at `check` time: `List.nth`,
-`Math.clamp`, `Text.length` (none exist) are check ERRORS with a near-miss
+Builtin-module MEMBER names are validated at `check` time: `List.tail`,
+`List.minimum`, `Text.padLeft` (none exist) are check ERRORS with a near-miss
 hint or the namespace's member list — a typo in a `List.*` / `Text.*` /
 `Math.*` call no longer survives to runtime. Note this is a hard error with
 no escape hatch, and it gates hot-reload: a builtin typo in a DEAD branch
@@ -569,12 +569,57 @@ thread through `|>` (which appends): `list |> List.map(fn)` == `List.map(fn, lis
 level) · `List.append(other, list)` (subject-LAST: `xs |> List.append(ys)` is
 `xs` followed by `ys`) · `List.any(fn, list)` / `List.all(fn, list)` (predicate
 first, list last — `xs |> List.any(pred)`; empty list is vacuously all-true /
-any-false) · `Text.concat(a, b)` · `Text.fromFloat(n)` ·
+any-false) ·
+`List.nth(index, list)` / `List.head(list)` / `List.last(list)` /
+`List.find(fn, list)` — the PARTIAL accessors, each returning
+**`Option.t<'a>`** (`Option.Some(x)` / `Option.None`), never a sentinel;
+`List.nth`'s index is 0-based and out of range is `Option.None`, but a
+FRACTIONAL index is an error (a caller bug, not an absence). Match them, or
+collapse with `Option.defaultValue(fallback)`. (`List.maximum` predates
+`Option` and still ERRORS on an empty list — the one inconsistency, kept
+because changing it would break existing games.) ·
+`List.indexedMap(fn, list)` (like `map`, but `fn(index, element)` — index
+FIRST, 0-based) · `List.sortBy(fn, list)` (ascending by the Float the key
+returns; **stable**, and the key runs exactly once per element. **NaN keys
+sort LAST**, all tied with each other and independent of the NaN's sign —
+so the order is the same on every platform, which `f64::total_cmp` would
+NOT be, since `0.0 / 0.0` is `-NaN` on x86 and `+NaN` on ARM. `-0.0` and
+`0.0` are ties) ·
+`List.zip(other, list)` (→ `List<('a, 'b)>`; the PIPED list is the first
+tuple slot, and it truncates to the shorter side) ·
+`List.take(count, list)` / `List.drop(count, list)` (both SATURATE: past the
+end is the whole list / `[]`, and a negative count acts as 0) ·
+`List.sum(list)` (Floats; empty is `0.0`) ·
+`List.concatMap(fn, list)` (map then flatten one level; `fn` returns a list) ·
+`Text.concat(a, b)` · `Text.fromFloat(n)` ·
 `Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
 `%d` shape) · `Text.toBullets(list)` · `Text.split(sep, s)` (→ `List<string>`;
 empty `sep` is an error; `Text.split(sep, "")` = `[""]`) · `Text.join(sep, list)`
 (strings only) · `Text.parseFloat(s)` (trims; unparseable → `0.0`, the F#
-`unwrap_or(0)` shape) · `Math.clamp01(n)` · `Math.sin(n)` · `Math.cos(n)` ·
+`unwrap_or(0)` shape) ·
+`Text.length(s)` (→ Float) / `Text.chars(s)` (→ `List<string>` of
+one-character strings) — both count **Unicode scalar values**, not bytes and
+not grapheme clusters: `"日本"` is 2, but `"e" + combining acute` is 2 as
+well. There is no char type, hence one-character STRINGS.
+`Text.length(s)` == `List.length(Text.chars(s))`, always ·
+`Text.toUpper(s)` / `Text.toLower(s)` (Unicode-aware, so the length MAY
+change — `"ß"` uppercases to `"SS"`) · `Text.trim(s)` (both ends,
+whitespace) · `Text.contains(needle, s)` (subject-LAST:
+`s |> Text.contains("ab")`; the empty needle is in everything) ·
+`Text.replace(from, to, s)` (subject-LAST, replaces EVERY occurrence and
+never re-scans what it wrote; empty `from` is an error) ·
+`Math.clamp01(n)` · `Math.clamp(low, high, n)` (the GENERAL clamp,
+subject-LAST — `n |> Math.clamp(0.0, 10.0)`; `clamp01(n)` ==
+`clamp(0.0, 1.0, n)`; `low > high` is an error, not a silent swap) ·
+`Math.sin(n)` · `Math.cos(n)` · `Math.tan(n)` ·
+`Math.asin(n)` / `Math.acos(n)` (NaN outside `[-1, 1]` — they do NOT clamp,
+so a dot product nudged past 1.0 by float error needs
+`dot |> Math.clamp(-1.0, 1.0) |> Math.acos`) · `Math.atan(n)` ·
+`Math.round(n)` (**half AWAY FROM ZERO**, not banker's: `0.5`→`1`,
+`2.5`→`3`, `-2.5`→`-3`) · `Math.ceil(n)` ·
+`Math.log(n)` (NATURAL log, base e — the inverse of `Math.exp`) ·
+`Math.exp(n)` ·
+`Math.sign(n)` (`-1` / `0` / `1`; **0 at zero**, and NaN for NaN) ·
 `Math.sqrt(n)` · `Math.abs(n)` · `Math.floor(n)` · `Math.atan2(y, x)`
 (standard math arg order, y first) · `Math.mod(a, b)` (**Euclidean** — the
 result is always NON-NEGATIVE (in `[0, abs(b))`), so negatives wrap
@@ -623,13 +668,14 @@ when done.
 **The list above is the WHOLE registry, and it is CLOSED.** A builtin
 namespace (`List`, `Text`, `Math`, `Random`, `Debug`) owns exactly these
 members in every embedding, so anything else is a **check-time error** —
-`functor-lang check` (and `functor build`) reject `List.nth` / `Text.length` /
-`Math.clamp` with `` `List` has no builtin `nth` `` plus the nearest name or
-the namespace's full member list. Do NOT assume an F#/Elm stdlib function
-exists: there is no `nth`/`head`/`take`/`zip`/`sortBy`/`indexedMap`/`find`/
-`sum` on `List`, no `length`/`toUpper` on `Text`, and `Math` has `clamp01`
-(0–1 only), not a general `clamp`. Build what you need from `List.fold` /
-`List.filter` / `List.range` / `Math.min` + `Math.max`. (`Scene.*` and the
+`functor-lang check` (and `functor build`) reject `List.tail` /
+`Text.padLeft` with `` `List` has no builtin `tail` `` plus the nearest name
+or the namespace's full member list. Do NOT assume an F#/Elm stdlib function
+exists just because it is idiomatic there: `List` still has no
+`tail`/`minimum`/`partition`/`unzip`/`chunk`/`mapMaybe`/`sortWith`/`foldRight`,
+and `Text` no `padLeft`/`startsWith`/`slice`. Build those from `List.fold` /
+`List.filter` / `List.take` + `List.drop` / `Math.min` + `Math.max`.
+(`Scene.*` and the
 rest of the engine prelude are host-provided, so under plain
 `functor-lang check` — no host — they stay the gradual `Unknown` seam and
 only resolve under the runner, where the prelude's `.funi` interfaces make an
@@ -1507,7 +1553,7 @@ apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: '
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized type
 names) and absorbs anything — but a BUILTIN namespace is not such a seam:
-its member set is closed, so `List.nth` / `Math.clamp` are check errors, not
+its member set is closed, so `List.tail` / `Text.padLeft` are check errors, not
 `Unknown` (see "Builtins"). Function TYPES **do** annotate —
 `(f: (float) => float)`, `(f: ('a) => 'b)`, and the parenthesized
 return position `(): ((A) => B) =>` all parse and check (see the Syntax

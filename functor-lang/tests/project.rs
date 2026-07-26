@@ -875,6 +875,102 @@ fn bundled_option_module_runs_and_checks() {
     assert!(!option.interface);
 }
 
+/// The `Option` a PARTIAL BUILTIN returns is the very same `Option` the
+/// bundled module defines — not a private look-alike. The interpreter builds
+/// it in Rust (`eval::option_value`) while the module's constructors are
+/// declared in `stdlib/option.fun`, so this is the seam that could silently
+/// drift into two incompatible types. It is pinned three ways:
+///
+///   1. a builtin result MATCHES against `Option.Some` / `Option.None`,
+///   2. it flows through the module's own helpers (`map`, `defaultValue`),
+///   3. it is structurally EQUAL to the hand-written constructor call.
+///
+/// Were the ctor names to diverge (say an unqualified `Some`), (1) would
+/// stop matching and (3) would be false.
+#[test]
+fn option_returning_builtins_interop_with_the_option_module() {
+    let src = "let xs = [10.0, 20.0, 30.0]\n\
+               let main = () =>\n\
+               \x20 let hit =\n\
+               \x20   match List.nth(1.0, xs) with\n\
+               \x20   | Option.Some(v) => v\n\
+               \x20   | Option.None => 0.0 in\n\
+               \x20 let miss =\n\
+               \x20   match xs |> List.nth(99.0) with\n\
+               \x20   | Option.Some(v) => v\n\
+               \x20   | Option.None => 1.0 in\n\
+               \x20 let piped =\n\
+               \x20   xs |> List.find((v) => v > 15.0)\n\
+               \x20      |> Option.map((v) => v + 1.0)\n\
+               \x20      |> Option.defaultValue(0.0) in\n\
+               \x20 let same =\n\
+               \x20   if List.head(xs) == Option.Some(10.0) then 100.0 else 0.0 in\n\
+               \x20 let empty =\n\
+               \x20   if List.head([]) == Option.None then 1000.0 else 0.0 in\n\
+               \x20 hit + miss + piped + same + empty\n";
+    let project = load("option-builtin-interop", &[("game.fun", src)]);
+    let diags = project.check();
+    assert!(diags.is_empty(), "Option-returning builtins should check: {diags:?}");
+
+    let record = functor_lang::run(&project.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("should run: {}", f.error.message));
+    match record.outcome {
+        // 20 (nth hit) + 1 (nth miss -> None) + 21 (find |> map) + 100
+        // (head == Option.Some(10)) + 1000 (empty head == Option.None).
+        RunOutcome::Main(Value::Number(n)) => assert_eq!(n, 1142.0),
+        _ => panic!("expected a numeric main result"),
+    }
+}
+
+/// EQUIVALENCE WITH THE WORKAROUND the builtins replace. Before `List.nth`,
+/// indexing meant folding over the list while counting — the idiom the RPG
+/// jam entry hand-rolled, once per lookup, making its lookups quadratic.
+/// Before `List.find`, "first match" meant the same fold carrying a sentinel
+/// (the pool entry's `-1.0` / `9999.0`).
+///
+/// The builtins must agree with those workarounds EXACTLY, including at the
+/// out-of-range / no-match edge, or a game porting off them silently changes
+/// behavior. (Here the builtin's `Option` is collapsed with the same
+/// sentinel the workaround used, so the two are directly comparable.)
+#[test]
+fn option_builtins_agree_with_the_sentinel_workarounds() {
+    let src = "let xs = [10.0, 20.0, 30.0, 40.0]\n\
+               // The pre-`List.nth` workaround: fold while counting.\n\
+               let nthByFold = (index: float, list: List<float>): float =>\n\
+               \x20 let step = (acc: (float, float), v: float): (float, float) =>\n\
+               \x20   match acc with\n\
+               \x20   | (i, found) => (i + 1.0, if i == index then v else found) in\n\
+               \x20 match List.fold(step, (0.0, -1.0), list) with\n\
+               \x20 | (_, found) => found\n\
+               let nthByBuiltin = (index: float): float =>\n\
+               \x20 xs |> List.nth(index) |> Option.defaultValue(-1.0)\n\
+               let nthAgrees = (i: float): bool => nthByFold(i, xs) == nthByBuiltin(i)\n\
+               // The pre-`List.find` workaround: fold carrying a sentinel.\n\
+               let findByFold = (limit: float): float =>\n\
+               \x20 let step = (found: float, v: float): float =>\n\
+               \x20   if found == -1.0 && v > limit then v else found in\n\
+               \x20 List.fold(step, -1.0, xs)\n\
+               let findByBuiltin = (limit: float): float =>\n\
+               \x20 xs |> List.find((v) => v > limit) |> Option.defaultValue(-1.0)\n\
+               let findAgrees = (l: float): bool => findByFold(l) == findByBuiltin(l)\n\
+               let main = () =>\n\
+               \x20 if List.all(nthAgrees, [0.0, 1.0, 2.0, 3.0, 4.0, 99.0])\n\
+               \x20   && List.all(findAgrees, [0.0, 15.0, 35.0, 99.0])\n\
+               \x20 then 1.0 else 0.0\n";
+    let project = load("option-workaround-equivalence", &[("game.fun", src)]);
+    let diags = project.check();
+    assert!(diags.is_empty(), "should check: {diags:?}");
+
+    let record = functor_lang::run(&project.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("should run: {}", f.error.message));
+    match record.outcome {
+        RunOutcome::Main(Value::Number(n)) => {
+            assert_eq!(n, 1.0, "a builtin disagreed with the workaround it replaces")
+        }
+        _ => panic!("expected a numeric main result"),
+    }
+}
+
 #[test]
 fn bundled_result_module_runs_and_checks() {
     let src = "let main = () =>\n\
