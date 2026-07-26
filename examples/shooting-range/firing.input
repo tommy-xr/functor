@@ -1,9 +1,11 @@
 # Deterministic firing scenario for reproducible stills.
 #
-# The game's primary trigger is the LEFT MOUSE BUTTON, but `--input-script`
-# only parses `<frame> <KeyName> <down|up>` — it has no mouse-button event —
-# so this script holds SPACE, the documented keyboard fallback, which feeds
-# exactly the same `held.trigger` level state.
+# The game's primary trigger is the LEFT MOUSE BUTTON, and that is what this
+# script drives: `--input-script` takes `<frame> Mouse.Left <down|up>` as well
+# as key names. (The `Mouse.` prefix is required — a bare `Left` is the ARROW
+# KEY.) A scripted press feeds both the `mouseButton` rising edge and the held
+# `snapshot.mouse.buttons.left` level state, which is what makes the weapon
+# full-auto — the same two paths a real click drives.
 #
 #   functor -d examples/shooting-range run native \
 #     --input-script firing.input --script-dt 0.016 \
@@ -15,4 +17,4 @@
 # the muzzle flash (flashLife 0.055 s ~ 3 frames) and the tracer (tracerLife
 # 0.075 s ~ 4 frames) while they are at full brightness, with several rounds of
 # recoil already accumulated in the crosshair spread.
-0 Space down
+0 Mouse.Left down
