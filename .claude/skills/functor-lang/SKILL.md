@@ -1360,7 +1360,8 @@ gets a free second jump, and steering uses the ground acceleration rate in
 mid-air.
 
 **Keep the decisions pure.** Read the world in `tick`, pass a plain
-`observation` record (grounded, velocity, probe distance, rest height) to
+`observation` record (`{ grounded, vx, vy, vz }` — no probe distance and no
+rest height, because the controller never writes the vertical axis) to
 pure functions, and command the result. The controller's feel then unit-tests
 under `functor test` with no GPU and no world — and the physics drive is
 recorded, so a scripted `--input-script` run is bit-deterministic too

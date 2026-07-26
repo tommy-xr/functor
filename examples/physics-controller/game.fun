@@ -90,7 +90,7 @@ let physics = (model) =>
       // Non-negotiable for a character. Without it the capsule picks up
       // angular velocity from any glancing contact and topples — and a tipped
       // capsule's lowest point is no longer `feetOffset` below its center, so
-      // the grounding probe and the ground clamp both start lying.
+      // the grounding probe starts lying about how far down the ground is.
       |> Physics.upright,
   ])
 
@@ -213,16 +213,15 @@ let tick = (model, dt, tts) =>
       } in
       // Steer the horizontal plane and leave the vertical axis to the solver,
       // which owns the ground contact, the landing impulse, and gravity. The
-      // ONLY frame that writes vy is the one a jump fires on — and because
-      // the two masks are disjoint, the pair applies as one whole-vector
-      // write without either clobbering the other.
+      // ONLY frame that writes vy is the one a jump fires on — `Control.
+      // verticalCommand` is `Some` exactly then, and its expects pin that.
+      // The two writes touch disjoint axes, so the pair applies as one
+      // whole-vector write without either clobbering the other.
+      let steer = Physics.setVelocityXZ(playerTag, want.x, want.z) in
       (trace(row, next),
-       if Control.jumpNow(sensed) then
-         Effect.batch([
-           Physics.setVelocityXZ(playerTag, want.x, want.z),
-           Physics.setVelocityY(playerTag, Control.jumpVelocity(carry)),
-         ])
-       else Physics.setVelocityXZ(playerTag, want.x, want.z))
+       match Control.verticalCommand(carry, sensed) with
+       | Option.Some(vy) => Effect.batch([steer, Physics.setVelocityY(playerTag, vy)])
+       | Option.None => steer)
 
 let input = (model, key, isDown) =>
   match key with

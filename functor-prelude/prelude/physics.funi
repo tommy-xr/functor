@@ -125,14 +125,15 @@ let setVelocity : (tag, Vec3.t) => Effect.t
 /// Replace a body's HORIZONTAL velocity, leaving the vertical axis alone.
 ///
 /// The character-controller command. Steering owns x and z while the solver
-/// keeps the y it is using to resolve the ground contact, so a grounded body
-/// rests at its true standing height instead of sinking — with
-/// `Physics.setVelocity` the game must write all three, and both available
-/// answers for y (echo the read back, or command 0) drive the capsule into
-/// the floor.
+/// keeps the y it is using to resolve the ground contact, so the game never
+/// has to author a vertical velocity it has no opinion about — with
+/// `Physics.setVelocity` it must write all three every frame, and the only
+/// values available to it are a one-step-stale read or a guess.
 ///
 /// The preserved axis is read from the live world when the command applies —
-/// after reconcile, and after any command queued earlier the same frame.
+/// after reconcile, and after any command queued earlier the same frame. So
+/// velocity commands in one frame compose as last-write-wins per axis, and an
+/// axis nobody wrote is left exactly as the solver left it.
 let setVelocityXZ : (tag, float, float) => Effect.t
 
 /// Replace a body's VERTICAL velocity, leaving the horizontal plane alone.

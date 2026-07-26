@@ -45,23 +45,24 @@ pub enum PhysicsCommand {
     /// a recorded frame, so a force lasts exactly one fixed step.
     ApplyForce { tag: String, force: [f32; 3] },
     SetVelocity { tag: String, velocity: [f32; 3] },
-    /// Replace only the axes flagged in `axes` (x, y, z), leaving the rest of
-    /// the body's linear velocity exactly as the world holds it at apply time.
+    /// Replace a body's HORIZONTAL velocity, leaving `y` exactly as the world
+    /// holds it at apply time.
     ///
-    /// The character-controller case: steering owns the horizontal plane while
+    /// The character-controller case: steering owns the horizontal plane and
     /// the solver keeps the vertical axis it is using to resolve the ground
-    /// contact. Writing all three every frame destroys that contact impulse,
-    /// so each step's gravity increment accumulates as penetration — see
-    /// `masked_writes_do_not_sink_a_grounded_capsule`.
+    /// contact, so the game never has to author a `y` it has no opinion about.
+    /// The write is exactly transparent on `y` — see
+    /// `masked_writes_are_transparent_on_the_untouched_axis`.
     ///
-    /// Unmasked axes are read from the live body, so several commands in one
-    /// frame compose: they apply in queue order, and the LAST write to a given
-    /// axis wins while every axis nobody wrote is untouched.
-    SetVelocityAxes {
-        tag: String,
-        velocity: [f32; 3],
-        axes: [bool; 3],
-    },
+    /// The untouched axis is read from the LIVE body, so several velocity
+    /// commands in one frame compose: they apply in queue order, the LAST
+    /// write to a given axis wins, and an axis nobody wrote is untouched.
+    SetVelocityXZ { tag: String, x: f32, z: f32 },
+    /// Replace a body's VERTICAL velocity, leaving the horizontal plane
+    /// exactly as the world holds it at apply time — a jump that keeps the
+    /// run. Composes with [`PhysicsCommand::SetVelocityXZ`] by the same
+    /// last-write-wins-per-axis rule; together the two cover all three axes.
+    SetVelocityY { tag: String, y: f32 },
     /// Move the live body without touching its declaration (the declared
     /// cache is unchanged, so the next frame's unchanged declaration does not
     /// snap it back).
@@ -75,7 +76,8 @@ impl PhysicsCommand {
             PhysicsCommand::ApplyImpulse { tag, .. } => (tag, "applyImpulse"),
             PhysicsCommand::ApplyForce { tag, .. } => (tag, "applyForce"),
             PhysicsCommand::SetVelocity { tag, .. } => (tag, "setVelocity"),
-            PhysicsCommand::SetVelocityAxes { tag, .. } => (tag, "setVelocity"),
+            PhysicsCommand::SetVelocityXZ { tag, .. } => (tag, "setVelocityXZ"),
+            PhysicsCommand::SetVelocityY { tag, .. } => (tag, "setVelocityY"),
             PhysicsCommand::Teleport { tag, .. } => (tag, "teleport"),
         }
     }
@@ -712,21 +714,17 @@ impl World {
                 PhysicsCommand::SetVelocity { velocity, .. } => {
                     rb.set_linvel(vec3(*velocity), true);
                 }
-                PhysicsCommand::SetVelocityAxes { velocity, axes, .. } => {
-                    // Unmasked axes are read from the LIVE body here, not from
-                    // whatever the game read in `tick` — so this composes with
-                    // reconcile and with any command already applied from this
-                    // same frame's queue.
+                // The preserved axes are read from the LIVE body here, not
+                // from whatever the game read in `tick` — so these compose
+                // with reconcile and with any command already applied from
+                // this same frame's queue.
+                PhysicsCommand::SetVelocityXZ { x, z, .. } => {
                     let live = rb.linvel();
-                    let keep = [live.x, live.y, live.z];
-                    let next = std::array::from_fn(|i| {
-                        if axes[i] {
-                            velocity[i]
-                        } else {
-                            keep[i]
-                        }
-                    });
-                    rb.set_linvel(vec3(next), true);
+                    rb.set_linvel(vec3([*x, live.y, *z]), true);
+                }
+                PhysicsCommand::SetVelocityY { y, .. } => {
+                    let live = rb.linvel();
+                    rb.set_linvel(vec3([live.x, *y, live.z]), true);
                 }
                 PhysicsCommand::Teleport { position, .. } => {
                     let rotation = *rb.rotation();
@@ -1525,18 +1523,17 @@ mod tests {
     // ── per-axis velocity writes ────────────────────────────────────────
 
     fn set_xz(tag: &str, x: f32, z: f32) -> PhysicsCommand {
-        PhysicsCommand::SetVelocityAxes {
+        PhysicsCommand::SetVelocityXZ {
             tag: tag.to_string(),
-            velocity: [x, 0.0, z],
-            axes: [true, false, true],
+            x,
+            z,
         }
     }
 
     fn set_y(tag: &str, y: f32) -> PhysicsCommand {
-        PhysicsCommand::SetVelocityAxes {
+        PhysicsCommand::SetVelocityY {
             tag: tag.to_string(),
-            velocity: [0.0, y, 0.0],
-            axes: [false, true, false],
+            y,
         }
     }
 
@@ -1629,36 +1626,36 @@ mod tests {
         w.step_frame(FIXED_DT);
         let warnings = w.take_command_warnings();
         assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(warnings[0].contains("unknown tag"), "{warnings:?}");
-        assert!(warnings[1].contains("non-dynamic"), "{warnings:?}");
+        // The warning must name the command the game actually called, not the
+        // whole-vector one it is a sibling of.
+        assert_eq!(
+            warnings[0],
+            "physics setVelocityXZ for unknown tag \"nobody\""
+        );
+        assert_eq!(
+            warnings[1],
+            "physics setVelocityY on non-dynamic body \"ground\" has no effect"
+        );
     }
 
-    /// The capsule's feet offset (half-height + radius) and the grounding
-    /// probe's skin, from `examples/physics-controller`.
+    /// The capsule's feet offset (half-height + radius), from
+    /// `examples/physics-controller`.
     const FEET: f32 = 0.9;
-    const PROBE_SKIN: f32 = 0.15;
 
-    /// What the character-controller harness observes each frame.
-    #[derive(Clone, Copy)]
-    struct Obs {
-        vy: f32,
-        grounded: bool,
-    }
-
-    /// Drive a character capsule for `frames` fixed steps under `policy`,
-    /// which is handed the body's live velocity each frame and queues whatever
-    /// it wants. Returns the body's final Y.
+    /// Drive a character capsule for `frames` fixed steps, calling `policy`
+    /// each frame to queue whatever commands it wants. Returns the body's
+    /// final `(x, y)`.
     ///
     /// Mirrors `examples/physics-controller`: gravity -22, an upright
     /// frictionless capsule (half-height 0.5 + radius 0.4, so the feet sit
     /// 0.9 below the center) standing on a fixed slab whose top is y = 0. The
     /// correct resting height is therefore y = 0.90.
-    fn rest_height_dt(
+    fn run_capsule(
         spawn_y: f32,
         frames: u32,
         dt: impl Fn(u32) -> f32,
-        policy: impl Fn(&mut World, Obs),
-    ) -> f32 {
+        policy: impl Fn(&mut World),
+    ) -> (f32, f32) {
         const GRAVITY: [f32; 3] = [0.0, -22.0, 0.0];
         let declared = PhysicsScene::create(
             GRAVITY,
@@ -1691,24 +1688,19 @@ mod tests {
             // does: an unchanged declaration means the simulation owns the
             // body, so this is not a per-frame snap back to the spawn.
             w.reconcile(&declared);
-            let y = w.body_transform("player").unwrap().0[1];
-            let vy = w.body_velocity("player").unwrap()[1];
-            // The same grounding probe the example uses: a ray from the
-            // capsule's center down past the feet by a 0.15 skin.
-            policy(
-                &mut w,
-                Obs {
-                    vy,
-                    grounded: y - FEET <= PROBE_SKIN,
-                },
-            );
+            policy(&mut w);
             w.step_frame(dt(frame));
         }
-        w.body_transform("player").unwrap().0[1]
+        let (pos, _) = w.body_transform("player").unwrap();
+        (pos[0], pos[1])
     }
 
-    fn rest_height(spawn_y: f32, frames: u32, policy: impl Fn(&mut World, Obs)) -> f32 {
-        rest_height_dt(spawn_y, frames, |_| FIXED_DT, policy)
+    fn run_capsule_fixed(
+        spawn_y: f32,
+        frames: u32,
+        policy: impl Fn(&mut World),
+    ) -> (f32, f32) {
+        run_capsule(spawn_y, frames, |_| FIXED_DT, policy)
     }
 
     /// A masked write is EXACTLY transparent on the axes it does not name:
@@ -1738,36 +1730,60 @@ mod tests {
         // solver has actual penetration to recover from.
         const SPAWN: f32 = 3.0;
         let frames = 260;
-        let steer = |w: &mut World, _o: Obs| w.queue_command(set_xz("player", 0.0, 0.0));
+        // A NONZERO horizontal write, so this compares a real steering command
+        // against no command — not one no-op against another. The capsule is
+        // frictionless on flat ground, so driving x and z cannot itself change
+        // the height the solver settles at.
+        let steer = |w: &mut World| w.queue_command(set_xz("player", 4.0, -2.0));
 
-        let untouched = rest_height(SPAWN, frames, |_, _| {});
-        let masked = rest_height(SPAWN, frames, steer);
-        assert_eq!(
-            masked, untouched,
-            "a masked write moved the axis it does not name"
+        let (idle_x, untouched) = run_capsule_fixed(SPAWN, frames, |_| {});
+        let (driven_x, masked) = run_capsule_fixed(SPAWN, frames, steer);
+        // Tolerance, not bit-equality: the steered capsule really is sliding,
+        // so the solver does slightly different contact work and the last
+        // couple of float bits differ (~1e-7 here). Demanding an exact match
+        // would also be a cross-platform trap — this runs on x86 and ARM CI.
+        // The claim under test is that steering does not move the standing
+        // height, and 1e-4 is ~4000x tighter than the 0.4-unit sink the
+        // whole-vector command was supposed to cause.
+        assert!(
+            (masked - untouched).abs() < 1e-4,
+            "a masked write moved the axis it does not name: {masked} vs {untouched}"
         );
         assert!(
             (masked - FEET).abs() < 0.02,
             "the capsule did not rest at its standing height: {masked}"
         );
 
+        // The steered axis really was driven — otherwise the equality above
+        // would be the trivial one, two runs that both commanded nothing.
+        assert!(
+            (idle_x).abs() < 1e-6,
+            "the uncommanded capsule drifted in x: {idle_x}"
+        );
+        assert!(
+            driven_x > 10.0,
+            "the steered capsule did not travel: x = {driven_x}"
+        );
+
         // Again under a JITTERED frame time, the way the real runtime drives
         // it: some frames take no substep and some take two, so a command can
         // sit pending across a frame and two can land before one substep.
         let jitter = |f: u32| FIXED_DT * (0.6 + 0.9 * ((f % 7) as f32 / 6.0));
-        let untouched = rest_height_dt(SPAWN, frames, jitter, |_, _| {});
-        let masked = rest_height_dt(SPAWN, frames, jitter, steer);
-        assert_eq!(
-            masked, untouched,
-            "a masked write moved the untouched axis under a jittered frame time"
+        let (_, untouched) = run_capsule(SPAWN, frames, jitter, |_| {});
+        let (jx, masked) = run_capsule(SPAWN, frames, jitter, steer);
+        assert!(
+            (masked - untouched).abs() < 1e-4,
+            "a masked write moved the untouched axis under a jittered frame \
+             time: {masked} vs {untouched}"
         );
+        assert!(jx > 10.0, "the steered capsule did not travel: x = {jx}");
 
-        // The steered axes really are driven, so the test above is not just
-        // observing a command that did nothing at all.
-        let ran = rest_height(SPAWN, 60, |w, _| {
-            w.queue_command(set_xz("player", 4.0, 0.0));
-        });
-        assert!((ran - FEET).abs() < 0.02, "steering changed the height: {ran}");
+        // (The vertical mask's mirror property — a `y` write leaving x and z
+        // untouched — is pinned exactly in
+        // `set_velocity_y_leaves_the_horizontal_plane_alone`, in the
+        // contact-free world where it is a clean no-op. Commanding `y` here
+        // would not be a no-op: it cancels the fall and changes when the
+        // capsule lands.)
     }
 
     #[test]

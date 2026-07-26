@@ -2279,35 +2279,30 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
         physics_command(|tag, position| physics::PhysicsCommand::Teleport { tag, position }),
     );
     // Per-axis velocity writes. `setVelocity` replaces all three components,
-    // which forces a character controller to say something about the vertical
-    // axis every frame even when the solver is the one that should own it —
-    // and every available answer sinks the body (see the world tests). These
-    // two split the Y-up engine's natural partition: the horizontal plane the
-    // game steers, and the vertical axis a jump owns for one frame.
+    // which forces a character controller to author a vertical velocity every
+    // frame even though the solver is the one that owns it while grounded —
+    // and the only values available to the game are a stale read or a guess.
+    // These two split the Y-up engine's natural partition: the horizontal
+    // plane the game steers, and the vertical axis a jump owns for one frame.
     reg.fn3(
         "Physics.setVelocityXZ",
         "Physics.setVelocityXZ(tag, x, z)",
         |tag: std::rc::Rc<str>, x: f64, z: f64| {
-            FunctorLangEffect(EffectTree::Physics(
-                physics::PhysicsCommand::SetVelocityAxes {
-                    tag: tag.to_string(),
-                    velocity: [x as f32, 0.0, z as f32],
-                    axes: [true, false, true],
-                },
-            ))
+            FunctorLangEffect(EffectTree::Physics(physics::PhysicsCommand::SetVelocityXZ {
+                tag: tag.to_string(),
+                x: x as f32,
+                z: z as f32,
+            }))
         },
     );
     reg.fn2(
         "Physics.setVelocityY",
         "Physics.setVelocityY(tag, v)",
         |tag: std::rc::Rc<str>, v: f64| {
-            FunctorLangEffect(EffectTree::Physics(
-                physics::PhysicsCommand::SetVelocityAxes {
-                    tag: tag.to_string(),
-                    velocity: [0.0, v as f32, 0.0],
-                    axes: [false, true, false],
-                },
-            ))
+            FunctorLangEffect(EffectTree::Physics(physics::PhysicsCommand::SetVelocityY {
+                tag: tag.to_string(),
+                y: v as f32,
+            }))
         },
     );
     // Query EFFECT (docs/physics.md Phase 4): deferred until after the
@@ -4352,11 +4347,8 @@ dropping the rest"
                     physics::PhysicsCommand::ApplyImpulse { .. } => "physics.applyImpulse",
                     physics::PhysicsCommand::ApplyForce { .. } => "physics.applyForce",
                     physics::PhysicsCommand::SetVelocity { .. } => "physics.setVelocity",
-                    physics::PhysicsCommand::SetVelocityAxes { axes, .. } => match axes {
-                        [true, false, true] => "physics.setVelocityXZ",
-                        [false, true, false] => "physics.setVelocityY",
-                        _ => "physics.setVelocity",
-                    },
+                    physics::PhysicsCommand::SetVelocityXZ { .. } => "physics.setVelocityXZ",
+                    physics::PhysicsCommand::SetVelocityY { .. } => "physics.setVelocityY",
                     physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
                 };
                 let tag = command.tag_and_kind().0.to_string();
@@ -6956,6 +6948,89 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             w.step_frame(1.0 / 60.0);
             let v = w.body_velocity("ball").unwrap();
             assert!(v[0] > 0.0, "impulse not applied: {v:?}");
+            assert!(w.take_command_warnings().is_empty());
+        });
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+    }
+
+    // The per-axis commands log their OWN kind (not the whole-vector one), and
+    // the masked write reaches the world preserving the axis it does not name.
+    #[test]
+    fn per_axis_velocity_commands_log_their_kind_and_preserve_the_other_axes() {
+        for (src, kind) in [
+            (
+                "let main = () => Physics.setVelocityXZ(\"ball\", 3.0, 4.0)",
+                "physics.setVelocityXZ",
+            ),
+            (
+                "let main = () => Physics.setVelocityY(\"ball\", 9.0)",
+                "physics.setVelocityY",
+            ),
+        ] {
+            crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+            let effect = eval(src);
+            let Value::HostData(data) = &effect else {
+                panic!("expected an Effect from `{src}`");
+            };
+            let tree = &data.as_any().downcast_ref::<FunctorLangEffect>().expect("Effect").0;
+
+            let module =
+                functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap()).unwrap();
+            let session = functor_lang::Session::load(&module, &mut FunctorHost)
+                .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
+            let mut model = Value::Number(0.0);
+            let mut log = EffectLog::new();
+            let mut runner = FakeEffects::new(0.0, vec![]);
+            let deferred = drain_effects(
+                &session,
+                &mut model,
+                tree.clone(),
+                &mut runner,
+                &mut log,
+                &mut |m| panic!("unexpected report: {m}"),
+                false,
+            );
+            assert!(deferred.is_empty(), "nothing should defer here");
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0].kind, kind, "wrong effect-log kind for `{src}`");
+            assert_eq!(log[0].value, EffectValue::Text("ball".to_string()));
+        }
+
+        // And the masked write really is masked once it reaches the world: a
+        // body drifting on all three axes keeps its `y` through a setVelocityXZ.
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        let effect = eval("let main = () => Physics.setVelocityXZ(\"ball\", 3.0, 4.0)");
+        let Value::HostData(data) = &effect else {
+            panic!("expected an Effect");
+        };
+        let tree = &data.as_any().downcast_ref::<FunctorLangEffect>().expect("Effect").0;
+        let module =
+            functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap()).unwrap();
+        let session = functor_lang::Session::load(&module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
+        let mut model = Value::Number(0.0);
+        let mut log = EffectLog::new();
+        let mut runner = FakeEffects::new(0.0, vec![]);
+        let _ = drain_effects(
+            &session,
+            &mut model,
+            tree.clone(),
+            &mut runner,
+            &mut log,
+            &mut |m| panic!("unexpected report: {m}"),
+            false,
+        );
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| {
+            w.reconcile(&crate::physics::PhysicsScene::create(
+                [0.0, 0.0, 0.0],
+                vec![crate::physics::Body::dynamic(
+                    "ball".to_string(),
+                    crate::physics::Shape::Sphere { radius: 0.5 },
+                )
+                .with_velocity([1.0, -5.0, 2.0])],
+            ));
+            w.step_frame(1.0 / 60.0);
+            assert_eq!(w.body_velocity("ball").unwrap(), [3.0, -5.0, 4.0]);
             assert!(w.take_command_warnings().is_empty());
         });
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);

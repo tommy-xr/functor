@@ -81,7 +81,7 @@ let decay = (dt, t) => Math.max(0.0, t - dt)
 let sense = (dt, obs, jumpEdge, c) =>
   let lock = decay(dt, c.lock) in
   // While the post-jump lock is live, grounding is ignored outright: everything
-  // downstream — coyote refill, the landing edge, and the ground clamp — reads
+  // downstream — coyote refill, the landing edge, and the steering rate — reads
   // the character as airborne, which is what it physically is.
   let grounded = obs.grounded && not (lock > 0.0) in
   let landed = grounded && not c.grounded in
@@ -105,7 +105,7 @@ let sense = (dt, obs, jumpEdge, c) =>
 let jumpNow = (c) => c.coyote > 0.0 && c.buffer > 0.0
 
 // Close both windows so one press cannot fire twice, and arm the lock that
-// keeps the ground clamp off the character while it is leaving the ground.
+// keeps the character reading as airborne while it is leaving the ground.
 let consumeJump = (c) => { c with coyote: 0.0, buffer: 0.0, lock: jumpLockTime }
 
 // Move `current` toward `target` at `rate` units/s^2 without overshooting.
@@ -145,12 +145,18 @@ let desiredVelocity = (dt, obs, carry, c) =>
     z: approach(rate, dt, obs.vz, targetZ),
   }
 
-// The vertical velocity a JUMP commands, on the one frame it fires — the jump
-// speed plus whatever the surface underfoot was already doing, so a rising
-// lift launches you higher instead of out from under itself. `game.fun` sends
-// this with `Physics.setVelocityY` only when `jumpNow` is true; on every other
-// frame nothing writes the axis at all.
+// The vertical velocity a JUMP commands — the jump speed plus whatever the
+// surface underfoot was already doing, so a rising lift launches you higher
+// instead of out from under itself.
 let jumpVelocity = (carry) => jumpSpeed + carry.y
+
+// The whole vertical story, as data: `Some` on the one frame a jump fires and
+// `None` on every other. `game.fun` sends a `Physics.setVelocityY` exactly
+// when this is `Some`, so "the controller does not touch the vertical axis
+// unless it is jumping" is a property the expects below can pin, rather than
+// a convention a reader has to verify by eye.
+let verticalCommand = (carry, c): Option.t<float> =>
+  if jumpNow(c) then Option.Some(jumpVelocity(carry)) else Option.None
 
 // Landing squash as a vertical scale factor: 1.0 at rest, dipping right after
 // a hard landing and easing back as the timer drains.
@@ -229,17 +235,28 @@ expect (
   not jumpNow(consumeJump(land))
 )
 
-// A jump commands the jump speed. Every other frame commands NOTHING vertical
-// — `game.fun` only sends `Physics.setVelocityY` when `jumpNow` is true, so
-// the property to check here is simply when the jump fires, not what vy the
-// controller would have invented on the frames in between.
-expect jumpVelocity(still) == jumpSpeed
-expect jumpNow(sense(dt, onGround, true, zero))
-expect not jumpNow(sense(dt, obsAt(false, 0.0, -4.25), false, zero))
+// THE rule this example exists to demonstrate: the controller emits a vertical
+// command on the jump frame and on NO other frame, so the solver owns the
+// standing height, the landing, and gravity. `game.fun` sends a
+// `Physics.setVelocityY` exactly when `verticalCommand` is `Some`.
+expect (
+  let jumping = sense(dt, onGround, true, zero) in
+  verticalCommand(still, jumping) == Option.Some(jumpSpeed)
+)
+// Grounded and standing, falling through the air, and hard on the way down —
+// none of them command anything vertical.
+expect verticalCommand(still, sense(dt, onGround, false, zero)) == Option.None
+expect verticalCommand(still, sense(dt, air, false, zero)) == Option.None
+expect verticalCommand(still, sense(dt, obsAt(true, 0.0, -6.7), false, zero)) == Option.None
+expect verticalCommand(still, sense(dt, obsAt(false, 0.0, -4.25), false, zero)) == Option.None
 
 // Jumping off a moving deck inherits its vertical motion (a rising lift
 // launches you higher, not out from under itself).
-expect jumpVelocity({ x: 0.0, y: 2.0, z: 0.0 }) == jumpSpeed + 2.0
+expect (
+  let lift = { x: 0.0, y: 2.0, z: 0.0 } in
+  let jumping = sense(dt, onGround, true, zero) in
+  verticalCommand(lift, jumping) == Option.Some(jumpSpeed + 2.0)
+)
 
 // The post-jump lock, pinned. On the frame AFTER a jump fires the feet are
 // still within the probe's reach, so the raw observation still says grounded.

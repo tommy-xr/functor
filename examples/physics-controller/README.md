@@ -96,7 +96,7 @@ whatever it stands on; the plaza's top face is `y = 0` and the deck's is
 | Riding the moving platform | **CLEAN** | `probe.tag` → `linearVelocity` tracks the deck's analytic velocity to within 0.030 on a 2.4 u/s deck. Relative offset `x − deckX` held at −0.48 ± 0.02 over 80 frames — bounded and oscillatory, not accumulating. |
 | Wall | **CLEAN, and free** | Held into the wall for 220 frames: stopped at `x = −6.3012` against a predicted −6.3000 (wall face −6.7, capsule radius 0.4) and stayed — `x` and `z` both constant to four decimals from f=260 to f=399. Zero collision code in the game. |
 | Edge / ledge fall-off | **CLEAN, and free** | Walking off the deck's edge simply stops being grounded; gravity and the solver do the rest. |
-| Standing height | **CLEAN** | A constant 0.8987 on the plaza and 2.1462–2.1487 on the deck, owned entirely by the solver: the controller never writes the vertical axis. Needs `Physics.setVelocityXZ`, a post-jump lockout, and `Physics.upright` — see below. |
+| Standing height | **CLEAN** | A constant 0.8987 on the plaza and 2.1462–2.1487 on the deck, owned entirely by the solver: with `Physics.setVelocityXZ` the controller never writes the vertical axis, so there is nothing to hold it up by hand. Needs `Physics.upright` (and a post-jump lockout for the grounding read) — see below. |
 | Keeping the capsule upright | **WAS IMPOSSIBLE — fixed in this change** | A rotating capsule visibly toppled (40-80° off vertical mid-jump) and then crept 0.19 units sideways along the wall with no input. No rotation lock, angular damping, or angular-velocity command existed in the `Physics` API, so this was unfixable in game code. This change adds `Physics.upright`. |
 
 ### The one thing that was genuinely impossible
