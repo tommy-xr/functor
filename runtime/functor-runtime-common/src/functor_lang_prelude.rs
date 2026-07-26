@@ -116,6 +116,7 @@
 //! Physics.at/velocity(v, body)                        -> Body
 //! Physics.mass/friction/restitution(n, body)                -> Body
 //! Physics.sensor(body)                                      -> Body
+//! Physics.upright(body)                                     -> Body
 //! Physics.scene(Vec3.make(gx, gy, gz), [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
 //! Physics.transformed(tag, scene)                           -> Scene
@@ -2146,6 +2147,11 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Physics.sensor", "Physics.sensor(body)", |body: FunctorLangBody| {
         FunctorLangBody(body.0.as_sensor())
     });
+    reg.fn1(
+        "Physics.upright",
+        "Physics.upright(body)",
+        |body: FunctorLangBody| FunctorLangBody(body.0.as_upright()),
+    );
     reg.fn2(
         "Physics.scene",
         "Physics.scene(Vec3.make(gx, gy, gz), [body, …])",
@@ -6390,6 +6396,21 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         assert_eq!(scene.bodies[1].mass, Some(2.0));
         assert_eq!(scene.bodies[1].restitution, 0.5);
         assert!(scene.bodies[2].sensor);
+    }
+
+    // `Physics.upright` locks a body's rotation — the character-capsule
+    // attribute. Default is off, so existing bodies keep tumbling as before.
+    #[test]
+    fn physics_upright_locks_rotation_and_defaults_off() {
+        let value = eval(
+            "let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
+               Physics.dynamic(\"player\", Physics.capsule(0.5, 0.4)) |> Physics.upright,\n\
+               Physics.dynamic(\"barrel\", Physics.capsule(0.5, 0.4)),\n\
+             ])",
+        );
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        assert!(scene.bodies[0].rotation_locked);
+        assert!(!scene.bodies[1].rotation_locked);
     }
 
     #[test]

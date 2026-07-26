@@ -83,6 +83,11 @@ pub struct Body {
     pub restitution: f32,
     /// A sensor detects overlaps but produces no contact forces.
     pub sensor: bool,
+    /// Rotation is locked on all three axes: the body translates but never
+    /// tips. The character-controller case — an upright capsule that must not
+    /// tumble when it lands, scuffs a ledge, or leans on a wall.
+    #[serde(default)]
+    pub rotation_locked: bool,
     pub authority: Authority,
 }
 
@@ -100,6 +105,7 @@ impl Body {
             friction: 0.5,
             restitution: 0.0,
             sensor: false,
+            rotation_locked: false,
             authority: Authority::Local,
         }
     }
@@ -152,6 +158,12 @@ impl Body {
 
     pub fn as_sensor(mut self) -> Body {
         self.sensor = true;
+        self
+    }
+
+    /// Lock the body's rotation so it translates but never tips.
+    pub fn as_upright(mut self) -> Body {
+        self.rotation_locked = true;
         self
     }
 
