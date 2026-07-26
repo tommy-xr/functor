@@ -6482,8 +6482,8 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             "let main = () => Physics.cast(Vec3.make(0.0, 10.0, 0.0), \
              Vec3.make(0.0, -1.0, 0.0), 100.0)",
         );
-        assert_eq!(field(&hit, "hit"), Value::Bool(true));
-        assert_eq!(field(&hit, "tag"), Value::String(Rc::from("ball")));
+        assert!(matches!(field(&hit, "hit"), Value::Bool(true)));
+        assert!(matches!(field(&hit, "tag"), Value::String(s) if &*s == "ball"));
         assert!((num(&hit, "ny") - 1.0).abs() < 1e-5, "sphere top normal is +Y");
         assert!(num(&hit, "distance") > 0.0);
 
@@ -6492,7 +6492,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             "let main = () => Physics.castExcluding(Physics.tag(\"ball\"), \
              Vec3.make(0.0, 10.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 100.0)",
         );
-        assert_eq!(field(&floor, "tag"), Value::String(Rc::from("floor")));
+        assert!(matches!(field(&floor, "tag"), Value::String(s) if &*s == "floor"));
         assert!(
             num(&floor, "distance") > num(&hit, "distance"),
             "the floor is further than the ball in front of it"
@@ -6503,9 +6503,9 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             "let main = () => Physics.cast(Vec3.make(0.0, 10.0, 0.0), \
              Vec3.make(0.0, 1.0, 0.0), 100.0)",
         );
-        assert_eq!(field(&miss, "hit"), Value::Bool(false));
+        assert!(matches!(field(&miss, "hit"), Value::Bool(false)));
         assert_eq!(num(&miss, "distance"), 0.0);
-        assert_eq!(field(&miss, "tag"), Value::String(Rc::from("")));
+        assert!(matches!(field(&miss, "tag"), Value::String(s) if s.is_empty()));
 
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
@@ -6525,25 +6525,29 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             "{at}let probe = (p) => Physics.cast(origin(p), {down}, 10.0)\n\
              let main = () => probe(Physics.position(\"ball\"))"
         ));
-        assert_eq!(field(&selfhit, "tag"), Value::String(Rc::from("ball")));
+        assert!(matches!(field(&selfhit, "tag"), Value::String(s) if &*s == "ball"));
 
         let ground = eval(&format!(
             "{at}let probe = (p) => \
                Physics.castExcluding(Physics.tag(\"ball\"), origin(p), {down}, 10.0)\n\
              let main = () => probe(Physics.position(\"ball\"))"
         ));
-        assert_eq!(field(&ground, "tag"), Value::String(Rc::from("floor")));
-        assert_eq!(field(&ground, "hit"), Value::Bool(true));
+        assert!(matches!(field(&ground, "tag"), Value::String(s) if &*s == "floor"));
+        assert!(matches!(field(&ground, "hit"), Value::Bool(true)));
         // Standing on the floor: the probe reaches it within the ball's radius.
         let d = num(&ground, "distance");
         assert!(d > 0.0 && d < 1.0, "grounded distance = {d}");
 
-        // Excluding a tag that isn't in the world excludes nothing.
+        // Excluding a tag that isn't in the world excludes nothing: the ray
+        // still hits the nearest body along it (the ball resting on the
+        // floor), exactly as a plain `Physics.cast` would. This is what lets a
+        // not-yet-spawned character probe cleanly on its first frame instead
+        // of erroring.
         let unknown = eval(
             "let main = () => Physics.castExcluding(Physics.tag(\"nobody\"), \
              Vec3.make(0.0, 10.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 100.0)",
         );
-        assert_eq!(field(&unknown, "tag"), Value::String(Rc::from("floor")));
+        assert!(matches!(field(&unknown, "tag"), Value::String(s) if &*s == "ball"));
 
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
