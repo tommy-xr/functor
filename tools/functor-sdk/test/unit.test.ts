@@ -150,6 +150,33 @@ test("xrInput returns the typed optional input domain", async () => {
   assert.deepEqual(await client.xrInput(), xr);
 });
 
+test("xr() posts a flat, tagged sample and passes partials through", async () => {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  const http = {
+    postText: async (path: string, body: unknown) => {
+      calls.push({ path, body });
+      return "ok";
+    },
+  } as HttpClient;
+  const client = new FunctorClient(http);
+
+  // The wire shape is the sample INLINED beside the tag, not nested — and the
+  // runtime defaults everything omitted, so a partial hand is legal.
+  await client.xr({
+    right: { active: true, grip: { position: [0, 0, 0.12] }, trigger: 1 },
+  });
+
+  assert.deepEqual(calls, [
+    {
+      path: "/input",
+      body: {
+        type: "xr",
+        right: { active: true, grip: { position: [0, 0, 0.12] }, trigger: 1 },
+      },
+    },
+  ]);
+});
+
 test("reloadAssets uploads binary envelopes then finalizes the manifest", async () => {
   const calls: Array<{ path: string; body: unknown }> = [];
   const http = {

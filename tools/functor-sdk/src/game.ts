@@ -7,6 +7,7 @@ import type {
   RuntimeState,
   Scene,
   WaitForOptions,
+  XrInputSample,
   XrInputSnapshot,
 } from "./types.js";
 
@@ -147,6 +148,23 @@ export class FunctorClient {
   /** Scroll the mouse wheel. */
   mouseWheel(delta: number): Promise<void> {
     return this.input({ type: "mouse_wheel", delta });
+  }
+
+  /** Set the XR sample the next fixed step's `sampledInput` sees — tracked
+   * poses, grips, and buttons, without a headset (desktop runtimes only).
+   *
+   * Level state that stays in force until replaced, and a whole-sample
+   * replacement: see {@link XrInputSample}. Pair with `step()` for one pose per
+   * frame. The device runtime rejects it (it samples live tracking). */
+  xr(sample: XrInputSample): Promise<void> {
+    return this.input({ type: "xr", ...sample });
+  }
+
+  /** Drop an injected XR sample, restoring what the runtime samples on its own
+   * — the `--emulate-xr` rig, or no `xr` domain at all. The release half of
+   * {@link xr}'s held-key contract. */
+  xrClear(): Promise<void> {
+    return this.input({ type: "xr_clear" });
   }
 
   // --- Drive: clock --------------------------------------------------------

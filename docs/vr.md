@@ -117,6 +117,17 @@ controller levels for deterministic captures without adding a desktop-only
 game API. This is one shell adapter over the canonical snapshot; future
 gamepad/mobile adapters should produce that same target-neutral record.
 
+The emulator's fidelity is deliberately low: both hands sit on a fixed
+rig-local plane (`z = -0.55`) with **identity orientations**, so gestures that
+depend on depth (pulling a hand back toward your face) or on a controller's
+rotation (aiming along a grip's forward) cannot be expressed by mouse and
+keyboard at all. For those, **inject the sample directly** over the debug
+server — `POST /input {"type":"xr", …}` sets the XR sample every following fixed
+step feeds to `sampledInput`, so an arbitrary two-handed pose sequence is
+scriptable and deterministic with no headset and no window. See
+`docs/debug-runtime.md`, and `e2e/xr-pose-injection.mjs` for a worked
+pose-sequence driver.
+
 `examples/xr-controllers` is the shared-path reference: it maps both grip
 poses through the authored camera, visualizes each aim direction, and pulls an
 orb toward the right controller while trigger is held. Run it unchanged on

@@ -34,6 +34,7 @@
     "test:ide": "node e2e/ide-project.mjs",
     "test:ide-page": "node e2e/ide-page.mjs",
     "test:runtime-target": "node e2e/runtime-target.mjs",
+    "test:xr-injection": "cargo build -p functor-cli --no-default-features && node e2e/xr-pose-injection.mjs",
     "demo:time-travel": "node site/demos/time-travel.mjs",
     "demo:instant-feedback": "node site/demos/instant-feedback.mjs",
     "demo:batteries-included": "node site/demos/batteries-included.mjs",

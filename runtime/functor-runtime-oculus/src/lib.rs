@@ -643,6 +643,15 @@ fn service_debug_request(
                     game.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
+                // Rejected rather than honored: this runtime resamples the XR
+                // domain from live OpenXR tracking every frame, so an injected
+                // sample would be silently overwritten before any `sampledInput`
+                // saw it. Injection is the DESKTOP substitute for this device.
+                InputCommand::Xr(_) | InputCommand::XrClear => Err(
+                    "xr injection is unsupported on the device runtime (it samples live \
+tracking); use the desktop runtime's --headless/--debug-port path"
+                        .to_string(),
+                ),
             };
             if clock.is_paused() {
                 game.absorb_paused_input();
