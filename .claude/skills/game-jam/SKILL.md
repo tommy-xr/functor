@@ -40,8 +40,9 @@ roadmap items, and promotes the best sample(s).
 
 ## Phase 1 — one agent per game
 
-Spawn one **Opus** subagent per brief, `isolation: worktree`, in a single
-parallel batch, running in the background. Each prompt must include:
+Spawn one **Opus** subagent per brief, `isolation: worktree`, running in the
+background — but **pace the fleet; do not run everything at once** (see
+"Concurrency limits" below). Each prompt must include:
 
 - **The brief**: game, slug, and the specific engine surfaces it exists to
   stress (physics, XR input, 2D ergonomics, chase camera, UI/dialog, …).
@@ -76,10 +77,50 @@ parallel batch, running in the background. Each prompt must include:
   game summary, capture paths, xreview outcome, the full friction log inline,
   and a 1–5 self-assessment on the two judging criteria below.
 
-## Phase 1.5 — rolling gap fixers (don't wait for synthesis)
+## Concurrency limits (learned the hard way — 2026-07 jam)
 
-As friction reports land, triage blockers immediately instead of batching them
-to the end — spawn a fixer/assessor agent (Opus, worktree) per cluster:
+Running the whole fleet at once oversubscribed the machine badly: 7 jam agents
++ 6 fixers + their xreview reviewer subagents peaked at **61 cargo / 51 rustc
+processes**, producing 90-minute compiles that normally take minutes, capture
+runs so slow the UI overlay hadn't rastered by capture time (agents chased
+phantom rendering bugs), Codex CLI hangs, and meaningless wall-clock bench
+numbers. Rules:
+
+- **Default to sequential, or at most 2–3 concurrent agents**, on a developer
+  laptop. The user experiences the whole fleet's load; ask before scaling wider.
+- **Pair one LIGHT agent with one HEAVY one** when running two. Light = works
+  against a prebuilt binary or docs (interpreting game files, captures, site
+  builds, snippet typechecks). Heavy = anything that compiles the toolchain
+  (cold-worktree cargo, wasm-pack). Two lights are also fine; two heavies never
+  are. Classify each agent's *remaining* work before starting it — a "docs"
+  task that needs docgen via cargo counts as heavy.
+- Jam agents are cheap only while writing/interpreting `.fun` (the shared
+  prebuilt binary) — but each one's **xreview spawns reviewers**, and finisher
+  phases run captures; count those toward the cap.
+- **Never let two fixers cold-build Rust worktrees concurrently.** A fresh
+  worktree compiles the whole dependency graph; two at once thrash, and the
+  global `~/.cargo` package-cache lock serializes them anyway. Run
+  cargo-building fixers strictly one at a time.
+- **Benchmarks need a quiet machine.** frame_bench wall-clock is worthless
+  under load; schedule bench-requiring fixers last, alone, and lean on
+  allocs/bytes-per-frame (load-immune) as the acceptance numbers.
+- Sequencing mechanic: resume/spawn one agent, wait for its completion
+  notification, then start the next — nearest-to-completion first so results
+  land early.
+
+## Phase 1.5 — gap fixers (sequential, after entries complete)
+
+Triage blockers as friction reports land, but run the fixing **sequentially,
+after the jam entries finish** — fixers cold-build Rust worktrees and run
+xreview, exactly the load the concurrency limits exist for. One fixer at a
+time, nearest-to-mergeable first.
+
+**Prefer the game's own agent for low-lift fixes.** If the gap is small and
+blocks that agent's game (a doc wording, a missing signature, a small prelude
+register), resume the entry's agent after its game is committed and have it
+open the fix PR itself — it has the full context and the motivating example.
+Spawn dedicated assessor/fixer agents only for cross-cutting or heavier gaps.
+Per cluster:
 
 - **Doc gaps** are usually same-day: fix in the `.funi` doc comments and/or the
   `site/` manual, verify with `npm run check:docs` + a site build, open a
@@ -96,6 +137,18 @@ to the end — spawn a fixer/assessor agent (Opus, worktree) per cluster:
 
 Point fixers at the jam entry's `JAM_NOTES.md` (read-only) as evidence, and
 keep them off the jam worktrees.
+
+**Docs changes are visual changes.** A PR that edits a manual/docs/site page
+embeds before/after screenshots of the rendered page (base ref vs change), the
+same as any rendering PR — reviewers judge the page users will see, not the
+markup diff.
+
+**PR lifecycle:** fixers open PRs as drafts (repo convention), and once
+verification is re-run post-review and every Critical/High is dispositioned in
+the body — plus media embedded for visual changes — the PR gets marked ready
+**in the same breath** (`gh pr ready`), by the fixer or the orchestrator.
+Draft is a "review/captures still landing" signal, not a resting state; a
+fully-verified PR parked in draft just hides finished work from reviewers.
 
 ## Phase 2 — judging (orchestrator)
 
@@ -124,8 +177,17 @@ it shows (samples should be readable), and asset hygiene.
 3. **File the gap work**: turn the consolidated list into issues or follow-up
    PRs (engine gaps vs doc gaps separately — doc gaps are often same-day
    fixes to `site/` or the generated reference).
-4. Clean up: remove jam worktrees/branches for entries that aren't promoted
-   (after saving their JAM_NOTES content into the synthesis report).
+4. Clean up. Two kinds, and both matter:
+   - **Processes, immediately after any agent stops or is killed**: sweep for
+     orphaned `functor` debug servers, `cargo`/`rustc`/`sccache` trees, and
+     Codex reviewer processes (`ps aux | grep -E 'functor|cargo|rustc|codex'`)
+     — killed agents routinely leave runaway compiles and hung reviewers
+     burning CPU.
+   - **Worktrees, only after synthesis**: first confirm every entry's work is
+     committed to its `jam/<slug>` branch (branches survive worktree removal;
+     staged-but-uncommitted work does not), save JAM_NOTES content into the
+     synthesis report, then remove the worktrees — including their multi-GB
+     `target/` dirs from fixer builds.
 
 ## Backlog — future jam briefs and what each stresses
 
