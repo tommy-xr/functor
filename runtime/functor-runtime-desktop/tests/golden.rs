@@ -21,8 +21,11 @@
 //!
 //! Goldens are renderer/display-specific (GPU, driver, HiDPI scale). To
 //! regenerate the native references on your machine, run the same scenarios with
-//! `--capture-frame examples/<sample>/golden/<name>.png` (the runner invocation
-//! below, pointed at the golden path instead of a temp file).
+//! `--capture-frame examples/<sample>/golden/<name>.png --capture-size 1600x1200`
+//! (the runner invocation below, pointed at the golden path instead of a temp
+//! file). The size must be pinned: without it the framebuffer follows the
+//! display's HiDPI scale and the references only match the machine that made
+//! them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,6 +34,9 @@ use serde::Deserialize;
 
 // A pixel "differs" if any channel is off by more than this (0-255). Absorbs
 // minor antialiasing/driver wobble between runs on the same machine.
+/// Framebuffer every golden is captured at. Changing this invalidates every
+/// committed reference, so treat it as a format version.
+const GOLDEN_CAPTURE_SIZE: &str = "1600x1200";
 const TOLERANCE: u8 = 16;
 // Allow this fraction of pixels to exceed the tolerance before failing. (The
 // wasm harness uses the analogous `maxDiffPixelRatio` in playwright.config.mjs.)
@@ -121,6 +127,12 @@ fn assert_scenario_matches(scenario: &Scenario) {
         out.to_str().unwrap(),
         "--capture-time",
         "1.0",
+        // Pin the framebuffer so a reference depends on the renderer, not on
+        // the monitor. Without this the same scene captures at 800x600 on a 1x
+        // display and 1600x1200 on a Retina one, and every golden fails on a
+        // size mismatch the moment a machine is docked or undocked.
+        "--capture-size",
+        GOLDEN_CAPTURE_SIZE,
     ];
     if let Some(mode) = &scenario.debug_render {
         args.extend_from_slice(&["--debug-render", mode]);

@@ -27,6 +27,22 @@ use crate::{
     asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
 };
 
+/// Parse `WIDTHxHEIGHT` for `--capture-size`.
+fn parse_capture_size(raw: &str) -> Result<(u32, u32), String> {
+    let (w, h) = raw
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("expected WIDTHxHEIGHT, got `{raw}`"))?;
+    let parse = |value: &str, axis| {
+        value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|size| *size > 0)
+            .ok_or_else(|| format!("{axis} must be a positive integer, got `{value}`"))
+    };
+    Ok((parse(w, "width")?, parse(h, "height")?))
+}
+
 const SCR_WIDTH: u32 = 800;
 const SCR_HEIGHT: u32 = 600;
 
@@ -351,6 +367,16 @@ pub struct Args {
     /// Wall-clock seconds to run before --capture-frame takes the shot.
     #[arg(long, default_value_t = 2.0)]
     capture_time: f32,
+
+    /// Render at exactly this framebuffer size, as `WIDTHxHEIGHT`.
+    ///
+    /// Without it the framebuffer follows the display's HiDPI scale, so the
+    /// same scene captures at 800x600 on a 1x monitor and 1600x1200 on a
+    /// Retina one — which silently invalidates every golden image when a
+    /// machine is docked or undocked. Pinning the size makes a capture depend
+    /// on the renderer instead of the monitor.
+    #[arg(long, value_parser = parse_capture_size)]
+    capture_size: Option<(u32, u32)>,
 
     /// Pin the game's frame time (seconds) to a constant so the rendered pose
     /// is deterministic — for reproducible captures / golden images.
@@ -1092,11 +1118,18 @@ pub fn run(args: Args) {
             if hidden {
                 glfw.window_hint(glfw::WindowHint::Visible(false));
             }
+            // A pinned size means the framebuffer must be exactly that, so opt
+            // out of the display's backing scale rather than inheriting it.
+            #[cfg(target_os = "macos")]
+            if args.capture_size.is_some() {
+                glfw.window_hint(glfw::WindowHint::CocoaRetinaFramebuffer(false));
+            }
+            let (width, height) = args.capture_size.unwrap_or((SCR_WIDTH, SCR_HEIGHT));
 
             // glfw window creation
             // --------------------
             let (mut window, events) = glfw
-                .create_window(SCR_WIDTH, SCR_HEIGHT, "Functor", glfw::WindowMode::Windowed)
+                .create_window(width, height, "Functor", glfw::WindowMode::Windowed)
                 .expect("Failed to create GLFW window");
 
             window.make_current();
