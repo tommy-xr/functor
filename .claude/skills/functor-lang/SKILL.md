@@ -892,6 +892,43 @@ camera2d |> Camera2D.at(x, y)                              // pan the world-spac
 camera2d |> Camera2D.zoom(k)                               // positive zoom; larger = closer
 Sprite.blank()
 Sprite.rectangle(color, width, height) / Sprite.square(color, size)
+Sprite.text(color, size, "SCORE")                          // text in the BUILT-IN font — no
+                                                           //   asset needed, on every target.
+                                                           //   `size` is the LINE HEIGHT in
+                                                           //   world units and, because the
+                                                           //   font is monospace, also the
+                                                           //   per-character advance. Centered
+                                                           //   on its own box like every other
+                                                           //   primitive. String LAST, so a
+                                                           //   formatted value pipes in:
+                                                           //   Text.fixed(m.score, 0.0)
+                                                           //     |> Sprite.text(cyan, 1.2)
+                                                           //   `\n` breaks lines at exactly one
+                                                           //   `size`, each line centered in the
+                                                           //   block. Printable ASCII only:
+                                                           //   other scalars (incl. combining
+                                                           //   marks) occupy their cell and draw
+                                                           //   NOTHING, so unsupported text
+                                                           //   leaves gaps instead of shifting
+                                                           //   the line. Glyphs sample like any
+                                                           //   sprite image, so |> Sprite.nearest()
+                                                           //   gives crisp pixels
+Sprite.measure(size, "SCORE")                              // -> { width, height } in world
+                                                           //   units, WITHOUT rendering (pure —
+                                                           //   testable under `functor test`).
+                                                           //   width = the widest line's;
+                                                           //   height = `size` per line, for
+                                                           //   EVERY string incl. "" — so
+                                                           //   stacking blocks by a measured
+                                                           //   height can never overlap them.
+                                                           //   Text is centered, so alignment is
+                                                           //   a half-width shift:
+                                                           //   |> Sprite.move(x + w * 0.5, y)
+                                                           //   puts the LEFT edge at x; negate
+                                                           //   for the right edge. Ask measure
+                                                           //   rather than assuming n * size —
+                                                           //   it is the seam a future
+                                                           //   proportional font changes
 Sprite.image(width, height, texture)                       // Asset.Texture only; the locator
                                                            //   becomes plain sprite data
 Sprite.region(x, y, width, height)                         // whole source pixels from the
