@@ -14,6 +14,33 @@ Reach for this **before** building an optimization, not after. The cost of a
 profiling session is one adb command; the cost of optimizing the wrong stage is
 a rebuild cycle plus a wrong conclusion in the PR history.
 
+## Profile on desktop *and* device — they measure different things
+
+Desktop benchmarks cannot see GPU cost. `frame_bench` is headless: it measures
+CPU allocations and per-frame work, and is blind to shading, texture sampling,
+filtering and fill rate. A rendering change can show **exact** `frame_bench`
+parity and still be a large GPU regression.
+
+The worked example this skill came from: #477 requested 8× anisotropy for every
+mipmapped texture. `allocs/frame` and `bytes/frame` were byte-identical to main
+— a clean desktop result — and on a Quest 3 it cost **8.9 ms of a 13.8 ms
+frame**, dropping the terrain sample to 44 fps. No desktop tool available to us
+would have caught it.
+
+So for anything touching rendering internals, shaders, materials, or sampler
+state, run both:
+
+| Where | Tool | Answers |
+| --- | --- | --- |
+| Desktop | `frame_bench` | CPU allocations, per-frame work |
+| Desktop | `npm run test:golden` | did the image change |
+| Device | `npm run bench:quest` | frame time, stale frames, budget |
+| Device | `ovrgpuprofiler` | *why* — which stage, which stall |
+
+Whenever a Quest is attached, the device numbers are part of done. When one
+isn't, say so explicitly in the PR — an unmeasured GPU cost should be visible as
+a gap, not mistaken for an absent one.
+
 ## Prerequisites
 
 Get a real workload running first — see the **`vr-device-loop` skill** for build,

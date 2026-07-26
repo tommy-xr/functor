@@ -379,6 +379,25 @@ benchmark a debug build (the harness warns), and never use the windowed
 runtime's `draw_us` telemetry for perf claims (it inflates ~2× on
 sub-saturated scenes).
 
+**`frame_bench` cannot see GPU cost — profile the device too.** It runs
+headless, so it measures CPU allocations and per-frame work and is blind to
+shading, texture sampling, filtering, and fill rate. A change to shaders,
+materials, textures, or sampler state can show *exact* `frame_bench` parity and
+still be a large GPU regression. This is not hypothetical: #477 requested 8×
+anisotropy for every mipmapped texture with byte-identical `allocs/frame` and
+`bytes/frame` against main — and it cost **8.9 ms of a 13.8 ms Quest frame**,
+dropping `examples/terrain` to 44 fps. Nothing on desktop could have caught it.
+
+So for changes touching **rendering internals, shaders, materials, or texture
+sampling**, the definition of done is both:
+
+1. **Desktop** — `frame_bench` before/after for CPU parity, plus goldens
+   (`npm run test:golden`) for visual correctness.
+2. **Device, whenever a Quest is attached** — `npm run bench:quest` for frame
+   time and stale frames, and `ovrgpuprofiler` when you need to know *why*
+   (see the **`oculus-profiling` skill**). State explicitly in the PR when no
+   device was available, so the gap is visible rather than assumed absent.
+
 For language-only changes, `functor-lang/benches` (see its README) isolates
 interpreter micro-ops under the plain prelude — useful for pinpointing, but a
 frame_bench run is still the acceptance number: micro-derived estimates have
