@@ -1055,6 +1055,67 @@ mod tests {
         assert!(hit.normal[1] > 0.99, "{hit:?}");
     }
 
+    // A capsule dropped onto terrain must come to rest at the elevation the
+    // heightmap declares. This is the end-to-end check that the collision
+    // surface agrees with the rendered one: `Scene.terrain` and
+    // `Physics.heightfield` derive from the same samples, but nothing else
+    // asserts that a body standing on the result is where the map says the
+    // ground is.
+    #[test]
+    fn a_capsule_settles_on_the_heightfield_at_the_declared_elevation() {
+        const HALF_HEIGHT: f32 = 0.9;
+        const RADIUS: f32 = 0.4;
+        // Uniform samples, so the expected ground height is exact rather than
+        // an interpolation of a slope: 0.25 of a 0..40 m range = 10 m.
+        let terrain = flat_heightfield(64, 64, 16384);
+        let Shape::Heightfield { geometry, .. } = &terrain else {
+            unreachable!()
+        };
+        let expected_ground =
+            geometry.min_height + 0.25 * (geometry.max_height - geometry.min_height);
+
+        let mut world = World::new([0.0, -9.81, 0.0]);
+        let scene = PhysicsScene::create(
+            [0.0, -9.81, 0.0],
+            vec![
+                Body::fixed("terrain".to_string(), terrain.clone()),
+                Body::dynamic(
+                    "walker".to_string(),
+                    Shape::Capsule {
+                        half_height: HALF_HEIGHT,
+                        radius: RADIUS,
+                    },
+                )
+                .at([0.0, expected_ground + 6.0, 0.0])
+                .as_upright(),
+            ],
+        );
+        world.reconcile(&scene);
+
+        // Long enough to fall 6 m and for the contact to settle.
+        for _ in 0..240 {
+            world.step_frame(FIXED_DT);
+        }
+
+        let (position, _) = world
+            .body_transform("walker")
+            .expect("the walker should still be in the world");
+        // A capsule rests centre-height above the surface: half the segment
+        // plus the cap radius.
+        let resting_centre = expected_ground + HALF_HEIGHT + RADIUS;
+        assert!(
+            (position[1] - resting_centre).abs() < 0.1,
+            "settled at y={:.3}, expected ~{resting_centre:.3} (ground {expected_ground:.3})",
+            position[1]
+        );
+        // It must come to rest, not tunnel through or jitter on the surface.
+        assert!(
+            position[1] > expected_ground,
+            "fell through the heightfield: y={:.3}",
+            position[1]
+        );
+    }
+
     #[test]
     fn heightfield_uses_rapier_triangles_not_bilinear_interpolation() {
         let shape = Shape::Heightfield {
