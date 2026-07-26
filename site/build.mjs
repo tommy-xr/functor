@@ -263,7 +263,7 @@ await esbuild.build({
   // OUTPUT basenames are unchanged either way (esbuild always emits `.js`).
   entryPoints: [
     `${site}src/sandbox.tsx`,
-    `${site}src/ide.ts`,
+    `${site}src/ide.tsx`,
     `${site}src/docs.ts`,
     `${site}src/api-docs.ts`,
     `${site}src/hero.ts`,

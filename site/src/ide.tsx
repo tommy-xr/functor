@@ -4,7 +4,15 @@
 // iframe (see project-bridge.ts): the preview boots from memory and hot-swaps
 // on every edit, model preserved. Work is persisted to localStorage; the
 // project downloads as a .zip that drops into `functor -d <dir> build wasm`.
+//
+// The page shell is static HTML; the CHROME around the editor (the toolbar, the
+// pill, the external-runtime panel, the file sidebar, the status bar) renders as
+// React islands mounted into that shell's containers — the same architecture the
+// sandbox uses, sharing the same components. The editor itself is not React
+// (CodeMirror owns `#editor`'s subtree), and the project logic below stays plain
+// imperative code that publishes to small stores.
 
+import { createRoot } from "react-dom/client";
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
@@ -22,8 +30,15 @@ import {
   currentExpects,
 } from "./lang-intel.js";
 import { ProjectBridge } from "./project-bridge.js";
-import { createStatusBar } from "./status-bar.js";
-import { createRuntimeTarget } from "./runtime-target.js";
+import { createStatusBarStore } from "./status-bar-store.js";
+import { createRuntimeTargetCore } from "./runtime-target-core.js";
+import type { RuntimeTargetState } from "./runtime-target-core.js";
+import { createStore } from "./store.js";
+import { IdeControls } from "./components/IdeControls.js";
+import { StatusBar } from "./components/StatusBar.js";
+import { FilePane, ActiveFileTab } from "./components/FilePane.js";
+import type { FileListState } from "./components/FilePane.js";
+import type { PillState } from "./components/StatusPill.js";
 import { asPlayerMessage } from "./protocol.js";
 import type { ProjectFile } from "./protocol.js";
 import { zipFiles } from "./zip.js";
@@ -46,17 +61,11 @@ interface StoredProject {
   files?: ProjectFile[];
 }
 
-/** The status pill's three states — also its `data-state` attribute value. */
-type PillState = "busy" | "live" | "error";
-
 /** `validName`'s verdict: exactly one of the two fields is ever present. */
 interface NameCheck {
   path?: string;
   error?: string;
 }
-
-type RuntimeTarget = ReturnType<typeof createRuntimeTarget>;
-type RuntimeTargetState = ReturnType<RuntimeTarget["state"]>;
 
 /** The IDE's e2e seam (driven by e2e/ide-page.mjs and e2e/ide-project.mjs). */
 interface IdeSeam {
@@ -64,11 +73,7 @@ interface IdeSeam {
   openFile: (path: string) => void;
   newFile: (path: string, source?: string) => void;
   files: () => ProjectFile[];
-  status: () => {
-    state: string | undefined;
-    text: string | null;
-    message: string;
-  };
+  status: () => { state: string; text: string; message: string };
   runtimeTarget: () => RuntimeTargetState;
   triggerComplete(source: string, cursor: number): void;
   acceptCompletion: () => boolean;
@@ -87,14 +92,6 @@ const ENTRY = "game.fun"; // the program root; every other .fun is a sibling mod
 // files, so a hand-edited/corrupt localStorage can't smuggle in a `../x.fun`
 // (which would be a zip-slip entry on download and a bad module at load).
 const MODULE_FILE = /^[A-Za-z][A-Za-z0-9_]*\.fun$/;
-
-// The Functor mark, shown on every .fun file row — the same art as the site
-// favicon and the VS Code file icon (docs/media/functor-icon.svg).
-const FILE_ICON =
-  '<svg class="file-icon" viewBox="366 163 385 690" fill="currentColor" aria-hidden="true">' +
-  '<path d="M382 341 545 179H735L615 300H548L382 466Z"/>' +
-  '<path d="M382 493 497 380V748L382 837Z"/>' +
-  '<path d="M518 426H693L597 522H518Z"/></svg>';
 
 // A two-file starter: game.fun draws using constants from palette.fun (a
 // sibling module — file = module, so palette.fun is module `Palette`), to show
@@ -133,15 +130,16 @@ let sky = 0.18
 };
 
 const els = {
-  fileList: document.getElementById("file-list")!,
-  newFile: document.getElementById("new-file")!,
-  download: document.getElementById("download")!,
-  restart: document.getElementById("restart")!,
-  status: document.getElementById("status")!,
-  activeName: document.getElementById("active-file")!,
   editorHost: document.getElementById("editor")!,
   player: document.getElementById("player") as HTMLIFrameElement,
 };
+
+// The two stores the islands render. `pill` is the preview's live indicator;
+// `fileList` is the sidebar's (and the editor tab's) view of the project — the
+// paths and which one is open, republished wherever `renderFileList` used to
+// rebuild the DOM.
+const pill = createStore<PillState>({ state: "busy", text: "◌ loading…", detail: "" });
+const fileList = createStore<FileListState>({ files: [], active: ENTRY });
 
 // ---------------------------------------------------------------- project
 
@@ -199,13 +197,11 @@ const activeFile = () => project.files.find((f) => f.path === project.active);
 
 // ---------------------------------------------------------------- status
 
-const setStatus = (state: PillState, text: string, detail = "") => {
-  els.status.dataset.state = state;
-  els.status.textContent = text;
+const setStatus = (state: PillState["state"], text: string, detail = "") => {
   // The detail (the reload note, or a parse error) lives in the pill's tooltip
   // and — for errors — the Output panel. No separate error banner under the
   // editor: the preview pill is the single live indicator.
-  els.status.title = detail;
+  pill.set({ state, text, detail });
 };
 
 // The boot loader (static markup in ide.html) evaporates when the PREVIEW
@@ -218,7 +214,6 @@ const dismissBootLoader = () =>
 // ---------------------------------------------------------------- editor
 
 let programmaticEdit = false;
-let runtimeTarget: RuntimeTarget | null = null;
 
 const view = new EditorView({
   parent: els.editorHost,
@@ -248,9 +243,10 @@ const langReady = setupLangIntel().then((extensions) => {
   return extensions.length > 0;
 });
 
-const statusBar = createStatusBar({ host: document.getElementById("statusbar")! });
-runtimeTarget = createRuntimeTarget({
-  host: document.getElementById("runtime-target"),
+const statusBar = createStatusBarStore();
+// Created once, outside React: this controller carries the live link's queued
+// pushes and its `/state` poll chain, so a re-render must never restart it.
+const runtimeTarget = createRuntimeTargetCore({
   getProject: () => project.files,
   onOutput: (level, message) => statusBar.appendOutput(level, message),
 });
@@ -338,44 +334,15 @@ const bridge = new ProjectBridge(els.player, {
 const schedulePush = () => {
   saveProject();
   bridge.setProject(project.files);
-  // Assigned during boot, before any edit or seam call can reach these.
-  runtimeTarget!.projectChanged();
+  runtimeTarget.projectChanged();
 };
 
 // ---------------------------------------------------------------- sidebar
 
-const renderFileList = () => {
-  els.fileList.textContent = "";
-  for (const file of project.files) {
-    const row = document.createElement("div");
-    row.className = "file-row" + (file.path === project.active ? " active" : "");
-
-    const name = document.createElement("button");
-    name.className = "file-name";
-    name.innerHTML = FILE_ICON;
-    const label = document.createElement("span");
-    label.className = "file-label";
-    label.textContent = file.path;
-    name.appendChild(label);
-    name.title = file.path === ENTRY ? "game.fun — the program entry" : file.path;
-    name.addEventListener("click", () => openFile(file.path));
-    row.appendChild(name);
-
-    // Every file but the entry can be deleted (the entry is the program root).
-    if (file.path !== ENTRY) {
-      const del = document.createElement("button");
-      del.className = "file-delete";
-      del.textContent = "×";
-      del.title = `Delete ${file.path}`;
-      del.addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteFile(file.path);
-      });
-      row.appendChild(del);
-    }
-    els.fileList.appendChild(row);
-  }
-  els.activeName.textContent = project.active;
+// The sidebar and the editor tab re-render from this one publication — the
+// declarative replacement for the old teardown-and-rebuild of every row.
+const publishFiles = () => {
+  fileList.set({ files: project.files.map((f) => f.path), active: project.active });
 };
 
 const openFile = (path: string) => {
@@ -389,7 +356,7 @@ const openFile = (path: string) => {
   project.active = path;
   const next = activeFile();
   setDoc(next ? next.source : "");
-  renderFileList();
+  publishFiles();
   saveProject();
   // The paused trace carries per-file hashes: re-gate the live overlay
   // against the newly opened buffer (the doc swap just cleared it).
@@ -438,7 +405,7 @@ const deleteFile = (path: string) => {
     // linter never reruns, leaving diagnostics/inlays/lenses stale forever.
     refreshIntel(view);
   }
-  renderFileList();
+  publishFiles();
   schedulePush();
 };
 
@@ -469,16 +436,37 @@ const restart = () => {
   setStatus("busy", "◌ loading…");
   els.player.src = "player.html?project=inline";
   bridge.setProject(project.files);
-  runtimeTarget!.restart();
+  runtimeTarget.restart();
 };
 
 // ---------------------------------------------------------------- boot
 
-els.newFile.addEventListener("click", newFile);
-els.download.addEventListener("click", download);
-els.restart.addEventListener("click", restart);
+// Mount the islands into the static shell's containers. Each keeps its element
+// ids and class names, so styles.css and every e2e selector match the rendered
+// DOM exactly as they matched the hand-built one.
+createRoot(document.querySelector(".sandbox-controls")!).render(
+  <IdeControls
+    pill={pill}
+    runtimeTarget={runtimeTarget}
+    onDownload={download}
+    onRestart={restart}
+  />
+);
+createRoot(document.querySelector(".file-pane")!).render(
+  <FilePane
+    store={fileList}
+    entry={ENTRY}
+    onOpen={openFile}
+    onDelete={deleteFile}
+    onNew={newFile}
+  />
+);
+createRoot(document.querySelector(".editor-tab")!).render(<ActiveFileTab store={fileList} />);
+const statusBarHost = document.getElementById("statusbar")!;
+statusBarHost.className = "statusbar";
+createRoot(statusBarHost).render(<StatusBar store={statusBar} />);
 
-renderFileList();
+publishFiles();
 setDoc(activeFile()!.source);
 setStatus("busy", "◌ loading…");
 // Store the file set BEFORE the iframe loads, so the bridge can flush it the
@@ -502,12 +490,14 @@ els.player.src = "player.html?project=inline";
     schedulePush();
   },
   files: () => project.files.map((f) => ({ ...f })),
-  status: () => ({
-    state: els.status.dataset.state,
-    text: els.status.textContent,
-    message: els.status.title,
-  }),
-  runtimeTarget: () => runtimeTarget!.state(),
+  // Read the pill's store, which the rendered pill mirrors exactly: the seam
+  // stays synchronous with the page's own state rather than racing a React
+  // commit. The fields are the pre-migration ones (`title` was the detail).
+  status: () => {
+    const { state, text, detail } = pill.getSnapshot();
+    return { state, text, message: detail };
+  },
+  runtimeTarget: () => runtimeTarget.state(),
   // Replace the active buffer, place the cursor, and open the completion popup
   // (explicit trigger) — the sandbox's seam, minus any push (programmaticEdit
   // suppresses the mirror-and-push listener).

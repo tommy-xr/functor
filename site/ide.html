@@ -22,6 +22,12 @@
   </head>
   <body class="ide-page">
     <!--@header suffix="IDE"-->
+      <!--
+        The pre-JS paint. src/ide.tsx renders this row as a React island, which
+        replaces these children on mount — keep the skeleton in step with the
+        initial stores there (notably the pill's state and label) so the swap is
+        invisible.
+      -->
       <div class="sandbox-controls">
         <button id="download" type="button" title="Download the project as a .zip">
           ↓ project.zip
@@ -35,6 +41,12 @@
     <!--/@header-->
 
     <main class="ide-split">
+      <!--
+        Two more pre-JS skeletons, replaced on mount by the FilePane and
+        ActiveFileTab islands (src/components/FilePane.tsx). The rows themselves
+        can't be pre-painted — they come from the stored project — so the list
+        starts empty, exactly as it did before the migration.
+      -->
       <aside class="file-pane">
         <div class="file-pane-head">
           <span class="file-pane-title">Files</span>
@@ -44,12 +56,13 @@
       </aside>
       <section class="editor-pane">
         <div class="editor-tab"><span id="active-file">game.fun</span></div>
+        <!-- NOT an island: CodeMirror owns this subtree. -->
         <div id="editor"></div>
       </section>
       <section class="preview-pane">
         <!-- The boot loader. Static markup on purpose: it paints on the first
              frame, long before the editor bundle and the wasm runtime arrive.
-             src/ide.ts dismisses it (`.is-done`); the rest is styles.css. -->
+             src/ide.tsx dismisses it (`.is-done`); the rest is styles.css. -->
         <div class="fn-boot" data-fn-boot>
           <svg class="fn-boot-defs" aria-hidden="true">
             <symbol id="fn-boot-mark" viewBox="366 163 385 690">

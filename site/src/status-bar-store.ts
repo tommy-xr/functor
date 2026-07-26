@@ -1,17 +1,44 @@
-// The status bar's LOGIC, split out of the DOM component so a React view can
-// render it: the problems list, the rAF-coalesced output log (capped, newest
-// wins), and the paused inspector's executions picker.
+// The status bar's LOGIC and types, feeding the React view in
+// `components/StatusBar.tsx`: the problems list, the rAF-coalesced output log
+// (capped, newest wins), and the paused inspector's executions picker.
 //
-// The store deliberately implements the same `StatusBar` handle the imperative
-// `status-bar.ts` returns, so its producers — the page's own `appendOutput`
-// calls and `wireLiveTrace`'s `setExecutions` — are unchanged by the migration.
-// The types still live in `status-bar.ts` while the IDE renders that version;
-// they move here when the IDE converts and that module goes away.
+// The store implements the `StatusBar` handle its producers already spoke to —
+// the pages' own `appendOutput` calls and `wireLiveTrace`'s `setExecutions` —
+// so those call sites never had to change. (The types lived in the imperative
+// `status-bar.ts` until the IDE converted too; that module is gone.)
 
 import type { ConsoleLevel } from "./protocol.js";
-import type { Execution, Problem, StatusBar } from "./status-bar.js";
 
 const MAX_OUTPUT_LINES = 500;
+
+/**
+ * One Problems row. `severity` is the producer's own (every call site passes a
+ * CodeMirror lint `Diagnostic.severity`), and the bar only ever distinguishes
+ * "error" from everything else — so it stays a plain string rather than
+ * coupling this editor-agnostic surface to CodeMirror's union.
+ */
+export interface Problem {
+  severity?: string;
+  message: string;
+  /** Pre-formatted location, e.g. `game.fun 12:5`. */
+  loc: string;
+  /** Jumping is the host's job (it closes over its editor). */
+  jump?: () => void;
+}
+
+/** One row of the paused inspector's entry-point picker. */
+export interface Execution {
+  label: string;
+  selected: boolean;
+  onPick?: () => void;
+}
+
+/** The handle the producing pages hold. */
+export interface StatusBar {
+  setProblems: (items: Problem[]) => void;
+  appendOutput: (level: ConsoleLevel, text: string, frame?: number | null) => void;
+  setExecutions: (items: Execution[]) => void;
+}
 
 /** One rendered output row. `time` is stamped at append, not at flush. */
 export interface OutputLine {

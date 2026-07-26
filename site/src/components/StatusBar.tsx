@@ -2,10 +2,11 @@
 // panels — Problems (live type diagnostics), Output (runtime console traces +
 // reload results), and Executions (the paused inspector's entry-point picker).
 //
-// The rows come from `status-bar-store.ts`; this is only the view. It renders
-// the same markup the imperative `status-bar.ts` builds (still the IDE's), so
-// styles.css and the e2e selectors are untouched — including keeping all three
-// lists MOUNTED and toggled with `display`, exactly as before.
+// The rows come from `status-bar-store.ts`; this is only the view, rendered by
+// both editor pages. It emits the same markup the imperative `status-bar.ts`
+// built (deleted once the IDE converted), so styles.css and the e2e selectors
+// are untouched — including keeping all three lists MOUNTED and toggled with
+// `display`, exactly as before.
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { outputPreamble } from "../status-bar-store.js";

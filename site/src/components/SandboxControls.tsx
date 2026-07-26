@@ -4,6 +4,8 @@
 
 import { useSyncExternalStore } from "react";
 import { RuntimeTargetPanel } from "./RuntimeTargetPanel.js";
+import { StatusPill } from "./StatusPill.js";
+import type { PillState } from "./StatusPill.js";
 import type { RuntimeTargetCore } from "../runtime-target-core.js";
 import type { Store } from "../store.js";
 
@@ -16,13 +18,6 @@ export interface PickerOption {
 export interface PickerState {
   options: PickerOption[];
   selected: string;
-}
-
-/** The preview pill: its `data-state`, its label, and its tooltip detail. */
-export interface PillState {
-  state: "busy" | "live" | "error";
-  text: string;
-  detail: string;
 }
 
 export interface SandboxControlsProps {
@@ -41,7 +36,6 @@ export const SandboxControls = ({
   onReset,
 }: SandboxControlsProps) => {
   const { options, selected } = useSyncExternalStore(picker.subscribe, picker.getSnapshot);
-  const status = useSyncExternalStore(pill.subscribe, pill.getSnapshot);
 
   return (
     <>
@@ -65,9 +59,7 @@ export const SandboxControls = ({
       <div id="runtime-target" className="runtime-target-host">
         <RuntimeTargetPanel core={runtimeTarget} />
       </div>
-      <span id="status" className="status-pill" data-state={status.state} title={status.detail}>
-        {status.text}
-      </span>
+      <StatusPill store={pill} />
     </>
   );
 };

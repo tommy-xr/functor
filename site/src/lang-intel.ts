@@ -33,7 +33,7 @@ import type { EditorState, Extension, Range, Text } from "@codemirror/state";
 import type { CompletionContext } from "@codemirror/autocomplete";
 import { functorLangLanguage } from "./functor-lang.js";
 import type { ProjectFile } from "./protocol.js";
-import type { StatusBar } from "./status-bar.js";
+import type { StatusBar } from "./status-bar-store.js";
 
 // --- The analysis wasm's boundary ----------------------------------------------
 // The glue module is fetched at runtime (not bundled), so nothing here is
