@@ -24,14 +24,49 @@ import {
 import { PlayerBridge } from "./player-bridge.js";
 import { createStatusBar } from "./status-bar.js";
 import { createRuntimeTarget } from "./runtime-target.js";
+import { asPlayerMessage } from "./protocol.js";
 import { EXAMPLES } from "./examples.js";
 
-const frame = document.getElementById("player");
-const statusPill = document.getElementById("status");
-const picker = document.getElementById("example-picker");
-const resetButton = document.getElementById("reset");
+/** The preview pill's three states — also its `data-state` attribute value. */
+type PillState = "busy" | "live" | "error";
 
-const setStatus = (state, text, detail = "") => {
+/** The sandbox's e2e seam (driven by e2e/site-sandbox.mjs). */
+interface SandboxSeam {
+  setSource(source: string): void;
+  source: () => string;
+  status: () => {
+    state: string | undefined;
+    text: string | null;
+    message: string;
+  };
+  runtimeTarget: () => RuntimeTargetState;
+  getSource: () => string;
+  triggerComplete(source: string, cursor: number): void;
+  acceptCompletion: () => boolean;
+}
+
+// The language-analysis seam, shared in NAME (not shape) with the IDE's — each
+// page declares its own, so the two never have to agree. The payload types are
+// lang-intel's internals; naming them through `ReturnType` keeps this seam
+// exact without widening that module's public surface.
+interface LangSeam {
+  ready: Promise<boolean>;
+  analyze: (source: string) => ReturnType<typeof analyzeCached>;
+  complete: (source: string, offset: number) => ReturnType<typeof completeAt>;
+  liveHints: () => ReturnType<typeof currentLiveHints>;
+  coverage: () => ReturnType<typeof currentCoverage>;
+  expects: () => ReturnType<typeof currentExpects>;
+}
+
+type RuntimeTarget = ReturnType<typeof createRuntimeTarget>;
+type RuntimeTargetState = ReturnType<RuntimeTarget["state"]>;
+
+const frame = document.getElementById("player") as HTMLIFrameElement;
+const statusPill = document.getElementById("status")!;
+const picker = document.getElementById("example-picker") as HTMLSelectElement;
+const resetButton = document.getElementById("reset")!;
+
+const setStatus = (state: PillState, text: string, detail = "") => {
   statusPill.dataset.state = state;
   statusPill.textContent = text;
   // The detail (the reload note, or a parse error) lives in the pill's tooltip
@@ -40,14 +75,14 @@ const setStatus = (state, text, detail = "") => {
   statusPill.title = detail;
 };
 
-const statusBar = createStatusBar({ host: document.getElementById("statusbar") });
-let runtimeTarget = null;
+const statusBar = createStatusBar({ host: document.getElementById("statusbar")! });
+let runtimeTarget: RuntimeTarget | null = null;
 // The sandbox edits only the entry buffer, but some examples also load sibling
 // modules (for example Mario's generated assets.fun manifest). Keep those
 // fetched sources so an external runtime receives the same complete project as
 // the in-page wasm preview.
-let siblingSources = [];
-let assetSources = [];
+let siblingSources: [string, string][] = [];
+let assetSources: [string, Uint8Array][] = [];
 
 const bridge = new PlayerBridge(frame, {
   onReloading: () => setStatus("busy", "◌ reloading…"),
@@ -70,7 +105,7 @@ const bridge = new PlayerBridge(frame, {
 // Runtime console traces (Functor Lang `Debug.log` and friends), forwarded by the
 // player page — see the console hook in player.html. Guarded to OUR iframe.
 window.addEventListener("message", (event) => {
-  const data = event.data;
+  const data = asPlayerMessage(event.data);
   if (!data || data.type !== "functor-lang-console") return;
   if (event.source !== frame.contentWindow) return;
   statusBar.appendOutput(data.level, data.message, data.frame ?? null);
@@ -83,7 +118,7 @@ window.addEventListener("message", (event) => {
 let programmaticEdit = false;
 
 const view = new EditorView({
-  parent: document.getElementById("editor"),
+  parent: document.getElementById("editor")!,
   extensions: [
     basicSetup,
     keymap.of([indentWithTab]),
@@ -143,7 +178,7 @@ onDiagnostics((diags) => {
   );
 });
 
-window.__lang = {
+(window as Window & { __lang?: LangSeam }).__lang = {
   ready: langReady,
   analyze: (source) => analyzeCached(source),
   complete: (source, offset) => completeAt(source, offset),
@@ -152,7 +187,11 @@ window.__lang = {
   expects: () => currentExpects(view),
 };
 
-const setDoc = (source, siblings = [], assets = []) => {
+const setDoc = (
+  source: string,
+  siblings: [string, string][] = [],
+  assets: [string, Uint8Array][] = []
+) => {
   bridge.reset();
   // Wholesale document replacement (example switch, inline load, reset): drop
   // the wasm completion cache so the previous program's candidates can't leak.
@@ -168,20 +207,20 @@ const setDoc = (source, siblings = [], assets = []) => {
 // An inline program from the URL fragment (the docs' "try it" buttons):
 // #src=<base64url> becomes the editor buffer and the player's ?src= data:
 // URL, so it starts with a fresh init — no served file involved.
-const fromBase64Url = (b64u) =>
+const fromBase64Url = (b64u: string) =>
   new TextDecoder().decode(
     Uint8Array.from(atob(b64u.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))
   );
 
-let inlineB64 = null;
+let inlineB64: string | null = null;
 
 // A monotonically increasing load token: each picker change / reset / inline
 // load claims a new one, and a fetch that finishes after a newer load started
 // is ignored — a slow earlier response must not overwrite a newer selection.
 let loadToken = 0;
 
-const loadInline = (b64u) => {
-  let source;
+const loadInline = (b64u: string) => {
+  let source: string;
   try {
     source = fromBase64Url(b64u);
   } catch {
@@ -208,7 +247,7 @@ const loadInline = (b64u) => {
   return true;
 };
 
-const loadExample = async (id) => {
+const loadExample = async (id: string) => {
   const token = ++loadToken;
   const example = EXAMPLES.find((candidate) => candidate.id === id);
   const files = [
@@ -232,7 +271,7 @@ const loadExample = async (id) => {
     responses.slice(0, files.length).map((response) => response.text())
   );
   const assets = await Promise.all(
-    responses.slice(files.length).map(async (response, index) => [
+    responses.slice(files.length).map(async (response, index): Promise<[string, Uint8Array]> => [
       assetFiles[index].output,
       new Uint8Array(await response.arrayBuffer()),
     ])
@@ -240,8 +279,9 @@ const loadExample = async (id) => {
   if (token !== loadToken) return;
   const url = files[0];
   const source = sources[0];
-  const siblings = files.slice(1).map((path, index) => [
-    path.split("/").pop(),
+  const siblings = files.slice(1).map((path, index): [string, string] => [
+    // Every path here has at least one segment, so `pop` always yields one.
+    path.split("/").pop()!,
     sources[index + 1],
   ]);
   // A fresh iframe (fresh model: init runs) rather than a source push, so
@@ -262,10 +302,11 @@ for (const example of EXAMPLES) {
 
 picker.addEventListener("change", () => {
   if (picker.value === "__inline") {
-    loadInline(inlineB64);
+    // The `__inline` option only exists once loadInline has stored its source.
+    loadInline(inlineB64!);
     return;
   }
-  const url = new URL(window.location);
+  const url = new URL(window.location.href);
   url.searchParams.set("example", picker.value);
   url.hash = "";
   window.history.replaceState(null, "", url);
@@ -273,18 +314,18 @@ picker.addEventListener("change", () => {
 });
 
 resetButton.addEventListener("click", () =>
-  picker.value === "__inline" ? loadInline(inlineB64) : loadExample(picker.value)
+  picker.value === "__inline" ? loadInline(inlineB64!) : loadExample(picker.value)
 );
 
 const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
 const requested = new URLSearchParams(window.location.search).get("example");
-const initial = EXAMPLES.some((e) => e.id === requested) ? requested : EXAMPLES[0].id;
+const initial = EXAMPLES.some((e) => e.id === requested) ? requested! : EXAMPLES[0].id;
 picker.value = initial;
 if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initial);
 
 // Test seam for the headless e2e (e2e/site-sandbox.mjs): set the buffer and
 // observe results without synthesizing keyboard events.
-window.__sandbox = {
+(window as Window & { __sandbox?: SandboxSeam }).__sandbox = {
   setSource(source) {
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   },
@@ -294,7 +335,8 @@ window.__sandbox = {
     text: statusPill.textContent,
     message: statusPill.title,
   }),
-  runtimeTarget: () => runtimeTarget.state(),
+  // Assigned during boot, long before any e2e call can reach this seam.
+  runtimeTarget: () => runtimeTarget!.state(),
   getSource: () => view.state.doc.toString(),
   // Replace the buffer, place the cursor, and open the completion popup
   // (explicit trigger). Guarded so it does NOT push to the runtime — completion

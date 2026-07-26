@@ -20,7 +20,15 @@ import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 import { setupLangIntel, wireLiveTrace } from "./lang-intel.js";
 import { PlayerBridge } from "./player-bridge.js";
 
-const frame = document.getElementById("player");
+/** The demo / e2e seam this page exposes (site/demos/ drives it). */
+interface DemoEditorSeam {
+  ready: Promise<boolean>;
+  view: EditorView;
+  frame: HTMLIFrameElement;
+  source: () => string;
+}
+
+const frame = document.getElementById("player") as HTMLIFrameElement;
 const game = new URLSearchParams(location.search).get("game") || "examples/hero.fun";
 
 // wireLiveTrace drives an executions picker through a status bar; the demo has
@@ -41,7 +49,7 @@ const bridge = new PlayerBridge(frame, {
 let programmaticEdit = false;
 
 const view = new EditorView({
-  parent: document.getElementById("editor"),
+  parent: document.getElementById("editor")!,
   extensions: [
     basicSetup,
     keymap.of([indentWithTab]),
@@ -74,7 +82,7 @@ wireLiveTrace(view, noopStatusBar, frame, langReady);
 })();
 
 // Demo / e2e seam.
-window.__demoEditor = {
+(window as Window & { __demoEditor?: DemoEditorSeam }).__demoEditor = {
   ready: langReady,
   view,
   frame,

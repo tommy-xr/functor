@@ -262,12 +262,12 @@ await esbuild.build({
   // `src/docs.js` would silently win. Name the file that actually exists. The
   // OUTPUT basenames are unchanged either way (esbuild always emits `.js`).
   entryPoints: [
-    `${site}src/sandbox.js`,
-    `${site}src/ide.js`,
+    `${site}src/sandbox.ts`,
+    `${site}src/ide.ts`,
     `${site}src/docs.ts`,
     `${site}src/api-docs.ts`,
-    `${site}src/hero.js`,
-    `${site}src/demo-editor.js`,
+    `${site}src/hero.ts`,
+    `${site}src/demo-editor.ts`,
     `${site}src/features.ts`,
   ],
   bundle: true,
