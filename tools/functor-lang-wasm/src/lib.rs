@@ -504,7 +504,7 @@ mod tests {
     // one def is reported).
     #[test]
     fn valid_program_with_prelude_is_clean() {
-        let src = "let draw = (model, tts: Float) =>\n  \
+        let src = "let draw = (model, tts: float) =>\n  \
             Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
         let out = parse(&analyze_json(src));
         assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0, "{out}");
@@ -733,7 +733,7 @@ mod tests {
     // The IDE's two-file starter shape: game.fun references a sibling module.
     // Single-file analyze errors on the unknown `Palette`; the project variant
     // resolves it — the reason the `_project` API exists.
-    const GAME: &str = "let draw = (model, tts: Float) =>\n  \
+    const GAME: &str = "let draw = (model, tts: float) =>\n  \
         Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), \
         Scene.sphere() |> Scene.emissive(Color.rgb(0.15, 1.0, Palette.glow)))\n";
     const PALETTE: &str = "let glow = 0.85\nlet sky = 0.18\n";
@@ -761,12 +761,13 @@ mod tests {
         }
 
         // The observable difference from the single-file pass: the sibling
-        // member RESOLVES. Single-file, `Palette` is tolerated but Unknown;
-        // with the project, `Palette.glow` types as float.
+        // member RESOLVES. Single-file, `Palette` is tolerated but `unknown`
+        // (the seam prints as it is written); with the project, `Palette.glow`
+        // types as float.
         let member = GAME.find("Palette.glow").unwrap() + "Palette.".len();
         let offset = utf16_len(&GAME[..member]);
         let single = parse(&hover_json(GAME, offset));
-        assert!(single["text"].as_str().unwrap().contains("Unknown"), "{single}");
+        assert!(single["text"].as_str().unwrap().contains("unknown"), "{single}");
         let project = parse(&hover_project_json(&files, "game.fun", offset));
         assert!(project["text"].as_str().unwrap().contains("float"), "{project}");
     }

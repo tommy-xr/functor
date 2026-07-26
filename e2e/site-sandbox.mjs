@@ -37,8 +37,8 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const GREEN = `let init = { t: 0.0 }
-let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
-let draw = (model, tts: Float) =>
+let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)) |> Scene.scale(2.0))
@@ -49,8 +49,8 @@ const BROKEN = "let init = {\n";
 // read in both tick and draw): only a fresh `init` runs it cleanly, so this
 // catches the sandbox hot-swapping an inline program onto a foreign model.
 const INLINE_SPIN = `let init = { spin: 0.0 }
-let tick = (model, dt: Float, tts: Float) => { model with spin: model.spin + dt }
-let draw = (model, tts: Float) =>
+let tick = (model, dt: float, tts: float) => { model with spin: model.spin + dt }
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8)))
@@ -61,8 +61,8 @@ let draw = (model, tts: Float) =>
 // and show the unavailable prefix rather than collapsing or disappearing.
 const CLOSURE_HISTORY = `let offset = (k) => (x) => x + k
 let init = { t: 0.0, behavior: offset(1.0) }
-let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
-let draw = (model, tts: Float) =>
+let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.radians(model.t)) |> Scene.emissive(Color.rgb(0.2, 0.8, 1.0)))
@@ -76,8 +76,8 @@ let draw = (model, tts: Float) =>
 // a hot-swap onto the record-model default would throw at draw).
 const INTEL_SRC = `let speed = 2.0
 let init = 0.0
-let tick = (model, dt: Float, tts: Float) => model + dt
-let draw = (model, tts: Float) =>
+let tick = (model, dt: float, tts: float) => model + dt
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2))
@@ -1047,7 +1047,7 @@ for (const example of examples) {
     // A clean program using prelude names.
     const clean = JSON.parse(
       mod.functor_lang_analyze(
-        "let draw = (model, tts: Float) =>\n" +
+        "let draw = (model, tts: float) =>\n" +
           "  Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n"
       )
     );
@@ -1080,7 +1080,7 @@ for (const example of examples) {
 // bad def is removed — all while the push loop keeps the status pill live.
 {
   const CLEAN = GREEN;
-  const TYPE_ERROR = `${GREEN}let oops = (x: Float) => x + "type error"\n`;
+  const TYPE_ERROR = `${GREEN}let oops = (x: float) => x + "type error"\n`;
 
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(`${BASE}/sandbox.html`);
@@ -1256,7 +1256,7 @@ for (const example of examples) {
   };
 
   // A type error fills the Problems tab and panel.
-  const BAD = `${GREEN}let oops = (x: Float) => x + "status bar"\n`;
+  const BAD = `${GREEN}let oops = (x: float) => x + "status bar"\n`;
   await page.evaluate((s) => window.__sandbox.setSource(s), BAD);
   const flagged = await waitFor(() => tabText(problemsTab), (t) => t.includes("1 problem"));
   check("problems tab counts the type error", flagged.includes("1 problem"), flagged);
@@ -1418,14 +1418,14 @@ for (const example of examples) {
   // arm after; `never` requires hp < 0 — unreachable (statically runnable →
   // dark). Unique arm texts so line lookup can't collide with init.
   const PARITY = `let init = { n: 0.0, hp: 1.0 }
-let tick = (model, dt: Float, tts: Float) =>
+let tick = (model, dt: float, tts: float) =>
   match model.hp < 0.0 with
   | true => { n: model.n, hp: 0.0 }
   | false =>
     match model.n < 60.0 with
     | true => { n: model.n + 1.0, hp: 1.0 }
     | false => { n: model.n + 1.0, hp: 2.0 }
-let draw = (model, tts: Float) =>
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)))
