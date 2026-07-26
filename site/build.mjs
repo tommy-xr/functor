@@ -287,8 +287,8 @@ await esbuild.build({
 });
 
 // The hero is built SEPARATELY, with code splitting on, because it is the only
-// entry whose weight is deferred: src/hero.ts is a ~0.5kb eager loader that
-// dynamic-imports src/hero-app.tsx, and esbuild only emits that as its own
+// entry whose weight is deferred: src/hero.ts is a ~170-byte eager loader that
+// dynamic-imports src/hero-app.ts, and esbuild only emits that as its own
 // output file when `splitting` is enabled (otherwise it inlines the imported
 // module back into the entry and the landing page pays for it up front again).
 //

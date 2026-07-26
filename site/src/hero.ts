@@ -1,4 +1,4 @@
-// The landing page's ONLY eager script: a ~200-byte loader whose whole job is
+// The landing page's ONLY eager script: a ~170-byte loader whose whole job is
 // to pull in the hero island. Everything heavy — the CodeMirror mini-editor and
 // the player bridge — lives in ./hero-app.ts and arrives through this dynamic
 // import, so the landing page's first paint depends on the static shell alone.
