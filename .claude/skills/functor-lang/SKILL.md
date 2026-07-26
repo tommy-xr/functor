@@ -132,8 +132,9 @@ let main = () => report([12.0, 3.5, 40.0])    // zero-param main is run's entry 
 Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
 loosest), unary `-`, and the **short-circuiting booleans** `&&` / `||` plus
 prefix `not`. That list is EXHAUSTIVE — there is **no `>=`, `<=`, `!=`, `<>`,
-`%`, or `^`**. Writing `x >= 0.0` is a parse error (`expected an expression,
-found =`); spell it `not (x < 0.0)`, and inequality as `not (a == b)`.
+`%`, or `^`**. Writing `x >= 0.0` is a parse error (`` expected an
+expression, found `=` ``); spell it `not (x < 0.0)`, and inequality as
+`not (a == b)`.
 Modulo is `Math.mod(a, b)` and exponentiation `Math.pow(base, exp)`.
 Precedence (tightest→loosest): comparisons > `not` > `&&` > `||`
 > pipelines. So `not a == b` is `not (a == b)`, `a || b && c` is
@@ -172,8 +173,8 @@ still counts. File stems must be identifiers (`pure_pipeline.fun`, not
 is **skipped with a warning** (`[functor-lang] ignoring pure-pipeline.fun —
 its file stem is not a valid module identifier (editor temp file?); rename
 it to load it as a module`) and the rest of the project loads normally. So
-a hyphenated file silently contributes nothing; rename it to make its
-definitions visible.
+a hyphenated file contributes nothing; rename it to make its definitions
+visible.
 
 A project may instead declare named **`entries`** (`{"entries": {"client":
 "client.fun", "server": "server.fun"}}`) — multiple program roots over the
@@ -390,7 +391,8 @@ expect (                                      // any expression works — a
   bodies (late-bound at call time — this is the hot-reload rebind seam), but
   a *top-level initializer* may only demand globals defined above it.
 - **Equality `==` is structural**; comparing functions is rejected at
-  CHECK time (`functions cannot be compared with ==`), not just at run time.
+  CHECK time (`` functions cannot be compared with `==` ``), not just at
+  run time.
 - **Division is IEEE** (`1.0/0.0` = `inf`); the engine boundary rejects
   non-finite numbers.
 - **Greedy match arms**: arm bodies are full expressions, so a nested
@@ -423,8 +425,10 @@ expect (                                      // any expression works — a
   `<partial 1 more>` and `Rect(1.0)(2.0)` completes it to `Rect(1, 2)`. Only
   OVER-application errors (`cannot call a variant`). So a dropped ctor
   argument surfaces as a stray function value flowing through your model,
-  not as an arity error at the call — the checker is what catches it
-  (field types are the checker's job).
+  not as an arity error at the call. `check` catches it where the types are
+  pinned down, but in unannotated code it can slip through to run time —
+  so a variant that mysteriously renders/compares wrong is worth grepping
+  for a missing argument.
 - **Duplicates are errors**: top-level names (per namespace — `type Foo` and
   `let Foo` may coexist, but constructors share the value namespace with
   `let`s), record fields (literal and update), lambda params, pattern
@@ -432,11 +436,13 @@ expect (                                      // any expression works — a
 - Recursion depth is capped (128 eval levels); deep iteration belongs in the
   iterative `List.*` builtins (`List.fold`/`map`/`filter`/`any`/`all`/`length`/…),
   which loop in the interpreter and consume no evaluation depth. A hand-rolled
-  recursive walk trips the cap in the **low tens** of elements — each user-level
-  call burns several eval levels, so the usable depth is shape-dependent
-  (measured: ~41 for a bare `countdown(n - 1.0)`, and a `match`-based list walk
-  fails by n = 60). The depth error names the cap value (128) and points at
-  `List.fold`.
+  recursive walk trips the cap somewhere between **n≈40 and n≈60** — each
+  user-level call burns several eval levels, and the exact limit depends on
+  shape. Bisected: a bare tail call (`countdown(n - 1.0)`) reaches 62, while
+  wrapping the call in an operator (`1.0 + countdown(n - 1.0)`, or a
+  `match`-based `h + sumList(t)` list walk) costs an extra level per call and
+  fails at 42. Budget for the conservative number. The depth error names the
+  cap value (128) and points at `List.fold`.
 
 ## Standard library modules
 
@@ -585,16 +591,21 @@ Scene.model(Assets.shark)                                  // glTF by branded As
 let world =
   Terrain.heightmap(Assets.heightmap, 4000.0, 4000.0, -40.0, 420.0)
   |> Terrain.maxPixelError(2.0)                            // finite XZ heightfield: Asset.Texture,
-  |> Terrain.color(baseColor)                              //   width, depth, min/max Y. Terrain.color
-                                                           //   is the plain single-color material;
-                                                           //   Terrain.layered the height/slope blend
-  |> Terrain.layered(low, high, rock, snow, 340.0)         //   Black maps
+  |> Terrain.layered(low, high, rock, snow, 340.0)         //   width, depth, min/max Y. Black maps
   |> Terrain.grass(13.0, 520.0, 5.5, grassColor)           //   to min, white to max. Modifiers are
 Scene.terrain(world)                                       //   descriptor-last; rendering uses a
                                                            //   camera-relative quadtree, a shared
                                                            //   GPU grid, 16-bit height sampling,
                                                            //   skirts, and bounded instanced grass
                                                            //   (not thousands of Scene nodes)
+terrain |> Terrain.color(color)                            // the plain single-color terrain
+                                                           //   material — an ALTERNATIVE to
+                                                           //   Terrain.layered, not a stage
+                                                           //   before it. The LAST of the two
+                                                           //   in the pipe wins (Terrain.color
+                                                           //   clears any layers), so chaining
+                                                           //   both just makes the earlier one
+                                                           //   dead. Pick one
 Asset.model("shark.glb") / Asset.texture("wood.png")       // typed asset locators, branded
 Asset.sound("boom.ogg")                                    //   per KIND (types Asset.Model /
                                                            //   Asset.Texture / Asset.Sound)
@@ -654,10 +665,11 @@ Texture.file("wood.png")                                   // a Texture.t from a
                                                            //   not asset coercion, so it
                                                            //   keeps its string)
 scene |> Scene.litTexture(tex)                             // textured lit / unlit-glow
-scene |> Scene.emissiveTexture(tex)                        //   materials. `tex` is EITHER a
+scene |> Scene.emissiveTexture(tex)                        //   materials. `tex` may be a
                                                            //   Texture.t VALUE or an
-                                                           //   Asset.Texture (the two brands
-                                                           //   the signature accepts);
+                                                           //   Asset.Texture — the signature
+                                                           //   is generic ('texture), so the
+                                                           //   kind check happens in the host;
                                                            //   scene-last, so they pipe
 scene |> Scene.litNormalMapped(color, normalTex)           // + tangent-space
                                                            //   normal map (a
@@ -1058,13 +1070,17 @@ tagger: nothing folds back through `update`; observe outcomes via the
 physics reads. Commands queue at perform time and apply at **the next
 physics step after they queue**, on its first substep and **after
 reconcile** — so declaring a body and commanding it in the same frame
-works. Because the step comes after `tick`, a command issued from a
-PRE-step source (`tick` / `input` / `update` / subscriptions) lands in
-**this frame's** step and is already visible to this frame's `draw`
-(verified: a `Physics.teleport` returned from `tick` on frame 2 reads back
-at the teleported position in frame 3's own `draw`). Only POST-step
-sources — a `Physics.raycast` tagger, a `Physics.events` handler — queue
-for the next frame's step. A command naming an unknown tag
+works. The rule is simply **the next physics step after the command
+queues**. Because the step comes after `tick`, a command from a pre-step
+source (`tick` / `input` / a subscription-driven `update`) normally reaches
+the immediately following step and is already visible to this frame's
+`draw` — verified with a `Physics.teleport` returned from `tick`, whose
+teleported position is read back by the very next `draw`. Commands from
+POST-step sources — a `Physics.raycast` tagger, a `Physics.events` handler
+— queue for the next frame's step instead. And on a frame where the
+fixed-step accumulator takes ZERO substeps (normal above 60fps) nothing
+steps at all, so EVERY command defers to the next simulated frame — the
+same exception the raycast paragraph below describes. A command naming an unknown tag
 (or a non-dynamic body) is a deduped `[functor-lang]` warning, not an error (the
 body may have despawned in flight). `teleport` moves the live body without
 touching its declaration (no snap-back next frame). Command effects need
@@ -1161,20 +1177,30 @@ exactly deterministic (that's the test seam). Taggers must be functions —
 Frame order: `sampledInput` → subscriptions→`update` → `tick` → `physics` (reconcile +
 fixed-step, 60Hz accumulator) → `draw`.
 
-`Physics.position` / `Physics.transformed` are **live-world reads, valid in
-ANY entry point** — there is no "draw-only" rule. What differs is only how
-fresh the pose is: every PRE-step caller (`tick`, the `physics` hook itself,
-`update`, `input`) sees the *previous* frame's stepped pose, and `draw` —
-running after the step — sees this frame's. Reading in `tick` is a normal,
-supported thing to do; it is simply one step stale.
+`Physics.position` / `Physics.transformed` are **live-world reads**, and they
+work in `tick`, `update`, `input`, and `draw`. What differs is only how fresh
+the pose is, and that follows WHEN the caller runs: `tick` / `input` and the
+subscription-driven `update`s run before the step, so they see the *previous*
+frame's stepped pose; `draw` runs after it and sees this frame's. `update` is
+not uniformly pre-step — when it is handling a `Physics.raycast` tagger or a
+`Physics.events` message it runs POST-step, and its reads see the current
+frame's world.
 
-The one real constraint is the **first frame**: nothing has stepped yet, so
-a pre-step read before the world's first reconcile+step is a spanned error
-— `no body tagged "ball" in the physics world (bodies exist after the
-frame's physics declaration has been reconciled and stepped)`. It is
-logged as a `tick error` and that tick is skipped; the game keeps running,
-and every later frame reads fine. Guard the first frame (a `started` flag,
-or a `Sub`/`update` gate) or do that particular read in `draw`.
+Two real constraints:
+
+- **Never read inside the `physics` hook.** It is not merely stale — it is a
+  DEADLOCK. The read raises before the hook returns its scene, so the world
+  is never declared, so the body never exists, so the read raises again:
+  every frame, forever — and it takes `draw`'s `Physics.transformed` down
+  with it. The hook is a pure DECLARATION of the world; derive positions
+  from the model instead.
+- **The first frame**, for the pre-step readers: nothing has stepped yet, so
+  the read is a spanned error — `` no body tagged "ball" in the physics world
+  (bodies exist after the frame's `physics` declaration has been reconciled
+  and stepped) ``. Unlike the hook case this is self-correcting: it is logged
+  as a `<hook> error` (`tick error`, `draw error`, …), that hook's call is
+  skipped, and every later frame reads fine. Guard it (a `started` flag, or a
+  `Sub`/`update` gate) or do that particular read in `draw`.
 
 The physics world survives hot reload (like the model); deleting the
 `physics` hook drops it. Gotcha: `--fixed-time T` pins the clock with
