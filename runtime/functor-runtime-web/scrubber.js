@@ -187,18 +187,26 @@ const HTML = `
     </div>
   </details>`;
 
-export function mountScrubber() {
-  if (!document.getElementById("functor-scrubber-style")) {
+// `hidden: true` mounts the SEAM without the chrome: the timeline model, the
+// runtime poll loop, and `window.__scrub` all run exactly as usual, but the
+// bar's DOM is never attached to the document — so nothing renders and
+// nothing enters the accessibility tree. This is for host pages that dock
+// their own transport UI over the seam (the sandbox's chrono bar) — an
+// honest replacement for hiding the bar with injected CSS.
+export function mountScrubber({ hidden = false } = {}) {
+  if (!hidden && !document.getElementById("functor-scrubber-style")) {
     const style = document.createElement("style");
     style.id = "functor-scrubber-style";
     style.textContent = STYLE;
     document.head.appendChild(style);
   }
 
+  // The element is always BUILT (every internal lookup and render targets
+  // it); when hidden it simply stays detached.
   const el = document.createElement("div");
   el.id = "scrubber";
   el.innerHTML = HTML;
-  document.body.appendChild(el);
+  if (!hidden) document.body.appendChild(el);
 
   const $ = (id) => el.querySelector(`#${id}`);
   const rail = $("scrub-rail");
