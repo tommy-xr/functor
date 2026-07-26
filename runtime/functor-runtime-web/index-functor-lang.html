@@ -8,7 +8,15 @@
     <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; }
-      /* Fill the window; the runtime sizes the drawable buffer (and GL
+      /* SPIKE (multiplayer dev session): the page is a three-row shell —
+         header | chrono bar | stage — per the frontend design. There is no
+         header on the dev-server page, so it is two rows here. The chrono bar
+         is a LAYOUT ROW, not an overlay: it reserves its own height instead of
+         eating the top of the canvas. Its row collapses to 0 when no dev
+         session is running, so single-game behaviour is unchanged. */
+      body { display: grid; grid-template-rows: auto 1fr; }
+      #stage { position: relative; min-height: 0; }
+      /* Fill the stage; the runtime sizes the drawable buffer (and GL
          viewport) to match this displayed size each frame, scaled for HiDPI. */
       #canvas { display: block; width: 100%; height: 100%; }
       /* Explicit mouse-look toggle. The cursor stays FREE by default so the
@@ -35,11 +43,161 @@
          isolated document on native. The interior pointer-events rules live
          inside the shadow root (page CSS can't cross the boundary). */
       #webview { position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+
+      /* ==================================================================
+         SPIKE: the chrono bar and the pane grid.
+         ------------------------------------------------------------------
+         Inline here on purpose. The real change (design §9 P0/P1) is
+         `mountScrubber({ dock })` inside the shared scrubber.js plus a
+         `--scrub-dock` token; doing that properly means inverting four
+         upward-opening surfaces and updating the site e2e's #scrubber
+         lookups. This spike is a SEPARATE bar so the shipped scrubber is
+         untouched and single-game views behave exactly as before.
+
+         Tokens are the public --scrub-* family (design §8), extended with
+         the player colours, so the spike reads as the same instrument.
+         ================================================================== */
+      #chrono {
+        --scrub-bg: rgba(30, 24, 51, 0.94);
+        --scrub-line: #2b2542;
+        --scrub-text: #e9e6f2;
+        --scrub-dim: #9b94b3;
+        --scrub-accent: #41d8e6;
+        --scrub-future: #4a4166;
+        --scrub-drop: #ff5470;
+        --scrub-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        /* Player colours: p1 = cyan (the server/authority), p2 = pink,
+           p3 = amber. One identity across pane border, comb, and label. */
+        --scrub-p1: #41d8e6;
+        --scrub-p2: #e858b8;
+        --scrub-p3: #f5a524;
+        --scrub-gauge-w: 144px;
+        display: none;
+        flex-direction: column; gap: 6px;
+        padding: 8px 12px 9px;
+        background: var(--scrub-bg);
+        color: var(--scrub-text);
+        font: 12px/1.3 var(--scrub-font);
+        /* Docked TOP, so the shadow and the hairline fall DOWNWARD — the
+           inverse of the bottom-docked scrubber (design §7.2). */
+        border-bottom: 1px solid var(--scrub-line);
+        box-shadow: 0 3px 16px rgba(0, 0, 0, 0.45);
+        user-select: none;
+      }
+      #chrono.on { display: flex; }
+      #chrono .row { display: flex; align-items: center; gap: 10px; }
+      #chrono button {
+        font: 12px/1 var(--scrub-font); padding: 5px 8px; cursor: pointer;
+        color: var(--scrub-text); background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--scrub-line); border-radius: 5px;
+      }
+      #chrono button:hover { background: rgba(255, 255, 255, 0.13); }
+      /* The SIM/LIVE chip: the scrub GUARANTEE differs between substrates
+         (exact whole-environment seek vs ±2-3 frames clock-synced), and
+         hiding that burns trust (design §1). */
+      #chrono .chip {
+        font-size: 10px; letter-spacing: 0.14em; padding: 4px 7px;
+        border-radius: 4px; border: 1px solid var(--scrub-accent);
+        color: var(--scrub-accent); background: rgba(65, 216, 230, 0.1);
+      }
+      #chrono .label { color: var(--scrub-dim); font-variant-numeric: tabular-nums; }
+      #chrono .label b { color: var(--scrub-text); font-weight: 600; }
+      /* The keyboard's owner is global state, so it lives on the global bar,
+         mirrored by loud chrome on the pane itself. HOLLOW when the stage does
+         not own DOM focus — "will my keys go to the game?" at a glance. */
+      #chrono #focus-chip {
+        font-size: 11px; padding: 4px 8px; border-radius: 4px;
+        border: 1px solid currentColor;
+      }
+      #chrono #focus-chip.owned { background: color-mix(in srgb, currentColor 18%, transparent); }
+      #chrono #rail { flex: 1; min-width: 120px; height: 34px; display: block; cursor: pointer; }
+      /* The link row is the second half of ONE instrument: dial impairment
+         here, then scrub the rail to watch what that impairment did. Appears
+         only when panes > 1. */
+      #chrono .linkrow {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 11px; color: var(--scrub-dim);
+      }
+      #chrono .linkrow .who { font-weight: 600; min-width: 34px; }
+      #chrono .presets { display: flex; gap: 2px; }
+      #chrono .presets button {
+        padding: 3px 7px; font-size: 10px; border-radius: 3px;
+        color: var(--scrub-dim);
+      }
+      /* `background: currentColor` cannot work here — the selected state also
+         sets `color`, so the fill would be the dark text colour on dark. The
+         player colour has to come in as its own variable. */
+      #chrono .presets button.sel {
+        color: #17131f; background: var(--pcolor); border-color: var(--pcolor);
+        font-weight: 700;
+      }
+      #chrono .readout { font-variant-numeric: tabular-nums; }
+
+      /* Pane chrome: a DOM overlay aligned to the GL pane columns. The bodies
+         are GL (one viewport of the shared context per instance), so this
+         layer is chrome only and must not eat pointer events except where it
+         is a control. */
+      #panes {
+        position: absolute; inset: 0; z-index: 6; display: none;
+        pointer-events: none;
+        font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      #panes.on { display: block; }
+      #panes .pane {
+        position: absolute; box-sizing: border-box;
+        border: 1px solid color-mix(in srgb, var(--pc) 35%, transparent);
+        pointer-events: auto; cursor: pointer;
+      }
+      /* Loud chrome on the keyboard's owner: 2px at FULL player-colour
+         saturation plus a soft outer glow. The test is that the difference is
+         legible in a screenshot at thumbnail size (design §4). */
+      #panes .pane.focused {
+        border: 2px solid var(--pc);
+        box-shadow: 0 0 0 1px color-mix(in srgb, var(--pc) 45%, transparent),
+                    0 0 18px color-mix(in srgb, var(--pc) 40%, transparent) inset;
+      }
+      #panes .head {
+        display: flex; align-items: center; gap: 7px;
+        padding: 4px 8px;
+        background: rgba(23, 19, 31, 0.86);
+        border-bottom: 1px solid color-mix(in srgb, var(--pc) 30%, transparent);
+        color: #9b94b3;
+      }
+      #panes .pane.focused .head { color: #e9e6f2; }
+      /* Accessibility: colour is never the only channel — the digit is the
+         fallback that actually works (design §8). */
+      #panes .digit {
+        display: inline-block; min-width: 14px; text-align: center;
+        border-radius: 3px; padding: 0 3px;
+        color: #17131f; background: var(--pc); font-weight: 700;
+      }
+      #panes .role { color: var(--pc); letter-spacing: 0.1em; font-size: 9px; text-transform: uppercase; }
+      #panes .head .sp { margin-left: auto; }
+      #panes .you { color: var(--pc); font-weight: 700; }
+      #panes .lagtag { color: var(--pc); font-variant-numeric: tabular-nums; }
+      /* The server's model: `functorLangSimState(id)`'s pretty-printed TEXT in
+         a <pre>. Explicitly not parsed and not a tree view — the wasm export
+         documents that callers must not parse it (design §5.2). */
+      #panes .model {
+        margin: 6px 8px; padding: 6px 7px; max-height: 45%; overflow: auto;
+        white-space: pre-wrap; word-break: break-all;
+        font-size: 9.5px; line-height: 1.35;
+        color: #cfc9de; background: rgba(23, 19, 31, 0.8);
+        border: 1px solid #2b2542; border-radius: 4px;
+        pointer-events: auto;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #panes .pane, #panes .pane.focused { transition: none; }
+      }
     </style>
   </head>
   <body>
-    <canvas id="canvas"></canvas>
-    <div id="webview"></div>
+    <div id="chrono"></div>
+    <div id="stage">
+      <canvas id="canvas"></canvas>
+      <div id="webview"></div>
+      <div id="panes"></div>
+    </div>
     <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
     <script type="module">
 
@@ -66,6 +224,8 @@
         functorLangSimTimeline,
         functorLangSimSeek,
         functorLangSimLen,
+        functorLangSimSetLink,
+        functorLangSimPanes,
         functorLangStopSim,
       } from "./pkg/functor_runtime_web.js";
       // The time-travel scrubber is the shared component, served next to pkg/
@@ -382,8 +542,633 @@
           timeline: () => functorLangSimTimeline(),
           seek: (frame) => functorLangSimSeek(frame),
           len: () => functorLangSimLen(),
+          // Impair a link so the panes visibly disagree: {latencyTicks,
+          // jitterTicks, loss, reorder}, all optional. Per UNORDERED PAIR and
+          // shared by both directions — asymmetric lag is not expressible.
+          setLink: (a, b, opts = {}) =>
+            functorLangSimSetLink(
+              a,
+              b,
+              opts.latencyTicks ?? 1,
+              opts.jitterTicks ?? 0,
+              opts.loss ?? 0,
+              opts.reorder ?? false,
+            ),
+          panes: () => functorLangSimPanes(),
           stop: () => functorLangStopSim(),
         };
+      };
+
+      // ====================================================================
+      // SPIKE — the chrono bar.
+      //
+      // A tangible pass at ~/notes/projects/functor/design-multiplayer-ide-
+      // frontend.md: a full-width instrument docked at the TOP of the
+      // workspace, above everything it governs. It owns the session clock, the
+      // impairment of the links, and the identity of who has the keyboard.
+      // Panes below are its subjects.
+      //
+      // The mental model it exists to protect: THE RAIL IS SERVER TIME. Never
+      // client time, never wall time. Clients are drawn ON the rail as combs,
+      // at whatever frame each of them last actually displayed.
+      //
+      // WHAT IS FAKED, and why (kept in one list so nobody mistakes this for
+      // the shipped thing):
+      //
+      //  1. No Park/Parked/Resume+epoch protocol. This drives `NetSim::seek`
+      //     (#472) straight from the page, which is the plan's in-page fast
+      //     path with the protocol boundary omitted (plan PRs 12-13).
+      //  2. Keyboard focus routes NOTHING. `functorLangSimInput` does not
+      //     exist yet (plan PR 5) — while a session runs, input is
+      //     drained-and-discarded. The focus chrome, the digit/[/]/Esc
+      //     bindings and the ⌨ chip are real UI over a real focus MODEL; the
+      //     keys just have nowhere to go. This is the #1 product risk and the
+      //     spike does not hide it.
+      //  3. No wire log. `Packet` is private and drops are silent
+      //     early-returns, so there is no route-event stream to show (plan
+      //     PR 7). Faking one would have been the least honest thing here, so
+      //     the server pane shows its real model text instead.
+      //  4. The server is an equal third, not a 300px strip; `f`-maximize and
+      //     the comb→pane hairline connectors are not implemented.
+      //  5. The rAF step driver is JS, not the Rust session clock (plan PR 4).
+      //
+      // WHAT IS REAL: the panes (one GL viewport per wasm sim instance), the
+      // seek (whole-environment, exact, non-destructive while parked), the
+      // impairment (real `LinkProfile` on the real `VirtualNet`), and — the
+      // one that matters most — THE LAG COMBS ARE MEASURED, not modelled. See
+      // `displayedServerFrame` below.
+      // ====================================================================
+      const installChronoBar = () => {
+        const chrono = document.getElementById("chrono");
+        const panesEl = document.getElementById("panes");
+        const canvas = document.getElementById("canvas");
+        const mouselook = document.getElementById("mouselook");
+
+        const FRAME_MS = 1000 / 60;
+        // The PINNED LAG GAUGE. A 132ms link at 60fps is ~8 frames; on a rail
+        // showing 8000 recorded frames across 900px that is 0.9 PIXELS — the
+        // single most valuable signal in the UI would be sub-pixel exactly when
+        // the user dialled latency up to look at it. So combs never live at
+        // rail scale: they live in a fixed-scale zone anchored to the playhead,
+        // ~4px per frame over ~36 frames (~600ms), with a seam and a `-36f`
+        // tick where the scales change.
+        const GAUGE_FRAMES = 36;
+        const GAUGE_PX = 4;
+        const GAUGE_W = GAUGE_FRAMES * GAUGE_PX;
+        const PLAYER = ["var(--scrub-p1)", "var(--scrub-p2)", "var(--scrub-p3)"];
+        const colorFor = (i) => PLAYER[i % PLAYER.length];
+
+        // Presets write REAL LinkProfile fields. ms at the JS edge, ticks in
+        // the sim: `LinkProfile` is the sim's native unit and virtual_net.rs's
+        // tests pin it. Latency is ONE-WAY (a packet waits this long before it
+        // can be delivered), so the round trip is twice this.
+        const PRESETS = [
+          ["LAN", { ms: 17, jitterMs: 0, loss: 0 }],
+          ["Wi-Fi", { ms: 45, jitterMs: 12, loss: 0.002 }],
+          ["mobile", { ms: 132, jitterMs: 40, loss: 0.012 }],
+          ["awful", { ms: 350, jitterMs: 120, loss: 0.06 }],
+        ];
+        const toTicks = (ms) => Math.max(1, Math.round(ms / FRAME_MS));
+
+        // ---- session state owned by the bar --------------------------------
+        // Starts PAUSED, deliberately. `e2e/wasm-sim.mjs` is a CI gate that
+        // starts a session and steps it by hand, asserting exact states; a bar
+        // that auto-stepped on mount would race it. Paused, the bar only READS
+        // the sim, so an existing harness is unaffected and a human presses play.
+        let paused = true;
+        let panes = [];
+        let paneSig = ""; // count + roles; the chrome is rebuilt when it changes
+        let focused = -1; // pane index owning the keyboard
+        let stageOwnsKeys = false;
+        let linkChoice = []; // preset index per pane
+        let dragAnchor = null; // {frame, x} captured at pointerdown
+        let lastModelText = "";
+        let modelDue = 0;
+
+        // ---- REAL lag measurement -----------------------------------------
+        // The combs need "the server frame each client last DISPLAYED". No ack
+        // protocol exists, so instead of modelling it from the configured
+        // latency (which would make the gauge a picture of its own input) we
+        // MEASURE it: the server's broadcast snapshot is the authoritative
+        // player positions for that frame, and a client draws exactly the last
+        // snapshot it received. So record a signature of the server's positions
+        // per frame, and find the newest server frame whose signature matches
+        // what the client is showing right now. That frame IS the comb.
+        //
+        // The signature reads the model's pretty-printed text, which the wasm
+        // export documents as unparseable free-form. That is a real cheat and
+        // it is why this is a spike: the honest version is plan PR 7's route
+        // events plus PR 12's `Parked { frame, residual_ms }` acks.
+        const serverSig = new Map();
+        const sigOf = (text) => {
+          // Positional fields only: `x:`/`z:` but never `vx:`/`vz:`/`pid:`.
+          const re = /(?<![A-Za-z0-9_])([xz])\s*:\s*(-?\d+(?:\.\d+)?)/g;
+          const out = [];
+          let m;
+          while ((m = re.exec(text)) !== null) {
+            out.push(m[1] + Math.round(parseFloat(m[2]) * 1000));
+          }
+          return out.join(",");
+        };
+        const recordServerSig = () => {
+          const t = window.__sim.timeline();
+          serverSig.set(t.frame, sigOf(window.__sim.state(0)));
+          // Prune to the SEEKABLE floor (`lo`), not a fixed recent window. A
+          // 400-frame window silently dropped the sigs for frames a seek can
+          // still reach, so the combs vanished the moment you scrubbed further
+          // back than that — losing exactly the thing the design calls the most
+          // valuable in the UI: the stagger PRESERVED while parked.
+          if (t.frame % 64 === 0) {
+            for (const f of serverSig.keys()) {
+              if (f < (t.lo ?? 0)) serverSig.delete(f);
+            }
+          }
+        };
+        // The newest recorded server frame whose positions match what instance
+        // `id` is showing. Searched newest-first from `top`.
+        //
+        // ALIASING is the real limitation of the signature trick: the arena
+        // wraps, so a client's exact positions recur every ~240 frames. Because
+        // the search is newest-first, a lag of L < one lap always finds the
+        // right frame first — but a lag beyond a lap would alias onto the
+        // previous one. The honest fix is protocol acks (plan PR 12).
+        const displayedServerFrame = (id, top) => {
+          let sig;
+          try {
+            sig = sigOf(window.__sim.state(id));
+          } catch {
+            return null;
+          }
+          const floor = Math.max(0, window.__sim.timeline().lo ?? 0);
+          for (let f = top; f >= floor; f--) {
+            if (serverSig.get(f) === sig) return f;
+          }
+          return null;
+        };
+        // How many frames instance `id` trails the SERVER by, measured against
+        // the server's own comb rather than against the playhead.
+        //
+        // This is deliberately self-calibrating. The ring is keyed by
+        // `timeline().frame` (steps taken) while the playhead when parked is
+        // `scrubPos`, and the two conventions are offset by one — so measuring
+        // each client against the playhead read one frame early live and one
+        // frame late parked, which the wrap-aliasing above then turned into a
+        // confident, completely wrong "239 frames behind". Anchoring both ends
+        // of the subtraction to the same lookup makes the offset cancel.
+        const behindServer = (id, playhead) => {
+          const top = playhead + 1;
+          const ref = displayedServerFrame(0, top);
+          const mine = displayedServerFrame(id, top);
+          if (ref == null || mine == null) return null;
+          return Math.max(0, ref - mine);
+        };
+
+        // A debug seam for the spike harness: the comb measurement is the one
+        // part of this bar with a real chance of quietly reading zero, so it is
+        // inspectable rather than only visible.
+        window.__chrono = { serverSig, sigOf, displayedServerFrame, behindServer };
+
+        // ---- the instrument's DOM (built once) -----------------------------
+        chrono.innerHTML = `
+          <div class="row">
+            <span class="chip" id="mode-chip" title="Exact whole-environment seek: every instance AND the packets in flight between them are restored.">SIM</span>
+            <button id="c-pause" title="Ctrl+Space">&#9208;</button>
+            <button id="c-step" title="., one frame">&#9197;</button>
+            <svg id="rail" role="slider" aria-label="server time"></svg>
+            <span class="label" id="c-frame">#f <b>0</b></span>
+            <span id="focus-chip">keys --</span>
+          </div>
+          <div class="linkrow" id="c-links"></div>`;
+        const rail = chrono.querySelector("#rail");
+        const frameLabel = chrono.querySelector("#c-frame b");
+        const focusChip = chrono.querySelector("#focus-chip");
+        const linksEl = chrono.querySelector("#c-links");
+        const pauseBtn = chrono.querySelector("#c-pause");
+
+        const setPaused = (v) => {
+          paused = v;
+          pauseBtn.innerHTML = paused ? "&#9205;" : "&#9208;";
+          pauseBtn.title = paused ? "resume (Ctrl+Space)" : "pause (Ctrl+Space)";
+        };
+        // Clicking the bar takes DOM focus away from the stage, so the pane
+        // digit shortcuts go inert and the chip goes hollow.
+        chrono.addEventListener("pointerdown", () => {
+          stageOwnsKeys = false;
+        });
+        pauseBtn.addEventListener("click", () => setPaused(!paused));
+        chrono.querySelector("#c-step").addEventListener("click", () => stepOne());
+
+        // ---- pane chrome ---------------------------------------------------
+        // Rebuilt only when the pane COUNT changes; per-frame updates are text.
+        let paneNodes = [];
+        const buildPanes = () => {
+          panesEl.replaceChildren();
+          paneNodes = panes.map((p, i) => {
+            const el = document.createElement("div");
+            el.className = "pane";
+            el.style.setProperty("--pc", colorFor(i));
+            el.innerHTML = `
+              <div class="head">
+                <span class="digit">${i + 1}</span>
+                <span class="role">${p.role}</span>
+                <span>${p.entry}</span>
+                <span class="sp"></span>
+                <span class="lagtag"></span>
+                <span class="you"></span>
+              </div>
+              <pre class="model"${p.role === "server" ? "" : ' hidden'}></pre>`;
+            // Click to focus. On the shipped thing the click ALSO passes
+            // through to the game (no click-to-activate tax); here there is no
+            // input path, so it only focuses.
+            el.addEventListener("pointerdown", () => {
+              focused = i;
+              stageOwnsKeys = true;
+            });
+            panesEl.append(el);
+            return el;
+          });
+        };
+
+        // Mirror the Rust pane split EXACTLY, in framebuffer px, and convert to
+        // CSS px only at the end. Dividing CSS px with the same `gap = 2` (as
+        // the parked branch's e2e did) is off by the device pixel ratio, so the
+        // chrome drifts off its pane on a HiDPI display.
+        const paneRects = (n) => {
+          const dpr = window.devicePixelRatio || 1;
+          const fbW = canvas.width;
+          const fbH = canvas.height;
+          const gap = 2;
+          const contentW = Math.max(n, fbW - gap * (n - 1));
+          const paneW = Math.max(1, Math.floor(contentW / n));
+          const out = [];
+          for (let i = 0; i < n; i++) {
+            const x = i * (paneW + gap);
+            const w = i === n - 1 ? Math.max(1, fbW - x) : paneW;
+            out.push({ left: x / dpr, width: w / dpr, height: fbH / dpr });
+          }
+          return out;
+        };
+
+        // ---- the link row --------------------------------------------------
+        const applyLink = (id) => {
+          const [, p] = PRESETS[linkChoice[id]];
+          window.__sim.setLink(0, id, {
+            latencyTicks: toTicks(p.ms),
+            jitterTicks: p.jitterMs ? toTicks(p.jitterMs) : 0,
+            loss: p.loss,
+          });
+        };
+        const buildLinks = () => {
+          linksEl.replaceChildren();
+          panes.forEach((p, i) => {
+            if (p.role === "server") return;
+            const wrap = document.createElement("div");
+            wrap.className = "linkrow";
+            wrap.style.color = colorFor(i);
+            wrap.style.setProperty("--pcolor", colorFor(i));
+            const group = document.createElement("span");
+            group.className = "presets";
+            PRESETS.forEach(([name], pi) => {
+              const b = document.createElement("button");
+              b.textContent = name;
+              b.dataset.pi = String(pi);
+              b.addEventListener("click", () => {
+                linkChoice[i] = pi;
+                applyLink(i);
+                syncLinkRow();
+              });
+              group.append(b);
+            });
+            const readout = document.createElement("span");
+            readout.className = "readout";
+            wrap.append(
+              Object.assign(document.createElement("span"), {
+                className: "who",
+                textContent: `client ${i + 1}`,
+              }),
+              group,
+              readout,
+            );
+            wrap.dataset.pane = String(i);
+            linksEl.append(wrap);
+          });
+          syncLinkRow();
+        };
+        const syncLinkRow = () => {
+          for (const wrap of linksEl.querySelectorAll("[data-pane]")) {
+            const i = Number(wrap.dataset.pane);
+            const sel = linkChoice[i];
+            for (const b of wrap.querySelectorAll("button")) {
+              b.classList.toggle("sel", Number(b.dataset.pi) === sel);
+            }
+            const [, p] = PRESETS[sel];
+            // Report what the sim will ACTUALLY do: ms quantise to whole ticks.
+            const ms = Math.round(toTicks(p.ms) * FRAME_MS);
+            const jm = p.jitterMs ? Math.round(toTicks(p.jitterMs) * FRAME_MS) : 0;
+            wrap.querySelector(".readout").textContent =
+              `${ms}ms ±${jm} jitter, ${(p.loss * 100).toFixed(1)}% loss`;
+          }
+        };
+
+        // ---- the rail ------------------------------------------------------
+        const svgNs = "http://www.w3.org/2000/svg";
+        const svg = (tag, attrs) => {
+          const n = document.createElementNS(svgNs, tag);
+          for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+          return n;
+        };
+        const railGeom = () => {
+          const w = Math.max(1, rail.clientWidth);
+          const t = window.__sim.timeline();
+          const lo = t.lo ?? 0;
+          // The playhead is the LIVE frame, not the last RECORDED one. `hi`
+          // trails `frame` by one, and the comb ring is keyed by `frame`, so
+          // taking `hi` here made every comb lookup miss by exactly one frame
+          // and read as "no data" — combs silently absent at every preset.
+          const playhead = t.scrubPos ?? t.frame;
+          const hi = Math.max(t.hi ?? 0, playhead);
+          const span = Math.max(1, hi - lo);
+          const xOf = (f) => ((Math.min(hi, Math.max(lo, f)) - lo) / span) * w;
+          const xp = xOf(playhead);
+          const gaugeRight = xp;
+          const gaugeLeft = Math.max(0, xp - GAUGE_W);
+          return { w, lo, hi, playhead, span, xOf, xp, gaugeLeft, gaugeRight, parked: t.scrubPos != null };
+        };
+        const drawRail = () => {
+          const g = railGeom();
+          const H = 34;
+          rail.setAttribute("viewBox", `0 0 ${g.w} ${H}`);
+          rail.setAttribute("width", g.w);
+          rail.setAttribute("height", H);
+          const kids = [];
+          const trackY = 11;
+          // The recorded range, then the past-of-playhead brightened. The rail
+          // IS server time; nothing on it is a client's clock.
+          kids.push(svg("rect", { x: 0, y: trackY, width: g.w, height: 4, rx: 2, fill: "var(--scrub-future)" }));
+          kids.push(svg("rect", { x: 0, y: trackY, width: Math.max(0, g.xp), height: 4, rx: 2, fill: "var(--scrub-accent)", "fill-opacity": 0.55 }));
+          // The pinned lag gauge: a fixed-scale magnifier on the present,
+          // anchored to the playhead. Live, it is the rightmost ~150px of the
+          // rail; parked, it follows the playhead back — which is the whole
+          // point, because a parked comb shows that client's RECORDED frame for
+          // that moment, and the stagger that survives is real lag preserved.
+          kids.push(svg("rect", {
+            x: g.gaugeLeft, y: 2, width: Math.max(0, g.gaugeRight - g.gaugeLeft), height: H - 4,
+            fill: "rgba(255,255,255,0.05)", stroke: "var(--scrub-line)", "stroke-width": 1,
+          }));
+          kids.push(svg("line", {
+            x1: g.gaugeLeft, y1: 2, x2: g.gaugeLeft, y2: H - 2,
+            stroke: "var(--scrub-dim)", "stroke-width": 1, "stroke-dasharray": "2 2",
+          }));
+          const seam = svg("text", {
+            x: g.gaugeLeft + 3, y: H - 4, fill: "var(--scrub-dim)", "font-size": 8,
+            "font-family": "var(--scrub-font)",
+          });
+          seam.textContent = `−${GAUGE_FRAMES}f`;
+          kids.push(seam);
+          // The playhead.
+          kids.push(svg("line", {
+            x1: g.xp, y1: 2, x2: g.xp, y2: H - 2,
+            stroke: "var(--scrub-text)", "stroke-width": 2,
+          }));
+          // Lag combs: one tick per client, in that client's player colour, at
+          // the server frame it last actually displayed. Only inside the gauge.
+          panes.forEach((p, i) => {
+            if (p.role === "server") return;
+            const behind = behindServer(i, g.playhead);
+            if (behind == null) return;
+            const over = behind > GAUGE_FRAMES;
+            const x = over ? g.gaugeLeft + 2 : g.gaugeRight - behind * GAUGE_PX;
+            kids.push(svg("line", {
+              class: "comb", "data-pane": i, "data-behind": behind,
+              x1: x, y1: 16, x2: x, y2: H - 6,
+              stroke: colorFor(i), "stroke-width": 3,
+            }));
+            const lbl = svg("text", {
+              x: x, y: 10, fill: colorFor(i), "font-size": 10, "font-weight": 700,
+              "text-anchor": "middle", "font-family": "var(--scrub-font)",
+            });
+            lbl.textContent = over ? `»${i + 1}` : String(i + 1);
+            kids.push(lbl);
+            // Stash for the pane header's own lag tag.
+            p.__behind = behind;
+          });
+          rail.replaceChildren(...kids);
+        };
+        // Seeking. Inside the gauge the scale is fine (one frame per ~4px), so
+        // dragging there is a genuine frame-stepping affordance the rail alone
+        // cannot offer. The gauge anchor is captured at pointerdown, otherwise
+        // moving the playhead would move the gauge under the cursor.
+        const frameAtX = (x, anchor) => {
+          if (x >= anchor.gaugeLeft) {
+            const behind = Math.round((anchor.gaugeRight - x) / GAUGE_PX);
+            return Math.max(anchor.lo, Math.min(anchor.hi, anchor.playhead - behind));
+          }
+          return Math.round(anchor.lo + (x / anchor.w) * anchor.span);
+        };
+        const seekTo = (f) => {
+          try {
+            window.__sim.seek(f);
+          } catch (e) {
+            console.error("[chrono] seek:", e);
+          }
+        };
+        rail.addEventListener("pointerdown", (e) => {
+          if (!panes.length) return;
+          rail.setPointerCapture(e.pointerId);
+          setPaused(true);
+          dragAnchor = railGeom();
+          seekTo(frameAtX(e.offsetX, dragAnchor));
+        });
+        rail.addEventListener("pointermove", (e) => {
+          if (!dragAnchor) return;
+          seekTo(frameAtX(e.offsetX, dragAnchor));
+        });
+        const endDrag = () => {
+          dragAnchor = null;
+        };
+        rail.addEventListener("pointerup", endDrag);
+        rail.addEventListener("pointercancel", endDrag);
+
+        // ---- keys ----------------------------------------------------------
+        // The conflict designed away: digits are also text, so pane shortcuts
+        // are live only when the STAGE owns DOM focus (i.e. after a click in a
+        // pane). And the bar's own pause must not steal Space from a focused
+        // pane, so the global scrub keys are Ctrl+Space / , / . — never bare.
+        const stepOne = () => {
+          setPaused(true);
+          try {
+            window.__sim.step(1);
+            recordServerSig();
+          } catch (e) {
+            console.error("[chrono] step:", e);
+          }
+        };
+        window.addEventListener(
+          "keydown",
+          (e) => {
+            if (!panes.length) return;
+            if (e.code === "Space" && (e.ctrlKey || e.metaKey)) {
+              setPaused(!paused);
+            } else if (e.key === "." || e.key === ",") {
+              stepOne();
+            } else if (stageOwnsKeys) {
+              if (e.key >= "1" && e.key <= "9") {
+                const i = Number(e.key) - 1;
+                if (i < panes.length) focused = i;
+              } else if (e.key === "[" || e.key === "]") {
+                const d = e.key === "[" ? -1 : 1;
+                focused = (focused + d + panes.length) % panes.length;
+              } else if (e.key === "0" || e.key === "Escape") {
+                // A deliberate hands-off state: nothing owns the keyboard.
+                stageOwnsKeys = false;
+              } else if (e.key === "f") {
+                console.warn("[chrono] SPIKE: f-maximize is not implemented");
+                return;
+              } else {
+                return;
+              }
+            } else {
+              return;
+            }
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          },
+          true,
+        );
+
+        // ---- the frame loop ------------------------------------------------
+        let acc = 0;
+        let last = performance.now();
+        const tick = () => {
+          requestAnimationFrame(tick);
+          const now = performance.now();
+          const dtMs = now - last;
+          last = now;
+
+          let live = [];
+          try {
+            live = functorLangSimLen() > 0 ? window.__sim.panes() : [];
+          } catch {
+            live = [];
+          }
+          // Rebuild on the ROLE SIGNATURE, not just the pane count. `role` is
+          // derived from the sim's LIVE routing tables, so on the first frame —
+          // before anyone has connected — the server has no listener yet and
+          // every instance reads "client". Keying the rebuild on the count alone
+          // froze that first answer into the chrome: every pane labelled CLIENT
+          // for the rest of the session, no server model pane, a preset row for
+          // the server, and a self-link `setLink(0, 0)`.
+          const sig = live.map((p) => p.role).join(",");
+          if (sig !== paneSig) {
+            const fresh = live.length !== panes.length;
+            paneSig = sig;
+            panes = live;
+            if (fresh) {
+              focused = panes.length ? panes.findIndex((p) => p.role !== "server") : -1;
+              if (focused < 0) focused = panes.length ? 0 : -1;
+              linkChoice = panes.map(() => 0);
+              serverSig.clear();
+            }
+            if (panes.length) {
+              buildPanes();
+              // No `applyLink` on mount: `LinkProfile::PERFECT` — the sim's
+              // default — is exactly the LAN preset (1 tick, no jitter, no
+              // loss), so showing LAN selected is a true statement about the
+              // links rather than a claim we had to go and make true. It also
+              // keeps mounting the bar side-effect-free on the sim.
+              buildLinks();
+            }
+          } else {
+            panes = live;
+          }
+
+          const running = panes.length > 0;
+          chrono.classList.toggle("on", running);
+          panesEl.classList.toggle("on", running);
+          // #mouselook drives the SINGLE game's camera, which is suspended
+          // while a session owns the page — so it is not merely colliding with
+          // the top-docked bar (design §7.3), it is a control that would do
+          // nothing. Hide it for the duration.
+          if (mouselook) mouselook.style.display = running ? "none" : "";
+          // The shipped bottom-docked #scrubber is the SINGLE game's timeline,
+          // and that game is suspended while a session owns the page — so it
+          // sits over the panes advertising a clock that is not moving and a
+          // seek that governs nothing. Hide it, which is also the design's
+          // point about vacating the bottom edge (§7.12).
+          const legacy = document.getElementById("scrubber");
+          if (legacy) legacy.style.visibility = running ? "hidden" : "";
+          if (!running) {
+            acc = 0;
+            return;
+          }
+
+          if (paused) {
+            acc = 0;
+          } else {
+            acc += dtMs;
+            // Whole frames only, and never skip: `History::record` asserts
+            // strictly consecutive frames and a wasm assert aborts with no
+            // unwind. Capped so a long stall cannot wedge the tab.
+            let n = Math.min(8, Math.floor(acc / FRAME_MS));
+            acc -= Math.floor(acc / FRAME_MS) * FRAME_MS;
+            while (n-- > 0) {
+              try {
+                window.__sim.step(1);
+                recordServerSig();
+              } catch (e) {
+                console.error("[chrono] step:", e);
+                setPaused(true);
+                break;
+              }
+            }
+          }
+
+          // ---- paint ----
+          const t = window.__sim.timeline();
+          const playhead = t.scrubPos ?? t.frame;
+          frameLabel.textContent = String(playhead);
+          chrono.querySelector("#mode-chip").textContent = t.scrubPos != null ? "SIM · PARKED" : "SIM";
+          drawRail();
+
+          const rects = paneRects(panes.length);
+          panes.forEach((p, i) => {
+            const el = paneNodes[i];
+            if (!el) return;
+            const r = rects[i];
+            el.style.left = `${r.left}px`;
+            el.style.top = "0px";
+            el.style.width = `${r.width}px`;
+            el.style.height = `${r.height}px`;
+            const owner = stageOwnsKeys && i === focused;
+            el.classList.toggle("focused", owner);
+            el.querySelector(".you").textContent = owner ? "keys: you" : "";
+            const behind = p.__behind;
+            el.querySelector(".lagtag").textContent =
+              p.role === "server"
+                ? "authoritative"
+                : behind == null
+                  ? ""
+                  : `lag ${Math.round(behind * FRAME_MS)}ms (${behind}f)`;
+          });
+          focusChip.style.color = focused >= 0 ? colorFor(focused) : "var(--scrub-dim)";
+          focusChip.classList.toggle("owned", stageOwnsKeys);
+          focusChip.textContent = stageOwnsKeys && focused >= 0 ? `keys ${focused + 1}` : "keys --";
+
+          // The server's model text, throttled — a <pre> rewrite per frame is
+          // DOM work the render loop should not pay for. (Throttled in the rAF
+          // loop rather than on a setInterval, which the parked branch never
+          // cleared on stop.)
+          const modelEl = paneNodes[0] && paneNodes[0].querySelector(".model");
+          if (modelEl && now >= modelDue) {
+            modelDue = now + 200;
+            const text = window.__sim.state(0);
+            if (text !== lastModelText) {
+              lastModelText = text;
+              modelEl.textContent = text;
+            }
+          }
+        };
+        requestAnimationFrame(tick);
       };
 
       init().then(() => {
@@ -395,6 +1180,11 @@
           setupInput();
           mountScrubber();
           setupInspectorRelay();
+          // SPIKE: the multiplayer chrono bar. Its layout row collapses to 0
+          // height while no dev session is running, so a single-game page looks
+          // and behaves exactly as it did. Skipped in deterministic captures for
+          // the same reason the scrubber is.
+          installChronoBar();
         }
         // The webview overlay renders even in deterministic captures (it is
         // part of the frame's visual output); only its input wiring is inert
