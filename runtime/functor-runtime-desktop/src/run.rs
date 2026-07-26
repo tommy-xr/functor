@@ -148,11 +148,14 @@ fn release_held_mouse_buttons(
     held_buttons: &mut MouseButtons,
     deliver: bool,
 ) {
-    for button in [
-        functor_runtime_common::MouseButton::Left,
-        functor_runtime_common::MouseButton::Right,
-        functor_runtime_common::MouseButton::Middle,
-    ] {
+    // Driven off `ALL` rather than a literal list: a button added to the enum
+    // must be swept too, or it becomes exactly the stuck-down bug this exists
+    // to prevent.
+    for button in functor_runtime_common::MouseButton::ALL
+        .iter()
+        .copied()
+        .filter(|b| *b != functor_runtime_common::MouseButton::Unknown)
+    {
         if held_buttons.is_down(button) {
             held_buttons.set(button, false);
             if deliver {
@@ -1472,6 +1475,19 @@ pub fn run(args: Args) {
                                 &mut held_buttons,
                                 !ignore_user_input,
                             );
+                            // Under a pinned clock the sampled snapshot is not
+                            // rebuilt per frame, so the cleared level has to be
+                            // written into it or `sampledInput` reports the
+                            // button held forever (as `Focus(false)` does).
+                            if clock.is_fixed_time() {
+                                refresh_fixed_input_levels(
+                                    &mut fixed_input_snapshot,
+                                    &held_keys,
+                                    held_buttons,
+                                    false,
+                                    xr_override.as_ref(),
+                                );
+                            }
                             window.set_cursor_mode(glfw::CursorMode::Normal);
                             cursor_captured = false;
                             println!(
@@ -1500,6 +1516,16 @@ Escape again to quit"
                             &mut held_buttons,
                             !ignore_user_input,
                         );
+                        // Same pinned-clock caveat as the Escape arm above.
+                        if clock.is_fixed_time() {
+                            refresh_fixed_input_levels(
+                                &mut fixed_input_snapshot,
+                                &held_keys,
+                                held_buttons,
+                                false,
+                                xr_override.as_ref(),
+                            );
+                        }
                         if !hidden {
                             if scrubber_visible {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
@@ -1628,6 +1654,10 @@ Escape again to quit"
                     // this sits before the `ignore_user_input` catch-all so a
                     // button held at a pin transition can't stick, while the
                     // game only hears edges it may act on.
+                    // NOTE: `--emulate-xr` never captures the cursor (its left
+                    // click drives the emulated XR primary instead), so window
+                    // buttons do not reach `mouseButton` under it — inject them
+                    // through `POST /input` when scripting that rig.
                     glfw::WindowEvent::MouseButton(button, action, _) if cursor_captured => {
                         let mapped = map_mouse_button(button);
                         if mapped != functor_runtime_common::MouseButton::Unknown {
