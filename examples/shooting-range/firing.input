@@ -1,0 +1,18 @@
+# Deterministic firing scenario for reproducible stills.
+#
+# The game's primary trigger is the LEFT MOUSE BUTTON, but `--input-script`
+# only parses `<frame> <KeyName> <down|up>` — it has no mouse-button event —
+# so this script holds SPACE, the documented keyboard fallback, which feeds
+# exactly the same `held.trigger` level state.
+#
+#   functor -d examples/shooting-range run native \
+#     --input-script firing.input --script-dt 0.016 \
+#     --capture-frame .captures/firing.png --capture-at-frame 36
+#
+# The trigger is held from frame 0. The weapon is full-auto at one round per
+# `fireInterval` (0.18 s) = 12 frames at --script-dt 0.016, so shots leave the
+# barrel on frames 0, 12, 24, 36, ... Capturing exactly on a shot frame catches
+# the muzzle flash (flashLife 0.055 s ~ 3 frames) and the tracer (tracerLife
+# 0.075 s ~ 4 frames) while they are at full brightness, with several rounds of
+# recoil already accumulated in the crosshair spread.
+0 Space down
