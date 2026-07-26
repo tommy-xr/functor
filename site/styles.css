@@ -1589,8 +1589,31 @@ a:hover {
   color: var(--text);
 }
 
-.api-meta a {
+/* The manual link plus the machine-readable format chips travel together as
+   one cluster pushed to the right edge of the meta row. */
+.api-meta-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
   margin-left: auto;
+}
+
+/* Raw-format links wear the page's pill vocabulary (see .api-kind) so they
+   read as artifacts to fetch, not as another prose destination. */
+.api-format {
+  padding: 2px 9px;
+  border: 1px solid rgba(65, 216, 230, 0.25);
+  border-radius: 999px;
+  color: var(--cyan);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.api-format:hover {
+  border-color: var(--cyan);
+  background: rgba(65, 216, 230, 0.08);
 }
 
 .api-search {
@@ -1819,7 +1842,9 @@ a:hover {
     font-size: 1.45rem;
   }
 
-  .api-meta a {
+  /* Narrow: the cluster drops to its own full-width row rather than pushing
+     right, but the chips stay inline next to each other. */
+  .api-meta-links {
     width: 100%;
     margin-left: 0;
   }

@@ -16,6 +16,9 @@
 //   7. the docs page highlights its Functor Lang blocks, and a "try it" button's
 //      program loads live in the sandbox (the #src= → player ?src= data-URL
 //      path, fresh init);
+//   7b. the API reference is readable with NO JavaScript — a plain fetch of
+//      /docs/ returns every module and declaration, and /docs/api.json,
+//      /docs/api.md and /llms.txt mirror it;
 //   8. an inline #src= program with its OWN model shape truly fresh-inits (its
 //      init runs — no model carried over from the default example) and ticks
 //      cleanly.
@@ -445,6 +448,58 @@ for (const example of examples) {
   await page.waitForURL(/\/manual\/#get-started$/);
   check("legacy docs.html preserves manual anchors", true, page.url());
   await page.close();
+}
+
+// --- 7b. The API reference is readable with NO JavaScript. --------------------
+// Functor is meant to be LLM-native, and an agent reads the docs with a plain
+// HTTP GET. These use `fetch`, not the browser, so they fail if the reference
+// ever regresses to being assembled client-side.
+{
+  // An absolute floor first: the count assertions below compare the page
+  // against the same JSON it was rendered from, so an empty reference would
+  // satisfy them (0 === 0) while shipping a blank page.
+  check(
+    "the generated reference is non-trivial",
+    API_MODULE_COUNT > 10 && API_ITEM_COUNT > 50,
+    `${API_MODULE_COUNT} modules, ${API_ITEM_COUNT} declarations`
+  );
+
+  const docsHtml = await (await fetch(`${BASE}/docs/`)).text();
+  const staticModules = docsHtml.match(/class="api-module"/g)?.length ?? 0;
+  const staticItems = docsHtml.match(/class="api-declaration"/g)?.length ?? 0;
+  check(
+    "no-JS GET of /docs/ contains every module",
+    staticModules === API_MODULE_COUNT,
+    `${staticModules}/${API_MODULE_COUNT} modules in the raw HTML`
+  );
+  check(
+    "no-JS GET of /docs/ contains every declaration",
+    staticItems === API_ITEM_COUNT,
+    `${staticItems}/${API_ITEM_COUNT} declarations in the raw HTML`
+  );
+  // A signature an agent would actually look up, present as real text.
+  check(
+    "no-JS GET of /docs/ contains real signatures",
+    docsHtml.includes("Scene.rotateY") && docsHtml.includes("Angle.t"),
+    "Scene.rotateY / Angle.t"
+  );
+
+  for (const [path, verify] of [
+    [
+      "/docs/api.json",
+      (body) => JSON.parse(body).modules.length === API_MODULE_COUNT,
+    ],
+    ["/docs/api.md", (body) => body.includes("# Functor API reference") && body.includes("## Scene")],
+    ["/llms.txt", (body) => body.includes("/docs/api.md") && body.includes("/docs/api.json")],
+  ]) {
+    const response = await fetch(`${BASE}${path}`);
+    const body = await response.text();
+    let ok = false;
+    try {
+      ok = response.ok && verify(body);
+    } catch {}
+    check(`${path} serves the machine-readable reference`, ok, `HTTP ${response.status}`);
+  }
 }
 
 // --- 8. Inline #src= program with its OWN model shape fresh-inits. -------------
