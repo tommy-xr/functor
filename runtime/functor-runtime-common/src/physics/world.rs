@@ -510,17 +510,45 @@ impl World {
     /// filter) — an invisible trigger volume can occlude a solid body behind
     /// it.
     pub fn raycast(&self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> Option<RayHit> {
+        self.raycast_excluding(origin, dir, max_dist, None)
+    }
+
+    /// [`Self::raycast`], but ignoring one body's collider.
+    ///
+    /// This is what a self-probe needs: a grounding ray cast from inside a
+    /// character's own capsule would otherwise hit that capsule at distance 0
+    /// and report the character standing on itself. An `exclude` tag that
+    /// isn't in the world excludes nothing — a body that doesn't exist can't
+    /// be hit anyway, so a not-yet-spawned character probes cleanly instead of
+    /// erroring on its first frame.
+    pub fn raycast_excluding(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_dist: f32,
+        exclude: Option<&str>,
+    ) -> Option<RayHit> {
         let d = vec3(dir);
         let len = d.length();
         if !(len.is_finite() && len > 0.0) {
             return None;
         }
         let ray = rapier3d::prelude::Ray::new(vec3(origin), d / len);
+        let mut filter = QueryFilter::default();
+        // Exclude the RIGID BODY, not the single collider the tag maps to: a
+        // tagged body owns exactly one collider today, but the moment one
+        // gains a second (a compound shape, or a separate sensor volume) a
+        // collider-level filter would quietly let the self-probe hit the
+        // character again. Excluding the body costs the same and carries no
+        // such invariant.
+        if let Some((body, _)) = exclude.and_then(|tag| self.tags.get(tag)) {
+            filter = filter.exclude_rigid_body(*body);
+        }
         let pipeline = self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
             &self.bodies,
             &self.colliders,
-            QueryFilter::default(),
+            filter,
         );
         let (col_handle, hit) = pipeline.cast_ray_and_get_normal(&ray, max_dist, true)?;
         // Reverse handle→tag lookup: scenes are small; a scan beats carrying

@@ -1014,6 +1014,13 @@ body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
 body |> Physics.sensor                                     // overlap-only, no forces
 Physics.scene(gravity, [body, …])                          // what `physics` returns
 Physics.position(tag)                                      // {x, y, z} of the LIVE body
+Physics.linearVelocity(tag)                                // {x, y, z} velocity of the LIVE body
+                                                           //   (Physics.velocity is the BUILDER)
+Physics.cast(origin, dir, maxDist)                         // SYNCHRONOUS ray -> rayHit record,
+                                                           //   in place (no tagger, no update)
+Physics.castExcluding(tag, origin, dir, maxDist)           //   same, ignoring one body — the
+                                                           //   grounding probe (skip your own
+                                                           //   collider)
 scene |> Physics.transformed(tag)                          // scene at the body's live pose
 Physics.applyImpulse(tag, v)                               // -> Effect (fire-and-forget)
 Physics.applyForce(tag, v)                                 //   force lasts ONE stepped frame
@@ -1027,8 +1034,12 @@ Physics.events(tagger)                                     // -> Sub (from `subs
                                                            //   sensor} per contact begin/end
 ```
 
-`Physics.position` / `Physics.transformed` read the live stepped world
-(Functor Lang runs in the shell's process — no boundary). A tag not in the world is
+`Physics.position` / `Physics.linearVelocity` / `Physics.cast` /
+`Physics.castExcluding` / `Physics.transformed` read the live stepped world
+(Functor Lang runs in the shell's process — no boundary). They work in **any**
+entry point, `tick` included: in `tick` they see the previous step (physics runs
+after `tick`), in `draw` this frame's. That one step of read latency is inherent
+to read → decide → step. A tag not in the world is
 a **spanned runtime error** (there is no Option-shaped return to match on),
 so only read tags your `physics` hook declares. The tag is cross-frame
 identity: same tag = same body; drop a body by not declaring it.
@@ -1060,6 +1071,43 @@ handler chaining a command queues it for next frame's step; chaining
 another query answers immediately (the world already stepped). Under the
 fake/replay runners raycasts are canned/recorded — physics-query logic is
 testable with no world at all.
+
+`Physics.cast` / `Physics.castExcluding` are the **synchronous** counterparts:
+same `rayHit` record, but answered in place, so `tick` can branch on the result
+while deciding. Use them for a character controller; use the `Physics.raycast`
+effect when you want the answer against THIS frame's post-step world (a hitscan
+weapon fired on the frame it lands). They are world reads, not environment reads
+— not routed through the effect runner and not logged, so unlike the effect they
+are not canned under `FakeEffects`; they read whatever world is live (an empty
+one misses). Determinism holds because the world is state the physics Timeline
+reconstructs from recorded declarations and commands. A miss is `hit: false`
+with zeroed fields, never an error.
+
+**The character-controller loop** is therefore one frame, not two:
+
+```functor
+let probe = (p) =>
+  Physics.castExcluding(playerTag, Vec3.make(p.x, p.y - 0.9, p.z),
+                        Vec3.make(0.0, -1.0, 0.0), 0.2)
+let tick = (m, dt, tts) =>
+  match m.started with          // guard the FIRST frame: nothing has been
+  | false => { m with started: true }   //   reconciled yet, so the reads below
+  | true =>                             //   would raise `no body tagged …`
+    let pos = Physics.position(playerTag) in
+    let vel = Physics.linearVelocity(playerTag) in
+    let onGround = probe(pos).hit in
+    let vy = if onGround && m.jump then 6.0 else vel.y in
+    (m, Physics.setVelocity(playerTag, Vec3.make(vel.x, vy, vel.z)))
+```
+
+The read happens in `tick`, the command drains immediately after `tick` (no
+`update` hook needed), and the next step applies it — normally this frame's
+(when the 60 Hz accumulator is short of a full step, no step runs at all that
+frame and it lands on the next one). Reads and writes both live in `tick`.
+
+Note the two rules this example obeys: local `let` needs `in`, and the
+pre-step readers raise on the first frame, before the `physics` hook's
+declaration has been reconciled and stepped — so gate them.
 
 `Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
 `Sub.batch`; it requires `update`). Every contact begin/end from this
