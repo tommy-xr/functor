@@ -44,6 +44,17 @@ use khronos_egl as egl;
 use openxr as xr;
 
 /// GLES version to request. Quest 3 supports 3.2.
+/// Display refresh rate to aim for, in Hz.
+///
+/// Quest 3 offers 72/80/90/120; the runtime defaults to 72 and only changes on
+/// request. This picks the highest offered rate that does not exceed the
+/// target, so a headset advertising fewer options still gets a sane choice.
+///
+/// Raising this raises the frame budget's difficulty in exact proportion —
+/// 13.8 ms at 72 Hz, 11.1 ms at 90, 8.3 ms at 120 — so it is a measured
+/// decision, not a preference. See the `oculus-profiling` skill.
+const TARGET_REFRESH_RATE: f32 = 72.0;
+
 const GLES_MAJOR: i32 = 3;
 const GLES_MINOR: i32 = 2;
 
@@ -818,8 +829,18 @@ pub fn android_main(app: AndroidApp) {
         .initialize_android_loader()
         .expect("initialize android loader");
 
+    // Only ask for what the runtime advertises: an unsupported extension in the
+    // set fails xrCreateInstance outright, which would take the whole app down
+    // on a headset that happens not to offer it.
+    let available = entry
+        .enumerate_extensions()
+        .expect("enumerate OpenXR extensions");
+
     let mut extensions = xr::ExtensionSet::default();
     extensions.khr_opengl_es_enable = true;
+    // Without this the runtime picks the display rate and the app has no say —
+    // Quest defaults to 72 Hz no matter how much headroom the frame has.
+    extensions.fb_display_refresh_rate = available.fb_display_refresh_rate;
     // Required on Android: openxr only chains the activity/JVM context into
     // xrCreateInstance (XrInstanceCreateInfoAndroidKHR) when this is set —
     // without it the runtime can reject instance creation.
@@ -869,6 +890,41 @@ pub fn android_main(app: AndroidApp) {
         )
     }
     .expect("create session");
+
+    // Display refresh rate. Requesting one is a *request*: the runtime may
+    // refuse, and it can change underneath us (battery, thermals, system UI),
+    // so report what was actually granted rather than what was asked for.
+    if available.fb_display_refresh_rate {
+        match session.enumerate_display_refresh_rates() {
+            Ok(rates) => {
+                let current = session.get_display_refresh_rate().ok();
+                log::info!("display refresh rates available: {rates:?} (current {current:?})");
+                // The highest the display offers that is no faster than the
+                // target. Asking for an unlisted rate is an error, and asking
+                // for more than the frame can sustain just converts headroom
+                // into stale frames.
+                let choice = rates
+                    .iter()
+                    .copied()
+                    .filter(|rate| *rate <= TARGET_REFRESH_RATE + 0.5)
+                    .fold(f32::NAN, f32::max);
+                if choice.is_finite() {
+                    // The request is asynchronous: reading the rate back here
+                    // still returns the old one. The runtime confirms the
+                    // change with DisplayRefreshRateChangedFB, which the event
+                    // loop logs — so do not report a rate we have not been
+                    // told took effect.
+                    match session.request_display_refresh_rate(choice) {
+                        Ok(()) => log::info!("requested {choice} Hz"),
+                        Err(e) => log::warn!("display refresh rate {choice} Hz refused: {e}"),
+                    }
+                }
+            }
+            Err(e) => log::warn!("cannot enumerate display refresh rates: {e}"),
+        }
+    } else {
+        log::info!("XR_FB_display_refresh_rate unavailable; using the runtime default");
+    }
 
     // STAGE (floor-origin, room-scale) preferred; LOCAL (head-origin) is the
     // portable baseline when the runtime has no stage bounds set up.
@@ -976,6 +1032,13 @@ pub fn android_main(app: AndroidApp) {
         while let Some(event) = instance.poll_event(&mut event_storage).expect("poll_event") {
             use xr::Event::*;
             match event {
+                DisplayRefreshRateChangedFB(e) => {
+                    log::info!(
+                        "display refresh rate changed: {} Hz -> {} Hz",
+                        e.from_display_refresh_rate(),
+                        e.to_display_refresh_rate()
+                    );
+                }
                 SessionStateChanged(e) => {
                     log::info!("session state: {:?}", e.state());
                     session_focused = e.state() == xr::SessionState::FOCUSED;
