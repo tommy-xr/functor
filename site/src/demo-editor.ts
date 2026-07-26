@@ -1,6 +1,6 @@
 // A standalone, full-featured Functor Lang editor beside a live scene — the
 // hero editor's demo-grade sibling. Unlike the landing hero's mini-editor
-// (mini-editor.js — deliberately stripped to keep the landing bundle tiny),
+// (mini-editor.ts — deliberately stripped to keep the landing bundle tiny),
 // this composes the SAME language intelligence the sandbox uses — completion,
 // codelenses, hover types, diagnostics, and the paused-inspector live-value
 // overlay — plus state-preserving hot reload. It carries none of the sandbox's
@@ -10,7 +10,7 @@
 //
 // This is a lean re-composition of the shared, already-modular seams
 // (setupLangIntel, wireLiveTrace, PlayerBridge) rather than a fork of
-// sandbox.js — the only overlap is constructing the editor view.
+// sandbox.ts — the only overlap is constructing the editor view.
 
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";

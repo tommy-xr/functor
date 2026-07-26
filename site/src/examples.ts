@@ -2,7 +2,7 @@
 // this one list, so it can't drift:
 //   - build.mjs (Node)   uses `id` + `source` to copy the .fun into
 //     dist/examples/<id>.fun at build time;
-//   - sandbox.js (browser) uses `id` + `label` to build the scene dropdown.
+//   - sandbox.ts (browser) uses `id` + `label` to build the scene dropdown.
 // The site e2e derives its per-example smoke test from the rendered picker, so
 // it tracks this list automatically too.
 //
