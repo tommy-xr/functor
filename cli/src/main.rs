@@ -131,6 +131,12 @@ enum Command {
         #[arg(value_enum)]
         environment: Option<Environment>,
     },
+    /// Run the project's inline `expect` tests headlessly under the engine
+    /// prelude — no GPU, no window. Typechecks first (like `build`), then
+    /// evaluates every `expect` in the entry and its sibling modules,
+    /// reporting each failure at its source location. Exits non-zero if any
+    /// expect fails. E.g. `functor -d examples/platformer test`.
+    Test,
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
     /// server; `vr` runs it on an adb-attached headset, re-pushing on save).
     /// E.g. `functor -d examples/primitives run native`.
@@ -337,6 +343,7 @@ async fn run(args: &Args) -> io::Result<()> {
     let is_routed = matches!(
         &args.command,
         Command::Build { .. }
+            | Command::Test
             | Command::Run { .. }
             | Command::Develop { .. }
             | Command::Push { .. }
@@ -363,6 +370,12 @@ async fn run(args: &Args) -> io::Result<()> {
             | Command::Inspect { .. }
             | Command::Import => {
                 unreachable!("is_routed excludes")
+            }
+            // The typecheck gate runs first so an `expect` failure is
+            // unambiguously a RUNTIME failure, never a type error in disguise.
+            Command::Test => {
+                let loaded = project.build(&working_directory_str, false)?;
+                project.test(&loaded)
             }
             // `build` is the strict typecheck gate — nothing compiles for
             // either target (native interprets the file; wasm ships it as
@@ -408,7 +421,10 @@ async fn run(args: &Args) -> io::Result<()> {
         // The F#/Fable pipeline was removed in E3: every Functor project is now
         // Functor Lang (functor.json `"language": "functor-lang"`), routed above. A project that
         // isn't Functor Lang has no build/run/develop/push path.
-        Command::Build { .. } | Command::Run { .. } | Command::Develop { .. } => {
+        Command::Build { .. }
+        | Command::Test
+        | Command::Run { .. }
+        | Command::Develop { .. } => {
             Err(io::Error::other(
                 "not a Functor Lang project: functor.json needs \"language\": \"functor-lang\" \
 (the F#/Fable pipeline was removed in E3)",
@@ -452,6 +468,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Init { .. } => "init",
         Command::Docs { .. } => "docs",
         Command::Build { .. } => "build",
+        Command::Test => "test",
         Command::Run { .. } => "run",
         Command::Develop { .. } => "develop",
         Command::Inspect { .. } => "inspect",
