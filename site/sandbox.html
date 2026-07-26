@@ -44,6 +44,33 @@
         <div id="editor"></div>
       </section>
       <section class="preview-pane">
+        <!-- The boot loader. Static markup on purpose: it paints on the first
+             frame, long before the editor bundle and the wasm runtime arrive.
+             src/sandbox.tsx dismisses it (`.is-done`); the rest is styles.css. -->
+        <div class="fn-boot" data-fn-boot>
+          <svg class="fn-boot-defs" aria-hidden="true">
+            <symbol id="fn-boot-mark" viewBox="366 163 385 690">
+              <path d="M382 341 545 179H735L615 300H548L382 466Z" />
+              <path d="M382 493 497 380V748L382 837Z" />
+              <path d="M518 426H693L597 522H518Z" />
+            </symbol>
+          </svg>
+          <div class="fn-boot-word" aria-hidden="true">FUNCTOR</div>
+          <div class="fn-boot-stage" aria-hidden="true">
+            <div class="fn-boot-spin">
+          <span class="fn-boot-slice" style="--i:0"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:1"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:2"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:3"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:4"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:5"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:6"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:7"><svg><use href="#fn-boot-mark" /></svg></span>
+          <span class="fn-boot-slice" style="--i:8"><svg><use href="#fn-boot-mark" /></svg></span>
+            </div>
+          </div>
+          <p class="fn-boot-label">loading<span class="fn-boot-dots"></span></p>
+        </div>
         <iframe id="player" title="live game preview" allow="pointer-lock"></iframe>
       </section>
     </main>

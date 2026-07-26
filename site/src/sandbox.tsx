@@ -78,11 +78,18 @@ const picker = createStore<PickerState>({
 });
 const pill = createStore<PillState>({ state: "busy", text: "◌ loading…", detail: "" });
 
-const setStatus = (state: PillState["state"], text: string, detail = "") =>
+const setStatus = (state: PillState["state"], text: string, detail = "") => {
   // The detail (the reload note, or a parse error) lives in the pill's tooltip
   // and — for errors — the Output panel. No separate error banner under the
   // editor: the preview pill is the single live indicator.
   pill.set({ state, text, detail });
+  // The boot loader (static markup in sandbox.html) evaporates the moment the
+  // preview reports anything but "busy" — it is live, or there is an error
+  // worth reading. One class toggle; the animation is all CSS.
+  if (state !== "busy") {
+    document.querySelector("[data-fn-boot]")?.classList.add("is-done");
+  }
+};
 
 const statusBar = createStatusBarStore();
 // The sandbox edits only the entry buffer, but some examples also load sibling

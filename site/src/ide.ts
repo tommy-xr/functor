@@ -206,6 +206,12 @@ const setStatus = (state: PillState, text: string, detail = "") => {
   // and — for errors — the Output panel. No separate error banner under the
   // editor: the preview pill is the single live indicator.
   els.status.title = detail;
+  // The boot loader (static markup in ide.html) evaporates the moment the
+  // preview reports anything but "busy" — it is live, or there is an error
+  // worth reading. One class toggle; the animation is all CSS.
+  if (state !== "busy") {
+    document.querySelector("[data-fn-boot]")?.classList.add("is-done");
+  }
 };
 
 // ---------------------------------------------------------------- editor

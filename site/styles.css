@@ -2025,3 +2025,360 @@ a:hover {
 .exec-row.selected {
   color: var(--cyan);
 }
+
+/* ==== the boot loader ====================================================
+   The Functor mark, milled out of nine copies of itself along Z, spinning
+   over a surface that has not booted yet: the hero card, and the sandbox /
+   IDE preview panes. It is STATIC markup in each page's shell — it paints on
+   the first frame, before the editor bundle and the wasm runtime have
+   arrived, which is the whole point. The only JS is one class toggle:
+
+     document.querySelector('[data-fn-boot]')?.classList.add('is-done');
+
+   which runs the 620ms evaporate and parks the node at visibility:hidden.
+   The overlay is pointer-events:none from birth (not just once dismissed),
+   so a fast click — or an e2e — mid-boot is never intercepted by it. */
+
+.fn-boot {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-md);
+  /* Sits on whatever it covers: a hair of the panel tone plus a radial lift
+     so the mark reads on both #0d0221 (hero card) and --bg (preview pane). */
+  background:
+    radial-gradient(120% 90% at 50% 42%, rgba(65, 216, 230, 0.07), transparent 62%),
+    var(--bg-panel);
+  /* Purely decorative: it never takes a click, at any point in its life. */
+  pointer-events: none;
+  /* cqi sizing for the wordmark below scales it from the hero card down to a
+     narrow preview pane. */
+  container-type: size;
+}
+
+/* The preview panes host a loader; the hero card is already positioned. */
+.preview-pane {
+  position: relative;
+}
+
+/* The <symbol> sprite each slice instantiates — never rendered itself. */
+.fn-boot-defs {
+  display: none;
+}
+
+/* Faint horizon rule under the mark — one line, keeps the composition from
+   floating. The site's cyan → pink gradient rule at very low alpha. */
+.fn-boot::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(200px, 54%);
+  height: 1px;
+  transform: translate(-50%, 122px);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(65, 216, 230, 0.34),
+    rgba(232, 88, 184, 0.24),
+    transparent
+  );
+  animation: fn-boot-rule 2.6s ease-in-out infinite;
+}
+
+/* The faded FUNCTOR wordmark behind the mark — the brand name stays readable
+   while the surface loads. Same face as the header wordmark, as a watermark.
+   It sits behind the LOWER half of the mark: the F's bottom is a narrow stem,
+   so only one letter is grazed (at 46% the wide head of the F parks exactly
+   on the "C"). Flex items stack with plain z-index, so the stage and label
+   sit above it without any extra positioning. */
+.fn-boot-word {
+  position: absolute;
+  left: 50%;
+  top: 54%;
+  transform: translate(-50%, -50%);
+  z-index: 0;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(20px, 12cqi, 56px);
+  letter-spacing: 0.34em;
+  text-indent: 0.34em; /* recentre the trailing letter-space */
+  white-space: nowrap;
+  color: var(--text);
+  opacity: 0.09;
+  user-select: none;
+}
+
+.fn-boot-stage,
+.fn-boot-label {
+  z-index: 1;
+}
+
+.fn-boot-stage {
+  perspective: 620px;
+  width: 96px;
+  height: 132px;
+  animation: fn-boot-bob 3.4s ease-in-out infinite;
+}
+
+.fn-boot-spin {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  animation: fn-boot-spin 3.6s linear infinite;
+}
+
+/* Each slice is one copy of the mark, pushed back along Z. Nine of them read
+   as a milled solid rather than a flipping card — the whole point. */
+.fn-boot-slice {
+  position: absolute;
+  inset: 0;
+  display: block;
+  transform: translateZ(calc((4 - var(--i)) * 2.1px));
+  /* The front face is full cyan; the tail falls off toward a deep pink-violet
+     so the extrusion reads as a shadowed side wall, not a stack of stickers. */
+  color: color-mix(in oklab, var(--cyan), #5b2470 calc(var(--i) * 12%));
+  opacity: calc(1 - var(--i) * 0.02);
+}
+
+.fn-boot-slice svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  fill: currentColor;
+}
+
+/* Only the front slice carries the bloom — glowing all nine smears the form. */
+.fn-boot-slice[style*="--i:0"] svg {
+  filter: drop-shadow(0 0 12px rgba(65, 216, 230, 0.55))
+    drop-shadow(0 0 30px rgba(65, 216, 230, 0.22));
+}
+
+.fn-boot-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em; /* offset the trailing letter-space so it stays centred */
+  text-transform: uppercase;
+  color: var(--text-dim);
+  animation: fn-boot-label 2.6s ease-in-out infinite;
+}
+
+/* The dots cycle "" → "." → ".." → "..." without reflowing the label. */
+.fn-boot-dots {
+  display: inline-block;
+  width: 2.4em;
+  text-align: left;
+  text-indent: 0;
+}
+
+.fn-boot-dots::before {
+  content: "";
+  animation: fn-boot-dots 1.6s steps(1) infinite;
+}
+
+/* -- the resting (loading) state ---------------------------------------- */
+
+@keyframes fn-boot-spin {
+  from {
+    transform: rotateX(-11deg) rotateY(0deg);
+  }
+  to {
+    transform: rotateX(-11deg) rotateY(360deg);
+  }
+}
+
+@keyframes fn-boot-bob {
+  0%,
+  100% {
+    transform: translateY(-3px);
+  }
+  50% {
+    transform: translateY(3px);
+  }
+}
+
+@keyframes fn-boot-label {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes fn-boot-dots {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
+  }
+}
+
+@keyframes fn-boot-rule {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translate(-50%, 122px) scaleX(0.86);
+  }
+  50% {
+    opacity: 1;
+    transform: translate(-50%, 122px) scaleX(1);
+  }
+}
+
+/* -- the exit: fade + evaporate ------------------------------------------
+   Layered so it reads as the solid coming apart, not just a div fading:
+   (1) the slices spread along Z and drift up, staggered back-to-front;
+   (2) the whole loader blurs, lifts and over-scales slightly;
+   (3) the backdrop wash dissolves a beat earlier than the mark.
+   animation-fill-mode: forwards holds the final visibility:hidden, so the
+   node is parked for good; removing it afterwards is never required. */
+
+.fn-boot.is-done {
+  animation: fn-boot-out 620ms cubic-bezier(0.32, 0, 0.24, 1) forwards;
+}
+
+.fn-boot.is-done .fn-boot-spin {
+  animation-play-state: paused;
+}
+
+.fn-boot.is-done .fn-boot-stage {
+  animation: none;
+}
+
+.fn-boot.is-done::after {
+  animation: fn-boot-rule-out 260ms ease-in forwards;
+}
+
+.fn-boot.is-done .fn-boot-label {
+  animation: fn-boot-label-out 320ms ease-in forwards;
+}
+
+.fn-boot.is-done .fn-boot-word {
+  animation: fn-boot-word-out 420ms ease-in forwards;
+}
+
+.fn-boot.is-done .fn-boot-slice {
+  animation: fn-boot-slice-out 620ms cubic-bezier(0.32, 0, 0.24, 1) forwards;
+  /* The tail evaporates first and the lit cyan face last, while the whole
+     stack stretches away from the viewer. */
+  animation-delay: calc((8 - var(--i)) * 22ms);
+}
+
+@keyframes fn-boot-out {
+  0% {
+    opacity: 1;
+    filter: blur(0) saturate(1);
+    transform: translateY(0) scale(1);
+    background-color: var(--bg-panel);
+  }
+  35% {
+    opacity: 0.92;
+    filter: blur(1.5px) saturate(1.15);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(13px) saturate(1.25);
+    transform: translateY(-14px) scale(1.055);
+    background-color: transparent;
+    visibility: hidden;
+  }
+}
+
+@keyframes fn-boot-slice-out {
+  0% {
+    opacity: calc(1 - var(--i) * 0.035);
+  }
+  100% {
+    opacity: 0;
+    transform: translateZ(calc((4 - var(--i)) * 2.1px - var(--i) * 7px))
+      translateY(calc(var(--i) * -2.6px - 8px)) scale(1.04);
+  }
+}
+
+@keyframes fn-boot-label-out {
+  to {
+    opacity: 0;
+    transform: translateY(9px);
+    letter-spacing: 0.58em;
+  }
+}
+
+@keyframes fn-boot-word-out {
+  to {
+    opacity: 0;
+    letter-spacing: 0.5em;
+  }
+}
+
+@keyframes fn-boot-rule-out {
+  to {
+    opacity: 0;
+    transform: translate(-50%, 122px) scaleX(0.2);
+  }
+}
+
+/* -- reduced motion ------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .fn-boot-spin {
+    /* Held at a 3/4 angle so the extrusion still reads. The pulse must animate
+       the STAGE, not this element: opacity on a preserve-3d node flattens it
+       and the shadowed back slice paints over the lit face. */
+    transform: rotateX(-11deg) rotateY(-32deg);
+    animation: none;
+  }
+
+  .fn-boot-stage {
+    animation: fn-boot-pulse 2.4s ease-in-out infinite;
+  }
+
+  .fn-boot::after,
+  .fn-boot-label {
+    animation: none;
+  }
+
+  .fn-boot.is-done {
+    animation: fn-boot-fade 300ms linear forwards;
+  }
+
+  .fn-boot.is-done .fn-boot-slice,
+  .fn-boot.is-done .fn-boot-label,
+  .fn-boot.is-done .fn-boot-word,
+  .fn-boot.is-done::after {
+    animation: none;
+  }
+}
+
+@keyframes fn-boot-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes fn-boot-fade {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}

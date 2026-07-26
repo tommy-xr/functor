@@ -47,6 +47,12 @@ const setStatus = (state: HeroState, message = "") => {
   statusState = { state, message };
   dot.dataset.state = state;
   dot.title = message || state;
+  // The boot loader (static markup in index.html) evaporates the moment the
+  // card reports anything but "busy" — the scene is live, or there is an
+  // error worth reading. One class toggle; the animation is all CSS.
+  if (state !== "busy") {
+    document.querySelector("[data-fn-boot]")?.classList.add("is-done");
+  }
 };
 // Busy until the player's ready handshake: the bridge's onLive (or a
 // successful onResult) is what turns the dot green, never the mount itself.
