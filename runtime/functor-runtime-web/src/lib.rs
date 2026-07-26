@@ -1592,8 +1592,17 @@ async fn run_async() -> Result<(), JsValue> {
             // strobe instead of freezing at the paused pose.
             // MULTI-PANE: while a dev session owns the page, the canvas shows
             // one column per instance — the server's authoritative world beside
-            // each client's (latency-lagged) view of it. The single game's frame
-            // is not drawn at all; it is suspended.
+            // each client's (latency-lagged) view of it.
+            //
+            // The single game's frame is NOT DRAWN — but note it is still fully
+            // computed above and then discarded: `game.render`, the preview /
+            // ghost recompute, and the overlay all still run every rAF. Its
+            // MODEL is frozen (the pre-existing `sim::is_running()` gate), so
+            // nothing diverges, but this is wasted work and the comment further
+            // up promising the single game "stops rendering entirely" under
+            // multi-pane is not yet true. Gating those paths is plan PR 4; doing
+            // it here would mean restructuring the frame loop, which is more
+            // than a visualization spike should touch.
             //
             // Same structure as the native `functor-netsim-viz`, including its
             // scissor discipline: the shadow pass inside `render_frame` must run

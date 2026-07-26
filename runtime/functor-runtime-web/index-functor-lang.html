@@ -57,7 +57,14 @@
          Tokens are the public --scrub-* family (design §8), extended with
          the player colours, so the spike reads as the same instrument.
          ================================================================== */
-      #chrono {
+      /* On :root, NOT on #chrono. The player colours are consumed by BOTH the
+         chrono bar (combs, chips) and the pane chrome, and #panes is a SIBLING
+         of #chrono — so scoping them to #chrono left every `var(--pc)` in the
+         pane chrome resolving to nothing: invalid at computed-value time. The
+         2px focused border, the digit badges, the role labels and the lag tags
+         all silently rendered as no colour at all, which is precisely the
+         "legible in a screenshot at thumbnail size" claim the design makes. */
+      :root {
         --scrub-bg: rgba(30, 24, 51, 0.94);
         --scrub-line: #2b2542;
         --scrub-text: #e9e6f2;
@@ -71,7 +78,12 @@
         --scrub-p1: #41d8e6;
         --scrub-p2: #e858b8;
         --scrub-p3: #f5a524;
-        --scrub-gauge-w: 144px;
+      }
+      #chrono {
+        /* Above #webview (z-index 5), which is `position: fixed; inset: 0` and
+           now spans this bar's grid row — a game's webview UI would otherwise
+           paint straight over the instrument. */
+        position: relative; z-index: 10;
         display: none;
         flex-direction: column; gap: 6px;
         padding: 8px 12px 9px;
@@ -114,11 +126,15 @@
       /* The link row is the second half of ONE instrument: dial impairment
          here, then scrub the rail to watch what that impairment did. Appears
          only when panes > 1. */
+      /* The CONTAINER stacks; each client's row is a flex line inside it. These
+         were both `.linkrow` at first, which laid the client groups out
+         horizontally — fine at two clients, overflowing at three. */
+      #chrono #c-links { display: flex; flex-direction: column; gap: 4px; }
       #chrono .linkrow {
         display: flex; align-items: center; gap: 8px;
         font-size: 11px; color: var(--scrub-dim);
       }
-      #chrono .linkrow .who { font-weight: 600; min-width: 34px; }
+      #chrono .linkrow .who { font-weight: 600; min-width: 58px; }
       #chrono .presets { display: flex; gap: 2px; }
       #chrono .presets button {
         padding: 3px 7px; font-size: 10px; border-radius: 3px;
@@ -187,7 +203,7 @@
         pointer-events: auto;
       }
       @media (prefers-reduced-motion: reduce) {
-        #panes .pane, #panes .pane.focused { transition: none; }
+        #panes .dot { animation: none; }
       }
     </style>
   </head>
@@ -605,13 +621,24 @@
         const mouselook = document.getElementById("mouselook");
 
         const FRAME_MS = 1000 / 60;
-        // The PINNED LAG GAUGE. A 132ms link at 60fps is ~8 frames; on a rail
-        // showing 8000 recorded frames across 900px that is 0.9 PIXELS — the
-        // single most valuable signal in the UI would be sub-pixel exactly when
-        // the user dialled latency up to look at it. So combs never live at
-        // rail scale: they live in a fixed-scale zone anchored to the playhead,
-        // ~4px per frame over ~36 frames (~600ms), with a seam and a `-36f`
-        // tick where the scales change.
+        // The PINNED LAG GAUGE. A 132ms link at 60fps is ~8 frames, and at rail
+        // scale that is a handful of pixels that keeps SHRINKING as the
+        // recording grows — the most valuable signal in the UI gets least
+        // legible exactly as a session gets interesting. So combs live in a
+        // fixed-scale zone anchored to the playhead: ~4px per frame over ~36
+        // frames (~600ms), with a seam and a `-36f` tick where the scales
+        // change, plus fine-grained seek inside it.
+        //
+        // Worth correcting against the design doc, which motivates this with
+        // "8 frames is 0.9 pixels on a rail showing 8000 recorded frames": a
+        // session cannot reach 8000 frames. `NetSim` records through
+        // `History::bounded(DEFAULT_HISTORY_FRAMES)` = 900
+        // (`functor-runtime-common/src/timetravel.rs:57`), so the rail never
+        // gets coarser than ~1px/frame and the sub-pixel case never arises. The
+        // gauge still earns its place — ~3.6x magnification at the bound, and
+        // frame-accurate seeking the rail cannot offer — but it is a magnifier,
+        // not a rescue from invisibility, which is why it now COLLAPSES while
+        // the rail is already finer than 4px/frame.
         const GAUGE_FRAMES = 36;
         const GAUGE_PX = 4;
         const GAUGE_W = GAUGE_FRAMES * GAUGE_PX;
@@ -644,6 +671,7 @@
         let dragAnchor = null; // {frame, x} captured at pointerdown
         let lastModelText = "";
         let modelDue = 0;
+        let lastRecordedFrame = -1;
 
         // ---- REAL lag measurement -----------------------------------------
         // The combs need "the server frame each client last DISPLAYED". No ack
@@ -715,10 +743,9 @@
         // frame late parked, which the wrap-aliasing above then turned into a
         // confident, completely wrong "239 frames behind". Anchoring both ends
         // of the subtraction to the same lookup makes the offset cancel.
-        const behindServer = (id, playhead) => {
-          const top = playhead + 1;
-          const ref = displayedServerFrame(0, top);
-          const mine = displayedServerFrame(id, top);
+        const referenceFrame = (playhead) => displayedServerFrame(0, playhead + 1);
+        const behindServer = (id, playhead, ref = referenceFrame(playhead)) => {
+          const mine = displayedServerFrame(id, playhead + 1);
           if (ref == null || mine == null) return null;
           return Math.max(0, ref - mine);
         };
@@ -738,7 +765,7 @@
             <span class="label" id="c-frame">#f <b>0</b></span>
             <span id="focus-chip">keys --</span>
           </div>
-          <div class="linkrow" id="c-links"></div>`;
+          <div id="c-links"></div>`;
         const rail = chrono.querySelector("#rail");
         const frameLabel = chrono.querySelector("#c-frame b");
         const focusChip = chrono.querySelector("#focus-chip");
@@ -890,9 +917,25 @@
           const span = Math.max(1, hi - lo);
           const xOf = (f) => ((Math.min(hi, Math.max(lo, f)) - lo) / span) * w;
           const xp = xOf(playhead);
+          // The gauge is a MAGNIFIER, so it only earns its place while the rail
+          // is coarser than it is. Early in a session (a few hundred recorded
+          // frames across ~1000px) the rail is already finer than 4px/frame, and
+          // a fixed-scale zone there was a DE-magnifier: a comb 20f behind drew
+          // at xp-80 while frame playhead-20 actually sat at xp-100 on the very
+          // track it was superimposed on — the comb pointed at the wrong place,
+          // and `frameAtX` inherited the same error, so a click in the gauge
+          // sought a different frame than the rail said. Below the crossover the
+          // gauge collapses and everything runs at rail scale.
+          const railPxPerFrame = w / span;
+          const magnifies = railPxPerFrame < GAUGE_PX;
+          const pxPerFrame = magnifies ? GAUGE_PX : railPxPerFrame;
           const gaugeRight = xp;
-          const gaugeLeft = Math.max(0, xp - GAUGE_W);
-          return { w, lo, hi, playhead, span, xOf, xp, gaugeLeft, gaugeRight, parked: t.scrubPos != null };
+          const gaugeLeft = magnifies ? Math.max(0, xp - GAUGE_W) : xp;
+          return {
+            w, lo, hi, playhead, span, xOf, xp,
+            gaugeLeft, gaugeRight, magnifies, pxPerFrame,
+            parked: t.scrubPos != null,
+          };
         };
         const drawRail = () => {
           const g = railGeom();
@@ -911,20 +954,22 @@
           // rail; parked, it follows the playhead back — which is the whole
           // point, because a parked comb shows that client's RECORDED frame for
           // that moment, and the stagger that survives is real lag preserved.
-          kids.push(svg("rect", {
-            x: g.gaugeLeft, y: 2, width: Math.max(0, g.gaugeRight - g.gaugeLeft), height: H - 4,
-            fill: "rgba(255,255,255,0.05)", stroke: "var(--scrub-line)", "stroke-width": 1,
-          }));
-          kids.push(svg("line", {
-            x1: g.gaugeLeft, y1: 2, x2: g.gaugeLeft, y2: H - 2,
-            stroke: "var(--scrub-dim)", "stroke-width": 1, "stroke-dasharray": "2 2",
-          }));
-          const seam = svg("text", {
-            x: g.gaugeLeft + 3, y: H - 4, fill: "var(--scrub-dim)", "font-size": 8,
-            "font-family": "var(--scrub-font)",
-          });
-          seam.textContent = `−${GAUGE_FRAMES}f`;
-          kids.push(seam);
+          if (g.magnifies) {
+            kids.push(svg("rect", {
+              x: g.gaugeLeft, y: 2, width: Math.max(0, g.gaugeRight - g.gaugeLeft), height: H - 4,
+              fill: "rgba(255,255,255,0.05)", stroke: "var(--scrub-line)", "stroke-width": 1,
+            }));
+            kids.push(svg("line", {
+              x1: g.gaugeLeft, y1: 2, x2: g.gaugeLeft, y2: H - 2,
+              stroke: "var(--scrub-dim)", "stroke-width": 1, "stroke-dasharray": "2 2",
+            }));
+            const seam = svg("text", {
+              x: g.gaugeLeft + 3, y: H - 4, fill: "var(--scrub-dim)", "font-size": 8,
+              "font-family": "var(--scrub-font)",
+            });
+            seam.textContent = `−${GAUGE_FRAMES}f`;
+            kids.push(seam);
+          }
           // The playhead.
           kids.push(svg("line", {
             x1: g.xp, y1: 2, x2: g.xp, y2: H - 2,
@@ -932,19 +977,31 @@
           }));
           // Lag combs: one tick per client, in that client's player colour, at
           // the server frame it last actually displayed. Only inside the gauge.
+          // One `ref` lookup for the whole rail, not one per client: each is an
+          // O(recorded frames) scan preceded by a full model pretty-print over
+          // the wasm boundary, and every client resolved the SAME reference.
+          const ref = referenceFrame(g.playhead);
           panes.forEach((p, i) => {
             if (p.role === "server") return;
-            const behind = behindServer(i, g.playhead);
+            const behind = behindServer(i, g.playhead, ref);
             if (behind == null) return;
-            const over = behind > GAUGE_FRAMES;
-            const x = over ? g.gaugeLeft + 2 : g.gaugeRight - behind * GAUGE_PX;
+            const over = g.magnifies && behind > GAUGE_FRAMES;
+            const x = over
+              ? g.gaugeLeft + 2
+              : Math.max(0, g.gaugeRight - behind * g.pxPerFrame);
             kids.push(svg("line", {
               class: "comb", "data-pane": i, "data-behind": behind,
               x1: x, y1: 16, x2: x, y2: H - 6,
               stroke: colorFor(i), "stroke-width": 3,
             }));
+            // Clamped into the viewBox: a zero-lag comb sits at x = w, where a
+            // middle-anchored label is half sheared off by the SVG edge — and
+            // "the LAN client sits on the playhead" is the baseline every other
+            // comb is read against, so it must be the clearest mark, not the
+            // least legible one.
             const lbl = svg("text", {
-              x: x, y: 10, fill: colorFor(i), "font-size": 10, "font-weight": 700,
+              x: Math.min(g.w - 6, Math.max(6, x)), y: 10,
+              fill: colorFor(i), "font-size": 10, "font-weight": 700,
               "text-anchor": "middle", "font-family": "var(--scrub-font)",
             });
             lbl.textContent = over ? `»${i + 1}` : String(i + 1);
@@ -959,7 +1016,7 @@
         // cannot offer. The gauge anchor is captured at pointerdown, otherwise
         // moving the playhead would move the gauge under the cursor.
         const frameAtX = (x, anchor) => {
-          if (x >= anchor.gaugeLeft) {
+          if (anchor.magnifies && x >= anchor.gaugeLeft) {
             const behind = Math.round((anchor.gaugeRight - x) / GAUGE_PX);
             return Math.max(anchor.lo, Math.min(anchor.hi, anchor.playhead - behind));
           }
@@ -1007,6 +1064,21 @@
           "keydown",
           (e) => {
             if (!panes.length) return;
+            // `,` and `.` are bare step keys by design — which means they are
+            // also ordinary characters. This listener is on `window` in the
+            // CAPTURE phase and calls `stopImmediatePropagation`, so without
+            // this guard typing a decimal point into a game's webview text
+            // field would silently step the simulation AND swallow the
+            // keystroke before the field ever saw it.
+            const target = e.composedPath()[0];
+            if (
+              target instanceof HTMLElement &&
+              (target.isContentEditable ||
+                target.tagName === "INPUT" ||
+                target.tagName === "TEXTAREA")
+            ) {
+              return;
+            }
             if (e.code === "Space" && (e.ctrlKey || e.metaKey)) {
               setPaused(!paused);
             } else if (e.key === "." || e.key === ",") {
@@ -1022,7 +1094,10 @@
                 // A deliberate hands-off state: nothing owns the keyboard.
                 stageOwnsKeys = false;
               } else if (e.key === "f") {
-                console.warn("[chrono] SPIKE: f-maximize is not implemented");
+                // f-maximize is out of scope for the spike (it needs the GL pane
+                // split to change, not just the chrome). Inert, and deliberately
+                // silent: a `[chrono] …` console line is what the harness treats
+                // as a failure signal.
                 return;
               } else {
                 return;
@@ -1064,10 +1139,16 @@
             paneSig = sig;
             panes = live;
             if (fresh) {
-              focused = panes.length ? panes.findIndex((p) => p.role !== "server") : -1;
-              if (focused < 0) focused = panes.length ? 0 : -1;
               linkChoice = panes.map(() => 0);
               serverSig.clear();
+            }
+            // Re-pick the default owner on every ROLE change, not only when the
+            // pane count changes. On the first frame nobody has connected yet so
+            // every instance reads "client" and `findIndex` returned 0 — the
+            // server, the one instance that by definition takes no input.
+            if (focused < 0 || !panes[focused] || panes[focused].role === "server") {
+              const firstClient = panes.findIndex((p) => p.role !== "server");
+              focused = firstClient >= 0 ? firstClient : panes.length ? 0 : -1;
             }
             if (panes.length) {
               buildPanes();
@@ -1115,6 +1196,9 @@
               try {
                 window.__sim.step(1);
                 recordServerSig();
+                // (also recorded below, driver-agnostically; this keeps every
+                // frame of a multi-frame catch-up in the ring rather than only
+                // the last one.)
               } catch (e) {
                 console.error("[chrono] step:", e);
                 setPaused(true);
@@ -1125,8 +1209,22 @@
 
           // ---- paint ----
           const t = window.__sim.timeline();
+          // Record the comb ring from the OBSERVED frame, not from the act of
+          // stepping. The bar mounts paused precisely so another driver can own
+          // the session (e2e/wasm-sim.mjs steps by hand) — and in that
+          // configuration recording only inside the bar's own step loop left the
+          // ring empty, so every comb read "no data", which is visually
+          // indistinguishable from "no lag".
+          if (t.scrubPos == null && t.frame !== lastRecordedFrame) {
+            lastRecordedFrame = t.frame;
+            recordServerSig();
+          }
           const playhead = t.scrubPos ?? t.frame;
-          frameLabel.textContent = String(playhead);
+          // One convention in both states. `t.frame` is the count of steps taken
+          // — one PAST the newest recorded frame, and a frame `seek` clamps away
+          // — so printing it live and `scrubPos` parked made the counter drop by
+          // one the instant you parked, with nothing having moved.
+          frameLabel.textContent = String(t.scrubPos ?? Math.max(0, t.frame - 1));
           chrono.querySelector("#mode-chip").textContent = t.scrubPos != null ? "SIM · PARKED" : "SIM";
           drawRail();
 

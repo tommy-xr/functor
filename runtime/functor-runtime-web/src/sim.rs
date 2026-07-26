@@ -294,6 +294,13 @@ pub(crate) fn render_frames() -> Option<(Vec<Frame>, functor_runtime_common::Fra
     SIM.with(|sim| {
         let mut slot = sim.try_borrow_mut().ok()?;
         let sim = slot.as_mut()?;
+        // A sim with no instances must fall through to the single game, not
+        // return an empty pane list: the caller's multi-pane branch would clear
+        // the canvas to black and then draw nothing at all, with the single
+        // game's render skipped and no pane chrome either.
+        if sim.is_empty() {
+            return None;
+        }
         let time = sim.display_time();
         let frames = (0..sim.len())
             .map(|i| sim.render(i, time.clone()))
@@ -363,6 +370,11 @@ pub fn sim_set_link(
             return Err(format!(
                 "setLink: no such instance pair ({a}, {b}) — the sim has {}",
                 sim.len()
+            ));
+        }
+        if a == b {
+            return Err(format!(
+                "setLink: an instance has no link to itself (both ends are {a})"
             ));
         }
         if !(0.0..=1.0).contains(&loss) {
