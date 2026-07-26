@@ -271,8 +271,11 @@ ANY sibling.
 
 ```sh
 ./target/debug/functor -d examples/counter test
-./target/debug/functor -d examples/mp test --entry server   # multi-entry: pick the role
 ```
+
+`--entry` picks which entry is typechecked in a multi-entry project; it does NOT
+narrow the tests, since `file = module` loads every sibling either way — the
+whole directory's expects run whichever role you name.
 
 **Verify the language without a GPU:** `cargo run -q -p functor-lang -- run|check|trace|test|parse|ir <file.fun>`
 drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the

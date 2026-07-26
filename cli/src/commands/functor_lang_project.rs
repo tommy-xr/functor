@@ -179,7 +179,11 @@ impl FunctorLangProject {
     /// gitignored model must not abort the dev loop (the runtime's fallback +
     /// logged error covers it), and cold-URL HEAD probes must not delay
     /// launch (the fast-inner-loop rule).
-    pub fn build(&self, working_directory: &str, verify_assets: bool) -> Result<(), Error> {
+    pub fn build(
+        &self,
+        working_directory: &str,
+        verify_assets: bool,
+    ) -> Result<functor_lang::project::Project, Error> {
         refresh_manifest(working_directory);
         let path = self.entry_path(working_directory)?;
         let display = path.display().to_string();
@@ -240,7 +244,7 @@ impl FunctorLangProject {
         // diagnostics. (Bare-string consumer args are check-time type
         // errors since the flag day — no lint needed.)
         if !verify_assets {
-            return self.finish_build(&project);
+            return self.finish_build(project);
         }
         let findings = crate::util::asset_verify::verify_assets(
             &project.module,
@@ -269,11 +273,14 @@ impl FunctorLangProject {
                 findings.errors.len()
             )));
         }
-        self.finish_build(&project)
+        self.finish_build(project)
     }
 
     /// The successful-build tail: report what loaded.
-    fn finish_build(&self, project: &functor_lang::project::Project) -> Result<(), Error> {
+    fn finish_build(
+        &self,
+        project: functor_lang::project::Project,
+    ) -> Result<functor_lang::project::Project, Error> {
         // The user's own sibling `.fun` files: exclude the entry and the
         // prelude-injected builtin (`<builtin>/Net.fun`).
         let sibling_count = project
@@ -287,19 +294,20 @@ impl FunctorLangProject {
             entry: self.entry.clone(),
             sibling_count,
         });
-        Ok(())
+        Ok(project)
     }
 
     /// Run the project's inline `expect` tests headlessly under the ENGINE
     /// prelude (no GL context, no window, no game loop) — the thin CLI shell
-    /// over [`functor_runtime_common::functor_lang_test::run_project_expects`].
+    /// over [`functor_runtime_common::functor_lang_test::run_expects_in`].
     ///
-    /// Callers run [`Self::build`] first, so by here the project typechecks;
-    /// a remaining failure is a *runtime* one and renders as a positioned
-    /// diagnostic at the `expect` that produced it.
-    pub fn test(&self, working_directory: &str) -> Result<(), Error> {
-        let path = self.entry_path(working_directory)?;
-        let run = match functor_runtime_common::functor_lang_test::run_project_expects(&path) {
+    /// Takes the project [`Self::build`] already loaded and typechecked, so
+    /// the bytes evaluated are exactly the bytes verified (re-loading would
+    /// let an editor save land in between). A failure here is therefore a
+    /// *runtime* one, rendered as a positioned diagnostic at the `expect`
+    /// that produced it.
+    pub fn test(&self, project: &functor_lang::project::Project) -> Result<(), Error> {
+        let run = match functor_runtime_common::functor_lang_test::run_expects_in(project) {
             Ok(run) => run,
             Err(e) => {
                 emit(Event::Diagnostic {
@@ -314,7 +322,7 @@ impl FunctorLangProject {
                 });
                 return Err(Error::other(format!(
                     "cannot run the {} tests",
-                    path.display()
+                    self.entry
                 )));
             }
         };
@@ -329,9 +337,7 @@ impl FunctorLangProject {
                 line: Some(case.line),
                 col: Some(case.col),
                 message: message.clone(),
-                source_line: std::fs::read_to_string(&case.file)
-                    .ok()
-                    .and_then(|src| nth_line(&src, case.line)),
+                source_line: case.source_line.clone(),
             });
         }
 

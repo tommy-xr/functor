@@ -350,8 +350,7 @@ expect (                                      // any expression works — a
 ### Running them: `functor test` (a GAME) vs `functor-lang test` (pure logic)
 
 ```sh
-functor -d examples/counter test          # a game project, under the ENGINE prelude
-functor -d examples/mp test --entry server   # multi-entry: pick the role
+functor -d examples/counter test                # a game project, under the ENGINE prelude
 cargo run -q -p functor-lang -- test file.fun   # a plain .fun, no engine
 ```
 
@@ -361,6 +360,8 @@ its siblings under the real engine host — headlessly: no GPU, no window,
 no game loop. Each failure prints at its `file:line:col` with the source
 line and, for a top-level comparison, both sides' values; the command
 exits non-zero if any expect failed. A project with no expects is a pass.
+In a multi-entry project `--entry` picks which entry is TYPECHECKED; it does
+not narrow the tests, because `file = module` loads every sibling either way.
 
 `functor-lang test` is the LANGUAGE crate's dev command and runs under the
 plain `NoHost` prelude, where `Scene.*` / `Color.*` / `Physics.*` don't
@@ -372,10 +373,11 @@ files. Don't copy pure modules to a scratch directory to work around this;
 that's what `functor test` is for.
 
 - Expects may freely call engine externals under `functor test`
-  (`Scene.*`, `Color.*`, …) — they are pure constructors over protocol
-  values. `Effect.*` builds a *descriptor*; nothing is performed, so a
-  test never does IO. Still, the highest-value tests are pure logic:
-  model/`tick`/`update` math.
+  (`Scene.*`, `Color.*`, …): no external performs IO or touches GL, and
+  `Effect.*` only builds a *descriptor* — nothing is performed. Note that
+  engine values are `HostData`, so `==` on them is a runtime error;
+  assert on numbers/records you derive instead. The highest-value tests
+  are pure logic anyway: model/`tick`/`update` math.
 
 ## Semantics rules that WILL bite you
 

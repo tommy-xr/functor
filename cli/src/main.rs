@@ -374,8 +374,8 @@ async fn run(args: &Args) -> io::Result<()> {
             // The typecheck gate runs first so an `expect` failure is
             // unambiguously a RUNTIME failure, never a type error in disguise.
             Command::Test => {
-                project.build(&working_directory_str, false)?;
-                project.test(&working_directory_str)
+                let loaded = project.build(&working_directory_str, false)?;
+                project.test(&loaded)
             }
             // `build` is the strict typecheck gate — nothing compiles for
             // either target (native interprets the file; wasm ships it as

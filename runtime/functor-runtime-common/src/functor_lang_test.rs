@@ -6,11 +6,16 @@
 //! `Scene.*` / `Sprite.*` / `Camera.*` — and `file = module` means *every*
 //! sibling loads, so one rendering module is enough to make a whole game
 //! untestable. This module supplies the real [`FunctorHost`] instead, which is
-//! the same host the shells run and is a stateless value: every external is a
-//! pure constructor over the protocol types (a `Scene.cube(…)` builds a scene
-//! node; an `Effect.*` builds an effect *descriptor* — performing it is the
-//! producer's effect broker, which never runs here). Nothing in the registry
-//! touches GL, so instantiating it off-thread and off-GPU is safe.
+//! the same host the shells run and is a unit struct: no external in the
+//! registry touches GL, performs IO, or spawns a thread — they build protocol
+//! values (a `Scene.cube(…)` builds a scene node) or *descriptors* (an
+//! `Effect.*` describes an effect; performing it is the producer's effect
+//! broker, which never runs here). So it is safe to instantiate off-GPU.
+//!
+//! Two externals are not quite pure: the `Ui.*` widget constructors push into
+//! the prelude's `UI_HANDLERS` thread-local. The producer drains that after
+//! every `ui(model)` evaluation; [`run_project_expects`] does the same at the
+//! end, so a project whose expects construct widgets doesn't leak closures.
 //!
 //! This is the library core behind `functor test`; the CLI command is a thin
 //! wrapper that renders [`ExpectRun`] as diagnostics.
@@ -26,6 +31,10 @@ pub struct ExpectCase {
     pub file: PathBuf,
     pub line: usize,
     pub col: usize,
+    /// The offending source line, carried from the already-in-memory
+    /// `SourceFile` so the caller renders a caret without re-reading (and
+    /// without risking a *different* snapshot than the one evaluated).
+    pub source_line: Option<String>,
     /// `None` when the expect held; otherwise the human-facing reason (a
     /// rendered comparison, or a located runtime error).
     pub failure: Option<String>,
@@ -66,9 +75,10 @@ pub struct ExpectRunError {
 /// engine's bundled modules and `.funi` interfaces — exactly what `build` and
 /// the producers load) and evaluate its `expect` tests under the engine host.
 ///
-/// Like `functor-lang test`, this does NOT typecheck: `check` is the static
-/// gate, and callers that want it (the `functor test` command does) run it
-/// first. A non-bool expect therefore reports as its own failure here.
+/// Callers that already hold a loaded (and typechecked) project should use
+/// [`run_expects_in`] instead — loading twice would let an edit land between
+/// the check and the run, so the bytes evaluated would not be the bytes
+/// verified.
 pub fn run_project_expects(entry: &Path) -> Result<ExpectRun, ExpectRunError> {
     let project = functor_lang::project::load_with_bundled_modules(
         entry,
@@ -81,7 +91,20 @@ pub fn run_project_expects(entry: &Path) -> Result<ExpectRun, ExpectRunError> {
         col: e.col,
         message: e.message,
     })?;
+    run_expects_in(&project)
+}
 
+/// Evaluate an ALREADY-LOADED project's `expect` tests under the engine host.
+///
+/// Like `functor-lang test`, this does NOT typecheck: `check` is the static
+/// gate, and callers that want it (the `functor test` command does) run it on
+/// this same project first. A non-bool expect therefore reports as its own
+/// failure here.
+///
+/// Expects from the engine's own bundled modules are EXCLUDED: they are not
+/// the user's tests, and their `<builtin>/…` paths are not files anyone can
+/// open. (`build`'s module count filters the same marker.)
+pub fn run_expects_in(project: &functor_lang::project::Project) -> Result<ExpectRun, ExpectRunError> {
     let reports =
         functor_lang::run_expects(&project.module, &mut FunctorHost).map_err(|failure| {
             let (file, line, col) = project.sources.resolve(failure.error.span.start);
@@ -91,10 +114,23 @@ pub fn run_project_expects(entry: &Path) -> Result<ExpectRun, ExpectRunError> {
                 col,
                 message: failure.error.message.clone(),
             }
-        })?;
+        });
+    // The `Ui.*` constructors register handlers in a thread-local the producer
+    // drains per frame; nothing consumes them here, so drop whatever the
+    // expects accumulated (also on the error path — the def load runs first).
+    let _ = crate::functor_lang_prelude::take_ui_handlers();
+    let reports = reports?;
 
     let cases = reports
         .iter()
+        .filter(|report| {
+            !project
+                .sources
+                .resolve(report.span.start)
+                .0
+                .path
+                .starts_with("<builtin>")
+        })
         .map(|report| {
             let (file, line, col) = project.sources.resolve(report.span.start);
             let failure = match &report.outcome {
@@ -118,12 +154,18 @@ pub fn run_project_expects(entry: &Path) -> Result<ExpectRun, ExpectRunError> {
                 file: file.path.clone(),
                 line,
                 col,
+                source_line: nth_line(&file.src, line),
                 failure,
             }
         })
         .collect();
 
     Ok(ExpectRun { cases })
+}
+
+/// The 1-based `line`th line of `src`, for the diagnostic caret.
+fn nth_line(src: &str, line: usize) -> Option<String> {
+    src.lines().nth(line.checked_sub(1)?).map(str::to_string)
 }
 
 #[cfg(test)]
