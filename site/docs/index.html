@@ -35,7 +35,7 @@
     <div class="docs-layout api-layout">
       <nav class="docs-nav api-nav" aria-label="API modules">
         <div class="api-nav-heading">Modules</div>
-        <div id="api-module-nav"></div>
+        <div id="api-module-nav"><!--api-module-nav--></div>
       </nav>
 
       <main class="docs-main api-main">
@@ -48,9 +48,15 @@
             <code>.funi</code> interfaces embedded in native, wasm, and editor tooling.
           </p>
           <div class="api-meta">
-            <span><strong id="api-module-count">—</strong> modules</span>
-            <span><strong id="api-item-count">—</strong> declarations</span>
-            <a href="../manual/">Read the manual →</a>
+            <span><strong id="api-module-count"><!--api-module-count--></strong> modules</span>
+            <span><strong id="api-item-count"><!--api-item-count--></strong> declarations</span>
+            <div class="api-meta-links">
+              <a href="../manual/">Read the manual →</a>
+              <!-- The same reference as machine-readable files, for agents and
+                   scripts that read the docs over a plain HTTP GET. -->
+              <a class="api-format" href="api.md" title="The whole reference as plain Markdown">Markdown</a>
+              <a class="api-format" href="api.json" title="The whole reference as structured JSON">JSON</a>
+            </div>
           </div>
         </div>
 
@@ -64,9 +70,10 @@
         </label>
         <p id="api-results" class="api-results" role="status" aria-live="polite"></p>
 
-        <div id="api-reference">
-          <noscript>This reference needs JavaScript to load its generated data.</noscript>
-        </div>
+        <!-- Prerendered by site/build.mjs (site/src/api-reference-html.mjs) so a
+             plain, no-JS GET returns the whole reference. api-docs.js only adds
+             search/filter on top of this markup. -->
+        <div id="api-reference"><!--api-reference--></div>
       </main>
     </div>
 

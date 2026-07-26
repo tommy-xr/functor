@@ -14,6 +14,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES } from "./src/examples.js";
+import { renderApiReference } from "./src/api-reference-html.mjs";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -40,6 +41,15 @@ const docs = spawnSync(
   { cwd: root, stdio: "inherit" },
 );
 if (docs.status !== 0) process.exit(docs.status ?? 1);
+
+// The same reference as plain Markdown. Published next to the JSON so an agent
+// (or a `curl`) can read the whole API without running the page's JavaScript.
+const apiMarkdown = spawnSync(
+  "cargo",
+  ["run", "-q", "-p", "functor-docgen", "--", "--deny-undocumented", "--format", "markdown"],
+  { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+);
+if (apiMarkdown.status !== 0) process.exit(apiMarkdown.status ?? 1);
 
 const PAGES = [
   "index.html",
@@ -106,22 +116,67 @@ try {
   if (/^v\d+\.\d+\.\d+$/.test(tag)) badge = `${tag} · alpha`;
 } catch {}
 
+// The API reference is prerendered into its page (see src/api-reference-html.mjs):
+// a no-JS fetch of /docs/ must return the real signatures and docs, not a shell.
+const reference = JSON.parse(await readFile(apiReference, "utf8"));
+const rendered = renderApiReference(reference);
+const PRERENDER = {
+  "api-module-nav": rendered.nav,
+  "api-reference": rendered.sections,
+  "api-module-count": String(rendered.moduleCount),
+  "api-item-count": String(rendered.itemCount),
+};
+
 for (const page of PAGES) {
   const target = `${dist}/${page}`;
   await mkdir(dirname(target), { recursive: true });
   if (page.endsWith(".html")) {
-    const html = await readFile(`${site}${page}`, "utf8");
-    await writeFile(
-      target,
-      html.replace(
-        /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
-        `$1${badge}$2`
-      )
+    let html = await readFile(`${site}${page}`, "utf8");
+    html = html.replace(
+      /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
+      `$1${badge}$2`
     );
+    if (page === "docs/index.html") {
+      for (const [marker, markup] of Object.entries(PRERENDER)) {
+        if (!html.includes(`<!--${marker}-->`)) {
+          console.error(`docs/index.html is missing the <!--${marker}--> prerender marker`);
+          process.exit(1);
+        }
+        html = html.replace(`<!--${marker}-->`, () => markup);
+      }
+    }
+    await writeFile(target, html);
   } else {
     await cp(`${site}${page}`, target);
   }
 }
+
+// Machine-readable mirrors of the reference, at stable URLs.
+await writeFile(`${dist}/docs/api.json`, JSON.stringify(reference, null, 2));
+await writeFile(`${dist}/docs/api.md`, apiMarkdown.stdout);
+// llms.txt (llmstxt.org): the entry point an agent fetches to find the rest.
+await writeFile(
+  `${dist}/llms.txt`,
+  `# Functor
+
+> A functional toolkit for building 3D games in Functor Lang — Functor's own
+> interpreted, F#-inspired game-logic language. A game is a \`.fun\` file the
+> Rust runtime interprets directly (native OpenGL, WebGL2, and Quest/OpenXR),
+> with hot-reload and no build step for game logic.
+
+## Docs
+
+- [API reference (Markdown)](https://functor.games/docs/api.md): every engine module, type, and function available to a hosted \`.fun\` game, generated from the \`.funi\` prelude embedded in the runtime.
+- [API reference (JSON)](https://functor.games/docs/api.json): the same reference as structured data (modules → items with \`qualified_name\`, \`kind\`, \`declaration\`, \`docs\`).
+- [API reference (HTML)](https://functor.games/docs/): the searchable rendering of the same data.
+- [Manual](https://functor.games/manual/): getting started, the MVU game contract, language principles, topic guides.
+- [Sandbox](https://functor.games/sandbox.html): run and edit the sample games in the browser.
+
+## Source
+
+- [GitHub repository](https://github.com/tommy-xr/functor): the runtimes, the language crate, and the \`examples/\` games.
+`,
+);
 for (const icon of ICONS) {
   try {
     await cp(`${site}${icon}`, `${dist}/${icon}`);
