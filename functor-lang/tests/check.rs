@@ -1711,6 +1711,33 @@ fn unknown_builtin_member_is_a_check_error() {
     }
 }
 
+// A suggestion is only offered when it is UNAMBIGUOUS and points the right
+// way; otherwise the namespace's full member list is the honest answer. A
+// misleading "did you mean" is worse than none — `List.mapIndexed` is not a
+// misspelling of `List.map`.
+#[test]
+fn a_suggestion_is_never_ambiguous_or_misleading() {
+    for (src, expected_hint) in [
+        // Several members share the prefix — name none of them.
+        ("let a = List.f([1.0])", "`List` has:"),
+        ("let a = Math.a(1.0)", "`Math` has:"),
+        // The typed name merely STARTS WITH a real member, but means
+        // something else.
+        ("let a = List.mapIndexed([1.0])", "`List` has:"),
+        ("let a = Math.moderate(1.0)", "`Math` has:"),
+        // Unambiguous prefix, and typo-scale distance: still suggested.
+        ("let a = Math.clamp(1.0)", "did you mean `Math.clamp01`?"),
+        ("let a = Debug.l(1.0)", "did you mean `Debug.log`?"),
+        ("let a = Math.sine(1.0)", "did you mean `Math.sin`?"),
+    ] {
+        let (message, _, _) = single_diag(src);
+        assert!(
+            message.contains(expected_hint),
+            "for {src}: expected hint {expected_hint:?}, got {message:?}"
+        );
+    }
+}
+
 // The diagnostic carries the reference's own span.
 #[test]
 fn unknown_builtin_member_reports_the_reference_span() {

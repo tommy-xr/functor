@@ -772,7 +772,6 @@ fn finish(mut items: Vec<CompletionItem>, partial: &str) -> Vec<CompletionItem> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::Builtin;
     use crate::project::load_sources_with_prelude;
     use std::path::PathBuf;
 
@@ -1460,54 +1459,6 @@ mod tests {
             find(&items, "Empty").detail.as_deref(),
             Some("Pieces.Empty : Box<'a>")
         );
-    }
-
-    // Drift guard: this match is exhaustive over `Builtin`, so adding a
-    // variant fails to compile here until BUILTINS (above) offers it too.
-    #[test]
-    fn builtins_list_is_exhaustive() {
-        for &b in &BUILTINS {
-            match b {
-                Builtin::ListMap
-                | Builtin::ListFilter
-                | Builtin::ListFold
-                | Builtin::ListRange
-                | Builtin::ListGrid
-                | Builtin::ListMaximum
-                | Builtin::ListLength
-                | Builtin::ListAppend
-                | Builtin::ListFlatten
-                | Builtin::ListAny
-                | Builtin::ListAll
-                | Builtin::ListReverse
-                | Builtin::ListIsEmpty
-                | Builtin::MathSin
-                | Builtin::MathCos
-                | Builtin::MathSqrt
-                | Builtin::MathAbs
-                | Builtin::MathFloor
-                | Builtin::MathAtan2
-                | Builtin::MathMod
-                | Builtin::MathMin
-                | Builtin::MathMax
-                | Builtin::MathPow
-                | Builtin::MathPi
-                | Builtin::MathClamp01
-                | Builtin::TextConcat
-                | Builtin::TextFromFloat
-                | Builtin::TextFixed
-                | Builtin::TextToBullets
-                | Builtin::TextSplit
-                | Builtin::TextJoin
-                | Builtin::TextParseFloat
-                | Builtin::RandomSeed
-                | Builtin::RandomStep
-                | Builtin::RandomRange
-                | Builtin::RandomFork
-                | Builtin::DebugLog => {}
-            }
-        }
-        assert_eq!(BUILTINS.len(), 37, "BUILTINS must list every Builtin");
     }
 
     // 19. A full keyword typed (`let`, cursor at end) still offers `let`.

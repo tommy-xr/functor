@@ -2547,8 +2547,9 @@ fn unknown_external_error(path: &[String], joined: String, span: Span) -> RunErr
 pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Text", "Math", "Random", "Debug"];
 
 /// The complete builtin registry as a list. Hand-listed because [`Builtin`] is
-/// not iterable — keep in sync with the enum (the `all_builtins_is_exhaustive`
-/// and `all_builtins_round_trip` tests fail otherwise). Lives next to
+/// not iterable — keep in sync with the enum (`builtins_list_is_exhaustive`
+/// fails to COMPILE otherwise, and `all_builtins_round_trip_through_dispatch`
+/// fails if an entry stops dispatching). Lives next to
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
@@ -2725,7 +2726,8 @@ pub fn render_trace(events: &[TraceEvent]) -> String {
 
 #[cfg(test)]
 mod builtin_registry_tests {
-    use super::{builtin, builtin_members, builtin_name, ALL_BUILTINS, BUILTIN_NAMESPACES};
+    use super::{builtin, builtin_members, builtin_name, Builtin, ALL_BUILTINS, BUILTIN_NAMESPACES};
+    use std::collections::BTreeSet;
 
     /// The DRIFT LOCK between the interpreter's dispatch table and the member
     /// set the checker reports (`types::unknown_builtin_member`): every listed
@@ -2745,58 +2747,67 @@ mod builtin_registry_tests {
                 "{name}: `{}` is missing from BUILTIN_NAMESPACES",
                 path[0]
             );
-            assert!(
-                builtin_members(&path[0]).contains(&&name[path[0].len() + 1..]),
-                "{name} is missing from builtin_members"
-            );
         }
     }
 
-    /// The OTHER half of the drift lock, and the one that matters most for a
-    /// FALSE check error: [`all_builtins_round_trip_through_dispatch`] only
-    /// walks [`ALL_BUILTINS`], so a variant added to the enum (and therefore,
-    /// by exhaustiveness, to [`builtin_name`]) but FORGOTTEN in
-    /// [`ALL_BUILTINS`] would slip past it — and the checker would then
-    /// reject a real, dispatchable builtin as an unknown member.
-    ///
-    /// [`builtin_name`]'s match is exhaustive over `Builtin`, so the names it
-    /// can return ARE the enum. Reading them out of the source is the only
-    /// way to enumerate a non-iterable enum, and it makes the two lists
-    /// impossible to diverge silently.
+    // THE DRIFT LOCK, half one: this match is exhaustive over `Builtin`, so
+    // adding a variant fails to COMPILE here until `ALL_BUILTINS` offers it
+    // too. That matters because `ALL_BUILTINS` is what the CHECKER reports as
+    // a namespace's member set — a builtin missing from it would be rejected
+    // as an unknown member even though the interpreter dispatches it.
+    // (Half two is `all_builtins_round_trip_through_dispatch`, below.)
     #[test]
-    fn builtin_name_match_and_all_builtins_agree() {
-        let source = include_str!("eval.rs");
-        let body = source
-            .split_once("pub fn builtin_name(b: Builtin) -> &'static str {")
-            .expect("builtin_name should exist")
-            .1
-            .split_once("\n}")
-            .expect("builtin_name should end")
-            .0;
+    fn builtins_list_is_exhaustive() {
+        for &b in &ALL_BUILTINS {
+            match b {
+                Builtin::ListMap
+                | Builtin::ListFilter
+                | Builtin::ListFold
+                | Builtin::ListRange
+                | Builtin::ListGrid
+                | Builtin::ListMaximum
+                | Builtin::ListLength
+                | Builtin::ListAppend
+                | Builtin::ListFlatten
+                | Builtin::ListAny
+                | Builtin::ListAll
+                | Builtin::ListReverse
+                | Builtin::ListIsEmpty
+                | Builtin::MathSin
+                | Builtin::MathCos
+                | Builtin::MathSqrt
+                | Builtin::MathAbs
+                | Builtin::MathFloor
+                | Builtin::MathAtan2
+                | Builtin::MathMod
+                | Builtin::MathMin
+                | Builtin::MathMax
+                | Builtin::MathPow
+                | Builtin::MathPi
+                | Builtin::MathClamp01
+                | Builtin::TextConcat
+                | Builtin::TextFromFloat
+                | Builtin::TextFixed
+                | Builtin::TextToBullets
+                | Builtin::TextSplit
+                | Builtin::TextJoin
+                | Builtin::TextParseFloat
+                | Builtin::RandomSeed
+                | Builtin::RandomStep
+                | Builtin::RandomRange
+                | Builtin::RandomFork
+                | Builtin::DebugLog => {}
+            }
+        }
+        assert_eq!(ALL_BUILTINS.len(), 37, "ALL_BUILTINS must list every Builtin");
 
-        let mut from_source: Vec<&str> = body
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("Builtin::"))
-            .filter_map(|arm| arm.split_once("=> \""))
-            .filter_map(|(_, rest)| rest.split_once('"'))
-            .map(|(name, _)| name)
-            .collect();
-        from_source.sort_unstable();
-        assert!(
-            from_source.len() > 30,
-            "the arm scrape found only {} names — did `builtin_name` change shape?",
-            from_source.len()
-        );
-
-        let mut listed: Vec<&str> = ALL_BUILTINS.iter().map(|b| builtin_name(*b)).collect();
-        listed.sort_unstable();
-
+        // The length check alone would accept a DUPLICATE entry standing in
+        // for a missing one.
+        let unique: BTreeSet<&str> = ALL_BUILTINS.iter().map(|b| builtin_name(*b)).collect();
         assert_eq!(
-            from_source, listed,
-            "`ALL_BUILTINS` has drifted from the `Builtin` enum. Names only \
-             `builtin_name` knows would be REJECTED BY THE CHECKER as unknown \
-             members; names only `ALL_BUILTINS` has are stale. Add the missing \
-             variant to `ALL_BUILTINS`."
+            unique.len(),
+            ALL_BUILTINS.len(),
+            "ALL_BUILTINS has a duplicate entry masking a missing builtin"
         );
     }
 

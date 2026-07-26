@@ -346,6 +346,12 @@ fn free_vars_of(ty: &Type, out: &mut Vec<u32>) {
 /// interpreter's wording (`eval::unknown_external_error`) so the same typo
 /// reads identically at check and at run time, and adds either the nearest
 /// member name or the namespace's full member list.
+///
+/// In practice this closes FOUR namespaces, not five: `Random` is a bundled
+/// interface module (`project.rs`), so lowering rejects `Random.nope` with
+/// "module `Random` has no `nope`" before checking ever runs. The `Random`
+/// arm is kept anyway — it costs nothing and would matter the day that
+/// module stops being bundled.
 fn unknown_builtin_member(path: &[String]) -> Option<String> {
     let (head, rest) = path.split_first()?;
     if rest.is_empty() || !BUILTIN_NAMESPACES.contains(&head.as_str()) {
@@ -360,16 +366,20 @@ fn unknown_builtin_member(path: &[String]) -> Option<String> {
     Some(format!("`{head}` has no builtin `{member}` — {hint}"))
 }
 
-/// The closest member name to `member`: a prefix relation (`Math.clamp` →
-/// `Math.clamp01`) or a typo-scale edit distance (≤ 2, and never more than a
-/// third of the name), so an honestly-missing function like `nth` suggests
-/// nothing instead of something misleading.
+/// The closest member name to `member`: an UNAMBIGUOUS prefix relation
+/// (`Math.clamp` → `Math.clamp01`) or a typo-scale edit distance (≤ 2, and
+/// never more than a third of the name), so an honestly-missing function like
+/// `nth` suggests nothing instead of something misleading.
+///
+/// Both restrictions are load-bearing. Only `name.starts_with(member)` — "you
+/// typed a prefix of the real name" — counts: the converse direction would
+/// answer `List.mapIndexed` with "did you mean `List.map`?", pointing at a
+/// function with different semantics. And a prefix shared by SEVERAL members
+/// (`List.f` → filter/flatten/fold) names none of them, since picking the
+/// shortest would be arbitrary; those fall through to the full member list.
 fn nearest_member(member: &str, members: &[&'static str]) -> Option<&'static str> {
-    if let Some(name) = members
-        .iter()
-        .filter(|name| name.starts_with(member) || member.starts_with(*name))
-        .min_by_key(|name| (name.len(), **name))
-    {
+    let mut prefixed = members.iter().filter(|name| name.starts_with(member));
+    if let (Some(name), None) = (prefixed.next(), prefixed.next()) {
         return Some(name);
     }
     let budget = 2.min(member.chars().count() / 3);
