@@ -14,6 +14,9 @@ import path from "node:path";
 const MESHES_BASE = "https://raw.githubusercontent.com/BabylonJS/Assets/master/meshes";
 const SKYBOX_BASE =
   "https://raw.githubusercontent.com/BabylonJS/Assets/master/skyboxes/TropicalSunnyDay";
+// Poly Haven serves direct per-file CDN URLs (no archive to unpack), so its
+// textures drop straight into the same fetch as everything else. All CC0.
+const POLYHAVEN_BASE = "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/1k";
 
 // Which assets each sample needs (a sample loads them relative to its own dir).
 const TARGETS = [
@@ -36,6 +39,19 @@ const TARGETS = [
     dir: "examples/crossfade",
     baseUrl: MESHES_BASE,
     assets: ["Xbot.glb"],
+  },
+  {
+    // Terrain detail maps, one per `Terrain.layered` band. Poly Haven nests
+    // each texture under its own id, so these carry a full path rather than a
+    // bare filename.
+    dir: "examples/terrain",
+    baseUrl: POLYHAVEN_BASE,
+    assets: [
+      { from: "forest_ground_04/forest_ground_04_diff_1k.jpg", to: "detail-low.jpg" },
+      { from: "aerial_grass_rock/aerial_grass_rock_diff_1k.jpg", to: "detail-high.jpg" },
+      { from: "rock_face/rock_face_diff_1k.jpg", to: "detail-rock.jpg" },
+      { from: "snow_02/snow_02_diff_1k.jpg", to: "detail-snow.jpg" },
+    ],
   },
   {
     dir: "examples/atmosphere",
@@ -74,14 +90,18 @@ async function exists(filePath) {
 
 let failures = 0;
 for (const { dir, baseUrl, assets } of TARGETS) {
-  for (const name of assets) {
-    const dest = path.join(dir, name);
+  for (const asset of assets) {
+    // A bare string is fetched and saved under the same name; `{ from, to }`
+    // renames, for hosts that nest a file under a per-asset path.
+    const from = typeof asset === "string" ? asset : asset.from;
+    const to = typeof asset === "string" ? asset : asset.to;
+    const dest = path.join(dir, to);
     if (await exists(dest)) {
       console.log(`ok       ${dest}`);
       continue;
     }
 
-    const url = `${baseUrl}/${name}`;
+    const url = `${baseUrl}/${from}`;
     process.stdout.write(`fetching ${dest} ... `);
     try {
       const response = await fetch(url);

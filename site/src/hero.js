@@ -4,7 +4,7 @@
 // the wave keeps rolling — then drag the timeline back through the change.
 //
 // This is the light sibling of sandbox.js: it reuses the same editor↔player
-// seam (player-bridge.js) but a stripped editor (mini-editor.js — no basicSetup
+// seam (player-bridge.ts) but a stripped editor (mini-editor.js — no basicSetup
 // or lint) so the landing bundle stays tiny. It NEVER reloads the iframe; every
 // edit is a source push, because state preservation IS the demo.
 

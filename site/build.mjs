@@ -15,6 +15,7 @@ import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES } from "./src/examples.js";
 import { renderApiReference } from "./src/api-reference-html.mjs";
+import { injectHeader } from "./src/header.js";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -132,7 +133,8 @@ for (const page of PAGES) {
   await mkdir(dirname(target), { recursive: true });
   if (page.endsWith(".html")) {
     let html = await readFile(`${site}${page}`, "utf8");
-    html = html.replace(
+    // The shared header first (it carries the badge span), then stamp the badge.
+    html = injectHeader(html, page).replace(
       /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
       `$1${badge}$2`
     );

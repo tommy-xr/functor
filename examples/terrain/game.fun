@@ -22,6 +22,12 @@ let world =
        Color.rgb(0.28, 0.25, 0.23),
        Color.rgb(0.86, 0.90, 0.91),
        340.0)
+  |> Terrain.textured(
+       Asset.texture("detail-low.jpg"),
+       Asset.texture("detail-high.jpg"),
+       Asset.texture("detail-rock.jpg"),
+       Asset.texture("detail-snow.jpg"),
+       24.0)
   |> Terrain.grass(13.0, 520.0, 5.5, Color.rgb(0.25, 0.46, 0.10))
 
 let terrainBody = Physics.tag("terrain")

@@ -34,7 +34,7 @@
 use std::collections::BTreeSet;
 
 use crate::ast::{TypeBody, VariantDecl};
-use crate::eval::{builtin_name, Builtin};
+use crate::eval::{builtin_name, ALL_BUILTINS as BUILTINS};
 use crate::hover::{children, type_name_text};
 use crate::ir::{BindingId, Def, Expr, ExprKind, Pattern, PatternKind};
 use crate::lexer::{Token, TokenKind};
@@ -62,48 +62,6 @@ pub enum CompletionKind {
     /// A record field, offered after a record-typed value (`pos.x`).
     Field,
 }
-
-/// The complete builtin registry. Hand-listed because [`Builtin`] is not
-/// iterable — keep in sync with `eval::Builtin` (35 variants).
-const BUILTINS: [Builtin; 37] = [
-    Builtin::ListMap,
-    Builtin::ListFilter,
-    Builtin::ListFold,
-    Builtin::ListRange,
-    Builtin::ListGrid,
-    Builtin::ListMaximum,
-    Builtin::ListLength,
-    Builtin::ListAppend,
-    Builtin::ListFlatten,
-    Builtin::ListAny,
-    Builtin::ListAll,
-    Builtin::ListReverse,
-    Builtin::ListIsEmpty,
-    Builtin::MathSin,
-    Builtin::MathCos,
-    Builtin::MathSqrt,
-    Builtin::MathAbs,
-    Builtin::MathFloor,
-    Builtin::MathAtan2,
-    Builtin::MathMod,
-    Builtin::MathMin,
-    Builtin::MathMax,
-    Builtin::MathPow,
-    Builtin::MathPi,
-    Builtin::TextConcat,
-    Builtin::TextFromFloat,
-    Builtin::TextFixed,
-    Builtin::TextToBullets,
-    Builtin::TextSplit,
-    Builtin::TextJoin,
-    Builtin::TextParseFloat,
-    Builtin::MathClamp01,
-    Builtin::RandomSeed,
-    Builtin::RandomStep,
-    Builtin::RandomRange,
-    Builtin::RandomFork,
-    Builtin::DebugLog,
-];
 
 /// The keywords offered at an expression position: the lexer keywords plus
 /// the contextual `open` (`lexer.rs`).
@@ -1501,54 +1459,6 @@ mod tests {
             find(&items, "Empty").detail.as_deref(),
             Some("Pieces.Empty : Box<'a>")
         );
-    }
-
-    // Drift guard: this match is exhaustive over `Builtin`, so adding a
-    // variant fails to compile here until BUILTINS (above) offers it too.
-    #[test]
-    fn builtins_list_is_exhaustive() {
-        for &b in &BUILTINS {
-            match b {
-                Builtin::ListMap
-                | Builtin::ListFilter
-                | Builtin::ListFold
-                | Builtin::ListRange
-                | Builtin::ListGrid
-                | Builtin::ListMaximum
-                | Builtin::ListLength
-                | Builtin::ListAppend
-                | Builtin::ListFlatten
-                | Builtin::ListAny
-                | Builtin::ListAll
-                | Builtin::ListReverse
-                | Builtin::ListIsEmpty
-                | Builtin::MathSin
-                | Builtin::MathCos
-                | Builtin::MathSqrt
-                | Builtin::MathAbs
-                | Builtin::MathFloor
-                | Builtin::MathAtan2
-                | Builtin::MathMod
-                | Builtin::MathMin
-                | Builtin::MathMax
-                | Builtin::MathPow
-                | Builtin::MathPi
-                | Builtin::MathClamp01
-                | Builtin::TextConcat
-                | Builtin::TextFromFloat
-                | Builtin::TextFixed
-                | Builtin::TextToBullets
-                | Builtin::TextSplit
-                | Builtin::TextJoin
-                | Builtin::TextParseFloat
-                | Builtin::RandomSeed
-                | Builtin::RandomStep
-                | Builtin::RandomRange
-                | Builtin::RandomFork
-                | Builtin::DebugLog => {}
-            }
-        }
-        assert_eq!(BUILTINS.len(), 37, "BUILTINS must list every Builtin");
     }
 
     // 19. A full keyword typed (`let`, cursor at end) still offers `let`.
