@@ -1587,23 +1587,39 @@ variant type; a foreign literal arm is a can-never-match error);
 exhaustiveness checks all ctors / `true`+`false` / catch-all; arm results
 must agree.
 
-⚠️ **A MISSPELLED OR MISCASED TYPE NAME SILENTLY DISABLES CHECKING.** An
-unrecognized annotation resolves to `Unknown`, which absorbs everything —
-so the primitives' exact lowercase spelling matters: `float`, `string`,
-`bool`, and `List<…>`. Writing `Float`, `String`, `Bool`, `int`, or `Number`
-does **not** error; it just turns that binding into a dynamic seam and
-throws away every diagnostic you annotated it to get. Verified:
+**Type names are lowercase**: `float`, `string`, `bool`, `List<…>`. A
+miscased or misspelled name is a **check error** with a did-you-mean, so
+you find out immediately:
 
 ```functor
 let f = (x: Float): Float => x + 1.0
-let bad = f("this is a string")   // `check` reports NOTHING (exit 0);
-                                  //   it blows up only at run time
+// error: unknown type name `Float` — did you mean `float`?
+//        (Functor Lang's primitive types are lowercase)
 ```
 
-The same trap applies to a mistyped nominal (`Postion` for `Position`).
-When an annotation you added stops catching an obvious error, suspect its
-spelling first. (`functor-lang check` cannot warn about this today — an
-unknown type name is exactly the `Unknown` gradual seam.)
+`Int`, `Number`, and `Double` are errors too — Functor Lang has a single
+number type, `float`. A mistyped nominal (`Postion` for `Position`)
+suggests the declared type it is closest to; a name that resembles nothing
+in scope tells you to declare it or to write `unknown`.
+
+⚠️ **Historical note (this WAS a silent trap).** Until the diagnostic
+landed, an unrecognized annotation resolved to `Unknown` — which absorbs
+everything — so `let x: Float = "hi"` typechecked clean and every
+annotation you added for safety was quietly inert. If you are reading older
+`.fun` code (or older docs) written against that behavior, its `Float`/
+`String` annotations were never checking anything, and fixing the casing
+may surface real type errors that were always there.
+
+`unknown` is the **explicit** gradual seam — the one annotation that
+deliberately absorbs anything, in both directions:
+
+```functor
+let handle = (payload: unknown) => …   // a host value only the two ends type
+```
+
+Use it where a value is genuinely dynamic (`Net.Data`'s payload is declared
+this way). Everywhere else, an unknown name is now an error rather than a
+silent opt-out of checking.
 
 ## Keeping this skill honest
 

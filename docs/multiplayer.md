@@ -99,9 +99,11 @@ Effect.sendMsg(connId, msg)   // send a plain-data VALUE; received as Net.Data(i
 ```
 
 `Net` is a built-in module, always in scope:
-`type NetEvent = | Connected(id: Float) | Message(id: Float, text: String) |
-Data(id: Float, value: NetData) | Disconnected(id: Float) |
-Error(id: Float, text: String)`. The connection id is
+`type NetEvent = | Connected(id: float) | Message(id: float, text: string) |
+Data(id: float, value: unknown) | Disconnected(id: float) |
+Error(id: float, text: string)`. `Data`'s payload is `unknown` — the explicit
+gradual seam, since its real type is whatever ADT the two ends share. The
+connection id is
 assigned by the runtime and reported via `Connected`; the game stores it in its
 model and names it in `Effect.send`. `examples/wsdemo` (client) and
 `examples/wsserverdemo` (server) are the ports.

@@ -12,23 +12,28 @@
 //! annotations are scoped type variables (`(xs: List<a>, f: (a) => b)`).
 //!
 //! **Gradualness survives at the seams**: [`Type::Unknown`] remains for
-//! host values and unrecognized UPPERCASE type names, absorbs anything in
+//! host values and for the annotation `unknown`, absorbs anything in
 //! unification, and never binds a variable — dynamic where the world is
-//! dynamic, inferred everywhere else. Record literals resolve NOMINALLY,
-//! F#-style: the unique declared type with exactly that field set (no
-//! match → anonymous data, still gradual; several → ambiguity error
-//! asking for an annotation).
+//! dynamic, inferred everywhere else. It is no longer where UNRECOGNIZED
+//! type names land: an unknown name is a check error (see
+//! `Checker::unknown_type_message`), because resolving `Float` to `Unknown`
+//! silently disabled checking wherever someone capitalized a primitive.
+//! Record literals resolve NOMINALLY, F#-style: the unique declared type
+//! with exactly that field set (no match → anonymous data, still gradual;
+//! several → ambiguity error asking for an annotation).
 //!
 //! ## The type language
 //!
-//! - Primitives `Float`, `String`, `Bool` (numbers are all Float).
-//! - Declared record types (`type Position = { x: Float, y: Float }`) —
+//! - Primitives `float`, `string`, `bool` (numbers are all `float`).
+//!   Lowercase — a capitalized `Float` is a diagnosed error, not a type.
+//! - `unknown` — the explicit dynamic seam, compatible with everything.
+//! - Declared record types (`type Position = { x: float, y: float }`) —
 //!   nominal, by name.
-//! - Declared variant types (`type Shape = | Circle(radius: Float) | Point`)
+//! - Declared variant types (`type Shape = | Circle(radius: float) | Point`)
 //!   — nominal, by name, like records.
 //! - `List<T>`.
 //! - Function types, from lambda annotations
-//!   (`(a: Float, b: Float): Float => …`); an unannotated return type is the
+//!   (`(a: float, b: float): float => …`); an unannotated return type is the
 //!   body's type when that is known (inferred in a single quiet enrichment
 //!   pass — a *chain* of unannotated-return functions may stay Unknown).
 //!
@@ -84,8 +89,10 @@ use std::fmt;
 #[derive(Clone, PartialEq)]
 pub enum Type {
     /// Not known statically; compatible with everything (see module docs).
-    /// After B7 this is the GRADUAL seam only (host values, unknown
-    /// uppercase type names) — unannotated code gets real [`Type::Var`]s.
+    /// After B7 this is the GRADUAL seam only (host values, and the
+    /// explicitly-written `unknown` annotation) — unannotated code gets real
+    /// [`Type::Var`]s, and an unrecognized type NAME is now an error rather
+    /// than a silent arrival here.
     Unknown,
     /// An inference variable (B7). Solved through the checker's
     /// substitution; a variable still free after a def's inference is
@@ -389,6 +396,21 @@ fn nearest_member(member: &str, members: &[&'static str]) -> Option<&'static str
         .filter(|(distance, _)| *distance <= budget)
         .min_by_key(|(distance, name)| (*distance, *name))
         .map(|(_, name)| name)
+}
+
+/// The primitive a capitalized/aliased spelling was reaching for. Functor
+/// Lang's primitives are lowercase, but nearly every other language
+/// capitalizes them, so `Float`/`String`/`Bool` are the mistake people
+/// actually make — and `Int`/`Number`/`Double` name a type Functor Lang
+/// doesn't have (all numbers are `float`).
+fn miscased_primitive(name: &str) -> Option<&'static str> {
+    match name.to_lowercase().as_str() {
+        "float" | "int" | "integer" | "number" | "double" | "num" => Some("float"),
+        "string" | "str" | "text" => Some("string"),
+        "bool" | "boolean" => Some("bool"),
+        "unknown" | "any" | "dynamic" | "obj" | "object" => Some("unknown"),
+        _ => None,
+    }
 }
 
 /// Levenshtein distance, for [`nearest_member`]'s typo suggestions.
@@ -1259,10 +1281,11 @@ impl Checker<'_> {
         (renumber_with(&a, &order), renumber_with(&b, &order))
     }
 
-    /// Resolve an annotation to a [`Type`]. Unknown type *names* are not
-    /// errors (they may be generics like `T`); a recognized name applied at
-    /// the wrong arity is. `report: false` resolves silently (the signature
-    /// pre-pass, whose annotations the body pass resolves again).
+    /// Resolve an annotation to a [`Type`]. An unrecognized type *name* is an
+    /// error (generics are spelled `'a`, and the dynamic seam is spelled
+    /// `unknown` — so nothing legitimate is unrecognized); so is a recognized
+    /// name applied at the wrong arity. `report: false` resolves silently (the
+    /// signature pre-pass, whose annotations the body pass resolves again).
     fn resolve_type(&mut self, ty: &TypeName, report: bool) -> Type {
         let arity_error = |checker: &mut Checker, takes: usize| {
             if report {
@@ -1287,6 +1310,18 @@ impl Checker<'_> {
                     "string" => Type::String,
                     _ => Type::Bool,
                 }
+            }
+            // The EXPLICIT gradual seam: `unknown` is compatible with
+            // everything and disables checking at that position on purpose
+            // (a host payload whose real type only the two ends know — see
+            // `Net.Data`'s value). Every OTHER unrecognized name is an error,
+            // so opting out of checking is a thing you write, not a typo you
+            // get away with.
+            "unknown" => {
+                if !ty.args.is_empty() {
+                    return arity_error(self, 0);
+                }
+                Type::Unknown
             }
             "List" => {
                 if ty.args.len() != 1 {
@@ -1363,15 +1398,84 @@ the type: `type Name<{name}> = …`"
                 self.annot_vars.insert(name.to_string(), var.clone());
                 var
             }
-            // Unrecognized UPPERCASE names stay Unknown — the gradual seam
-            // for host-side types this module doesn't declare. Still resolve
-            // any arguments so nested annotations get their diagnostics.
+            // An unrecognized name is an ERROR, not a silent `Unknown`. This
+            // used to be the gradual seam, and it was a trap: `let x: Float =
+            // "hi"` typechecked clean, because miscased `Float` resolved to
+            // `Unknown` and disabled checking at that position instead of
+            // meaning `float`. The seam is still reachable — you write
+            // `unknown` for it — but you now have to MEAN it.
+            //
+            // Arguments still resolve first, so nested annotations report too.
             _ => {
                 for arg in &ty.args {
                     self.resolve_type(arg, report);
                 }
+                if report {
+                    let message = self.unknown_type_message(&ty.name);
+                    self.diag(ty.span, message);
+                }
                 Type::Unknown
             }
+        }
+    }
+
+    /// The teaching message for an unrecognized type name, with a
+    /// did-you-mean when one is confident enough to name.
+    ///
+    /// The overwhelmingly common case is a MISCASED primitive — `Float` for
+    /// `float` — because every other language spells them capitalized. That
+    /// gets a flat, certain correction. Otherwise the name is matched against
+    /// everything actually in scope (primitives, `unknown`, and the declared
+    /// record/variant types), case-insensitively first — `NetEvnt` for
+    /// `NetEvent` is still a typo of a real type — then by typo-scale edit
+    /// distance. With no confident candidate the message points at the two
+    /// real options: declare the type, or say `unknown` on purpose.
+    fn unknown_type_message(&self, name: &str) -> String {
+        let head = format!("unknown type name `{name}`");
+        if let Some(prim) = miscased_primitive(name) {
+            // Distinguish "you capitalized it" from "that type doesn't
+            // exist here": `Int`/`Number` are not miscasings of `float`,
+            // they are a different type system's idea of numbers.
+            let why = if name.to_lowercase() == prim {
+                "Functor Lang's primitive types are lowercase"
+            } else if prim == "float" {
+                "Functor Lang has a single number type, `float`"
+            } else {
+                "that is how Functor Lang spells it"
+            };
+            return format!("{head} — did you mean `{prim}`? ({why})");
+        }
+        let mut candidates: Vec<&str> = vec!["float", "string", "bool", "unknown", "List"];
+        candidates.extend(self.records.keys().map(String::as_str));
+        candidates.extend(self.variants.keys().map(String::as_str));
+        // A pure case difference is a certain hit; only then fall back to
+        // edit distance, budgeted like `nearest_member` so an honestly-novel
+        // name suggests nothing rather than something misleading.
+        let lowered = name.to_lowercase();
+        let near = candidates
+            .iter()
+            .find(|c| c.to_lowercase() == lowered)
+            .copied()
+            .or_else(|| {
+                // Distance is measured case-INSENSITIVELY, so `Flaot` reads as
+                // a two-edit typo of `float` rather than a three-edit one that
+                // spends its whole budget on the capital F. Budget: 2 for a
+                // name long enough that two edits still leave it recognizable,
+                // 1 for short names where 2 edits could reach anything.
+                let budget = if name.chars().count() >= 4 { 2 } else { 1 };
+                candidates
+                    .iter()
+                    .map(|c| (edit_distance(&lowered, &c.to_lowercase()), *c))
+                    .filter(|(distance, _)| *distance <= budget)
+                    .min_by_key(|(distance, c)| (*distance, *c))
+                    .map(|(_, c)| c)
+            });
+        match near {
+            Some(near) => format!("{head} — did you mean `{near}`?"),
+            None => format!(
+                "{head} — declare it (`type {name} = …`), or write `unknown` \
+if this position is deliberately untyped"
+            ),
         }
     }
 

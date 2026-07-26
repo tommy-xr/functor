@@ -446,15 +446,107 @@ fn error_type_argument_arity() {
     assert_eq!(message, "`List` takes 1 type argument(s), got 0");
 }
 
+// An unrecognized type name is an ERROR. It used to resolve silently to
+// `Unknown`, which disabled checking at that position — the trap that let
+// `let x: Float = "hi"` typecheck clean. A generic parameter is spelled
+// `'a`, not `T`, so nothing legitimate relied on the fall-through.
+#[test]
+fn unknown_type_name_is_an_error() {
+    let (message, line, col) = single_diag("let id = (x: 'a): T => x");
+    assert!(message.starts_with("unknown type name `T`"), "{message}");
+    assert_eq!((line, col), (1, 19));
+}
+
+/// The headline case: a miscased primitive is certainly wrong, and says so
+/// with the exact correction.
+#[test]
+fn miscased_primitives_suggest_the_lowercase_spelling() {
+    for (bad, good) in [("Float", "float"), ("String", "string"), ("Bool", "bool")] {
+        let (message, _, _) = single_diag(&format!("let x: {bad} = 1.0"));
+        assert_eq!(
+            message,
+            format!(
+                "unknown type name `{bad}` — did you mean `{good}`? \
+(Functor Lang's primitive types are lowercase)"
+            )
+        );
+    }
+}
+
+/// A type from another language's number tower is not a *casing* mistake, so
+/// it gets its own explanation rather than a misleading one.
+#[test]
+fn foreign_number_types_point_at_float() {
+    for bad in ["Int", "Integer", "Number", "Double"] {
+        let (message, _, _) = single_diag(&format!("let x: {bad} = 1.0"));
+        assert_eq!(
+            message,
+            format!(
+                "unknown type name `{bad}` — did you mean `float`? \
+(Functor Lang has a single number type, `float`)"
+            )
+        );
+    }
+}
+
+/// A typo of a DECLARED type suggests that type — matched case-insensitively
+/// so the capital doesn't eat the edit budget.
+#[test]
+fn typos_suggest_the_nearest_declared_type() {
+    let (message, _, _) = single_diag("type Point = { x: float }\nlet f = (p: Pont) => p");
+    assert!(message.contains("did you mean `Point`?"), "{message}");
+
+    let (message, _, _) = single_diag("let x: Flaot = 1.0");
+    assert!(message.contains("did you mean `float`?"), "{message}");
+}
+
+/// With no confident candidate, the message names the two real ways out
+/// instead of guessing.
+#[test]
+fn a_novel_name_suggests_nothing_and_teaches_the_options() {
+    let (message, _, _) = single_diag("let f = (x: Quaternion) => x");
+    assert_eq!(
+        message,
+        "unknown type name `Quaternion` — declare it (`type Quaternion = …`), \
+or write `unknown` if this position is deliberately untyped"
+    );
+}
+
+/// The trap itself: previously silent, now diagnosed — and once the
+/// annotation is spelled correctly, it actually checks.
+#[test]
+fn the_miscased_annotation_trap_is_closed() {
+    let (message, _, _) = single_diag("let x: Float = \"hi\"");
+    assert!(message.starts_with("unknown type name `Float`"), "{message}");
+
+    let (message, _, _) = single_diag("let x: float = \"hi\"");
+    assert_eq!(message, "`x`: expected float, got string");
+}
+
 // Gradual typing: these must NOT error.
 
-// …but an *unknown* type name is not an error — it may be a generic
-// parameter (`T`) or a type this module doesn't declare.
+/// `unknown` is the EXPLICIT dynamic seam — it absorbs anything in both
+/// directions, which is what host payloads (`Net.Data`'s value) need.
 #[test]
-fn unknown_type_names_are_not_errors() {
-    assert_clean("let id = (x: T): T => x");
-    // An Unknown annotation checks against nothing, even with a known body.
-    assert_clean("let f = (x: T): T => 1.0");
+fn unknown_is_a_writable_gradual_seam() {
+    assert_clean("let f = (x: unknown): unknown => x");
+    assert_clean("let f = (x: unknown): float => x");
+    assert_clean("let f = (x: float): unknown => x");
+    assert_clean("let f = (x: unknown): string => x");
+}
+
+/// Every legitimate annotation form still resolves — the error must not
+/// catch primitives, generics, containers, or declared nominals.
+#[test]
+fn legitimate_type_names_still_resolve() {
+    assert_clean("let x: float = 1.0");
+    assert_clean("let x: List<float> = [1.0]");
+    assert_clean("let x: (float, string) = (1.0, \"s\")");
+    assert_clean("let f: (float) => float = (n: float) => n");
+    assert_clean("let f = (xs: List<'a>, g: ('a) => 'b): List<'b> => List.map(g, xs)");
+    assert_clean("type Point = { x: float }\nlet f = (p: Point) => p.x");
+    assert_clean("type Box<'a> = | Wrap(v: 'a)\nlet f = (b: Box<float>) => b");
+    assert_clean("type Opaque\nlet f = (o: Opaque) => o");
 }
 
 #[test]

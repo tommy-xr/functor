@@ -127,7 +127,7 @@
     "primitive-type": {
       "comment": "The lowercase primitive types (F#/OCaml convention)",
       "name": "support.type.primitive.functor",
-      "match": "\\b(float|bool|string)\\b"
+      "match": "\\b(float|bool|string|unknown)\\b"
     },
     "type-name": {
       "comment": "Any other uppercase identifier is a type: `type` decl names, annotations after `:`, and generic arguments (`List<float>`)",
