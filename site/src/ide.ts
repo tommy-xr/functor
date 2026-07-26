@@ -208,6 +208,13 @@ const setStatus = (state: PillState, text: string, detail = "") => {
   els.status.title = detail;
 };
 
+// The boot loader (static markup in ide.html) evaporates when the PREVIEW
+// reports in — never on any other status change, since an error from, say, a
+// rejected new-file name says nothing about whether the pane has pixels yet.
+// One class toggle; the 620ms evaporate is all CSS.
+const dismissBootLoader = () =>
+  document.querySelector("[data-fn-boot]")?.classList.add("is-done");
+
 // ---------------------------------------------------------------- editor
 
 let programmaticEdit = false;
@@ -308,8 +315,12 @@ const setDoc = (source: string) => {
 
 const bridge = new ProjectBridge(els.player, {
   onReloading: () => setStatus("busy", "◌ reloading…"),
-  onLive: () => setStatus("live", "● live"),
+  onLive: () => {
+    dismissBootLoader();
+    setStatus("live", "● live");
+  },
   onResult: (ok, message) => {
+    dismissBootLoader();
     if (ok) {
       // the runtime's "model preserved" note, reachable on hover
       setStatus("live", "● live", message);
