@@ -13,9 +13,9 @@ import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
-import { EXAMPLES } from "./src/examples.js";
+import { EXAMPLES } from "./src/examples.ts";
 import { renderApiReference } from "./src/api-reference-html.mjs";
-import { injectHeader } from "./src/header.js";
+import { injectHeader } from "./src/header.ts";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
