@@ -2413,7 +2413,7 @@ is {other}"
             // errors. `!=` is the exact negation, so it shares every rule
             // here; only the diagnostics' operator and certain verdict differ.
             BinOp::Eq | BinOp::Ne => {
-                let sym = op_str(op);
+                let sym = op.symbol();
                 let certain = if matches!(op, BinOp::Ne) {
                     "always true"
                 } else {
@@ -2520,14 +2520,14 @@ is {other}"
                 &ty,
                 &Type::Float,
                 span,
-                &format!("`{}` operand", op_str(op)),
+                &format!("`{}` operand", op.symbol()),
             );
             return;
         }
         if !compatible(&ty, &Type::Float) {
             self.diag(
                 span,
-                format!("`{}` needs float operands, got {ty}", op_str(op)),
+                format!("`{}` needs float operands, got {ty}", op.symbol()),
             );
         }
     }
@@ -2572,8 +2572,4 @@ fn is_effect_seam(ty: &Type) -> bool {
             .is_some_and(|(module, _)| module == "Effect"),
         _ => false,
     }
-}
-
-fn op_str(op: BinOp) -> &'static str {
-    op.symbol()
 }

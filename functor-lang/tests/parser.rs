@@ -702,6 +702,15 @@ fn generic_close_followed_immediately_by_eq_parses() {
 }
 
 #[test]
+fn generic_close_followed_immediately_by_a_fat_arrow_parses() {
+    // `>=>` lexes as `>=` then `>`: splitting the `>=` must REASSEMBLE the
+    // leftover `=` and that `>` into the lambda's fat arrow, not leave a bare
+    // `=`. A return annotation is where this shape occurs.
+    functor_lang::parse("let f = (xs: List<float>): List<float>=> xs").unwrap();
+    functor_lang::parse("let f = (x: Box<float>): Box<float>=> x").unwrap();
+}
+
+#[test]
 fn bare_bang_is_a_lex_error() {
     // `!` exists only as `!=`; prefix negation stays `not`.
     let (message, _, _) = parse_err("let v = !a");

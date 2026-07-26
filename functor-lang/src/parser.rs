@@ -25,7 +25,8 @@
 //! tuplePat  := "(" subpat ("," subpat)+ ","? ")"
 //! subpat    := "_" | lowerIdent
 //! pipeline  := cmp ("|>" cmp)*
-//! cmp       := add (("<" | ">" | "==") add)*        (left-assoc)
+//! cmp       := add (("<" | ">" | "<=" | ">=" | "==" | "!=") add)*
+//!                                                   (left-assoc)
 //! add       := mul (("+" | "-") mul)*               (left-assoc)
 //! mul       := unary (("*" | "/") unary)*           (left-assoc)
 //! unary     := "-" unary | postfix
@@ -148,16 +149,36 @@ impl Parser {
     }
 
     /// Close a generic argument list (`Box<'a>`, `List<float>`). Because `>=`
-    /// lexes as ONE token, a space-free `type Box<'a>= …` / `let xs:
-    /// List<float>= …` arrives here as `>=` — split it, consuming the `>` and
-    /// leaving an `=` in the stream for the caller.
+    /// lexes as ONE token, a space-free generic close followed by `=` arrives
+    /// here as `>=`: split it, consuming the `>` and putting what remains back
+    /// in the stream for the caller. Two shapes reach this, and both are real
+    /// grammar — `type Box<'a>= …` / `let xs: List<float>= …` leave an `=`,
+    /// and a return annotation (`(xs): List<float>=> xs`, lexed `>=` then `>`)
+    /// leaves a `=>` reassembled from the halves.
     fn expect_generic_close(&mut self) -> Result<Token, ParseError> {
         if self.peek_kind() == &TokenKind::GtEq {
             let span = self.peek().span;
-            self.tokens[self.pos] = Token {
-                kind: TokenKind::Eq,
-                span: Span::new(span.start + 1, span.end),
+            // A `>` sitting immediately after the `>=` means the source wrote
+            // `>=>`: the leftover `=` and that `>` are one fat arrow.
+            let arrow_end = self
+                .tokens
+                .get(self.pos + 1)
+                .filter(|next| next.kind == TokenKind::Gt && next.span.start == span.end)
+                .map(|next| next.span.end);
+            let rest = match arrow_end {
+                Some(end) => {
+                    self.tokens.remove(self.pos + 1);
+                    Token {
+                        kind: TokenKind::FatArrow,
+                        span: Span::new(span.start + 1, end),
+                    }
+                }
+                None => Token {
+                    kind: TokenKind::Eq,
+                    span: Span::new(span.start + 1, span.end),
+                },
             };
+            self.tokens[self.pos] = rest;
             return Ok(Token {
                 kind: TokenKind::Gt,
                 span: Span::new(span.start, span.start + 1),
