@@ -12,6 +12,13 @@ it doesn't parse — do not invent syntax from F#/OCaml habits.
 
 ## Verification loop (always available, no GPU)
 
+Builtin-module MEMBER names are validated at `check` time: `List.nth`,
+`Math.clamp`, `Text.length` (none exist) are check ERRORS with a near-miss
+hint or the namespace's member list — a typo in a `List.*` / `Text.*` /
+`Math.*` call no longer survives to runtime. Note this is a hard error with
+no escape hatch, and it gates hot-reload: a builtin typo in a DEAD branch
+now fails `build`/reload where it previously ran.
+
 ```sh
 cargo run -q -p functor-lang -- parse file.fun    # surface AST (spans on every node; this file only)
 cargo run -q -p functor-lang -- ir file.fun      # name-resolved core IR (merged project)
@@ -123,7 +130,12 @@ let main = () => report([12.0, 3.5, 40.0])    // zero-param main is run's entry 
 
 Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
 loosest), unary `-`, and the **short-circuiting booleans** `&&` / `||` plus
-prefix `not`. Precedence (tightest→loosest): comparisons > `not` > `&&` > `||`
+prefix `not`. That list is EXHAUSTIVE — there is **no `>=`, `<=`, `!=`, `<>`,
+`%`, or `^`**. Writing `x >= 0.0` is a parse error (`` expected an
+expression, found `=` ``); spell it `not (x < 0.0)`, and inequality as
+`not (a == b)`.
+Modulo is `Math.mod(a, b)` and exponentiation `Math.pow(base, exp)`.
+Precedence (tightest→loosest): comparisons > `not` > `&&` > `||`
 > pipelines. So `not a == b` is `not (a == b)`, `a || b && c` is
 `a || (b && c)`, and all three operands are checked as `bool`. `&&`/`||`
 short-circuit — `false && e` / `true || e` never evaluate `e` (so
@@ -156,7 +168,12 @@ module, named by its filename stem with the first letter capitalized
 EAGER and whole-program: ALL sibling `.fun` files load, check, and
 evaluate together — an unreferenced (or broken, or stray scratch) sibling
 still counts. File stems must be identifiers (`pure_pipeline.fun`, not
-`pure-pipeline.fun` — that's a load error).
+`pure-pipeline.fun`). A non-identifier stem is NOT a load error — the file
+is **skipped with a warning** (`[functor-lang] ignoring pure-pipeline.fun —
+its file stem is not a valid module identifier (editor temp file?); rename
+it to load it as a module`) and the rest of the project loads normally. So
+a hyphenated file contributes nothing; rename it to make its definitions
+visible.
 
 A project may instead declare named **`entries`** (`{"entries": {"client":
 "client.fun", "server": "server.fun"}}`) — multiple program roots over the
@@ -217,7 +234,11 @@ let grab = (s) =>
   Data(id: float, value: NetData) | Disconnected(id: float) |
   Error(id: float, text: string)`. A `Sub.connect`/
   `Sub.listen` tagger receives these — `match ev with | Net.Connected(id)
-  => …` — with no declaration needed. `Data` carries an `Effect.sendMsg`
+  => …` — with no declaration needed. The same module also declares
+  `type HttpResponse = | Response(status: float, body: string) |
+  Failure(error: string)`, the value an `Effect.httpGet`/`httpPost` tagger
+  receives (`Response` = the request completed at ANY HTTP status;
+  `Failure` = a transport error). `Data` carries an `Effect.sendMsg`
   payload decoded back into a plain-data value; its field type `NetData` is
   deliberately UNDECLARED (the gradual `Unknown` seam), so the bound value
   matches directly against whatever ADT the two ends share — declare the
@@ -393,7 +414,9 @@ that's what `functor test` is for.
 - **Top-level defs are mutually visible** (letrec-style) inside function
   bodies (late-bound at call time — this is the hot-reload rebind seam), but
   a *top-level initializer* may only demand globals defined above it.
-- **Equality `==` is structural**; comparing functions is a runtime error.
+- **Equality `==` is structural**; comparing functions is rejected at
+  CHECK time (`` functions cannot be compared with `==` ``), not just at
+  run time.
 - **Division is IEEE** (`1.0/0.0` = `inf`); the engine boundary rejects
   non-finite numbers.
 - **Greedy match arms**: arm bodies are full expressions, so a nested
@@ -421,8 +444,15 @@ that's what `functor test` is for.
   (mismatch = non-match, like ctors).
   Pattern vars are immutable bindings; lambdas may capture them. First
   matching arm wins; no arm matching is a spanned runtime error. Unapplied
-  ctors are first-class (`xs |> List.map(Circle)`); the runtime checks ctor
-  ARITY only (field types are the checker's job).
+  ctors are first-class (`xs |> List.map(Circle)`), and they **curry**:
+  under-applying yields a partial, not an error — `Rect(1.0)` displays as
+  `<partial 1 more>` and `Rect(1.0)(2.0)` completes it to `Rect(1, 2)`. Only
+  OVER-application errors (`cannot call a variant`). So a dropped ctor
+  argument surfaces as a stray function value flowing through your model,
+  not as an arity error at the call. `check` catches it where the types are
+  pinned down, but in unannotated code it can slip through to run time —
+  so a variant that mysteriously renders/compares wrong is worth grepping
+  for a missing argument.
 - **Duplicates are errors**: top-level names (per namespace — `type Foo` and
   `let Foo` may coexist, but constructors share the value namespace with
   `let`s), record fields (literal and update), lambda params, pattern
@@ -430,8 +460,13 @@ that's what `functor test` is for.
 - Recursion depth is capped (128 eval levels); deep iteration belongs in the
   iterative `List.*` builtins (`List.fold`/`map`/`filter`/`any`/`all`/`length`/…),
   which loop in the interpreter and consume no evaluation depth. A hand-rolled
-  recursive list walk trips the cap around n≈60; the depth error names the cap
-  value (128) and points at `List.fold`.
+  recursive walk trips the cap somewhere between **n≈40 and n≈60** — each
+  user-level call burns several eval levels, and the exact limit depends on
+  shape. Bisected: a bare tail call (`countdown(n - 1.0)`) reaches 62, while
+  wrapping the call in an operator (`1.0 + countdown(n - 1.0)`, or a
+  `match`-based `h + sumList(t)` list walk) costs an extra level per call and
+  fails at 42. Budget for the conservative number. The depth error names the
+  cap value (128) and points at `List.fold`.
 
 ## Standard library modules
 
@@ -452,6 +487,12 @@ let message = (result: Result.t<float, string>) =>
   | Result.Ok(value) => Text.fromFloat(value)
   | Result.Error(error) => error
 ```
+
+**Always qualify these constructors.** Bare `Some` / `None` / `Ok` / `Error`
+do NOT resolve (the loader says ``unknown name `Some` ``) — they are `Option`'s and
+`Result`'s ctors, not entry-module names, so write `Option.Some(x)`,
+`Option.None`, `Result.Ok(x)`, `Result.Error(e)` in both expressions and
+patterns (or `open Option` first).
 
 `Option.Some(value)` / `Option.None` ·
 `Option.map(fn, option)` · `Option.bind(fn, option)` ·
@@ -601,6 +642,14 @@ Scene.terrain(world)                                       //   descriptor-last;
                                                            //   GPU grid, 16-bit height sampling,
                                                            //   skirts, and bounded instanced grass
                                                            //   (not thousands of Scene nodes)
+terrain |> Terrain.color(color)                            // the plain single-color terrain
+                                                           //   material — an ALTERNATIVE to
+                                                           //   Terrain.layered, not a stage
+                                                           //   before it. The LAST of the two
+                                                           //   in the pipe wins (Terrain.color
+                                                           //   clears any layers), so chaining
+                                                           //   both just makes the earlier one
+                                                           //   dead. Pick one
 Asset.model("shark.glb") / Asset.texture("wood.png")       // typed asset locators, branded
 Asset.sound("boom.ogg")                                    //   per KIND (types Asset.Model /
                                                            //   Asset.Texture / Asset.Sound)
@@ -654,6 +703,18 @@ Vec3.make(x, y, z)                                         // Vec3 VALUES only: 
                                                            //   {x, y, z} records
 scene |> Scene.color(color)                                // scene-last: pipes
 scene |> Scene.lit(color)                                  // diffuse+specular
+Texture.file("wood.png")                                   // a Texture.t from a path
+                                                           //   relative to the game dir
+                                                           //   (a STRING — Texture.file is
+                                                           //   not asset coercion, so it
+                                                           //   keeps its string)
+scene |> Scene.litTexture(tex)                             // textured lit / unlit-glow
+scene |> Scene.emissiveTexture(tex)                        //   materials. `tex` may be a
+                                                           //   Texture.t VALUE or an
+                                                           //   Asset.Texture — the signature
+                                                           //   is generic ('texture), so the
+                                                           //   kind check happens in the host;
+                                                           //   scene-last, so they pipe
 scene |> Scene.litNormalMapped(color, normalTex)           // + tangent-space
                                                            //   normal map (a
                                                            //   Texture value):
@@ -850,6 +911,18 @@ Effect.sendMsg(connId, msg)                                // send a plain-data 
                                                            //   codec. Functions/host values in
                                                            //   the payload are teaching errors
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
+Effect.httpGet(url, tagger)                                // HTTP one-shots; the tagger
+Effect.httpPost(url, body, tagger)                         //   receives a Net.HttpResponse:
+                                                           //   `| Net.Response(status, body)`
+                                                           //   for ANY completed request
+                                                           //   (check status yourself) or
+                                                           //   `| Net.Failure(error)` for a
+                                                           //   transport error. Both are
+                                                           //   declared on the built-in Net
+                                                           //   module — no declaration needed.
+                                                           //   Pending HTTP is reset by hot
+                                                           //   reload (an in-flight tagger
+                                                           //   would dangle)
 
 Effect.preload(asset)                                      // warm the asset cache ahead of
 Effect.preloadThen(asset, msg)                             //   draw referencing the asset —
@@ -1049,9 +1122,20 @@ its declared position teleports it (the divergence rule, docs/physics.md).
 Physics **command effects** are returned beside the model like any effect
 — `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))` — but carry no
 tagger: nothing folds back through `update`; observe outcomes via the
-physics reads. Commands queue at perform time and apply at the next
-stepped frame's first substep, **after reconcile** — so declaring a body
-and commanding it in the same frame works. A command naming an unknown tag
+physics reads. Commands queue at perform time and apply at **the next
+physics step after they queue**, on its first substep and **after
+reconcile** — so declaring a body and commanding it in the same frame
+works. The rule is simply **the next physics step after the command
+queues**. Because the step comes after `tick`, a command from a pre-step
+source (`tick` / `input` / a subscription-driven `update`) normally reaches
+the immediately following step and is already visible to this frame's
+`draw` — verified with a `Physics.teleport` returned from `tick`, whose
+teleported position is read back by the very next `draw`. Commands from
+POST-step sources — a `Physics.raycast` tagger, a `Physics.events` handler
+— queue for the next frame's step instead. And on a frame where the
+fixed-step accumulator takes ZERO substeps (normal above 60fps) nothing
+steps at all, so EVERY command defers to the next simulated frame — the
+same exception the raycast paragraph below describes. A command naming an unknown tag
 (or a non-dynamic body) is a deduped `[functor-lang]` warning, not an error (the
 body may have despawned in flight). `teleport` moves the live body without
 touching its declaration (no snap-back next frame). Command effects need
@@ -1183,14 +1267,39 @@ exactly deterministic (that's the test seam). Taggers must be functions —
 `Effect.now(3.0)` is a construction-time error.
 
 Frame order: `sampledInput` → subscriptions→`update` → `tick` → `physics` (reconcile +
-fixed-step, 60Hz accumulator) → `draw` — physics reads in `draw` see this
-frame's stepped world; reads in `tick` see the *previous* frame's (so on
-the very first frame, and inside the `physics` hook itself, declared bodies
-don't exist yet — keep reads in `draw`). The physics world survives hot
-reload (like the model); deleting the `physics` hook drops it. Gotcha:
-`--fixed-time T` pins the clock with `dts = 0`, so physics **never steps**
-under it (and the subscription grid never crosses) — bodies render at their
-declared pose. Capture physics with plain `--capture-time` (and a settled
+fixed-step, 60Hz accumulator) → `draw`.
+
+`Physics.position` / `Physics.transformed` are **live-world reads**, and they
+work in `tick`, `update`, `input`, and `draw`. What differs is only how fresh
+the pose is, and that follows WHEN the caller runs: `tick` / `input` and the
+subscription-driven `update`s run before the step, so they see the *previous*
+frame's stepped pose; `draw` runs after it and sees this frame's. `update` is
+not uniformly pre-step — when it is handling a `Physics.raycast` tagger or a
+`Physics.events` message it runs POST-step, and its reads see the current
+frame's world.
+
+Two real constraints:
+
+- **Never read inside the `physics` hook.** It is not merely stale — it is a
+  DEADLOCK. The read raises before the hook returns its scene, so the world
+  is never declared, so the body never exists, so the read raises again:
+  every frame, forever — and it takes `draw`'s `Physics.transformed` down
+  with it. The hook is a pure DECLARATION of the world; derive positions
+  from the model instead.
+- **The first frame**, for the pre-step readers: nothing has stepped yet, so
+  the read is a spanned error — `` no body tagged "ball" in the physics world
+  (bodies exist after the frame's `physics` declaration has been reconciled
+  and stepped) ``. Unlike the hook case this is self-correcting: it is logged
+  as a `<hook> error` (`tick error`, `draw error`, …), that hook's call is
+  skipped, and every later frame reads fine. Guard it (a `started` flag, or a
+  `Sub`/`update` gate) or do that particular read in `draw`.
+
+The physics world survives hot reload (like the model); deleting the
+`physics` hook drops it. Gotcha: `--fixed-time T` pins the clock with
+`dts = 0`, so physics takes exactly **one** bootstrap substep and then never
+steps again (and the subscription grid never crosses) — bodies render at
+their declared pose, to within that single 1/60 substep. Capture physics
+with plain `--capture-time` (and a settled
 scene for reproducibility) instead; capture timer-driven changes via the
 debug server's `/time` advance. To *see* colliders, run with
 `--debug-render physics`: normal shading plus the live world's wireframes
@@ -1278,9 +1387,11 @@ lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized type
 names) and absorbs anything — but a BUILTIN namespace is not such a seam:
 its member set is closed, so `List.nth` / `Math.clamp` are check errors, not
-`Unknown` (see "Builtins"). (Function TYPES cannot be written in
-annotations yet — `f: ('a) => 'b` does not parse; leave higher-order
-parameters unannotated and let inference type them.) Generic declarations (`type Pair<'x, 'y> = { first: 'x, second: 'y }`)
+`Unknown` (see "Builtins"). Function TYPES **do** annotate —
+`(f: (float) => float)`, `(f: ('a) => 'b)`, and the parenthesized
+return position `(): ((A) => B) =>` all parse and check (see the Syntax
+subset above); leaving higher-order params unannotated and letting
+inference type them is still fine. Generic declarations (`type Pair<'x, 'y> = { first: 'x, second: 'y }`)
 instantiate fresh per use; an UNDECLARED type variable in a declaration is
 a teaching error. Record literals resolve nominally, F#-style:
 the unique declared type with exactly that field set (no match = anonymous
@@ -1290,6 +1401,24 @@ ambiguous — annotate). A `mut` slot's type fixes at its initializer. A
 variant type; a foreign literal arm is a can-never-match error);
 exhaustiveness checks all ctors / `true`+`false` / catch-all; arm results
 must agree.
+
+⚠️ **A MISSPELLED OR MISCASED TYPE NAME SILENTLY DISABLES CHECKING.** An
+unrecognized annotation resolves to `Unknown`, which absorbs everything —
+so the primitives' exact lowercase spelling matters: `float`, `string`,
+`bool`, and `List<…>`. Writing `Float`, `String`, `Bool`, `int`, or `Number`
+does **not** error; it just turns that binding into a dynamic seam and
+throws away every diagnostic you annotated it to get. Verified:
+
+```functor
+let f = (x: Float): Float => x + 1.0
+let bad = f("this is a string")   // `check` reports NOTHING (exit 0);
+                                  //   it blows up only at run time
+```
+
+The same trap applies to a mistyped nominal (`Postion` for `Position`).
+When an annotation you added stops catching an obvious error, suspect its
+spelling first. (`functor-lang check` cannot warn about this today — an
+unknown type name is exactly the `Unknown` gradual seam.)
 
 ## Keeping this skill honest
 
