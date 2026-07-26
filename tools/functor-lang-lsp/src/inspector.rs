@@ -484,7 +484,7 @@ pub fn execution_count(trace: &TraceDoc, entry: &str) -> usize {
 }
 
 /// The per-line recency-gutter states for `file_name`'s `source` — the same
-/// policy as the web editors' CodeMirror gutter (site/src/lang-intel.js):
+/// policy as the web editors' CodeMirror gutter (site/src/lang-intel.ts):
 /// `now` (green) ran on the paused frame; `before`/`after` ran only on
 /// earlier/later frames of the window (a line that ran both sides takes the
 /// NEAREST frame, tie → before); `dark` is statically runnable but never ran.
