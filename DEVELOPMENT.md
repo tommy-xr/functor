@@ -10,7 +10,8 @@ Install the following (the versions in parentheses are known-good):
 
 - [Rust](https://rustup.rs/) stable (`1.91`) with the wasm target:
   `rustup target add wasm32-unknown-unknown`
-- [Node.js + npm](https://nodejs.org/) (`node 22`, `npm 10`)
+- [Node.js + npm](https://nodejs.org/) (`node >=22.18`, `npm 10`) — the site build imports
+  TypeScript sources directly, and Node strips types by default only from 22.18
 - [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) (`0.12+`) — `npm install -g wasm-pack`
 
 On Linux you also need the native GL/X11 dev packages (see

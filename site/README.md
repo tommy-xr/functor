@@ -25,7 +25,7 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
 - `ide.html` / `src/ide.js` — the multi-file IDE: a file sidebar, per-file
   editing, a live preview fed the whole project via `functor-lang-set-project`
   (`src/project-bridge.js`), localStorage persistence, and project download as a
-  `.zip` (`src/zip.js`, a store-only writer). Asset (`.glb`/audio) management is a
+  `.zip` (`src/zip.ts`, a store-only writer). Asset (`.glb`/audio) management is a
   follow-up.
 - `src/runtime-target.js` — the shared external-runtime link in both editors.
   The first explicit push uses `/load-project` (fresh `init`); later edits use
@@ -37,20 +37,20 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
   `npm run site:serve -- --port 8124`. The runtime intentionally rejects
   non-loopback browser origins because its code-push API has no authentication.
   Current Chromium may ask once for local-network access when the link starts.
-- `src/functor-lang.js` — the Functor Lang CodeMirror language + synthwave theme,
+- `src/functor-lang.ts` — the Functor Lang CodeMirror language + synthwave theme,
   shared by both editors.
 - `manual/index.html` — getting started, the game contract, language principles,
   and topic guides. Runnable examples link directly into the sandbox.
-- `docs/index.html` / `src/api-reference-html.mjs` / `src/api-docs.js` — the API
+- `docs/index.html` / `src/api-reference-html.mjs` / `src/api-docs.ts` — the API
   reference. `site:build` regenerates gitignored `generated/api-reference.json`
   from the embedded prelude, then **prerenders** it into the page with
-  `src/api-reference-html.mjs`; `src/api-docs.js` only adds search/filter on top.
+  `src/api-reference-html.mjs`; `src/api-docs.ts` only adds search/filter on top.
   The page is therefore complete without JavaScript — a plain `curl` (or an LLM
   agent) sees every signature. The build also publishes machine-readable mirrors
   at `/docs/api.json`, `/docs/api.md`, and an `/llms.txt` index (llmstxt.org).
   `npm run generate:docs` additionally writes the local `docs/api-reference.md`.
 - `docs.html` — compatibility redirect to the manual, preserving old anchors.
-- `src/examples.js` is the single source of truth for the sandbox's example set
+- `src/examples.ts` is the single source of truth for the sandbox's example set
   (id + dropdown label + repo source path). `build.mjs` copies each entry's
   `game.fun` at build time and `src/sandbox.js` builds the dropdown from the same
   list, so the sandbox dropdown always matches what ships in the repo.

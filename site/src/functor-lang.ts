@@ -21,10 +21,23 @@ const KEYWORDS = new Set([
 ]);
 const ATOMS = new Set(["true", "false"]);
 
-export const functorLangLanguage = StreamLanguage.define({
+// The tokenizer's whole state: a stack of nesting contexts. `$"…"` pushes an
+// `interpolated`, a `{` inside one pushes a `hole` (which counts its own nested
+// braces so the closing `}` returns to the string), and a plain `"…"` pushes a
+// `string` for the unterminated-across-lines case.
+type Context =
+  | { kind: "interpolated" }
+  | { kind: "string" }
+  | { kind: "hole"; braces: number };
+
+interface State {
+  contexts: Context[];
+}
+
+export const functorLangLanguage = StreamLanguage.define<State>({
   name: "functor-lang",
-  startState: () => ({ contexts: [] }),
-  copyState: (state) => ({
+  startState: (): State => ({ contexts: [] }),
+  copyState: (state): State => ({
     contexts: state.contexts.map((context) => ({ ...context })),
   }),
   token(stream, state) {
@@ -42,7 +55,8 @@ export const functorLangLanguage = StreamLanguage.define({
         state.contexts.push({ kind: "hole", braces: 0 });
         return "bracket";
       }
-      while (!stream.eol() && !/["\\{}]/.test(stream.peek())) stream.next();
+      // `peek()` is non-null while `eol()` is false, so the guard runs first.
+      while (!stream.eol() && !/["\\{}]/.test(stream.peek()!)) stream.next();
       if (stream.pos === stream.start) stream.next();
       return "string";
     }

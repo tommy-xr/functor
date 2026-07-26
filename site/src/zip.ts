@@ -13,17 +13,22 @@ const CRC_TABLE = (() => {
   return t;
 })();
 
-const crc32 = (bytes) => {
+// Every byte array here is one we allocated ourselves, so the buffer is a plain
+// ArrayBuffer. Saying so (rather than the default `ArrayBufferLike`, which also
+// admits SharedArrayBuffer) is what lets the finished parts go into a `Blob`.
+type Bytes = Uint8Array<ArrayBuffer>;
+
+const crc32 = (bytes: Bytes): number => {
   let c = 0xffffffff;
   for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 };
 
-const u16 = (v) => new Uint8Array([v & 0xff, (v >>> 8) & 0xff]);
-const u32 = (v) =>
+const u16 = (v: number): Bytes => new Uint8Array([v & 0xff, (v >>> 8) & 0xff]);
+const u32 = (v: number): Bytes =>
   new Uint8Array([v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff]);
 
-const concat = (arrs) => {
+const concat = (arrs: Bytes[]): Bytes => {
   let len = 0;
   for (const a of arrs) len += a.length;
   const out = new Uint8Array(len);
@@ -35,12 +40,24 @@ const concat = (arrs) => {
   return out;
 };
 
-// files: [{ path, source }] (source a string). Returns a Blob (application/zip).
+/**
+ * One archive member: a path inside the zip and its text content.
+ *
+ * Structurally the IDE's `ProjectFile`, but deliberately its own type — the
+ * caller (ide.js) also zips a synthesised `functor.json` manifest that is not
+ * part of the project's module space.
+ */
+export interface ZipEntry {
+  path: string;
+  source: string;
+}
+
+// Returns a Blob (application/zip).
 // Timestamps are pinned (1980-01-01) so identical inputs yield identical bytes.
-export function zipFiles(files) {
+export function zipFiles(files: ZipEntry[]): Blob {
   const enc = new TextEncoder();
-  const parts = [];
-  const central = [];
+  const parts: Bytes[] = [];
+  const central: Bytes[] = [];
   let offset = 0;
 
   for (const f of files) {

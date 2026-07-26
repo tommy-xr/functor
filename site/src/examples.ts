@@ -13,7 +13,26 @@
 // `source` entry while the player fetches the complete project file list.
 // Asset outputs are relative to the site root because browser fetches resolve
 // `Asset.*` locators against player.html.
-export const EXAMPLES = [
+/** A file copied verbatim into the built site at `output` (relative to dist). */
+export interface ExampleCopy {
+  /** Path relative to the repo root. */
+  source: string;
+  /** Destination path relative to the site root. */
+  output: string;
+}
+
+export interface Example {
+  id: string;
+  label: string;
+  /** Path relative to the repo root; copied to `examples/<id>.fun`. */
+  source: string;
+  /** Sibling .fun modules the project needs (`file = module`). */
+  siblings?: ExampleCopy[];
+  /** Local binary assets the project's `Asset.*` locators resolve to. */
+  assets?: ExampleCopy[];
+}
+
+export const EXAMPLES: Example[] = [
   { id: "hero", label: "Neon grid", source: "site/examples/hero.fun" },
   { id: "orbit", label: "Orbit", source: "site/examples/orbit.fun" },
   // Single-file + a CORS-friendly CDN model (jsDelivr mirror of BabylonJS/Assets),
