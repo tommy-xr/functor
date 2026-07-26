@@ -780,7 +780,13 @@ impl Interp<'_> {
         use crate::ast::BinOp;
         let env = Env::empty();
         if let ExprKind::Binary {
-            op: op @ (BinOp::Eq | BinOp::Lt | BinOp::Gt),
+            op:
+                op @ (BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge),
             lhs,
             rhs,
         } = &expect.expr.kind
@@ -797,11 +803,7 @@ impl Interp<'_> {
                 Ok(Value::Bool(true)) => ExpectOutcome::Pass,
                 // Comparisons only produce bools, so anything else is false.
                 Ok(_) => ExpectOutcome::Fail(Some(FailedCompare {
-                    op: match op {
-                        BinOp::Eq => "==",
-                        BinOp::Lt => "<",
-                        _ => ">",
-                    },
+                    op: op.symbol(),
                     lhs: l.to_string(),
                     rhs: r.to_string(),
                 })),
@@ -1344,15 +1346,23 @@ evaluation depth."
             BinOp::Div => self.arith(lhs, rhs, span, |a, b| a / b),
             BinOp::Lt => self.compare(lhs, rhs, span, |a, b| a < b),
             BinOp::Gt => self.compare(lhs, rhs, span, |a, b| a > b),
-            BinOp::Eq => {
+            // IEEE ordering, like `<`/`>`: every comparison with NaN is false.
+            BinOp::Le => self.compare(lhs, rhs, span, |a, b| a <= b),
+            BinOp::Ge => self.compare(lhs, rhs, span, |a, b| a >= b),
+            // `!=` is the exact negation of `==`: the SAME structural walk,
+            // so it errors on functions/host values on exactly the inputs
+            // `==` does (and `NaN != NaN` is true, since `NaN == NaN` is
+            // false — the IEEE behaviour `<`/`<=` already have).
+            BinOp::Eq | BinOp::Ne => {
                 // Charge AFTER the walk (the count isn't known up front):
                 // one comparison can overshoot the budget by at most the
                 // value's size — itself budget-bounded to build — so total
                 // work stays O(budget).
                 let mut compared = 0u64;
-                let eq = value_eq(&lhs, &rhs, span, &mut compared)?;
+                let negated = matches!(op, BinOp::Ne);
+                let eq = value_eq(&lhs, &rhs, span, &mut compared, op.symbol())?;
                 self.charge(compared, span)?;
-                Ok(Value::Bool(eq))
+                Ok(Value::Bool(eq != negated))
             }
         }
     }
@@ -2225,7 +2235,15 @@ fn pattern_binder_sites<'a>(pattern: &'a Pattern, out: &mut Vec<(BindingId, &'a 
 /// recursion limit), and this runs inside editor/tooling processes where a
 /// stack overflow is a host crash. Pairs push in reverse so comparison
 /// order stays left-to-right (first mismatch/error is the leftmost).
-fn value_eq(a: &Value, b: &Value, span: Span, compared: &mut u64) -> Result<bool, RunError> {
+fn value_eq(
+    a: &Value,
+    b: &Value,
+    span: Span,
+    compared: &mut u64,
+    // The operator being evaluated (`==` or `!=`) — errors name the one the
+    // source actually wrote.
+    op: &str,
+) -> Result<bool, RunError> {
     /// Pending work. `MissingField` stands in for a record field whose name
     /// the other record lacks — pushed IN POSITION so the not-equal verdict
     /// lands in field order (an earlier field's function-comparison error
@@ -2301,13 +2319,13 @@ fn value_eq(a: &Value, b: &Value, span: Span, compared: &mut u64) -> Result<bool
                 | Value::Ctor { .. },
             ) => {
                 return Err(RunError {
-                    message: "functions cannot be compared with `==`".to_string(),
+                    message: format!("functions cannot be compared with `{op}`"),
                     span,
                 })
             }
             (Value::HostData(_), _) | (_, Value::HostData(_)) => {
                 return Err(RunError {
-                    message: "host values cannot be compared with `==`".to_string(),
+                    message: format!("host values cannot be compared with `{op}`"),
                     span,
                 })
             }
@@ -2853,7 +2871,7 @@ mod deep_value_tests {
                 let text = deep.to_string();
                 assert!(text.starts_with("[[[[") && text.len() > 400_000);
                 let mut compared = 0u64;
-                let same = value_eq(&deep, &deep.clone(), Span::new(0, 0), &mut compared)
+                let same = value_eq(&deep, &deep.clone(), Span::new(0, 0), &mut compared, "==")
                     .expect("comparable");
                 assert!(same);
                 assert!(compared > 200_000);
