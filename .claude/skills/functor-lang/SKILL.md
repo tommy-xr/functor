@@ -767,6 +767,24 @@ Vec3.make(x, y, z)                                         // Vec3 VALUES only: 
                                                            //   one. Reads (Physics.position,
                                                            //   rayHit) still hand back plain
                                                            //   {x, y, z} records
+Vec3.x(v) / Vec3.y(v) / Vec3.z(v)                          // read components back
+v |> Vec3.add(b)                                           // a + b
+v |> Vec3.sub(origin)                                      // "v minus origin" (subject LAST:
+                                                           //   Vec3.sub(b, a) == a - b)
+v |> Vec3.scale(k)                                         // negate with Vec3.scale(0.0 - 1.0)
+a |> Vec3.dot(b) / a |> Vec3.cross(b)                      // a · b (commutative) / a × b.
+                                                           //   Strafe axis is up × forward:
+                                                           //   up |> Vec3.cross(forward) = +X
+                                                           //   (forward +Z, up +Y)
+v |> Vec3.length() / v |> Vec3.normalize()                 // ZERO normalizes to ZERO, not NaN
+a |> Vec3.distance(b)                                      // |a - b|, symmetric
+from |> Vec3.lerp(target, t)                               // t=0 → from, t=1 → target; NOT
+                                                           //   clamped (it extrapolates)
+                                                           // Vec3 components are f32: accessors
+                                                           //   return ROUNDED values (compare
+                                                           //   with a tolerance), and an op that
+                                                           //   overflows the f32 range is an
+                                                           //   error, never a NaN
 scene |> Scene.color(color)                                // scene-last: pipes
 scene |> Scene.lit(color)                                  // diffuse+specular
 Texture.file("wood.png")                                   // a Texture.t from a path

@@ -1214,6 +1214,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
     REGISTRY.get_or_init(|| {
         let mut reg = crate::host_registry::Registry::default();
         register_branded_constructors(&mut reg);
+        register_vec3(&mut reg);
         register_ui_anchors(&mut reg);
         register_terrain(&mut reg);
         register_scene(&mut reg);
@@ -1330,6 +1331,155 @@ crate::host_returnable!(
     FunctorLangAudioSource,
     FunctorLangAudioScene,
 );
+
+/// `Vec3` component accessors and arithmetic (vec3.funi).
+///
+/// The brand stays opaque — these let a game keep vectors as `Vec3` all the
+/// way through instead of unpacking to a `{x, y, z}` record, doing the math
+/// itself, and rebuilding with `Vec3.make` at every prelude boundary. (Every
+/// game-jam entry that needed 3D math wrote that module by hand; four wrote
+/// it in parallel and one shipped a whole `v3.fun`.)
+///
+/// **Argument order is thread-last**, like the rest of the prelude
+/// (`Scene.translate(v, scene)`): the subject is LAST, so `Vec3.sub(b, a)`
+/// computes `a - b` and `v |> Vec3.sub(origin)` reads "v minus origin".
+///
+/// Every intermediate is computed in `f64` and the result is finite-checked
+/// before it is re-branded ([`vec3_finite`]). `Vec3.make` can only ever build
+/// a finite vector (its components go through the finite-checked `f64`
+/// extractor), and the arithmetic below preserves that invariant — so a
+/// `Vec3` reaching the renderer is ALWAYS componentwise finite, and a NaN can
+/// never reach a transform (where it would blank the scene and serialize as
+/// `null` in the `Frame` wire form).
+fn register_vec3(reg: &mut crate::host_registry::Registry) {
+    reg.fn1("Vec3.x", "Vec3.x(v)", |v: FunctorLangVec3| Value::Number(v.0 .0 as f64));
+    reg.fn1("Vec3.y", "Vec3.y(v)", |v: FunctorLangVec3| Value::Number(v.0 .1 as f64));
+    reg.fn1("Vec3.z", "Vec3.z(v)", |v: FunctorLangVec3| Value::Number(v.0 .2 as f64));
+
+    reg.fn2(
+        "Vec3.add",
+        "Vec3.add(b, a) — a + b; a |> Vec3.add(b)",
+        |b: FunctorLangVec3, a: FunctorLangVec3| {
+            let (a, b) = (widen(a), widen(b));
+            vec3_finite("Vec3.add", (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+        },
+    );
+    reg.fn2(
+        "Vec3.sub",
+        "Vec3.sub(b, a) — a - b; v |> Vec3.sub(origin)",
+        |b: FunctorLangVec3, a: FunctorLangVec3| {
+            let (a, b) = (widen(a), widen(b));
+            vec3_finite("Vec3.sub", (a.0 - b.0, a.1 - b.1, a.2 - b.2))
+        },
+    );
+    reg.fn2(
+        "Vec3.scale",
+        "Vec3.scale(k, v) — v |> Vec3.scale(2.0)",
+        |k: f64, v: FunctorLangVec3| {
+            let v = widen(v);
+            vec3_finite("Vec3.scale", (v.0 * k, v.1 * k, v.2 * k))
+        },
+    );
+    reg.fn2(
+        "Vec3.dot",
+        "Vec3.dot(b, a) — a · b",
+        |b: FunctorLangVec3, a: FunctorLangVec3| Value::Number(vec3_dot(widen(a), widen(b))),
+    );
+    reg.fn2(
+        "Vec3.cross",
+        "Vec3.cross(b, a) — a × b; a |> Vec3.cross(b)",
+        |b: FunctorLangVec3, a: FunctorLangVec3| {
+            let ((ax, ay, az), (bx, by, bz)) = (widen(a), widen(b));
+            vec3_finite(
+                "Vec3.cross",
+                (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx),
+            )
+        },
+    );
+    reg.fn1("Vec3.length", "Vec3.length(v)", |v: FunctorLangVec3| {
+        Value::Number(vec3_length(widen(v)))
+    });
+    reg.fn1("Vec3.normalize", "Vec3.normalize(v)", |v: FunctorLangVec3| {
+        let v = widen(v);
+        let len = vec3_length(v);
+        // `len` is finite for every representable input (see `vec3_length`),
+        // so the only non-dividable case is a true zero.
+        let unit = if len > 0.0 {
+            (v.0 / len, v.1 / len, v.2 / len)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        vec3_finite("Vec3.normalize", unit)
+    });
+    reg.fn2(
+        "Vec3.distance",
+        "Vec3.distance(b, a) — |a - b|",
+        |b: FunctorLangVec3, a: FunctorLangVec3| {
+            let (a, b) = (widen(a), widen(b));
+            Value::Number(vec3_length((a.0 - b.0, a.1 - b.1, a.2 - b.2)))
+        },
+    );
+    reg.fn3(
+        "Vec3.lerp",
+        "Vec3.lerp(target, t, from) — from |> Vec3.lerp(target, 0.5)",
+        |target: FunctorLangVec3, t: f64, from: FunctorLangVec3| {
+            let (f, g) = (widen(from), widen(target));
+            // Endpoint-exact: `t == 0` yields `from` and `t == 1` yields
+            // `target` bit-for-bit, which `from + (target - from) * t` does
+            // not guarantee once `target - from` overflows.
+            let mix = |f: f64, g: f64| {
+                if t == 0.0 {
+                    f
+                } else if t == 1.0 {
+                    g
+                } else {
+                    f * (1.0 - t) + g * t
+                }
+            };
+            vec3_finite("Vec3.lerp", (mix(f.0, g.0), mix(f.1, g.1), mix(f.2, g.2)))
+        },
+    );
+}
+
+/// The brand's `f32` storage widened to `f64` for arithmetic. Widening is
+/// exact, so no precision is invented; it only removes the overflow cliff
+/// (squaring an `f32` component overflows well below the `f32` range, which
+/// would make `Vec3.length` infinite for a length that is representable).
+fn widen(v: FunctorLangVec3) -> (f64, f64, f64) {
+    (v.0 .0 as f64, v.0 .1 as f64, v.0 .2 as f64)
+}
+
+fn vec3_dot(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
+    a.0 * b.0 + a.1 * b.1 + a.2 * b.2
+}
+
+/// Always finite for a componentwise-finite `f32` input: the largest possible
+/// sum of squares is ~3·(3.4e38)² ≈ 3.5e77, comfortably inside `f64`.
+fn vec3_length(v: (f64, f64, f64)) -> f64 {
+    vec3_dot(v, v).sqrt()
+}
+
+/// Narrow an `f64` result back into the brand, refusing a component that is
+/// not finite in `f32`.
+///
+/// This is the invariant that keeps NaN out of the renderer. Overflowing to
+/// infinity is a real possibility from perfectly legal inputs — a divergent
+/// integrator (`pos |> Vec3.add(vel |> Vec3.scale(dt))` with a too-stiff
+/// spring) doubles every frame and crosses the `f32` range in seconds — and
+/// an infinity that then reaches `Vec3.normalize` or a transform would
+/// silently blank the scene. Failing loudly at the operation that overflowed
+/// names the culprit instead.
+fn vec3_finite(path: &str, v: (f64, f64, f64)) -> Result<FunctorLangVec3, String> {
+    let (x, y, z) = (v.0 as f32, v.1 as f32, v.2 as f32);
+    if x.is_finite() && y.is_finite() && z.is_finite() {
+        Ok(FunctorLangVec3((x, y, z)))
+    } else {
+        Err(format!(
+            "{path}: the result is not a finite vector ({x}, {y}, {z}) — a Vec3 component \
+must stay within the 32-bit float range"
+        ))
+    }
+}
 
 fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
     reg.fn0("Ui.topLeft", "Ui.topLeft()", || FunctorLangUiAnchor(ui::Anchor::TopLeft));
@@ -5810,6 +5960,356 @@ Vec3.make(x, y, z)"
             fail("let main = () => Vec3.make(1.0, \"x\", 0.0)"),
             "expected a number, got a string"
         );
+    }
+
+    // --- Vec3 accessors and arithmetic ---
+
+    /// Evaluate a Functor Lang expression to a number.
+    fn eval_number(expr: &str) -> f64 {
+        match eval(&format!("let main = () => {expr}")) {
+            Value::Number(n) => n,
+            other => panic!("expected a number from `{expr}`, got a {}", value_kind(&other)),
+        }
+    }
+
+    /// Evaluate a Functor Lang expression to a `Vec3`, read back through the
+    /// public accessors (so the test exercises the same path a game does).
+    fn eval_vec3(expr: &str) -> (f64, f64, f64) {
+        (
+            eval_number(&format!("({expr}) |> Vec3.x()")),
+            eval_number(&format!("({expr}) |> Vec3.y()")),
+            eval_number(&format!("({expr}) |> Vec3.z()")),
+        )
+    }
+
+    /// f32 arithmetic widened to f64 is not exactly the f64 answer, and the
+    /// x86/ARM rounding of a `sqrt`-derived value can differ in the last
+    /// bits, so vector comparisons are always toleranced.
+    fn assert_close(actual: (f64, f64, f64), expected: (f64, f64, f64)) {
+        let ok = (actual.0 - expected.0).abs() < 1e-6
+            && (actual.1 - expected.1).abs() < 1e-6
+            && (actual.2 - expected.2).abs() < 1e-6;
+        assert!(ok, "expected {expected:?}, got {actual:?}");
+    }
+
+    /// The components a game stores go in and come back out unchanged.
+    #[test]
+    fn vec3_accessors_read_components() {
+        assert_close(
+            eval_vec3("Vec3.make(1.5, -2.25, 3.0)"),
+            (1.5, -2.25, 3.0),
+        );
+    }
+
+    /// Every arithmetic op, in direct-call form.
+    #[test]
+    fn vec3_arithmetic() {
+        let a = "Vec3.make(1.0, 2.0, 3.0)";
+        let b = "Vec3.make(10.0, 20.0, 30.0)";
+
+        // add is commutative; both spellings agree.
+        assert_close(eval_vec3(&format!("Vec3.add({b}, {a})")), (11.0, 22.0, 33.0));
+        assert_close(eval_vec3(&format!("Vec3.add({a}, {b})")), (11.0, 22.0, 33.0));
+
+        // sub(b, a) == a - b — the subject is the LAST argument.
+        assert_close(eval_vec3(&format!("Vec3.sub({b}, {a})")), (-9.0, -18.0, -27.0));
+        assert_close(eval_vec3(&format!("Vec3.sub({a}, {b})")), (9.0, 18.0, 27.0));
+
+        assert_close(eval_vec3(&format!("Vec3.scale(2.0, {a})")), (2.0, 4.0, 6.0));
+        // Negation is a scale by -1.
+        assert_close(
+            eval_vec3(&format!("Vec3.scale(0.0 - 1.0, {a})")),
+            (-1.0, -2.0, -3.0),
+        );
+
+        assert_eq!(eval_number(&format!("Vec3.dot({b}, {a})")), 140.0);
+        // Perpendicular vectors dot to zero.
+        assert_eq!(
+            eval_number("Vec3.dot(Vec3.make(0.0, 1.0, 0.0), Vec3.make(1.0, 0.0, 0.0))"),
+            0.0
+        );
+
+        // cross(b, a) == a × b, right-handed: X × Y = Z.
+        assert_close(
+            eval_vec3("Vec3.cross(Vec3.make(0.0, 1.0, 0.0), Vec3.make(1.0, 0.0, 0.0))"),
+            (0.0, 0.0, 1.0),
+        );
+        // …and is anti-commutative.
+        assert_close(
+            eval_vec3("Vec3.cross(Vec3.make(1.0, 0.0, 0.0), Vec3.make(0.0, 1.0, 0.0))"),
+            (0.0, 0.0, -1.0),
+        );
+
+        assert_eq!(eval_number("Vec3.length(Vec3.make(3.0, 4.0, 0.0))"), 5.0);
+        assert_eq!(eval_number("Vec3.length(Vec3.make(0.0, 0.0, 0.0))"), 0.0);
+
+        // distance is symmetric.
+        assert_eq!(
+            eval_number("Vec3.distance(Vec3.make(0.0, 0.0, 0.0), Vec3.make(3.0, 4.0, 0.0))"),
+            5.0
+        );
+        assert_eq!(
+            eval_number("Vec3.distance(Vec3.make(3.0, 4.0, 0.0), Vec3.make(0.0, 0.0, 0.0))"),
+            5.0
+        );
+
+        // lerp(target, t, from): t = 0 is `from`, t = 1 is `target`.
+        assert_close(eval_vec3(&format!("Vec3.lerp({b}, 0.0, {a})")), (1.0, 2.0, 3.0));
+        assert_close(
+            eval_vec3(&format!("Vec3.lerp({b}, 1.0, {a})")),
+            (10.0, 20.0, 30.0),
+        );
+        assert_close(eval_vec3(&format!("Vec3.lerp({b}, 0.5, {a})")), (5.5, 11.0, 16.5));
+        // t is not clamped — it extrapolates.
+        assert_close(eval_vec3(&format!("Vec3.lerp({b}, 2.0, {a})")), (19.0, 38.0, 57.0));
+    }
+
+    /// The strafe-axis identity the docs promise, pinned numerically: the
+    /// world-space "right" of a gaze is `up × forward`, which in this
+    /// argument order is `up |> Vec3.cross(forward)`. Getting this backwards
+    /// is the predictable cross-product mistake, so both orders are asserted.
+    #[test]
+    fn vec3_cross_strafe_axis_matches_the_docs() {
+        let forward = "Vec3.make(0.0, 0.0, 1.0)";
+        let up = "Vec3.make(0.0, 1.0, 0.0)";
+        // up × forward == +X — the documented strafe axis.
+        assert_close(
+            eval_vec3(&format!("{up} |> Vec3.cross({forward})")),
+            (1.0, 0.0, 0.0),
+        );
+        // forward × up == -X — the other order.
+        assert_close(
+            eval_vec3(&format!("{forward} |> Vec3.cross({up})")),
+            (-1.0, 0.0, 0.0),
+        );
+    }
+
+    /// Accessors round to the brand's `f32` storage — documented, and pinned
+    /// with a value that is NOT exactly representable so the rounding cannot
+    /// be accidentally hidden by a well-chosen test constant.
+    #[test]
+    fn vec3_accessors_round_to_f32() {
+        let x = eval_number("Vec3.x(Vec3.make(0.1, 0.0, 0.0))");
+        assert_eq!(x, 0.1f32 as f64);
+        assert_ne!(x, 0.1f64, "the f32 rounding is real and must stay documented");
+    }
+
+    /// Functor Lang has no exponent notation in float literals, so a huge
+    /// constant has to be spelled out in full.
+    fn lit(n: f64) -> String {
+        format!("{n:.1}")
+    }
+
+    /// A length that IS representable must not overflow to infinity just
+    /// because the intermediate squares would leave the `f32` range — and
+    /// such a vector must normalize to a real unit vector, not to zero (which
+    /// is indistinguishable from the documented zero-vector case).
+    #[test]
+    fn vec3_length_and_normalize_survive_huge_vectors() {
+        let c = lit(2.0e19);
+        let big = &format!("Vec3.make({c}, {c}, {c})");
+        let len = eval_number(&format!("Vec3.length({big})"));
+        assert!(len.is_finite(), "length overflowed to {len}");
+        assert!(
+            (len - 3.4641016e19).abs() / 3.4641016e19 < 1e-5,
+            "unexpected length {len}"
+        );
+        let unit = eval_vec3(&format!("Vec3.normalize({big})"));
+        assert_ne!(unit, (0.0, 0.0, 0.0), "a huge vector must not normalize to zero");
+        let unit_len = eval_number(&format!("Vec3.length(Vec3.normalize({big}))"));
+        assert!((unit_len - 1.0).abs() < 1e-6, "expected unit length, got {unit_len}");
+    }
+
+    /// An operation that overflows the `f32` range fails LOUDLY, naming the
+    /// operation — it must never hand back an infinity that becomes a NaN and
+    /// silently blanks the scene (a NaN transform also serializes as `null`,
+    /// which the `Frame` wire form cannot round-trip).
+    #[test]
+    fn vec3_overflow_is_an_error_not_a_nan() {
+        let (big, huge) = (lit(1.0e20), lit(1.0e19));
+        let msg = fail_message(&format!(
+            "let main = () => Vec3.make({big}, 0.0, 0.0) |> Vec3.scale({huge})"
+        ));
+        assert!(
+            msg.starts_with("Vec3.scale: the result is not a finite vector"),
+            "overflow should name the op, got: {msg}"
+        );
+        // …and the same guard covers the other producers.
+        let (p, n) = (lit(3.0e38), lit(-3.0e38));
+        for (src, path) in [
+            (
+                format!(
+                    "let main = () => Vec3.make({p}, 0.0, 0.0) \
+                     |> Vec3.add(Vec3.make({p}, 0.0, 0.0))"
+                ),
+                "Vec3.add",
+            ),
+            (
+                format!(
+                    "let main = () => Vec3.make({p}, 0.0, 0.0) \
+                     |> Vec3.sub(Vec3.make({n}, 0.0, 0.0))"
+                ),
+                "Vec3.sub",
+            ),
+        ] {
+            assert!(
+                fail_message(&src).starts_with(path),
+                "{path} overflow should be an error"
+            );
+        }
+    }
+
+    /// `lerp` is endpoint-exact even when `target - from` would overflow, so
+    /// `t = 0` can never turn a legal vector into a NaN.
+    #[test]
+    fn vec3_lerp_endpoints_are_exact_at_extremes() {
+        let (p, n) = (lit(3.0e38), lit(-3.0e38));
+        let from = &format!("Vec3.make({p}, 0.0, 0.0)");
+        let target = &format!("Vec3.make({n}, 0.0, 0.0)");
+        // Endpoints are EXACT (the f32-rounded input, unchanged) — an
+        // absolute tolerance is meaningless at this magnitude.
+        assert_eq!(
+            eval_vec3(&format!("{from} |> Vec3.lerp({target}, 0.0)")),
+            (3.0e38f32 as f64, 0.0, 0.0),
+        );
+        assert_eq!(
+            eval_vec3(&format!("{from} |> Vec3.lerp({target}, 1.0)")),
+            (-3.0e38f32 as f64, 0.0, 0.0),
+        );
+        // The midpoint of those extremes is representable and is zero.
+        assert_eq!(
+            eval_vec3(&format!("{from} |> Vec3.lerp({target}, 0.5)")),
+            (0.0, 0.0, 0.0),
+        );
+    }
+
+    /// A normalized vector is unit-length and keeps its direction.
+    #[test]
+    fn vec3_normalize_yields_a_unit_vector() {
+        assert_close(
+            eval_vec3("Vec3.normalize(Vec3.make(0.0, 5.0, 0.0))"),
+            (0.0, 1.0, 0.0),
+        );
+        let len = eval_number("Vec3.length(Vec3.normalize(Vec3.make(1.0, 2.0, 3.0)))");
+        assert!((len - 1.0).abs() < 1e-6, "expected unit length, got {len}");
+    }
+
+    /// The documented zero policy: normalizing the zero vector yields the
+    /// ZERO vector — not NaN, not an error. Per-frame code normalizes an idle
+    /// velocity constantly, so this must not fault the frame or poison a
+    /// transform with NaN.
+    #[test]
+    fn vec3_normalize_of_zero_is_zero() {
+        let v = eval_vec3("Vec3.normalize(Vec3.make(0.0, 0.0, 0.0))");
+        assert_eq!(v, (0.0, 0.0, 0.0));
+        assert!(!v.0.is_nan() && !v.1.is_nan() && !v.2.is_nan());
+        assert_eq!(
+            eval_number("Vec3.length(Vec3.normalize(Vec3.make(0.0, 0.0, 0.0)))"),
+            0.0
+        );
+    }
+
+    /// Thread-last is the point of the argument order: a pipeline of the
+    /// non-commutative ops must read left-to-right as the subject being
+    /// acted on, and agree with the direct-call spelling.
+    #[test]
+    fn vec3_pipelines_read_subject_first() {
+        // `v |> Vec3.sub(origin)` is "v minus origin".
+        assert_close(
+            eval_vec3("Vec3.make(5.0, 7.0, 9.0) |> Vec3.sub(Vec3.make(1.0, 2.0, 3.0))"),
+            (4.0, 5.0, 6.0),
+        );
+        // `a |> Vec3.cross(b)` is "a cross b" (X × Y = Z).
+        assert_close(
+            eval_vec3("Vec3.make(1.0, 0.0, 0.0) |> Vec3.cross(Vec3.make(0.0, 1.0, 0.0))"),
+            (0.0, 0.0, 1.0),
+        );
+        // `from |> Vec3.lerp(target, t)` moves `from` toward `target`.
+        assert_close(
+            eval_vec3("Vec3.make(0.0, 0.0, 0.0) |> Vec3.lerp(Vec3.make(4.0, 8.0, 12.0), 0.25)"),
+            (1.0, 2.0, 3.0),
+        );
+        // A whole chain: (v - origin) doubled, then normalized.
+        assert_close(
+            eval_vec3(
+                "Vec3.make(1.0, 2.0, 3.0) \
+                 |> Vec3.sub(Vec3.make(1.0, 2.0, 0.0)) \
+                 |> Vec3.scale(2.0) \
+                 |> Vec3.normalize()",
+            ),
+            (0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            eval_number("Vec3.make(3.0, 4.0, 0.0) |> Vec3.length()"),
+            5.0
+        );
+    }
+
+    /// The new functions are ordinary consumers of the brand, so they keep
+    /// the Angle-rule teaching errors: a bare number (or a bare `{x, y, z}`
+    /// record, the shape games hand-rolled before this existed) is refused.
+    #[test]
+    fn vec3_arithmetic_refuses_unbranded_values() {
+        // The error names the function that rejected the value, as the other
+        // branded consumers do.
+        for (src, path) in [
+            ("let main = () => Vec3.length(1.0)", "Vec3.length"),
+            ("let main = () => Vec3.x(1.0)", "Vec3.x"),
+            (
+                "let main = () => Vec3.add(1.0, Vec3.make(1.0, 2.0, 3.0))",
+                "Vec3.add",
+            ),
+        ] {
+            assert_eq!(
+                fail_message(src),
+                format!(
+                    "{path}: expected a Vec3, got a bare number — wrap the components: \
+Vec3.make(x, y, z)"
+                ),
+                "in `{src}`"
+            );
+        }
+        // A structural record is NOT a Vec3 — the brand is what makes an
+        // axis transposition unrepresentable.
+        let record = fail_message("let main = () => Vec3.length({ x: 1.0, y: 2.0, z: 3.0 })");
+        assert!(
+            record.contains("expected a Vec3"),
+            "a bare record must be refused, got: {record}"
+        );
+        // Arity slips still teach the shape.
+        assert_eq!(
+            fail_message("let main = () => Vec3.scale(2.0)"),
+            "usage: Vec3.scale(k, v) — v |> Vec3.scale(2.0)"
+        );
+    }
+
+    /// A vector that round-trips through the arithmetic is still a plain
+    /// three-f32 brand, so a velocity a game keeps in its model across
+    /// frames does not lose hot-reload time-travel history.
+    #[test]
+    fn computed_vec3s_stay_reload_safe() {
+        let v = eval(
+            "let main = () => Vec3.make(1.0, 2.0, 3.0) \
+             |> Vec3.add(Vec3.make(1.0, 0.0, 0.0)) |> Vec3.normalize()",
+        );
+        assert!(v.is_reload_safe_snapshot());
+    }
+
+    /// The whole point: a computed vector feeds the prelude directly, with
+    /// no unpack-and-rebuild at the boundary.
+    #[test]
+    fn computed_vec3s_feed_the_prelude_directly() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             let eye = Vec3.make(0.0, 2.0, 0.0) |> Vec3.add(Vec3.make(0.0, 0.0, -6.0)) in\n\
+             Frame.create(\n\
+             Camera.lookAt(eye, Vec3.make(0.0, 0.0, 0.0)),\n\
+             Scene.cube() |> Scene.translate(Vec3.make(1.0, 0.0, 0.0) |> Vec3.scale(3.0)))",
+        );
+        // The camera got the summed eye, and the scene the scaled offset.
+        let json = serde_json::to_string(&frame).expect("frame serializes");
+        assert!(json.contains("-6.0"), "camera eye z should be -6: {json}");
+        assert!(json.contains("3.0"), "translate x should be 3: {json}");
     }
 
     // A Vec3 stored in the model (a spawn point, a velocity) survives hot
