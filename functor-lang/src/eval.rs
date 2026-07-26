@@ -2752,6 +2752,54 @@ mod builtin_registry_tests {
         }
     }
 
+    /// The OTHER half of the drift lock, and the one that matters most for a
+    /// FALSE check error: [`all_builtins_round_trip_through_dispatch`] only
+    /// walks [`ALL_BUILTINS`], so a variant added to the enum (and therefore,
+    /// by exhaustiveness, to [`builtin_name`]) but FORGOTTEN in
+    /// [`ALL_BUILTINS`] would slip past it — and the checker would then
+    /// reject a real, dispatchable builtin as an unknown member.
+    ///
+    /// [`builtin_name`]'s match is exhaustive over `Builtin`, so the names it
+    /// can return ARE the enum. Reading them out of the source is the only
+    /// way to enumerate a non-iterable enum, and it makes the two lists
+    /// impossible to diverge silently.
+    #[test]
+    fn builtin_name_match_and_all_builtins_agree() {
+        let source = include_str!("eval.rs");
+        let body = source
+            .split_once("pub fn builtin_name(b: Builtin) -> &'static str {")
+            .expect("builtin_name should exist")
+            .1
+            .split_once("\n}")
+            .expect("builtin_name should end")
+            .0;
+
+        let mut from_source: Vec<&str> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("Builtin::"))
+            .filter_map(|arm| arm.split_once("=> \""))
+            .filter_map(|(_, rest)| rest.split_once('"'))
+            .map(|(name, _)| name)
+            .collect();
+        from_source.sort_unstable();
+        assert!(
+            from_source.len() > 30,
+            "the arm scrape found only {} names — did `builtin_name` change shape?",
+            from_source.len()
+        );
+
+        let mut listed: Vec<&str> = ALL_BUILTINS.iter().map(|b| builtin_name(*b)).collect();
+        listed.sort_unstable();
+
+        assert_eq!(
+            from_source, listed,
+            "`ALL_BUILTINS` has drifted from the `Builtin` enum. Names only \
+             `builtin_name` knows would be REJECTED BY THE CHECKER as unknown \
+             members; names only `ALL_BUILTINS` has are stale. Add the missing \
+             variant to `ALL_BUILTINS`."
+        );
+    }
+
     #[test]
     fn every_namespace_has_members() {
         for namespace in BUILTIN_NAMESPACES {
