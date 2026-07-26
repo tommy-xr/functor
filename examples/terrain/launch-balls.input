@@ -1,0 +1,23 @@
+# launch-balls.input — headless proof that launched spheres roll downhill.
+#
+# Deterministic scripted playback: the sim advances by a fixed --script-dt per
+# rendered frame, so frame N is always the same sim state.
+#
+#   functor -d examples/terrain run native \
+#     --input-script "$PWD/examples/terrain/launch-balls.input" \
+#     --script-dt 0.0166667 --capture-frame /tmp/f.png --capture-at-frame 300
+#
+#   f 30..90   look down the slope, then launch five spheres a few frames apart
+#   f 300      by here they have landed and rolled, spread down the hillside
+30 Down down
+44 Down up
+60 F down
+62 F up
+70 F down
+72 F up
+80 F down
+82 F up
+90 F down
+92 F up
+100 F down
+102 F up
