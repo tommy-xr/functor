@@ -3,8 +3,9 @@
 // — a controller that re-created itself on a React remount would drop queued
 // pushes and restart the `/state` poll chain.
 //
-// The markup mirrors `runtime-target.ts`'s (the IDE's imperative view) element
-// for element, class for class, data-attribute for data-attribute.
+// The markup mirrors the imperative view this replaced (`runtime-target.ts`,
+// deleted once the IDE converted too) element for element, class for class,
+// data-attribute for data-attribute. Both editor pages render this one panel.
 
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { RuntimeTargetCore } from "../runtime-target-core.js";

@@ -1,8 +1,8 @@
 // The external-runtime link's CLIENT and CONTROLLER, split out of the DOM
-// component so either a React view (the sandbox) or the imperative one
-// (`runtime-target.ts`, still used by the IDE) can render it. Every line of
-// protocol and state-machine behaviour below is carried over unchanged from
-// that module; only the writes that used to poke elements now publish a
+// component so a React view (`components/RuntimeTargetPanel.tsx`, rendered by
+// both the sandbox and the IDE) can render it. Every line of protocol and
+// state-machine behaviour below is carried over unchanged from the imperative
+// module it came from; only the writes that used to poke elements now publish a
 // snapshot for a view to render.
 //
 // The in-page wasm preview stays independent: the first explicit push starts a
