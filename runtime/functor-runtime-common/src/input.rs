@@ -41,7 +41,7 @@ pub struct MouseSnapshot {
 /// inactive), so a debug-injected sample (`POST /input` `{"type":"xr",…}`) can
 /// name only the hand and controls it drives.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct XrInputSnapshot {
     /// Center-eye pose relative to the rig reference.
     pub head: Option<TrackingPose>,
@@ -55,7 +55,7 @@ pub struct XrInputSnapshot {
 /// hand. Each pose is independently optional because OpenXR may have buttons
 /// while positional tracking is temporarily invalid.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct XrControllerSnapshot {
     pub active: bool,
     pub grip: Option<TrackingPose>,

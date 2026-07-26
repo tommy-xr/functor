@@ -160,6 +160,13 @@ export class FunctorClient {
     return this.input({ type: "xr", ...sample });
   }
 
+  /** Drop an injected XR sample, restoring what the runtime samples on its own
+   * — the `--emulate-xr` rig, or no `xr` domain at all. The release half of
+   * {@link xr}'s held-key contract. */
+  xrClear(): Promise<void> {
+    return this.input({ type: "xr_clear" });
+  }
+
   // --- Drive: clock --------------------------------------------------------
 
   /** Pin the game clock so it stops advancing (a "pause"). With no argument,

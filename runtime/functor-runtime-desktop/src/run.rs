@@ -676,6 +676,7 @@ fn service_debug_request(
                 debug_server::InputCommand::Key { .. }
                     | debug_server::InputCommand::MouseMove { .. }
                     | debug_server::InputCommand::Xr(_)
+                    | debug_server::InputCommand::XrClear
             );
             let result = match cmd {
                 debug_server::InputCommand::Key { key, down } => {
@@ -742,6 +743,10 @@ fn service_debug_request(
                     // `sampled_input` path a headset takes — which is what makes
                     // it land in the recorded input log and replay identically.
                     *xr_override = Some(*snapshot);
+                    Ok(())
+                }
+                debug_server::InputCommand::XrClear => {
+                    *xr_override = None;
                     Ok(())
                 }
             };

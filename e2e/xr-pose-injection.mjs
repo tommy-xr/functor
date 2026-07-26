@@ -147,8 +147,13 @@ function posePosition(model, name) {
   return xyz(block(block(model, name), "position"), `${name}.position`);
 }
 
-/** Run the whole injected sequence against a fresh runtime; return the state. */
-async function drive(port) {
+/** Run an injected sequence against a fresh runtime; return the state.
+ *
+ * `poseFn(i)` supplies step `i`'s pose, so a caller can drive the real sweep or
+ * a CONTROL sequence that holds one pose — the difference between the two is
+ * what proves the sequence itself (not merely "some hand was tracked") reached
+ * the simulation. */
+async function drive(port, poseFn = poseAt) {
   const base = `http://127.0.0.1:${port}`;
   const proc = spawn(
     BIN,
@@ -174,11 +179,18 @@ async function drive(port) {
     // Pin the clock so each pose gets exactly one fixed step.
     await post(base, "/time", { type: "set", tts: 0.0 });
     for (let i = 0; i < STEPS; i++) {
-      await post(base, "/input", poseAt(i));
+      await post(base, "/input", poseFn(i));
       await stepOneFrame(base);
     }
     const after = await state(base);
-    return { after, log };
+
+    // Release the injection: the game must fall back to "no XR device", which
+    // is only observable because the runtime stopped substituting our sample.
+    await post(base, "/input", { type: "xr_clear" });
+    await stepOneFrame(base);
+    const cleared = await state(base);
+
+    return { after, cleared, log };
   } finally {
     proc.kill("SIGKILL");
   }
@@ -207,12 +219,45 @@ console.log("\n▸ the pose sequence drove the simulation");
 const orb = point(after.model, "orb");
 const aim = posePosition(after.model, "rightAim");
 const init = { x: 0.0, y: 1.15, z: -0.7 };
-const moved = Math.hypot(orb.x - init.x, orb.y - init.y, orb.z - init.z);
-const toAim = Math.hypot(orb.x - aim.x, orb.y - aim.y, orb.z - aim.z);
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+const moved = dist(orb, init);
+const toAim = dist(orb, aim);
 check(moved > 0.1, `the orb left its init pose (moved ${moved.toFixed(3)})`);
 check(toAim < 0.5, `the orb was dragged to the injected aim (${toAim.toFixed(3)} away)`);
 
+// The control: the SAME machinery, but the hand held at the sweep's first pose
+// (z = -0.55, the plane --emulate-xr pins it to). If the harness were only
+// proving "a hand was tracked", this would land in the same place. It must not:
+// the swept hand ends 0.67 further back, and the orb has to follow it there.
+console.log("\n▸ the endpoint reflects the sequence, not just that XR was on");
+const control = await drive(8143, () => poseAt(0));
+const controlOrb = point(control.after.model, "orb");
+const spread = dist(orb, controlOrb);
+check(
+  spread > 0.3,
+  `a held first-pose control ends elsewhere (${spread.toFixed(3)} apart), so the sweep drove the result`,
+);
+// Rig-local +z is BACKWARD (OpenXR forward is -Z), and this camera sits at
+// z = -3 looking toward +Z — so a hand pulled toward the face travels toward
+// the camera, i.e. to SMALLER world z. The orb has to follow it there.
+check(
+  orb.z < controlOrb.z,
+  `pulling the hand toward the face drew the orb toward the camera (swept z ${orb.z.toFixed(3)} < held z ${controlOrb.z.toFixed(3)})`,
+);
+
+console.log("\n▸ releasing the injection restores the undriven state");
+check(
+  first.cleared.input.xr === undefined,
+  "xr_clear dropped the xr domain (no --emulate-xr to fall back to)",
+);
+check(
+  field(first.cleared.model, "rightGripTracked") === "false",
+  "the game returned to its Option.None branch",
+);
+
 console.log("\n▸ the sequence is deterministic");
+// Same inputs, a fresh process: this pins the injection path's reproducibility.
+// (It is not a test of recorded-log REPLAY — that path has its own coverage.)
 const second = await drive(8142);
 check(
   second.after.model === after.model,

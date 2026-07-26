@@ -110,6 +110,7 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"ui_event","slot":1,"kind":{"SliderChanged":0.5}}      // drag slider slot 1
 {"type":"ui_event","slot":2,"kind":{"TextChanged":"hi"}}       // edit text input slot 2
 {"type":"xr","left":{...},"right":{...},"head":{...}}          // set the XR device sample
+{"type":"xr_clear"}                                            // drop it again
 ```
 
 `ui_event` drives the game's interactive UI widgets without pixels or
@@ -128,10 +129,13 @@ input log, so a scripted pose sequence replays identically.
 
 The body is a whole [`xr` sample](#sampled-input-in-get-state) — the same shape
 `GET /state` reports — and it is **level state**, like a held key: it stays in
-force until the next `xr` command replaces it. Every field is optional and takes
-its default when omitted (hand inactive, no pose, `0.0`, an **identity**
-orientation), so name both hands each step rather than relying on a partial body
-to merge:
+force until the next `xr` command replaces it, or `{"type":"xr_clear"}` releases
+it (restoring the `--emulate-xr` rig, or no `xr` domain at all). Every field is
+optional and takes its default when omitted (hand inactive, no pose, `0.0`, an
+**identity** orientation), so name both hands each step rather than relying on a
+partial body to merge. An **unknown** field is a 400, not a default — a
+misspelled `"triger"` would otherwise succeed and pin the game to a
+nothing-tracked sample:
 
 ```sh
 curl -s -X POST $H/input -d '{

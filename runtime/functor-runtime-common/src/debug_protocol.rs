@@ -80,7 +80,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/input",
-        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"}",
+        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device)",
     },
     DebugRoute {
         method: "POST",
@@ -205,6 +205,13 @@ pub enum InputCommand {
     /// Boxed: the sample is an order of magnitude larger than the other
     /// commands, and would otherwise inflate every one of them.
     Xr(Box<XrInputSnapshot>),
+    /// Drop an injected sample, restoring whatever the runtime would sample on
+    /// its own — the `--emulate-xr` rig, or no `xr` domain at all.
+    ///
+    /// The release half of `Xr`'s held-key contract. Without it injection is a
+    /// one-way door: the first `xr` command would disable the emulator and make
+    /// a game's "no XR device" branch unreachable for the rest of the process.
+    XrClear,
 }
 
 /// A clock command sent through `POST /time`.
@@ -474,6 +481,35 @@ mod tests {
         // no head pose — i.e. "XR present, nothing tracked".
         let bare = serde_json::from_str::<InputCommand>(r#"{"type":"xr"}"#).unwrap();
         assert_eq!(bare, InputCommand::Xr(Box::default()));
+    }
+
+    /// Every field of an `xr` body is optional, so WITHOUT `deny_unknown_fields`
+    /// a typo is not a no-op — it is worse: the command still succeeds and
+    /// installs an all-default sample, flipping the game from "no XR device" to
+    /// "XR present, nothing tracked" and pinning it there. For a driver an agent
+    /// writes blind, that silent success is the expensive failure, so a
+    /// misspelling must be a 400 like every other malformed command.
+    #[test]
+    fn a_misspelled_xr_field_is_rejected_rather_than_silently_defaulted() {
+        for body in [
+            r#"{"type":"xr","lft":{"active":true}}"#,          // misspelled hand
+            r#"{"type":"xr","right":{"triger":1.0}}"#,         // misspelled control
+            r#"{"type":"xr","right":{"grip":{"pos":[0.0,0.0,0.0]}}}"#, // misspelled pose field
+        ] {
+            let err = serde_json::from_str::<InputCommand>(body)
+                .expect_err(&format!("{body} must be rejected"));
+            assert!(
+                err.to_string().contains("unknown field"),
+                "{body} rejected for the wrong reason: {err}"
+            );
+        }
+
+        // The tag itself must NOT count as an unknown field: `Xr` is an
+        // internally-tagged NEWTYPE variant, so `type` travels in the same map
+        // as the sample's own fields and a naive `deny_unknown_fields` would
+        // reject every valid body.
+        serde_json::from_str::<InputCommand>(r#"{"type":"xr","right":{"trigger":1.0}}"#)
+            .expect("a well-formed body still decodes");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::math::Angle;
 /// Deserialization fills missing fields from [`TrackingPose::IDENTITY`], so a
 /// scripted/injected pose can name only the part it cares about.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TrackingPose {
     pub position: [f32; 3],
     pub orientation: [f32; 4],

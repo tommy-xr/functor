@@ -100,7 +100,8 @@ export type InputCommand =
   | { type: "mouse_wheel"; delta: number }
   | { type: "ui_event"; slot: number; kind: UiEventKind }
   | { type: "webview_event"; slot: number; kind: UiEventKind }
-  | ({ type: "xr" } & XrInputSample);
+  | ({ type: "xr" } & XrInputSample)
+  | { type: "xr_clear" };
 
 /** An injected XR sample for `POST /input` (desktop only).
  *

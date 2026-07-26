@@ -647,7 +647,7 @@ fn service_debug_request(
                 // domain from live OpenXR tracking every frame, so an injected
                 // sample would be silently overwritten before any `sampledInput`
                 // saw it. Injection is the DESKTOP substitute for this device.
-                InputCommand::Xr(_) => Err(
+                InputCommand::Xr(_) | InputCommand::XrClear => Err(
                     "xr injection is unsupported on the device runtime (it samples live \
 tracking); use the desktop runtime's --headless/--debug-port path"
                         .to_string(),
