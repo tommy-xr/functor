@@ -97,6 +97,8 @@ let label = $"score: {threshold}; {{ready}}"  // interpolation: `$"…"` with fu
 let flag = true                               // bools
 
 let isHigh = (score: float): bool => score > threshold   // annotations OPTIONAL (gradual)
+let inRange = (n: float): bool => n >= 0.0 && n <= 1.0   // `<=` `>=` `!=` are ordinary
+let changed = (a: float, b: float): bool => a != b       //   comparisons (no `<>`)
 let describe = (score) => $"score: {score}"
 
 let report = (scores) =>
@@ -128,12 +130,17 @@ let sum3 = (a, b, c) =>
 let main = () => report([12.0, 3.5, 40.0])    // zero-param main is run's entry point
 ```
 
-Operators: `+ - * /` `< > ==` (conventional precedence; pipelines bind
-loosest), unary `-`, and the **short-circuiting booleans** `&&` / `||` plus
-prefix `not`. That list is EXHAUSTIVE — there is **no `>=`, `<=`, `!=`, `<>`,
-`%`, or `^`**. Writing `x >= 0.0` is a parse error (`` expected an
-expression, found `=` ``); spell it `not (x < 0.0)`, and inequality as
-`not (a == b)`.
+Operators: `+ - * /` `< > <= >= == !=` (conventional precedence; pipelines
+bind loosest), unary `-`, and the **short-circuiting booleans** `&&` / `||`
+plus prefix `not`. That list is EXHAUSTIVE — there is **no `<>`, `%`, or
+`^`**. Inequality is `!=` ONLY; F#'s `<>` is not an alias (it lexes as `<`
+then `>` and fails as an ordinary parse error), and bare `!` is not prefix
+negation (that stays `not`) — `!` exists only as part of `!=`.
+`<=`/`>=` are valid wherever `<`/`>` are (both operands must be `float`),
+and `!=` is the exact NEGATION of `==`: same operand rules, same errors on
+the same inputs — comparing functions with `!=` is the same check-time
+rejection (`` functions cannot be compared with `!=` ``), and host/engine
+values are the same runtime error.
 Modulo is `Math.mod(a, b)` and exponentiation `Math.pow(base, exp)`.
 Precedence (tightest→loosest): comparisons > `not` > `&&` > `||`
 > pipelines. So `not a == b` is `not (a == b)`, `a || b && c` is
@@ -424,7 +431,12 @@ that's what `functor test` is for.
   a *top-level initializer* may only demand globals defined above it.
 - **Equality `==` is structural**; comparing functions is rejected at
   CHECK time (`` functions cannot be compared with `==` ``), not just at
-  run time.
+  run time. `!=` behaves identically in every respect — it IS `==`
+  negated, so it rejects the same operands with the same (reworded)
+  errors.
+- **Comparisons are IEEE**, so NaN (`0.0 / 0.0`) is false against
+  everything — including itself — under `<`, `>`, `<=`, `>=`, and `==`;
+  `nan != nan` is therefore `true`.
 - **Division is IEEE** (`1.0/0.0` = `inf`); the engine boundary rejects
   non-finite numbers.
 - **Greedy match arms**: arm bodies are full expressions, so a nested

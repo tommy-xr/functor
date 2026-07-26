@@ -914,6 +914,113 @@ fn error_comparing_unapplied_ctors() {
     assert_eq!(message, "functions cannot be compared with `==`");
 }
 
+// --- `>=` / `<=` / `!=` ---
+
+#[test]
+fn ordering_operators_evaluate() {
+    for (src, expected) in [
+        ("1.0 <= 2.0", "true"),
+        ("2.0 <= 2.0", "true"),
+        ("3.0 <= 2.0", "false"),
+        ("3.0 >= 2.0", "true"),
+        ("2.0 >= 2.0", "true"),
+        ("1.0 >= 2.0", "false"),
+    ] {
+        assert_eq!(
+            main_result(&format!("let main = () => {src}")),
+            expected,
+            "{src}"
+        );
+    }
+}
+
+/// `<=` must agree with the pre-operator workaround (`not (a > b)`) on every
+/// ordering of two finite numbers — the gymnastics it replaces.
+#[test]
+fn ordering_operators_match_the_not_workaround() {
+    for (a, b) in [("1.0", "2.0"), ("2.0", "2.0"), ("3.0", "2.0")] {
+        assert_eq!(
+            main_result(&format!("let main = () => {a} <= {b}")),
+            main_result(&format!("let main = () => not ({a} > {b})")),
+            "{a} <= {b}"
+        );
+        assert_eq!(
+            main_result(&format!("let main = () => {a} >= {b}")),
+            main_result(&format!("let main = () => not ({a} < {b})")),
+            "{a} >= {b}"
+        );
+    }
+}
+
+/// `!=` is the exact negation of `==` — same structural walk, so the pair is
+/// tested together on every value shape (and `not (a == b)`, the workaround,
+/// agrees).
+#[test]
+fn inequality_is_the_exact_negation_of_equality() {
+    for src in [
+        "1.0",
+        "\"a\"",
+        "true",
+        "[1.0, 2.0]",
+        "(1.0, \"a\")",
+        "{ x: 1.0 }",
+    ] {
+        for other in [
+            "1.0",
+            "\"a\"",
+            "true",
+            "[1.0, 2.0]",
+            "(1.0, \"a\")",
+            "{ x: 1.0 }",
+            "2.0",
+        ] {
+            let eq = main_result(&format!("let main = () => {src} == {other}"));
+            let ne = main_result(&format!("let main = () => {src} != {other}"));
+            let workaround = main_result(&format!("let main = () => not ({src} == {other})"));
+            assert_ne!(eq, ne, "{src} vs {other}");
+            assert_eq!(ne, workaround, "{src} vs {other}");
+        }
+    }
+}
+
+/// NaN is representable (`0.0 / 0.0` — division is IEEE), and every operator
+/// treats it exactly as IEEE does: `==` false, `!=` true, all four orderings
+/// false. Tested as a pair so the `==`/`!=` symmetry is pinned.
+#[test]
+fn nan_comparisons_follow_ieee() {
+    const NAN: &str = "let nan = 0.0 / 0.0\n";
+    for (src, expected) in [
+        ("nan == nan", "false"),
+        ("nan != nan", "true"),
+        ("nan < nan", "false"),
+        ("nan > nan", "false"),
+        ("nan <= nan", "false"),
+        ("nan >= nan", "false"),
+        ("nan <= 1.0", "false"),
+        ("nan >= 1.0", "false"),
+    ] {
+        assert_eq!(
+            main_result(&format!("{NAN}let main = () => {src}")),
+            expected,
+            "{src}"
+        );
+    }
+}
+
+/// The operand rules are inherited unchanged: ordering needs numbers, and
+/// `!=` rejects functions exactly where `==` does — naming the operator the
+/// source wrote.
+#[test]
+fn error_new_comparisons_reject_bad_operands() {
+    let (message, _, _) = run_err("let main = () => \"a\" <= \"b\"");
+    assert_eq!(
+        message,
+        "comparison needs numbers, got a string and a string"
+    );
+    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle != Circle"));
+    assert_eq!(message, "functions cannot be compared with `!=`");
+}
+
 // Currying: over-applying a saturated constructor is still an error (the
 // resulting variant isn't callable); under-applying it (here, zero args) is a
 // legal partial rather than an arity error.
