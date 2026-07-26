@@ -262,7 +262,7 @@ await esbuild.build({
   // `src/docs.js` would silently win. Name the file that actually exists. The
   // OUTPUT basenames are unchanged either way (esbuild always emits `.js`).
   entryPoints: [
-    `${site}src/sandbox.ts`,
+    `${site}src/sandbox.tsx`,
     `${site}src/ide.ts`,
     `${site}src/docs.ts`,
     `${site}src/api-docs.ts`,
@@ -272,6 +272,9 @@ await esbuild.build({
   ],
   bundle: true,
   minify: true,
+  // `minify` is what selects React's PRODUCTION build: esbuild defines
+  // process.env.NODE_ENV as "production" when minifying a browser bundle, so
+  // the dev react-dom is dead-code-eliminated. Keep them together.
   format: "esm",
   // The editor dynamic-imports the language wasm glue at runtime from /pkg/;
   // esbuild must not try to bundle that path (it's copied in above, or absent).

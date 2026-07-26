@@ -22,6 +22,12 @@
   </head>
   <body class="sandbox-page">
     <!--@header suffix="SANDBOX" active="sandbox"-->
+      <!--
+        The pre-JS paint. sandbox.tsx renders this row as a React island, which
+        replaces these children on mount — keep the skeleton in step with the
+        initial stores there (notably the pill's state and label) so the swap is
+        invisible.
+      -->
       <div class="sandbox-controls">
         <label class="picker-label" for="example-picker">scene</label>
         <select id="example-picker"></select>
