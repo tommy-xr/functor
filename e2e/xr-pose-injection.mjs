@@ -84,6 +84,25 @@ async function waitReady(base, timeoutMs) {
   throw new Error("runtime never reported a frame");
 }
 
+/** Advance exactly one fixed step and WAIT for it to land.
+ *
+ * `POST /time advance` sets the clock's single `pending_step` slot, which the
+ * loop consumes on its next iteration. Two advances that arrive inside one
+ * request-drain therefore collapse into ONE step — so a naive
+ * "post pose, post advance" loop silently drops poses at localhost speed, and
+ * how many it drops depends on timing. Waiting for `frame` to increment is what
+ * makes one pose == one frame, and the sequence reproducible. */
+async function stepOneFrame(base, timeoutMs = 10000) {
+  const before = (await state(base)).frame;
+  await post(base, "/time", { type: "advance", dts: 1 / 60 });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await state(base)).frame > before) return;
+    await sleep(5);
+  }
+  throw new Error(`frame never advanced past ${before}`);
+}
+
 /** Read one numeric field out of the model's Rust `Debug` text. */
 function field(model, name) {
   const m = model.match(new RegExp(`"${name}":\\s*([A-Za-z0-9_.+-]+)`));
@@ -130,7 +149,7 @@ async function drive(port) {
     await post(base, "/time", { type: "set", tts: 0.0 });
     for (let i = 0; i < STEPS; i++) {
       await post(base, "/input", poseAt(i));
-      await post(base, "/time", { type: "advance", dts: 1 / 60 });
+      await stepOneFrame(base);
     }
     const after = await state(base);
     return { after, log };

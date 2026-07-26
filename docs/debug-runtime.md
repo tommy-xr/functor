@@ -152,16 +152,23 @@ without it. That is the point: the mouse/keyboard emulator pins both hands to
 toward your face, or aiming with a rotated grip, are inexpressible there and can
 only be driven this way. `held_keys` and `mouse` stay live alongside it.
 
-Pair it with `POST /time` `{"type":"advance","dts":0.016}` to step exactly one
-frame per pose, and the whole two-handed sequence is deterministic:
+Pair it with `POST /time` to step one frame per pose. **Wait for `frame` to
+increment before sending the next pose**: `advance` sets the clock's single
+pending-step slot, so two advances arriving inside one request-drain collapse
+into one step and the intervening pose is never sampled. With the wait, the
+whole two-handed sequence is one pose per frame and reproducible:
 
 ```sh
 for i in $(seq 0 20); do
+  before=$(curl -s $H/state | jq .frame)
   curl -s -X POST $H/input -d "$(pose_at $i)" >/dev/null   # your pose generator
   curl -s -X POST $H/time  -d '{"type":"advance","dts":0.016}' >/dev/null
+  until [ "$(curl -s $H/state | jq .frame)" -gt "$before" ]; do :; done
 done
 curl -s $H/state | jq -r .model
 ```
+
+`e2e/xr-pose-injection.mjs` is the same loop in JavaScript, with assertions.
 
 The device runtime rejects this command with **400**: Quest resamples the domain
 from live OpenXR tracking every frame, so an injected sample could never be seen.
