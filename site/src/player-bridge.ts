@@ -7,6 +7,9 @@
 // with the model preserved and replies `functor-lang-set-source-result`. The
 // player announces itself with `functor-lang-preview-ready` after it boots.
 
+import { asPlayerMessage } from "./protocol.js";
+import type { BridgeOptions, PreviewHello, SetSource } from "./protocol.js";
+
 // Same cadence as the VSCode extension: fast enough to feel live, slow enough
 // not to push a reload per keystroke.
 const PUSH_DEBOUNCE_MS = 300;
@@ -17,19 +20,33 @@ const PUSH_DEBOUNCE_MS = 300;
 const ERROR_GRACE_MS = 4000;
 
 export class PlayerBridge {
-  // iframe: the player element. Callbacks map protocol events to UI:
-  //   onReloading()          — a push was sent (busy)
-  //   onLive()               — the player is ready with nothing pending
-  //   onResult(ok, message)  — a hot-swap reply came back
+  readonly iframe: HTMLIFrameElement;
+  private readonly onReloading: () => void;
+  private readonly onLive: () => void;
+  private readonly onResult: (ok: boolean, message: string) => void;
+  private readonly debounceMs: number;
+  private readonly errorGraceMs: number;
+
+  private previewReady = false;
+  private dirty = false;
+  private pushTimer: ReturnType<typeof setTimeout> | undefined;
+  private errorTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastSource = "";
+  // Correlates results with pushes: each posted push gets a fresh id, the
+  // runtime echoes it in the result, and a result for anything but the
+  // LATEST push is stale — ignore it, its reply is coming. Results with no
+  // id (an older runtime) are accepted as before.
+  private pushId = 0;
+
   constructor(
-    iframe,
+    iframe: HTMLIFrameElement,
     {
       onReloading,
       onLive,
       onResult,
       debounceMs = PUSH_DEBOUNCE_MS,
       errorGraceMs = ERROR_GRACE_MS,
-    }
+    }: BridgeOptions
   ) {
     this.iframe = iframe;
     this.onReloading = onReloading;
@@ -37,17 +54,6 @@ export class PlayerBridge {
     this.onResult = onResult;
     this.debounceMs = debounceMs;
     this.errorGraceMs = errorGraceMs;
-
-    this.previewReady = false;
-    this.dirty = false;
-    this.pushTimer = null;
-    this.errorTimer = null;
-    this.lastSource = "";
-    // Correlates results with pushes: each posted push gets a fresh id, the
-    // runtime echoes it in the result, and a result for anything but the
-    // LATEST push is stale — ignore it, its reply is coming. Results with no
-    // id (an older runtime) are accepted as before.
-    this.pushId = 0;
 
     // Replies and readiness from the player iframe. Only trust the iframe we
     // created (same-origin, but be explicit about the source anyway).
@@ -65,12 +71,13 @@ export class PlayerBridge {
   // Greet the player so an already-live one re-announces readiness. Harmless if
   // the player isn't up yet: it ignores the hello and its one-shot ready (now
   // reaching our attached listener) covers that direction.
-  #hello() {
-    this.iframe.contentWindow?.postMessage({ type: "functor-lang-preview-hello" }, "*");
+  #hello(): void {
+    const message: PreviewHello = { type: "functor-lang-preview-hello" };
+    this.iframe.contentWindow?.postMessage(message, "*");
   }
 
   // Debounced live edit: swap in `source` once the buffer settles.
-  push(source) {
+  push(source: string): void {
     this.lastSource = source;
     clearTimeout(this.pushTimer);
     this.pushTimer = setTimeout(() => this.#post(), this.debounceMs);
@@ -78,7 +85,7 @@ export class PlayerBridge {
 
   // Reset for a fresh iframe load (fresh model: init runs). Cancels any pending
   // push and drops readiness until the next `functor-lang-preview-ready`.
-  reset() {
+  reset(): void {
     clearTimeout(this.pushTimer);
     clearTimeout(this.errorTimer);
     this.previewReady = false;
@@ -89,7 +96,7 @@ export class PlayerBridge {
   // last good program running, so the preview IS still live; show that now and
   // only surface the error if the program stays broken past the grace window.
   // Any success (the usual next keystroke that re-parses) clears it instantly.
-  #deliverResult(ok, message) {
+  #deliverResult(ok: boolean, message: string): void {
     clearTimeout(this.errorTimer);
     if (ok) {
       this.onResult(true, message);
@@ -99,7 +106,7 @@ export class PlayerBridge {
     }
   }
 
-  #post() {
+  #post(): void {
     if (!this.previewReady || !this.iframe.contentWindow) {
       this.dirty = true;
       return;
@@ -107,15 +114,22 @@ export class PlayerBridge {
     this.dirty = false;
     this.onReloading();
     this.pushId += 1;
-    this.iframe.contentWindow.postMessage(
-      { type: "functor-lang-set-source", source: this.lastSource, id: this.pushId },
-      "*"
-    );
+    const message: SetSource = {
+      type: "functor-lang-set-source",
+      source: this.lastSource,
+      id: this.pushId,
+    };
+    // Re-read `contentWindow` (rather than reusing the guarded reference) and
+    // post NON-optionally, exactly as the pre-migration code did: if
+    // `onReloading()` above swapped the iframe, the push must reach the NEW
+    // window, and a detached one must throw loudly rather than be silently
+    // dropped (a dropped push leaves the status stuck on "reloading…").
+    this.iframe.contentWindow!.postMessage(message, "*");
   }
 
-  #onMessage(event) {
+  #onMessage(event: MessageEvent): void {
     if (event.source !== this.iframe.contentWindow) return;
-    const data = event.data;
+    const data = asPlayerMessage(event.data);
     if (!data) return;
     if (data.type === "functor-lang-preview-ready") {
       // Idempotent: the one-shot ready and a hello-ack ready can both arrive for

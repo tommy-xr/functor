@@ -560,6 +560,7 @@ impl FunctorLangGame {
             &mut self.physics_rt,
             &mut self.physics_frame,
             self.has_physics,
+            &mut self.prev_tts,
         );
         let (model, report) = functor_lang::rebind_value(&self.model, &self.module, &loaded.module);
         self.model = model;
@@ -919,6 +920,7 @@ impl Game for FunctorLangGame {
             &mut self.physics_rt,
             &mut self.physics_frame,
             self.has_physics,
+            &mut self.prev_tts,
         );
         if result.is_ok() {
             // No in-flight frame work should carry across the branch (matches

@@ -1419,6 +1419,36 @@ a texture Asset, positive dimensions, and maxHeight greater than minHeight";
             FunctorLangTerrain(terrain.0.with_color([r, g, b]))
         },
     );
+    const TEXTURED: &str = "Terrain.textured(low, high, rock, snow, tileSize, terrain) — \
+four texture Assets and a positive finite tile size in world units";
+    reg.fn6(
+        "Terrain.textured",
+        TEXTURED,
+        |low: TextureAssetPath,
+         high: TextureAssetPath,
+         rock: TextureAssetPath,
+         snow: TextureAssetPath,
+         tile_size: f64,
+         terrain: FunctorLangTerrain| {
+            let tile_size = tile_size as f32;
+            if !tile_size.is_finite() || tile_size <= 0.0 {
+                return Err(format!("usage: {TEXTURED}"));
+            }
+            let map = |asset: TextureAssetPath| crate::terrain::TerrainDetailTexture {
+                locator: asset.path,
+                while_pending: asset.while_pending,
+            };
+            Ok(FunctorLangTerrain(terrain.0.with_textures(
+                crate::terrain::TerrainTextures {
+                    low: map(low),
+                    high: map(high),
+                    rock: map(rock),
+                    snow: map(snow),
+                    tile_size,
+                },
+            )))
+        },
+    );
     reg.fn6(
         "Terrain.layered",
         "Terrain.layered(low, high, rock, snow, snowHeight, terrain)",

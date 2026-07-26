@@ -12,13 +12,12 @@ it doesn't parse — do not invent syntax from F#/OCaml habits.
 
 ## Verification loop (always available, no GPU)
 
-⚠️ **`check` does not currently validate builtin-module MEMBER names.**
-`List.thisDoesNotExist(1.0, [2.0])` passes `check` with exit 0 and fails only
-at run time (`` `List` has no builtin `thisDoesNotExist` ``). So a typo in a
-`List.*` / `Text.*` / `Math.*` call survives the typechecker — run the code,
-or write an `expect`, to catch it. *(Landing: PR #485 "unknown
-builtin-module members are check-time errors" makes these `check` errors;
-once it merges, the typo is caught statically and this caveat goes away.)*
+Builtin-module MEMBER names are validated at `check` time: `List.nth`,
+`Math.clamp`, `Text.length` (none exist) are check ERRORS with a near-miss
+hint or the namespace's member list — a typo in a `List.*` / `Text.*` /
+`Math.*` call no longer survives to runtime. Note this is a hard error with
+no escape hatch, and it gates hot-reload: a builtin typo in a DEAD branch
+now fails `build`/reload where it previously ran.
 
 ```sh
 cargo run -q -p functor-lang -- parse file.fun    # surface AST (spans on every node; this file only)
@@ -358,8 +357,8 @@ expect (                                      // any expression works — a
 - The expression must CHECK as `bool` (`check`: "an `expect` test:
   expected bool, got …").
 - **Inert in the game loop**: `run native`/`run wasm`/`Session::load`
-  never evaluate expects — only `functor-lang test <entry.fun>` does (defs
-  load first, then each expect independently; one failure never stops the
+  never evaluate expects — only the test commands below do (defs load
+  first, then each expect independently; one failure never stops the
   rest; exit 1 on any failure). Sibling-module expects load and run with
   the project.
 - A failed TOP-LEVEL comparison (`==`/`<`/`>`) is decomposed: the report
@@ -369,12 +368,37 @@ expect (                                      // any expression works — a
   the pipe's argument.
 - Floats compare exactly; for computed floats prefer
   `Math.abs(a - b) < 0.001` over `==`.
-- Under plain `functor-lang test` the engine prelude doesn't exist —
-  expects calling `Scene.*` etc. error at runtime. Test pure logic:
-  model/`tick`/`update` math. *(Landing: PR #488 adds `functor test`, which
-  runs a project's expects under the ENGINE prelude — once it merges,
-  expects that touch `Scene.*`/`Physics.*`/`Frame.*` become testable
-  headlessly. The `functor` CLI has no `test` subcommand until then.)*
+### Running them: `functor test` (a GAME) vs `functor-lang test` (pure logic)
+
+```sh
+functor -d examples/counter test                # a game project, under the ENGINE prelude
+cargo run -q -p functor-lang -- test file.fun   # a plain .fun, no engine
+```
+
+**Use `functor test` for anything in a game directory.** It typechecks the
+project (the `build` gate), then evaluates every expect in the entry and
+its siblings under the real engine host — headlessly: no GPU, no window,
+no game loop. Each failure prints at its `file:line:col` with the source
+line and, for a top-level comparison, both sides' values; the command
+exits non-zero if any expect failed. A project with no expects is a pass.
+In a multi-entry project `--entry` picks which entry is TYPECHECKED; it does
+not narrow the tests, because `file = module` loads every sibling either way.
+
+`functor-lang test` is the LANGUAGE crate's dev command and runs under the
+plain `NoHost` prelude, where `Scene.*` / `Color.*` / `Physics.*` don't
+exist. Because `file = module` loads every sibling, pointing it at a game
+directory fails on the first engine call in ANY sibling — typically a
+top-level def like `let sky = Color.rgb(…)`, which aborts the def load
+before a single expect runs. Reach for it only for engine-free `.fun`
+files. Don't copy pure modules to a scratch directory to work around this;
+that's what `functor test` is for.
+
+- Expects may freely call engine externals under `functor test`
+  (`Scene.*`, `Color.*`, …): no external performs IO or touches GL, and
+  `Effect.*` only builds a *descriptor* — nothing is performed. Note that
+  engine values are `HostData`, so `==` on them is a runtime error;
+  assert on numbers/records you derive instead. The highest-value tests
+  are pure logic anyway: model/`tick`/`update` math.
 
 ## Semantics rules that WILL bite you
 
@@ -576,6 +600,21 @@ browser console on wasm. Not rate-limited: a `Debug.log` in `tick`/`draw` fires
 every frame (~60/s), so prefer an event path (`input`/`update`), or remove it
 when done.
 
+**The list above is the WHOLE registry, and it is CLOSED.** A builtin
+namespace (`List`, `Text`, `Math`, `Random`, `Debug`) owns exactly these
+members in every embedding, so anything else is a **check-time error** —
+`functor-lang check` (and `functor build`) reject `List.nth` / `Text.length` /
+`Math.clamp` with `` `List` has no builtin `nth` `` plus the nearest name or
+the namespace's full member list. Do NOT assume an F#/Elm stdlib function
+exists: there is no `nth`/`head`/`take`/`zip`/`sortBy`/`indexedMap`/`find`/
+`sum` on `List`, no `length`/`toUpper` on `Text`, and `Math` has `clamp01`
+(0–1 only), not a general `clamp`. Build what you need from `List.fold` /
+`List.filter` / `List.range` / `Math.min` + `Math.max`. (`Scene.*` and the
+rest of the engine prelude are host-provided, so under plain
+`functor-lang check` — no host — they stay the gradual `Unknown` seam and
+only resolve under the runner, where the prelude's `.funi` interfaces make an
+unknown member a load error.)
+
 ## Functor prelude (only under the engine host — `FunctorHost`)
 
 Available in runner-hosted Functor Lang (and tests via
@@ -592,7 +631,12 @@ let world =
   Terrain.heightmap(Assets.heightmap, 4000.0, 4000.0, -40.0, 420.0)
   |> Terrain.maxPixelError(2.0)                            // finite XZ heightfield: Asset.Texture,
   |> Terrain.layered(low, high, rock, snow, 340.0)         //   width, depth, min/max Y. Black maps
-  |> Terrain.grass(13.0, 520.0, 5.5, grassColor)           //   to min, white to max. Modifiers are
+  |> Terrain.textured(lowMap, highMap, rockMap, snowMap,   //   to min, white to max. `textured`
+       24.0)                                               //   dresses `layered`'s bands with
+  |> Terrain.grass(13.0, 520.0, 5.5, grassColor)           //   detail albedo (needs `layered`;
+                                                           //   tileSize in world units, sampled
+                                                           //   at two scales, fading to the band
+                                                           //   colors with distance). Modifiers are
 Scene.terrain(world)                                       //   descriptor-last; rendering uses a
                                                            //   camera-relative quadtree, a shared
                                                            //   GPU grid, 16-bit height sampling,
@@ -1293,7 +1337,9 @@ every use, element types flow through `List.map`/`filter`/`fold`, and
 apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: 'b): List<'b>`). Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, unrecognized type
-names) and absorbs anything. Function TYPES **do** annotate —
+names) and absorbs anything — but a BUILTIN namespace is not such a seam:
+its member set is closed, so `List.nth` / `Math.clamp` are check errors, not
+`Unknown` (see "Builtins"). Function TYPES **do** annotate —
 `(f: (float) => float)`, `(f: ('a) => 'b)`, and the parenthesized
 return position `(): ((A) => B) =>` all parse and check (see the Syntax
 subset above); leaving higher-order params unannotated and letting

@@ -1668,6 +1668,100 @@ fn ctor_literal_sub_pattern_does_not_cover_the_ctor() {
     );
 }
 
+// A BUILTIN namespace's member set is closed (identical in every embedding),
+// so a member the registry has no entry for is a CHECK error — not the
+// gradual-host `Unknown` seam, which only made it fail at `run`
+// ("`List` has no builtin `nth`"). These are the calls games actually reached
+// for.
+#[test]
+fn unknown_builtin_member_is_a_check_error() {
+    for (src, expected) in [
+        (
+            "let a = List.nth([1.0], 0.0)",
+            "`List` has no builtin `nth` — `List` has: all, any, append, filter, \
+             flatten, fold, grid, isEmpty, length, map, maximum, range, reverse",
+        ),
+        (
+            "let a = Text.length(\"hi\")",
+            "`Text` has no builtin `length` — `Text` has: concat, fixed, fromFloat, \
+             join, parseFloat, split, toBullets",
+        ),
+        (
+            "let a = Math.clamp(0.0, 1.0, 2.0)",
+            "`Math` has no builtin `clamp` — did you mean `Math.clamp01`?",
+        ),
+        (
+            "let a = Debug.logg(1.0)",
+            "`Debug` has no builtin `logg` — did you mean `Debug.log`?",
+        ),
+    ] {
+        let (message, _, _) = single_diag(src);
+        assert_eq!(message, expected, "for {src}");
+    }
+
+    // The rest of the empirically-confirmed set: each is flagged, and names
+    // the member the user typed.
+    for member in ["indexedMap", "sortBy", "zip", "find", "take"] {
+        let src = format!("let a = List.{member}([1.0])");
+        let (message, _, _) = single_diag(&src);
+        assert!(
+            message.starts_with(&format!("`List` has no builtin `{member}`")),
+            "unexpected for {src}: {message}"
+        );
+    }
+}
+
+// A suggestion is only offered when it is UNAMBIGUOUS and points the right
+// way; otherwise the namespace's full member list is the honest answer. A
+// misleading "did you mean" is worse than none — `List.mapIndexed` is not a
+// misspelling of `List.map`.
+#[test]
+fn a_suggestion_is_never_ambiguous_or_misleading() {
+    for (src, expected_hint) in [
+        // Several members share the prefix — name none of them.
+        ("let a = List.f([1.0])", "`List` has:"),
+        ("let a = Math.a(1.0)", "`Math` has:"),
+        // The typed name merely STARTS WITH a real member, but means
+        // something else.
+        ("let a = List.mapIndexed([1.0])", "`List` has:"),
+        ("let a = Math.moderate(1.0)", "`Math` has:"),
+        // Unambiguous prefix, and typo-scale distance: still suggested.
+        ("let a = Math.clamp(1.0)", "did you mean `Math.clamp01`?"),
+        ("let a = Debug.l(1.0)", "did you mean `Debug.log`?"),
+        ("let a = Math.sine(1.0)", "did you mean `Math.sin`?"),
+    ] {
+        let (message, _, _) = single_diag(src);
+        assert!(
+            message.contains(expected_hint),
+            "for {src}: expected hint {expected_hint:?}, got {message:?}"
+        );
+    }
+}
+
+// The diagnostic carries the reference's own span.
+#[test]
+fn unknown_builtin_member_reports_the_reference_span() {
+    let (_, line, col) = single_diag("let a = 1.0\nlet b = List.nth([1.0], 0.0)");
+    assert_eq!((line, col), (2, 9));
+}
+
+// NEGATIVE CONTROLS. Real builtins still check clean, and an unresolved
+// external OUTSIDE a builtin namespace stays the gradual seam: a host
+// (`Scene.*` under the engine prelude) supplies those, and the plain
+// `functor-lang` embedding must not claim they are typos.
+#[test]
+fn real_builtins_and_host_externals_stay_clean() {
+    assert_clean(
+        "let a = List.length([1.0])\n\
+         let b = Math.clamp01(0.5)\n\
+         let c = Text.join(\", \", [\"x\"])\n\
+         let d = Debug.log(\"x\")\n\
+         let e = Math.pi",
+    );
+    assert_clean("let s = Scene.cube()");
+    assert_clean("let v = Vec3.make(0.0, 1.0, 2.0)");
+}
+
 #[test]
 fn literal_sub_pattern_type_mismatch_is_diagnosed() {
     // A string literal where the tuple element is a float.

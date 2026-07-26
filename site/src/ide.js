@@ -1,7 +1,7 @@
 // The web IDE: a file sidebar + multi-file Functor Lang editor + live preview.
 // The IDE holds the WHOLE project in memory (nothing is served) and pushes it
 // over the `functor-lang-set-project` seam to a `player.html?project=inline`
-// iframe (see project-bridge.js): the preview boots from memory and hot-swaps
+// iframe (see project-bridge.ts): the preview boots from memory and hot-swaps
 // on every edit, model preserved. Work is persisted to localStorage; the
 // project downloads as a .zip that drops into `functor -d <dir> build wasm`.
 

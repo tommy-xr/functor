@@ -27,12 +27,14 @@
     "test:inspector-emit": "node e2e/inspector-emit.mjs",
     "test:scrubber": "node --test runtime/functor-runtime-web/timeline-model.test.js",
     "test:vscode-e2e": "playwright test -c tools/functor-lang-vscode/tests-integration/playwright.config.mjs",
+    "check:site": "tsc -p site --noEmit",
     "site:build": "npm run generate:icons && node site/build.mjs",
     "site:serve": "node site/serve.mjs",
     "test:site": "node e2e/site-sandbox.mjs",
     "test:ide": "node e2e/ide-project.mjs",
     "test:ide-page": "node e2e/ide-page.mjs",
     "test:runtime-target": "node e2e/runtime-target.mjs",
+    "test:xr-injection": "cargo build -p functor-cli --no-default-features && node e2e/xr-pose-injection.mjs",
     "demo:time-travel": "node site/demos/time-travel.mjs",
     "demo:instant-feedback": "node site/demos/instant-feedback.mjs",
     "demo:batteries-included": "node site/demos/batteries-included.mjs",
@@ -51,6 +53,7 @@
     "@vscode/test-electron": "^2.4.1",
     "codemirror": "^6.0.2",
     "esbuild": "^0.28.1",
-    "png-to-ico": "^3.0.2"
+    "png-to-ico": "^3.0.2",
+    "typescript": "^5.9.3"
   }
 }
