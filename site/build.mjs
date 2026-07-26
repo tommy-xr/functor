@@ -256,20 +256,7 @@ if (langPkgPresent) {
   }
 }
 
-await esbuild.build({
-  // Entry points are PATHS, not import specifiers: esbuild only falls back to
-  // a `.ts` sibling when the named `.js` is absent, so a stale leftover
-  // `src/docs.js` would silently win. Name the file that actually exists. The
-  // OUTPUT basenames are unchanged either way (esbuild always emits `.js`).
-  entryPoints: [
-    `${site}src/sandbox.tsx`,
-    `${site}src/ide.tsx`,
-    `${site}src/docs.ts`,
-    `${site}src/api-docs.ts`,
-    `${site}src/hero.ts`,
-    `${site}src/demo-editor.ts`,
-    `${site}src/features.ts`,
-  ],
+const bundle = {
   bundle: true,
   minify: true,
   // `minify` is what selects React's PRODUCTION build: esbuild defines
@@ -281,6 +268,42 @@ await esbuild.build({
   external: ["/pkg/functor_lang_wasm.js"],
   outdir: `${dist}/assets`,
   logLevel: "info",
+};
+
+await esbuild.build({
+  // Entry points are PATHS, not import specifiers: esbuild only falls back to
+  // a `.ts` sibling when the named `.js` is absent, so a stale leftover
+  // `src/docs.js` would silently win. Name the file that actually exists. The
+  // OUTPUT basenames are unchanged either way (esbuild always emits `.js`).
+  entryPoints: [
+    `${site}src/sandbox.tsx`,
+    `${site}src/ide.tsx`,
+    `${site}src/docs.ts`,
+    `${site}src/api-docs.ts`,
+    `${site}src/demo-editor.ts`,
+    `${site}src/features.ts`,
+  ],
+  ...bundle,
+});
+
+// The hero is built SEPARATELY, with code splitting on, because it is the only
+// entry whose weight is deferred: src/hero.ts is a ~0.5kb eager loader that
+// dynamic-imports src/hero-app.tsx, and esbuild only emits that as its own
+// output file when `splitting` is enabled (otherwise it inlines the imported
+// module back into the entry and the landing page pays for it up front again).
+//
+// A separate call rather than `splitting: true` on the build above: splitting
+// hoists code shared BETWEEN entry points into common chunks, which would
+// rewrite sandbox.js / ide.js / demo-editor.js into multi-file loads for no
+// benefit on those pages. One extra esbuild call keeps the blast radius at
+// exactly the hero. `chunkNames` is namespaced for the same reason — the two
+// calls share an outdir, so a chunk must not be able to collide with another
+// call's entry output.
+await esbuild.build({
+  entryPoints: [`${site}src/hero.ts`],
+  splitting: true,
+  chunkNames: "hero-[name]-[hash]",
+  ...bundle,
 });
 
 console.log(`site built at ${dist}`);
