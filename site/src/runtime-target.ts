@@ -51,7 +51,8 @@ export interface RuntimeView {
 export interface RuntimeState {
   frame: number;
   tts: number;
-  pending_steps: number;
+  /** v3 and later only — this client still links v2 runtimes, which omit it. */
+  pending_steps?: number;
   viewport: RuntimeViewport;
   views: RuntimeView[];
   model: string;
@@ -67,11 +68,16 @@ export type ProjectAssetInput =
   | [string, ProjectAssetBytes]
   | { path: string; bytes: ProjectAssetBytes };
 
+// `declare` on the fields of both classes below: they are assigned by the
+// constructor, and a plain declaration would EMIT a field definition, creating
+// the properties (as undefined) before those assignments. That is observable
+// on this subclass — it would reorder `name` behind them — so declare the
+// types and let the constructor keep being the only thing that emits.
 export class RuntimeHttpError extends Error {
-  readonly method: string;
-  readonly url: string;
-  readonly status: number;
-  readonly body: string;
+  declare readonly method: string;
+  declare readonly url: string;
+  declare readonly status: number;
+  declare readonly body: string;
 
   constructor(method: string, url: string, status: number, body: string) {
     super(`${method} ${url} failed with status ${status}: ${body}`);
@@ -87,9 +93,9 @@ export class RuntimeHttpError extends Error {
 // fetch client intentionally keeps the browser response as a Blob while using
 // the same canonical protocol routes and JSON bodies.
 export class BrowserRuntimeClient {
-  readonly endpoint: string;
-  private readonly fetchImpl: typeof fetch;
-  private readonly timeoutMs: number;
+  declare readonly endpoint: string;
+  private declare readonly fetchImpl: typeof fetch;
+  private declare readonly timeoutMs: number;
 
   constructor(
     endpoint: unknown,
@@ -178,26 +184,24 @@ export class BrowserRuntimeClient {
       // `this.fetchImpl(...)` supplies the client as the Web API receiver,
       // which some browsers reject as an illegal invocation before networking.
       const fetchRequest = this.fetchImpl;
-      // `exactOptionalPropertyTypes` rejects an explicit `undefined` body even
-      // though fetch treats it exactly like an absent one, so the init is
-      // asserted rather than restructured — the request is unchanged.
       const response = await fetchRequest(url, {
         method,
-        headers:
-          body === undefined
-            ? undefined
-            : { "Content-Type": contentType ?? "application/json" },
-        // An explicit `contentType` is only ever passed with binary bytes (the
-        // asset envelope); every other body goes out as JSON text. The types
-        // cannot express that correlation, hence the assertion.
-        body:
-          body === undefined
-            ? undefined
-            : contentType === null
-              ? JSON.stringify(body)
-              : (body as BodyInit),
+        headers: (body === undefined
+          ? undefined
+          : { "Content-Type": contentType ?? "application/json" }) as HeadersInit,
+        // Two assertions, narrowed to the property that needs them: an
+        // explicit `contentType` is only ever passed with binary bytes (the
+        // asset envelope) while every other body goes out as JSON text, and
+        // `exactOptionalPropertyTypes` rejects the explicit `undefined` that
+        // fetch treats exactly like an absent body. `method` and `signal`
+        // stay checked.
+        body: (body === undefined
+          ? undefined
+          : contentType === null
+            ? JSON.stringify(body)
+            : body) as BodyInit,
         signal: controller.signal,
-      } as RequestInit);
+      });
       if (!response.ok) {
         throw new RuntimeHttpError(method, url, response.status, await response.text());
       }
@@ -313,7 +317,9 @@ const errorMessage = (error: unknown, endpoint: string, action: string): string 
 };
 
 export interface RuntimeTargetOptions {
-  host: HTMLElement;
+  /** Nullable because both callers pass `document.getElementById(…)`; the
+   *  guard below is what turns that into the teaching error. */
+  host: HTMLElement | null;
   getProject: () => ProjectFileInput[];
   getAssets?: (() => ProjectAssetInput[] | Promise<ProjectAssetInput[]>) | null;
   onOutput?: (level: ConsoleLevel, message: string) => void;
