@@ -68,6 +68,9 @@ export interface RuntimeView {
 export interface RuntimeState {
   frame: number;
   tts: number;
+  /** Clock steps queued by `advance` that have not run yet. `0` means every
+   * requested step has been simulated. */
+  pending_steps: number;
   /** Combined/legacy output extent. Use `views` when view identity matters. */
   viewport: RuntimeViewport;
   views: RuntimeView[];

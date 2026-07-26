@@ -600,6 +600,7 @@ fn service_debug_request(
             let _ = resp.send(debug_server::RuntimeState {
                 frame: *frame_count,
                 tts,
+                pending_steps: clock.pending_steps(),
                 viewport: debug_server::RuntimeViewport::new(width, height),
                 views: vec![debug_server::RuntimeView::new("main", width, height)],
                 model: game.state_debug(),
@@ -759,12 +760,7 @@ fn service_debug_request(
             let _ = resp.send(result);
         }
         debug_server::DebugRequest::Time(cmd, resp) => {
-            match cmd {
-                debug_server::TimeCommand::Set { tts } => clock.set(tts),
-                debug_server::TimeCommand::Advance { dts } => clock.advance(dts),
-                debug_server::TimeCommand::Resume => clock.resume(),
-            }
-            let _ = resp.send(());
+            let _ = resp.send(clock.apply(cmd));
         }
     }
     sampled_input_changed
@@ -1276,7 +1272,8 @@ pub fn run(args: Args) {
             // in whole 1/60 steps decoupled from the render rate, so the sim is
             // deterministic and a recorded frame is exactly one forward-step fine
             // step (the ghost replay's assumption). Scripted playback queued a
-            // one-shot `step` above, so this yields exactly one sub-frame then;
+            // one-shot `step` above, so that yields one sub-frame per iteration
+            // (a debug `advance` batch can queue more, draining ≤8 per frame);
             // --fixed-time / the debug pin yields one {dts:0} sub-frame; paused
             // yields none. `time` is the RENDER frame time — the settled `tts` the
             // frame is drawn / hot-reloaded / reported at (its `dts` is unused by
@@ -1736,13 +1733,14 @@ Escape again to quit"
             } else {
                 (32usize, 1.6f32, 8usize)
             };
-            // While a drag-into-the-future catch-up is draining, skip the
-            // preview recompute (the anchor moves every frame, so it would be
-            // a full forward-sim per frame and throttle the catch-up to a
-            // crawl) — it snaps back in on arrival.
+            // While a drag-into-the-future catch-up — or a batched debug
+            // `advance` — is draining, skip the preview recompute (the anchor
+            // moves every frame, so it would be a full forward-sim per frame
+            // and throttle the drain to a crawl) — it snaps back in on arrival.
             let preview_active = (trail_wanted || strobe_wanted)
                 && args.composite_demo == CompositeDemoArg::Off
-                && clock.pending_frames() == 0;
+                && clock.pending_frames() == 0
+                && clock.pending_steps() == 0;
             let preview: Option<functor_runtime_common::FramePreview> = if preview_active {
                 // Not bound by the 8-target compositor cap — this only reads node
                 // transforms — so sample finely for a smooth arc.
@@ -1865,8 +1863,10 @@ Escape again to quit"
             let ghost_frames = if ghost_active
                 && !args.stereo_sbs
                 && args.composite_demo == CompositeDemoArg::Off
-                // Skipped during a catch-up drain, like the scene-diff preview.
+                // Skipped during a catch-up or batched-advance drain, like the
+                // scene-diff preview.
                 && clock.pending_frames() == 0
+                && clock.pending_steps() == 0
             {
                 const MAX_GHOST: usize = 8;
                 // Interactive: the ⚙ popover's rate × window (clamped to the
