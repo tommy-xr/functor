@@ -749,6 +749,24 @@ impl NetSim {
         }
     }
 
+    /// The render clock for the sim's CURRENT position — the live frame, or the
+    /// scrubbed one while parked.
+    ///
+    /// A viewer must draw the panes at this time, not at the page's wall clock:
+    /// the sim advances only when [`step`](Self::step) is called, so borrowing
+    /// wall-clock time would keep `draw(model, tts)` animations moving while the
+    /// simulation stands still, and would not rewind when a
+    /// [`seek`](Self::seek) does.
+    pub fn display_time(&self) -> FrameTime {
+        let frame = self
+            .scrub_pos
+            .unwrap_or_else(|| self.frame.saturating_sub(1));
+        FrameTime {
+            tts: frame as f32 * self.dt,
+            dts: self.dt,
+        }
+    }
+
     /// The frame (camera + scene) an instance would render at this time — for a
     /// visualizer that draws each instance's view (see `functor-netsim-viz`).
     /// Takes `&mut self`: a producer evaluates its `draw` (and caches) here.

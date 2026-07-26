@@ -33,12 +33,33 @@ pub struct WebPlatform {
     /// The overlay's shadow state — the last message shown (or `None` if hidden)
     /// — so a persistent error doesn't rewrite the DOM every frame.
     overlay_error: Option<String>,
+    /// May this producer drive the page's error overlay? True for the page's one
+    /// live game; FALSE for a dev-session instance. See [`WebPlatform::for_sim`].
+    owns_overlay: bool,
 }
 
 impl WebPlatform {
     pub fn new() -> WebPlatform {
         WebPlatform {
             overlay_error: None,
+            owns_overlay: true,
+        }
+    }
+
+    /// A platform for a **dev-session instance**, which must not touch the
+    /// page's draw-error overlay.
+    ///
+    /// `#functor-lang-error` is a single page-global div. With several instances
+    /// rendering per frame, each holding its OWN dedupe state, two panes failing
+    /// with different messages would show and hide it every frame — a 60 Hz
+    /// flash — and a pane's error would be reported page-wide with nothing
+    /// saying which pane it came from. Draw errors still reach the console
+    /// through the producer's reporter; surfacing them per pane belongs with the
+    /// pane chrome.
+    pub fn for_sim() -> WebPlatform {
+        WebPlatform {
+            overlay_error: None,
+            owns_overlay: false,
         }
     }
 }
@@ -101,6 +122,11 @@ impl ProducerPlatform for WebPlatform {
     /// state actually changes (draw breaks with a new message, or recovers) so a
     /// persistent error doesn't rewrite the overlay every frame.
     fn set_draw_overlay(&mut self, error: Option<&str>) {
+        // A session instance is one of N producers sharing this page; the
+        // overlay belongs to the single live game only.
+        if !self.owns_overlay {
+            return;
+        }
         // Dedupe by borrow: a persistent draw error re-reports the same message
         // every frame, so allocate a stored copy ONLY when the state changes.
         if self.overlay_error.as_deref() == error {

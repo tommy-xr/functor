@@ -1590,7 +1590,59 @@ async fn run_async() -> Result<(), JsValue> {
             // ghost frame renders at ITS OWN division-boundary time, so
             // render-time animation (the skinned pose) advances through the
             // strobe instead of freezing at the paused pose.
-            if !ghosts.is_empty() {
+            // MULTI-PANE: while a dev session owns the page, the canvas shows
+            // one column per instance — the server's authoritative world beside
+            // each client's (latency-lagged) view of it. The single game's frame
+            // is not drawn at all; it is suspended.
+            //
+            // Same structure as the native `functor-netsim-viz`, including its
+            // scissor discipline: the shadow pass inside `render_frame` must run
+            // UNSCISSORED, and it re-scissors the main pass to the pane, so the
+            // test is disabled before each pane rather than once up front.
+            if let Some((sim_frames, sim_time)) = sim::render_frames() {
+                let (fb_w, fb_h) = (canvas.width() as i32, canvas.height() as i32);
+                let panes = sim_frames.len().max(1) as i32;
+                gl.disable(glow::SCISSOR_TEST);
+                gl.viewport(0, 0, fb_w, fb_h);
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+
+                // Integer division floors, so N panes of `pane_w` plus the gaps
+                // leave a stale strip on the right — and at a narrow canvas
+                // `pane_w` can floor to 0 outright. The LAST pane absorbs the
+                // remainder so the panes tile the framebuffer exactly, the same
+                // rule the desktop stereo path uses for odd widths.
+                let gap = 2;
+                let content_w = (fb_w - gap * (panes - 1)).max(panes);
+                let pane_w = (content_w / panes).max(1);
+                for (i, sim_frame) in sim_frames.iter().enumerate() {
+                    let i = i as i32;
+                    let x = i * (pane_w + gap);
+                    let w = if i == panes - 1 {
+                        (fb_w - x).max(1)
+                    } else {
+                        pane_w
+                    };
+                    gl.disable(glow::SCISSOR_TEST);
+                    functor_runtime_common::render_frame(
+                        &gl,
+                        shader_version,
+                        asset_cache.clone(),
+                        &scene_context,
+                        &shadow_map,
+                        sim_frame,
+                        &sim_frame.camera,
+                        sim_time.clone(),
+                        functor_runtime_common::Viewport::with_offset(
+                            x.max(0) as u32,
+                            0,
+                            w as u32,
+                            fb_h.max(1) as u32,
+                        ),
+                        debug_render_mode,
+                    );
+                }
+            } else if !ghosts.is_empty() {
                 functor_runtime_common::render_composited_frames(
                     &gl,
                     shader_version,
