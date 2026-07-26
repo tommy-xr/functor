@@ -47,13 +47,14 @@ const setStatus = (state: HeroState, message = "") => {
   statusState = { state, message };
   dot.dataset.state = state;
   dot.title = message || state;
-  // The boot loader (static markup in index.html) evaporates the moment the
-  // card reports anything but "busy" — the scene is live, or there is an
-  // error worth reading. One class toggle; the animation is all CSS.
-  if (state !== "busy") {
-    document.querySelector("[data-fn-boot]")?.classList.add("is-done");
-  }
 };
+
+// The boot loader (static markup in index.html) evaporates when the PLAYER
+// reports in — never on any other status change, since a failure to fetch the
+// editable region says nothing about whether the card has pixels yet. One
+// class toggle; the 620ms evaporate is all CSS.
+const dismissBootLoader = () =>
+  document.querySelector("[data-fn-boot]")?.classList.add("is-done");
 // Busy until the player's ready handshake: the bridge's onLive (or a
 // successful onResult) is what turns the dot green, never the mount itself.
 setStatus("busy", "loading…");
@@ -69,9 +70,14 @@ const fullProgram = () => prefix + region + suffix;
 
 const bridge = new PlayerBridge(frame, {
   onReloading: () => setStatus("busy"),
-  onLive: () => setStatus("live", "live"),
-  onResult: (ok, message) =>
-    ok ? setStatus("live", message) : setStatus("error", message),
+  onLive: () => {
+    dismissBootLoader();
+    setStatus("live", "live");
+  },
+  onResult: (ok, message) => {
+    dismissBootLoader();
+    ok ? setStatus("live", message) : setStatus("error", message);
+  },
 });
 
 let editor: EditorView | null = null;

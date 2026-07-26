@@ -1182,6 +1182,8 @@ a:hover {
 .preview-pane {
   min-width: 0;
   min-height: 0;
+  /* The containing block for the boot loader; the hero card is already one. */
+  position: relative;
 }
 
 #player {
@@ -2042,7 +2044,10 @@ a:hover {
 .fn-boot {
   position: absolute;
   inset: 0;
-  z-index: 30;
+  /* Enough to clear the iframe and the hero's status dot (z-index 2), and no
+     more: .hero-card opens no stacking context, so a bigger value would paint
+     the loader over the sticky site header when the hero scrolls under it. */
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2057,12 +2062,21 @@ a:hover {
   pointer-events: none;
   /* cqi sizing for the wordmark below scales it from the hero card down to a
      narrow preview pane. */
-  container-type: size;
+  container-type: inline-size;
+  /* Safety valve. Dismissal is the player's readiness handshake, and a runtime
+     that never boots (a 404 on the wasm, no WebGL2) would otherwise leave this
+     claiming progress forever — worse than the blank pane it replaced. After
+     20s it retires and lets the bare surface show through. `.is-done` replaces
+     this animation outright, so a normal boot never reaches it. */
+  animation: fn-boot-give-up 600ms ease-in 20s forwards;
 }
 
-/* The preview panes host a loader; the hero card is already positioned. */
-.preview-pane {
-  position: relative;
+/* On the hero the loader covers the whole card, and the mini-editor mounts as
+   soon as hero.fun is fetched — well before the player's handshake. Keep it out
+   of the hit region (and out of the tab order) while it is occluded, so nobody
+   types into an editor they cannot see. */
+.fn-boot:not(.is-done) ~ .hero-editor {
+  visibility: hidden;
 }
 
 /* The <symbol> sprite each slice instantiates — never rendered itself. */
@@ -2099,7 +2113,7 @@ a:hover {
 .fn-boot-word {
   position: absolute;
   left: 50%;
-  top: 54%;
+  top: calc(50% + -22px);
   transform: translate(-50%, -50%);
   z-index: 0;
   font-family: var(--font-display);
@@ -2246,7 +2260,7 @@ a:hover {
    Layered so it reads as the solid coming apart, not just a div fading:
    (1) the slices spread along Z and drift up, staggered back-to-front;
    (2) the whole loader blurs, lifts and over-scales slightly;
-   (3) the backdrop wash dissolves a beat earlier than the mark.
+   (3) the horizon rule and the label retire a beat earlier than the mark.
    animation-fill-mode: forwards holds the final visibility:hidden, so the
    node is parked for good; removing it afterwards is never required. */
 
@@ -2286,7 +2300,6 @@ a:hover {
     opacity: 1;
     filter: blur(0) saturate(1);
     transform: translateY(0) scale(1);
-    background-color: var(--bg-panel);
   }
   35% {
     opacity: 0.92;
@@ -2296,14 +2309,13 @@ a:hover {
     opacity: 0;
     filter: blur(13px) saturate(1.25);
     transform: translateY(-14px) scale(1.055);
-    background-color: transparent;
     visibility: hidden;
   }
 }
 
 @keyframes fn-boot-slice-out {
   0% {
-    opacity: calc(1 - var(--i) * 0.035);
+    opacity: calc(1 - var(--i) * 0.02);
   }
   100% {
     opacity: 0;
@@ -2373,6 +2385,13 @@ a:hover {
   }
   50% {
     opacity: 1;
+  }
+}
+
+@keyframes fn-boot-give-up {
+  to {
+    opacity: 0;
+    visibility: hidden;
   }
 }
 

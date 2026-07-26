@@ -83,13 +83,14 @@ const setStatus = (state: PillState["state"], text: string, detail = "") => {
   // and — for errors — the Output panel. No separate error banner under the
   // editor: the preview pill is the single live indicator.
   pill.set({ state, text, detail });
-  // The boot loader (static markup in sandbox.html) evaporates the moment the
-  // preview reports anything but "busy" — it is live, or there is an error
-  // worth reading. One class toggle; the animation is all CSS.
-  if (state !== "busy") {
-    document.querySelector("[data-fn-boot]")?.classList.add("is-done");
-  }
 };
+
+// The boot loader (static markup in sandbox.html) evaporates when the PLAYER
+// reports in — never on any other status change, since an error from, say, a
+// bad #src= fragment says nothing about whether the pane has pixels yet. One
+// class toggle; the 620ms evaporate is all CSS.
+const dismissBootLoader = () =>
+  document.querySelector("[data-fn-boot]")?.classList.add("is-done");
 
 const statusBar = createStatusBarStore();
 // The sandbox edits only the entry buffer, but some examples also load sibling
@@ -101,8 +102,12 @@ let assetSources: [string, Uint8Array][] = [];
 
 const bridge = new PlayerBridge(frame, {
   onReloading: () => setStatus("busy", "◌ reloading…"),
-  onLive: () => setStatus("live", "● live"),
+  onLive: () => {
+    dismissBootLoader();
+    setStatus("live", "● live");
+  },
   onResult: (ok, message) => {
+    dismissBootLoader();
     if (ok) {
       // The runtime's status line ("reloaded … model preserved") stays
       // reachable — hover the pill, or the e2e's status() seam below.
