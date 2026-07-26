@@ -16,7 +16,12 @@ use crate::{ui::UiEventKind, InputSnapshot, XrInputSnapshot};
 pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 
 /// Version of the routes and JSON wire shapes in this module.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 2;
+///
+/// 3 added `pending_steps` to `GET /state` and `frames` to `POST /time`'s
+/// `advance`, and made `/time` answer 409 under a `--fixed-time` pin. A client
+/// that batches advances or waits on `pending_steps` needs a v3 runtime: a v2
+/// one ignores `frames`, runs a single step, and reports no `pending_steps`.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 3;
 
 /// Maximum accepted body size for either reload operation.
 pub const MAX_RELOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -65,7 +70,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, viewport, views, input snapshot (held_keys + mouse + optional xr), model (Debug text)",
+        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse + optional xr), model (Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -85,7 +90,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/time",
-        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016} (step one frame) | {\"type\":\"resume\"}",
+        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016,\"frames\":1} (queue that many steps; advances accumulate) | {\"type\":\"resume\"} — 409 while --fixed-time pins the clock",
     },
     DebugRoute {
         method: "POST",
@@ -173,6 +178,10 @@ impl RuntimeView {
 pub struct RuntimeState {
     pub frame: u64,
     pub tts: f32,
+    /// Clock steps queued by `POST /time` `advance` and not yet run. Zero means
+    /// every requested step has been simulated, which is how a harness knows a
+    /// batched advance has fully landed without guessing a frame target.
+    pub pending_steps: u32,
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
     pub model: String,
@@ -219,8 +228,19 @@ pub enum InputCommand {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TimeCommand {
     Set { tts: f32 },
-    Advance { dts: f32 },
+    /// Step the clock, then hold. `frames` (default 1) is the BATCH form: it
+    /// queues that many `dts` steps in one request instead of one round trip
+    /// per step. Queued steps accumulate — `n` advances always run `n` steps.
+    Advance {
+        dts: f32,
+        #[serde(default = "one_frame")]
+        frames: u32,
+    },
     Resume,
+}
+
+fn one_frame() -> u32 {
+    1
 }
 
 /// A coupled model-and-physics rewind sent through `POST /rewind`.
@@ -328,7 +348,9 @@ pub enum DebugRequest {
     Scene(Sender<String>),
     Trace(Sender<String>),
     Input(InputCommand, Sender<Result<(), String>>),
-    Time(TimeCommand, Sender<()>),
+    /// `Err` is a conflict the operator must resolve — today, a `/time` command
+    /// under an unconditional `--fixed-time` pin, which the clock cannot honor.
+    Time(TimeCommand, Sender<Result<(), String>>),
     ReloadSource(String, Sender<Result<String, String>>),
     ReloadProject(ProjectSources, Sender<Result<String, String>>),
     LoadProject(ProjectSources, Sender<Result<String, String>>),
@@ -351,6 +373,7 @@ mod tests {
         let state = RuntimeState {
             frame: 42,
             tts: 1.5,
+            pending_steps: 3,
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: "Model {\n  label: \"hello\"\n}".into(),
@@ -367,6 +390,7 @@ mod tests {
             json!({
                 "frame": 42,
                 "tts": 1.5,
+                "pending_steps": 3,
                 "viewport": { "width": 1920, "height": 1080 },
                 "views": [{
                     "name": "main",
@@ -434,7 +458,19 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<TimeCommand>(r#"{"type":"advance","dts":0.016}"#).unwrap(),
-            TimeCommand::Advance { dts: 0.016 }
+            TimeCommand::Advance {
+                dts: 0.016,
+                frames: 1
+            },
+            "an advance with no `frames` is still exactly one step"
+        );
+        assert_eq!(
+            serde_json::from_str::<TimeCommand>(r#"{"type":"advance","dts":0.016,"frames":120}"#)
+                .unwrap(),
+            TimeCommand::Advance {
+                dts: 0.016,
+                frames: 120
+            }
         );
         assert_eq!(
             serde_json::from_str::<RewindCommand>(r#"{"frame":42}"#).unwrap(),
@@ -553,6 +589,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 2);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 3);
     }
 }

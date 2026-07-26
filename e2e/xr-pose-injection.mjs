@@ -86,12 +86,12 @@ async function waitReady(base, timeoutMs) {
 
 /** Advance exactly one fixed step and WAIT for it to land.
  *
- * `POST /time advance` sets the clock's single `pending_step` slot, which the
- * loop consumes on its next iteration. Two advances that arrive inside one
- * request-drain therefore collapse into ONE step — so a naive
- * "post pose, post advance" loop silently drops poses at localhost speed, and
- * how many it drops depends on timing. Waiting for `frame` to increment is what
- * makes one pose == one frame, and the sequence reproducible. */
+ * `POST /time advance` QUEUES a step (advances accumulate, so no step is ever
+ * lost), which the frame loop consumes on a later iteration. The wait is still
+ * REQUIRED here: an injected pose is level state applied when its request is
+ * serviced, so a step still queued when the next pose lands would run against
+ * the NEW pose. Waiting for `frame` to increment is what pins one pose to one
+ * frame, and makes the sequence reproducible. */
 async function stepOneFrame(base, timeoutMs = 10000) {
   const before = (await state(base)).frame;
   await post(base, "/time", { type: "advance", dts: 1 / 60 });

@@ -156,11 +156,12 @@ without it. That is the point: the mouse/keyboard emulator pins both hands to
 toward your face, or aiming with a rotated grip, are inexpressible there and can
 only be driven this way. `held_keys` and `mouse` stay live alongside it.
 
-Pair it with `POST /time` to step one frame per pose. **Wait for `frame` to
-increment before sending the next pose**: `advance` sets the clock's single
-pending-step slot, so two advances arriving inside one request-drain collapse
-into one step and the intervening pose is never sampled. With the wait, the
-whole two-handed sequence is one pose per frame and reproducible:
+Pair it with `POST /time` to step one frame per pose — and **wait for `frame` to
+increment before sending the next pose**. Advances accumulate (one advance is
+one stepped frame), but injected input is *level* state, not a queue: it is
+applied when the request is serviced, so any steps still queued when the next
+pose arrives run against the NEW pose. Waiting is what pins one pose to one
+frame:
 
 ```sh
 for i in $(seq 0 20); do
@@ -237,14 +238,43 @@ target-specific endpoints or string-keyed capability bags.
 ### `POST /time` — frame-loop control
 
 ```jsonc
-{"type":"set","tts":2.0}        // PAUSE: pin game time to a constant (dts=0)
-{"type":"advance","dts":0.016}  // STEP: run exactly one frame with this dt, then hold
-{"type":"resume"}               // RESUME: follow wall-clock again
+{"type":"set","tts":2.0}                    // PAUSE: pin game time to a constant (dts=0)
+{"type":"advance","dts":0.016}              // STEP: run exactly one frame with this dt, then hold
+{"type":"advance","dts":0.016,"frames":120} // BATCH: queue 120 such steps in one request
+{"type":"resume"}                           // RESUME: follow wall-clock again
 ```
 
-`--fixed-time <T>` pins the clock from launch (equivalent to an initial `set`).
-While the clock is pinned, **user keyboard/mouse input from the window is ignored**, but
-injected `/input` still applies — so an external driver has deterministic control.
+**Advances accumulate.** Each queued step runs exactly once, in order: `n`
+advances always run `n` model steps, whenever they arrive relative to a frame.
+A single advance is therefore one observable stepped frame — step, read
+`/state`, step again.
+
+**`frames` is the batch form** (default `1`), for skipping ahead when you do
+*not* need to observe between steps: one round trip instead of `n`, and the
+queue drains at up to 8 steps per rendered frame rather than one, so a
+600-frame skip costs ~75 rendered frames instead of 600. The clock parks at the
+end exactly as a single advance does.
+
+Two things follow from that speed. The response returns when the steps are
+*queued*, so poll `GET /state` until **`pending_steps` is 0** to know the batch
+has fully landed. And because up to 8 ticks run inside one rendered frame, a
+batch has ~`n/8` of the per-rendered-frame I/O points that `n` single advances
+would give it — network delivery, effect results, injected input, and rendering
+all happen once per rendered frame, not once per tick. Step one at a time when
+the game needs to see input or I/O between steps. (Batches are capped at
+1,000,000 queued steps; past that the request is a 409.)
+
+**`--fixed-time <T>` is not an initial `set`.** It is an *unconditional* capture
+pin: every frame is `{dts: 0, tts: T}`, and no clock control — pause, step,
+rebase — can move it. That is what makes golden captures byte-identical, so
+`/time` does not get to weaken it: `set`, `advance`, and `resume` all return
+**409 Conflict** with a message naming the pin while `--fixed-time` is in
+effect. To start pinned *and* step, launch WITHOUT `--fixed-time` and
+`POST {"type":"set","tts":T}` first.
+
+While the clock is pinned (either way), **user keyboard/mouse input from the window is
+ignored**, but injected `/input` still applies — so an external driver has deterministic
+control.
 
 ### `POST /reload-source` — network hot-reload (Functor Lang)
 
