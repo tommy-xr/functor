@@ -1193,6 +1193,83 @@ Note the two rules this example obeys: local `let` needs `in`, and the
 pre-step readers raise on the first frame, before the `physics` hook's
 declaration has been reconciled and stepped — so gate them.
 
+⚠️ The sketch above is the LOOP SHAPE, not a usable controller: its
+`else vel.y` is the first of three traps below. See the next section.
+
+### Character controllers on the `physics` hook
+
+`examples/physics-controller` is the worked reference (a dynamic capsule, a
+moving kinematic deck, coyote time, jump buffering, landing squash, walls),
+with its whole feel layer as pure functions under `expect`. Read it before
+writing a controller. The recipe, and the three traps that are NOT obvious:
+
+**Grounding** is `Physics.castExcluding` from the capsule's center, straight
+down, reaching `feetOffset + skin`. Excluding your own tag is mandatory — a ray
+starting inside your collider otherwise hits it at distance 0 and reports the
+character standing on itself. Keep `skin` small (~0.15): it is also the knob
+that decides how far AHEAD of physical contact your landing response fires.
+
+**Moving-platform carry needs no platform identity.** The probe reports which
+body it hit, so ask that body for its velocity — one line, no per-platform
+state, no "which deck was I on last frame". Fixed bodies read back zero, so
+static ground needs no special case; a kinematic body whose declared pose is
+re-derived each frame reads back the velocity rapier derived from that motion:
+
+```functor
+let surfaceVelocity = (probe) =>
+  if probe.hit then Physics.linearVelocity(probe.tag) else zeroVelocity
+```
+
+Then steer RELATIVE to that surface (`target = carry.x + wish * speed`), so
+standing still rides along and a jump inherits the deck's motion.
+
+**The three traps.** All three come from `Physics.setVelocity` replacing ALL
+THREE components — there is no horizontal-only command — so the controller must
+say something about `vy` every frame. All three were measured as visible
+artifacts, not theorized:
+
+1. **Do not echo the read back while grounded.** The read is one step stale, so
+   it still carries the downward speed the solver just cancelled at the contact;
+   re-commanding it drives the capsule into the floor. A capsule that should
+   rest 0.90 above the surface rested at 0.40 — and, downstream, stopped against
+   a wall 0.45 units early, because a half-buried capsule catches the wall's
+   corner instead of its face.
+2. **Commanding `0.0` while grounded also sinks, just slower.** Overwriting `vy`
+   destroys the contact's own pushout impulse too, so each step's gravity
+   increment accumulates as penetration (0.98 drifting to 0.40 over 260 frames).
+   Instead, own the standing height with a **ground clamp**: the probe already
+   measured the distance, so correct toward the rest distance, `error / dt`,
+   bounded to a few units/s. This also buys stick-to-a-descending-deck for free.
+3. **The ground clamp will cancel your jump** unless you suppress it. For the
+   first frames after takeoff the feet are still within the probe's reach, so
+   the character reads as grounded and gets clamped back down — it rose 0.12
+   units instead of 1.16, `vy` flipping +6.83 to −6.37 in one frame. Arm a short
+   **post-jump lockout** (~0.1 s) when the jump fires, and treat grounding as
+   false for its duration.
+
+**Keep the decisions pure.** Read the world in `tick`, pass a plain
+`observation` record (grounded, velocity, probe distance, rest height) to
+pure functions, and command the result. The controller's feel then unit-tests
+under `functor test` with no GPU and no world — and the physics drive is
+recorded, so a scripted `--input-script` run is bit-deterministic too
+(verified: 400 frames of identical trace and a byte-identical capture across
+two runs).
+
+**Everything else comes free from the solver**: walls stop you, edges drop you,
+and props can be knocked around — which is the whole reason to put a character
+on the `physics` hook rather than hand-rolling kinematics like
+`examples/platformer`.
+
+**There is no `postTick` hook, and a controller does not want one.** Reads in
+`tick` see the previous step, which is inherent to read → decide → step. A
+post-step hook would read fresher but its commands would wait a full frame (the
+write asymmetry), so total loop latency would not improve — and measured against
+real landings, the grounding probe's `skin` already makes the landing response
+fire 1–3 frames *before* physical contact, so removing a frame of read latency
+pushes it further from contact, not closer. Anything purely visual can already
+read the fresh post-step world in `draw`; post-step events already arrive
+through `Physics.events`.
+
 `Physics.events` is a **Sub** (return it from `subscriptions`, alone or in
 `Sub.batch`; it requires `update`). Every contact begin/end from this
 frame's physics step arrives post-step as `{started: bool, a: Physics.tag,
