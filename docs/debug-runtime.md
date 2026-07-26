@@ -106,12 +106,20 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"key","key":"w","down":true}      // key press / release
 {"type":"mouse_move","x":10,"y":20}       // absolute cursor position
 {"type":"mouse_wheel","delta":1}          // scroll
+{"type":"mouse_button","button":"left","down":true}            // "left"|"right"|"middle"
 {"type":"ui_event","slot":0,"kind":"Clicked"}                  // click widget slot 0
 {"type":"ui_event","slot":1,"kind":{"SliderChanged":0.5}}      // drag slider slot 1
 {"type":"ui_event","slot":2,"kind":{"TextChanged":"hi"}}       // edit text input slot 2
 {"type":"xr","left":{...},"right":{...},"head":{...}}          // set the XR device sample
 {"type":"xr_clear"}                                            // drop it again
 ```
+
+`mouse_button` is both an edge and level state, exactly like `key`: it calls the
+game's `mouseButton` hook AND updates the held buttons that later steps'
+`sampledInput` sees (`mouse.buttons`), so holding one across several
+`/time advance` steps scripts full-auto fire. A release is delivered only if the
+game saw the press. Unlike window buttons it ignores cursor capture — a
+headless/hidden session has no capture to acquire.
 
 `ui_event` drives the game's interactive UI widgets without pixels or
 hit-testing (docs/ui-interaction.md): `slot` is the widget's index in the
@@ -188,7 +196,7 @@ tracking is valid:
 ```jsonc
 {
   "held_keys": [],
-  "mouse": { "x": 0, "y": 0 },
+  "mouse": { "x": 0, "y": 0, "buttons": { "left": false, "right": false, "middle": false } },
   "xr": {
     "head": {
       "position": [0.0, 0.0, 0.0],
