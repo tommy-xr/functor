@@ -246,8 +246,8 @@ let grab = (s) =>
   Failure(error: string)`, the value an `Effect.httpGet`/`httpPost` tagger
   receives (`Response` = the request completed at ANY HTTP status;
   `Failure` = a transport error). `Data` carries an `Effect.sendMsg`
-  payload decoded back into a plain-data value; its field type `NetData` is
-  deliberately UNDECLARED (the gradual `Unknown` seam), so the bound value
+  payload decoded back into a plain-data value; its field type is
+  deliberately `unknown` (the EXPLICIT gradual seam), so the bound value
   matches directly against whatever ADT the two ends share — declare the
   protocol ADT once in a shared sibling module and match its ctors
   (`match w with | Protocol.Ping(n) => …`). A corrupt/version-skewed typed
@@ -1569,8 +1569,9 @@ unification with let-polymorphism — generic functions instantiate fresh at
 every use, element types flow through `List.map`/`filter`/`fold`, and
 apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: 'b): List<'b>`). Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
-at genuinely-dynamic seams (host values, unrecognized type
-names) and absorbs anything — but a BUILTIN namespace is not such a seam:
+at genuinely-dynamic seams (host values, and the `unknown` annotation you
+write on purpose — an UNRECOGNIZED type name is an error, not a seam)
+and absorbs anything — but a BUILTIN namespace is not such a seam:
 its member set is closed, so `List.tail` / `Text.padLeft` are check errors, not
 `Unknown` (see "Builtins"). Function TYPES **do** annotate —
 `(f: (float) => float)`, `(f: ('a) => 'b)`, and the parenthesized

@@ -118,7 +118,9 @@ pub enum Type {
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Type::Unknown => write!(f, "Unknown"),
+            // Spelled as it is WRITTEN: `unknown` is a real annotation now,
+            // so a type copied out of hover into the source still checks.
+            Type::Unknown => write!(f, "unknown"),
             // Raw display; hover/errors normalize vars to 'a, 'b first
             // (see `Checker::zonk_normalized`).
             Type::Var(v) => write!(f, "'{}", var_name(*v)),
@@ -403,12 +405,17 @@ fn nearest_member(member: &str, members: &[&'static str]) -> Option<&'static str
 /// capitalizes them, so `Float`/`String`/`Bool` are the mistake people
 /// actually make — and `Int`/`Number`/`Double` name a type Functor Lang
 /// doesn't have (all numbers are `float`).
+///
+/// Deliberately NOT here: `Any`/`Object`/`Dynamic`. Answering those with
+/// "did you mean `unknown`?" would recommend the check-disabling seam as a
+/// typo fix — reinstating, by suggestion, the exact trap this diagnostic
+/// exists to close. They fall through to the neutral message, which mentions
+/// `unknown` as a deliberate choice without endorsing it.
 fn miscased_primitive(name: &str) -> Option<&'static str> {
     match name.to_lowercase().as_str() {
         "float" | "int" | "integer" | "number" | "double" | "num" => Some("float"),
         "string" | "str" | "text" => Some("string"),
         "bool" | "boolean" => Some("bool"),
-        "unknown" | "any" | "dynamic" | "obj" | "object" => Some("unknown"),
         _ => None,
     }
 }
@@ -1422,61 +1429,89 @@ the type: `type Name<{name}> = …`"
     /// The teaching message for an unrecognized type name, with a
     /// did-you-mean when one is confident enough to name.
     ///
-    /// The overwhelmingly common case is a MISCASED primitive — `Float` for
-    /// `float` — because every other language spells them capitalized. That
-    /// gets a flat, certain correction. Otherwise the name is matched against
-    /// everything actually in scope (primitives, `unknown`, and the declared
-    /// record/variant types), case-insensitively first — `NetEvnt` for
-    /// `NetEvent` is still a typo of a real type — then by typo-scale edit
-    /// distance. With no confident candidate the message points at the two
-    /// real options: declare the type, or say `unknown` on purpose.
+    /// A DECLARED type always wins: the name is matched against everything
+    /// actually in scope (primitives, `unknown`, and the declared record and
+    /// variant types) before any built-in correction table, so a project that
+    /// declares `Text` or `Number` gets its own type suggested rather than
+    /// `string`/`float`. Declared types are canonical (`Asset.Model`,
+    /// `Utils.Position`), so their MEMBER part matches too — writing `Model`
+    /// unqualified suggests the qualified `Asset.Model` rather than
+    /// misdirecting to "declare it".
+    ///
+    /// Only then the miscased-primitive table, which covers the common
+    /// `Float`-for-`float` mistake. With no confident candidate the message
+    /// points at the real options.
     fn unknown_type_message(&self, name: &str) -> String {
         let head = format!("unknown type name `{name}`");
+        let lowered = name.to_lowercase();
+        // A candidate matches on its full canonical name OR on its member
+        // part, so an unqualified `Model` finds `Asset.Model`.
+        let member_of = |c: &str| c.rsplit_once('.').map_or(c, |(_, m)| m).to_lowercase();
+        let declared: Vec<&str> = self
+            .records
+            .keys()
+            .chain(self.variants.keys())
+            .map(String::as_str)
+            .collect();
+        // A DECLARED type that differs only by case (or by qualification) is
+        // a certain hit, and outranks the primitive table — a project that
+        // declares `Number` means its own type, not `float`.
+        if let Some(hit) = declared
+            .iter()
+            .find(|c| c.to_lowercase() == lowered || member_of(c) == lowered)
+        {
+            return format!("{head} — did you mean `{hit}`?");
+        }
         if let Some(prim) = miscased_primitive(name) {
-            // Distinguish "you capitalized it" from "that type doesn't
-            // exist here": `Int`/`Number` are not miscasings of `float`,
-            // they are a different type system's idea of numbers.
-            let why = if name.to_lowercase() == prim {
+            // Distinguish "you capitalized it" from "that type doesn't exist
+            // here": `Int`/`Number` are not miscasings of `float`, they are
+            // another language's idea of numbers.
+            let why = if lowered == prim {
                 "Functor Lang's primitive types are lowercase"
-            } else if prim == "float" {
-                "Functor Lang has a single number type, `float`"
             } else {
-                "that is how Functor Lang spells it"
+                "Functor Lang has a single number type, `float`"
             };
             return format!("{head} — did you mean `{prim}`? ({why})");
         }
+        // No certain hit: fall back to typo-scale edit distance over
+        // everything in scope. Distance is measured case-INSENSITIVELY, so
+        // `Flaot` reads as a two-edit typo of `float` rather than a
+        // three-edit one that spends its budget on the capital F. Budget: 2
+        // for a name long enough that two edits still leave it recognizable,
+        // 1 for short names where 2 edits could reach anything.
         let mut candidates: Vec<&str> = vec!["float", "string", "bool", "unknown", "List"];
-        candidates.extend(self.records.keys().map(String::as_str));
-        candidates.extend(self.variants.keys().map(String::as_str));
-        // A pure case difference is a certain hit; only then fall back to
-        // edit distance, budgeted like `nearest_member` so an honestly-novel
-        // name suggests nothing rather than something misleading.
-        let lowered = name.to_lowercase();
+        candidates.extend(declared);
+        let budget = if name.chars().count() >= 4 { 2 } else { 1 };
         let near = candidates
             .iter()
-            .find(|c| c.to_lowercase() == lowered)
-            .copied()
-            .or_else(|| {
-                // Distance is measured case-INSENSITIVELY, so `Flaot` reads as
-                // a two-edit typo of `float` rather than a three-edit one that
-                // spends its whole budget on the capital F. Budget: 2 for a
-                // name long enough that two edits still leave it recognizable,
-                // 1 for short names where 2 edits could reach anything.
-                let budget = if name.chars().count() >= 4 { 2 } else { 1 };
-                candidates
-                    .iter()
-                    .map(|c| (edit_distance(&lowered, &c.to_lowercase()), *c))
-                    .filter(|(distance, _)| *distance <= budget)
-                    .min_by_key(|(distance, c)| (*distance, *c))
-                    .map(|(_, c)| c)
-            });
-        match near {
-            Some(near) => format!("{head} — did you mean `{near}`?"),
-            None => format!(
-                "{head} — declare it (`type {name} = …`), or write `unknown` \
-if this position is deliberately untyped"
-            ),
+            .map(|c| {
+                let distance = edit_distance(&lowered, &c.to_lowercase())
+                    .min(edit_distance(&lowered, &member_of(c)));
+                (distance, *c)
+            })
+            .filter(|(distance, _)| *distance <= budget)
+            .min_by_key(|(distance, c)| (*distance, *c))
+            .map(|(_, c)| c);
+        if let Some(near) = near {
+            return format!("{head} — did you mean `{near}`?");
         }
+        // A type VARIABLE is apostrophe-prefixed; a bare lowercase name in
+        // type position is most often that mistake, not a missing type.
+        if name.chars().next().is_some_and(char::is_lowercase) {
+            return format!("{head} — a type variable is spelled `'{name}`");
+        }
+        // "declare it" only makes sense for a name that could BE a
+        // declaration; `type Foo.Bar = …` does not parse.
+        if name.contains('.') {
+            return format!(
+                "{head} — that module declares no such type (or write `unknown` \
+if this position is deliberately untyped)"
+            );
+        }
+        format!(
+            "{head} — declare it (`type {name} = …`), or write `unknown` \
+if this position is deliberately untyped"
+        )
     }
 
     fn resolve_annotation(&mut self, ty: Option<&TypeName>, report: bool) -> Type {

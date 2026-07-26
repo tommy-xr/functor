@@ -113,6 +113,11 @@ fn error_redeclare_builtin_type() {
     assert_eq!(message, "cannot redeclare builtin type `float`");
     let (message, _, _) = lower_err("type List = { head: float }");
     assert_eq!(message, "cannot redeclare builtin type `List`");
+    // `unknown` is reserved for the same reason: `resolve_type` answers it
+    // before consulting declared types, so a user's `type unknown` could
+    // never be reached from an annotation.
+    let (message, _, _) = lower_err("type unknown = { x: float }");
+    assert_eq!(message, "cannot redeclare builtin type `unknown`");
 }
 
 /// A lowering error's position points at the offending identifier itself.

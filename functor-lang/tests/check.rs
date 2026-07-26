@@ -500,6 +500,39 @@ fn typos_suggest_the_nearest_declared_type() {
     assert!(message.contains("did you mean `float`?"), "{message}");
 }
 
+/// A DECLARED type beats the built-in correction table: a project that
+/// declares `Number` gets its own type suggested, not `float`.
+#[test]
+fn a_declared_type_wins_over_the_primitive_table() {
+    let (message, _, _) = single_diag("type Number = { n: float }\nlet f = (x: number) => x");
+    assert!(message.contains("did you mean `Number`?"), "{message}");
+}
+
+/// `Any`/`Object` must NOT be answered with "did you mean `unknown`?" —
+/// that would recommend the check-disabling seam as a typo fix.
+#[test]
+fn dynamic_sounding_names_do_not_recommend_the_seam() {
+    for bad in ["Any", "Object", "Dynamic"] {
+        let (message, _, _) = single_diag(&format!("let f = (x: {bad}) => x"));
+        assert!(
+            !message.contains("did you mean `unknown`"),
+            "`{bad}` must not be corrected TO the seam: {message}"
+        );
+        assert!(message.contains("declare it"), "{message}");
+    }
+}
+
+/// A bare lowercase name in type position is usually a type variable
+/// written without its apostrophe — say so rather than "declare it".
+#[test]
+fn a_bare_lowercase_name_suggests_the_type_variable_spelling() {
+    let (message, _, _) = single_diag("let f = (xs: List<zz>) => xs");
+    assert_eq!(
+        message,
+        "unknown type name `zz` — a type variable is spelled `'zz`"
+    );
+}
+
 /// With no confident candidate, the message names the two real ways out
 /// instead of guessing.
 #[test]

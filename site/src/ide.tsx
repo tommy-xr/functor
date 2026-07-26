@@ -107,9 +107,9 @@ const STARTER: Project = {
 // a .zip to run it with \`functor -d <dir> build wasm\`.
 let init = { t: 0.0 }
 
-let tick = (model, dt: Float, tts: Float) => { model with t: model.t + dt }
+let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 
-let draw = (model, tts: Float) =>
+let draw = (model, tts: float) =>
   Frame.create(
     Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.5, 0.0)),
     Scene.group([
