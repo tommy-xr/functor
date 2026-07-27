@@ -186,6 +186,11 @@ try {
   check(/^## Syntax subset/.test(syntax) && syntax.length > 2000, `a named section returns its full text (${syntax.length} chars)`);
   check(/let draw = \(model, tts\)/.test(await rpc.call("language_guide", { section: "game contract" })), "a section is addressable by a fragment of its name");
 
+  // A section stops at its first subsection, so a parent must say where it
+  // continues rather than reading like the end of the topic.
+  const modules = await rpc.call("language_guide", { section: "modules-multi-file-projects" });
+  check(/Continues in: interface-files/.test(modules), "a parent section points at its subsections");
+
   let badSection = null;
   try {
     await rpc.call("language_guide", { section: "monad-transformers" });

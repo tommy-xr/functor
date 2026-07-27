@@ -5,8 +5,8 @@ description: Write, run, and debug Functor Lang (.fun) — Functor's F#-inspired
 
 # Functor Lang — the current language, exactly
 
-Functor Lang is Functor's interpreted game-logic language (roadmap: `docs/functor-lang.md`;
-design notes: `~/notes/ideas/functor-lang/`). It is deliberately small; this
+Functor Lang is Functor's interpreted game-logic language (roadmap:
+`docs/functor-lang.md`). It is deliberately small; this
 file describes **everything that exists today**. If a construct isn't here,
 it doesn't parse — do not invent syntax from F#/OCaml habits.
 

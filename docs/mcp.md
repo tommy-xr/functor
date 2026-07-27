@@ -99,7 +99,11 @@ is no second copy to rot — the skill is already required to track the language
 (`CLAUDE.md`), and this surface follows it automatically. Sections are named by
 their slugged heading (`syntax-subset`, `semantics-rules-that-will-bite-you`); a
 unique fragment (`"game contract"`) resolves too, and an unknown or ambiguous
-one comes back as a teaching error naming the candidates.
+one comes back as a teaching error naming the candidates. A section runs to the
+next heading of **any** level, so a subsection is fetched on its own rather than
+inflating its parent — a parent that has any ends with a `Continues in:` line
+naming them. Nothing is truncated: the section is the narrowing, exactly as a
+`module` listing is for `api_reference`.
 
 ```jsonc
 language_guide {}                                // TOC + the quick facts
