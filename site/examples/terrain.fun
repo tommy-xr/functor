@@ -10,9 +10,10 @@
 // tiled detail maps, instanced grass, a physics heightfield and a dynamic
 // walker. If the web runtime regresses, this is where it shows first.
 
+
 let worldSize = 4000.0
-let walkSpeed = 34.0
-let jumpSpeed = 18.0
+let walkSpeed = 7.5
+let jumpSpeed = 7.0
 let sensitivity = 0.003
 let pitchLimit = 1.45
 
@@ -158,7 +159,6 @@ let tick = (model, dt, tts) =>
   if not model.started then { model with started: true }
   else
   let pos = Physics.position(walkerTag) in
-  let vel = Physics.linearVelocity(walkerTag) in
   let probe = groundProbe(pos) in
   let forward = axis(model.held.down, model.held.up) in
   let right = axis(model.held.left, model.held.right) in
@@ -170,15 +170,25 @@ let tick = (model, dt, tts) =>
               forward * Math.cos(model.yaw) + right * Math.sin(model.yaw))
     |> Vec3.normalize
     |> Vec3.scale(walkSpeed) in
-  // Horizontal motion is driven; vertical is left to gravity, except for the
-  // instant of a jump. Overwriting vy every frame would cancel the fall.
-  let vy = if probe.hit && model.jump then jumpSpeed else vel.y in
   let next =
     { model with
         grounded: probe.hit,
         eye: { x: pos.x, y: pos.y + eyeOffset, z: pos.z } } in
+  // Steer the horizontal plane and leave the vertical axis to the solver,
+  // which owns the ground contact, the landing impulse and gravity. The only
+  // frame that writes vy is the one a jump fires on; the two writes touch
+  // disjoint axes, so the pair applies as one whole-vector write.
+  //
+  // Writing the whole vector instead — echoing the previous frame's
+  // `linearVelocity` as vy — is what made this walker floaty: that read is one
+  // step stale (physics runs after `tick`), so every frame overwrote the
+  // solver's in-progress contact resolution and a crest launched you off the
+  // surface.
+  let steer = Physics.setVelocityXZ(walkerTag, Vec3.x(wish), Vec3.z(wish)) in
   (next,
-   Physics.setVelocity(walkerTag, Vec3.make(Vec3.x(wish), vy, Vec3.z(wish))))
+   if probe.hit && model.jump then
+     Effect.batch([steer, Physics.setVelocityY(walkerTag, jumpSpeed)])
+   else steer)
 
 let ballTag = (ball) => Physics.tag($"ball-{ball.id}")
 
