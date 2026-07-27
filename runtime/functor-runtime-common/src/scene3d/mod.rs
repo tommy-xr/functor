@@ -61,6 +61,12 @@ pub struct SceneContext {
     // GL mesh each frame; static terrain uploads exactly once. Keyed by
     // (rows, cols) — the stable identity of the mesh across frames.
     heightmaps: RefCell<HashMap<(u32, u32), geometry::HeightmapMesh>>,
+    // One persistent 2D fill mesh per POINT COUNT, re-uploaded in place when the
+    // points differ from what is loaded. Every `Sprite.circle` lowers to the same
+    // unit ring plus a scale, so all circles share one mesh and upload nothing;
+    // author-supplied polygons of the same vertex count share a mesh and each
+    // re-uploads before its own draw.
+    polygons: RefCell<HashMap<usize, geometry::PolygonMesh>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
     terrain_decode_residency: RefCell<TerrainDecodeResidency>,
     terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
@@ -233,6 +239,7 @@ impl SceneContext {
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
             heightmaps: RefCell::new(HashMap::new()),
+            polygons: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
             terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
             terrain_requests: RefCell::new(BTreeSet::new()),
@@ -1026,6 +1033,14 @@ pub enum Shape {
         cols: u32,
         heights: Vec<f32>,
     },
+    /// A filled CONVEX polygon in the XY plane (z = 0), facing +Z: the points in
+    /// order, used verbatim (not re-centered) and triangulated as a fan. The 2D
+    /// fill behind `Sprite.polygon` and `Sprite.circle`.
+    ///
+    /// Convexity is a precondition established at construction — `Sprite.polygon`
+    /// rejects a non-convex outline rather than let a fan fill it wrongly — so
+    /// rendering does no validation.
+    ConvexPolygon { points: Vec<[f32; 2]> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1525,6 +1540,37 @@ named \"{name}\" — {hint}"
                     }
                 };
                 mesh.update(&render_context.gl, heights);
+                mesh.draw(&render_context.gl);
+            }
+            SceneObject::Geometry(Shape::ConvexPolygon { points }) => {
+                // A polygon needs at least a triangle; anything less is rejected
+                // at construction, so a shorter list here means malformed
+                // protocol data and is skipped rather than drawn as garbage.
+                if points.len() < 3 {
+                    return;
+                }
+                let xform = world_matrix * self.xform;
+                geometry_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                // One persistent mesh per point count (see `PolygonMesh`).
+                let mut polygons = scene_context.polygons.borrow_mut();
+                let counters = crate::gpu_counters::gpu_counters();
+                let mesh = match polygons.entry(points.len()) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        counters.cache_hit();
+                        e.into_mut()
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        counters.cache_miss();
+                        e.insert(geometry::PolygonMesh::create(&render_context.gl, points))
+                    }
+                };
+                mesh.update(&render_context.gl, points);
                 mesh.draw(&render_context.gl);
             }
         }

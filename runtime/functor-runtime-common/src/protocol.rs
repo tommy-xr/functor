@@ -69,6 +69,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v8: filled 2D shapes — the `SceneObject::Geometry(Shape::ConvexPolygon)`
+/// variant, carrying its XY points inline. Emitted only by `Sprite.circle` /
+/// `Sprite.polygon`, so frames without them keep their v7 shape.
+///
 /// v7: built-in textures — the `TextureDescription::Builtin` variant, carrying
 /// a symbolic [`crate::scene3d::BuiltinTexture`] instead of a locator. Emitted
 /// only by `Sprite.text`, so frames without text keep their v6 shape.
@@ -88,7 +92,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -425,7 +429,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 7);
+        assert_eq!(PROTOCOL_VERSION, 8);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -442,6 +446,29 @@ mod tests {
         );
         let back: MaterialDescription =
             serde_json::from_str(&json).expect("deserialize sprite material");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    /// The filled-2D-shape geometry carries its points inline, so its wire shape
+    /// is pinned like the sprite atlas material above — a silent change here
+    /// would break any consumer reading `GET /scene`.
+    #[test]
+    fn convex_polygon_geometry_wire_is_pinned() {
+        use crate::{Scene3D, SceneObject, Shape};
+
+        assert_eq!(PROTOCOL_VERSION, 8);
+        let scene = Scene3D {
+            obj: SceneObject::Geometry(Shape::ConvexPolygon {
+                points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
+            }),
+            xform: cgmath::Matrix4::from_scale(1.0),
+        };
+        let json = serde_json::to_string(&scene.obj).expect("serialize polygon geometry");
+        assert_eq!(
+            json,
+            r#"{"Geometry":{"ConvexPolygon":{"points":[[0.0,0.0],[2.0,0.0],[1.0,1.5]]}}}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize polygon geometry");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 

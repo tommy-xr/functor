@@ -172,26 +172,89 @@ same mechanism `Sprite.region` atlases rely on — so no padding gutter was adde
 on top of it. There is deliberately no pixel snapping: text is world-space, and
 snapping to device pixels would make it jitter as the camera scrolls.
 
-## Slice 2: filled shapes
+## Slice 2 (landed): filled shapes
 
 ```
-let circle   : (Color.t, float) => t                    // radius
-let polygon  : (Color.t, List<point>) => t              // filled, convex
-let line     : (Color.t, float, point, point) => t      // color, thickness
-let polyline : (Color.t, float, List<point>) => t
-let outline  : (Color.t, float, List<point>) => t        // closed
+let circle  : (Color.t, float) => t                                  // radius
+let polygon : (Color.t, List<Input.point2>) => t                      // filled, CONVEX
+let line    : (Color.t, float, Input.point2, Input.point2) => t       // thickness, from, to
 ```
 
-Triangulated during lowering, on the same plain-data discipline as text: the
-sprite tree keeps the points, and geometry is generated at lowering. `point`
-should be a shared `{ x, y }` record so game-computed geometry drops straight
-in. This deletes `shape.fun`, and with it the corner-notch and
-stroke-width-varies-with-angle traps, since a real line primitive has real
-joins. A `Stroke` record (`width`, `cap`, `join`) is the natural later
-extension once joins matter.
+Same plain-data discipline as text: the sprite tree keeps the author's
+parameters (`Sprite.Circle(3, …)`, not 32 expanded vertices), and triangulation
+happens at lowering.
+
+### The point type is `Input.point2`, and that is not a stylistic choice
+
+Record literals resolve **nominally** by field set, and two same-shaped
+declarations make a bare literal an *ambiguous record literal* — a hard check
+error. Verified directly:
+
+```
+error: ambiguous record literal: fields match PointA and PointB — annotate which one is meant
+```
+
+So declaring a second `{ x, y }` type for geometry would have broken every game
+with a bare point literal anywhere. There can be exactly one `{ x, y }` record in
+the prelude, and `Input.point2` already existed. The cross-module reference reads
+slightly oddly from `Sprite`, and it is still the only correct answer.
+
+### Convexity: an error, never a wrong fill
+
+The fill is a triangle fan from the first vertex, which is correct only for a
+convex outline; on a concave one it paints outside the shape. Rather than
+document that as undefined behavior, `Sprite.polygon` **validates convexity at
+construction** — an O(n) cross-product sign scan, pure and unit-tested — and
+rejects a concave outline with a teaching error that names the fix (split it into
+convex pieces and group them). `examples/shapes2d` does exactly that with a
+notched asteroids hull, which is the shape a real game reaches for first.
+
+**Either winding is accepted.** A game computing points from angles can
+legitimately produce clockwise or counter-clockwise, nothing culls back faces, and
+demanding one winding would be an invisible trap (a silently empty screen).
+Collinear vertices are fine — they are convex — but a zero-area outline is
+rejected, since it cannot be filled and would give the mesh a degenerate
+bounding box.
+
+### Lines have no caps and no joins, on purpose
+
+`Sprite.line` is one segment: it stops flat (butt caps) at each endpoint. Two
+lines meeting at an angle therefore leave a notch — the jam's P1-1 complaint is
+only *partly* answered by this slice, and pretending otherwise would be worse
+than saying so. What IS fixed is the other half of that finding: thickness is
+applied in the segment's own frame (scale, then rotate), so it is exact at every
+angle, where a game rotating an assembled group gets thickness that varies with
+direction. `examples/shapes2d` renders a 14-spoke fan precisely so that invariant
+is visible rather than asserted.
+
+Thickness is **geometry, not a screen-space stroke**: `Sprite.scale(k)`
+multiplies it along with the length, and `scaleXY` with unequal factors distorts
+it for any line that is not axis-aligned. That is the honest behavior of an
+affine transform on geometry, and it is why a `Stroke` record with a
+screen-space width is not quietly implied by this surface.
+
+### Rendering
+
+One new protocol variant, `Shape::ConvexPolygon { points }` (v8), carrying its XY
+points inline exactly as `Shape::Heightmap` carries heights. The renderer keeps
+one persistent mesh **per point count** and re-uploads vertices in place, so
+there is no per-frame VAO/VBO churn.
+
+`Sprite.circle` exploits that deliberately: every circle lowers to the *same*
+unit-radius 32-gon plus a scale transform, so all circles in a process share one
+mesh and upload nothing at all. Author-supplied polygons of equal vertex count
+share a mesh and each re-uploads before its own draw — measured at 432 B/frame
+for three distinct triangles, which is the honest cost of the sharing.
+
+Still deferred: `polyline` / `outline` with real joins and caps (a `Stroke`
+record: width, cap, join), and concave fills via ear clipping.
 
 ## Later slices, in priority order
 
+0. **Jointed strokes** — `polyline` / `outline` over a point list, with a
+   `Stroke` record (width, cap, join). This is the remaining half of the jam's
+   stroked-geometry finding: `Sprite.line` fixes angle-dependent thickness but
+   still notches at corners, because a single segment has no joins.
 1. **Screen-space anchoring** — `Sprite.anchored(Anchor.t, insetX, insetY, t)`
    plus `Frame.with2DOverlay`, resolving against the letterboxed viewport and
    ignoring `Camera2D.at` / `zoom`. This is the highest-value remaining item: it

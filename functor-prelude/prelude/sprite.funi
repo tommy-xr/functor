@@ -58,6 +58,37 @@ let text : (Color.t, float, string) => t
 /// stacking blocks by their measured height never overlaps them.
 let measure : (float, string) => metrics
 
+/// Create a filled circle of the given radius, centered on the origin like
+/// `square` — so it spans `2 * radius` across. Approximated by a 32-sided
+/// polygon, which is under a pixel from true at any size that reads as a circle.
+let circle : (Color.t, float) => t
+
+/// Fill a CONVEX polygon through the given points, in order.
+///
+/// Unlike every other primitive, a polygon is NOT re-centered: the points are the
+/// geometry, in the sprite's own coordinate space, so an outline computed in game
+/// logic lands where it was computed. Either winding works (clockwise or
+/// counter-clockwise).
+///
+/// The fill is a triangle fan, which is only correct for a convex outline, so a
+/// CONCAVE one is REJECTED with an error rather than filled wrongly — draw it as
+/// a group of convex pieces. Fewer than 3 points, or points that are all on one
+/// line, are errors too.
+let polygon : (Color.t, List<Input.point2>) => t
+
+/// Draw a straight line of the given thickness between two points, in the
+/// sprite's own coordinate space (not re-centered, like `polygon`).
+///
+/// Thickness is measured across the line and is exact at every angle. There are
+/// no caps and no joins: the line stops flat at each endpoint, so two lines
+/// meeting at an angle leave a notch at the corner — a jointed `polyline` is not
+/// part of this surface yet. A zero-length line draws nothing.
+///
+/// Thickness is geometry, not a screen-space stroke: `scale` multiplies it along
+/// with the length, and `scaleXY` with unequal factors distorts it for any line
+/// that is not axis-aligned.
+let line : (Color.t, float, Input.point2, Input.point2) => t
+
 /// Create a centered, textured rectangle with positive width and height.
 let image : (float, float, Asset.Texture) => t
 /// Select a source rectangle without requiring the image's full dimensions.

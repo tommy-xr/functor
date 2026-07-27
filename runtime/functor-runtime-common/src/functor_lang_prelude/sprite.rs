@@ -19,6 +19,48 @@ struct FunctorLangSprite(Value);
 /// A plain-data, top-left-origin source rectangle in texture pixels.
 struct FunctorLangSpriteRegion([f32; 4]);
 
+/// A 2D point in the sprite's own coordinate space — the `Input.point2` record
+/// (`{ x, y }`) reused deliberately. Declaring a second `{ x, y }` record type
+/// would make every bare `{ x: …, y: … }` literal in every game an AMBIGUOUS
+/// record literal (a check error), since literals resolve nominally by field
+/// set. One shared point type is the only workable choice.
+struct FunctorLangPoint2([f32; 2]);
+
+impl crate::host_registry::FromArg for FunctorLangPoint2 {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::Record(fields) = value else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected a point record {{ x, y }}, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let get = |name: &str| -> Result<f32, RunError> {
+            match fields.iter().find(|(field, _)| field == name) {
+                Some((_, Value::Number(n))) if (*n as f32).is_finite() => Ok(*n as f32),
+                Some((_, Value::Number(n))) => Err(RunError {
+                    message: format!("{path}: point `{name}` must be finite, got {n}"),
+                    span,
+                }),
+                Some((_, other)) => Err(RunError {
+                    message: format!(
+                        "{path}: point `{name}` must be a number, got {}",
+                        other.kind_name()
+                    ),
+                    span,
+                }),
+                None => Err(RunError {
+                    message: format!("{path}: expected a point record {{ x, y }}, missing `{name}`"),
+                    span,
+                }),
+            }
+        };
+        Ok(FunctorLangPoint2([get("x")?, get("y")?]))
+    }
+}
+
 impl HostData for FunctorLangCamera2D {
     fn type_name(&self) -> &'static str {
         "Camera2D"
@@ -115,6 +157,86 @@ fn text_size(size: f64, path: &str) -> Result<f64, String> {
         return Err(format!("{path} size must be a positive number, got {size}"));
     }
     Ok(size)
+}
+
+/// Segments in a `Sprite.circle`. Fixed rather than derived from the radius,
+/// because lowering cannot know the camera zoom the circle will be seen at. At 32
+/// the worst-case radial error is `1 - cos(pi/32)` ~= 0.5% of the radius, which is
+/// under a pixel for any circle small enough to read as a circle.
+const CIRCLE_SEGMENTS: usize = 32;
+
+/// The unit-radius ring every `Sprite.circle` lowers to, sized by a scale
+/// transform. Because the points are identical for every circle, the renderer's
+/// per-point-count mesh cache uploads them once for the whole process.
+fn unit_circle_points() -> Vec<[f32; 2]> {
+    (0..CIRCLE_SEGMENTS)
+        .map(|i| {
+            let angle = i as f32 / CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+            [angle.cos(), angle.sin()]
+        })
+        .collect()
+}
+
+/// Validate an author-supplied outline for the triangle-fan fill.
+///
+/// A fan from the first vertex only fills a CONVEX polygon; on a concave outline
+/// it silently paints outside the shape. Rather than document that as undefined,
+/// this rejects it with a teaching error at the construction site. Pure and
+/// renderer-free, so it is unit-testable.
+///
+/// EITHER winding is accepted (clockwise or counter-clockwise): a game computing
+/// points from angles can legitimately produce either, nothing culls back faces,
+/// and demanding one would be an invisible trap. Collinear vertices are fine —
+/// they are convex — but an outline with no area at all is rejected, since it
+/// cannot be filled and would give the mesh a degenerate bounding box.
+fn convex_outline(points: Vec<FunctorLangPoint2>, path: &str) -> Result<Vec<[f32; 2]>, String> {
+    let points: Vec<[f32; 2]> = points.into_iter().map(|point| point.0).collect();
+    if points.len() < 3 {
+        return Err(format!(
+            "{path} needs at least 3 points to fill, got {}",
+            points.len()
+        ));
+    }
+    let count = points.len();
+    let mut sign = 0.0f32;
+    for index in 0..count {
+        let a = points[index];
+        let b = points[(index + 1) % count];
+        let c = points[(index + 2) % count];
+        let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if cross == 0.0 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if cross.signum() != sign {
+            return Err(format!(
+                "{path} points must form a CONVEX outline — this one turns both left and \
+                 right, and the fill is a triangle fan, so it would paint outside the \
+                 shape. Split it into convex pieces and draw them as a group."
+            ));
+        }
+    }
+    if sign == 0.0 {
+        return Err(format!(
+            "{path} points must enclose an area, but these are all on one line"
+        ));
+    }
+    Ok(points)
+}
+
+fn point_list_value(points: &[[f32; 2]]) -> Value {
+    Value::List(Rc::new(
+        points
+            .iter()
+            .map(|point| {
+                Value::Record(Rc::new(vec![
+                    ("x".to_string(), Value::Number(point[0] as f64)),
+                    ("y".to_string(), Value::Number(point[1] as f64)),
+                ]))
+            })
+            .collect(),
+    ))
 }
 
 fn sprite_node(name: &str, args: Vec<Value>) -> Value {
@@ -248,6 +370,72 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 vec![
                     Value::Number(size),
                     Value::Number(size),
+                    Value::Number(r as f64),
+                    Value::Number(g as f64),
+                    Value::Number(b as f64),
+                ],
+            ))
+        },
+    );
+    reg.fn2(
+        "Sprite.circle",
+        "Sprite.circle(color, radius)",
+        |color: FunctorLangColor, radius: f64| {
+            if !(radius as f32).is_finite() || radius <= 0.0 {
+                return Err(format!(
+                    "Sprite.circle radius must be a positive number, got {radius}"
+                ));
+            }
+            let (r, g, b) = color.0;
+            Ok(sprite_node(
+                "Circle",
+                vec![
+                    Value::Number(radius),
+                    Value::Number(r as f64),
+                    Value::Number(g as f64),
+                    Value::Number(b as f64),
+                ],
+            ))
+        },
+    );
+    reg.fn2(
+        "Sprite.polygon",
+        "Sprite.polygon(color, points)",
+        |color: FunctorLangColor, points: Vec<FunctorLangPoint2>| {
+            let points = convex_outline(points, "Sprite.polygon")?;
+            let (r, g, b) = color.0;
+            Ok(sprite_node(
+                "Polygon",
+                vec![
+                    point_list_value(&points),
+                    Value::Number(r as f64),
+                    Value::Number(g as f64),
+                    Value::Number(b as f64),
+                ],
+            ))
+        },
+    );
+    reg.fn4(
+        "Sprite.line",
+        "Sprite.line(color, thickness, from, to)",
+        |color: FunctorLangColor,
+         thickness: f64,
+         from: FunctorLangPoint2,
+         to: FunctorLangPoint2| {
+            if !(thickness as f32).is_finite() || thickness <= 0.0 {
+                return Err(format!(
+                    "Sprite.line thickness must be a positive number, got {thickness}"
+                ));
+            }
+            let (r, g, b) = color.0;
+            Ok(sprite_node(
+                "Line",
+                vec![
+                    Value::Number(thickness),
+                    Value::Number(from.0[0] as f64),
+                    Value::Number(from.0[1] as f64),
+                    Value::Number(to.0[0] as f64),
+                    Value::Number(to.0[1] as f64),
                     Value::Number(r as f64),
                     Value::Number(g as f64),
                     Value::Number(b as f64),
@@ -483,6 +671,30 @@ fn sprite_number(value: &Value, node: &str) -> Result<f32, String> {
     }
 }
 
+/// Fold the inherited tint into a node's own color channels.
+fn tinted(
+    tint: [f32; 4],
+    r: &Value,
+    g: &Value,
+    b: &Value,
+    node: &str,
+) -> Result<[f32; 4], String> {
+    Ok([
+        sprite_number(r, node)? * tint[0],
+        sprite_number(g, node)? * tint[1],
+        sprite_number(b, node)? * tint[2],
+        tint[3],
+    ])
+}
+
+/// A filled convex polygon leaf in the sprite's own coordinate space.
+fn convex_polygon_scene(points: Vec<[f32; 2]>) -> Scene3D {
+    Scene3D {
+        obj: SceneObject::Geometry(Shape::ConvexPolygon { points }),
+        xform: Matrix4::from_scale(1.0),
+    }
+}
+
 fn lower_sprite(
     value: &Value,
     tint: [f32; 4],
@@ -512,6 +724,77 @@ fn lower_sprite(
                 FunctorLangScene(Scene3D::quad()),
             );
             Ok(transformed(leaf, Matrix4::from_nonuniform_scale(width, height, 1.0)).0)
+        }
+        ("Sprite.Circle", [radius, r, g, b]) => {
+            let radius = sprite_number(radius, "Circle")?;
+            let color = tinted(tint, r, g, b, "Circle")?;
+            // Every circle is the SAME unit ring plus a scale, so the renderer's
+            // mesh cache holds one polygon mesh for all of them and re-uploads
+            // nothing between circles or between frames.
+            let leaf = material_scene(
+                MaterialDescription::emissive(color[0], color[1], color[2], color[3]),
+                FunctorLangScene(convex_polygon_scene(unit_circle_points())),
+            );
+            Ok(transformed(leaf, Matrix4::from_nonuniform_scale(radius, radius, 1.0)).0)
+        }
+        ("Sprite.Polygon", [Value::List(points), r, g, b]) => {
+            let color = tinted(tint, r, g, b, "Polygon")?;
+            let mut outline = Vec::with_capacity(points.len());
+            for point in points.iter() {
+                let Value::Record(fields) = point else {
+                    return Err("invalid Polygon sprite data: expected point records".to_string());
+                };
+                let coordinate = |name: &str| match fields
+                    .iter()
+                    .find(|(field, _)| field == name)
+                {
+                    Some((_, value)) => sprite_number(value, "Polygon"),
+                    None => Err(format!(
+                        "invalid Polygon sprite data: point is missing `{name}`"
+                    )),
+                };
+                outline.push([coordinate("x")?, coordinate("y")?]);
+            }
+            if outline.len() < 3 {
+                return Err("invalid Polygon sprite data: needs at least 3 points".to_string());
+            }
+            // The points are the geometry, in the sprite's own space — no
+            // centering, so game-computed outlines land where they were computed.
+            Ok(material_scene(
+                MaterialDescription::emissive(color[0], color[1], color[2], color[3]),
+                FunctorLangScene(convex_polygon_scene(outline)),
+            )
+            .0)
+        }
+        ("Sprite.Line", [thickness, x1, y1, x2, y2, r, g, b]) => {
+            let thickness = sprite_number(thickness, "Line")?;
+            let (x1, y1) = (sprite_number(x1, "Line")?, sprite_number(y1, "Line")?);
+            let (x2, y2) = (sprite_number(x2, "Line")?, sprite_number(y2, "Line")?);
+            let color = tinted(tint, r, g, b, "Line")?;
+            let (dx, dy) = (x2 - x1, y2 - y1);
+            let length = (dx * dx + dy * dy).sqrt();
+            // A zero-length line has no direction to orient, so it draws nothing
+            // at all rather than issuing a degenerate draw call.
+            if length == 0.0 {
+                return Ok(group(vec![], Matrix4::from_scale(1.0)));
+            }
+            let leaf = material_scene(
+                MaterialDescription::emissive(color[0], color[1], color[2], color[3]),
+                FunctorLangScene(Scene3D::quad()),
+            );
+            // Thickness is applied in the SEGMENT's own frame (scale, then
+            // rotate), so it is exact at every angle — the artifact a game gets
+            // if it rotates an assembled group instead.
+            Ok(transformed(
+                leaf,
+                Matrix4::from_translation(cgmath::vec3(
+                    (x1 + x2) * 0.5,
+                    (y1 + y2) * 0.5,
+                    0.0,
+                )) * Matrix4::from_angle_z(cgmath::Rad(dy.atan2(dx)))
+                    * Matrix4::from_nonuniform_scale(length, thickness, 1.0),
+            )
+            .0)
         }
         ("Sprite.Text", [size, r, g, b, Value::String(text)]) => {
             let size = sprite_number(size, "Text")?;

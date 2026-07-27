@@ -209,6 +209,64 @@ let draw = (m: float, tts: float) =>
     )
 }
 
+/// A filled-shape 2D frame: `count` circles, convex polygons, and lines in a
+/// `Frame.create2D` sprite pass.
+///
+/// Like the text workload this is a NEW workload, priced per shape. What it
+/// measures is the CPU side of lowering: a circle expands to a 32-point unit ring
+/// during `Frame.create2D`, which is where its allocations come from. The GPU
+/// side (one draw call per shape, and the vertex re-upload that same-vertex-count
+/// polygons share) is invisible here — see the note the `shapes` header prints.
+fn shape_workload(count: u32) -> String {
+    let shapes: Vec<String> = (0..count)
+        .map(|i| {
+            let t = i as f32 * 0.37;
+            match i % 3 {
+                0 => format!(
+                    "    Sprite.circle(Color.rgb(1.0, 0.4, 0.8), {:.2}) \
+                     |> Sprite.move({:.2}, {:.2}),",
+                    0.4 + (i % 5) as f32 * 0.2,
+                    t.cos() * 12.0,
+                    t.sin() * 7.0
+                ),
+                1 => format!(
+                    "    Sprite.polygon(Color.rgb(0.6, 1.0, 0.45), [\
+                     {{ x: {:.2}, y: {:.2} }}, {{ x: {:.2}, y: {:.2} }}, \
+                     {{ x: {:.2}, y: {:.2} }}]),",
+                    t.cos() * 12.0,
+                    t.sin() * 7.0,
+                    t.cos() * 12.0 + 1.4,
+                    t.sin() * 7.0,
+                    t.cos() * 12.0,
+                    t.sin() * 7.0 + 1.1
+                ),
+                _ => format!(
+                    "    Sprite.line(Color.rgb(0.35, 0.95, 1.0), 0.12, \
+                     {{ x: {:.2}, y: {:.2} }}, {{ x: {:.2}, y: {:.2} }}),",
+                    t.cos() * 12.0,
+                    t.sin() * 7.0,
+                    t.cos() * 12.0 + 2.0,
+                    t.sin() * 7.0 + 1.5
+                ),
+            }
+        })
+        .collect();
+    format!(
+        r#"
+let init = 0.0
+
+let tick = (m: float, dt: float, tts: float) => m
+
+let draw = (m: float, tts: float) =>
+  Sprite.group([
+{}
+  ])
+  |> Frame.create2D(Camera2D.create(32.0, 18.0))
+"#,
+        shapes.join("\n")
+    )
+}
+
 // --- The harness -----------------------------------------------------------
 
 /// Warmup wall-clock before timing begins (caches / branch predictor).
@@ -375,6 +433,32 @@ fn bench_text() {
     }
 }
 
+/// The filled-shape table: cost as a function of shapes on screen.
+fn bench_shapes() {
+    println!("frame_bench: headless per-frame cost under the engine prelude (no GL)");
+    println!("workload: Sprite.circle / polygon / line in a 2D pass (equal thirds)");
+    println!("NOTE: a NEW workload, not comparable to the synthwave table; it draws no 3D scene.");
+    println!("NOTE: CPU only — one draw call per shape, and the vertex re-upload that");
+    println!("      same-vertex-count polygons share, are both invisible here.");
+    println!();
+    println!(
+        "{:>7} {:>15} {:>15} {:>10} {:>13} {:>12}",
+        "shapes", "us/frame(min)", "us/frame(med)", "us/shape", "allocs/frame", "bytes/frame"
+    );
+    for count in [12, 120, 600] {
+        let m = bench_source(&shape_workload(count));
+        println!(
+            "{:>7} {:>15.1} {:>15.1} {:>10.3} {:>13} {:>12}",
+            count,
+            m.min_us,
+            m.median_us,
+            m.min_us / count as f64,
+            m.allocs_per_frame,
+            m.bytes_per_frame,
+        );
+    }
+}
+
 fn main() {
     if cfg!(debug_assertions) {
         eprintln!("========================================================================");
@@ -392,6 +476,10 @@ fn main() {
     // are not comparable to each other).
     if args.first().is_some_and(|a| a == "text") {
         bench_text();
+        return;
+    }
+    if args.first().is_some_and(|a| a == "shapes") {
+        bench_shapes();
         return;
     }
 
