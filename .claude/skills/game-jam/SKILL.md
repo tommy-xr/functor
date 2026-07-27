@@ -114,7 +114,29 @@ numbers. Rules:
   BEFORE starting the next heavy agent (`rm -rf .claude/worktrees/agent-*/target`
   for done agents only; never the running one's), and check free space
   (`df -h`) as part of each heavy launch. Don't wait for end-of-jam cleanup;
-  by then the drive may already be full.
+  by then the drive may already be full. Long-running heavy agents should also
+  self-monitor: instruct them to delete their OWN cache as their last action,
+  and to report (not self-remediate outside their worktree) if disk runs low
+  mid-task.
+- **Local verification is single-platform — the CI matrix is part of the
+  gate.** A fixer with 600 green local tests still shipped an x86-vs-ARM
+  divergence (`f64::total_cmp` orders computed NaNs by sign bit, which differs
+  per architecture) that only ubuntu CI caught. Fixers hold PRs in draft until
+  `gh pr checks` is green on ALL OSes; float-ordering/libm-adjacent code gets
+  explicit cross-platform thought up front. Also verify the CI matrix actually
+  covers the crates you touched (this repo's CI skipped the desktop crate's
+  tests, which is how a broken test lived on main unnoticed) — run uncovered
+  suites locally and say so.
+- **Wasm bundle staleness lies.** The engine prelude ships INSIDE the
+  web-runtime bundle; rebuilding the native binary alone leaves the bundle
+  stale, so a WebGL2/web claim verified against it can be false (`module X has
+  no member` at runtime). Any prelude/runtime change that claims web support
+  must rebuild the wasm bundle and re-run the web smoke path before the claim
+  goes in a PR body.
+- **Orchestrator CI watchers: verify, then flip.** Agents' CI monitors die
+  with their process — the orchestrator finishes the watch. Use strict logic
+  (count checks, require ALL pass, print offenders otherwise); a sloppy
+  one-liner once flipped a PR ready with a red check.
 
 ## Phase 1.5 — gap fixers (sequential, after entries complete)
 
