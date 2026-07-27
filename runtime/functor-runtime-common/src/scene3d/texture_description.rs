@@ -31,6 +31,22 @@ pub enum TextureDescription {
         file: String,
         while_pending: Vec<String>,
     },
+    /// A texture compiled into the runtime rather than loaded from a locator.
+    /// It binds with no asset, no file IO, and no fetch, so it works
+    /// identically on native, wasm, and Quest — which is what lets
+    /// `Sprite.text` need no asset. Sampled clamp-to-edge like a sprite image
+    /// and uploaded top-row-first like a file texture.
+    Builtin(BuiltinTexture),
+}
+
+/// The runtime's compiled-in textures. An enum rather than a magic path so a
+/// serialized frame names the texture symbolically and cannot collide with a
+/// game's own asset locator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BuiltinTexture {
+    /// The 16x6 glyph atlas of the built-in 8x8 bitmap font behind
+    /// `Sprite.text` (see [`crate::sprite_font`]).
+    FontAtlas,
 }
 
 impl TextureDescription {

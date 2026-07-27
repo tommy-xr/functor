@@ -5301,6 +5301,172 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
     }
 
     #[test]
+    fn sprite_text_keeps_its_string_as_plain_inspectable_data() {
+        // The whole point of expanding glyphs at LOWERING rather than in the
+        // value: a picture containing text is still ordinary comparable,
+        // serializable, time-travellable data carrying the string itself.
+        let sprite = eval(
+            "let main = () =>\n\
+             Sprite.text(Color.rgb(1.0, 0.5, 0.25), 2.0, \"HI\")\n\
+               |> Sprite.move(3.0, 4.0)",
+        );
+        assert!(
+            !matches!(sprite, Value::HostData(_)),
+            "a text sprite must stay plain Functor Lang data"
+        );
+        assert!(sprite.is_reload_safe_snapshot());
+        assert_eq!(
+            sprite.to_string(),
+            "Sprite.Move(3, 4, Sprite.Text(2, 1, 0.5, 0.25, \"HI\"))"
+        );
+        assert!(matches!(
+            eval(
+                "let a = () => Sprite.text(Color.rgb(1.0, 1.0, 1.0), 2.0, \"HI\")\n\
+                 let main = () => a() == a()"
+            ),
+            Value::Bool(true)
+        ));
+        // Different strings are different pictures — equality reaches the text.
+        assert!(matches!(
+            eval(
+                "let main = () =>\n\
+                 Sprite.text(Color.rgb(1.0, 1.0, 1.0), 2.0, \"HI\")\n\
+                   == Sprite.text(Color.rgb(1.0, 1.0, 1.0), 2.0, \"HO\")"
+            ),
+            Value::Bool(false)
+        ));
+    }
+
+    #[test]
+    fn sprite_measure_reports_monospace_metrics_in_world_units() {
+        let width = |src: &str| match eval(src) {
+            Value::Number(n) => n,
+            other => panic!("expected a number, got {other}"),
+        };
+        // The built-in font is monospace: width is exactly size * characters.
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"SCORE\").width"), 10.0);
+        assert_eq!(width("let main = () => Sprite.measure(0.5, \"SCORE\").width"), 2.5);
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"\").width"), 0.0);
+        // Height is the LINE height for every string, including the empty one,
+        // so stacking lines by `measure(...).height` cannot overlap them — the
+        // layout bug that is invisible in code review.
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"SCORE\").height"), 2.0);
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"\").height"), 2.0);
+    }
+
+    #[test]
+    fn sprite_measure_counts_every_character_that_text_advances_past() {
+        // measure() and text() must agree exactly, including on characters that
+        // draw nothing: blanks occupy their cell so unsupported text reads as
+        // gaps instead of sliding the rest of the line left.
+        let width = |src: &str| match eval(src) {
+            Value::Number(n) => n,
+            other => panic!("expected a number, got {other}"),
+        };
+        assert_eq!(width("let main = () => Sprite.measure(1.0, \"A B\").width"), 3.0);
+
+        // ...and only the visible glyphs emit a quad.
+        assert_eq!(glyph_quads("A B"), 2, "the space draws nothing");
+        assert_eq!(glyph_quads("SCORE"), 5);
+        assert_eq!(glyph_quads(""), 0);
+        assert_eq!(glyph_quads("café"), 3, "the non-ASCII scalar is blank");
+    }
+
+    /// How many atlas-textured quads `text` lowers to — one per visible glyph.
+    fn glyph_quads(text: &str) -> usize {
+        let frame = frame_of(&format!(
+            "let main = () =>\n\
+             Sprite.text(Color.rgb(1.0, 1.0, 1.0), 1.0, \"{text}\")\n\
+             |> Frame.create2D(Camera2D.create(16.0, 9.0))"
+        ));
+        serde_json::to_string(&frame)
+            .expect("text frame serializes")
+            .matches(r#""Builtin""#)
+            .count()
+    }
+
+    #[test]
+    fn sprite_text_breaks_lines_on_a_newline_and_measure_agrees() {
+        let metric = |src: &str| match eval(src) {
+            Value::Number(n) => n,
+            other => panic!("expected a number, got {other}"),
+        };
+        // Width is the WIDEST line; height is one `size` per line. Both stay
+        // exact, so a block still stacks against its own measured height.
+        assert_eq!(
+            metric("let main = () => Sprite.measure(2.0, \"HI\\nSCORE\").width"),
+            10.0
+        );
+        assert_eq!(
+            metric("let main = () => Sprite.measure(2.0, \"HI\\nSCORE\").height"),
+            4.0
+        );
+        // A trailing newline is a real, empty final line.
+        assert_eq!(metric("let main = () => Sprite.measure(2.0, \"HI\\n\").height"), 4.0);
+        assert_eq!(metric("let main = () => Sprite.measure(2.0, \"HI\\n\").width"), 4.0);
+        // An empty line in the middle keeps its row.
+        assert_eq!(
+            metric("let main = () => Sprite.measure(1.0, \"HI\\n\\nHO\").height"),
+            3.0
+        );
+
+        // The newline itself never draws, and never consumes a cell of width.
+        assert_eq!(glyph_quads("HI\\nHO"), 4);
+        assert_eq!(glyph_quads("HI\\n"), 2);
+
+        // The two lines land one full `size` apart, centered on the block: with
+        // two lines of size 2 the row centers are +1 and -1.
+        let frame = frame_of(
+            "let main = () =>\n\
+             Sprite.text(Color.rgb(1.0, 1.0, 1.0), 2.0, \"I\\nI\")\n\
+             |> Frame.create2D(Camera2D.create(16.0, 9.0))",
+        );
+        let ys = glyph_translations_y(&frame.sprite_layers[0].scene);
+        assert_eq!(ys, vec![1.0, -1.0], "top line first, one size apart");
+    }
+
+    /// The accumulated Y translation of every glyph quad in a lowered text run,
+    /// in lowering order. Transforms are `Group` wrappers carrying an `xform`,
+    /// so summing `xform.w.y` down to each material leaf gives the glyph's
+    /// world Y.
+    fn glyph_translations_y(scene: &Scene3D) -> Vec<f32> {
+        let y = scene.xform.w.y;
+        match &scene.obj {
+            SceneObject::Group(items) | SceneObject::Material(_, items) => items
+                .iter()
+                .flat_map(glyph_translations_y)
+                .map(|inner| inner + y)
+                .collect(),
+            _ => vec![y],
+        }
+    }
+
+    #[test]
+    fn create2d_lowers_text_into_one_atlas_quad_per_visible_glyph() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Sprite.text(Color.rgb(1.0, 1.0, 1.0), 2.0, \"HI\")\n\
+             |> Sprite.nearest()\n\
+             |> Frame.create2D(Camera2D.create(16.0, 9.0))",
+        );
+        let json = serde_json::to_string(&frame).expect("text frame serializes");
+        // The atlas is named symbolically, never as a locator a game could
+        // collide with, and carries no file path at all.
+        assert!(json.contains(r#""Builtin":"FontAtlas""#), "json: {json}");
+        assert!(!json.contains(r#""FileClamped""#), "json: {json}");
+        assert_eq!(json.matches(r#""Builtin""#).count(), 2, "json: {json}");
+        // 'H' is U+0048, cell 40 => column 8, row 2 of the 16-wide atlas.
+        assert!(
+            json.contains(r#""source_pixels":[64.0,16.0,8.0,8.0]"#),
+            "json: {json}"
+        );
+        // Text honors the ambient sampling context like any other sprite image.
+        assert!(json.contains(r#""sampling":"Nearest""#), "json: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("text frame deserializes");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
     fn inner_sprite_sampling_overrides_an_outer_group_choice() {
         let frame = frame_of(
             "let main = () =>\n\
@@ -5323,6 +5489,40 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             (
                 "Sprite.rectangle(Color.rgb(1.0, 1.0, 1.0), 0.0, 2.0)",
                 "Sprite.rectangle width and height must be positive",
+            ),
+            (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), 0.0, \"HI\")",
+                "Sprite.text size must be a positive number",
+            ),
+            // NaN never reaches the size check — the registry's numeric
+            // conversion rejects non-finite arguments first.
+            (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), 0.0 / 0.0, \"HI\")",
+                "expected a finite number, got NaN",
+            ),
+            // A finite f64 that OVERFLOWS f32 (1e40) is already refused by the
+            // registry's numeric conversion, which requires f32-finiteness.
+            (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), \
+                 100000000000000000000.0 * 100000000000000000000.0, \"HI\")",
+                "expected a finite number",
+            ),
+            // ...and one that UNDERFLOWS f32 to zero (1e-60), which would
+            // otherwise let measure report a positive box while text drew
+            // degenerate quads.
+            (
+                "Sprite.text(Color.rgb(1.0, 1.0, 1.0), 1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0), \"HI\")",
+                "Sprite.text size must be a positive number",
+            ),
+            (
+                "Sprite.measure(-1.0, \"HI\")",
+                "Sprite.measure size must be a positive number",
+            ),
+            (
+                "Sprite.measure(1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0), \"HI\")",
+                "Sprite.measure size must be a positive number",
             ),
             (
                 "Sprite.image(-1.0, 2.0, Asset.texture(\"hero.png\"))",
