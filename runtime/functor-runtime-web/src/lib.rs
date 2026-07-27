@@ -17,7 +17,9 @@ use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
-use functor_runtime_common::{Frame, FrameTime, GameClock, InputSnapshot, SceneContext};
+use functor_runtime_common::{
+    Frame, FrameTime, GameClock, InputEdges, InputSnapshot, SceneContext,
+};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
@@ -1166,6 +1168,9 @@ async fn run_async() -> Result<(), JsValue> {
         let initial_time = performance.now() as f32;
         let mut last_time = initial_time;
         let mut input_snapshot = InputSnapshot::default();
+        // rAF can produce zero or several fixed steps. Keep transitions until
+        // the first step, then clear them before any catch-up step.
+        let mut input_edges = InputEdges::default();
         // let texture_future = async {
         //     let bytes = load_bytes_async("crate.png").await;
         //     sleep(Duration::from_secs(1)).await;
@@ -1336,6 +1341,7 @@ async fn run_async() -> Result<(), JsValue> {
             functor_lang_game::drain_input(
                 &mut **game,
                 &mut input_snapshot,
+                &mut input_edges,
                 !suspended,
                 clock.is_paused() && !clock.is_fixed_time(),
             );
@@ -1381,8 +1387,11 @@ async fn run_async() -> Result<(), JsValue> {
 
                 for sub in &sub_frames {
                     if game.samples_input() {
+                        input_edges.apply_to(&mut input_snapshot);
                         game.sampled_input(&input_snapshot);
                     }
+                    input_edges.clear();
+                    input_snapshot.clear_edges();
                     game.tick(sub.clone());
                 }
 

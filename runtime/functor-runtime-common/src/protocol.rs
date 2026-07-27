@@ -12,8 +12,8 @@
 //! # Per-frame, runtime → logic
 //!
 //! - [`crate::FrameTime`] — `tts`/`dts` seconds.
-//! - [`crate::InputSnapshot`] — continuously sampled held/device state,
-//!   delivered once before each simulation tick.
+//! - [`crate::InputSnapshot`] — sampled held/device state plus deterministic
+//!   keyboard/mouse transitions, delivered once before each fixed step.
 //! - Input events, as scalars: key code ([`crate::Key`] as `i32`) + down flag,
 //!   mouse position (`i32` pixels), wheel delta (`i32`). The `Key` enum's
 //!   **`i32` discriminants** are the wire representation on both sides
@@ -70,6 +70,12 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v9: deterministic fixed-step keyboard/mouse transitions —
+/// [`crate::InputSnapshot::pressed_keys`],
+/// [`crate::InputSnapshot::released_keys`], and the pressed/released button
+/// sets in [`crate::MouseSnapshot`]. The fields default when decoding v8
+/// snapshots, so retained recordings remain readable.
+///
 /// v8: filled 2D shapes — the `SceneObject::Geometry(Shape::ConvexPolygon)`
 /// variant, carrying its XY points inline. Emitted only by `Sprite.circle` /
 /// `Sprite.polygon`, so frames without them keep their v7 shape.
@@ -93,7 +99,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -259,9 +265,10 @@ pub trait GameProducer {
         false
     }
 
-    /// Deliver continuously sampled input immediately before one
-    /// [`GameProducer::tick`]. The default drops it for replay/legacy
-    /// producers; Functor Lang producers call `sampledInput(model, snapshot)`.
+    /// Deliver held/device levels plus this fixed step's keyboard/mouse
+    /// transitions immediately before one [`GameProducer::tick`]. The default
+    /// drops it for replay/legacy producers; Functor Lang producers call
+    /// `sampledInput(model, snapshot)`.
     fn sampled_input(&mut self, _snapshot: &crate::InputSnapshot) {}
 
     /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.
@@ -451,7 +458,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 9);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -478,7 +485,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 9);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],

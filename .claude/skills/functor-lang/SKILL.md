@@ -303,9 +303,12 @@ let grab = (s) =>
   load-time error. Buttons the platform reports that Functor does not name are
   never delivered (no `Unknown` variant reaches game logic).
 - **`Input` is the engine's continuously sampled input module.**
-  `Input.snapshot` contains `heldKeys: List<Key.t>`, a pixel-space `mouse`
-  record (`{ x, y, buttons: { left, right, middle } }` — `buttons` is the HELD
-  level state, the complement to `mouseButton`'s edges), and
+  `Input.snapshot` contains keyboard levels and fixed-step transitions:
+  `heldKeys`, `pressedKeys`, and `releasedKeys` (all `List<Key.t>`). Its
+  pixel-space `mouse` record has `x`, `y`, and three `{left,right,middle}`
+  sets: `buttons` for held levels plus `pressed` / `released` for transitions.
+  A quick tap can appear in both edge sets while the held set carries the final
+  level. The snapshot also contains
   `xr: Option.t<Input.xr>`. XR head/grip/aim poses are rig-local
   plain data: position `{x,y,z}` and quaternion `{x,y,z,w}`, with +X right,
   +Y up, and -Z forward. Each controller also carries `active`, analog
@@ -1626,17 +1629,24 @@ debug server's `/time` advance. To *see* colliders, run with
 `--debug-render physics`: normal shading plus the live world's wireframes
 (collider outlines, contacts, body frames).
 
-`sampledInput` is the level-state complement to the edge-oriented `input` /
-`mouseMove` / `mouseButton` hooks — `mouseButton` tells you a click HAPPENED,
-`snapshot.mouse.buttons.left` tells you it is still held (so a full-auto weapon
-reads the snapshot and a semi-auto one takes the edge). Shells sample it once
-per fixed simulation step; a hook may
+`sampledInput` carries both levels and deterministic fixed-step edges alongside
+the event-oriented `input` / `mouseMove` / `mouseButton` hooks.
+`snapshot.mouse.buttons.left` tells you a button is held;
+`snapshot.mouse.pressed.left` and `.released.left` report transitions since the
+previous fixed step. Keyboard uses `heldKeys`, `pressedKeys`, and
+`releasedKeys`. Edges are de-duplicated: native OS repeat still reaches the
+legacy `input` hook but does not repeat `pressedKeys`; down/up/down before one
+step can put a control in both edge sets with the final level held. Shells
+retain transitions across render frames with no simulation step, consume them
+on the first catch-up step, and clear them for later substeps. Focus/cursor-loss
+releases use the same path. A hook may
 return either a bare model or `(model, effect)` like other model-updating entry
 points. Samples are plain data recorded in the frame input log, so rewind,
 forward ghosting, and counterfactual history replay re-run the same snapshot
-before the same tick. Future projection carries the latest sampled level state
-through unrecorded ticks and applies scripted key/mouse edges to that carried
-snapshot. Dense samples share the bounded 900-frame model/world horizon; sparse
+before the same tick. Future projection clears already-consumed edges, carries
+the latest level/pose state through unrecorded ticks, and synthesizes one-step
+edges from scripted key/mouse events. Dense samples share the bounded 900-frame
+model/world horizon; sparse
 edge events remain session-long. Adding the hook during hot reload keeps
 selected-snapshot semantics because the old timeline has no historical
 coeffects to replay. A game without the hook pays no snapshot-conversion cost.

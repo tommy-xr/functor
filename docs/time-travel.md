@@ -63,7 +63,11 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   after a safe reload at a scrubbed historical frame, it replays the
   plain-data input and exact frame-clock logs from the edited program's `init`
   through the newest retained frame once. Sparse edge input remains available
-  from frame zero. Continuously sampled coeffects share the 900-frame
+  from frame zero. Dense sampled snapshots record `pressedKeys`/`releasedKeys`
+  and `mouse.pressed`/`mouse.released` exactly; a replay delivers them on their
+  original fixed step, then future projection clears them while carrying only
+  held levels and poses. Raw projected key/mouse events synthesize an edge for
+  one projected step. Continuously sampled coeffects share the 900-frame
   model/world retention horizon; after their session origin ages out, reload
   deliberately keeps selected-snapshot semantics instead of replaying an
   incomplete prefix. The selected counterfactual model

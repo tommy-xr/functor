@@ -1307,12 +1307,24 @@ let draw = (model, tts) =>
     #[test]
     fn sampled_input_is_typed_delivered_and_recorded_per_tick() {
         let source = r#"
-let init = { trigger: 0.0, held: 0.0, mouseX: 0.0 }
+let init = {
+  trigger: 0.0,
+  held: 0.0,
+  pressed: 0.0,
+  released: 0.0,
+  mousePressed: false,
+  mouseReleased: false,
+  mouseX: 0.0
+}
 let sampledInput = (model, snapshot: Input.snapshot) =>
   match snapshot.xr with
   | Option.Some(xr) => {
       trigger: xr.right.trigger,
       held: List.length(snapshot.heldKeys),
+      pressed: List.length(snapshot.pressedKeys),
+      released: List.length(snapshot.releasedKeys),
+      mousePressed: snapshot.mouse.pressed.left,
+      mouseReleased: snapshot.mouse.released.right,
       mouseX: snapshot.mouse.x
     }
   | Option.None => model
@@ -1331,9 +1343,19 @@ let draw = (model, tts) =>
 
         let snapshot = crate::InputSnapshot {
             held_keys: vec![crate::Key::W, crate::Key::Space],
+            pressed_keys: vec![crate::Key::Space],
+            released_keys: vec![crate::Key::Enter],
             mouse: crate::MouseSnapshot {
                 x: 42,
                 y: 9,
+                pressed: crate::MouseButtons {
+                    left: true,
+                    ..crate::MouseButtons::default()
+                },
+                released: crate::MouseButtons {
+                    right: true,
+                    ..crate::MouseButtons::default()
+                },
                 ..Default::default()
             },
             xr: Some(crate::XrInputSnapshot {
@@ -1344,6 +1366,7 @@ let draw = (model, tts) =>
                 },
                 ..crate::XrInputSnapshot::default()
             }),
+            ..crate::InputSnapshot::default()
         };
         game.sampled_input(&snapshot);
         game.tick(frame_time(1.0 / 60.0, 1.0 / 60.0));
@@ -1351,6 +1374,10 @@ let draw = (model, tts) =>
         let model = game.state_debug();
         assert!(model.contains("trigger: 0.625"), "{model}");
         assert!(model.contains("held: 2"), "{model}");
+        assert!(model.contains("pressed: 1"), "{model}");
+        assert!(model.contains("released: 1"), "{model}");
+        assert!(model.contains("mousePressed: true"), "{model}");
+        assert!(model.contains("mouseReleased: true"), "{model}");
         assert!(model.contains("mouseX: 42"), "{model}");
         assert!(matches!(
             game.recorded_inputs_at(0).as_slice(),
@@ -1378,10 +1405,10 @@ let draw = (model, tts) =>
         .expect("sampled-input game loads");
         let snapshot = |x| crate::InputSnapshot {
             mouse: crate::MouseSnapshot {
-                    x,
-                    y: 0,
-                    ..Default::default()
-                },
+                x,
+                y: 0,
+                ..Default::default()
+            },
             ..crate::InputSnapshot::default()
         };
 

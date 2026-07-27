@@ -1,7 +1,7 @@
 //! Target-neutral continuously sampled input.
 //!
 //! The optional `sampledInput(model, snapshot)` game hook receives one
-//! `Input.snapshot` immediately before every simulation tick. XR is the first
+//! `Input.snapshot` immediately before every fixed simulation step. XR is the first
 //! typed device domain; future gamepad and mobile-touch records belong beside
 //! `xr` on the snapshot.
 
@@ -35,17 +35,31 @@ type xr = {
   right: controller
 }
 
-/// Which mouse buttons are held right now — the level complement of the
-/// `mouseButton(model, button, isDown)` edge hook, and what continuous
-/// behavior (full-auto fire, drag) should read.
+/// A fixed set of mouse buttons. `mouse.buttons` uses it for held levels;
+/// `mouse.pressed` / `mouse.released` use it for one-step transitions.
 type mouseButtons = { left: bool, right: bool, middle: bool }
 
-/// Mouse position in shell-provided surface coordinates, plus held buttons.
-type mouse = { x: float, y: float, buttons: mouseButtons }
+/// Mouse position in shell-provided surface coordinates, plus held levels and
+/// transitions since the previous fixed simulation step. A quick click may be
+/// both `pressed.left` and `released.left` in one sample.
+type mouse = {
+  x: float,
+  y: float,
+  buttons: mouseButtons,
+  pressed: mouseButtons,
+  released: mouseButtons
+}
 
-/// Held and continuously sampled input for one simulation tick.
+/// Keyboard/mouse levels and transitions for one fixed simulation step.
+///
+/// `pressedKeys` and `releasedKeys` are de-duplicated transition sets. They
+/// survive render frames with no simulation step, are consumed by the first
+/// catch-up step, and are empty on later steps. Native OS-repeat events still
+/// reach the legacy `input` hook, but do not repeat `pressedKeys`.
 type snapshot = {
   heldKeys: List<Key.t>,
+  pressedKeys: List<Key.t>,
+  releasedKeys: List<Key.t>,
   mouse: mouse,
   xr: Option.t<xr>
 }

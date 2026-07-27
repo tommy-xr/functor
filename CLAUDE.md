@@ -77,9 +77,10 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
   Delivered **while the cursor is captured** (the rule `mouseMove`/`mouseWheel` already follow),
   so click-to-shoot works under free-look; a held button is swept released on focus loss
 - `sampledInput = (model, snapshot: Input.snapshot) => model'` — OPTIONAL; per-fixed-step
-  held/device state. `snapshot` has keyboard/mouse (`mouse.buttons.left`/`.right`/`.middle` for
-  held buttons — the level twin of `mouseButton`'s edges, so full-auto fire is a `sampledInput`
-  read) plus typed device domains (`xr` first; gamepad and mobile touch extend it as siblings)
+  held/device state plus deterministic keyboard/mouse transitions.
+  `pressedKeys`/`releasedKeys` and `mouse.pressed`/`.released` are de-duplicated edges consumed
+  by the next fixed step; `heldKeys` and `mouse.buttons` are levels for continuous behavior.
+  Typed device domains (`xr` first; gamepad and mobile touch extend it as siblings) sit beside them.
 - `tick = (model, dt, tts) => model'` — per-frame simulation step
 - `update = (model, msg) => model'` — OPTIONAL; handles messages (ADT variants) from subscriptions/effects
 - `subscriptions = (model) => Sub.every(...)` — OPTIONAL declarative timers, polled each frame (requires `update`)
@@ -104,7 +105,8 @@ By convention, `plane` geometry lies in XZ (ground) and `quad` in XY (screen/wal
 messages and effect results through `update`, **draining the effect queue to a fixed point**
 (capped at 1000 effects/frame to avoid hangs) before running `tick` on the settled state. The
 frame order is `sampledInput → subscriptions → update → tick → physics → draw`. Sampled
-input is recorded as plain data for deterministic forward replay. This machinery is shared,
+input—including its one-step pressed/released sets—is recorded as plain data for deterministic
+forward replay; projection clears consumed edges while carrying held levels. This machinery is shared,
 prelude-level Rust in `functor_runtime_common::functor_lang_prelude` (`drain_effects`, an `EffectRunner`:
 `RealEffects` / `FakeEffects` / `ReplayEffects`), consumed by both producers — every performed
 effect lands in a structured log, so under a fake/replay runner the same program is exactly

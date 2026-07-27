@@ -184,7 +184,7 @@ let draw = (m, tts) =>
               <tr><td><code>tick</code></td><td><code>(model, dt, tts) => model'</code></td><td>per-frame step; <code>dt</code> seconds since last frame, <code>tts</code> total time</td></tr>
               <tr><td><code>draw</code></td><td><code>(model, tts) => Frame</code></td><td>pure frame description</td></tr>
               <tr><td><code>input</code></td><td><code>(model, key, isDown) => model'</code></td><td>optional; <code>key</code> is a <code>Key.t</code> variant such as <code>Key.W</code>, <code>Key.Up</code>, or <code>Key.Space</code> — key <em>repeats</em> arrive as <code>isDown = true</code>, so latch if you need edges</td></tr>
-              <tr><td><code>sampledInput</code></td><td><code>(model, snapshot) => model'</code></td><td>optional; <em>level</em> state (what is held right now) rather than edges — one <code>Input.snapshot</code> immediately before every tick</td></tr>
+              <tr><td><code>sampledInput</code></td><td><code>(model, snapshot) => model'</code></td><td>optional; held levels plus deterministic pressed/released edges — one <code>Input.snapshot</code> immediately before every fixed step</td></tr>
               <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
               <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
               <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Delivered while the cursor is captured, so click-to-shoot works under free-look</td></tr>
@@ -202,23 +202,28 @@ let draw = (m, tts) =>
             return a 2-tuple <code>(model', effect)</code> to issue one-shot
             <a href="#prelude-effects">effects</a>.
           </p>
-          <h3>Held input: <code>sampledInput</code></h3>
+          <h3>Sampled levels and edges: <code>sampledInput</code></h3>
           <p>
-            <code>input</code> is edge-oriented (a key went down, a key came up).
-            <code>sampledInput</code> is its complement: the runtime hands you a snapshot of what
-            is <em>currently</em> held, once per tick, so continuous movement doesn't need you to
-            latch key state into the model yourself.
+            <code>input</code> is event-oriented (including native key repeats).
+            <code>sampledInput</code> gives you both what is <em>currently</em> held and
+            de-duplicated transitions since the previous fixed step. Continuous movement and
+            one-shot actions therefore need no model-resident input latch.
           </p>
           <pre class="functor-lang">let sampledInput = (model, snapshot: Input.snapshot) =>
   let held = (k) => snapshot.heldKeys |> List.any((key) => key == k) in
+  let pressed = (k) => snapshot.pressedKeys |> List.any((key) => key == k) in
   { model with
-      dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0) }</pre>
+      dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0),
+      jumps: model.jumps + (if pressed(Key.Space) then 1.0 else 0.0) }</pre>
           <p>
-            The snapshot is a plain record — <code>heldKeys : List&lt;Key.t&gt;</code>,
-            <code>mouse : { x, y, buttons }</code> (with
-            <code>buttons.left</code> / <code>.right</code> / <code>.middle</code> for the
-            buttons held right now — the level twin of <code>mouseButton</code>'s edges, so a
-            full-auto weapon reads the snapshot while a semi-auto one takes the edge), and
+            The snapshot is a plain record. Keyboard has
+            <code>heldKeys</code>, <code>pressedKeys</code>, and <code>releasedKeys</code>;
+            mouse has <code>buttons</code>, <code>pressed</code>, and <code>released</code>,
+            each with <code>left</code> / <code>right</code> / <code>middle</code>.
+            A quick tap may appear in both edge sets while the held level reports the final state.
+            Edges survive render frames with no simulation step, reach the first catch-up step,
+            then clear. Native key repeat still reaches <code>input</code>, but does not create
+            another sampled press. The snapshot also carries
             <code>xr : Option.t&lt;…&gt;</code> for headset
             head and controller poses (see <code>Input</code> in the
             <a href="../docs/">API reference</a>). Being plain data is what lets sampled input be

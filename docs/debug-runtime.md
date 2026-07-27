@@ -86,7 +86,7 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse` + optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (keyboard/mouse held + pressed/released sets and optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
@@ -151,6 +151,13 @@ game's `mouseButton` hook AND updates the held buttons that later steps'
 `/time advance` steps scripts full-auto fire. A release is delivered only if the
 game saw the press. Unlike window buttons it ignores cursor capture — a
 headless/hidden session has no capture to acquire.
+
+The next fixed step also sees the transition in `pressedKeys`/`releasedKeys` or
+`mouse.pressed`/`mouse.released`. Repeating a down command while it is already
+held preserves the legacy event-hook call but does not create another sampled
+press. A down/up burst before one step can appear in both sampled edge sets;
+the held level reports the final state. After that step the edge fields clear,
+including under `--fixed-time`, recording/replay, and forward projection.
 
 `ui_event` drives the game's interactive UI widgets without pixels or
 hit-testing (docs/ui-interaction.md): `slot` is the widget's index in the
@@ -242,6 +249,8 @@ game's `mouseButton` hook receives. Buttons carry the same edge + level
 semantics as injected ones — the `mouseButton` hook fires AND `mouse.buttons`
 updates for later `sampledInput` steps, so holding one scripts full-auto fire
 (`examples/shooting-range/firing.input` is the worked example).
+The scripted transition also appears once in `mouse.pressed` or
+`mouse.released` on that frame's sampled snapshot.
 
 A `Mouse.* up` with no preceding press is a **parse error**, not a silently
 dropped line: live playback would suppress it while the `--ghost` forward-step
@@ -253,15 +262,25 @@ needs a two-coordinate line shape rather than this `<control> <down|up>` triple.
 
 ### Sampled input in `GET /state`
 
-`input` is runtime-owned data sampled for one simulation frame. Keyboard and
-mouse keep their existing event entry points; continuously sampled devices add
-typed sibling domains to the same record. Quest currently adds `xr` while head
-tracking is valid:
+`input` is runtime-owned data sampled for one fixed simulation step. Keyboard and
+mouse keep their existing event entry points while also exposing deterministic
+held and pressed/released sets. Quest adds `xr` while head tracking is valid:
+
+These edge fields were added in debug protocol v6. Against an older runtime,
+clients should treat absent edge arrays/button sets as empty.
 
 ```jsonc
 {
   "held_keys": [],
-  "mouse": { "x": 0, "y": 0, "buttons": { "left": false, "right": false, "middle": false } },
+  "pressed_keys": [],
+  "released_keys": [],
+  "mouse": {
+    "x": 0,
+    "y": 0,
+    "buttons": { "left": false, "right": false, "middle": false },
+    "pressed": { "left": false, "right": false, "middle": false },
+    "released": { "left": false, "right": false, "middle": false }
+  },
   "xr": {
     "head": {
       "position": [0.0, 0.0, 0.0],

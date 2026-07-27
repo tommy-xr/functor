@@ -35,9 +35,11 @@ const png = await game.capture();// PNG bytes of the frame
 // `await using` shuts the runtime down at scope exit.
 ```
 
-`state.input` is one extensible sampled-input record. It always carries held
-keys and the last mouse position plus which buttons are held
-(`state.input.mouse.buttons`); XR targets add typed rig-local head and
+`state.input` is one extensible sampled-input record. It carries held keys,
+fixed-step key transitions (`pressed_keys` / `released_keys`), and the last
+mouse position with held/pressed/released button sets (`mouse.buttons`,
+`mouse.pressed`, `mouse.released`). Edge fields are absent on older runtimes,
+so the SDK types keep them optional. XR targets add typed rig-local head and
 controller state (`game.xrInput()`). Future gamepad and mobile-touch domains
 can extend the same record without target-specific clients.
 

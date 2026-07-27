@@ -299,13 +299,24 @@ snapshots — no GPU, fully agent-verifiable.
       the cursor is captured** — the rule `mouseMove`/`mouseWheel` already
       followed, and the fix for clicks being eaten by free-look capture — and a
       held button is swept released on focus loss, Escape, and the console
-      toggle so it cannot fire forever. The held level state rides on the
-      sampled snapshot as `mouse.buttons.{left,right,middle}`, making
-      `mouseButton` the edge and `sampledInput` the level (semi- vs. full-auto).
+      toggle so it cannot fire forever. The sampled snapshot exposes held
+      levels as `mouse.buttons.{left,right,middle}` and deterministic fixed-step
+      transitions as `mouse.pressed.*` / `mouse.released.*`; keyboard has the
+      same split as `heldKeys` / `pressedKeys` / `releasedKeys`. This lets
+      `sampledInput` express both continuous and one-shot behavior without a
+      model-resident latch.
       All three producers plus the replay path build the variant from one shared
       conversion, so live input, forward-step projection, and the journal agree;
       `POST /input {"type":"mouse_button","button":"left","down":true}` scripts
       it headlessly as both edge and level.
+- [x] **Deterministic sampled input edges** (2026-07-27). `Input.snapshot`
+      preserves its held levels and adds `pressedKeys` / `releasedKeys` plus
+      `mouse.pressed` / `mouse.released`. Shells accumulate physical
+      transitions until a fixed step, deliver them once on its first substep,
+      and retain only levels for catch-up/coasting steps. Repeats still reach
+      legacy hooks without duplicating sampled presses; focus-loss, fixed-time,
+      debug/script injection, recorded replay, and forward projection share
+      the same transition discipline.
 - [x] **Branded `Color` values** (2026-07-16; strong-typing track). The Angle
       rule applied to color: `Color.rgb(r, g, b)` makes an opaque `Color.t`,
       and every color parameter — `Scene.color`/`lit`/`emissive`/

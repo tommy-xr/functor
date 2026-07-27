@@ -589,11 +589,18 @@ impl FrameCtx<'_> {
         let mut step = 0usize;
         for div in 0..divisions {
             for _ in 0..steps_per_division {
+                // A carried sample contributes levels only. Its transition
+                // fields were consumed by the step that recorded/projected it.
+                if let Some(sample) = sampled_input.as_mut() {
+                    sample.clear_edges();
+                }
                 // Replay this fine step's recorded inputs before the frame body,
                 // so the model absorbs them exactly as the live frame did.
-                // Sampled input is level state: after the recorded window ends,
-                // carry the latest sample through every projected tick.
+                // After the recorded window ends, carry sampled levels/poses
+                // through every projected tick; transient edges are cleared
+                // after the one step that consumes them.
                 let mut delivered_sample = false;
+                let mut projected_edges = crate::InputEdges::default();
                 if let Some(events) = input_at(step) {
                     // A recorded UiEvent resolved against the LAST RENDER's
                     // handler table live — the tree the user saw, built from
@@ -618,20 +625,22 @@ impl FrameCtx<'_> {
                             RecordedInput::Snapshot(snapshot) => {
                                 sampled_input = Some(snapshot.as_ref().clone());
                                 delivered_sample = true;
+                                // The dense sample already contains the
+                                // transitions live delivery saw this step.
+                                projected_edges.clear();
                             }
                             RecordedInput::Key { code, is_down } => {
                                 if let Some(key) = crate::Key::from_i32(*code)
                                     .filter(|key| *key != crate::Key::Unknown)
                                 {
                                     let sample = sampled_input.get_or_insert_with(Default::default);
-                                    if *is_down {
-                                        if !sample.held_keys.contains(&key) {
-                                            sample.held_keys.push(key);
-                                            sample.held_keys.sort_unstable();
-                                        }
-                                    } else {
-                                        sample.held_keys.retain(|held| *held != key);
-                                    }
+                                    crate::apply_key_transition_to_snapshot(
+                                        sample,
+                                        &mut projected_edges,
+                                        key,
+                                        *is_down,
+                                        true,
+                                    );
                                 }
                             }
                             RecordedInput::MouseMove { x, y } => {
@@ -641,11 +650,14 @@ impl FrameCtx<'_> {
                             }
                             RecordedInput::MouseButton { button, is_down } => {
                                 if let Some(button) = crate::MouseButton::from_i32(*button) {
-                                    sampled_input
-                                        .get_or_insert_with(Default::default)
-                                        .mouse
-                                        .buttons
-                                        .set(button, *is_down);
+                                    let sample = sampled_input.get_or_insert_with(Default::default);
+                                    crate::apply_mouse_transition_to_snapshot(
+                                        sample,
+                                        &mut projected_edges,
+                                        button,
+                                        *is_down,
+                                        true,
+                                    );
                                 }
                             }
                             _ => {}
@@ -654,7 +666,8 @@ impl FrameCtx<'_> {
                     }
                 }
                 if !delivered_sample {
-                    if let Some(sample) = sampled_input.as_ref() {
+                    if let Some(sample) = sampled_input.as_mut() {
+                        projected_edges.apply_to(sample);
                         self.deliver_sampled_input(sample, false);
                     }
                 }
@@ -1874,6 +1887,62 @@ mod tests {
         assert_eq!(error, None);
         assert_eq!(from_live_tail[0].0.to_string(), "30.5");
         assert_eq!(from_live_tail[1].0.to_string(), "30.5");
+    }
+
+    #[test]
+    fn forward_step_replays_edges_once_then_coasts_on_levels_only() {
+        let src = "let init = 0.0\n\
+                   let sampledInput = (m, snapshot) =>\n\
+                   \x20 List.length(snapshot.pressedKeys) * 10.0 +\n\
+                   \x20 List.length(snapshot.releasedKeys)\n\
+                   let tick = (m, dt, tts) => m\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let pressed = crate::InputSnapshot {
+            held_keys: vec![crate::Key::Space],
+            pressed_keys: vec![crate::Key::Space],
+            ..crate::InputSnapshot::default()
+        };
+        let inputs = vec![
+            vec![RecordedInput::Snapshot(Box::new(pressed))],
+            Vec::new(),
+            vec![RecordedInput::Key {
+                code: crate::Key::Space as i32,
+                is_down: false,
+            }],
+            Vec::new(),
+        ];
+
+        let stepped = forward_step_scene(
+            &session,
+            &Value::Number(0.0),
+            false,
+            false,
+            None,
+            0.0,
+            1.0 / 60.0,
+            4,
+            1,
+            &inputs,
+        );
+        assert_eq!(stepped[0].0.to_string(), "10");
+        assert_eq!(
+            stepped[1].0.to_string(),
+            "0",
+            "recorded pressed edge must not repeat while coasting"
+        );
+        assert_eq!(
+            stepped[2].0.to_string(),
+            "1",
+            "a sparse raw release projects into one sampled edge"
+        );
+        assert_eq!(
+            stepped[3].0.to_string(),
+            "0",
+            "projected release edge must be consumed after one step"
+        );
     }
 
     /// Regression: a replayed `MouseMove` must update only x/y, never replace
