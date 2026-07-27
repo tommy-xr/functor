@@ -33,7 +33,8 @@
          pointer being grabbed on every canvas click; press this (or Esc to
          release) to control the camera. */
       #mouselook {
-        position: fixed; top: 10px; left: 10px; z-index: 10;
+        /* Bottom-left: the top edge belongs to the (top-docked) scrubber. */
+        position: fixed; bottom: 10px; left: 10px; z-index: 10;
         font: 12px/1 var(--scrub-font); padding: 6px 10px; cursor: pointer;
         color: var(--scrub-text); background: var(--scrub-bg);
         border: 1px solid var(--scrub-line); border-radius: 6px;
