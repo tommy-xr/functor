@@ -239,7 +239,9 @@ export function mountScrubber({ hidden = false } = {}) {
 
   const dispatch = (action) => {
     state = reduceTimeline(state, action);
-    render();
+    // Hidden mounts skip ALL rendering: state is owned by reduceTimeline and
+    // the seam reads it directly, so the detached DOM never needs painting.
+    if (!hidden) render();
   };
 
   const view = () => deriveTimelineView(state);
@@ -667,7 +669,7 @@ export function mountScrubber({ hidden = false } = {}) {
     }
     const range = functor_lang_scene_range();
     if (range.length === 2) {
-      el.style.display = "flex";
+      if (!hidden) el.style.display = "flex";
       const snapshot = {
         frame: functor_lang_scene_frame(),
         lo: range[0],
@@ -685,9 +687,9 @@ export function mountScrubber({ hidden = false } = {}) {
     } else {
       const paused = functor_lang_scrub_paused();
       if (paused && state.runtime) {
-        el.style.display = "flex";
+        if (!hidden) el.style.display = "flex";
         if (state.recordingAvailable) dispatch({ type: "recording-cleared" });
-      } else {
+      } else if (!hidden) {
         el.style.display = "none";
       }
       lastRuntimeSnapshotKey = "";
