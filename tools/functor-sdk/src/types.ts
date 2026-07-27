@@ -75,9 +75,23 @@ export interface RuntimeView {
   viewport: RuntimeViewport;
 }
 
+/** A structured JSON view of a Functor Lang value: plain data maps structurally
+ * (records as objects, lists as arrays), and everything else is a sigil-keyed
+ * object no record field can collide with — `{"$tuple": [...]}`,
+ * `{"$ctor": "Some", "args": [...]}`, `{"$fn": "<fn(dt)>"}`,
+ * `{"$host": "SceneNode"}`, `{"$number": "NaN"}`, and
+ * `{"$truncated": "max depth"}` past the nesting bound. */
+export type ModelJson =
+  | number
+  | string
+  | boolean
+  | null
+  | ModelJson[]
+  | { [key: string]: ModelJson };
+
 /** Runtime state from `GET /state`. `input` is structured and game-agnostic;
- * `model` is the game model rendered with Rust's pretty-`Debug` (not structured
- * JSON), so reading fields from it is best-effort string matching. */
+ * `model` is the structured, lossy JSON view of the game model — the default
+ * thing to read fields from. */
 export interface RuntimeState {
   frame: number;
   tts: number;
@@ -88,7 +102,16 @@ export interface RuntimeState {
   viewport: RuntimeViewport;
   views: RuntimeView[];
   input: InputSnapshot;
-  model: string;
+  /** Structured, lossy JSON view of the model (`null` for producers without
+   * a structured model, e.g. replay). Protocol v4+ — a pre-v4 runtime sends
+   * the Debug TEXT under this key instead; gate on `GET /`'s
+   * `protocol_version` before reading it as data. */
+  model: ModelJson;
+  /** The Rust-`Debug` pretty-print of the model: the human-facing view (full
+   * depth, construction order where `model` is lossy). Opaque text — don't
+   * parse it. v4 and later — a pre-v4 runtime omits it (and sends the text
+   * under `model` instead). */
+  model_debug: string;
 }
 
 /** Camera block from `GET /scene`. */

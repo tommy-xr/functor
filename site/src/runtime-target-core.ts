@@ -61,7 +61,12 @@ export interface RuntimeState {
   pending_steps?: number;
   viewport: RuntimeViewport;
   views: RuntimeView[];
-  model: string;
+  /** v4+: the structured JSON model view; pre-v4 runtimes send the Debug
+   * text under this key. This panel only displays a dump, so it reads
+   * `model_debug` and falls back to a pre-v4 string `model`. */
+  model: unknown;
+  /** v4 and later only — the Rust-`Debug` model dump. */
+  model_debug?: string;
   input: unknown;
 }
 
@@ -435,7 +440,12 @@ export function createRuntimeTargetCore({
   const renderState = (state: RuntimeState) => {
     if (!state || !Number.isFinite(state.frame)) return;
     const views = Array.isArray(state.views) ? state.views.map((view) => view.name).join(" + ") : "—";
-    const model = typeof state.model === "string" ? state.model.trim() : "";
+    const model =
+      typeof state.model_debug === "string"
+        ? state.model_debug.trim()
+        : typeof state.model === "string"
+          ? state.model.trim()
+          : "";
     update({
       telemetry: {
         frame: String(state.frame),

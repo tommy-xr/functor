@@ -1316,6 +1316,10 @@ AudioScene.empty), got {}",
         self.model.to_string()
     }
 
+    fn state_json(&self) -> serde_json::Value {
+        functor_runtime_common::functor_lang_prelude::value_to_json(&self.model)
+    }
+
     /// The paused-inspector trace (visual-debugger PR2). When NOT paused, a
     /// cheap early-out: `paused: false` with empty invocations — and NO
     /// `frame`/`tts`, which change every frame: the LSP's idle poll dedups on

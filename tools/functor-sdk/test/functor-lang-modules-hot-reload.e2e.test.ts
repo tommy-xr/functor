@@ -58,10 +58,10 @@ test(
 
     // Pin the clock: every state change below is an explicit, exact step.
     await runner.pause();
-    const base = spinOf((await runner.state()).model);
+    const base = spinOf((await runner.state()).model_debug);
     const DT = 0.1;
     for (let i = 0; i < 3; i++) await runner.step(DT);
-    const before = spinOf((await runner.state()).model);
+    const before = spinOf((await runner.state()).model_debug);
     assert.ok(
       Math.abs(before - base - 3 * DT) < 1e-4,
       `three steps at Config.speed 1.0 should add ~0.3 to ${base}, got ${before}`,
@@ -75,7 +75,7 @@ test(
       { timeoutMs: 10_000, description: "sibling edit observed as hot reload" },
     );
     await runner.step(DT);
-    const after = spinOf((await runner.state()).model);
+    const after = spinOf((await runner.state()).model_debug);
 
     // THE assertion: the new spin is the OLD value plus one step of the NEW
     // sibling constant — state survived a non-entry edit AND it took effect.
@@ -93,7 +93,7 @@ test(
       { timeoutMs: 10_000, description: "broken sibling reload reported" },
     );
     await runner.step(DT);
-    const still = spinOf((await runner.state()).model);
+    const still = spinOf((await runner.state()).model_debug);
     assert.ok(
       Math.abs(still - (after + DT * -5.0)) < 1e-4,
       `the old program should keep running after a broken sibling edit, got ${still}`,
@@ -109,7 +109,7 @@ test(
       { timeoutMs: 10_000, description: "fixed sibling reloaded" },
     );
     await runner.step(DT);
-    const fixed = spinOf((await runner.state()).model);
+    const fixed = spinOf((await runner.state()).model_debug);
     assert.ok(
       Math.abs(fixed - (still + DT * 2.0)) < 1e-4,
       `expected ${still} + ${DT}*2 after the fix, got ${fixed}`,

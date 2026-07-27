@@ -57,7 +57,7 @@ test(
     });
     await runner.pause();
 
-    const model = async () => (await runner.state()).model;
+    const model = async () => (await runner.state()).model_debug;
     // `buttons` is optional on the type (older runtimes omit it); a runtime
     // that supports this feature at all must report it.
     const buttons = async () => {

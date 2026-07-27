@@ -52,10 +52,10 @@ test(
     // (The game free-runs on the wall clock between launch and pause, so all
     // assertions are RELATIVE to the pinned baseline.)
     await runner.pause();
-    const base = spinOf((await runner.state()).model);
+    const base = spinOf((await runner.state()).model_debug);
     const DT = 0.1;
     for (let i = 0; i < 3; i++) await runner.step(DT);
-    const before = spinOf((await runner.state()).model);
+    const before = spinOf((await runner.state()).model_debug);
     assert.ok(
       Math.abs(before - base - 3 * DT) < 1e-4,
       `three steps at speed 1.0 should add ~0.3 to ${base}, got ${before}`,
@@ -71,7 +71,7 @@ test(
       { timeoutMs: 10_000, description: "hot reload observed in logs" },
     );
     await runner.step(DT);
-    const after = spinOf((await runner.state()).model);
+    const after = spinOf((await runner.state()).model_debug);
 
     // THE assertion: the new spin is the OLD value plus one step of the NEW
     // behavior — state survived the edit AND the edit took effect.
@@ -95,7 +95,7 @@ test(
       { timeoutMs: 10_000, description: "broken reload reported" },
     );
     await runner.step(DT);
-    const still = spinOf((await runner.state()).model);
+    const still = spinOf((await runner.state()).model_debug);
     assert.ok(
       Math.abs(still - (after + DT * -5.0)) < 1e-4,
       `the old program should keep running after a broken edit, got ${still}`,

@@ -1063,6 +1063,10 @@ AudioScene.empty), got {}",
         self.model.to_string()
     }
 
+    fn state_json(&self) -> serde_json::Value {
+        crate::functor_lang_prelude::value_to_json(&self.model)
+    }
+
     /// The paused-inspector trace (visual-debugger PR2b), same contract and
     /// caching as the other producers: the byte-stable stub while playing, and
     /// a lazily built + cached full doc while paused.

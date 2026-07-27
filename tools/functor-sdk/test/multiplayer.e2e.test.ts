@@ -73,10 +73,10 @@ test(
 
     // The server should accept both connections and track a player for each.
     const serverState = await server.waitForState(
-      (s) => serverPlayerCount(s.model) === 2,
+      (s) => serverPlayerCount(s.model_debug) === 2,
       { ...waitOpts, description: "server to track 2 players" },
     );
-    assert.equal(serverPlayerCount(serverState.model), 2);
+    assert.equal(serverPlayerCount(serverState.model_debug), 2);
 
     // Each client should reach "in-world" and see both players in the snapshot
     // the server broadcasts — i.e. the clients converge on a shared world. The
@@ -87,11 +87,11 @@ test(
       ["B", clientB],
     ] as const) {
       const converged = await client.waitForState(
-        (s) => clientStatus(s.model) === "in-world" && clientWorldCount(s.model) === 2,
+        (s) => clientStatus(s.model_debug) === "in-world" && clientWorldCount(s.model_debug) === 2,
         { ...waitOpts, description: `client ${name} to see both players` },
       );
-      assert.equal(clientStatus(converged.model), "in-world");
-      assert.equal(clientWorldCount(converged.model), 2, `client ${name} sees both players`);
+      assert.equal(clientStatus(converged.model_debug), "in-world");
+      assert.equal(clientWorldCount(converged.model_debug), 2, `client ${name} sees both players`);
     }
   },
 );

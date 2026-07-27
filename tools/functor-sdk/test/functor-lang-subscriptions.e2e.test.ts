@@ -85,7 +85,7 @@ test(
       { timeoutMs: 10_000, description: "hot reload observed in logs" },
     );
     await runner.step(1.0);
-    const model = (await runner.state()).model;
+    const model = (await runner.state()).model_debug;
     assert.equal(
       fieldOf(model, "beats"),
       1,
@@ -95,17 +95,17 @@ test(
     // One step per period -> one message per step, exactly.
     await runner.step(1.0);
     await runner.step(1.0);
-    let beats = fieldOf((await runner.state()).model, "beats");
+    let beats = fieldOf((await runner.state()).model_debug, "beats");
     assert.equal(beats, 3, `two more 1s steps should make 3 beats, got ${beats}`);
 
     // Time.millis(1000) fires in lockstep with Time.seconds(1.0).
-    const echoes = fieldOf((await runner.state()).model, "echoes");
+    const echoes = fieldOf((await runner.state()).model_debug, "echoes");
     assert.equal(echoes, beats, `millis/seconds parity: ${echoes} vs ${beats}`);
 
     // A long frame collapses missed boundaries into ONE firing (the F#
     // crossedBoundary rule: floor comparison, not a counter).
     await runner.step(4.0);
-    beats = fieldOf((await runner.state()).model, "beats");
+    beats = fieldOf((await runner.state()).model_debug, "beats");
     assert.equal(beats, 4, `a 4s frame fires Beat once, not four times: ${beats}`);
   },
 );
