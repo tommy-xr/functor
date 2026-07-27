@@ -85,6 +85,17 @@ Runtime errors come back as tool errors carrying the runtime's own message — a
 `/input` 400 explaining a misspelled field, a `/reload-source` 400 with the
 rendered load error, a `/time` 409 naming a `--fixed-time` pin.
 
+`launch_game` and `connect_game` both require **debug protocol v4 or newer**
+(`docs/debug-runtime.md`), and say so if the runtime is older. Below that, the
+guarantees above quietly stop holding: a pre-v3 runtime ignores a batched
+`frames` and reports no `pending_steps` (so `step` would call a ten-frame batch
+landed after one), and a pre-v4 one never sends `model_json`. This matters most
+for a device APK, which versions independently of the CLI — rebuild it from the
+same Functor version.
+
+Launched games are killed when the server stops, whether its client closes
+stdin or signals it (SIGTERM/Ctrl-C). Attached ones are always left running.
+
 ## `hidden` vs `headless`
 
 `launch_game`'s `mode` chooses which one:

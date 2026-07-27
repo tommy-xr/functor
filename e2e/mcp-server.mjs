@@ -68,6 +68,7 @@ class Rpc {
       const waiter = this.pending.get(message.id);
       if (waiter) {
         this.pending.delete(message.id);
+        clearTimeout(waiter.timer);
         message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result);
       }
     }
@@ -81,8 +82,11 @@ class Rpc {
     const id = this.nextId++;
     this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      setTimeout(() => reject(new Error(`${method} timed out\nstderr:\n${this.stderr}`)), 60000);
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} timed out\nstderr:\n${this.stderr}`));
+      }, 60000);
+      this.pending.set(id, { resolve, reject, timer });
     });
   }
 

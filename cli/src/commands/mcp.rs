@@ -11,7 +11,7 @@
 //! plus a child process when the session was launched (rather than attached)
 //! by this server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -31,10 +31,14 @@ use tokio::process::{Child, Command};
 
 /// How long `launch_game` waits for a spawned runtime to answer discovery.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long `step` waits for a queued batch of advances to drain.
-const STEP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `step` tolerates a queued batch making NO progress before giving
+/// up. A large batch legitimately takes far longer than this to drain in total.
+const STEP_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request timeout for the (loopback or adb-forwarded) debug server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Lowest debug-protocol version whose contract these tools actually keep
+/// (`pending_steps` on `/state`, `frames` on `/time advance`, `model_json`).
+const REQUIRED_PROTOCOL_VERSION: u64 = 4;
 /// Bytes of a launched child's stdout/stderr kept for failure reporting.
 const LOG_TAIL_BYTES: usize = 8 * 1024;
 
@@ -46,18 +50,41 @@ pub async fn execute() -> io::Result<()> {
         .serve(stdio())
         .await
         .map_err(|error| io::Error::other(format!("failed to start the MCP server: {error}")))?;
-    let quit = service.waiting().await;
-    // Owned children are killed on drop (`kill_on_drop`), but the registry is
-    // reachable from the transport task's clone; drop them explicitly so a
-    // clean client disconnect never leaves a game running.
+    // Owned children are killed on drop (`kill_on_drop`), but a client that
+    // signals the server instead of closing stdin would never reach that drop —
+    // and every orphan is a whole desktop runtime holding a GL context. So
+    // shutdown is reached from either side.
+    let running = service.waiting();
+    tokio::pin!(running);
+    let quit = tokio::select! {
+        result = &mut running => result.map(|_| ()),
+        _ = shutdown_signal() => Ok(()),
+    };
     Registry::shutdown(&sessions);
-    quit.map(|_| ())
-        .map_err(|error| io::Error::other(format!("the MCP server task failed: {error}")))
+    quit.map_err(|error| io::Error::other(format!("the MCP server task failed: {error}")))
+}
+
+/// Resolve when the host asks this process to stop (SIGTERM or Ctrl-C).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut terminate) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = terminate.recv() => return,
+                _ = tokio::signal::ctrl_c() => return,
+            }
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// One game the server can talk to.
 struct Session {
     url: String,
+    /// The port this server reserved for a launched runtime, held so a
+    /// concurrent launch cannot be handed the same one.
+    port: Option<u16>,
     /// `Some` only when this server spawned the runtime. An attached session
     /// (`connect_game`) is never killed — the runtime belongs to someone else.
     child: Option<Child>,
@@ -67,14 +94,35 @@ struct Session {
 struct Registry {
     next_id: u32,
     sessions: BTreeMap<String, Session>,
+    /// Ports handed to a launch. The OS never offers a port a live runtime
+    /// already holds, but it happily offers the same one twice inside the
+    /// window between `free_port` and the child's own bind — and MCP tool calls
+    /// can overlap, which is exactly the two-game case sessions exist for.
+    reserved: BTreeSet<u16>,
 }
 
 impl Registry {
-    fn insert(&mut self, url: String, child: Option<Child>) -> String {
+    fn insert(&mut self, url: String, port: Option<u16>, child: Option<Child>) -> String {
         self.next_id += 1;
         let id = format!("s{}", self.next_id);
-        self.sessions.insert(id.clone(), Session { url, child });
+        self.sessions
+            .insert(id.clone(), Session { url, port, child });
         id
+    }
+
+    /// Claim a port no other session has been handed.
+    fn reserve_port(&mut self) -> Result<u16, String> {
+        for _ in 0..64 {
+            let port = free_port()?;
+            if self.reserved.insert(port) {
+                return Ok(port);
+            }
+        }
+        Err("could not find a free port that is not already reserved by another session".into())
+    }
+
+    fn release_port(&mut self, port: u16) {
+        self.reserved.remove(&port);
     }
 
     /// The session's base URL, or an error naming the sessions that do exist —
@@ -98,7 +146,12 @@ impl Registry {
 
     fn remove(&mut self, id: &str) -> Result<Session, String> {
         match self.sessions.remove(id) {
-            Some(session) => Ok(session),
+            Some(session) => {
+                if let Some(port) = session.port {
+                    self.release_port(port);
+                }
+                Ok(session)
+            }
             None => Err(self.url(id).expect_err("id is absent")),
         }
     }
@@ -242,7 +295,11 @@ or \"headless\" (no GL, no capture)"
                 ))
             }
         };
-        let port = resolve!(free_port());
+        let port = resolve!(self
+            .sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .reserve_port());
         let exe = resolve!(std::env::current_exe()
             .map_err(|error| format!("cannot locate the functor executable: {error}")));
 
@@ -262,15 +319,20 @@ or \"headless\" (no GL, no capture)"
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = resolve!(command
-            .spawn()
-            .map_err(|error| format!("failed to spawn the runtime: {error}")));
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.release_port(port);
+                return tool_error(format!("failed to spawn the runtime: {error}"));
+            }
+        };
         let log = Arc::new(Mutex::new(Vec::new()));
+        let mut drains = Vec::new();
         if let Some(stream) = child.stdout.take() {
-            drain_into(stream, log.clone());
+            drains.push(drain_into(stream, log.clone()));
         }
         if let Some(stream) = child.stderr.take() {
-            drain_into(stream, log.clone());
+            drains.push(drain_into(stream, log.clone()));
         }
 
         let url = format!("http://127.0.0.1:{port}");
@@ -278,15 +340,25 @@ or \"headless\" (no GL, no capture)"
             Ok(discovery) => discovery,
             Err(message) => {
                 let _ = child.start_kill();
+                self.release_port(port);
+                // The output that explains a failed launch — a bind error, a
+                // typecheck diagnostic — is written just before the child exits,
+                // so let the drain tasks reach EOF before reading the tail.
+                let _ = tokio::time::timeout(Duration::from_millis(500), async {
+                    for drain in drains {
+                        let _ = drain.await;
+                    }
+                })
+                .await;
                 return tool_error(format!("{message}\n\nruntime output:\n{}", tail(&log)));
             }
         };
 
-        let id = self
-            .sessions
-            .lock()
-            .expect("mcp registry poisoned")
-            .insert(url.clone(), Some(child));
+        let id = self.sessions.lock().expect("mcp registry poisoned").insert(
+            url.clone(),
+            Some(port),
+            Some(child),
+        );
         ok_text(
             serde_json::json!({
                 "session": id,
@@ -310,11 +382,11 @@ or \"headless\" (no GL, no capture)"
     ) -> Result<CallToolResult, ErrorData> {
         let url = args.url.trim_end_matches('/').to_string();
         let discovery = resolve!(self.discover(&url).await);
-        let id = self
-            .sessions
-            .lock()
-            .expect("mcp registry poisoned")
-            .insert(url.clone(), None);
+        let id =
+            self.sessions
+                .lock()
+                .expect("mcp registry poisoned")
+                .insert(url.clone(), None, None);
         ok_text(
             serde_json::json!({
                 "session": id,
@@ -435,11 +507,16 @@ or \"headless\" (no GL, no capture)"
             .bytes()
             .await
             .map_err(|error| format!("reading the captured PNG failed: {error}")));
+        // 503 is "no pixels right now", and the runtime says WHICH reason —
+        // headless, a dozing XR session, a capture timeout. Pass its own words
+        // through and only append the hint, so an attached Quest is not told to
+        // relaunch a process this server does not own.
         if status.as_u16() == 503 {
-            return tool_error(
-                "this runtime has no pixels to capture: it was started headless (--headless \
-creates no GL context). Relaunch the game with mode \"hidden\" to capture frames.",
-            );
+            return tool_error(format!(
+                "POST /capture -> 503: {}\n\nA session launched with mode \"headless\" has no GL \
+context at all — relaunch it with mode \"hidden\" to capture frames.",
+                String::from_utf8_lossy(&body)
+            ));
         }
         if !status.is_success() {
             return tool_error(format!(
@@ -460,6 +537,8 @@ creates no GL context). Relaunch the game with mode \"hidden\" to capture frames
     /// `{"type":"ui_event","slot":0,"kind":"Clicked"}` (also
     /// `{"SliderChanged":0.5}` / `{"TextChanged":"hi"}`),
     /// `{"type":"xr", "head":…, "left":…, "right":…}`, `{"type":"xr_clear"}`.
+    /// The list mirrors `POST /input` and is not exhaustive; an unrecognized
+    /// shape comes back as the runtime's own 400, which names the problem.
     /// Keys, held buttons and XR samples are LEVEL state: they stay in force
     /// across steps until released, which is how a paused session is scripted.
     #[tool]
@@ -480,16 +559,19 @@ creates no GL context). Relaunch the game with mode \"hidden\" to capture frames
         &self,
         Parameters(args): Parameters<PauseArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let url = resolve!(self.url(&args.session));
         let tts = match args.tts {
             Some(tts) => tts,
-            None => resolve!(self.current_tts(&args.session).await),
+            None => resolve!(tts_of(&resolve!(self.state(&url).await))),
         };
-        self.proxy_post(
-            &args.session,
-            "/time",
-            serde_json::json!({ "type": "set", "tts": tts }).to_string(),
-        )
-        .await
+        ok_text(resolve!(
+            self.post(
+                &url,
+                "/time",
+                serde_json::json!({ "type": "set", "tts": tts }).to_string(),
+            )
+            .await
+        ))
     }
 
     /// Run exactly `frames` simulation steps of `dts` seconds each, WAIT for
@@ -509,17 +591,26 @@ creates no GL context). Relaunch the game with mode \"hidden\" to capture frames
             "frames": args.frames.unwrap_or(1),
         });
         resolve!(self.post(&url, "/time", body.to_string()).await);
-        let deadline = Instant::now() + STEP_TIMEOUT;
+        // The timeout is a STALL timeout, not a total one: a large batch drains
+        // at up to 8 steps per rendered frame, so a legitimate 100k-step skip
+        // takes minutes. Every observed step resets the clock; only a queue that
+        // stops moving is a failure.
+        let mut deadline = Instant::now() + STEP_STALL_TIMEOUT;
+        let mut remaining = u64::MAX;
         loop {
             let state = resolve!(self.state(&url).await);
-            if state["pending_steps"].as_u64().unwrap_or(0) == 0 {
+            let pending = state["pending_steps"].as_u64().unwrap_or(0);
+            if pending == 0 {
                 return ok_text(state.to_string());
             }
-            if Instant::now() >= deadline {
+            if pending < remaining {
+                remaining = pending;
+                deadline = Instant::now() + STEP_STALL_TIMEOUT;
+            } else if Instant::now() >= deadline {
                 return tool_error(format!(
-                    "the queued steps never drained ({} still pending after {}s)",
-                    state["pending_steps"],
-                    STEP_TIMEOUT.as_secs()
+                    "the queued steps stopped draining ({pending} still pending, no progress for \
+{}s) — the game loop may be stuck or the runtime paused from elsewhere",
+                    STEP_STALL_TIMEOUT.as_secs()
                 ));
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -551,8 +642,7 @@ creates no GL context). Relaunch the game with mode \"hidden\" to capture frames
         Parameters(args): Parameters<RewindArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let url = resolve!(self.url(&args.session));
-        let state = resolve!(self.state(&url).await);
-        let tts = state["tts"].as_f64().unwrap_or(0.0);
+        let tts = resolve!(tts_of(&resolve!(self.state(&url).await)));
         // The clock must be pinned before a rewind or the next wall-clock frame
         // would immediately overwrite the restored model. `/state` does not
         // report whether it already is, so this re-pins at the CURRENT time —
@@ -611,6 +701,13 @@ creates no GL context). Relaunch the game with mode \"hidden\" to capture frames
 }
 
 impl FunctorMcp {
+    fn release_port(&self, port: u16) {
+        self.sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .release_port(port);
+    }
+
     fn url(&self, session: &str) -> Result<String, String> {
         self.sessions
             .lock()
@@ -660,11 +757,6 @@ impl FunctorMcp {
             .map_err(|error| format!("GET /state returned invalid JSON: {error}"))
     }
 
-    async fn current_tts(&self, session: &str) -> Result<f64, String> {
-        let url = self.url(session)?;
-        Ok(self.state(&url).await?["tts"].as_f64().unwrap_or(0.0))
-    }
-
     /// Fetch and validate the discovery document, so an `http://…` that answers
     /// something else is rejected here rather than at the first real call.
     async fn discover(&self, url: &str) -> Result<Value, String> {
@@ -675,6 +767,20 @@ impl FunctorMcp {
             return Err(format!(
                 "{url} is not a Functor debug runtime (its / reports {})",
                 discovery["service"]
+            ));
+        }
+        // Below v4 the guarantees these tools advertise silently stop holding:
+        // a pre-v3 runtime ignores a batched `frames` and reports no
+        // `pending_steps` (so `step` would claim a 10-frame batch landed after
+        // running one), and a pre-v4 one never sends `model_json`. Refuse
+        // rather than mislead — this matters for a device APK, which versions
+        // independently of the CLI.
+        let version = discovery["protocol_version"].as_u64().unwrap_or(0);
+        if version < REQUIRED_PROTOCOL_VERSION {
+            return Err(format!(
+                "{url} speaks debug protocol v{version}, but these tools need \
+v{REQUIRED_PROTOCOL_VERSION} (batched steps report pending_steps, and /state carries \
+model_json). Rebuild that runtime from this version of Functor."
             ));
         }
         Ok(discovery)
@@ -721,6 +827,17 @@ impl Default for FunctorMcp {
     }
 }
 
+/// The runtime's current time, from a `/state` document. Never defaulted: a
+/// silent 0.0 would pin a paused game (or a rewind) to the start of time.
+fn tts_of(state: &Value) -> Result<f64, String> {
+    state["tts"].as_f64().ok_or_else(|| {
+        format!(
+            "GET /state did not report a numeric tts (got {})",
+            state["tts"]
+        )
+    })
+}
+
 /// Read a response body, turning a non-2xx into a message that carries the
 /// runtime's own text — the 400s from `/input`, `/time` and the reload routes
 /// are teaching errors, so they must reach the caller verbatim.
@@ -751,7 +868,7 @@ fn free_port() -> Result<u16, String> {
 
 /// Accumulate a child's output into a bounded tail buffer, so a launch that
 /// never serves can still report why.
-fn drain_into<R>(mut stream: R, log: Arc<Mutex<Vec<u8>>>)
+fn drain_into<R>(mut stream: R, log: Arc<Mutex<Vec<u8>>>) -> tokio::task::JoinHandle<()>
 where
     R: AsyncReadExt + Unpin + Send + 'static,
 {
@@ -768,7 +885,7 @@ where
                 buffer.drain(..excess);
             }
         }
-    });
+    })
 }
 
 fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
@@ -782,8 +899,8 @@ mod tests {
     #[test]
     fn ids_are_short_sequential_and_resolve_to_their_url() {
         let mut registry = Registry::default();
-        let first = registry.insert("http://127.0.0.1:1".into(), None);
-        let second = registry.insert("http://127.0.0.1:2".into(), None);
+        let first = registry.insert("http://127.0.0.1:1".into(), None, None);
+        let second = registry.insert("http://127.0.0.1:2".into(), None, None);
 
         assert_eq!(first, "s1");
         assert_eq!(second, "s2");
@@ -796,21 +913,40 @@ mod tests {
         let empty = registry.url("s1").unwrap_err();
         assert!(empty.contains("no sessions yet"), "{empty}");
 
-        registry.insert("http://127.0.0.1:1".into(), None);
-        registry.insert("http://127.0.0.1:2".into(), None);
+        registry.insert("http://127.0.0.1:1".into(), None, None);
+        registry.insert("http://127.0.0.1:2".into(), None, None);
         let unknown = registry.url("s9").unwrap_err();
         assert!(unknown.contains("s1, s2"), "{unknown}");
     }
 
     #[test]
+    fn a_reserved_port_is_held_until_its_session_is_removed() {
+        let mut registry = Registry::default();
+        let port = registry.reserve_port().unwrap();
+        assert!(registry.reserved.contains(&port));
+
+        // A second reservation cannot be handed the same port, even though the
+        // first one's listener is already closed.
+        let other = registry.reserve_port().unwrap();
+        assert_ne!(port, other);
+
+        registry.insert("http://127.0.0.1:1".into(), Some(port), None);
+        registry.remove("s1").unwrap();
+        assert!(!registry.reserved.contains(&port));
+    }
+
+    #[test]
     fn removing_a_session_forgets_it_and_does_not_reuse_its_id() {
         let mut registry = Registry::default();
-        registry.insert("http://127.0.0.1:1".into(), None);
+        registry.insert("http://127.0.0.1:1".into(), None, None);
         let removed = registry.remove("s1").unwrap();
 
         assert_eq!(removed.url, "http://127.0.0.1:1");
         assert!(registry.url("s1").is_err());
-        assert_eq!(registry.insert("http://127.0.0.1:3".into(), None), "s2");
+        assert_eq!(
+            registry.insert("http://127.0.0.1:3".into(), None, None),
+            "s2"
+        );
         let Err(message) = registry.remove("s1") else {
             panic!("a removed id must not resolve again");
         };
