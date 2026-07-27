@@ -629,6 +629,12 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.asset_progress = Some(progress);
     }
 
+    fn project_sources(&self) -> Option<crate::debug_protocol::ProjectSources> {
+        // Every source this producer has ever run arrived over the wire, so
+        // its own buffers ARE the truth.
+        Some(self.sources.clone())
+    }
+
     fn reload_source(&mut self, source: &str) -> Result<String, String> {
         // The editor push path (docs/functor-lang.md D4), same semantics as the
         // desktop runner's `POST /reload-source`: model preserved, a broken

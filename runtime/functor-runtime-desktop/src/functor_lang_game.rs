@@ -78,6 +78,11 @@ pub struct FunctorLangGame {
     /// siblings; any on-disk project edit clears it (disk is the newer whole
     /// project in the desktop shell's last-write-wins model).
     pushed_project: Option<Vec<(String, String)>>,
+    /// The `.fun` sources the CURRENT program was built from — file name and
+    /// text, entry first, project files only. Serves `GET /project`: after a
+    /// pushed edit (`reload_source`/`reload_project`) these differ from what
+    /// is on disk, and they, not the directory, are what the game is running.
+    sources: Vec<(String, String)>,
     /// The lowered (merged) module the current session came from — kept so
     /// a reload can rebind model-stored closures (old module × new module).
     module: functor_lang::ir::Module,
@@ -300,6 +305,26 @@ fn load_sources(files: &[(String, String)]) -> Result<Loaded, String> {
     finish_load(path, project)
 }
 
+/// The project's OWN files out of a linked source map: bundled prelude and
+/// stdlib modules carry `<prelude>`/`<stdlib>` pseudo-paths (the same rule
+/// `inspector_sources` uses), and a project is one flat directory, so each
+/// file is reported by its name.
+fn project_sources_of(sources: &SourceMap) -> Vec<(String, String)> {
+    sources
+        .files()
+        .iter()
+        .filter(|file| !file.path.to_string_lossy().starts_with('<'))
+        .map(|file| {
+            let name = file
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file.path.to_string_lossy().into_owned());
+            (name, file.src.clone())
+        })
+        .collect()
+}
+
 /// Contract-check the already linked project. Both disk-backed and pushed
 /// projects pass through this one validation path.
 fn finish_load(path: &str, project: functor_lang::project::Project) -> Result<Loaded, String> {
@@ -472,12 +497,14 @@ impl FunctorLangGame {
         // `None` check. See `functor_lang_producer`.
         journal_arm();
         let source_hashes = inspector_sources(&loaded.sources);
+        let sources = project_sources_of(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
         FunctorLangGame {
             path: path.to_string(),
             stamp,
             pushed_entry: None,
             pushed_project: None,
+            sources,
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
@@ -580,6 +607,7 @@ impl FunctorLangGame {
         // the journal + cached trace: they refer to the OLD program's spans and
         // execution (visual-debugger PR2 — hot-reload clears both).
         self.source_hashes = inspector_sources(&loaded.sources);
+        self.sources = project_sources_of(&loaded.sources);
         self.last_frame_journal.clear();
         self.journal_ring.clear(); // old program's spans
         self.runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
@@ -671,6 +699,7 @@ impl FunctorLangGame {
         clear_preload_completions();
 
         self.source_hashes = inspector_sources(&loaded.sources);
+        self.sources = project_sources_of(&loaded.sources);
         self.last_frame_journal.clear();
         self.journal_ring.clear();
         self.runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
@@ -815,6 +844,12 @@ impl Game for FunctorLangGame {
                 });
             }
         }
+    }
+
+    fn project_sources(&self) -> Option<functor_runtime_common::debug_protocol::ProjectSources> {
+        // What the SESSION is running, which after a push (or before a save)
+        // is not what the project directory holds.
+        Some(self.sources.clone())
     }
 
     fn reload_source(&mut self, source: &str) -> Result<String, String> {
@@ -1778,6 +1813,21 @@ mod tests {
             game.session.global("probe").expect("probe").to_string(),
             "9"
         );
+
+        // `GET /project` reports what the SESSION is running: the pushed
+        // entry (not the file still on disk) plus the pushed sibling, which
+        // has no on-disk existence at all.
+        let reported = game.project_sources().expect("an .fun game has sources");
+        assert_eq!(
+            reported
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["game.fun", "config.fun"],
+            "the entry comes first, then siblings"
+        );
+        assert!(reported[0].1.contains("Config.k + 2.0"), "{reported:?}");
+        assert_eq!(reported[1].1, "let k = 7.0\n");
 
         let broken = vec![("game.fun".to_string(), "let init =".to_string())];
         assert!(game.reload_project(&broken).is_err());

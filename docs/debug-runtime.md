@@ -94,6 +94,7 @@ screenshot run has no reason to grab your mouse.
 | `POST /reload-source` | swap game logic from the request body (see below) |
 | `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first |
 | `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init` |
+| `GET /project` | the running program's own `.fun` sources as a JSON array of `[path, source]` pairs, entry first — the read half of the push routes (see below) |
 | `POST /reload-asset` | upload one project-relative texture/model/audio asset as a binary path+bytes envelope |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
@@ -369,6 +370,24 @@ starts with the project's `init` model. Its watch loop then uses
 `/reload-project`, preserving that live model across edits. Both routes carry
 all sibling `.fun`/`.funi` modules, with the same file-as-module behavior as
 desktop.
+
+### `GET /project` — read the running sources back (protocol v5)
+
+The reply is a JSON array of `[path, source]` pairs, entry first — exactly the
+body `/reload-project` accepts, so the two compose:
+
+```sh
+curl -s http://127.0.0.1:8123/project | jq -r '.[0][1]' > game.fun
+```
+
+After a `/reload-source` or `/reload-project` push, this is the only place the
+program's current source exists: the runtime is running text that may never
+have been written to a file (an agent authoring over the wire, the browser
+IDE). It reports the PROJECT's own modules — bundled prelude/stdlib modules
+are excluded — by file name. A producer whose logic is not source-shaped
+(`--replay`) answers **501**, and a pre-v5 runtime answers **404**.
+
+`functor mcp`'s `save_project` tool is built on it (docs/mcp.md).
 
 ### Project asset sync
 

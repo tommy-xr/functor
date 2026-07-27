@@ -147,6 +147,17 @@ pub trait GameProducer {
         Err("this producer does not support project loading (not an .fun game)".to_string())
     }
 
+    /// The `.fun` sources the program is CURRENTLY running — `(path, source)`
+    /// pairs, the entry first, project files only (no bundled prelude
+    /// modules). The read half of the push routes above, serving
+    /// `GET /project`: after a `reload_source`/`reload_project` push the
+    /// running sources exist nowhere else, so a driver that wants to persist
+    /// what it authored must ask the RUNTIME rather than copy a directory.
+    /// `None` for producers whose logic is not source-shaped.
+    fn project_sources(&self) -> Option<crate::debug_protocol::ProjectSources> {
+        None
+    }
+
     /// Rewind the whole scene — model AND physics world — to an earlier
     /// RENDERED frame, restoring both to the state they had at the end of that
     /// frame and branching the recorded future from there (docs/time-travel.md

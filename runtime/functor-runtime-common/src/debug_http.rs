@@ -270,6 +270,41 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 ),
             }
         }
+        ("GET", "/project") => {
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::Project(resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            match recv(resp_rx) {
+                Ok(Some(files)) => respond_bytes(
+                    &mut stream,
+                    cors_origin,
+                    200,
+                    "OK",
+                    "application/json",
+                    serde_json::to_string(&files)
+                        .expect("project sources are strings")
+                        .as_bytes(),
+                ),
+                // Not "no files": this producer's logic is not source-shaped at
+                // all (a replay, a compiled dylib), so there is nothing a
+                // caller could save or edit.
+                Ok(None) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    501,
+                    "Not Implemented",
+                    "this runtime is not running .fun sources, so it has no project to report",
+                ),
+                Err(_) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    500,
+                    "Internal Server Error",
+                    "project failed",
+                ),
+            }
+        }
         ("POST", "/input") => {
             let command = match parse_json::<InputCommand>(&mut reader, content_length) {
                 Ok(command) => command,
@@ -697,6 +732,54 @@ mod tests {
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("reloaded project"));
+    }
+
+    #[test]
+    fn project_reports_the_running_sources_as_json() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = connect(
+            &listener,
+            "GET /project HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        );
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+
+        match rx.recv().unwrap() {
+            DebugRequest::Project(response) => response
+                .send(Some(vec![("game.fun".into(), "let init = 1".into())]))
+                .unwrap(),
+            _ => panic!("expected a project request"),
+        }
+
+        assert_eq!(server.join().unwrap(), Some(()));
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("Content-Type: application/json\r\n"));
+        assert!(response.ends_with(r#"[["game.fun","let init = 1"]]"#));
+    }
+
+    /// A producer with no source-shaped logic must say so, rather than answer
+    /// an empty project a caller would happily save over its real files.
+    #[test]
+    fn project_is_not_implemented_when_the_producer_has_no_sources() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = connect(
+            &listener,
+            "GET /project HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        );
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+
+        match rx.recv().unwrap() {
+            DebugRequest::Project(response) => response.send(None).unwrap(),
+            _ => panic!("expected a project request"),
+        }
+
+        assert_eq!(server.join().unwrap(), Some(()));
+        assert!(client
+            .join()
+            .unwrap()
+            .starts_with("HTTP/1.1 501 Not Implemented\r\n"));
     }
 
     #[test]
