@@ -8,12 +8,13 @@
 // frame, from a game running with no visible window at all.
 //
 // The loop it shows is the documented one: launch_game → pause → get_state →
-// send_input → step → capture_frame. Because the clock is pinned and every
-// step advances a fixed dts, the run is reproducible: the same model numbers
-// and the same poses come back every time. The only values that move between
-// captures are `frame`/`tts`, which count from wherever the game had got to
-// when the agent paused it (mario stands still until it is driven, so the
-// simulation itself starts from the same place either way).
+// send_input → step → capture_frame. It is reproducible by construction: the
+// clock is pinned to an explicit tts (so even the walk-cycle phase mario draws
+// from it is fixed), every step advances a fixed dts, and the two values that
+// could not be reproduced — the launch `port` and the `frame` counter, which
+// count from wherever the game got to before it was paused — are the two the
+// transcript does not show. Everything shown is the server's own answer,
+// abridged only where a `…` says so.
 //
 // Prereqs: a current functor binary (cargo build -p functor-cli
 // --no-default-features, or npm run build:cli:debug), @playwright/test's
@@ -33,14 +34,22 @@ import { chromium } from "@playwright/test";
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const GAME = process.env.DEMO_GAME || "examples/mario";
 const OUT = resolve(process.argv[2] || join(ROOT, "site/media/feature-mcp-drive.gif"));
+if (!OUT.endsWith(".gif")) {
+  console.error(`the output path must end in .gif (got ${OUT})`);
+  process.exit(1);
+}
 const STILL = OUT.replace(/\.gif$/, ".png");
 const WIDTH = 1180;
 const HEIGHT = 620;
 const GIF_WIDTH = 560; // the committed feature-GIF width on the landing page
 const FPS = Number(process.env.DEMO_FPS || 14);
 const DTS = 0.016; // the step size every `step` call advances, per frame
-// mario's chasm spans x ∈ [-3, 3] and its default jump carries ~6.9 units, so
-// leaving from here clears it with room to spare (examples/mario/game.fun).
+const STRIDE = 4; // frames per `step` call — one captured frame per call
+// mario's chasm spans x ∈ [-3, 3] and its default jump carries ~6.9 units.
+// Running right at 8 units/s, a STRIDE of 4 moves 0.512 per call, so the walk
+// loop stops at x = -3.44 and the jump lands around x = 3.5 — clear of the far
+// lip, with the guard below to catch it if a retune breaks that
+// (examples/mario/game.fun).
 const JUMP_FROM = -3.6;
 
 const BIN = existsSync(join(ROOT, "target/debug/functor"))
@@ -162,6 +171,9 @@ await page.setContent(`<!doctype html><html><head>
       <div id="stage"><div id="shdr"><span id="dot"></span><span id="slbl">no window — nothing on screen yet</span></div><img id="gv" /></div>
     </div>
   </div></body></html>`);
+// The transcript is typography-heavy, so wait for the webfont rather than
+// capturing the first frames in a fallback face.
+await page.evaluate(() => document.fonts.ready);
 await page.evaluate(() => {
   const term = document.getElementById("term");
   const add = (cls, html) => {
@@ -224,12 +236,23 @@ const note = async (text) => {
   await snap();
 };
 
+// The arguments as shown: the `session` every call after the launch repeats is
+// elided to a `…`, which is what keeps a line from wrapping at this size. The
+// call itself is always made with the real, whole arguments.
+const shownArgs = (args) => {
+  const rest = { ...args };
+  const elided = rest.session !== undefined;
+  delete rest.session;
+  const body = Object.entries(rest).map(([k, v]) => `"${k}": ${JSON.stringify(v)}`);
+  return "{ " + [...(elided ? ["…"] : []), ...body].join(", ") + " }";
+};
+
 // Type the tool call out, then actually make it. `quiet` performs the call
 // without showing it — used for the per-step `capture_frame`, whose result IS
 // the game pane (the call itself is shown the first time it appears).
 const call = async (tool, args, { quiet = false } = {}) => {
   if (quiet) return rpc.call(tool, args);
-  const text = JSON.stringify(args).replace(/,"/g, ', "').replace(/":/g, '": ');
+  const text = shownArgs(args);
   await page.evaluate((t) => window.__t.call(t), tool);
   for (const [i, c] of [...text].entries()) {
     await page.evaluate((ch) => window.__t.ch(ch), c);
@@ -241,122 +264,135 @@ const call = async (tool, args, { quiet = false } = {}) => {
   return rpc.call(tool, args);
 };
 
-/** Show the PNG `capture_frame` just returned; report its real dimensions. */
+// Show the PNG `capture_frame` just returned, waiting for it to decode so a
+// screenshot can never catch the previous frame beside the new transcript
+// line. Returns its real dimensions, read from the PNG header.
 const showFrame = async (image) => {
-  await page.evaluate((u) => {
-    document.getElementById("gv").src = u;
+  await page.evaluate(async (u) => {
+    const img = document.getElementById("gv");
+    img.src = u;
+    await img.decode();
   }, `data:${image.mimeType};base64,${image.data}`);
   const png = Buffer.from(image.data, "base64");
   return `${png.readUInt32BE(16)}×${png.readUInt32BE(20)}`;
 };
 
 /** A one-line view of a real response object, keeping only `keys`. */
-/** The server's answer as one line: its own text, or a compact object view. */
-const answer = (json, keys) => (typeof json === "string" ? json : pick(json, keys));
-
 const pick = (json, keys) =>
   "{ " + keys.filter((k) => json[k] !== undefined).map((k) => `"${k}": ${JSON.stringify(json[k])}`).join(", ") + " }";
 
+// The real `/state` answer, abridged the way `…` marks everywhere here: it also
+// carries pending_steps, viewports and the input snapshot, and the model has
+// four more fields. `frame` is left out on purpose — it counts from wherever
+// the game had got to when the agent paused it, so it is the one value that
+// would differ between captures.
 const modelLine = (state) => {
   const m = state.model;
-  return `{ "frame": ${state.frame}, "tts": ${round(state.tts)}, "model": { "x": ${round(m.x)}, "y": ${round(m.y)}, "grounded": ${m.grounded} } }`;
+  return `{ "tts": ${round(state.tts)}, "model": { "x": ${round(m.x)}, "y": ${round(m.y)}, "grounded": ${m.grounded}, … }, … }`;
 };
 
-// --- 1. Launch a game, through the MCP server -------------------------------
-await caption("A coding agent's MCP client, driving a real game — <b>functor mcp</b>.");
-await hold(4);
+let session = null;
+try {
+  // --- 1. Launch a game, through the MCP server ------------------------------
+  await caption("A coding agent's MCP client, driving a real game — <b>functor mcp</b>.");
+  await hold(4);
 
-const launched = await call("launch_game", { dir: GAME, mode: "hidden" });
-const session = launched.json.session;
-// The response's `port` is deliberately not shown: it is a free port the
-// server picks, and it is the one value in the whole run that would differ
-// between captures.
-await res(answer(launched.json, ["session", "mode", "owned"]));
-await note("  # a real runtime — a GL context in a window that is never shown");
-await stage(`session ${session} — running`, false);
+  const launched = await call("launch_game", { dir: GAME, mode: "hidden" });
+  session = launched.json.session;
+  // The response's `port` is deliberately not shown: it is a free port the
+  // server picks, and it would differ between captures.
+  await res(pick(launched.json, ["session", "mode", "owned"]));
+  await note("  # a real runtime — a GL context in a window that is never shown");
+  await stage(`session ${session} — running`, false);
 
-let shot = await call("capture_frame", { session });
-await res(`[image] image/png, ${await showFrame(shot.image)}`);
-await hold(5);
+  let shot = await call("capture_frame", { session });
+  await res(`[image] image/png, ${await showFrame(shot.image)}`);
+  await note(`  # … elides the "session": "${session}" every later call carries`);
+  await hold(5);
 
-// --- 2. Pause: the clock is the agent's now ---------------------------------
-await caption("Pin the clock — <b>pause</b>. Nothing advances unless the agent asks.");
-const paused = await call("pause", { session });
-await res(answer(paused.json, ["mode", "tts"]));
-await stage(`session ${session} — paused`, true);
-let state = (await call("get_state", { session })).json;
-await res(modelLine(state));
-await note("  # the model itself, as structured JSON — not a debug string");
-shot = await call("capture_frame", { session });
-await showFrame(shot.image);
-await snap();
-await hold(5);
-
-// --- 3. Play it: hold Right, and step the world by hand ----------------------
-await caption("Play it — <b>send_input</b> holds a key, <b>step</b> advances exact frames.");
-const injected = await call("send_input", { session, command: { type: "key", key: "Right", down: true } });
-await res(answer(injected.json));
-await note("  # input is level state: it stays held across steps");
-
-// Run to the lip of the chasm (it spans x ∈ [-3, 3]) — the model says when to
-// stop, so the demo does not depend on counting frames by hand.
-for (let k = 0; k < 12 && state.model.x < JUMP_FROM; k++) {
-  state = (await call("step", { session, frames: 4, dts: DTS })).json;
+  // --- 2. Pause: the clock is the agent's now --------------------------------
+  await caption("Pin the clock — <b>pause</b>. Nothing advances unless the agent asks.");
+  // An explicit tts, rather than "wherever it happens to be": the clock is then
+  // the same on every capture, and so is the walk animation phase mario draws
+  // from it.
+  const paused = await call("pause", { session, tts: 0 });
+  await res(String(paused.json));
+  await stage(`session ${session} — paused`, true);
+  let state = (await call("get_state", { session })).json;
   await res(modelLine(state));
-  shot = await call("capture_frame", { session }, { quiet: true });
-  await showFrame(shot.image);
-  await snap();
-}
-await hold(3);
+  await note("  # the model itself, as structured JSON — not a debug string");
+  shot = await call("capture_frame", { session });
+  await res(`[image] image/png, ${await showFrame(shot.image)}`);
+  await hold(5);
 
-// --- 4. Jump the chasm, one injected key and the frames it takes -------------
-await caption("One injected <b>Space</b>, then frame-by-frame — the jump, on demand.");
-const jumped = await call("send_input", { session, command: { type: "key", key: "Space", down: true } });
-await res(answer(jumped.json));
-await call("send_input", { session, command: { type: "key", key: "Space", down: false } }, { quiet: true });
+  // --- 3. Play it: hold Right, and step the world by hand --------------------
+  await caption("Play it — <b>send_input</b> holds a key, <b>step</b> advances exact frames.");
+  const injected = await call("send_input", { session, command: { type: "key", key: "Right", down: true } });
+  await res(String(injected.json));
+  await note("  # input is level state: it stays held across steps");
 
-// Step until the model says it landed, so the closing caption is the game's
-// own answer rather than a guess about how long the arc takes. The cap is a
-// guard: a jump that never lands means the shot list no longer holds.
-let airborne = 0;
-for (; airborne < 16 && !(airborne > 0 && state.model.grounded); airborne++) {
-  state = (await call("step", { session, frames: 6, dts: DTS })).json;
-  await res(modelLine(state));
-  shot = await call("capture_frame", { session }, { quiet: true });
-  await showFrame(shot.image);
-  const path = await snap();
-  if (airborne === 4) stillFrame = path;
-}
-// mario respawns on the left platform if it falls in, and that also reads as
-// `grounded: true` — so the far side is what proves the jump cleared.
-if (!state.model.grounded || state.model.x < 3) {
-  throw new Error(
-    `the jump did not clear the chasm after ${airborne} steps (x = ${state.model.x}) — retune the shot list`,
+  // Run to the lip of the chasm (it spans x ∈ [-3, 3]) — the model says when to
+  // stop, so the demo does not depend on counting frames by hand.
+  for (let k = 0; k < 12 && state.model.x < JUMP_FROM; k++) {
+    state = (await call("step", { session, frames: STRIDE, dts: DTS })).json;
+    await res(modelLine(state));
+    shot = await call("capture_frame", { session }, { quiet: true });
+    await showFrame(shot.image);
+    await snap();
+  }
+  await hold(3);
+
+  // --- 4. Jump the chasm, one injected key and the steps it takes ------------
+  await caption(`One injected <b>Space</b>, then ${STRIDE} frames at a time — the jump, on demand.`);
+  const jumped = await call("send_input", { session, command: { type: "key", key: "Space", down: true } });
+  await res(String(jumped.json));
+  await call("send_input", { session, command: { type: "key", key: "Space", down: false } }, { quiet: true });
+
+  // Step until the model says it landed, so the closing caption is the game's
+  // own answer rather than a guess about how long the arc takes. The cap is a
+  // guard: a jump that never lands means the shot list no longer holds.
+  let airborne = 0;
+  for (; airborne < 20 && !(airborne > 0 && state.model.grounded); airborne++) {
+    state = (await call("step", { session, frames: STRIDE, dts: DTS })).json;
+    await res(modelLine(state));
+    shot = await call("capture_frame", { session }, { quiet: true });
+    await showFrame(shot.image);
+    const path = await snap();
+    if (airborne === 4) stillFrame = path;
+  }
+  // mario respawns on the left platform if it falls in, and that also reads as
+  // `grounded: true` — so the far side is what proves the jump cleared.
+  if (!state.model.grounded || state.model.x < 3) {
+    throw new Error(
+      `the jump did not clear the chasm after ${airborne} steps (x = ${state.model.x}) — retune the shot list`,
+    );
+  }
+
+  await caption("Landed — <b>grounded: true</b>. Every frame here was asked for over MCP.");
+  await hold(12);
+
+  // --- Render --------------------------------------------------------------
+  mkdirSync(dirname(OUT), { recursive: true });
+  execFileSync(
+    "ffmpeg",
+    [
+      "-y",
+      "-framerate", String(FPS),
+      "-i", join(framesDir, "f%04d.png"),
+      "-vf",
+      `scale=${GIF_WIDTH}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=none`,
+      "-loop", "0",
+      OUT,
+    ],
+    { stdio: "inherit" },
   );
+  copyFileSync(stillFrame ?? join(framesDir, `f${String(n - 1).padStart(4, "0")}.png`), STILL);
+  console.log(`\nwrote ${OUT} (${n} frames) and ${STILL}`);
+} finally {
+  // A failed run must not leave a game, a browser, a server or a few hundred
+  // full-size PNGs behind.
+  if (session) await rpc.call("stop_game", { session }).catch(() => {});
+  await browser.close();
+  server.stdin.end();
+  rmSync(framesDir, { recursive: true, force: true });
 }
-
-await caption("Landed — <b>grounded: true</b>. Every frame here was asked for over MCP.");
-await hold(14);
-
-await rpc.call("stop_game", { session });
-await browser.close();
-server.stdin.end();
-
-// --- Render ------------------------------------------------------------------
-mkdirSync(dirname(OUT), { recursive: true });
-execFileSync(
-  "ffmpeg",
-  [
-    "-y",
-    "-framerate", String(FPS),
-    "-i", join(framesDir, "f%04d.png"),
-    "-vf",
-    `scale=${GIF_WIDTH}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3`,
-    "-loop", "0",
-    OUT,
-  ],
-  { stdio: "inherit" },
-);
-copyFileSync(stillFrame ?? join(framesDir, `f${String(n - 1).padStart(4, "0")}.png`), STILL);
-rmSync(framesDir, { recursive: true, force: true });
-console.log(`\nwrote ${OUT} (${n} frames) and ${STILL}`);
