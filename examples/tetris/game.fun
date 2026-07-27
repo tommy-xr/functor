@@ -175,6 +175,7 @@ let beginLock = (model, extraScore) =>
       { model with
           board: joined,
           active: nextPiece,
+          pieceIndex: nextIndex,
           score: model.score + extraScore,
           phase: "gameover",
           fallTimer: 0.0 }
@@ -251,7 +252,7 @@ let softDrop = (model) =>
 let keyHeld = (model, key) => model.heldKeys |> List.any((held) => held == key)
 
 let handlePress = (model, key) =>
-  if key == Key.R then fresh
+  if key == Key.R then { fresh with heldKeys: model.heldKeys }
   else if model.phase != "playing" then model
   else if key == Key.A || key == Key.Left then tryMove(model, -1.0, 0.0)
   else if key == Key.D || key == Key.Right then tryMove(model, 1.0, 0.0)
@@ -271,6 +272,14 @@ let input = (model, key, isDown) =>
   else
     { model with heldKeys: model.heldKeys |> List.filter((held) => held != key) }
 
+let gravityStep = (interval, model) =>
+  if model.phase != "playing" || model.fallTimer < interval then model
+  else
+    let moved = tryMove(model, 0.0, -1.0) in
+    if moved.active.y != model.active.y
+    then { moved with fallTimer: model.fallTimer - interval }
+    else beginLock(model, 0.0)
+
 let tick = (model, dt, tts) =>
   if model.phase == "gameover" then model
   else if model.phase == "clearing" then
@@ -280,12 +289,12 @@ let tick = (model, dt, tts) =>
   else
     let interval = Math.max(0.1, 0.72 - model.level * 0.055) in
     let elapsed = model.fallTimer + dt in
-    if elapsed < interval then { model with fallTimer: elapsed }
-    else
-      let moved = tryMove(model, 0.0, -1.0) in
-      if moved.active.y != model.active.y
-      then { moved with fallTimer: elapsed - interval }
-      else beginLock(model, 0.0)
+    // Consume every due gravity interval after a hitch. The board-height fold
+    // is a natural safety cap: one piece can never descend farther than this.
+    List.range(boardHeight)
+    |> List.fold(
+        (state, step) => gravityStep(interval, state),
+        { model with fallTimer: elapsed })
 
 let cellCenterX = (x) => boardLeft + 0.5 + x
 let cellCenterY = (y) => boardBottom + 0.5 + y

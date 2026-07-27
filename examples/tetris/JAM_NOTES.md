@@ -87,3 +87,19 @@ Ranked as `P0 blocked`, `P1 painful workaround`, `P2 ergonomic annoyance`, and
    CLI predated that surface (`module Sprite has no text`). Verification had to
    wait for the orchestrator's matching release build; the version relationship
    between hosted docs and an installed CLI is not visible on either page.
+
+## Review mode
+
+The required post-commit xreview covered commit `30b44a8` and all three final
+captures. The installed Claude CLI could not start under its Node runtime
+(`Unexpected token '||='`), so the requested fallback was used: the Codex CLI
+review plus a separate adversarial manual review. The shell's default Node
+selected the wrong Codex architecture as well; invoking the same installed
+Codex package with its arm64 Node binary recovered that half of the review.
+
+There were no Critical or High findings and no visual findings. Both review
+passes identified frame-rate-dependent one-row gravity catch-up and a restart
+edge case that discarded other held-key latches; both were fixed. Codex also
+identified a Low inconsistent `pieceIndex` on top-out, which was fixed. Build,
+large-`dt` gravity, held-Space restart, the full control path, line clearing,
+top-out, and restart were all re-verified afterward.
