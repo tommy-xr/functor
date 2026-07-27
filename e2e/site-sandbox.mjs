@@ -540,25 +540,33 @@ for (const example of examples) {
   const player = playerFrame(page);
 
   // The seam appears once the scrubber is wired; history then accrues as the
-  // scene ticks.
+  // scene ticks. The sandbox player boots with ?scrubber=hidden — the seam
+  // without the bar — and the HOST page's chrono bar is the one transport.
   await player.waitForFunction(() => window.__scrub, { timeout: 10000 });
-  const sandboxHasScrubber = await player.evaluate(
-    () => !!document.getElementById("scrubber")
+  const chronoReplacesScrubber = await player.evaluate(
+    () => !!window.__scrub && !document.getElementById("scrubber")
   );
-  check("sandbox player has the scrubber element", sandboxHasScrubber);
-  const customHandles = await player.evaluate(() =>
-    ["scrub-playhead", "scrub-preview-handle"].every((id) => {
+  const chronoVisible = await page.evaluate(
+    () => getComputedStyle(document.querySelector(".mp-chrono")).display === "flex"
+  );
+  check(
+    "sandbox chrono bar replaces the in-frame scrubber",
+    chronoReplacesScrubber && chronoVisible,
+    JSON.stringify({ chronoReplacesScrubber, chronoVisible })
+  );
+  const customHandles = await page.evaluate(() =>
+    ["mp-playhead", "mp-preview-handle"].every((id) => {
       const handle = document.getElementById(id);
       return handle?.getAttribute("role") === "slider" && handle.tabIndex === 0;
     })
   );
-  check("scrubber exposes two keyboard-focusable slider handles", customHandles);
-  const handleColors = await player.evaluate(() => ({
-    playhead: getComputedStyle(document.getElementById("scrub-playhead")).backgroundColor,
-    preview: getComputedStyle(document.getElementById("scrub-preview-handle")).backgroundColor,
+  check("chrono bar exposes two keyboard-focusable slider handles", customHandles);
+  const handleColors = await page.evaluate(() => ({
+    playhead: getComputedStyle(document.getElementById("mp-playhead")).backgroundColor,
+    preview: getComputedStyle(document.getElementById("mp-preview-handle")).backgroundColor,
   }));
   check(
-    "scrubber handles keep their solid cyan and pink fills",
+    "chrono bar handles keep their solid cyan and pink fills",
     handleColors.playhead === "rgb(65, 216, 230)" &&
       handleColors.preview === "rgb(232, 88, 184)",
     JSON.stringify(handleColors)
@@ -577,21 +585,25 @@ for (const example of examples) {
   // Extrapolation is a live mode: its second handle follows the advancing tail
   // by a fixed logical window. Pausing freezes the anchor; it does not enable
   // the control or the renderer.
-  await player.evaluate(() => window.__scrub.setPreview({ enabled: true, seconds: 2 }));
-  await player.waitForFunction(
-    () => getComputedStyle(document.getElementById("scrub-preview-handle")).display === "block",
+  await page.evaluate(() => document.getElementById("mp-extrap").click());
+  await player.evaluate(() => window.__scrub.setPreview({ seconds: 2 }));
+  await page.waitForFunction(
+    () => getComputedStyle(document.getElementById("mp-preview-handle")).display === "block",
+    null,
     { timeout: 3000 }
   );
   const livePreview0 = await player.evaluate(() => window.__scrub.view());
   await sleep(300);
-  const livePreview1 = await player.evaluate(() => ({
-    view: window.__scrub.view(),
-    handleVisible:
-      getComputedStyle(document.getElementById("scrub-preview-handle")).display === "block",
-    endpointClipped: document
-      .getElementById("scrub-preview-handle")
-      .classList.contains("fully-clipped"),
-  }));
+  const livePreview1 = {
+    view: await player.evaluate(() => window.__scrub.view()),
+    ...(await page.evaluate(() => ({
+      handleVisible:
+        getComputedStyle(document.getElementById("mp-preview-handle")).display === "block",
+      endpointClipped: document
+        .getElementById("mp-preview-handle")
+        .classList.contains("fully-clipped"),
+    }))),
+  };
   check(
     "live extrapolation keeps its pink endpoint tracking the live tail",
     !livePreview0.paused &&
@@ -614,12 +626,15 @@ for (const example of examples) {
     () => window.__scrub.events().some((event) => event.kind === "key-down"),
     { timeout: 3000 }
   );
-  const inputMarker = await player.evaluate(
-    () => !!document.querySelector("#scrub-events .scrub-event.input")
-  );
+  const inputMarker = await page
+    .waitForFunction(() => !!document.querySelector("#mp-markers .mp-evt.input"), null, {
+      timeout: 3000,
+    })
+    .then(() => true)
+    .catch(() => false);
   check("timeline renders recorded input markers", inputMarker);
-  const accessibleInputMarkers = await player
-    .getByRole("button", { name: /frame \d+, Space down/ })
+  const accessibleInputMarkers = await page
+    .getByRole("button", { name: /frame \d+ · Space down/ })
     .count();
   check(
     "timeline markers are present in the accessibility tree",
@@ -634,9 +649,12 @@ for (const example of examples) {
     () => window.__scrub.events().some((event) => event.kind === "reload-ok"),
     { timeout: 5000 }
   );
-  const reloadMarker = await player.evaluate(
-    () => !!document.querySelector("#scrub-events .scrub-event.reload")
-  );
+  const reloadMarker = await page
+    .waitForFunction(() => !!document.querySelector("#mp-markers .mp-evt.reload"), null, {
+      timeout: 3000,
+    })
+    .then(() => true)
+    .catch(() => false);
   check("timeline renders successful hot-reload boundaries", reloadMarker);
   const rangeAfterSafeReload = await player.evaluate(() => window.__scrub.range());
   check(
@@ -680,22 +698,24 @@ for (const example of examples) {
     previewAfter.previewEndFrame > previewAfter.viewport.hi && previewAfter.previewClippedFrames > 0,
     JSON.stringify(previewAfter)
   );
-  const transportAccessibility = await player.evaluate(() => ({
-    pause: document.getElementById("scrub-pause").getAttribute("aria-label"),
-    extrapolating: document.getElementById("scrub-extrapolate").getAttribute("aria-pressed"),
+  const transportAccessibility = await page.evaluate(() => ({
+    pause: document.getElementById("mp-pause").getAttribute("aria-label"),
+    extrapolating: document.getElementById("mp-extrap").getAttribute("aria-pressed"),
   }));
   check(
     "transport and extrapolation expose their current state accessibly",
     transportAccessibility.pause === "Resume" && transportAccessibility.extrapolating === "true",
     JSON.stringify(transportAccessibility)
   );
-  const clippedHandlesRemainIndependent = await player.evaluate(() => {
-    const playhead = document.getElementById("scrub-playhead");
-    const preview = document.getElementById("scrub-preview-handle");
+  // (#mp-playhead is pointer-events:none, so it can never be the hit itself —
+  // the invariant is that the clipped endpoint does not sit over it.)
+  const clippedHandlesRemainIndependent = await page.evaluate(() => {
+    const playhead = document.getElementById("mp-playhead");
+    const preview = document.getElementById("mp-preview-handle");
     const rect = playhead.getBoundingClientRect();
     return (
       preview.classList.contains("fully-clipped") &&
-      document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === playhead
+      document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) !== preview
     );
   });
   check(
@@ -721,25 +741,33 @@ for (const example of examples) {
 
   // Markers have generous invisible hit targets, expose hover detail, and seek
   // when selected.
-  const markerDetail = await player.evaluate(() => {
-    const marker = document.querySelector("#scrub-events .scrub-event-hit");
+  const markerDetail = await page.evaluate(() => {
+    const marker = document.querySelector("#mp-markers .mp-evt");
     marker.dispatchEvent(new MouseEvent("mouseenter"));
-    return document.getElementById("scrub-event-detail").textContent;
+    return document.getElementById("mp-evt-tip").textContent;
   });
   check("hovering a marker exposes its frame and label", markerDetail.includes("frame"), markerDetail);
-  const selectedMarkerFrame = await player.evaluate(() => {
-    const marker = document.querySelector("#scrub-events .scrub-event-hit");
+  const selectedMarkerFrame = await page.evaluate(() => {
+    const marker = document.querySelector("#mp-markers .mp-evt");
+    const labelled = marker.getAttribute("aria-label").match(/frame (\d+)/);
     marker.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    return window.__scrub.model().selectedEventId !== null
-      ? Number(marker.getAttribute("aria-label").match(/frame (\d+)/)[1])
-      : -1;
+    return labelled ? Number(labelled[1]) : -1;
   });
+  // The click must SELECT the event on the seam (highlight/activeEvent latch),
+  // not merely seek — the assertion the original in-frame check carried.
+  const markerSelected = await player.evaluate(
+    () => window.__scrub.model().selectedEventId !== null
+  );
   await player.waitForFunction(
     (frame) => Math.abs(window.__scrub.frame() - frame) <= 1,
     selectedMarkerFrame,
     { timeout: 3000 }
   );
-  check("selecting a marker seeks to its frame", selectedMarkerFrame >= 0);
+  check(
+    "selecting a marker seeks to its frame",
+    markerSelected && selectedMarkerFrame >= 0,
+    JSON.stringify({ markerSelected, selectedMarkerFrame })
+  );
 
   // Seek snaps to a frame within the range.
   const rng = await player.evaluate(() => window.__scrub.range());
@@ -870,11 +898,11 @@ for (const example of examples) {
         .find((event) => event.id > lastId && event.kind === "reload-ok"),
     reloadWhileScrubbed.lastId
   );
-  const reloadTransportIsVisible = await player.evaluate(() => {
-    const scrubber = document.getElementById("scrubber");
-    const step = document.getElementById("scrub-step");
+  const reloadTransportIsVisible = await page.evaluate(() => {
+    const chrono = document.querySelector(".mp-chrono");
+    const step = document.getElementById("mp-step");
     return (
-      getComputedStyle(scrubber).display === "flex" &&
+      getComputedStyle(chrono).display === "flex" &&
       getComputedStyle(step).visibility !== "hidden" &&
       !step.disabled
     );
@@ -890,7 +918,7 @@ for (const example of examples) {
       safeReloadView.hasUnavailableHistory === reloadWhileScrubbed.hadUnavailableHistory,
     JSON.stringify(safeReloadView)
   );
-  await player.locator("#scrub-step").click();
+  await page.locator("#mp-step").click();
   await sleep(500);
   const postReloadStep = await player.evaluate(() => ({
     paused: window.__scrub.paused(),
@@ -907,8 +935,11 @@ for (const example of examples) {
       postReloadStep.view.unavailableAfterStartUnit < 1,
     JSON.stringify({ postReloadStep, scrubConsole: scrubConsole.slice(-8) })
   );
-  const preservedRailStartsAtHistoryFloor = await player.evaluate(
-    () => Number(document.getElementById("scrub-played").getAttribute("x")) === 0
+  // Host geometry: the recorded (cyan) band's left edge is recordedStartUnit —
+  // 0 means the preserved history still reaches back to the timeline floor
+  // (the same quantity the in-frame bar carried in scrub-played's x attr).
+  const preservedRailStartsAtHistoryFloor = await page.evaluate(
+    () => parseFloat(document.getElementById("mp-recorded").style.left) === 0
   );
   check(
     "preserved history keeps its cyan rail before the reload boundary",
@@ -967,23 +998,32 @@ for (const example of examples) {
     beforeReload.lastId,
     { timeout: 5000 }
   );
-  const afterReload = await player.evaluate(() => {
-    const view = window.__scrub.view();
-    return {
-      frame: window.__scrub.frame(),
-      range: window.__scrub.range(),
-      view,
-      stripeWidth: Number(document.getElementById("scrub-unavailable").getAttribute("width")),
-      stripeAfterWidth: Number(
-        document.getElementById("scrub-unavailable-after").getAttribute("width")
-      ),
-      playheadVisible: getComputedStyle(document.getElementById("scrub-playhead")).display,
-      previewVisible: getComputedStyle(document.getElementById("scrub-preview-handle")).display,
-      playheadValueText: document.getElementById("scrub-playhead").getAttribute("aria-valuetext"),
-      label: document.getElementById("scrub-count").textContent,
-      reloadFrame: window.__scrub.events().findLast((event) => event.kind === "reload-ok").frame,
-    };
-  });
+  // Let the host chrono bar's rAF paint catch up to the post-reload view
+  // before sampling its stripes/label (the seam is already settled).
+  await page
+    .waitForFunction(
+      () => parseFloat(document.getElementById("mp-unavailable").style.width) > 0,
+      null,
+      { timeout: 3000 }
+    )
+    .catch(() => {});
+  const afterReloadSeam = await player.evaluate(() => ({
+    frame: window.__scrub.frame(),
+    range: window.__scrub.range(),
+    view: window.__scrub.view(),
+    reloadFrame: window.__scrub.events().findLast((event) => event.kind === "reload-ok").frame,
+  }));
+  const afterReloadChrono = await page.evaluate(() => ({
+    stripeWidth: parseFloat(document.getElementById("mp-unavailable").style.width),
+    stripeAfterWidth: parseFloat(
+      document.getElementById("mp-unavailable-after").style.width
+    ),
+    playheadVisible: getComputedStyle(document.getElementById("mp-playhead")).display,
+    previewVisible: getComputedStyle(document.getElementById("mp-preview-handle")).display,
+    playheadValueText: document.getElementById("mp-playhead").getAttribute("aria-valuetext"),
+    label: document.getElementById("mp-frame").textContent,
+  }));
+  const afterReload = { ...afterReloadSeam, ...afterReloadChrono };
   check(
     "closure reload keeps the paused frame and frozen viewport",
     afterReload.frame === beforeReload.frame &&
@@ -1344,7 +1384,7 @@ for (const example of examples) {
 
   // Let a few frames run, then pause via the real scrubber button.
   await sleep(800);
-  await playerFrame(page).evaluate(() => document.getElementById("scrub-pause")?.click());
+  await page.evaluate(() => document.getElementById("mp-pause")?.click());
 
   // Live inlays appear (the relay → setLiveTrace → hash gate → overlay path).
   const liveCount = await waitFor(() => page.locator(".cm-live-value").count(), (n) => n > 0);
@@ -1393,13 +1433,13 @@ for (const example of examples) {
 
   // Resuming play clears the overlay (the runtime's unpaused stub bumps the
   // trace generation; stale inlays over a running game would be lies).
-  await playerFrame(page).evaluate(() => document.getElementById("scrub-pause")?.click());
+  await page.evaluate(() => document.getElementById("mp-pause")?.click());
   const resumed = await waitFor(() => page.locator(".cm-live-value").count(), (n) => n === 0, 6000);
   check("resuming clears the live overlay", resumed === 0, `count=${resumed}`);
 
   // Pause again: the overlay returns, then an edit clears it instantly —
   // stale values must never drift over moved text (hash gate).
-  await playerFrame(page).evaluate(() => document.getElementById("scrub-pause")?.click());
+  await page.evaluate(() => document.getElementById("mp-pause")?.click());
   await waitFor(() => page.locator(".cm-live-value").count(), (n) => n > 0);
   await page.evaluate((s) => window.__sandbox.setSource(s), `${GREEN}// paused edit\n`);
   const cleared = await waitFor(() => page.locator(".cm-live-value").count(), (n) => n === 0, 4000);
@@ -1460,7 +1500,7 @@ let draw = (model, tts: float) =>
     () => window.__scrub && window.__scrub.range().length === 2 && window.__scrub.range()[1] > 80,
     { timeout: 30000 }
   );
-  await player.evaluate(() => document.getElementById("scrub-pause")?.click());
+  await page.evaluate(() => document.getElementById("mp-pause")?.click());
   const cov = await waitFor(
     () => page.evaluate(() => window.__lang.coverage()),
     (c) => c[lateLine] === "now"
