@@ -2483,7 +2483,9 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px 16px;
+  /* Near-equal vertical padding centers the transport row; the label fits
+     inside the trailing 14px. */
+  padding: 12px 12px 14px;
   font: 12px/1 var(--font-mono);
   color: var(--text);
   background: rgba(30, 24, 51, 0.92);
@@ -2971,8 +2973,8 @@ a:hover {
 
 .mp-rail-label {
   position: absolute;
-  /* Clear of the rail's keyboard-focus ring (2px offset below the box). */
-  top: calc(100% + 4px);
+  /* Snug under the rail, still clear of the playhead's focus ring. */
+  top: calc(100% + 2px);
   left: 50%;
   transform: translateX(-50%);
   font-size: 9px;
