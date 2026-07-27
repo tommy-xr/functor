@@ -8,6 +8,11 @@ let boardHeight = 20.0
 let boardLeft = -8.0
 let boardBottom = -10.0
 
+type Phase =
+  | Playing
+  | Clearing
+  | GameOver
+
 let dark = Color.rgb(0.025, 0.03, 0.09)
 let well = Color.rgb(0.055, 0.065, 0.15)
 let gridColor = Color.rgb(0.12, 0.14, 0.26)
@@ -127,7 +132,7 @@ let fresh = {
   lines: 0.0,
   level: 0.0,
   fallTimer: 0.0,
-  phase: "playing",
+  phase: Playing,
   clearTimer: 0.0,
   flashRows: [],
   heldKeys: []
@@ -141,14 +146,23 @@ let tryMove = (model, dx, dy) =>
 
 let tryRotate = (model, direction) =>
   let turned = { model.active with rotation: model.active.rotation + direction } in
-  let kicks = [
-    turned,
-    { turned with x: turned.x - 1.0 },
-    { turned with x: turned.x + 1.0 },
-    { turned with x: turned.x - 2.0 },
-    { turned with x: turned.x + 2.0 },
-    { turned with y: turned.y + 1.0 }
-  ] in
+  let kicks =
+    if model.active.kind == 0.0 then [
+      turned,
+      { turned with x: turned.x - 1.0 },
+      { turned with x: turned.x + 1.0 },
+      { turned with x: turned.x - 2.0 },
+      { turned with x: turned.x + 2.0 },
+      { turned with y: turned.y - 1.0 },
+      { turned with y: turned.y + 1.0 }
+    ]
+    else [
+      turned,
+      { turned with x: turned.x - 1.0 },
+      { turned with x: turned.x + 1.0 },
+      { turned with y: turned.y - 1.0 },
+      { turned with y: turned.y + 1.0 }
+    ] in
   match kicks |> List.find((piece) => validPiece(model.board, piece)) with
   | Option.Some(piece) => { model with active: piece }
   | Option.None => model
@@ -177,13 +191,13 @@ let beginLock = (model, extraScore) =>
           active: nextPiece,
           pieceIndex: nextIndex,
           score: model.score + extraScore,
-          phase: "gameover",
+          phase: GameOver,
           fallTimer: 0.0 }
   else
     { model with
         board: joined,
         score: model.score + extraScore,
-        phase: "clearing",
+        phase: Clearing,
         clearTimer: 0.32,
         flashRows: rows,
         fallTimer: 0.0 }
@@ -215,7 +229,7 @@ let finishClear = (model) =>
         score: scored,
         lines: newLines,
         level: newLevel,
-        phase: "playing",
+        phase: Playing,
         clearTimer: 0.0,
         flashRows: [] }
   else
@@ -226,17 +240,35 @@ let finishClear = (model) =>
         score: scored,
         lines: newLines,
         level: newLevel,
-        phase: "gameover",
+        phase: GameOver,
         clearTimer: 0.0,
         flashRows: [] }
 
 let dropDistance = (model) =>
   List.range(boardHeight)
-  |> List.filter((distance) =>
-      validPiece(
-        model.board,
-        { model.active with y: model.active.y - distance }))
-  |> List.maximum
+  |> List.fold(
+      (distance, step) =>
+        let next = distance + 1.0 in
+        if validPiece(
+             model.board,
+             { model.active with y: model.active.y - next })
+        then next
+        else distance,
+      0.0)
+
+// Regression: hard drop must stop at the first obstruction, even when a
+// deeper position would be independently valid.
+let coveredCavity = {
+  fresh with
+    board: [{ x: 4.0, y: 10.0, kind: 5.0 }],
+    active: { kind: 1.0, rotation: 0.0, x: 4.0, y: 12.0 }
+}
+
+expect dropDistance(coveredCavity) == 1.0
+expect (List.range(7.0) |> List.map(nextKind)) == [1.0, 6.0, 4.0, 2.0, 0.0, 5.0, 3.0]
+expect completeRows(
+  openingBoard
+  |> List.append(cellsFor({ kind: 1.0, rotation: 0.0, x: 4.0, y: 0.0 }))) == [0.0, 1.0]
 
 let hardDrop = (model) =>
   let distance = dropDistance(model) in
@@ -253,7 +285,7 @@ let keyHeld = (model, key) => model.heldKeys |> List.any((held) => held == key)
 
 let handlePress = (model, key) =>
   if key == Key.R then { fresh with heldKeys: model.heldKeys }
-  else if model.phase != "playing" then model
+  else if model.phase != Playing then model
   else if key == Key.A || key == Key.Left then tryMove(model, -1.0, 0.0)
   else if key == Key.D || key == Key.Right then tryMove(model, 1.0, 0.0)
   else if key == Key.W || key == Key.Up then tryRotate(model, 1.0)
@@ -273,7 +305,7 @@ let input = (model, key, isDown) =>
     { model with heldKeys: model.heldKeys |> List.filter((held) => held != key) }
 
 let gravityStep = (interval, model) =>
-  if model.phase != "playing" || model.fallTimer < interval then model
+  if model.phase != Playing || model.fallTimer < interval then model
   else
     let moved = tryMove(model, 0.0, -1.0) in
     if moved.active.y != model.active.y
@@ -281,8 +313,8 @@ let gravityStep = (interval, model) =>
     else beginLock(model, 0.0)
 
 let tick = (model, dt, tts) =>
-  if model.phase == "gameover" then model
-  else if model.phase == "clearing" then
+  if model.phase == GameOver then model
+  else if model.phase == Clearing then
     if model.clearTimer - dt <= 0.0
     then finishClear(model)
     else { model with clearTimer: model.clearTimer - dt }
@@ -348,26 +380,32 @@ let valueText = (text, y) =>
   Sprite.text(ink, 0.78, text)
   |> Sprite.move(7.0, y)
 
-let controlText = (text, y) =>
-  Sprite.text(Color.rgb(0.58, 0.65, 0.82), 0.34, text)
-  |> Sprite.move(7.0, y)
+let controlRow = (key, action, y) =>
+  Sprite.group([
+    Sprite.text(cyan, 0.34, key) |> Sprite.move(4.8, y),
+    Sprite.text(Color.rgb(0.58, 0.65, 0.82), 0.34, action) |> Sprite.move(7.7, y)
+  ])
 
 let preview = (kind) =>
+  let centerX = if kind == 0.0 || kind == 1.0 then 0.5 else 0.0 in
+  let centerY = if kind == 0.0 then 0.0 else 0.5 in
   pieceOffsets(kind, 0.0)
   |> List.map((cell) =>
       blockPicture(kind, false)
       |> Sprite.scale(0.78)
-      |> Sprite.move(7.0 + cell.x * 0.78, 5.7 + cell.y * 0.78))
+      |> Sprite.move(
+          7.0 + (cell.x - centerX) * 0.78,
+          5.7 + (cell.y - centerY) * 0.78))
   |> Sprite.group
 
 let statusOverlay = (model) =>
-  if model.phase == "gameover" then
+  if model.phase == GameOver then
     Sprite.group([
       Sprite.rectangle(dark, 9.4, 4.4) |> Sprite.fade(0.92) |> Sprite.move(-3.0, 0.0),
       Sprite.text(pink, 0.92, "STACK OVER") |> Sprite.move(-3.0, 0.65),
       Sprite.text(ink, 0.4, "PRESS R TO RESTART") |> Sprite.move(-3.0, -0.65)
     ])
-  else if model.phase == "clearing" then
+  else if model.phase == Clearing then
     Sprite.text(white, 0.58, "LINE CLEAR")
     |> Sprite.fade(0.35 + 0.65 * (model.clearTimer / 0.32))
     |> Sprite.move(-3.0, 0.0)
@@ -380,11 +418,11 @@ let draw = (model, tts) =>
       Sprite.rectangle(well, 10.2, 20.2) |> Sprite.move(-3.0, 0.0),
       Sprite.group(verticalGrid),
       Sprite.group(horizontalGrid),
-      if model.phase == "playing"
+      if model.phase == Playing
       then model |> ghostCells |> List.map((cell) => drawGhost(model, cell)) |> Sprite.group
       else Sprite.blank(),
       model.board |> List.map((cell) => drawCell(model, cell)) |> Sprite.group,
-      if model.phase == "playing"
+      if model.phase == Playing
       then cellsFor(model.active) |> List.map((cell) => drawCell(model, cell)) |> Sprite.group
       else Sprite.blank(),
       statusOverlay(model)
@@ -404,12 +442,12 @@ let draw = (model, tts) =>
       valueText(Text.fixed(model.level + 1.0, 0.0), -1.65),
       Sprite.rectangle(gridColor, 7.2, 0.04) |> Sprite.move(7.0, -2.8),
       label("CONTROLS", -3.55),
-      controlText("A/D    LEFT / RIGHT", -4.25),
-      controlText("W/UP   ROTATE CW", -4.85),
-      controlText("Z      ROTATE CCW", -5.45),
-      controlText("S/DN   SOFT DROP", -6.05),
-      controlText("SPACE  HARD DROP", -6.65),
-      controlText("R      RESTART", -7.25),
+      controlRow("A/D", "LEFT / RIGHT", -4.25),
+      controlRow("W/UP", "ROTATE CW", -4.85),
+      controlRow("Z", "ROTATE CCW", -5.45),
+      controlRow("S/DN", "SOFT DROP", -6.05),
+      controlRow("SPACE", "HARD DROP", -6.65),
+      controlRow("R", "RESTART", -7.25),
       Sprite.text(Color.rgb(0.25, 0.78, 0.92), 0.3, "PURE DATA  //  ZERO PHYSICS")
       |> Sprite.move(7.0, -9.25)
     ]) in
