@@ -25,8 +25,9 @@ The habits that break first, in one place. Each is expanded below.
   There is no `<>` (inequality is `!=` only), no `%` (`Math.mod`), no `^`
   (`Math.pow`), and no string-concatenation operator (use `$"…"`).
 - **No loops** — iterate with `List.map` / `List.filter` / `List.fold`.
-- **All numbers are `float`** (f64); type names are lowercase (`float`,
-  `string`, `bool`, `List<…>`).
+- **All numbers are `float`** (f64); primitive type names are lowercase
+  (`float`, `string`, `bool`), while generic containers are `List<…>` and
+  `Map<…, …>`.
 - **Every `match` arm and every variant alternative needs a leading `|`**,
   the first one included. Arm bodies are full expressions, so a nested
   `match` must be parenthesized.
@@ -262,7 +263,7 @@ let grab = (s) =>
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude or bundled-core namespace (Net, Key, Mouse, Random, Option, Result,
-  List, Text, Math, Debug, Scene,
+  List, Map, Text, Math, Debug, Scene,
   Sprite, Anim, Asset, Camera, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
   Style, AudioSource, AudioScene) is a
@@ -623,6 +624,24 @@ tuple slot, and it truncates to the shorter side) ·
 end is the whole list / `[]`, and a negative count acts as 0) ·
 `List.sum(list)` (Floats; empty is `0.0`) ·
 `List.concatMap(fn, list)` (map then flatten one level; `fn` returns a list) ·
+`Map.empty()` → `Map<'key, 'value>` ·
+`Map.get(key, map)` → `Option.t<'value>` ·
+`Map.insert(key, value, map)` / `Map.remove(key, map)` → a new map ·
+`Map.member(key, map)` → `bool` ·
+`Map.values(map)` → `List<'value>` ·
+`Map.toList(map)` → `List<('key, 'value)>` ·
+`Map.fromList(entries)` → `Map<'key, 'value>` (the LAST tuple for a duplicate
+key wins). Maps are immutable plain data. Keys are bounded to `bool`, FINITE
+`float`, or `string`; inference keeps a map homogeneous in ordinary code,
+while a generic/`unknown` seam is checked again at runtime. `-0.0` and `0.0`
+are the SAME key; NaN and infinities are refused. Every map is stored in
+canonical key order: bool < float < string, then false < true / ascending
+numeric / lexicographic Unicode scalar-value string order (not locale-aware).
+Therefore `values`/`toList`,
+structural equality, display (`Map.fromList([…])`), native, and wasm all agree
+byte-for-byte. `get`/`member` are logarithmic; immutable `insert`/`remove`
+copy the ordered vector and are linear; `values`/`toList` are linear and
+`fromList` is O(n log n) ·
 `Text.concat(a, b)` · `Text.fromFloat(n)` ·
 `Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
 `%d` shape) · `Text.toBullets(list)` · `Text.split(sep, s)` (→ `List<string>`;
@@ -698,7 +717,7 @@ every frame (~60/s), so prefer an event path (`input`/`update`), or remove it
 when done.
 
 **The list above is the WHOLE registry, and it is CLOSED.** A builtin
-namespace (`List`, `Text`, `Math`, `Random`, `Debug`) owns exactly these
+namespace (`List`, `Map`, `Text`, `Math`, `Random`, `Debug`) owns exactly these
 members in every embedding, so anything else is a **check-time error** —
 `functor-lang check` (and `functor build`) reject `List.tail` /
 `Text.padLeft` with `` `List` has no builtin `tail` `` plus the nearest name
@@ -1097,7 +1116,9 @@ Effect.sendMsg(connId, msg)                                // send a plain-data 
                                                            //   shared-module ADT variant); the
                                                            //   other end receives it decoded as
                                                            //   Net.Data(id, value) — no string
-                                                           //   codec. Functions/host values in
+                                                           //   codec. Lists, Maps, tuples,
+                                                           //   records, and variants cross
+                                                           //   structurally; functions/host values in
                                                            //   the payload are teaching errors
 Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
 Effect.httpGet(url, tagger)                                // HTTP one-shots; the tagger
@@ -1705,8 +1726,12 @@ values do support structural display/equality, snapshots, and hot reload.
 
 `functor-lang check` runs REAL INFERENCE (B7): unannotated code gets full types via
 unification with let-polymorphism — generic functions instantiate fresh at
-every use, element types flow through `List.map`/`filter`/`fold`, and
-apostrophe-prefixed annotation names are type variables (`(xs: List<'a>, seed: 'b): List<'b>`). Inference has teeth: unannotated bad calls, mixed-element
+every use, element types flow through `List.map`/`filter`/`fold`, key/value
+types flow through every `Map` operation, and apostrophe-prefixed annotation
+names are type variables (`(xs: List<'a>, seed: 'b): List<'b>`). Map keys are
+limited to `bool`, finite `float`, and `string`; concrete violations diagnose
+during checking, while polymorphic/`unknown` seams repeat that validation at
+runtime. Inference has teeth: unannotated bad calls, mixed-element
 lists, and contradictory `mut` use are errors now. `Unknown` remains ONLY
 at genuinely-dynamic seams (host values, and the `unknown` annotation you
 write on purpose — an UNRECOGNIZED type name is an error, not a seam)
@@ -1727,7 +1752,8 @@ variant type; a foreign literal arm is a can-never-match error);
 exhaustiveness checks all ctors / `true`+`false` / catch-all; arm results
 must agree.
 
-**Type names are lowercase**: `float`, `string`, `bool`, `List<…>`. A
+**Primitive type names are lowercase**: `float`, `string`, `bool`; the
+built-in generic containers are `List<…>` and `Map<key, value>`. A
 miscased or misspelled name is a **check error** with a did-you-mean, so
 you find out immediately:
 

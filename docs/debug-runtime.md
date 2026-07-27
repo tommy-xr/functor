@@ -108,13 +108,15 @@ full depth, construction order — but opaque text; don't parse it. Before
 protocol v4, `model` carried that text and there was no structured view — gate
 on `GET /`'s `protocol_version` before reading `model` as data.)
 Plain data maps structurally
-(records as objects, lists as arrays, numbers/strings/bools as themselves);
+(records as objects, lists as arrays, immutable Maps as a `$map` entry list,
+numbers/strings/bools as themselves);
 everything else becomes a sigil-keyed object no source-authored record field
 can collide with (`$` is not a Functor Lang identifier character — though a record
 key that arrived off the network in a typed message can carry one, so treat
 the sigils as a strong convention rather than a proof):
 
 ```jsonc
+{"$map": [["a", 1.0], ["b", 2.0]]}      // Maps, in canonical key order
 {"$tuple": [1.0, 2.0]}                 // tuples, kept distinct from lists
 {"$ctor": "Playing", "args": [7.0]}    // variants: constructor + positional args
 {"$fn": "<fn(dt)>"}                    // closures/callables (their Display form)

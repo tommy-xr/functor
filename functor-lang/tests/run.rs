@@ -44,6 +44,141 @@ fn main_result(src: &str) -> String {
     }
 }
 
+// ------------------------------------------------------------- immutable Map
+
+#[test]
+fn map_core_operations_are_immutable_and_subject_last() {
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  let original = Map.empty() |> Map.insert("b", 2.0) |> Map.insert("a", 1.0) in
+  let changed = original |> Map.insert("b", 20.0) |> Map.remove("a") in
+  (Map.get("b", original), Map.member("a", original),
+   Map.get("b", changed), Map.member("a", changed))
+"#
+        ),
+        "(Option.Some(2), true, Option.Some(20), false)"
+    );
+}
+
+#[test]
+fn map_iteration_and_display_are_in_canonical_key_order() {
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  Map.fromList([("z", 3.0), ("a", 1.0), ("m", 2.0)])
+"#
+        ),
+        r#"Map.fromList([("a", 1), ("m", 2), ("z", 3)])"#
+    );
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  Map.fromList([("z", 3.0), ("a", 1.0), ("m", 2.0)]) |> Map.values
+"#
+        ),
+        "[1, 2, 3]"
+    );
+    // String order is Unicode scalar-value lexicographic, never locale
+    // collation: decomposed `e + acute` sorts by its leading `e`, before z,
+    // while precomposed `é` sorts after z.
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  Map.fromList([("é", 3.0), ("z", 2.0), ("é", 1.0)]) |> Map.values
+"#
+        ),
+        "[1, 2, 3]"
+    );
+}
+
+#[test]
+fn map_from_list_is_last_write_wins_and_to_list_is_canonical() {
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  Map.fromList([(2.0, "old"), (1.0, "one"), (2.0, "new")])
+  |> Map.toList
+"#
+        ),
+        r#"[(1, "one"), (2, "new")]"#
+    );
+}
+
+#[test]
+fn map_key_order_is_explicit_even_through_a_gradual_seam() {
+    // `run` does not typecheck first, so this deliberately exercises the
+    // runtime order used when an `unknown` host payload mixes supported key
+    // kinds: bool < finite float < string.
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  Map.fromList([("a", 3.0), (1.0, 2.0), (true, 1.0), (false, 0.0)])
+  |> Map.toList
+"#
+        ),
+        r#"[(false, 0), (true, 1), (1, 2), ("a", 3)]"#
+    );
+}
+
+#[test]
+fn map_normalizes_signed_zero_as_one_key() {
+    assert_eq!(
+        main_result(
+            r#"
+let main = () => Map.fromList([(0.0 - 0.0, "first"), (-0.0, "last")])
+"#
+        ),
+        r#"Map.fromList([(0, "last")])"#
+    );
+}
+
+#[test]
+fn maps_compare_structurally_independent_of_insertion_order() {
+    assert_eq!(
+        main_result(
+            r#"
+let main = () =>
+  Map.fromList([("b", [2.0]), ("a", [1.0])])
+  == (Map.empty() |> Map.insert("a", [1.0]) |> Map.insert("b", [2.0]))
+"#
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn map_rejects_non_finite_and_non_scalar_keys() {
+    for (src, needle) in [
+        (
+            "let main = () => Map.empty() |> Map.insert(0.0 / 0.0, 1.0)",
+            "NaN/Infinity cannot be map keys",
+        ),
+        (
+            "let main = () => Map.empty() |> Map.insert([1.0], 1.0)",
+            "keys must be bools, finite floats, or strings",
+        ),
+    ] {
+        let (message, _, _) = run_err(src);
+        assert!(message.contains(needle), "unexpected message: {message}");
+    }
+}
+
+#[test]
+fn map_from_list_rejects_malformed_entries() {
+    let (message, _, _) = run_err("let main = () => Map.fromList([[\"a\", 1.0]])");
+    assert!(
+        message.contains("expects (key, value) tuples; entry 0 is a list"),
+        "unexpected message: {message}"
+    );
+}
+
 #[test]
 fn string_interpolation_renders_values_and_literal_braces() {
     assert_eq!(
