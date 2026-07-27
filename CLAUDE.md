@@ -306,7 +306,7 @@ drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude,
 
 **Drive a game as an MCP client.** `functor mcp` serves the debug runtime
 (`docs/debug-runtime.md`) as MCP tools over stdio — launch/attach N game sessions, read
-`model_json`, pause/step the clock, inject input, capture frames, hot-reload source. Register
+the structured `model`, pause/step the clock, inject input, capture frames, hot-reload source. Register
 it with `claude mcp add functor -- functor mcp`; see `docs/mcp.md`. It ignores `-d` (each
 launched game names its own directory) and owns stdout for JSON-RPC.
 

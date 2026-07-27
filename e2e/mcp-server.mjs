@@ -7,7 +7,7 @@
 //   1. initialize / notifications/initialized / tools/list, asserting the whole
 //      documented tool surface is advertised.
 //   2. launch_game on examples/counter in HEADLESS mode (no GL, so this runs
-//      anywhere CI does), and assert /state's structured `model_json` arrives.
+//      anywhere CI does), and assert /state's structured `model` arrives.
 //   3. pause, then step twice — asserting the frame advances and that `step`
 //      only returns once the queued steps have landed (pending_steps == 0).
 //   4. send_input: counter's model reacts to a UI click (its `update` handles
@@ -146,10 +146,10 @@ try {
   console.log("\n▸ the structured model view (protocol v4)");
   const state = await rpc.call("get_state", { session });
   check(
-    state.model_json !== null && typeof state.model_json === "object",
-    "get_state carries model_json as a structured object",
+    state.model !== null && typeof state.model === "object",
+    "get_state carries model as a structured object",
   );
-  check(state.model_json?.count === 0, `the counter starts at 0 (model_json.count = ${state.model_json?.count})`);
+  check(state.model?.count === 0, `the counter starts at 0 (model.count = ${state.model?.count})`);
 
   console.log("\n▸ pause + step is a deterministic clock");
   await rpc.call("pause", { session });
@@ -167,10 +167,10 @@ try {
   console.log("\n▸ injected input reaches the game");
   // counter's `update` handles Inc, delivered by clicking the button — slot 0,
   // the first interactive widget in its `ui` tree.
-  const before = (await rpc.call("get_state", { session })).model_json.count;
+  const before = (await rpc.call("get_state", { session })).model.count;
   await rpc.call("send_input", { session, command: { type: "ui_event", slot: 0, kind: "Clicked" } });
   const clicked = await rpc.call("step", { session });
-  check(clicked.model_json.count === before + 1, `a ui_event click incremented the model (${before} → ${clicked.model_json.count})`);
+  check(clicked.model.count === before + 1, `a ui_event click incremented the model (${before} → ${clicked.model.count})`);
 
   // A key event exercises the keyboard shape end to end. counter has no `input`
   // hook, so the assertion is that the runtime accepted and sampled it — not a

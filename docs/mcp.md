@@ -53,7 +53,7 @@ URL plus, when the server launched it, the child process.
 
 | Tool | What it does |
 | --- | --- |
-| `get_state` | `frame`, `tts`, `pending_steps`, viewports, sampled `input`, and the model — read `model_json`, the structured view. |
+| `get_state` | `frame`, `tts`, `pending_steps`, viewports, sampled `input`, and the model — the structured JSON view (the default read; `model_debug` is the Debug text). |
 | `get_scene` | The camera, scene graph, and lights `draw` produced. Pure data, so it works headlessly. |
 | `get_trace` | The paused inspector trace: every entry point's binder and variable values for the last real frame. Pause first. |
 | `capture_frame` | A PNG of the next rendered frame, returned as an MCP image block. |
@@ -89,7 +89,8 @@ rendered load error, a `/time` 409 naming a `--fixed-time` pin.
 (`docs/debug-runtime.md`), and say so if the runtime is older. Below that, the
 guarantees above quietly stop holding: a pre-v3 runtime ignores a batched
 `frames` and reports no `pending_steps` (so `step` would call a ten-frame batch
-landed after one), and a pre-v4 one never sends `model_json`. This matters most
+landed after one), and a pre-v4 one sends Debug text under `model` instead of
+structured JSON. This matters most
 for a device APK, which versions independently of the CLI — rebuild it from the
 same Functor version.
 
@@ -119,12 +120,12 @@ pause      { "session": "s1" }                       // pin the clock where it i
 send_input { "session": "s1",
              "command": {"type":"ui_event","slot":0,"kind":"Clicked"} }
 step       { "session": "s1" }                       // one frame, waited for
-// → {"frame":9,"tts":0.13,"pending_steps":0,…,"model_json":{"count":1}}
+// → {"frame":9,"tts":0.13,"pending_steps":0,…,"model":{"count":1}}
 stop_game  { "session": "s1" }
 ```
 
 Nothing advanced between the click and the step, and `step` returned only once
-the step had actually run — so `model_json.count` is the click's effect, not a
+the step had actually run — so `model.count` is the click's effect, not a
 sample of a still-moving game.
 
 ## Connecting to a Quest

@@ -37,7 +37,7 @@ const STEP_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request timeout for the (loopback or adb-forwarded) debug server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Lowest debug-protocol version whose contract these tools actually keep
-/// (`pending_steps` on `/state`, `frames` on `/time advance`, `model_json`).
+/// (`pending_steps` on `/state`, `frames` on `/time advance`, `model`).
 const REQUIRED_PROTOCOL_VERSION: u64 = 4;
 /// Bytes of a launched child's stdout/stderr kept for failure reporting.
 const LOG_TAIL_BYTES: usize = 8 * 1024;
@@ -456,8 +456,9 @@ or \"headless\" (no GL, no capture)"
     }
 
     /// Runtime state JSON: `frame`, `tts`, `pending_steps`, viewports, the
-    /// sampled `input`, and the model both as `Debug` text (`model`) and as a
-    /// structured, parseable JSON view (`model_json`) — read `model_json`.
+    /// sampled `input`, and the game model — `model` is the structured,
+    /// parseable JSON view (the thing to read); `model_debug` is the
+    /// human-facing `Debug` text.
     #[tool]
     async fn get_state(
         &self,
@@ -772,15 +773,16 @@ impl FunctorMcp {
         // Below v4 the guarantees these tools advertise silently stop holding:
         // a pre-v3 runtime ignores a batched `frames` and reports no
         // `pending_steps` (so `step` would claim a 10-frame batch landed after
-        // running one), and a pre-v4 one never sends `model_json`. Refuse
+        // running one), and a pre-v4 one sends Debug text under `model`
+        // instead of structured JSON. Refuse
         // rather than mislead — this matters for a device APK, which versions
         // independently of the CLI.
         let version = discovery["protocol_version"].as_u64().unwrap_or(0);
         if version < REQUIRED_PROTOCOL_VERSION {
             return Err(format!(
                 "{url} speaks debug protocol v{version}, but these tools need \
-v{REQUIRED_PROTOCOL_VERSION} (batched steps report pending_steps, and /state carries \
-model_json). Rebuild that runtime from this version of Functor."
+v{REQUIRED_PROTOCOL_VERSION} (batched steps report pending_steps, and /state's model \
+is structured JSON). Rebuild that runtime from this version of Functor."
             ));
         }
         Ok(discovery)
@@ -813,7 +815,7 @@ model_json). Rebuild that runtime from this version of Functor."
 #[tool_handler(
     name = "functor",
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
-(launch_game / connect_game), then observe it (get_state — read model_json — get_scene, \
+(launch_game / connect_game), then observe it (get_state — read model — get_scene, \
 get_trace, capture_frame) and drive it (pause, send_input, step, resume, rewind, \
 reload_source). The deterministic loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \
