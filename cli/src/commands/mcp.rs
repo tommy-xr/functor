@@ -44,6 +44,16 @@ const REQUIRED_PROTOCOL_VERSION: u64 = 4;
 const LOG_TAIL_BYTES: usize = 8 * 1024;
 /// How many API-reference items one `api_reference` call returns.
 const MAX_API_RESULTS: usize = 20;
+/// The Functor Lang language guide, embedded verbatim from the `functor-lang`
+/// skill — the repository's declared source of truth for the language
+/// (`CLAUDE.md` requires it to be updated whenever the language changes). It is
+/// embedded rather than paraphrased so this tool cannot drift from it: there is
+/// exactly one copy, and `language_guide` serves sections of it mechanically.
+const LANGUAGE_GUIDE: &str = include_str!("../../../.claude/skills/functor-lang/SKILL.md");
+/// The section whose bullets front the table of contents — the "do NOT guess
+/// from F#/OCaml" list, which is what an agent needs before it writes a line.
+/// Matched as a slug PREFIX, so rewording the heading's tail cannot lose it.
+const QUICK_FACTS_SLUG: &str = "quick-facts";
 
 /// Serve MCP over stdio until the client disconnects.
 pub async fn execute() -> io::Result<()> {
@@ -365,6 +375,14 @@ pub struct ApiReferenceArgs {
     pub module: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct LanguageGuideArgs {
+    /// A section name from the guide's own table of contents, e.g.
+    /// `"syntax-subset"` or `"the-game-contract"` (a unique fragment of one is
+    /// enough). Omit it to get the table of contents plus the quick facts.
+    pub section: Option<String>,
+}
+
 #[tool_router]
 impl FunctorMcp {
     pub fn new() -> Self {
@@ -406,6 +424,37 @@ impl FunctorMcp {
         // is never truncated — only an open search is.
         let limit = (!query.trim().is_empty()).then_some(MAX_API_RESULTS);
         ok_text(render_api_hits(&hits, limit))
+    }
+
+    /// Read the Functor Lang LANGUAGE guide: syntax, semantics, the modules
+    /// model, the `init`/`tick`/`draw` game contract, and hot-reload rules —
+    /// the `functor-lang` skill, embedded verbatim, which is this repository's
+    /// source of truth for the language. Functor Lang is NOT F# or OCaml: it
+    /// has `:=` assignment, thread-LAST pipelines (`x |> f(a)` is `f(a, x)`),
+    /// `if/then/else` only as an expression, no loops and no `<>` — guessing
+    /// from F#/OCaml habits produces parse errors, so read this first. Called
+    /// with no arguments it returns the table of contents plus those quick
+    /// facts; `section` returns one section's full text. This is the language;
+    /// `api_reference` is the prelude API (`Scene.cube`'s signature). Neither
+    /// needs a session.
+    #[tool]
+    async fn language_guide(
+        &self,
+        Parameters(args): Parameters<LanguageGuideArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (intro, sections) = guide_sections(LANGUAGE_GUIDE);
+        match args
+            .section
+            .as_deref()
+            .map(str::trim)
+            .filter(|section| !section.is_empty())
+        {
+            Some(wanted) => {
+                let index = resolve!(find_guide_section(&sections, wanted));
+                ok_text(render_guide_section(&sections, index))
+            }
+            None => ok_text(render_guide_contents(intro, &sections)),
+        }
     }
 
     /// Start a game as a child process with its debug server on a free port,
@@ -1078,8 +1127,9 @@ is structured JSON). Rebuild that runtime from this version of Functor."
 get_trace, capture_frame) and drive it (pause, send_input, step, resume, rewind, \
 reload_source). The deterministic loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \
-across steps. api_reference searches the engine's prelude API and needs no session, so it \
-answers language/API questions before anything is launched. A game can also be AUTHORED \
+across steps. language_guide teaches the LANGUAGE (Functor Lang is not F#/OCaml — read it \
+before writing any .fun) and api_reference searches the engine's prelude API; neither needs \
+a session, so both answer before anything is launched. A game can also be AUTHORED \
 here with no filesystem of your own: launch_game with inline `files` runs source that has \
 no home, reload_source edits it live, and save_project writes what the runtime is actually \
 running to a directory. init_game scaffolds a starter project on disk instead."
@@ -1199,6 +1249,215 @@ fn render_api_hits(hits: &[ApiHit], limit: Option<usize>) -> String {
         ));
     }
     out
+}
+
+/// One addressable part of the language guide: a markdown heading plus the
+/// text under it, stopping at the NEXT heading of any level. Sections are
+/// derived from the skill's own headings, never hand-listed, so a restructured
+/// skill re-sections itself.
+///
+/// A subsection is therefore addressed in its own right rather than also
+/// living inside its parent (the prelude section alone is tens of kilobytes —
+/// carrying its subsections would make one call most of the guide), and a
+/// parent that has any says so in a `Continues in:` line.
+#[derive(Debug)]
+struct GuideSection<'a> {
+    /// 2 for `##`, 3 for `###`.
+    level: usize,
+    slug: String,
+    /// The heading line and its body, verbatim.
+    text: &'a str,
+}
+
+/// Drop the skill's YAML front matter, which is loader metadata rather than
+/// language documentation. CRLF is handled because a Windows checkout of a
+/// `.md` is not pinned to LF, and leaking the metadata is silent.
+fn strip_front_matter(guide: &str) -> &str {
+    let Some(rest) = guide
+        .strip_prefix("---\n")
+        .or_else(|| guide.strip_prefix("---\r\n"))
+    else {
+        return guide;
+    };
+    ["\n---\n", "\n---\r\n"]
+        .iter()
+        .find_map(|delimiter| Some(&rest[rest.find(delimiter)? + delimiter.len()..]))
+        .unwrap_or(guide)
+}
+
+/// The heading level of a line, for the levels this tool addresses.
+fn heading_level(line: &str) -> Option<usize> {
+    let level = line.bytes().take_while(|byte| *byte == b'#').count();
+    (matches!(level, 2 | 3) && line.as_bytes().get(level) == Some(&b' ')).then_some(level)
+}
+
+/// A heading's stable name: lowercase, non-alphanumerics collapsed to `-`.
+fn slugify(title: &str) -> String {
+    let mut slug = String::new();
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+/// Split the guide into the text before its first heading and its sections,
+/// in document order.
+fn guide_sections(guide: &str) -> (&str, Vec<GuideSection<'_>>) {
+    let body = strip_front_matter(guide);
+    // (offset, level, title) per heading. Fenced code blocks are skipped: a
+    // shell comment in an example is not a section. A fence is recognized at
+    // column 0 only, as every fence in the guide is written.
+    let mut headings: Vec<(usize, usize, &str)> = Vec::new();
+    let mut fenced = false;
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced {
+            if let Some(level) = heading_level(trimmed) {
+                headings.push((offset, level, trimmed[level + 1..].trim()));
+            }
+        }
+        offset += line.len();
+    }
+    let intro = headings.first().map_or(body, |(start, _, _)| &body[..*start]);
+    let sections = headings
+        .iter()
+        .enumerate()
+        .map(|(index, &(start, level, title))| {
+            let end = headings
+                .get(index + 1)
+                .map_or(body.len(), |(next_start, _, _)| *next_start);
+            GuideSection {
+                level,
+                slug: slugify(title),
+                text: body[start..end].trim_end(),
+            }
+        })
+        .collect();
+    (intro, sections)
+}
+
+/// A section's one-line summary: its first sentence of prose, code blocks
+/// skipped. The guide is hard-wrapped, so lines are joined until one ends a
+/// sentence rather than reported as they are broken.
+fn guide_summary(section: &GuideSection) -> String {
+    let mut fenced = false;
+    let mut summary = String::new();
+    for line in section.text.lines().skip(1) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced || trimmed.is_empty() {
+            continue;
+        }
+        if !summary.is_empty() {
+            summary.push(' ');
+        }
+        summary.push_str(trimmed.trim_start_matches(['-', '*', ' ']));
+        if summary.ends_with('.') || summary.chars().count() >= 100 {
+            break;
+        }
+    }
+    let summary = summary.replace("**", "").replace('`', "");
+    match summary.char_indices().nth(120) {
+        Some((cut, _)) => format!("{}…", summary[..cut].trim_end()),
+        None => summary,
+    }
+}
+
+/// The guide's front page: what it is, the quick facts every caller needs
+/// before writing a line of Functor Lang, and the sections it can ask for.
+fn render_guide_contents(intro: &str, sections: &[GuideSection]) -> String {
+    let mut out = String::from(
+        "The Functor Lang language guide (the `functor-lang` skill, verbatim — the source of \
+truth for the language). Call language_guide again with `section` for a section's full \
+text; `api_reference` covers the prelude API instead.\n\n",
+    );
+    out.push_str(intro.trim());
+    out.push_str("\n\n");
+    if let Some(facts) = sections
+        .iter()
+        .find(|section| section.slug.starts_with(QUICK_FACTS_SLUG))
+    {
+        out.push_str(facts.text);
+        out.push_str("\n\n");
+    }
+    out.push_str("## Sections\n\n");
+    for section in sections {
+        let indent = "  ".repeat(section.level - 2);
+        let lines = section.text.lines().count();
+        out.push_str(&format!(
+            "{indent}- {} ({lines} lines) — {}\n",
+            section.slug,
+            guide_summary(section)
+        ));
+    }
+    out
+}
+
+/// One section as served: its text, plus a pointer to the subsections that
+/// continue it — without which a truncation at a `###` heading reads like the
+/// end of the topic.
+fn render_guide_section(sections: &[GuideSection], index: usize) -> String {
+    let section = &sections[index];
+    let children: Vec<&str> = sections[index + 1..]
+        .iter()
+        .take_while(|next| next.level > section.level)
+        .map(|next| next.slug.as_str())
+        .collect();
+    match children.is_empty() {
+        true => section.text.to_string(),
+        false => format!("{}\n\nContinues in: {}\n", section.text, children.join(", ")),
+    }
+}
+
+/// Look a section up by slug, or by a unique fragment of one — an agent
+/// naturally asks for "syntax" or "the game contract". `Err` is a teaching
+/// message naming what it could have asked for.
+fn find_guide_section(sections: &[GuideSection], wanted: &str) -> Result<usize, String> {
+    let needle = slugify(wanted);
+    let unknown = || {
+        format!(
+            "unknown guide section {wanted:?}. The sections are {}.",
+            join_slugs(sections.iter())
+        )
+    };
+    if needle.is_empty() {
+        return Err(unknown());
+    }
+    if let Some(exact) = sections.iter().position(|section| section.slug == needle) {
+        return Ok(exact);
+    }
+    let matches: Vec<usize> = sections
+        .iter()
+        .enumerate()
+        .filter(|(_, section)| section.slug.contains(&needle))
+        .map(|(index, _)| index)
+        .collect();
+    match matches.as_slice() {
+        [only] => Ok(*only),
+        [] => Err(unknown()),
+        several => Err(format!(
+            "{wanted:?} matches several guide sections: {}. Name one exactly.",
+            join_slugs(several.iter().map(|index| &sections[*index]))
+        )),
+    }
+}
+
+/// Name a set of sections the way every teaching error here does.
+fn join_slugs<'a>(sections: impl Iterator<Item = &'a GuideSection<'a>>) -> String {
+    sections
+        .map(|section| section.slug.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A path for display: absolute where the filesystem can say so, and the
@@ -1408,7 +1667,11 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_api_hits, search_api, Registry};
+    use super::{
+        find_guide_section, guide_sections, render_api_hits, render_guide_contents,
+        render_guide_section, search_api, strip_front_matter, Registry, LANGUAGE_GUIDE,
+        QUICK_FACTS_SLUG,
+    };
     use functor_docgen::ApiReference;
 
     fn reference() -> ApiReference {
@@ -1438,6 +1701,136 @@ mod tests {
                 .any(|hit| hit.item.qualified_name == "Scene.cube"),
             "Scene.cube must match its own bare name"
         );
+    }
+
+    /// The drift guard. The guide is the `functor-lang` skill embedded
+    /// verbatim, so a restructure that broke the embedding (or emptied it)
+    /// must fail here rather than quietly serving an empty language surface.
+    #[test]
+    fn the_embedded_guide_still_teaches_the_language() {
+        assert!(
+            LANGUAGE_GUIDE.len() > 50_000,
+            "the embedded skill is suspiciously small ({} bytes)",
+            LANGUAGE_GUIDE.len()
+        );
+        let lowercase = LANGUAGE_GUIDE.to_lowercase();
+        for marker in [
+            ":=",                  // assignment, not `<-`
+            "thread-last",         // `x |> f(a)` is `f(a, x)`
+            "if cond then a else", // the conditional is an expression
+            "let init",
+            "let tick",
+            "let draw",
+        ] {
+            assert!(
+                lowercase.contains(&marker.to_lowercase()),
+                "the language guide no longer covers {marker:?}"
+            );
+        }
+
+        let (intro, sections) = guide_sections(LANGUAGE_GUIDE);
+        assert!(sections.len() > 8, "sections: {}", sections.len());
+        assert!(
+            sections
+                .iter()
+                .any(|section| section.slug.starts_with(QUICK_FACTS_SLUG)),
+            "the quick-facts section fronts the table of contents"
+        );
+        // Every heading became a section, and the last one runs to the end of
+        // the file: an unbalanced code fence (or an unhandled heading level)
+        // otherwise swallows the whole tail silently.
+        let headings = LANGUAGE_GUIDE
+            .lines()
+            .filter(|line| line.starts_with("## ") || line.starts_with("### "))
+            .count();
+        assert_eq!(headings, sections.len(), "a heading was not sectioned");
+        let body = strip_front_matter(LANGUAGE_GUIDE).trim_end();
+        assert!(body.ends_with(sections.last().unwrap().text));
+        // The front matter is loader metadata, not language documentation.
+        assert!(intro.trim_start().starts_with("# Functor Lang"), "{intro}");
+    }
+
+    #[test]
+    fn the_table_of_contents_is_short_and_leads_with_the_quick_facts() {
+        let (intro, sections) = guide_sections(LANGUAGE_GUIDE);
+        let contents = render_guide_contents(intro, &sections);
+
+        assert!(contents.contains("Assignment is `:=`"), "{contents}");
+        assert!(contents.contains("thread-LAST"), "{contents}");
+        assert!(contents.contains("- syntax-subset ("), "{contents}");
+        // The point of a table of contents is that it is not the whole guide.
+        assert!(
+            contents.len() < LANGUAGE_GUIDE.len() / 4,
+            "the contents are {} bytes",
+            contents.len()
+        );
+    }
+
+    #[test]
+    fn a_section_is_addressable_by_slug_or_by_a_unique_fragment() {
+        let (_, sections) = guide_sections(LANGUAGE_GUIDE);
+        let text = |wanted| {
+            render_guide_section(&sections, find_guide_section(&sections, wanted).unwrap())
+        };
+
+        let syntax = text("syntax-subset");
+        assert!(syntax.starts_with("## Syntax subset"), "{syntax}");
+        assert!(syntax.contains("|> APPENDS"), "{syntax}");
+
+        // A fragment, spelled the way an agent would ask for it.
+        assert!(text("game contract").contains("let draw = (model, tts)"));
+    }
+
+    /// The parser's edges, on a fixture rather than on the skill's prose:
+    /// nesting, a heading that is really a shell comment in a code fence, and
+    /// the `Continues in:` pointer a truncated parent needs.
+    #[test]
+    fn sections_nest_fence_aware_and_a_parent_points_at_its_children() {
+        const FIXTURE: &str = "---\nname: fixture\n---\n\nIntro prose.\n\n\
+## First\n\nOne.\n\n```sh\n## not a heading\n```\n\n\
+### Nested\n\nTwo.\n\n## Second\n\nThree.\n";
+        let (intro, sections) = guide_sections(FIXTURE);
+
+        assert_eq!(intro.trim(), "Intro prose.");
+        assert_eq!(
+            sections.iter().map(|s| s.slug.as_str()).collect::<Vec<_>>(),
+            ["first", "nested", "second"]
+        );
+        // The fenced `## not a heading` stayed inside its section's text.
+        assert!(sections[0].text.contains("## not a heading"));
+        assert!(!sections[0].text.contains("### Nested"));
+
+        let first = render_guide_section(&sections, 0);
+        assert!(first.ends_with("Continues in: nested\n"), "{first}");
+        assert_eq!(render_guide_section(&sections, 2), sections[2].text);
+    }
+
+    #[test]
+    fn an_unknown_ambiguous_or_empty_section_names_the_ones_that_exist() {
+        const FIXTURE: &str = "## Sound design\n\nOne.\n\n## Sound effects\n\nTwo.\n";
+        let (_, sections) = guide_sections(FIXTURE);
+
+        let unknown = find_guide_section(&sections, "monads").unwrap_err();
+        assert!(unknown.contains("sound-design, sound-effects"), "{unknown}");
+        // A blank name is a client bug, not "give me the first section".
+        assert!(find_guide_section(&sections, "   ").is_err());
+
+        let ambiguous = find_guide_section(&sections, "sound").unwrap_err();
+        assert!(ambiguous.contains("matches several"), "{ambiguous}");
+        assert!(ambiguous.contains("sound-design, sound-effects"), "{ambiguous}");
+    }
+
+    #[test]
+    fn front_matter_is_dropped_however_the_file_is_checked_out() {
+        assert_eq!(strip_front_matter("---\na: b\n---\n# Title\n"), "# Title\n");
+        assert_eq!(
+            strip_front_matter("---\r\na: b\r\n---\r\n# Title\r\n"),
+            "# Title\r\n"
+        );
+        // No front matter, or an unterminated one, is served as it is rather
+        // than truncated to nothing.
+        assert_eq!(strip_front_matter("# Title\n"), "# Title\n");
+        assert_eq!(strip_front_matter("---\na: b\n"), "---\na: b\n");
     }
 
     #[test]
