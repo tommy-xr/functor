@@ -18,9 +18,8 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
 
 - `player.html` — the runtime host page; the sibling of the CLI dev server's
   `index-functor-lang.html`, but the `.fun` entry comes from `?game=` (one file) or
-  `?project=inline` (the IDE pushes the whole file set by postMessage).
-  `?cursor=visible` selects the absolute-pointer policy (captured is default).
-  Keep its input mapping and set-source/set-project seam in sync with that page.
+  `?project=inline` (the IDE pushes the whole file set by postMessage). Keep its
+  input mapping and set-source/set-project seam in sync with that page.
 - `sandbox.html` / `src/sandbox.tsx` — the single-buffer editor over a served
   example (pushes `functor-lang-set-source`).
 - `ide.html` / `src/ide.tsx` — the multi-file IDE: a file sidebar, per-file

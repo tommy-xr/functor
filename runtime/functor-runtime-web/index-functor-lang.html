@@ -296,12 +296,14 @@
         };
         canvas.addEventListener("mousemove", uiPointer);
         canvas.addEventListener("mousedown", (e) => {
-          if (e.button !== 0) return;
+          // The earlier game-button listener owns a visible primary press when
+          // no widget wanted it. Keep that same press out of the UI bridge.
+          if (e.button !== 0 || gameButtons.has(1)) return;
           uiButtonDown = true;
           uiPointer(e);
         });
         canvas.addEventListener("mouseup", (e) => {
-          if (e.button !== 0) return;
+          if (e.button !== 0 || gameButtons.has(1)) return;
           uiButtonDown = false;
           uiPointer(e);
         });

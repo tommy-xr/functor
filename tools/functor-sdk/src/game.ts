@@ -141,11 +141,7 @@ export class FunctorClient {
     return this.key(key, false);
   }
 
-  /** Move the mouse cursor to an absolute logical-surface position.
-   *
-   * The runtime keeps its own surface extent; inspect
-   * `state().input.mouse.surface_width` / `surface_height` (protocol v6+) when
-   * mapping the injected point. */
+  /** Move the mouse cursor to an absolute position. */
   mouseMove(x: number, y: number): Promise<void> {
     return this.input({ type: "mouse_move", x, y });
   }

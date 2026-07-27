@@ -693,9 +693,7 @@ Starts once A2 + B3 exist.
         "Up"; since typed as the `Key.t` variant — see the strong-typing
         track entry) — validated at load when present, reload-aware. And
         `functor.json` grows `"language": "functor-lang"` (+ optional `entry`,
-        default `game.fun`; later extended with optional
-        `cursor: "captured" | "visible"`): `functor build` =
-        parse+lower+**check as
+        default `game.fun`): `functor build` = parse+lower+**check as
         errors** (the strict gate; the runner keeps them warnings),
         `run native` spawns the interpreter (proven byte-identical to a
         direct runner invocation), `develop` = `run` (hot reload is built
@@ -799,20 +797,6 @@ Starts once A2 + B3 exist.
         per bind so a shared texture cannot inherit another draw's choice.
         Mario exercises the path with one character atlas and nearest-neighbor
         sampling.
-      - [x] **C4b-8. Resize-correct 2D pointer mapping** (done 2026-07-27):
-        `Input.mouse` carries `surfaceWidth` / `surfaceHeight` in the same
-        top-left-origin logical coordinate space as `x` / `y` (window points
-        natively, CSS pixels on web). `Camera2D.toWorld(mouse, camera)` shares
-        the renderer's aspect-fit math, maps through pan/zoom, and returns
-        `Option.None` in letterbox/pillarbox bars. `functor.json` makes pointer
-        ownership explicit with `"cursor":"visible"|"captured"`; captured is
-        the compatibility default, while visible delivers absolute motion and
-        buttons on both shells. `examples/pointer-2d` is the complete
-        pointer-led Sprite reference.
-        *Verify (done):* shared-camera tests cover resize, mismatched aspect,
-        Retina scaling, pan/zoom, and bar rejection; shell tests pin logical
-        surface sampling and debug injection; native and web captures exercise
-        the visible pointer policy.
 - [x] **C5. Wasm** (done 2026-07-03). `FunctorLangWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,

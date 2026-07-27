@@ -193,9 +193,9 @@ let draw = (m, tts) =>
               <tr><td><code>draw</code></td><td><code>(model, tts) => Frame</code></td><td>pure frame description</td></tr>
               <tr><td><code>input</code></td><td><code>(model, key, isDown) => model'</code></td><td>optional; <code>key</code> is a <code>Key.t</code> variant such as <code>Key.W</code>, <code>Key.Up</code>, or <code>Key.Space</code> — key <em>repeats</em> arrive as <code>isDown = true</code>, so latch if you need edges</td></tr>
               <tr><td><code>sampledInput</code></td><td><code>(model, snapshot) => model'</code></td><td>optional; held levels plus deterministic pressed/released edges — one <code>Input.snapshot</code> immediately before every fixed step</td></tr>
-              <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; logical window/CSS coordinates</td></tr>
+              <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
               <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
-              <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Captured projects receive it under free-look; visible projects receive absolute clicks</td></tr>
+              <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Delivered while the cursor is captured, so click-to-shoot works under free-look</td></tr>
               <tr><td><code>update</code></td><td><code>(model, msg) => model'</code></td><td>optional; messages are your variant values</td></tr>
               <tr><td><code>subscriptions</code></td><td><code>(model) => Sub</code></td><td>optional (requires <code>update</code>); declarative timers</td></tr>
               <tr><td><code>physics</code></td><td><code>(model) => Physics.scene(…)</code></td><td>optional; declarative bodies, reconciled each frame</td></tr>
@@ -234,11 +234,7 @@ let draw = (m, tts) =>
           <p>
             The snapshot is a plain record. Keyboard has
             <code>heldKeys</code>, <code>pressedKeys</code>, and <code>releasedKeys</code>;
-            mouse position has <code>x</code>, <code>y</code>,
-            <code>surfaceWidth</code>, and <code>surfaceHeight</code> in
-            top-left-origin logical units (window points natively, CSS pixels on web),
-            independent of Retina scale. Mouse also has <code>buttons</code>,
-            <code>pressed</code>, and <code>released</code>,
+            mouse has <code>buttons</code>, <code>pressed</code>, and <code>released</code>,
             each with <code>left</code> / <code>right</code> / <code>middle</code>.
             A quick tap may appear in both edge sets while the held level reports the final state.
             Edges survive render frames with no simulation step, reach the first catch-up step,
@@ -506,37 +502,6 @@ let pos = model.pos |> Vec3.add(step)</pre>
               <tr><td><code>Frame.createLit(camera, scene, [light, …])</code></td><td>lit + shadowed</td></tr>
             </tbody>
           </table>
-
-          <h3 id="prelude-2d">2D sprites and pointer picking</h3>
-          <p>
-            <code>Sprite</code> is a pure picture algebra: compose rectangles,
-            circles, polygons, lines, text, and images, then hand the picture to
-            <code>Frame.create2D</code>. A <code>Camera2D</code> declares its visible
-            world extent and aspect-fits it without stretching.
-          </p>
-          <pre class="functor-lang">let camera =
-  Camera2D.create(24.0, 13.5)
-  |> Camera2D.at(2.0, -1.0)
-  |> Camera2D.zoom(1.2)
-
-let sampledInput = (model, snapshot: Input.snapshot) =>
-  { model with pointer: Camera2D.toWorld(snapshot.mouse, camera) }
-
-let draw = (model, tts) =>
-  Sprite.group([
-    Sprite.rectangle(Color.rgb(0.03, 0.04, 0.1), 24.0, 13.5),
-    Sprite.text(Color.rgb(0.2, 0.9, 1.0), 1.0, "CLICK ME")
-  ])
-  |> Frame.create2D(camera)</pre>
-          <p>
-            <code>Camera2D.toWorld</code> applies the same fit, pan, and zoom as
-            rendering. It returns <code>Option.None</code> in letterbox or
-            pillarbox bars, and stays correct through resize and device-pixel-ratio
-            changes because <code>snapshot.mouse</code> carries its logical surface
-            extent. Use <code>"cursor":"visible"</code> in <code>functor.json</code>
-            for pointer-led games. See <code>examples/pointer-2d</code> for a
-            complete selectable-card game.
-          </p>
 
           <h3>Render targets</h3>
           <pre class="functor-lang">let feed = RenderTarget.named("security") |> RenderTarget.sized(256.0, 256.0)</pre>

@@ -162,8 +162,6 @@ npm run fetch:assets
 
 The CLI operates on a directory containing a `functor.json`
 (`{"language": "functor-lang", "entry": "game.fun"}`). Point it at the example with `-d`.
-Pointer-led games add `"cursor":"visible"`; the default `"captured"` policy is
-for relative free-look.
 The `run` command interprets the game's `.fun` and launches it — no build step:
 
 ```sh

@@ -117,7 +117,6 @@
         functor_lang_ui_pointer,
         functor_lang_ui_pointer_leave,
         functor_lang_ui_wants_keyboard,
-        functor_lang_ui_wants_pointer,
         functor_lang_ui_key,
         functor_lang_webview_html,
         functor_lang_webview_gen,
@@ -299,9 +298,6 @@
           ay += e.movementY;
           functor_lang_mouse_move(ax, ay);
         });
-        canvas.addEventListener("mousemove", (e) => {
-          if (visiblePointer) functor_lang_mouse_move(e.offsetX, e.offsetY);
-        });
 
         canvas.addEventListener("wheel", (e) => {
           if (!gameCameraControl || document.pointerLockElement !== canvas) return;
@@ -309,9 +305,10 @@
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
         });
 
-        // Captured projects deliver mouse buttons only while pointer-locked.
-        // Visible projects deliver absolute canvas buttons without locking,
-        // with primary-widget arbitration matching native.
+        // Mouse buttons reach the game only while pointer-locked — the same
+        // rule mousemove follows above, and the browser twin of the desktop's
+        // "only while the cursor is captured". While the cursor is FREE it
+        // belongs to the scrubber and the `Ui.*` widget path below.
         // MouseEvent.button (0 left, 1 middle, 2 right) → the runtime's
         // canonical MouseButton discriminants (1 left, 2 right, 3 middle).
         // Kept in sync with index-functor-lang.html.
@@ -325,7 +322,6 @@
           ) return;
           const code = buttonCode(e.button);
           if (code === 0) return;
-          if (visiblePointer && code === 1 && functor_lang_ui_wants_pointer()) return;
           e.preventDefault();
           functor_lang_mouse_button(code, true);
           gameButtons.add(code);
