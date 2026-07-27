@@ -291,8 +291,8 @@ a:hover {
   background: #0d0221;
 }
 
-/* The live code panel below the scene, inside the card. ~8 visible lines of
-   the editable region; the mini-editor carries the shared synthwave theme. */
+/* The live code panel below the scene, inside the card (~9 visible lines at
+   the shared editor type below); the mini-editor carries the synthwave theme. */
 .hero-editor {
   border-top: 1px solid var(--line);
   height: 172px;
@@ -302,8 +302,12 @@ a:hover {
 
 .hero-editor .cm-editor {
   height: 100%;
-  /* Same density as the sandbox/IDE editors. */
+  /* Same type AND leading as the sandbox/IDE editors. */
   font-size: 11.5px;
+}
+
+.hero-editor .cm-content {
+  line-height: 1.65;
 }
 
 /* A small status dot pinned to the card corner: green live / red on a broken
@@ -841,6 +845,7 @@ a:hover {
 
 #example-picker:hover {
   border-color: var(--cyan);
+  color: var(--cyan);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%2341d8e6'/%3E%3C/svg%3E");
 }
 
@@ -886,6 +891,7 @@ a:hover {
 .status-pill[data-state="busy"] {
   color: var(--amber);
   background: rgba(238, 200, 119, 0.07);
+  /* No glow on purpose: busy is transient; only settled states light up. */
 }
 
 /* Shared external-runtime link for the sandbox and multi-file IDE. It stays a
@@ -1210,7 +1216,9 @@ a:hover {
 
 #editor .cm-editor {
   height: 100%;
-  /* A denser code column: more program on screen next to the preview. */
+  /* The design mockup's editor type: smaller glyphs with more open leading.
+     Note this is a LOOK, not density — 11.5px at 1.65 shows the same line
+     count as the old 13.5px at default leading. */
   font-size: 11.5px;
 }
 
@@ -1913,6 +1921,10 @@ a:hover {
   border-top: 1px solid var(--line);
   background: var(--bg-panel);
   font-family: var(--font-mono);
+  /* Positioned, like the headers above: as a static block the upward shadow
+     would paint beneath the preview pane / editor and never show. */
+  position: relative;
+  z-index: 20;
   box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
 }
 
