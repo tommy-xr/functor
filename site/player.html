@@ -502,13 +502,22 @@
         // mouse-look button too (there is no input to drive).
         const deterministic = params.has("fixed-time");
         // `?scrubber=0` is an explicit opt-out for the scrubber only (input and
-        // mouse-look stay live).
-        const scrubberOff = params.get("scrubber") === "0";
+        // mouse-look stay live). `?scrubber=hidden` mounts the seam
+        // (window.__scrub) without the bar's DOM — for host pages that dock
+        // their own transport UI. (Under ?fixed-time nothing mounts at all —
+        // deterministic captures have no seam; hosts wanting both should pin
+        // time through the seam instead.) Unknown values warn and mount the
+        // normal bar rather than silently disabling anything.
+        const scrubberMode = params.get("scrubber");
+        const scrubberOff = scrubberMode === "0";
+        if (scrubberMode !== null && scrubberMode !== "0" && scrubberMode !== "hidden") {
+          console.warn(`[player] unknown ?scrubber=${scrubberMode}; mounting the normal scrubber`);
+        }
         if (deterministic) {
           document.getElementById("mouselook").style.display = "none";
         } else {
           setupInput();
-          if (!scrubberOff) mountScrubber();
+          if (!scrubberOff) mountScrubber({ hidden: scrubberMode === "hidden" });
         }
         // The webview overlay renders even in deterministic captures (it is
         // part of the frame's visual output); paused clocks drop its
