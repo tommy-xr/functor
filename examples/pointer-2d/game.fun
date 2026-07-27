@@ -60,7 +60,7 @@ let target = (model, index, x, label, color) =>
     Sprite.rectangle(panel, 4.25, 3.45),
     Sprite.text(color, 0.7, label) |> Sprite.moveY(0.35),
     Sprite.text(if selected then color else dim, 0.3,
-      if selected then "SELECTED" else "CLICK TO CHOOSE")
+      if selected then "SELECTED" else "CLICK")
       |> Sprite.moveY(-0.75)
   ])
   |> Sprite.move(x, -1.0)
@@ -79,7 +79,7 @@ let pointerSprite = (model) =>
 let draw = (model, tts) =>
   Sprite.group([
     Sprite.rectangle(bg, 24.0, 15.0) |> Sprite.move(2.0, -1.0),
-    Sprite.text(ink, 0.85, "RESIZE-CORRECT POINTER") |> Sprite.move(2.0, 3.4),
+    Sprite.text(ink, 0.85, "POINTER PICKING") |> Sprite.move(2.0, 3.4),
     Sprite.text(dim, 0.32, "BARS ARE NOT PICKABLE") |> Sprite.move(2.0, 2.75),
     target(model, 0.0, -1.0, "CYAN", cyan),
     target(model, 1.0, 5.0, "PINK", pink),
