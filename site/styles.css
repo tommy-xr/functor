@@ -17,6 +17,14 @@
   --font-display: "Orbitron", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
+  /* Player-identity colors for multiplayer chrome (pane borders, tabs, lag
+     combs, Output prefixes). One identity everywhere; p1/p2 deliberately alias
+     the site accents so the multiplayer chrome reads as the same product. */
+  --scrub-p1: var(--cyan);
+  --scrub-p2: var(--pink);
+  --scrub-p3: var(--amber);
+  --scrub-p4: var(--green);
+
   /* Spacing scale — a single rhythm the whole landing page snaps to. */
   --space-sm: 16px;
   --space-md: 24px;
@@ -819,6 +827,7 @@ a:hover {
 }
 
 #example-picker,
+#client-count,
 #reset,
 #download,
 #restart {
@@ -832,8 +841,9 @@ a:hover {
   padding: 5px 9px;
 }
 
-/* Selects drop the OS widget chrome for a themed ▾ chip look. */
-#example-picker {
+/* Selects drop the OS widget chrome for the mockup's ▾ chip look. */
+#example-picker,
+#client-count {
   appearance: none;
   -webkit-appearance: none;
   padding-right: 24px;
@@ -843,7 +853,8 @@ a:hover {
   background-position: right 9px center;
 }
 
-#example-picker:hover {
+#example-picker:hover,
+#client-count:hover {
   border-color: var(--cyan);
   color: var(--cyan);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%2341d8e6'/%3E%3C/svg%3E");
@@ -2452,4 +2463,616 @@ a:hover {
     opacity: 0;
     visibility: hidden;
   }
+}
+
+/* ---------------------------------------------------------- mp pane grid */
+
+/* Multiplayer prototype (sandbox ?clients=N > 1): the preview column becomes
+   chrono bar | tab strip (tabs view) | pane grid. The chrono bar governs only
+   the game side — the editor keeps its full height. Player identity comes
+   from --pc (set per pane from --scrub-p1..p4). */
+
+.preview-pane.mp {
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(120% 80% at 50% 0%, #171029 0%, var(--bg) 60%);
+}
+
+.mp-chrono {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 14px;
+  font: 12px/1 var(--font-mono);
+  color: var(--text);
+  background: rgba(30, 24, 51, 0.92);
+  border-bottom: 1px solid var(--line);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.5),
+    0 14px 36px rgba(0, 0, 0, 0.38);
+  position: relative;
+  /* Above the pane grid (pane headers are z-index 6 for their link menus), so
+     the ⚙ popover and event tooltip never clip under the window chrome. */
+  z-index: 12;
+}
+
+.mp-chrono.dormant .mp-rail,
+.mp-chrono.dormant .mp-rail-label {
+  opacity: 0.35;
+}
+
+.mp-sbtn {
+  font: 13px/1 var(--font-mono);
+  color: var(--text);
+  cursor: pointer;
+  background: rgba(65, 216, 230, 0.1);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: box-shadow 0.12s ease, border-color 0.12s ease;
+}
+
+.mp-sbtn:hover {
+  border-color: var(--cyan);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+}
+
+.mp-rail {
+  position: relative;
+  flex: 1;
+  min-width: 80px;
+  height: 30px;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.mp-track,
+.mp-recorded,
+.mp-played {
+  position: absolute;
+  top: 12px;
+  height: 6px;
+  border-radius: 3px;
+}
+
+.mp-track {
+  left: 0;
+  right: 0;
+  background: rgba(155, 148, 179, 0.18);
+}
+
+.mp-recorded {
+  background: rgba(65, 216, 230, 0.3);
+}
+
+.mp-played {
+  left: 0;
+  background: var(--cyan);
+  opacity: 0.62;
+  box-shadow: 0 0 10px rgba(65, 216, 230, 0.45);
+}
+
+/* Event markers span the full rail (the mockup's .evt ticks): thin amber input
+   lines, slightly heavier violet reload / red error lines, each with a soft
+   glow so they read through the played bar. */
+.mp-evt {
+  position: absolute;
+  top: 3px;
+  height: 24px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  pointer-events: auto;
+}
+
+.mp-evt.input {
+  background: #ffd166;
+  width: 2px;
+  opacity: 0.75;
+  box-shadow: 0 0 5px rgba(255, 209, 102, 0.5);
+}
+
+.mp-evt.reload {
+  background: #b994ff;
+  width: 3px;
+  box-shadow: 0 0 6px rgba(185, 148, 255, 0.6);
+}
+
+.mp-evt.err {
+  background: #ff6b7d;
+  width: 3px;
+  box-shadow: 0 0 6px rgba(255, 107, 125, 0.6);
+}
+
+.mp-playhead {
+  position: absolute;
+  top: 15px;
+  width: 14px;
+  height: 20px;
+  border-radius: 4px;
+  transform: translate(-50%, -50%);
+  background: var(--cyan);
+  border: 1px solid #b9f8ff;
+  box-shadow: 0 0 12px rgba(65, 216, 230, 0.6);
+  pointer-events: none;
+}
+
+.mp-viewseg {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.mp-viewseg button {
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--line);
+  padding: 6px 9px;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s;
+}
+
+.mp-viewseg button:last-child {
+  border-right: 0;
+}
+
+.mp-viewseg button:hover {
+  background: rgba(65, 216, 230, 0.07);
+  color: var(--text);
+}
+
+.mp-viewseg button[aria-pressed="true"] {
+  background: rgba(65, 216, 230, 0.14);
+  color: var(--cyan);
+}
+
+/* ---- tab strip (tabs view) ---- */
+
+.mp-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+
+.mp-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+  background: color-mix(in srgb, var(--pc) 6%, var(--bg-raised));
+  border: 1px solid color-mix(in srgb, var(--pc) 28%, var(--line));
+  border-radius: 5px 5px 0 0;
+  border-bottom: 0;
+  padding: 7px 12px;
+  filter: saturate(0.45);
+  transition: filter 0.18s;
+}
+
+.mp-tab.focus {
+  color: var(--pc);
+  background: color-mix(in srgb, var(--pc) 14%, var(--bg-raised));
+  border-color: var(--pc);
+  filter: none;
+  box-shadow: 0 -2px 14px color-mix(in srgb, var(--pc) 25%, transparent);
+}
+
+/* ---- the grid ---- */
+
+.mp-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.mp-grid[data-view="tabs"] {
+  grid-template-columns: 1fr;
+  padding-top: 0;
+}
+
+.mp-grid[data-view="tabs"] .mp-pane:not(.focus) {
+  display: none;
+}
+
+/* ---- pane shell ---- */
+
+.mp-pane {
+  --pc: var(--cyan);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* The frame is the shadow, not the line: a whisper of player color on the
+     border, real separation from depth. */
+  border: 1px solid color-mix(in srgb, var(--pc) 12%, rgba(43, 37, 66, 0.6));
+  border-radius: 5px;
+  /* NOT overflow:hidden — the link menu must escape the pane. The children
+     carry the rounding: the header clips its top corners, the body clips the
+     iframe's bottom corners (unless the error strip is the last row). */
+  background: #0b0817;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.45),
+    0 12px 36px rgba(0, 0, 0, 0.55);
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+
+.mp-pane.focus {
+  border-color: color-mix(in srgb, var(--pc) 55%, transparent);
+  box-shadow:
+    0 0 22px color-mix(in srgb, var(--pc) 28%, transparent),
+    0 2px 6px rgba(0, 0, 0, 0.45),
+    0 12px 36px rgba(0, 0, 0, 0.55);
+}
+
+.mp-pane-hd {
+  position: relative;
+  z-index: 6; /* the link menu must paint above the pane's iframe */
+  border-radius: 4px 4px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  font: 10.5px/1 var(--font-mono);
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--pc) 8%, var(--bg-raised));
+  border-bottom: 1px solid color-mix(in srgb, var(--pc) 14%, var(--line));
+  filter: saturate(0.45);
+  transition: filter 0.18s;
+  cursor: default;
+  user-select: none;
+}
+
+.mp-pane.focus .mp-pane-hd {
+  filter: none;
+  background: color-mix(in srgb, var(--pc) 15%, var(--bg-raised));
+}
+
+.mp-digit {
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border-radius: 3px;
+  flex: none;
+  background: color-mix(in srgb, var(--pc) 24%, transparent);
+  color: var(--pc);
+  font-size: 9.5px;
+}
+
+.mp-role {
+  color: var(--pc);
+  letter-spacing: 0.05em;
+}
+
+.mp-hd-r {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-you {
+  color: var(--pc);
+}
+
+.mp-pf b {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.mp-st {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: none;
+}
+
+.mp-st[data-state="live"] {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+}
+
+.mp-st[data-state="busy"] {
+  background: var(--amber);
+  box-shadow: 0 0 6px var(--amber);
+}
+
+.mp-st[data-state="error"] {
+  background: var(--red);
+  box-shadow: 0 0 6px var(--red);
+}
+
+.mp-pane-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.mp-pane-body:last-child {
+  border-radius: 0 0 4px 4px;
+}
+
+.mp-pane-body iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: var(--bg);
+}
+
+.mp-pane-err {
+  border-radius: 0 0 4px 4px;
+  padding: 4px 9px;
+  font: 10.5px/1.4 var(--font-mono);
+  color: var(--red);
+  background: rgba(242, 99, 127, 0.1);
+  border-top: 1px solid rgba(242, 99, 127, 0.35);
+}
+
+/* ---- per-pane link chip + menu ---- */
+
+.mp-link-host {
+  position: relative;
+}
+
+.mp-link-chip {
+  font: 10px/1 var(--font-mono);
+  color: var(--text-dim);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 7px;
+  transition: border-color 0.14s, color 0.14s;
+}
+
+.mp-link-chip:hover {
+  border-color: color-mix(in srgb, var(--pc) 50%, transparent);
+  color: var(--text);
+}
+
+.mp-link-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  font: 11px/1.4 var(--font-mono);
+  color: var(--text);
+  background: rgba(30, 24, 51, 0.98);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  filter: saturate(1); /* opt out of the dimmed-header filter */
+}
+
+.mp-link-presets {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mp-link-presets button {
+  font: 10.5px/1 var(--font-mono);
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--line);
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.mp-link-presets button:last-child {
+  border-right: 0;
+}
+
+.mp-link-presets button:hover {
+  background: rgba(65, 216, 230, 0.08);
+  color: var(--text);
+}
+
+.mp-link-presets button[aria-pressed="true"] {
+  background: rgba(232, 88, 184, 0.16);
+  color: var(--pink);
+}
+
+.mp-link-menu label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+}
+
+.mp-link-menu input {
+  width: 52px;
+  font: 11px/1 var(--font-mono);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 3px 5px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-link-note {
+  margin: 0;
+  max-width: 220px;
+  white-space: normal;
+  font-size: 9.5px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+/* Narrow columns (the sandbox's preview at laptop width): stack the panes. */
+@media (max-width: 1280px) {
+  .preview-pane.mp .mp-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* `hidden` must win over the display rules above. */
+.mp-tabs[hidden],
+.mp-link-menu[hidden] {
+  display: none;
+}
+
+/* ---- under-rail frame label, future (extrapolation) segment, 🔮 state ---- */
+
+.mp-rail-label {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  color: var(--text-dim);
+  opacity: 0.78;
+  white-space: nowrap;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-rail-label b {
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.mp-viewseg button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mp-viewseg button:disabled:hover {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+/* ---- single client: same instrument, no multiplayer chrome ---- */
+
+/* One client keeps the chrono bar (tiled/tabs disabled) but drops the pane
+   header — digits, roles, and link chips are multiplayer vocabulary — and the
+   focus glow, since there is nothing to disambiguate. */
+.preview-pane.mp[data-count="1"] .mp-pane-hd,
+.preview-pane.mp[data-count="1"] .mp-tabs,
+.preview-pane.mp[data-count="1"] .mp-chrono {
+  display: none;
+}
+
+/* One client is exactly today's sandbox: no chrome frame around the game and
+   the pane's own in-frame scrubber (the chrono bar appears at 2+). */
+.preview-pane.mp[data-count="1"] .mp-grid {
+  padding: 0;
+  gap: 0;
+}
+
+.preview-pane.mp[data-count="1"] .mp-pane {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.preview-pane.mp[data-count="1"] .mp-pane.focus {
+  border: 0;
+  box-shadow: none;
+}
+
+/* ---- restored scrubber polish: handles, tooltip, overflow chip, ⚙ ---- */
+
+/* Breathing room between the rail (whose playhead overhangs its right edge
+   when fully caught up) and the 🔮 button. */
+.mp-rail {
+  margin-right: 8px;
+}
+
+.mp-evt {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.mp-evt:hover,
+.mp-evt:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.75);
+  outline-offset: 1px;
+}
+
+.mp-evt-tip {
+  display: none;
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  max-width: min(280px, 60vw);
+  padding: 5px 7px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: rgba(30, 24, 51, 0.98);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* The 🔮 extrapolation surface ships with the single-client chrono
+   unification (it is single-client-only by design: whole-session forward
+   extrapolation means N speculative re-simulations). Until then the chrono
+   bar carries the view toggle alone. */
+
+/* ---- second ticks along the rail (every 60 frames; heavier each 5s) ---- */
+
+.mp-tick {
+  position: absolute;
+  top: 11px;
+  height: 8px;
+  width: 1px;
+  background: rgba(233, 230, 242, 0.28);
+  pointer-events: none;
+}
+
+.mp-tick.major {
+  top: 9px;
+  height: 12px;
+  width: 1px;
+  background: rgba(233, 230, 242, 0.5);
+}
+
+/* Numeric fields are raw text entry — the native spinner arrows fight the
+   theme and are unusably small; type=number keeps validation and keyboard
+   arrows working. */
+.mp-link-menu input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.mp-link-menu input[type="number"]::-webkit-inner-spin-button,
+.mp-link-menu input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }

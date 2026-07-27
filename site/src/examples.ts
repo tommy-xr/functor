@@ -30,6 +30,13 @@ export interface Example {
   siblings?: ExampleCopy[];
   /** Local binary assets the project's `Asset.*` locators resolve to. */
   assets?: ExampleCopy[];
+  /**
+   * Marks a sample that declares a server entry point (the functor.json
+   * `entries` shape, like examples/mp) — the sandbox shows its CLIENTS
+   * control only for those. No current sample qualifies; the flag seats the
+   * gate for an orbs-style client/server sample.
+   */
+  multiplayer?: boolean;
 }
 
 export const EXAMPLES: Example[] = [

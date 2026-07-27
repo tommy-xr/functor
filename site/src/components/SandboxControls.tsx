@@ -20,22 +20,34 @@ export interface PickerState {
   selected: string;
 }
 
+/** The multiplayer prototype's CLIENTS control (mp-panes.ts). */
+export interface ClientsState {
+  count: number;
+  /** Shown only for multiplayer-capable samples, or while panes are forced. */
+  visible: boolean;
+}
+
 export interface SandboxControlsProps {
   picker: Store<PickerState>;
   pill: Store<PillState>;
+  clients: Store<ClientsState>;
   runtimeTarget: RuntimeTargetCore;
   onSelect: (value: string) => void;
   onReset: () => void;
+  onClients: (count: number) => void;
 }
 
 export const SandboxControls = ({
   picker,
   pill,
+  clients,
   runtimeTarget,
   onSelect,
   onReset,
+  onClients,
 }: SandboxControlsProps) => {
   const { options, selected } = useSyncExternalStore(picker.subscribe, picker.getSnapshot);
+  const clientsState = useSyncExternalStore(clients.subscribe, clients.getSnapshot);
 
   return (
     <>
@@ -53,6 +65,23 @@ export const SandboxControls = ({
           </option>
         ))}
       </select>
+      {clientsState.visible && (
+        <>
+          <label className="picker-label" htmlFor="client-count">
+            clients
+          </label>
+          <select
+            id="client-count"
+            title="Run N clients of this program side by side (multiplayer prototype)"
+            value={String(clientsState.count)}
+            onChange={(event) => onClients(Number(event.target.value))}
+          >
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+          </select>
+        </>
+      )}
       <button id="reset" type="button" title="Reload the example (resets the model)" onClick={onReset}>
         ↺ reset
       </button>

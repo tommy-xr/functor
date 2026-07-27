@@ -34,7 +34,9 @@ import { createRuntimeTargetCore } from "./runtime-target-core.js";
 import type { RuntimeTargetState } from "./runtime-target-core.js";
 import { createStore } from "./store.js";
 import { SandboxControls } from "./components/SandboxControls.js";
-import type { PickerState } from "./components/SandboxControls.js";
+import type { PickerState, ClientsState } from "./components/SandboxControls.js";
+import { initMultiplayerPanes, MAX_CLIENTS } from "./mp-panes.js";
+import type { MultiplayerPanes } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { asPlayerMessage } from "./protocol.js";
@@ -79,11 +81,30 @@ const picker = createStore<PickerState>({
 });
 const pill = createStore<PillState>({ state: "busy", text: "◌ loading…", detail: "" });
 
+// Multiplayer pane-grid prototype (mp-panes.ts): #clients=2|3 turns the
+// preview column into a chrono bar + N client panes. A HASH param, not a
+// query: count changes apply live (panes grow/shrink in place, client 1's
+// model survives) with no page reload. ?clients= still parses for old links.
+const hashClients = () =>
+  Number(new URLSearchParams(window.location.hash.slice(1)).get("clients")) || 0;
+const requestedClients = Math.min(
+  MAX_CLIENTS,
+  Math.max(
+    1,
+    hashClients() || Number(new URLSearchParams(window.location.search).get("clients")) || 1
+  )
+);
+let mp: MultiplayerPanes | null = null;
+const clients = createStore<ClientsState>({ count: requestedClients, visible: false });
+
 const setStatus = (state: PillState["state"], text: string, detail = "") => {
   // The detail (the reload note, or a parse error) lives in the pill's tooltip
   // and — for errors — the Output panel. No separate error banner under the
   // editor: the preview pill is the single live indicator.
   pill.set({ state, text, detail });
+  // In multiplayer the pill aggregates every pane ("● 3 running"); the primary
+  // pane's state feeds the same aggregate.
+  mp?.aggregateStatus(state, text, detail);
 };
 
 // The boot loader (static markup in sandbox.html) evaporates when the PLAYER
@@ -94,6 +115,64 @@ const dismissBootLoader = () =>
   document.querySelector("[data-fn-boot]")?.classList.add("is-done");
 
 const statusBar = createStatusBarStore();
+
+// The pane system mounts at every count, but its chrome is dark at one
+// client — no chrono bar, no pane frame, the stock in-frame scrubber. The
+// single-client chrono unification follows separately with the a11y parity
+// it requires. `getSource` lets a mirror added mid-session catch up to the
+// edited buffer (`view` exists by the time any pane is added).
+mp = initMultiplayerPanes({
+  frame,
+  count: requestedClients,
+  statusBar,
+  setPill: (state, text, detail) => pill.set({ state, text, detail }),
+  getSource: () => view.state.doc.toString(),
+});
+
+// The CLIENTS control only appears for samples that support multiplayer (a
+// server entry point) — N panes of a single-entry scene are just N copies.
+// It stays visible while #clients= forces panes, so there is always a way
+// back to 1; the hash keeps working everywhere as the dev seam.
+const updateClientsStore = () => {
+  const example = EXAMPLES.find((candidate) => candidate.id === picker.getSnapshot().selected);
+  // Latched: once the control has appeared (a flagged sample, or a forcing
+  // hash), shrinking back to 1 must not remove the only way to grow again.
+  clients.set({
+    count: mp!.count(),
+    visible:
+      clients.getSnapshot().visible || Boolean(example?.multiplayer) || mp!.count() > 1,
+  });
+};
+updateClientsStore();
+
+// Reflect the live count into the hash (replaceState — no navigation, and the
+// #src= inline-program param survives alongside it).
+const writeClientsHash = (n: number) => {
+  const hash = new URLSearchParams(window.location.hash.slice(1));
+  if (n > 1) hash.set("clients", String(n));
+  else hash.delete("clients");
+  const url = new URL(window.location.href);
+  url.hash = hash.toString();
+  // Also retire the legacy ?clients= fallback — leaving it would resurrect
+  // the old count on the next reload after an explicit shrink.
+  url.searchParams.delete("clients");
+  window.history.replaceState(null, "", url);
+};
+
+const selectClients = (n: number) => {
+  mp!.setCount(n);
+  writeClientsHash(mp!.count());
+  updateClientsStore();
+};
+
+// Back/forward (or a hand-edited hash) also applies live.
+window.addEventListener("hashchange", () => {
+  const n = hashClients() || 1;
+  if (n !== mp!.count()) {
+    mp!.setCount(n);
+    updateClientsStore();
+  }
+});
 // The sandbox edits only the entry buffer, but some examples also load sibling
 // modules (for example Mario's generated assets.fun manifest). Keep those
 // fetched sources so an external runtime receives the same complete project as
@@ -129,7 +208,11 @@ window.addEventListener("message", (event) => {
   const data = asPlayerMessage(event.data);
   if (!data || data.type !== "functor-lang-console") return;
   if (event.source !== frame.contentWindow) return;
-  statusBar.appendOutput(data.level, data.message, data.frame ?? null);
+  statusBar.appendOutput(
+    data.level,
+    mp && mp.count() > 1 ? `[client 1] ${data.message}` : data.message,
+    data.frame ?? null
+  );
 });
 
 
@@ -156,6 +239,7 @@ const view = new EditorView({
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !programmaticEdit) {
         bridge.push(view.state.doc.toString());
+        mp?.push(view.state.doc.toString());
         runtimeTarget.projectChanged();
       }
     }),
@@ -215,6 +299,7 @@ const setDoc = (
   assets: [string, Uint8Array][] = []
 ) => {
   bridge.reset();
+  mp?.reset();
   // Wholesale document replacement (example switch, inline load, reset): drop
   // the wasm completion cache so the previous program's candidates can't leak.
   resetIntel();
@@ -263,6 +348,7 @@ const loadInline = (b64u: string) => {
   // `init` (a set-source push would preserve the default entry's model). The
   // loader derives module `Main` for a non-identifier entry label.
   frame.src = `player.html?src=${b64u}`;
+  mp?.setSrc(frame.src);
   return true;
 };
 
@@ -310,6 +396,7 @@ const loadExample = async (id: string) => {
   const params = new URLSearchParams({ game: url });
   for (const file of files) params.append("file", file);
   frame.src = `player.html?${params}`;
+  mp?.setSrc(frame.src);
 };
 
 const selectExample = (value: string) => {
@@ -321,8 +408,12 @@ const selectExample = (value: string) => {
   }
   const url = new URL(window.location.href);
   url.searchParams.set("example", value);
-  url.hash = "";
+  // Drop a stale inline program from the hash, but keep #clients=N alive.
+  const hash = new URLSearchParams(window.location.hash.slice(1));
+  hash.delete("src");
+  url.hash = hash.toString();
   window.history.replaceState(null, "", url);
+  updateClientsStore();
   loadExample(value);
 };
 
@@ -339,9 +430,11 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
   <SandboxControls
     picker={picker}
     pill={pill}
+    clients={clients}
     runtimeTarget={runtimeTarget}
     onSelect={selectExample}
     onReset={resetExample}
+    onClients={selectClients}
   />
 );
 const statusBarHost = document.getElementById("statusbar")!;
