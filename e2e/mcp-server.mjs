@@ -7,7 +7,9 @@
 //   1. initialize / notifications/initialized / tools/list, asserting the whole
 //      documented tool surface is advertised.
 //   2. api_reference, called before any session exists (it is session-free):
-//      a known item's signature, a module listing, and the zero-match case.
+//      a known item's signature, a module listing, and the zero-match case —
+//      and language_guide, its language-side twin: the table of contents, a
+//      section by name, and an unknown section.
 //   3. launch_game on examples/counter in HEADLESS mode (no GL, so this runs
 //      anywhere CI does), and assert /state's structured `model` arrives.
 //   4. pause, then step twice — asserting the frame advances and that `step`
@@ -54,6 +56,7 @@ const EXPECTED_TOOLS = [
   "reload_source",
   "reload_project",
   "api_reference",
+  "language_guide",
   "init_game",
   "save_project",
 ];
@@ -168,6 +171,33 @@ try {
     missed = error.message;
   }
   check(missed !== null && /Scene/.test(missed) && /Effect/.test(missed), "a query matching nothing names the available modules");
+
+  // The language surface is session-free too: an agent reads it BEFORE it has
+  // written, let alone launched, anything.
+  console.log("\n▸ the language guide, with no session");
+  const contents = await rpc.call("language_guide");
+  const sectionsBlock = contents.split("## Sections\n")[1] ?? "";
+  const sectionNames = sectionsBlock.split("\n").map((line) => line.trim()).filter(Boolean);
+  check(sectionNames.length > 3, `the table of contents lists ${sectionNames.length} sections`);
+  check(/Assignment is `:=`/.test(contents), "the contents lead with the quick facts (`:=`, not `<-`)");
+  check(/thread-LAST/.test(contents), "the thread-last pipeline rule is in the quick facts");
+
+  const syntax = await rpc.call("language_guide", { section: "syntax-subset" });
+  check(/^## Syntax subset/.test(syntax) && syntax.length > 2000, `a named section returns its full text (${syntax.length} chars)`);
+  check(/let draw = \(model, tts\)/.test(await rpc.call("language_guide", { section: "game contract" })), "a section is addressable by a fragment of its name");
+
+  // A section stops at its first subsection, so a parent must say where it
+  // continues rather than reading like the end of the topic.
+  const modules = await rpc.call("language_guide", { section: "modules-multi-file-projects" });
+  check(/Continues in: interface-files/.test(modules), "a parent section points at its subsections");
+
+  let badSection = null;
+  try {
+    await rpc.call("language_guide", { section: "monad-transformers" });
+  } catch (error) {
+    badSection = error.message;
+  }
+  check(badSection !== null && /syntax-subset/.test(badSection), "an unknown section names the sections that exist");
 
   console.log("\n▸ launching a game headlessly");
   const launched = await rpc.call("launch_game", { dir: "examples/counter", mode: "headless" });
