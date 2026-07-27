@@ -103,16 +103,19 @@ screenshot run has no reason to grab your mouse.
 `model` is opaque `Debug` text; `model_json` is the **parseable** sibling — a
 total, lossy JSON view of the live model. Plain data maps structurally
 (records as objects, lists as arrays, numbers/strings/bools as themselves);
-everything else becomes a sigil-keyed object no record field can collide with
-(`$` is not a Functor Lang identifier character):
+everything else becomes a sigil-keyed object no source-authored record field
+can collide with (`$` is not a Functor Lang identifier character — though a record
+key that arrived off the network in a typed message can carry one, so treat
+the sigils as a strong convention rather than a proof):
 
 ```jsonc
 {"$tuple": [1.0, 2.0]}                 // tuples, kept distinct from lists
 {"$ctor": "Playing", "args": [7.0]}    // variants: constructor + positional args
 {"$fn": "<fn(dt)>"}                    // closures/callables (their Display form)
 {"$host": "SceneNode"}                 // opaque host values
-{"$number": "NaN"}                     // non-finite numbers (JSON can't carry them)
-{"$truncated": "max depth"}            // nesting past the safety bound (128)
+{"$number": "NaN"}                     // NaN/Infinity/-Infinity (JS spellings)
+{"$truncated": "max depth"}            // nesting past the bound (128 — what
+                                       // stock JSON parsers accept anyway)
 ```
 
 It is a one-way observation format (there is deliberately no parser back),

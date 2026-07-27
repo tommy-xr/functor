@@ -450,47 +450,68 @@ impl EffectValue {
     }
 }
 
-/// Depth bound for [`value_to_json`]. Value nesting is user-controlled (see
+/// Depth bound for [`value_to_json`], measured in **emitted JSON
+/// containers**, not Functor values — a tuple or variant emits two nested
+/// containers (the sigil object plus its array), so charging per value would
+/// overshoot the real JSON depth 2×. Value nesting is user-controlled (see
 /// the `Value` `Display` doc — a fold wrapping `[acc]` per step builds depth
-/// past any recursion limit), and this walker recurses; past the bound a node
-/// becomes `{"$truncated": "max depth"}` instead of risking the host's stack.
-/// Far deeper than any real model, so truncation marks pathology, not data.
-const VALUE_JSON_MAX_DEPTH: usize = 128;
+/// past any recursion limit), so unbounded depth must be refused somewhere —
+/// and for JSON output the bound is a property of the FORMAT, not this
+/// walker: `serde_json::Value` recurses in its own `Serialize` and `Drop`
+/// impls, and serde_json's default *parse* recursion limit on the consuming
+/// side is 128 containers, so deeper output would overflow producing or be
+/// rejected consuming. 120 leaves headroom for the wrapping `RuntimeState`
+/// object and the truncation marker itself. Past the bound a node becomes
+/// `{"$truncated": "max depth"}` — visible, not silently dropped; the
+/// `model` Display text on the same response still shows the full value.
+const VALUE_JSON_MAX_DEPTH: usize = 120;
 
 /// A total, LOSSY JSON view of a [`Value`], for observation surfaces (the
 /// debug server's `GET /state` `model_json`). Unlike
 /// [`effect_value_from_value`] it never fails: plain data maps structurally
 /// (numbers, strings, bools; lists as arrays; records as objects — field
 /// order is the serde_json map's, not construction order), and everything
-/// else becomes a sigil-keyed object no record field can collide with (`$` is
-/// not a Functor Lang identifier character):
+/// else becomes a sigil-keyed object no source-authored record field can
+/// collide with (`$` is not a Functor Lang identifier character; a record key
+/// arriving off the network via a typed message CAN carry `$`, so treat
+/// sigils as a strong convention, not a proof):
 ///
 /// - tuples: `{"$tuple": [...]}` (so they stay distinct from lists)
 /// - variants: `{"$ctor": "Some", "args": [...]}`
 /// - callables: `{"$fn": "<fn(dt)>"}` — the `Display` form
 /// - host values: `{"$host": "SceneNode"}` — the `type_name`
-/// - non-finite numbers: `{"$number": "NaN"}` (JSON numbers can't carry them)
+/// - non-finite numbers: `{"$number": "NaN" | "Infinity" | "-Infinity"}`
+///   (JSON numbers can't carry them; the JS spellings, not Rust's `inf`)
 ///
 /// A one-way observation format: there is deliberately no parser back.
 pub fn value_to_json(value: &Value) -> serde_json::Value {
     value_to_json_at(value, 0)
 }
 
+/// `depth` is the JSON-container depth this node is emitted at: lists and
+/// records place children one container deeper, tuples and variants two (the
+/// sigil object wrapping the args array).
 fn value_to_json_at(value: &Value, depth: usize) -> serde_json::Value {
     use serde_json::{json, Value as Json};
     if depth > VALUE_JSON_MAX_DEPTH {
         return json!({ "$truncated": "max depth" });
     }
-    let items_json = |items: &[Value]| -> Vec<Json> {
-        items.iter().map(|v| value_to_json_at(v, depth + 1)).collect()
+    let items_json = |items: &[Value], charge: usize| -> Vec<Json> {
+        items
+            .iter()
+            .map(|v| value_to_json_at(v, depth + charge))
+            .collect()
     };
     match value {
         Value::Number(n) if n.is_finite() => json!(n),
-        Value::Number(n) => json!({ "$number": n.to_string() }),
+        Value::Number(n) if n.is_nan() => json!({ "$number": "NaN" }),
+        Value::Number(n) => {
+            json!({ "$number": if *n > 0.0 { "Infinity" } else { "-Infinity" } })
+        }
         Value::String(s) => json!(s.as_ref()),
         Value::Bool(b) => json!(b),
-        Value::List(items) => Json::Array(items_json(items)),
-        Value::Tuple(items) => json!({ "$tuple": items_json(items) }),
+        Value::List(items) => Json::Array(items_json(items, 1)),
+        Value::Tuple(items) => json!({ "$tuple": items_json(items, 2) }),
         Value::Record(fields) => Json::Object(
             fields
                 .iter()
@@ -498,7 +519,7 @@ fn value_to_json_at(value: &Value, depth: usize) -> serde_json::Value {
                 .collect(),
         ),
         Value::Variant { ctor, args } => {
-            json!({ "$ctor": ctor.as_ref(), "args": items_json(args) })
+            json!({ "$ctor": ctor.as_ref(), "args": items_json(args, 2) })
         }
         Value::Ctor { .. }
         | Value::Closure(_)
@@ -7964,6 +7985,8 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             ("spawn".to_string(), Value::HostFn(Rc::from("Scene.cube"))),
             ("handle".to_string(), Value::HostData(Rc::new(TestHost))),
             ("bad".to_string(), Value::Number(f64::NAN)),
+            ("up".to_string(), Value::Number(f64::INFINITY)),
+            ("down".to_string(), Value::Number(f64::NEG_INFINITY)),
         ]));
         assert_eq!(
             value_to_json(&model),
@@ -7977,6 +8000,8 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
                 "spawn": { "$fn": "<host Scene.cube>" },
                 "handle": { "$host": "TestHost" },
                 "bad": { "$number": "NaN" },
+                "up": { "$number": "Infinity" },
+                "down": { "$number": "-Infinity" },
             })
         );
     }
@@ -7995,6 +8020,31 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             node = &items[0];
         }
         assert_eq!(node, &serde_json::json!({ "$truncated": "max depth" }));
+    }
+
+    /// The bound is charged in emitted JSON containers (a tuple emits TWO —
+    /// sigil object + args array), so even the deepest producible
+    /// `model_json`, wrapped in a full `RuntimeState`, stays inside
+    /// serde_json's default 128-container parse limit and round-trips.
+    #[test]
+    fn deep_model_json_round_trips_through_runtime_state() {
+        let mut value = Value::Number(0.0);
+        for _ in 0..300 {
+            value = Value::Tuple(Rc::new(vec![Value::Number(1.0), value]));
+        }
+        let state = crate::debug_protocol::RuntimeState {
+            frame: 1,
+            tts: 0.0,
+            pending_steps: 0,
+            viewport: crate::debug_protocol::RuntimeViewport::new(1, 1),
+            views: vec![],
+            model: String::new(),
+            model_json: value_to_json(&value),
+            input: crate::InputSnapshot::default(),
+        };
+        let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
+            .expect("deep model_json must stay parseable by stock serde_json");
+        assert_eq!(back.model_json, state.model_json);
     }
 
     /// A diverged replay fails loud with the position, not silently wrong.

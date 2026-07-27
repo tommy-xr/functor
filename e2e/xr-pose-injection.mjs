@@ -215,6 +215,16 @@ check(field(after.model, "leftGripTracked") === "true", "left hand tracked");
 check(field(after.model, "rightGripTracked") === "true", "right hand tracked");
 check(field(after.model, "grabbing") === "true", "injected trigger drove `grabbing`");
 
+console.log("\n▸ model_json mirrors the model as structured data (protocol v4)");
+check(
+  after.model_json !== null && typeof after.model_json === "object",
+  "/state.model_json is a structured object",
+);
+check(
+  after.model_json?.grabbing === true,
+  "model_json.grabbing is a typed bool (no Debug-text matching needed)",
+);
+
 console.log("\n▸ the pose sequence drove the simulation");
 const orb = point(after.model, "orb");
 const aim = posePosition(after.model, "rightAim");

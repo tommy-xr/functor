@@ -105,8 +105,9 @@ export interface RuntimeState {
   input: InputSnapshot;
   model: string;
   /** Structured, lossy JSON view of the model (`null` for producers without
-   * a structured model, e.g. replay). */
-  model_json: ModelJson;
+   * a structured model, e.g. replay). Protocol v4+; absent from older
+   * runtimes. */
+  model_json?: ModelJson;
 }
 
 /** Camera block from `GET /scene`. */
