@@ -119,8 +119,9 @@ the sigils as a strong convention rather than a proof):
 {"$fn": "<fn(dt)>"}                    // closures/callables (their Display form)
 {"$host": "SceneNode"}                 // opaque host values
 {"$number": "NaN"}                     // NaN/Infinity/-Infinity (JS spellings)
-{"$truncated": "max depth"}            // nesting past the bound (128 — what
-                                       // stock JSON parsers accept anyway)
+{"$truncated": "max depth"}            // nesting past the bound (120 emitted
+                                       // containers — within what stock JSON
+                                       // parsers accept)
 ```
 
 It is a one-way observation format (there is deliberately no parser back),
