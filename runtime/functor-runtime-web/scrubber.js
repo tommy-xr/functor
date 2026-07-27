@@ -36,11 +36,13 @@ const STYLE = `
   --sb-accent: var(--scrub-accent, #41d8e6);
   --sb-future: var(--scrub-future, #e858b8);
   --sb-font: var(--scrub-font, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  /* Docked TOP: the transport instrument sits above the scene it governs,
+     matching the sandbox's chrono bar — one product-wide rule. */
+  position: fixed; left: 0; right: 0; top: 0; z-index: 10;
   display: none; align-items: center; gap: 8px; flex-wrap: nowrap;
   padding: 8px 12px 18px; color: var(--sb-text); background: var(--sb-bg);
-  border-top: 1px solid var(--sb-line);
-  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.5), 0 -14px 36px rgba(0, 0, 0, 0.38);
+  border-bottom: 1px solid var(--sb-line);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5), 0 14px 36px rgba(0, 0, 0, 0.38);
   font: 12px/1 var(--sb-font);
 }
 #scrubber button, #scrub-adv > summary {
@@ -98,7 +100,8 @@ const STYLE = `
   pointer-events: none;
 }
 #scrub-event-detail {
-  position: absolute; z-index: 5; bottom: calc(100% + 7px); display: none;
+  /* Below the frame label (which hangs at 100%+2px..+11px). */
+  position: absolute; z-index: 12; top: calc(100% + 13px); display: none;
   max-width: min(280px, 80vw); padding: 5px 7px; transform: translateX(-50%);
   border: 1px solid var(--sb-line); border-radius: 6px; color: var(--sb-text);
   background: rgba(30, 24, 51, 0.98); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
@@ -121,7 +124,7 @@ const STYLE = `
 #scrub-adv > summary::-webkit-details-marker { display: none; }
 #scrub-adv[open] > summary { border-color: var(--sb-accent); }
 #scrub-adv-pop {
-  position: absolute; bottom: calc(100% + 10px); right: 0; z-index: 11;
+  position: absolute; top: calc(100% + 10px); right: 0; z-index: 11;
   display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
   background: var(--sb-bg); border-radius: 8px; border: 1px solid var(--sb-line);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5); white-space: nowrap;
@@ -206,7 +209,15 @@ export function mountScrubber({ hidden = false } = {}) {
   const el = document.createElement("div");
   el.id = "scrubber";
   el.innerHTML = HTML;
-  if (!hidden) document.body.appendChild(el);
+  if (!hidden) {
+    document.body.appendChild(el);
+    // Reserve the bar's height from MOUNT (not first display): host pages lay
+    // the canvas out below `--functor-scrubber-h`, so the top-docked bar
+    // never occludes in-game UI (Ui.topLeft anchors) and the layout never
+    // jumps when a recording appears. 57px = 30px rail + 8/18px padding + 1px
+    // border (the bar's fixed metrics above).
+    document.documentElement.style.setProperty("--functor-scrubber-h", "57px");
+  }
 
   const $ = (id) => el.querySelector(`#${id}`);
   const rail = $("scrub-rail");
@@ -711,6 +722,7 @@ export function mountScrubber({ hidden = false } = {}) {
     destroy() {
       cancelAnimationFrame(raf);
       el.remove();
+      document.documentElement.style.removeProperty("--functor-scrubber-h");
       if (window.__scrub === seam) delete window.__scrub;
     },
   };
