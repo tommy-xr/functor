@@ -293,11 +293,11 @@ impl FunctorMcp {
     }
 
     /// Search the engine API reference: the `.funi` prelude embedded in this
-    /// binary — every module, signature and doc comment `functor docs` renders.
-    /// `query` matches case-insensitively against item names, qualified paths
-    /// (`Scene.cube`), signatures and doc text; `module` narrows to one prelude
-    /// module, and browses all of its items when `query` is omitted. This tool
-    /// needs no session — it answers before any game is launched.
+    /// binary — the same reference `functor docs` renders. `query` matches
+    /// case-insensitively against item names, qualified paths (`Scene.cube`),
+    /// signatures and doc text, best matches first; `module` narrows to one
+    /// prelude module, and lists all of its items when `query` is omitted. This
+    /// tool needs no session — it answers before any game is launched.
     #[tool]
     async fn api_reference(
         &self,
@@ -308,15 +308,18 @@ impl FunctorMcp {
         let hits = resolve!(search_api(reference, query, args.module.as_deref()));
         if hits.is_empty() {
             return tool_error(format!(
-                "no API items match {query:?}{}. The prelude modules are {}.",
+                "no API items match {query:?}{}. {}",
                 match args.module.as_deref() {
                     Some(module) => format!(" in module {module:?}"),
                     None => String::new(),
                 },
-                module_names(reference).join(", ")
+                modules_hint(reference)
             ));
         }
-        ok_text(render_api_hits(&hits))
+        // A whole-module listing is bounded by the module itself, so browsing
+        // is never truncated — only an open search is.
+        let limit = (!query.trim().is_empty()).then_some(MAX_API_RESULTS);
+        ok_text(render_api_hits(&hits, limit))
     }
 
     /// Start a game as a child process with its debug server on a free port,
@@ -751,7 +754,9 @@ impl FunctorMcp {
         self.docs
             .get_or_init(|| {
                 functor_docgen::generate()
-                    .map_err(|error| format!("could not read the embedded API reference: {error}"))
+                    .map_err(|error| {
+                        format!("could not generate the embedded API reference: {error}")
+                    })
             })
             .as_ref()
             .map_err(String::clone)
@@ -890,16 +895,22 @@ impl Default for FunctorMcp {
 #[derive(Debug)]
 struct ApiHit<'a> {
     item: &'a ApiItem,
-    /// 0 = the item's own name, 1 = its path or signature, 2 = its prose.
+    /// 0 = the item's own name, 1 = its qualified path, 2 = its signature,
+    /// 3 = its prose.
     rank: u8,
 }
 
-fn module_names(reference: &ApiReference) -> Vec<&str> {
-    reference
-        .modules
-        .iter()
-        .map(|module| module.name.as_str())
-        .collect()
+/// The orienting hint every API teaching error ends with.
+fn modules_hint(reference: &ApiReference) -> String {
+    format!(
+        "The prelude modules are {}.",
+        reference
+            .modules
+            .iter()
+            .map(|module| module.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Rank an item against an already-lowercased needle, or `None` if it misses.
@@ -907,15 +918,16 @@ fn rank_api_item(needle: &str, item: &ApiItem) -> Option<u8> {
     if item.name.eq_ignore_ascii_case(needle) || item.qualified_name.eq_ignore_ascii_case(needle) {
         return Some(0);
     }
-    if item.qualified_name.to_lowercase().contains(needle)
-        || item.declaration.to_lowercase().contains(needle)
-    {
+    if item.qualified_name.to_lowercase().contains(needle) {
         return Some(1);
+    }
+    if item.declaration.to_lowercase().contains(needle) {
+        return Some(2);
     }
     item.docs
         .as_deref()
         .is_some_and(|docs| docs.to_lowercase().contains(needle))
-        .then_some(2)
+        .then_some(3)
 }
 
 /// Search the reference, best matches first. `Err` is a teaching message: an
@@ -925,29 +937,22 @@ fn search_api<'a>(
     query: &str,
     module: Option<&str>,
 ) -> Result<Vec<ApiHit<'a>>, String> {
-    let wanted = module.map(str::trim).filter(|name| !name.is_empty());
+    let wanted = module.map(str::trim);
     let modules = match wanted {
-        Some(wanted) => {
-            let matched: Vec<_> = reference
-                .modules
-                .iter()
-                .filter(|module| module.name.eq_ignore_ascii_case(wanted))
-                .collect();
-            if matched.is_empty() {
-                return Err(format!(
-                    "unknown module {wanted:?}: the prelude modules are {}",
-                    module_names(reference).join(", ")
-                ));
-            }
-            matched
-        }
+        // A blank module is a client bug, not "no filter": answering it from
+        // the whole prelude would silently widen the scope that was asked for.
+        Some(wanted) => vec![reference
+            .modules
+            .iter()
+            .find(|module| module.name.eq_ignore_ascii_case(wanted))
+            .ok_or_else(|| format!("unknown module {wanted:?}. {}", modules_hint(reference)))?],
         None => reference.modules.iter().collect(),
     };
     let needle = query.trim().to_lowercase();
     if needle.is_empty() && wanted.is_none() {
         return Err(format!(
-            "give a query to search for, or a module to browse. The prelude modules are {}",
-            module_names(reference).join(", ")
+            "give a query to search for, or a module to list. {}",
+            modules_hint(reference)
         ));
     }
     let mut hits: Vec<ApiHit> = modules
@@ -968,28 +973,26 @@ fn search_api<'a>(
     Ok(hits)
 }
 
-/// Render matches as compact text: qualified name, signature, then the prose.
-fn render_api_hits(hits: &[ApiHit]) -> String {
+/// Render matches as compact text: qualified name at column 0, then the
+/// signature and the prose indented under it — a record type's signature spans
+/// several lines, so every line is indented or the shape would be ambiguous.
+fn render_api_hits(hits: &[ApiHit], limit: Option<usize>) -> String {
+    let shown = limit.unwrap_or(hits.len());
     let mut out = String::new();
-    for hit in hits.iter().take(MAX_API_RESULTS) {
+    for hit in hits.iter().take(shown) {
         out.push_str(&hit.item.qualified_name);
         out.push('\n');
-        out.push_str("  ");
-        out.push_str(&hit.item.declaration);
-        out.push('\n');
-        if let Some(docs) = &hit.item.docs {
-            for line in docs.lines() {
-                out.push_str("  ");
-                out.push_str(line);
-                out.push('\n');
-            }
+        let prose = hit.item.docs.as_deref().unwrap_or("");
+        for line in hit.item.declaration.lines().chain(prose.lines()) {
+            out.push_str("  ");
+            out.push_str(line);
+            out.push('\n');
         }
         out.push('\n');
     }
-    if hits.len() > MAX_API_RESULTS {
+    if hits.len() > shown {
         out.push_str(&format!(
-            "({} of {} matches shown — narrow with a more specific query, or a `module`)\n",
-            MAX_API_RESULTS,
+            "({shown} of {} matches shown — narrow with a more specific query)\n",
             hits.len()
         ));
     }
@@ -1078,7 +1081,7 @@ mod tests {
         assert_eq!(hits[0].item.qualified_name, "Scene.cube");
         assert_eq!(hits[0].rank, 0);
         // The rendered text carries the signature and the prose, not just a name.
-        let rendered = render_api_hits(&hits);
+        let rendered = render_api_hits(&hits, Some(super::MAX_API_RESULTS));
         assert!(rendered.contains("let cube : () => t"), "{rendered}");
     }
 
@@ -1089,7 +1092,8 @@ mod tests {
 
         assert_eq!(hits[0].rank, 0);
         assert!(
-            hits.iter().any(|hit| hit.item.qualified_name == "Scene.cube"),
+            hits.iter()
+                .any(|hit| hit.item.qualified_name == "Scene.cube"),
             "Scene.cube must match its own bare name"
         );
     }
@@ -1131,13 +1135,45 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_result_says_so() {
+    fn a_truncated_search_says_so_and_a_module_listing_is_whole() {
         let reference = reference();
         let hits = search_api(&reference, "", Some("Scene")).unwrap();
         assert!(hits.len() > super::MAX_API_RESULTS, "Scene is a big module");
 
-        let rendered = render_api_hits(&hits);
-        assert!(rendered.contains("matches shown"), "{rendered}");
+        let capped = render_api_hits(&hits, Some(super::MAX_API_RESULTS));
+        assert!(capped.contains("matches shown"), "{capped}");
+        // Listing a module is not truncated: `module` is already the narrowing
+        // the truncation notice would tell the caller to apply.
+        let whole = render_api_hits(&hits, None);
+        assert!(!whole.contains("matches shown"), "{whole}");
+        assert_eq!(
+            whole
+                .lines()
+                .filter(|line| line.starts_with("Scene."))
+                .count(),
+            hits.len()
+        );
+    }
+
+    #[test]
+    fn a_name_match_outranks_a_signature_match() {
+        let reference = reference();
+        let hits = search_api(&reference, "texture", None).unwrap();
+
+        let first = &hits[0];
+        assert!(
+            first.item.qualified_name.to_lowercase().contains("texture"),
+            "a name match must come before consumers that merely mention the type: {}",
+            first.item.qualified_name
+        );
+    }
+
+    #[test]
+    fn a_blank_module_is_a_teaching_error_rather_than_a_widened_search() {
+        let reference = reference();
+        let error = search_api(&reference, "cube", Some("  ")).unwrap_err();
+
+        assert!(error.contains("unknown module"), "{error}");
     }
 
     #[test]

@@ -112,7 +112,10 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
     copy_project(root, &out, true, &mut stats)?;
 
     // The runtime files go in last so nothing in the project can shadow them.
-    std::fs::write(out.join("index.html"), render_functor_lang_index(entry, &files))?;
+    std::fs::write(
+        out.join("index.html"),
+        render_functor_lang_index(entry, &files),
+    )?;
     std::fs::write(out.join("scrubber.js"), SCRUBBER_JS)?;
     std::fs::write(out.join("timeline-model.js"), TIMELINE_MODEL_JS)?;
     let pkg = out.join("pkg");
@@ -218,8 +221,7 @@ fn missing_asset_references(root: &Path, entry: &str) -> Vec<String> {
 
 fn is_asset_path(s: &str) -> bool {
     // A URL ("https://cdn/x.png") is fetched remotely, not from the bundle.
-    !s.contains("://")
-        && functor_runtime_common::asset::is_project_asset_file(Path::new(s))
+    !s.contains("://") && functor_runtime_common::asset::is_project_asset_file(Path::new(s))
 }
 
 /// Will the path `s` be present in the exported bundle at the URL the
@@ -303,11 +305,20 @@ mod tests {
         let out = &export.out_dir;
         let index = fs::read_to_string(out.join("index.html")).unwrap();
         assert!(index.contains("window.__functorLangGamePath = \"game.fun\""));
-        assert!(index.contains("\"pieces.fun\""), "sibling module in the file list");
-        assert!(!fs::read(out.join("pkg/functor_runtime_web_bg.wasm")).unwrap().is_empty());
-        assert!(!fs::read(out.join("pkg/functor_runtime_web.js")).unwrap().is_empty());
         assert!(
-            fs::read_to_string(out.join("scrubber.js")).unwrap().contains("mountScrubber"),
+            index.contains("\"pieces.fun\""),
+            "sibling module in the file list"
+        );
+        assert!(!fs::read(out.join("pkg/functor_runtime_web_bg.wasm"))
+            .unwrap()
+            .is_empty());
+        assert!(!fs::read(out.join("pkg/functor_runtime_web.js"))
+            .unwrap()
+            .is_empty());
+        assert!(
+            fs::read_to_string(out.join("scrubber.js"))
+                .unwrap()
+                .contains("mountScrubber"),
             "the shared scrubber component ships with the bundle"
         );
         assert!(
@@ -321,8 +332,14 @@ mod tests {
         assert!(out.join("model.glb").is_file());
         assert!(out.join("tex/wall.png").is_file());
         assert!(!out.join(".DS_Store").exists(), "hidden files are excluded");
-        assert!(!out.join("stale.txt").exists(), "stale output is wiped, not carried over");
-        assert!(!out.join("dist").exists(), "the output dir is never copied into itself");
+        assert!(
+            !out.join("stale.txt").exists(),
+            "stale output is wiped, not carried over"
+        );
+        assert!(
+            !out.join("dist").exists(),
+            "the output dir is never copied into itself"
+        );
         // game.fun + pieces.fun + model.glb + tex/wall.png
         assert_eq!(export.file_count, 4);
         assert!(export.shadowed.is_empty());
@@ -340,8 +357,14 @@ mod tests {
 
         let out = &export.out_dir;
         let index = fs::read_to_string(out.join("index.html")).unwrap();
-        assert!(index.contains("__functorLangGamePath"), "the bundle's index wins");
-        assert!(!out.join("pkg/junk.js").exists(), "no merge into the runtime pkg/");
+        assert!(
+            index.contains("__functorLangGamePath"),
+            "the bundle's index wins"
+        );
+        assert!(
+            !out.join("pkg/junk.js").exists(),
+            "no merge into the runtime pkg/"
+        );
         assert_eq!(export.shadowed, vec!["index.html", "pkg"]);
     }
 
@@ -367,7 +390,12 @@ let g = "pkg/tex.png"
         let missing = missing_asset_references(dir.path(), "game.fun");
         assert_eq!(
             missing,
-            vec!["../outside.png", "/abs/path.jpg", "missing.glb", "pkg/tex.png"],
+            vec![
+                "../outside.png",
+                "/abs/path.jpg",
+                "missing.glb",
+                "pkg/tex.png"
+            ],
             "missing + unbundleable flagged; present / non-asset / comments / URLs not"
         );
     }
@@ -385,7 +413,10 @@ let g = "pkg/tex.png"
         let wd = dir.path().to_string_lossy().to_string();
         let export = export_functor_lang_wasm(&wd, "game.fun").unwrap();
         assert_eq!(export.file_count, 1, "only game.fun ships");
-        assert!(!export.out_dir.join(".hidden.fun").exists(), "hidden sibling not bundled");
+        assert!(
+            !export.out_dir.join(".hidden.fun").exists(),
+            "hidden sibling not bundled"
+        );
     }
 
     #[cfg(unix)]

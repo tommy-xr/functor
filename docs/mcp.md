@@ -73,7 +73,13 @@ URL plus, when the server launched it, the child process.
 
 | Tool | What it does |
 | --- | --- |
-| `api_reference` | Search the embedded `.funi` prelude — the same reference `functor docs` renders — by name, qualified path (`Scene.cube`), signature, or doc text. `module` narrows to one module, and browses all of it when `query` is omitted. **No session needed**: it answers before any game is launched. |
+| `api_reference` | Search the embedded `.funi` prelude — the same reference `functor docs` renders — by name, qualified path (`Scene.cube`), signature, or doc text. `module` narrows to one module, and lists all of it when `query` is omitted. **No session needed**: it answers before any game is launched. |
+
+Matches come back best-first — the item's own name, then its qualified path,
+then its signature, then its prose — capped at 20 per search, with a line
+saying so. A `module` listing is never capped: the module is the narrowing.
+An unknown module, or a search with neither a query nor a module, answers with
+the list of prelude modules rather than an empty result.
 
 Two semantics are worth internalizing, because they are what make the loop
 deterministic rather than racy:

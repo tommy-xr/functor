@@ -78,7 +78,10 @@ pub fn verify_assets(
             };
             let path = path.join(".");
             // The sanctioned constructors: verify the locator itself.
-            if matches!(path.as_str(), "Asset.model" | "Asset.texture" | "Asset.sound") {
+            if matches!(
+                path.as_str(),
+                "Asset.model" | "Asset.texture" | "Asset.sound"
+            ) {
                 let Some((locator, span)) = string_arg(args, 0) else {
                     return; // dynamic construction — the data boundary, unlinted
                 };
@@ -287,11 +290,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("load: {}", e.render()))
     }
 
-    fn run(
-        src: &str,
-        dir: &Path,
-        probe: &mut dyn FnMut(&str) -> UrlVerdict,
-    ) -> AssetFindings {
+    fn run(src: &str, dir: &Path, probe: &mut dyn FnMut(&str) -> UrlVerdict) -> AssetFindings {
         verify_assets(&project(src).module, dir, probe)
     }
 

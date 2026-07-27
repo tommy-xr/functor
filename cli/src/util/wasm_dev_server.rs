@@ -179,7 +179,8 @@ mod tests {
 
     #[test]
     fn escapes_entries_that_would_break_the_script() {
-        let html = render_functor_lang_index("we\"ird\\name.fun", &["we\"ird\\name.fun".to_string()]);
+        let html =
+            render_functor_lang_index("we\"ird\\name.fun", &["we\"ird\\name.fun".to_string()]);
         assert!(html.contains("we\\\"ird\\\\name.fun"));
     }
 

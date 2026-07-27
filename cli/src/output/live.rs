@@ -94,10 +94,7 @@ impl Panel {
                         format!("{textures}").cyan(),
                     );
                     if let Some(bytes) = s.gpu_bytes_per_frame {
-                        gpu.push_str(&format!(
-                            " · up {}",
-                            format!("{bytes:.0}B/f").cyan()
-                        ));
+                        gpu.push_str(&format!(" · up {}", format!("{bytes:.0}B/f").cyan()));
                     }
                     if let Some((hits, misses)) = s.gpu_cache {
                         gpu.push_str(&format!(

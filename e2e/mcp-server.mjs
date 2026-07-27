@@ -145,6 +145,11 @@ try {
   const effectItems = effect.split("\n").filter((line) => /^Effect\./.test(line));
   check(effectItems.length > 1, `browsing a module lists its items (${effectItems.length} from Effect)`);
 
+  // Scene has more items than a search's result cap: a module listing is whole.
+  const scene = await rpc.call("api_reference", { module: "Scene" });
+  const sceneItems = scene.split("\n").filter((line) => /^Scene\./.test(line));
+  check(sceneItems.length > 20 && !/matches shown/.test(scene), `a module listing is not truncated (${sceneItems.length} from Scene)`);
+
   let missed = null;
   try {
     await rpc.call("api_reference", { query: "zzzznotathing" });

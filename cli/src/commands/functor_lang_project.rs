@@ -65,9 +65,9 @@ pub fn detect(working_directory: &str) -> Option<FunctorLangConfig> {
     }
     let entries = match (json.get("entry"), json.get("entries")) {
         (Some(_), Some(_)) => FunctorLangEntries::Conflicting,
-        (None, Some(serde_json::Value::Object(map))) => FunctorLangEntries::Named(
-            map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-        ),
+        (None, Some(serde_json::Value::Object(map))) => {
+            FunctorLangEntries::Named(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        }
         // A non-object `entries` is shaped wrong; carry that so selection
         // reports it instead of silently running the default entry.
         (None, Some(_)) => FunctorLangEntries::Malformed,
@@ -150,10 +150,9 @@ name → .fun path (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"
     #[cfg(test)]
     fn all(&self) -> Result<Vec<FunctorLangProject>, Error> {
         match &self.entries {
-            FunctorLangEntries::Named(map) => map
-                .iter()
-                .map(|(k, _)| self.select(Some(k)))
-                .collect(),
+            FunctorLangEntries::Named(map) => {
+                map.iter().map(|(k, _)| self.select(Some(k))).collect()
+            }
             _ => self.select(None).map(|p| vec![p]),
         }
     }
@@ -320,10 +319,7 @@ impl FunctorLangProject {
                         .ok()
                         .and_then(|src| nth_line(&src, e.line)),
                 });
-                return Err(Error::other(format!(
-                    "cannot run the {} tests",
-                    self.entry
-                )));
+                return Err(Error::other(format!("cannot run the {} tests", self.entry)));
             }
         };
 
@@ -784,7 +780,8 @@ relative path inside it (got {})",
                 });
             }
 
-            let wasm_server_start = WasmDevServer::start_functor_lang(working_directory, &self.entry);
+            let wasm_server_start =
+                WasmDevServer::start_functor_lang(working_directory, &self.entry);
             if no_open {
                 emit(Event::Info {
                     message: "--no-open: skipping browser launch".to_string(),
@@ -911,7 +908,11 @@ headset over USB and accept its debugging prompt"
 /// require it up front with the install pointer, instead of a connection
 /// error after launch.
 async fn adb_require_runtime(serial: &str) -> Result<(), Error> {
-    let out = adb_output(Some(serial), &["shell", "pm", "list", "packages", VR_PACKAGE]).await?;
+    let out = adb_output(
+        Some(serial),
+        &["shell", "pm", "list", "packages", VR_PACKAGE],
+    )
+    .await?;
     let installed = out
         .lines()
         .any(|line| line.trim() == format!("package:{VR_PACKAGE}"));
@@ -934,10 +935,12 @@ fn spawn_logcat(serial: &str) {
     tokio::spawn(async move {
         use tokio::io::AsyncBufReadExt;
         let mut cmd = tokio::process::Command::new("adb");
-        cmd.args(["-s", &serial, "logcat", "-T", "1", "-v", "brief", "-s", "functor"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true);
+        cmd.args([
+            "-s", &serial, "logcat", "-T", "1", "-v", "brief", "-s", "functor",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
         let Ok(mut child) = cmd.spawn() else {
             emit(Event::Warning {
                 message: "cannot stream the headset log (adb logcat failed to start)".to_string(),
@@ -1263,7 +1266,10 @@ mod tests {
         let config = named(&[("server", "server.fun"), ("client", "client.fun")]);
         assert_eq!(config.select(None).unwrap().entry, "client.fun");
         assert_eq!(
-            named(&[("server", "server.fun")]).select(None).unwrap().entry,
+            named(&[("server", "server.fun")])
+                .select(None)
+                .unwrap()
+                .entry,
             "server.fun"
         );
     }
@@ -1292,7 +1298,10 @@ mod tests {
             entries: FunctorLangEntries::Conflicting,
         };
         let err = config.select(None).unwrap_err();
-        assert!(err.to_string().contains("both `entry` and `entries`"), "{err}");
+        assert!(
+            err.to_string().contains("both `entry` and `entries`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1348,8 +1357,9 @@ mod tests {
     /// example now fails `cargo test` instead of waiting for a manual sweep.
     #[test]
     fn every_shipped_example_typechecks() {
-        let examples: std::path::PathBuf =
-            [env!("CARGO_MANIFEST_DIR"), "..", "examples"].iter().collect();
+        let examples: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples"]
+            .iter()
+            .collect();
         let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&examples)
             .expect("examples directory")
             .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -1365,7 +1375,11 @@ examples move?",
 
         let mut failures = Vec::new();
         for dir in &dirs {
-            let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let name = dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             let dir_str = dir.to_string_lossy().into_owned();
             let Some(config) = super::detect(&dir_str) else {
                 failures.push(format!("{name}: functor.json did not parse as a project"));
