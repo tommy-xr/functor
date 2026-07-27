@@ -1,15 +1,17 @@
 ---
 name: game-jam
 description: >-
-  Host a multi-agent Functor game jam: spawn parallel Opus subagents that each
-  build a sample game in an isolated worktree, working docs-first against
+  Host a multi-agent Functor game jam: spawn parallel high-capability subagents
+  (Opus on Claude, GPT-5.6 Sol on OpenAI by default) that each build a sample
+  game in an isolated worktree, working docs-first against
   https://functor.games to stress-test the manual/API reference, and return a
   ranked friction log of engine + doc gaps. Then judge the entries (usefulness,
   canonicality), promote the best into examples/, and turn the consolidated gap
   list into roadmap work. Use when asked to run a game jam, stress-test the
   Functor API/docs by building games, or generate candidate examples at scale.
-  Args: optional list of game briefs (e.g. `/game-jam tower-defense, tetris`);
-  no args = pick from the backlog below.
+  Args: optional `--model MODEL` override and optional list of game briefs
+  (e.g. `/game-jam --model gpt-5.6-terra tower-defense, tetris`); no briefs =
+  pick from the backlog below.
 ---
 
 # game-jam — parallel sample-building to find API & doc gaps
@@ -40,9 +42,19 @@ roadmap items, and promotes the best sample(s).
 
 ## Phase 1 — one agent per game
 
-Spawn one **Opus** subagent per brief, `isolation: worktree`, running in the
-background — but **pace the fleet; do not run everything at once** (see
-"Concurrency limits" below). Each prompt must include:
+Choose the game-builder model before spawning:
+
+- Default to **Opus** on Claude-hosted agents and **GPT-5.6 Sol**
+  (`gpt-5.6-sol`) on OpenAI-hosted agents.
+- Accept `--model <model>` anywhere in the skill arguments. Remove that option
+  from the game briefs and preserve the requested model identifier exactly.
+- Pass the chosen model explicitly to every game-builder subagent. The override
+  applies only to those agents, not to nested tools such as `xreview`, which
+  retain their own model policy.
+
+Spawn one subagent per brief with the chosen model, `isolation: worktree`,
+running in the background — but **pace the fleet; do not run everything at
+once** (see "Concurrency limits" below). Each prompt must include:
 
 - **The brief**: game, slug, and the specific engine surfaces it exists to
   stress (physics, XR input, 2D ergonomics, chase camera, UI/dialog, …).
