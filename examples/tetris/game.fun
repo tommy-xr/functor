@@ -363,13 +363,13 @@ let drawGhost = (model, cell) =>
 let verticalGrid =
   List.range(boardWidth + 1.0)
   |> List.map((column) =>
-      Sprite.rectangle(gridColor, 0.025, boardHeight)
+      Sprite.rectangle(gridColor, 0.05, boardHeight)
       |> Sprite.move(boardLeft + column, 0.0))
 
 let horizontalGrid =
   List.range(boardHeight + 1.0)
   |> List.map((row) =>
-      Sprite.rectangle(gridColor, boardWidth, 0.025)
+      Sprite.rectangle(gridColor, boardWidth, 0.05)
       |> Sprite.move(-3.0, boardBottom + row))
 
 let label = (text, y) =>
