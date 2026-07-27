@@ -151,10 +151,11 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },
-    /// Run with hot-reload (same as `run`; Functor Lang reloads on save), and
-    /// serve the debug runtime on http://127.0.0.1:8077 so an agent or script
-    /// can attach (docs/debug-runtime.md, docs/mcp.md) without being told a
-    /// port. E.g. `functor -d examples/lighting develop native`.
+    /// Run with hot-reload (same as `run`; Functor Lang reloads on save). On
+    /// native it also serves the debug runtime on http://127.0.0.1:8077 so an
+    /// agent or script can attach (docs/debug-runtime.md, docs/mcp.md) without
+    /// being told a port (`--no-debug` to skip; wasm serves pages, not the
+    /// control port). E.g. `functor -d examples/lighting develop native`.
     Develop {
         #[arg(value_enum)]
         environment: Option<Environment>,

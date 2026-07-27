@@ -839,11 +839,20 @@ fn resolve_debug_args(develop: bool, runner_args: &[String]) -> (Vec<String>, Op
     let explicit = has("--debug-port");
     let bind = has("--debug-bind");
     let no_debug = runner_args.iter().any(|arg| arg == "--no-debug");
+    // `--debug-port-optional` is internal to the injected develop default: an
+    // EXPLICIT --debug-port that cannot bind must stay an error, so a
+    // user-supplied copy is stripped rather than forwarded.
+    let internal = runner_args.iter().any(|arg| arg == "--debug-port-optional");
     let mut args: Vec<String> = runner_args
         .iter()
-        .filter(|arg| *arg != "--no-debug")
+        .filter(|arg| *arg != "--no-debug" && *arg != "--debug-port-optional")
         .cloned()
         .collect();
+    let internal_warning = internal.then(|| {
+        "--debug-port-optional is internal to the develop default and was ignored \
+(an explicit --debug-port that cannot bind is an error)"
+            .to_string()
+    });
 
     if !develop || explicit || no_debug || bind {
         let warning = match (no_debug, explicit, bind) {
@@ -857,13 +866,13 @@ bind is never implicit — pass --debug-port <PORT> to start one)"
             ),
             _ => None,
         };
-        return (args, warning);
+        return (args, warning.or(internal_warning));
     }
 
     args.push("--debug-port".to_string());
     args.push(DEFAULT_DEVELOP_PORT.to_string());
     args.push("--debug-port-optional".to_string());
-    (args, None)
+    (args, internal_warning)
 }
 
 /// Auto-reimport (B.2): regenerate a stale GENERATED `assets.fun` before the
@@ -1328,6 +1337,23 @@ mod tests {
     fn no_debug_suppresses_the_default_and_never_reaches_the_runtime() {
         assert_eq!(resolve(true, &["--no-debug", "--hidden"]).0, ["--hidden"]);
         assert_eq!(resolve(false, &["--no-debug"]).0, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_user_supplied_debug_port_optional_is_stripped() {
+        // The flag is internal to the injected default: forwarded alongside an
+        // explicit --debug-port it would silently degrade the fatal-bind
+        // contract, so it never survives the CLI in any combination.
+        let (args, warning) = resolve(true, &["--debug-port", "9001", "--debug-port-optional"]);
+        assert_eq!(args, ["--debug-port", "9001"]);
+        assert!(warning.is_some_and(|w| w.contains("--debug-port-optional")));
+        let (args, warning) = resolve(true, &["--debug-port-optional"]);
+        assert_eq!(
+            args,
+            ["--debug-port", "8077", "--debug-port-optional"],
+            "the DEFAULT still carries the internal flag it injects itself"
+        );
+        assert!(warning.is_some_and(|w| w.contains("--debug-port-optional")));
     }
 
     #[test]
