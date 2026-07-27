@@ -19,6 +19,7 @@ use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
+use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
 
 use crate::output::{emit, Event, Severity};
 // `util` (the shell-command runner + wasm dev server) is only used by the
@@ -412,6 +413,10 @@ impl FunctorLangProject {
             "--game-path".to_string(),
             self.entry.clone(),
         ];
+        let (runner_args, debug_warning) = resolve_debug_args(develop, runner_args);
+        if let Some(message) = debug_warning {
+            emit(Event::Warning { message });
+        }
         argv.extend(runner_args.iter().cloned());
         let runtime_args = functor_runtime_desktop::Args::parse_from(argv);
 
@@ -804,6 +809,70 @@ relative path inside it (got {})",
             wasm_server_start.await
         }
     }
+}
+
+/// Resolve the debug-server args the desktop runtime is invoked with, and
+/// strip the CLI-only `--no-debug` (the runtime's clap would reject it).
+///
+/// `develop` serves the debug runtime on the well-known localhost port
+/// [`DEFAULT_DEVELOP_PORT`] by default, so an agent can attach to a human's
+/// live session without being told a port. `run` stays opt-in — only a session
+/// the developer explicitly called `develop` gets a listener for free. An
+/// explicit `--debug-port` (or `--debug-port=P`) always wins, `--no-debug`
+/// suppresses the default, and the added default carries
+/// `--debug-port-optional` so a second concurrent session degrades to "no
+/// debug server" instead of dying on the bind.
+///
+/// The default is LOCALHOST-ONLY by construction: `--debug-bind` (the flag that
+/// widens the server to the LAN, where it is an unauthenticated remote-code
+/// channel) suppresses it too, so a wide bind still takes an explicit
+/// `--debug-port`. Nothing here ever widens a bind implicitly.
+///
+/// Returns the args to forward plus an optional warning to emit.
+fn resolve_debug_args(develop: bool, runner_args: &[String]) -> (Vec<String>, Option<String>) {
+    let has = |name: &str| {
+        let prefix = format!("{name}=");
+        runner_args
+            .iter()
+            .any(|arg| arg == name || arg.starts_with(&prefix))
+    };
+    let explicit = has("--debug-port");
+    let bind = has("--debug-bind");
+    let no_debug = runner_args.iter().any(|arg| arg == "--no-debug");
+    // `--debug-port-optional` is internal to the injected develop default: an
+    // EXPLICIT --debug-port that cannot bind must stay an error, so a
+    // user-supplied copy is stripped rather than forwarded.
+    let internal = runner_args.iter().any(|arg| arg == "--debug-port-optional");
+    let mut args: Vec<String> = runner_args
+        .iter()
+        .filter(|arg| *arg != "--no-debug" && *arg != "--debug-port-optional")
+        .cloned()
+        .collect();
+    let internal_warning = internal.then(|| {
+        "--debug-port-optional is internal to the develop default and was ignored \
+(an explicit --debug-port that cannot bind is an error)"
+            .to_string()
+    });
+
+    if !develop || explicit || no_debug || bind {
+        let warning = match (no_debug, explicit, bind) {
+            (true, true, _) => {
+                Some("--no-debug ignored: --debug-port was given explicitly".to_string())
+            }
+            (false, false, true) if develop => Some(
+                "--debug-bind without --debug-port: no debug server started (a non-localhost \
+bind is never implicit — pass --debug-port <PORT> to start one)"
+                    .to_string(),
+            ),
+            _ => None,
+        };
+        return (args, warning.or(internal_warning));
+    }
+
+    args.push("--debug-port".to_string());
+    args.push(DEFAULT_DEVELOP_PORT.to_string());
+    args.push("--debug-port-optional".to_string());
+    (args, internal_warning)
 }
 
 /// Auto-reimport (B.2): regenerate a stale GENERATED `assets.fun` before the
@@ -1228,7 +1297,90 @@ fn entry_escapes_project(entry: &str) -> bool {
 mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
-    use super::{nth_line, project_asset_files, FunctorLangConfig, FunctorLangEntries};
+    use super::{
+        nth_line, project_asset_files, resolve_debug_args, FunctorLangConfig, FunctorLangEntries,
+    };
+
+    fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        resolve_debug_args(develop, &args)
+    }
+
+    #[test]
+    fn develop_defaults_to_the_well_known_debug_port() {
+        let (args, warning) = resolve(true, &["--hidden"]);
+        assert_eq!(
+            args,
+            ["--hidden", "--debug-port", "8077", "--debug-port-optional"]
+        );
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn run_stays_opt_in() {
+        assert_eq!(resolve(false, &["--hidden"]).0, ["--hidden"]);
+    }
+
+    #[test]
+    fn an_explicit_debug_port_wins() {
+        assert_eq!(
+            resolve(true, &["--debug-port", "9001"]).0,
+            ["--debug-port", "9001"]
+        );
+        assert_eq!(
+            resolve(true, &["--debug-port=9001"]).0,
+            ["--debug-port=9001"]
+        );
+    }
+
+    #[test]
+    fn no_debug_suppresses_the_default_and_never_reaches_the_runtime() {
+        assert_eq!(resolve(true, &["--no-debug", "--hidden"]).0, ["--hidden"]);
+        assert_eq!(resolve(false, &["--no-debug"]).0, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_user_supplied_debug_port_optional_is_stripped() {
+        // The flag is internal to the injected default: forwarded alongside an
+        // explicit --debug-port it would silently degrade the fatal-bind
+        // contract, so it never survives the CLI in any combination.
+        let (args, warning) = resolve(true, &["--debug-port", "9001", "--debug-port-optional"]);
+        assert_eq!(args, ["--debug-port", "9001"]);
+        assert!(warning.is_some_and(|w| w.contains("--debug-port-optional")));
+        let (args, warning) = resolve(true, &["--debug-port-optional"]);
+        assert_eq!(
+            args,
+            ["--debug-port", "8077", "--debug-port-optional"],
+            "the DEFAULT still carries the internal flag it injects itself"
+        );
+        assert!(warning.is_some_and(|w| w.contains("--debug-port-optional")));
+    }
+
+    #[test]
+    fn a_bind_is_never_widened_implicitly() {
+        // The default listener has no auth, so `--debug-bind` (which exists to
+        // expose it) must not be handed a port it never asked for.
+        for args in [
+            vec!["--debug-bind", "0.0.0.0"],
+            vec!["--debug-bind=0.0.0.0"],
+        ] {
+            let (resolved, warning) = resolve(true, &args);
+            assert_eq!(resolved, args);
+            assert!(warning.is_some_and(|w| w.contains("--debug-bind")));
+        }
+        // …but an explicit port with a wide bind is still exactly what was asked.
+        assert_eq!(
+            resolve(true, &["--debug-bind", "0.0.0.0", "--debug-port", "9001"]).0,
+            ["--debug-bind", "0.0.0.0", "--debug-port", "9001"]
+        );
+    }
+
+    #[test]
+    fn no_debug_with_an_explicit_port_warns() {
+        let (args, warning) = resolve(true, &["--no-debug", "--debug-port", "9001"]);
+        assert_eq!(args, ["--debug-port", "9001"]);
+        assert!(warning.is_some_and(|w| w.contains("--no-debug ignored")));
+    }
 
     fn single(entry: &str) -> FunctorLangConfig {
         FunctorLangConfig {
