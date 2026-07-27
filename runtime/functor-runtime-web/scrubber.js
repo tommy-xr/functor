@@ -187,18 +187,26 @@ const HTML = `
     </div>
   </details>`;
 
-export function mountScrubber() {
-  if (!document.getElementById("functor-scrubber-style")) {
+// `hidden: true` mounts the SEAM without the chrome: the timeline model, the
+// runtime poll loop, and `window.__scrub` all run exactly as usual, but the
+// bar's DOM is never attached to the document — so nothing renders and
+// nothing enters the accessibility tree. This is for host pages that dock
+// their own transport UI over the seam (the sandbox's chrono bar) — an
+// honest replacement for hiding the bar with injected CSS.
+export function mountScrubber({ hidden = false } = {}) {
+  if (!hidden && !document.getElementById("functor-scrubber-style")) {
     const style = document.createElement("style");
     style.id = "functor-scrubber-style";
     style.textContent = STYLE;
     document.head.appendChild(style);
   }
 
+  // The element is always BUILT (every internal lookup and render targets
+  // it); when hidden it simply stays detached.
   const el = document.createElement("div");
   el.id = "scrubber";
   el.innerHTML = HTML;
-  document.body.appendChild(el);
+  if (!hidden) document.body.appendChild(el);
 
   const $ = (id) => el.querySelector(`#${id}`);
   const rail = $("scrub-rail");
@@ -231,7 +239,9 @@ export function mountScrubber() {
 
   const dispatch = (action) => {
     state = reduceTimeline(state, action);
-    render();
+    // Hidden mounts skip ALL rendering: state is owned by reduceTimeline and
+    // the seam reads it directly, so the detached DOM never needs painting.
+    if (!hidden) render();
   };
 
   const view = () => deriveTimelineView(state);
@@ -659,7 +669,7 @@ export function mountScrubber() {
     }
     const range = functor_lang_scene_range();
     if (range.length === 2) {
-      el.style.display = "flex";
+      if (!hidden) el.style.display = "flex";
       const snapshot = {
         frame: functor_lang_scene_frame(),
         lo: range[0],
@@ -677,9 +687,9 @@ export function mountScrubber() {
     } else {
       const paused = functor_lang_scrub_paused();
       if (paused && state.runtime) {
-        el.style.display = "flex";
+        if (!hidden) el.style.display = "flex";
         if (state.recordingAvailable) dispatch({ type: "recording-cleared" });
-      } else {
+      } else if (!hidden) {
         el.style.display = "none";
       }
       lastRuntimeSnapshotKey = "";
