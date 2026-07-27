@@ -73,8 +73,8 @@ const STYLE = `
 .scrub-event.input { fill: #ffd166; fill-opacity: 0.75; }
 .scrub-event.reload { fill: #b994ff; }
 .scrub-event.reload-error { fill: #ff6b7d; }
-.scrub-tick { fill: rgba(233, 230, 242, 0.28); pointer-events: none; }
-.scrub-tick.major { fill: rgba(233, 230, 242, 0.5); }
+.scrub-tick { fill: var(--sb-text); fill-opacity: 0.28; pointer-events: none; }
+.scrub-tick.major { fill: var(--sb-text); fill-opacity: 0.5; }
 .scrub-event-hit { cursor: pointer; outline: none; }
 .scrub-event-hit.active .scrub-event,
 .scrub-event-hit:focus .scrub-event { stroke: white; stroke-width: 2; }
@@ -361,15 +361,25 @@ export function mountScrubber() {
     }
   };
 
-  // Second ticks (60 frames; heavier every 5s) along the rail. Positions track
-  // the moving viewport, nodes are recycled — only count changes touch the DOM.
-  const ticksLayer = el.querySelector("#scrub-ticks");
+  // Ticks along the rail: one per second (TIMELINE_FPS frames), heavier every
+  // 5s. If a viewport ever spans enough seconds that ticks would smear
+  // together, the step widens (5s/30s) to keep them ≥ ~20 viewBox units
+  // apart. Skipped entirely when (lo, span) are unchanged since last render —
+  // the common paused case — so steady-state cost is one key comparison.
+  const ticksLayer = $("scrub-ticks");
+  let lastTickKey = "";
   const renderTicks = (current) => {
     const ns = "http://www.w3.org/2000/svg";
     const lo = current.viewport.lo;
     const span = Math.max(current.viewport.hi - lo, 1);
+    const perSecond = TIMELINE_FPS;
+    const step =
+      span / perSecond <= 50 ? perSecond : span / perSecond <= 250 ? 5 * perSecond : 30 * perSecond;
+    const tickKey = `${lo}:${span}:${step}`;
+    if (tickKey === lastTickKey) return;
+    lastTickKey = tickKey;
     const frames = [];
-    for (let f = Math.ceil(lo / 60) * 60; f <= current.viewport.hi; f += 60) frames.push(f);
+    for (let f = Math.ceil(lo / step) * step; f <= current.viewport.hi; f += step) frames.push(f);
     while (ticksLayer.children.length > frames.length) ticksLayer.lastElementChild.remove();
     while (ticksLayer.children.length < frames.length) {
       const rect = document.createElementNS(ns, "rect");
@@ -378,7 +388,7 @@ export function mountScrubber() {
     }
     frames.forEach((frame, index) => {
       const rect = ticksLayer.children[index];
-      const major = frame % 300 === 0;
+      const major = frame % (5 * step) === 0;
       rect.setAttribute("class", major ? "scrub-tick major" : "scrub-tick");
       rect.setAttribute("x", String(((frame - lo) / span) * 1000));
       rect.setAttribute("y", major ? "9" : "11");
