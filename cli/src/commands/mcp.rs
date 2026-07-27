@@ -113,14 +113,29 @@ impl Drop for ScratchDir {
 /// Create a fresh directory this server owns, under the system temp dir.
 fn scratch_dir() -> Result<ScratchDir, String> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let suffix = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("functor-mcp-{}-{suffix}", std::process::id()));
-    // `create_dir` rather than `create_dir_all`: the name is unique per
-    // process, so an existing one is someone else's directory, not ours to
-    // fill and later delete.
-    std::fs::create_dir(&path)
-        .map_err(|error| format!("could not create a scratch project dir: {error}"))?;
-    Ok(ScratchDir(path))
+    let mut last = String::new();
+    // `create_dir` rather than `create_dir_all`: an existing directory of this
+    // name is someone else's (a killed earlier server with the same pid), not
+    // ours to fill and later delete — so take the next name instead.
+    for _ in 0..16 {
+        let suffix = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("functor-mcp-{}-{suffix}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                // The game's source is the client's, and on a shared /tmp the
+                // default would be world-readable.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+                }
+                return Ok(ScratchDir(path));
+            }
+            Err(error) => last = error.to_string(),
+        }
+    }
+    Err(format!("could not create a scratch project dir: {last}"))
 }
 
 #[derive(Default)]
@@ -333,6 +348,11 @@ pub struct SaveProjectArgs {
     /// Directory to write the project into, absolute or relative to the MCP
     /// server's working directory. Created if it does not exist.
     pub dir: String,
+    /// Replace a project already in `dir` (default false, which refuses):
+    /// its `.fun`/`.funi` modules are overwritten, and any this session does
+    /// NOT have is deleted, so the directory ends up being exactly the
+    /// running program. Its `functor.json` is kept.
+    pub overwrite: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -509,7 +529,7 @@ files writes the inline project to a scratch directory this server owns",
                 "port": port,
                 "mode": mode,
                 "owned": true,
-                "dir": dir.display().to_string(),
+                "dir": absolute(&dir),
                 "discovery": discovery,
             })
             .to_string(),
@@ -853,7 +873,7 @@ or \"fps\" (a first-person WASD + mouse-look scene)"
             serde_json::json!({
                 "dir": absolute(&dir),
                 "template": name,
-                "files": ["functor.json", "game.fun"],
+                "files": template.file_names(),
             })
             .to_string(),
         )
@@ -863,8 +883,10 @@ or \"fps\" (a first-person WASD + mouse-look scene)"
     /// authored over the wire gets a durable home. The sources come from the
     /// RUNTIME (`GET /project`), so they are what it is actually running,
     /// including every `reload_source`/`reload_project` edit that never
-    /// touched a file. A `functor.json` is written when the project has none.
-    /// Refuses a directory that already holds a DIFFERENT project.
+    /// touched a file. A single-entry `functor.json` is synthesized when the
+    /// directory has none (a project's own manifest is never rewritten, and a
+    /// multi-entry one is not reconstructed). A directory that already holds a
+    /// project is REFUSED unless `overwrite` is true.
     #[tool]
     async fn save_project(
         &self,
@@ -873,19 +895,27 @@ or \"fps\" (a first-person WASD + mouse-look scene)"
         let url = resolve!(self.url(&args.session));
         let body = match self.get(&url, "/project").await {
             Ok(body) => body,
-            Err(message) => {
+            // A 404 is specifically "this runtime predates the route"; a 501
+            // is a producer that has no sources at all, which rebuilding
+            // would not change.
+            Err(message) if message.contains("→ 404") => {
                 return tool_error(format!(
                     "{message}\n\nsave_project asks the runtime for its sources (an edited \
-session's source may exist nowhere else). A runtime older than debug protocol v5 has no \
-GET /project — rebuild it from this version of Functor."
+session's source may exist nowhere else), and GET /project needs debug protocol v5 — \
+rebuild that runtime from this version of Functor."
                 ))
             }
+            Err(message) => return tool_error(message),
         };
         let files: Vec<(String, String)> = resolve!(serde_json::from_str(&body).map_err(
             |error| format!("GET /project did not return [path, source] pairs: {error}")
         ));
         let dir = std::path::PathBuf::from(&args.dir);
-        let written = resolve!(save_project_to(&dir, &files));
+        let written = resolve!(save_project_to(
+            &dir,
+            &files,
+            args.overwrite.unwrap_or(false)
+        ));
         ok_text(
             serde_json::json!({
                 "dir": absolute(&dir),
@@ -1184,7 +1214,7 @@ fn absolute(dir: &std::path::Path) -> String {
 /// that carries none. Named entries are a project-file concern; an inline
 /// project is by construction the single-entry case.
 fn synthesized_manifest(entry: &str) -> String {
-    format!("{{\n  \"language\": \"functor-lang\",\n  \"entry\": \"{entry}\"\n}}\n")
+    serde_json::json!({ "language": "functor-lang", "entry": entry }).to_string()
 }
 
 /// A pushed file's path must name a file INSIDE the project directory: these
@@ -1253,31 +1283,61 @@ fn write_project_files(dir: &std::path::Path, files: &[(String, String)]) -> Res
     Ok(())
 }
 
+/// The project files already in `dir` — its manifest and modules, sorted.
+/// Anything else there (a README, assets) is not this tool's business.
+fn existing_project_files(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name == "functor.json" || name.ends_with(".fun") || name.ends_with(".funi"))
+        .collect();
+    found.sort();
+    found
+}
+
 /// Persist a session's sources into `dir`, returning what was written.
-/// Re-saving the same project overwrites it (that is the point — the wire is
-/// newer than the disk), but a directory holding a DIFFERENT project is
-/// refused rather than merged into.
+///
+/// A directory that already holds a project is refused unless `overwrite` —
+/// "it has the same entry file name" is not evidence that it is the same
+/// project, since nearly every Functor project's entry is `game.fun`. With
+/// `overwrite`, modules this session does NOT have are removed as well:
+/// `file = module`, so a leftover sibling would still load and the saved copy
+/// would not be the program that ran.
 fn save_project_to(
     dir: &std::path::Path,
     files: &[(String, String)],
+    overwrite: bool,
 ) -> Result<Vec<String>, String> {
     let entry = entry_of(files)?.to_string();
-    let manifest = dir.join("functor.json");
-    if manifest.exists() && !dir.join(&entry).exists() {
+    let existing = existing_project_files(dir);
+    if !existing.is_empty() && !overwrite {
         return Err(format!(
-            "{} already holds a different project (it has a functor.json but no {entry}) — \
-save to a new directory, or remove that project first",
-            dir.display()
+            "{} already holds a project ({}) — save to a new directory, or pass \
+overwrite: true to replace it",
+            dir.display(),
+            existing.join(", ")
         ));
     }
     let mut files = files.to_vec();
     // The manifest is not part of what the runtime reports, so write one for a
-    // project that has none — and never clobber the one already there, which
+    // project that has none — and never rewrite the one already there, which
     // may declare named entries this session's sources cannot describe.
-    if !files.iter().any(|(path, _)| path == "functor.json") && !manifest.exists() {
+    if !files.iter().any(|(path, _)| path == "functor.json")
+        && !existing.iter().any(|name| name == "functor.json")
+    {
         files.push(("functor.json".to_string(), synthesized_manifest(&entry)));
     }
     write_project_files(dir, &files)?;
+    for stale in existing
+        .iter()
+        .filter(|name| name.ends_with(".fun") || name.ends_with(".funi"))
+        .filter(|name| !files.iter().any(|(path, _)| path == *name))
+    {
+        std::fs::remove_file(dir.join(stale))
+            .map_err(|error| format!("could not remove the stale module {stale}: {error}"))?;
+    }
     Ok(files.into_iter().map(|(path, _)| path).collect())
 }
 
@@ -1510,6 +1570,7 @@ mod tests {
                 ("game.fun".into(), "let init = 1".into()),
                 ("util.fun".into(), "let k = 2".into()),
             ],
+            false,
         )
         .unwrap();
 
@@ -1518,36 +1579,68 @@ mod tests {
             std::fs::read_to_string(dir.join("game.fun")).unwrap(),
             "let init = 1"
         );
-        assert!(dir.join("functor.json").is_file());
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("functor.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["entry"], "game.fun");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // Re-saving the SAME project overwrites it: the wire is the newer
-        // copy, which is the whole reason this tool exists.
-        super::save_project_to(&dir, &[("game.fun".into(), "let init = 2".into())]).unwrap();
+    /// The saved directory must BE the running program — `file = module`, so a
+    /// module the session dropped would still load from a stale file.
+    #[test]
+    fn overwriting_replaces_the_sources_and_removes_modules_the_session_lost() {
+        let dir =
+            std::env::temp_dir().join(format!("functor-mcp-save-again-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        super::save_project_to(
+            &dir,
+            &[
+                ("game.fun".into(), "let init = 1".into()),
+                ("util.fun".into(), "let k = 2".into()),
+            ],
+            false,
+        )
+        .unwrap();
+        std::fs::write(dir.join("functor.json"), "{\"entry\":\"game.fun\"}").unwrap();
+
+        super::save_project_to(&dir, &[("game.fun".into(), "let init = 2".into())], true).unwrap();
+
         assert_eq!(
             std::fs::read_to_string(dir.join("game.fun")).unwrap(),
             "let init = 2"
         );
+        assert!(!dir.join("util.fun").exists(), "a dropped module is removed");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("functor.json")).unwrap(),
+            "{\"entry\":\"game.fun\"}",
+            "an existing manifest is never rewritten"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Nearly every Functor project's entry is named `game.fun`, so a matching
+    /// entry name is no evidence that this is the same project: saving into an
+    /// occupied directory takes an explicit `overwrite`.
     #[test]
-    fn saving_refuses_a_directory_holding_a_different_project() {
+    fn saving_refuses_a_directory_that_already_holds_a_project() {
         let dir =
             std::env::temp_dir().join(format!("functor-mcp-save-other-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("functor.json"), "{}").unwrap();
-        std::fs::write(dir.join("theirs.fun"), "let init = 0").unwrap();
+        std::fs::write(dir.join("game.fun"), "someone else's game").unwrap();
 
-        let error = super::save_project_to(&dir, &[("game.fun".into(), "let init = 1".into())])
-            .unwrap_err();
+        let error =
+            super::save_project_to(&dir, &[("game.fun".into(), "let init = 1".into())], false)
+                .unwrap_err();
 
-        assert!(error.contains("different project"), "{error}");
-        assert!(!dir.join("game.fun").exists(), "nothing may be written");
+        assert!(error.contains("already holds a project"), "{error}");
+        assert!(error.contains("overwrite"), "{error}");
         assert_eq!(
-            std::fs::read_to_string(dir.join("functor.json")).unwrap(),
-            "{}",
-            "the existing manifest is untouched"
+            std::fs::read_to_string(dir.join("game.fun")).unwrap(),
+            "someone else's game",
+            "nothing may be written"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

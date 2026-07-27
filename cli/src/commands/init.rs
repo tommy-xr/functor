@@ -27,6 +27,12 @@ impl Template {
         }
     }
 
+    /// The file names this template writes — the scaffolder's own answer, so
+    /// callers that report them (the `init_game` MCP tool) cannot drift.
+    pub fn file_names(&self) -> [&'static str; 2] {
+        self.files().map(|file| file.name)
+    }
+
     fn files(&self) -> [TemplateFile; 2] {
         let game = match self {
             Self::ThreeD => GAME_3D,

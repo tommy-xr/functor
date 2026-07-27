@@ -75,7 +75,7 @@ URL plus, when the server launched it, the child process.
 | Tool | What it does |
 | --- | --- |
 | `init_game` | Scaffold a starter project on disk — the same `functor.json` + `game.fun` `functor init` writes. `template` is `"3d"` (default) or `"fps"`. Never overwrites; its `dir` goes straight into `launch_game`. |
-| `save_project` | Write a session's **current** source to a directory. The sources come from the RUNTIME (`GET /project`), so they include every wire-only edit. |
+| `save_project` | Write a session's **current** source to a directory. The sources come from the RUNTIME (`GET /project`), so they include every wire-only edit. Refuses a directory that already holds a project unless `overwrite`. |
 
 **Reading the API.**
 
@@ -159,9 +159,17 @@ home until `save_project` gives it one.
 `save_project` deliberately does not copy the launch directory. It asks the
 runtime for what it is *running* (`GET /project`, debug protocol v5), so a
 session edited only over the wire saves the edited source rather than the text
-it booted with. It writes a `functor.json` for a project that has none, and
-refuses a directory that already holds a **different** project (a `functor.json`
-without this project's entry file).
+it booted with.
+
+A directory that already holds a project (a `functor.json` or any `.fun` /
+`.funi`) is **refused** — nearly every project's entry is named `game.fun`, so
+a matching name is no evidence that it is the same project. Pass
+`overwrite: true` to replace it; that also **deletes modules the session does
+not have**, since `file = module` means a leftover sibling would still load and
+the saved copy would not be the program that ran. A `functor.json` is
+synthesized only when the directory has none — an existing manifest is never
+rewritten, and a multi-entry one is not reconstructed (`/project` reports
+modules, not project metadata).
 
 The other direction is `init_game`, which scaffolds the ordinary starter on
 disk — `init_game { "dir": "./my-game" }` then

@@ -277,6 +277,18 @@ let draw = (m: Model, tts) =>
   check(readFileSync(join(saveDir, "step.fun"), "utf8").trim() === "let amount = 1.0", "the pushed sibling was saved too");
   check(JSON.parse(readFileSync(join(saveDir, "functor.json"), "utf8")).entry === "game.fun", "a functor.json was synthesized for the saved project");
 
+  // A second save into the same directory is refused without an explicit
+  // overwrite: a matching entry name is no evidence of the same project.
+  let occupied = null;
+  try {
+    await rpc.call("save_project", { session: authored, dir: saveDir });
+  } catch (error) {
+    occupied = error.message;
+  }
+  check(occupied !== null && /already holds a project/.test(occupied), "save_project refuses an occupied directory");
+  await rpc.call("save_project", { session: authored, dir: saveDir, overwrite: true });
+  check(readFileSync(join(saveDir, "game.fun"), "utf8") === EDITED, "overwrite: true re-saves it");
+
   await rpc.call("stop_game", { session: authored });
   check(!existsSync(inline.dir), "the scratch project directory is removed with its session");
 
