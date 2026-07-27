@@ -74,20 +74,13 @@ export const EXAMPLES: Example[] = [
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
   { id: "toss", label: "Bouncing balls", source: "examples/toss/game.fun" },
-  // Multiplayer-structured asteroids: client.fun is the editable buffer;
-  // protocol.fun (the wire ADT) and server.fun (the pure authoritative sim)
-  // ride along as sibling modules (`file = module`).
+  // Multiplayer-structured asteroids in ONE module (banner sections:
+  // PROTOCOL / SERVER / BOT / CLIENT), so the wire ADT and the authoritative
+  // sim are right there in the editable buffer.
   {
     id: "asteroids-mp",
     label: "Asteroids (multiplayer)",
-    source: "examples/asteroids-mp/client.fun",
-    siblings: [
-      // Nested under the sample's own dist directory so a future multiplayer
-      // sample's protocol.fun/server.fun can never collide with these.
-      { source: "examples/asteroids-mp/protocol.fun", output: "examples/asteroids-mp/protocol.fun" },
-      { source: "examples/asteroids-mp/server.fun", output: "examples/asteroids-mp/server.fun" },
-      { source: "examples/asteroids-mp/bot.fun", output: "examples/asteroids-mp/bot.fun" },
-    ],
+    source: "examples/asteroids-mp/game.fun",
     multiplayer: true,
   },
   {
