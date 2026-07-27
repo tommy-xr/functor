@@ -43,6 +43,7 @@ interface ScrubSeam {
   togglePause(): void;
   step(): void;
   model(): { preview: { enabled: boolean; seconds: number; rate: number } };
+  selectEvent(id: number | null): void;
   view(): TimelineView | null;
   setPreview(preview: {
     enabled?: boolean;
@@ -57,6 +58,7 @@ interface ScrubSeam {
 interface TimelineView {
   viewport: { lo: number; hi: number };
   recorded: { lo: number; hi: number };
+  recordingAvailable: boolean;
   playheadUnit: number;
   playheadClippedBefore: boolean;
   playheadClippedAfter: boolean;
@@ -129,6 +131,9 @@ const PLAYER_COLORS = ["var(--scrub-p1)", "var(--scrub-p2)", "var(--scrub-p3)", 
 /** One clamp for every entry point (the select offers the same range). */
 export const MAX_CLIENTS = 3;
 
+/** The timeline's fixed tick rate (timeline-model.js TIMELINE_FPS). */
+const TIMELINE_FPS = 60;
+
 const LINK_PRESETS: LinkProfile[] = [
   { name: "LAN", ms: 8, jitter: 2, loss: 0 },
   { name: "Wi-Fi", ms: 45, jitter: 12, loss: 1.2 },
@@ -160,8 +165,7 @@ export function initMultiplayerPanes({
   chrono.innerHTML = `
     <button class="mp-sbtn" id="mp-pause" title="Pause / resume every client">⏸</button>
     <button class="mp-sbtn" id="mp-step" title="Step every client one frame">⏭</button>
-    <span class="mp-rail" id="mp-rail" title="Drag to seek every client"
-      role="slider" tabindex="0" aria-label="Time-travel timeline" aria-orientation="horizontal">
+    <span class="mp-rail" id="mp-rail" title="Drag to seek every client">
       <span class="mp-track"></span>
       <span class="mp-unavailable" id="mp-unavailable"></span>
       <span class="mp-unavailable mp-unavailable-after" id="mp-unavailable-after"></span>
@@ -170,7 +174,8 @@ export function initMultiplayerPanes({
       <span class="mp-future" id="mp-future"></span>
       <span class="mp-ticks" id="mp-ticks"></span>
       <span class="mp-markers" id="mp-markers"></span>
-      <span class="mp-playhead" id="mp-playhead"></span>
+      <span class="mp-playhead" id="mp-playhead" role="slider" tabindex="0"
+        aria-label="Selected frame" aria-orientation="horizontal"></span>
       <span class="mp-preview-handle" id="mp-preview-handle" role="slider" tabindex="0"
         aria-label="Extrapolation endpoint" aria-orientation="horizontal"
         title="Drag to stretch the extrapolation window"></span>
@@ -368,6 +373,7 @@ export function initMultiplayerPanes({
     const target = event.target as HTMLElement;
     if (event.key === "Escape") {
       closePopovers();
+      primarySeam()?.selectEvent(null);
       return;
     }
     if (target.closest?.(".cm-editor") || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
@@ -407,6 +413,13 @@ export function initMultiplayerPanes({
   // is untouched, so its model (and the editor session) survive.
   const setCount = (n: number) => {
     const target = Math.max(1, Math.min(MAX_CLIENTS, Math.floor(n) || 1));
+    // Extrapolation is single-client-only, and its controls are hidden at
+    // N > 1 — so leaving single must switch it OFF, or a pane keeps
+    // speculatively re-simulating with no way to stop it.
+    if (panes.length === 1 && target > 1) {
+      for (const seam of seams()) seam.setPreview({ enabled: false });
+      (chrono.querySelector("#mp-adv") as HTMLDetailsElement).open = false;
+    }
     while (panes.length < target) addMirror(true);
     while (panes.length > target) removeMirror();
     if (focused >= panes.length) focusPane(0);
@@ -584,9 +597,20 @@ export function initMultiplayerPanes({
   };
   previewHandle.addEventListener("pointerup", endPreviewDrag);
   previewHandle.addEventListener("pointercancel", endPreviewDrag);
+  previewHandle.addEventListener("lostpointercapture", endPreviewDrag);
   previewHandle.addEventListener("keydown", (event) => {
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      event.stopPropagation();
+      const seconds = event.key === "Home" ? 0.5 : 5;
+      for (const seam of seams()) seam.setPreview({ seconds });
+      advWin.value = String(seconds);
+      return;
+    }
+    const step = event.shiftKey ? 1 : 0.5;
     const deltas: Record<string, number> = {
-      ArrowLeft: -0.5, ArrowDown: -0.5, ArrowRight: 0.5, ArrowUp: 0.5,
+      ArrowLeft: -step, ArrowDown: -step, ArrowRight: step, ArrowUp: step,
+      PageDown: -1, PageUp: 1,
     };
     const delta = deltas[event.key];
     if (delta === undefined) return;
@@ -628,7 +652,8 @@ export function initMultiplayerPanes({
   rail.addEventListener("pointermove", (event) => {
     if (rail.hasPointerCapture(event.pointerId)) seekAt(event);
   });
-  rail.addEventListener("keydown", (event) => {
+  const playheadEl = $("mp-playhead");
+  playheadEl.addEventListener("keydown", (event) => {
     const current = primarySeam()?.view();
     if (!current) return;
     const steps = event.shiftKey ? 10 : 1;
@@ -637,10 +662,12 @@ export function initMultiplayerPanes({
       ArrowDown: current.selectedFrame - steps,
       ArrowRight: current.selectedFrame + steps,
       ArrowUp: current.selectedFrame + steps,
-      PageDown: current.selectedFrame - 60,
-      PageUp: current.selectedFrame + 60,
-      Home: current.viewport.lo,
-      End: current.viewport.hi,
+      PageDown: current.selectedFrame - TIMELINE_FPS,
+      PageUp: current.selectedFrame + TIMELINE_FPS,
+      // Recorded bounds, not the viewport's: after a reload the viewport can
+      // include striped history that is provably unseekable.
+      Home: current.recorded.lo,
+      End: current.recorded.hi,
     };
     const target = targets[event.key];
     if (target === undefined) return;
@@ -656,13 +683,35 @@ export function initMultiplayerPanes({
   const ticksHost = $("mp-ticks");
   let markerKey = "";
   let lastLabel = "";
+  // The host owns the ⚙ configuration: a freshly navigated player boots with
+  // the seam defaults (2s / 5 / both), which would silently diverge from the
+  // values the inputs display — push them whenever the primary seam changes.
+  let lastPrimaryWindow: Window | null = null;
   const paint = () => {
     const primary = primarySeam();
+    const primaryWindow = panes[focused]?.iframe.contentWindow ?? null;
+    if (primary && primaryWindow !== lastPrimaryWindow) {
+      lastPrimaryWindow = primaryWindow;
+      if (advWin.validity.valid && advRate.validity.valid) {
+        primary.setPreview({
+          seconds: advWin.valueAsNumber,
+          rate: advRate.valueAsNumber,
+          mode: Number(advMode.value),
+        });
+      }
+    }
     const current = primary?.view();
     chrono.classList.toggle("dormant", !current);
     if (primary && current) {
       const span = Math.max(current.viewport.hi - current.viewport.lo, 1);
-      $("mp-played").style.width = `${Math.min(current.playheadUnit, 1) * 100}%`;
+      const played = $("mp-played");
+      played.style.left = `${current.recordedStartUnit * 100}%`;
+      played.style.width = `${
+        Math.max(
+          Math.min(current.playheadUnit, current.recordedEndUnit) - current.recordedStartUnit,
+          0
+        ) * 100
+      }%`;
       $("mp-recorded").style.left = `${current.recordedStartUnit * 100}%`;
       $("mp-recorded").style.width =
         `${Math.max(current.recordedEndUnit - current.recordedStartUnit, 0) * 100}%`;
@@ -694,6 +743,18 @@ export function initMultiplayerPanes({
         previewOn && current.previewFrames > 0 && current.previewEndUnit <= current.playheadUnit
       );
       previewHandle.setAttribute(
+        "aria-valuemin",
+        String(current.selectedFrame + Math.round(0.5 * TIMELINE_FPS))
+      );
+      previewHandle.setAttribute(
+        "aria-valuemax",
+        String(current.selectedFrame + 5 * TIMELINE_FPS)
+      );
+      previewHandle.setAttribute(
+        "aria-valuenow",
+        String(current.selectedFrame + current.previewFrames)
+      );
+      previewHandle.setAttribute(
         "aria-valuetext",
         `${primary.model().preview.seconds} seconds ahead` +
           (current.previewClippedFrames ? `, ${current.previewClippedFrames} frames clipped` : "")
@@ -710,17 +771,23 @@ export function initMultiplayerPanes({
         ` / ${Math.round(current.viewport.hi)}`;
       // The stripes' availability note is ARIA-only, but it shares the label's
       // change guard so it repaints exactly when the label does.
-      const availability = striped
-        ? `, recorded frames ${Math.round(current.recorded.lo)} to ` +
-          `${Math.round(current.recorded.hi)}; striped history outside that range is unavailable`
-        : "";
+      // Mirrors timeline-model's describeRecordedAvailability exactly.
+      const availability = !current.recordingAvailable
+        ? ", no recorded history is currently available"
+        : striped
+          ? `, recorded frames ${Math.round(current.recorded.lo)} to ` +
+            `${Math.round(current.recorded.hi)}; striped history outside that range is unavailable`
+          : "";
       if (labelHtml + availability !== lastLabel) {
         lastLabel = labelHtml + availability;
         $("mp-frame").innerHTML = labelHtml;
-        rail.setAttribute("aria-valuemin", String(Math.round(current.viewport.lo)));
-        rail.setAttribute("aria-valuemax", String(Math.round(current.viewport.hi)));
-        rail.setAttribute("aria-valuenow", String(current.selectedFrame));
-        rail.setAttribute(
+        playheadEl.setAttribute("aria-valuemin", String(Math.round(current.viewport.lo)));
+        playheadEl.setAttribute(
+          "aria-valuemax",
+          String(Math.max(Math.round(current.viewport.hi), current.selectedFrame))
+        );
+        playheadEl.setAttribute("aria-valuenow", String(current.selectedFrame));
+        playheadEl.setAttribute(
           "aria-valuetext",
           `frame ${current.selectedFrame} of ${Math.round(current.viewport.hi)}` +
             (outside ? ", outside the frozen viewport" : "") +
@@ -777,10 +844,13 @@ export function initMultiplayerPanes({
             tick.addEventListener("pointerdown", (event) => event.stopPropagation());
             tick.addEventListener("click", (event) => {
               event.stopPropagation();
+              primarySeam()?.selectEvent(marker.id);
               for (const seam of seams()) seam.seek(marker.frame);
             });
             tick.addEventListener("mouseenter", () => showTip(marker.unit, detail));
             tick.addEventListener("mouseleave", hideTip);
+            tick.addEventListener("focus", () => showTip(marker.unit, detail));
+            tick.addEventListener("blur", hideTip);
             return tick;
           })
         );

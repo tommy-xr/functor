@@ -555,7 +555,7 @@ for (const example of examples) {
     JSON.stringify({ chronoReplacesScrubber, chronoVisible })
   );
   const customHandles = await page.evaluate(() =>
-    ["mp-rail", "mp-preview-handle"].every((id) => {
+    ["mp-playhead", "mp-preview-handle"].every((id) => {
       const handle = document.getElementById(id);
       return handle?.getAttribute("role") === "slider" && handle.tabIndex === 0;
     })
@@ -753,12 +753,21 @@ for (const example of examples) {
     marker.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     return labelled ? Number(labelled[1]) : -1;
   });
+  // The click must SELECT the event on the seam (highlight/activeEvent latch),
+  // not merely seek — the assertion the original in-frame check carried.
+  const markerSelected = await player.evaluate(
+    () => window.__scrub.model().selectedEventId !== null
+  );
   await player.waitForFunction(
     (frame) => Math.abs(window.__scrub.frame() - frame) <= 1,
     selectedMarkerFrame,
     { timeout: 3000 }
   );
-  check("selecting a marker seeks to its frame", selectedMarkerFrame >= 0);
+  check(
+    "selecting a marker seeks to its frame",
+    markerSelected && selectedMarkerFrame >= 0,
+    JSON.stringify({ markerSelected, selectedMarkerFrame })
+  );
 
   // Seek snaps to a frame within the range.
   const rng = await player.evaluate(() => window.__scrub.range());
@@ -1011,7 +1020,7 @@ for (const example of examples) {
     ),
     playheadVisible: getComputedStyle(document.getElementById("mp-playhead")).display,
     previewVisible: getComputedStyle(document.getElementById("mp-preview-handle")).display,
-    playheadValueText: document.getElementById("mp-rail").getAttribute("aria-valuetext"),
+    playheadValueText: document.getElementById("mp-playhead").getAttribute("aria-valuetext"),
     label: document.getElementById("mp-frame").textContent,
   }));
   const afterReload = { ...afterReloadSeam, ...afterReloadChrono };

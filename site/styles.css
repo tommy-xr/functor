@@ -2584,6 +2584,17 @@ a:hover {
   pointer-events: auto;
 }
 
+/* A generous invisible hit target around the 2–3px tick (the in-frame bar
+   used an 18px-wide transparent rect for the same reason). */
+.mp-evt::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  right: -8px;
+  top: -3px;
+  bottom: -3px;
+}
+
 .mp-evt.input {
   background: #ffd166;
   width: 2px;
@@ -3105,7 +3116,7 @@ a:hover {
 
 /* ---- the extrapolation surface (single-client) + rail keyboard focus ---- */
 
-.mp-rail:focus-visible,
+.mp-playhead:focus-visible,
 .mp-preview-handle:focus-visible {
   outline: 2px solid white;
   outline-offset: 2px;
