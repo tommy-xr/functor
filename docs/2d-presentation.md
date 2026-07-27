@@ -265,7 +265,24 @@ share a mesh and each re-uploads before its own draw — measured at 432 B/frame
 for three distinct triangles, which is the honest cost of the sharing.
 
 Still deferred: `polyline` / `outline` with real joins and caps (a `Stroke`
-record: width, cap, join), and concave fills via ear clipping.
+record: width, cap, join), rounded rectangles, dashes, and concave fills via ear
+clipping.
+
+### What this slice does and does not close
+
+Worth stating precisely, because it is easy to read "filled shapes landed" as
+more than it is. The jam's *fill* findings are closed: a solid triangle, a filled
+planet, a health-pie wedge, and a seeded rock n-gon are all expressible now. The
+jam's *stroke* findings are only **half** closed. `Sprite.line` fixes the
+artifact where thickness varied with the segment's angle, but it has no joins, so
+a closed outline assembled from segments still notches at every corner — which
+was the other half of the same finding.
+
+Concretely: `asteroids2d`'s `shape.fun` is **reduced, not deleted**. Its
+`segment` becomes one `Sprite.line`, and its rock silhouettes become
+`Sprite.polygon`, but its `outline` still belongs to game code until `polyline`
+exists. That is why jointed strokes head the follow-up queue rather than sitting
+further down it.
 
 ## Later slices, in priority order
 
