@@ -638,7 +638,16 @@ export function mountScrubber({ hidden = false } = {}) {
     view,
     events: () => state.events,
     selectEvent: (id) => dispatch({ type: "event-selected", id }),
-    setPreview: (preview) => {
+    // Accepts the timeline-model preview fields plus `mode` (1 trail /
+    // 2 strobe / 3 both / 4 ghost) — the ghost-mode select isn't part of the
+    // reducer's state, so hosts driving a hidden mount set it through here.
+    setPreview: ({ mode: previewMode, ...preview }) => {
+      // Only accept a mode the select actually offers — assigning an unknown
+      // value would blank the select and push mode 0 (renderer off) while the
+      // model still says enabled.
+      if (previewMode !== undefined && mode.querySelector(`option[value="${previewMode}"]`)) {
+        mode.value = String(previewMode);
+      }
       dispatch({ type: "preview-changed", preview });
       syncInputs();
       pushPreview();
