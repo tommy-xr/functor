@@ -46,7 +46,7 @@ export interface Example {
  * fetches) derive the path through this one helper so they can't drift.
  */
 export const exampleEntryPath = (id: string): string =>
-  `examples/${id.replace(/-/g, "_")}.fun`;
+  `examples/${encodeURIComponent(id.replace(/-/g, "_"))}.fun`;
 
 export const EXAMPLES: Example[] = [
   { id: "hero", label: "Neon grid", source: "site/examples/hero.fun" },
@@ -82,8 +82,11 @@ export const EXAMPLES: Example[] = [
     label: "Asteroids (multiplayer)",
     source: "examples/asteroids-mp/client.fun",
     siblings: [
-      { source: "examples/asteroids-mp/protocol.fun", output: "examples/protocol.fun" },
-      { source: "examples/asteroids-mp/server.fun", output: "examples/server.fun" },
+      // Nested under the sample's own dist directory so a future multiplayer
+      // sample's protocol.fun/server.fun can never collide with these.
+      { source: "examples/asteroids-mp/protocol.fun", output: "examples/asteroids-mp/protocol.fun" },
+      { source: "examples/asteroids-mp/server.fun", output: "examples/asteroids-mp/server.fun" },
+      { source: "examples/asteroids-mp/bot.fun", output: "examples/asteroids-mp/bot.fun" },
     ],
     multiplayer: true,
   },

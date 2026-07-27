@@ -1,13 +1,12 @@
 // server.fun — the authoritative asteroids simulation, as PURE step
 // functions over the Protocol types.
 //
-// There is no transport yet: nothing here opens a socket or defines a game
-// entry point. A future netsim transport will hold a `World`, fold arriving
-// `Protocol.Wire` values through `recv`, call `step` once per tick, and
-// broadcast `snapshot` to every client. Until then this file loads as an
-// ordinary sibling module (`file = module`) — and the client ALREADY runs
-// the entity steppers below as its local prediction, so by construction the
-// predicted sim and the authoritative sim are the same functions.
+// There is no socket transport yet, but nothing here is speculative: the
+// client HOSTS this authoritative world in-process. It `join`s two pilots
+// (you and the bot), folds their Steers through `recv` each tick, and calls
+// `step` once per tick. When the netsim transport lands, the world moves
+// behind the wire and `snapshot` is broadcast instead of read in-process —
+// the functions themselves do not change.
 
 // ---------- tuning ----------
 let turnSpeed = 3.4       // radians/second
@@ -15,7 +14,7 @@ let thrustAccel = 26.0    // units/second^2
 let drag = 0.6            // fraction of velocity shed per second
 let bulletSpeed = 34.0
 let bulletLife = 0.9      // seconds
-let fireCooldown = 0.22   // seconds between autonomous shots (held fire)
+let fireCooldown = 0.22   // seconds between shots while fire is held
 
 // ---------- entity steppers (the deterministic shared sim) ----------
 // angle 0 points +y; positive angle turns counter-clockwise, so the nose
@@ -85,6 +84,35 @@ let rockHitsShip = (ship: Protocol.Ship, r: Protocol.Rock): bool =>
   let reach = Protocol.radiusOf(r.size) + Protocol.shipRadius in
   Protocol.dist2(r.x, r.y, ship.x, ship.y) < reach * reach
 
+// ---------- bullet/rock resolution (ONE resolver for both roles) ----------
+// One-to-one: each bullet is consumed by the FIRST rock it overlaps this
+// tick, that rock is struck (it will split), and the SHOOTER — the pid the
+// bullet carries — is credited that rock's points.
+type Hits = { rocks: List<Protocol.Rock>, struck: List<Protocol.Rock>,
+              bullets: List<Protocol.Bullet>, credits: List<Protocol.Score> }
+
+// Drop the first element equal to `target` (structural equality — even
+// co-located split children are distinct records, so exactly one matches).
+let removeFirst = (target: 'a, xs: List<'a>): List<'a> =>
+  let out =
+    xs |> List.fold((acc, x) =>
+      if not acc.found && x == target
+      then { acc with found: true }
+      else { acc with kept: [x, ..acc.kept] },
+      { found: false, kept: [] }) in
+  out.kept |> List.reverse
+
+let resolveHits = (bullets: List<Protocol.Bullet>, rocks: List<Protocol.Rock>): Hits =>
+  let claim = (acc: Hits, b: Protocol.Bullet): Hits =>
+    match acc.rocks |> List.find((r) => bulletHitsRock(r, b)) with
+    | Option.None => { acc with bullets: [b, ..acc.bullets] }
+    | Option.Some(r) =>
+      { acc with rocks: removeFirst(r, acc.rocks),
+                 struck: [r, ..acc.struck],
+                 credits: [{ pid: b.pid, points: Protocol.pointsFor(r.size) },
+                           ..acc.credits] } in
+  bullets |> List.fold(claim, { rocks: rocks, struck: [], bullets: [], credits: [] })
+
 // ---------- the authoritative world ----------
 type Pilot = { ship: Protocol.Ship, intent: Protocol.Intent, cool: float, points: float }
 type World = { pilots: List<Pilot>, rocks: List<Protocol.Rock>,
@@ -107,55 +135,65 @@ let join = (w: World): (World, Protocol.Wire) =>
   let p = { ship: newShip(pid), intent: coast, cool: 0.0, points: 0.0 } in
   ({ w with pilots: [p, ..w.pilots], nextPid: pid + 1.0 }, Protocol.Welcome(pid))
 
-// Fold one arriving client message into the world.
-let recv = (wire: Protocol.Wire, w: World): World =>
-  match wire with
-  | Protocol.Steer(pid, intent) =>
-      { w with pilots: w.pilots |> List.map((p) =>
-          if p.ship.pid == pid then { p with intent: intent } else p) }
-  // Join is handled by `join` (it needs to return the Welcome);
-  // Welcome/Snapshot are server->client only.
-  | _ => w
+// Look up a pilot by pid (the client reads its own — and the bot's — ship back).
+let pilotOf = (pid: float, w: World): Option.t<Pilot> =>
+  w.pilots |> List.find((p) => p.ship.pid == pid)
 
-// One authoritative tick: integrate ships (spawning bullets on held fire),
-// move bullets and rocks, resolve bullet/rock hits with splitting + scoring.
-// Ships are not destroyed here — a hit is the CLIENT's game-over in this
-// sample, keeping the authoritative world simple.
+// Re-center a pilot's ship — the respawn after the client's ship is hit.
+let respawn = (pid: float, w: World): World =>
+  { w with pilots: w.pilots |> List.map((p) =>
+      if p.ship.pid == pid then { p with ship: newShip(pid) } else p) }
+
+// Fold one arriving client message into the world. `senderPid` is the pid
+// of the CONNECTION the message arrived on — identity is never read from
+// the wire value, so a client cannot steer another player's ship.
+let recv = (senderPid: float, wire: Protocol.Wire, w: World): World =>
+  match wire with
+  | Protocol.Steer(intent) =>
+      { w with pilots: w.pilots |> List.map((p) =>
+          if p.ship.pid == senderPid then { p with intent: intent } else p) }
+  | Protocol.Join => w                  // handled by `join` (it returns the Welcome)
+  | Protocol.Welcome(_) => w            // server -> client only; nothing to fold
+  | Protocol.Snapshot(_, _, _, _) => w  // server -> client only; nothing to fold
+
+// One authoritative tick: integrate ships — every pilot fires through the
+// SAME held-fire cooldown (`fired` is an explicit bool) — move bullets and
+// rocks, then resolve hits one-to-one with splitting, per-shooter scoring,
+// and wave respawns. Ships are not destroyed here — a hit is the CLIENT's
+// game-over in this sample, keeping the authoritative world simple.
 let step = (dt: float, w: World): World =>
-  let pilots =
+  let stepped =
     w.pilots |> List.map((p) =>
       let ship = stepShip(p.intent, dt, p.ship) in
       let firing = p.intent.fire && p.cool <= 0.0 in
-      { p with ship: ship, cool: if firing then fireCooldown else p.cool - dt }) in
+      { pilot: { p with ship: ship,
+                        cool: if firing then fireCooldown else p.cool - dt },
+        fired: firing }) in
+  let pilots = stepped |> List.map((s) => s.pilot) in
   let spawned =
-    pilots
-      |> List.filter((p) => p.intent.fire && p.cool == fireCooldown)
-      |> List.map((p) => fireBullet(p.ship)) in
+    stepped |> List.filter((s) => s.fired) |> List.map((s) => fireBullet(s.pilot.ship)) in
   let bullets =
     w.bullets
       |> List.append(spawned)
       |> List.map((b) => stepBullet(dt, b))
       |> List.filter((b) => b.ttl > 0.0) in
   let rocks = w.rocks |> List.map((r) => stepRock(dt, r)) in
-  let hitR = (r: Protocol.Rock) => bullets |> List.any((b) => bulletHitsRock(r, b)) in
-  let struck = rocks |> List.filter(hitR) in
-  let kept = rocks |> List.filter((r) => not hitR(r)) in
-  let survivors =
-    bullets |> List.filter((b) =>
-      not (rocks |> List.any((r) => bulletHitsRock(r, b)))) in
-  let gained = struck |> List.fold((acc, r) => acc + Protocol.pointsFor(r.size), 0.0) in
+  let hits = resolveHits(bullets, rocks) in
   let scored =
-    // Naive: every pilot whose bullet is in flight shares the credit; a real
-    // server would track which bullet struck (Bullet carries pid for that).
-    pilots |> List.map((p) => { p with points: p.points + gained }) in
-  let remaining = kept |> List.append(struck |> List.concatMap(splitRock)) in
+    pilots |> List.map((p) =>
+      let gained =
+        hits.credits
+          |> List.filter((c) => c.pid == p.ship.pid)
+          |> List.fold((acc, c) => acc + c.points, 0.0) in
+      { p with points: p.points + gained }) in
+  let remaining = hits.rocks |> List.append(hits.struck |> List.concatMap(splitRock)) in
   let (_, nextSeed) = Random.step(w.seed) in
   if List.isEmpty(remaining) then
-    { w with pilots: scored, bullets: survivors, wave: w.wave + 1.0,
-             seed: nextSeed,
-             rocks: spawnWave(nextSeed, 3.0 + w.wave) }
+    let nextWave = w.wave + 1.0 in
+    { w with pilots: scored, bullets: hits.bullets, wave: nextWave,
+             seed: nextSeed, rocks: spawnWave(nextSeed, 3.0 + nextWave) }
   else
-    { w with pilots: scored, bullets: survivors, rocks: remaining }
+    { w with pilots: scored, bullets: hits.bullets, rocks: remaining }
 
 // The full-state broadcast for this tick (naive: no deltas, no interest
 // management — plenty for a sample-sized arena).
@@ -187,4 +225,43 @@ expect (
   let w2 = step(1.0 / Protocol.tickHz, w1) in
   List.length(w2.pilots) == 1.0
     && (w2.rocks |> List.all((r) => Math.abs(r.x) <= Protocol.halfW))
+)
+expect (
+  // recv keys a Steer by the CONNECTION's pid — the wire value carries none,
+  // so pilot 0's thrust changes and pilot 1's does not.
+  let (w1, _) = join(newWorld(Random.seed(4.0))) in
+  let (w2, _) = join(w1) in
+  let w3 = w2 |> recv(0.0, Protocol.Steer({ turn: 0.0, thrust: true, fire: false })) in
+  w3.pilots |> List.all((p) =>
+    if p.ship.pid == 0.0 then p.intent.thrust else not p.intent.thrust)
+)
+expect (
+  // Held fire obeys the shared cooldown: one bullet immediately, none on
+  // the very next tick, a second only after fireCooldown elapses.
+  let (w1, _) = join(newWorld(Random.seed(3.0))) in
+  let armed =
+    { w1 with rocks: [{ x: 20.0, y: 12.0, vx: 0.0, vy: 0.0, size: 3.0 }],
+              pilots: w1.pilots |> List.map((p) =>
+                { p with intent: { turn: 0.0, thrust: false, fire: true } }) } in
+  let dt = 1.0 / Protocol.tickHz in
+  let w2 = step(dt, armed) in
+  let w3 = step(dt, w2) in
+  let w4 = List.range(20.0) |> List.fold((w, n) => step(dt, w), w3) in
+  List.length(w2.bullets) == 1.0
+    && List.length(w3.bullets) == 1.0
+    && List.length(w4.bullets) == 2.0
+)
+expect (
+  // The resolver is one-to-one: one bullet through two overlapping rocks
+  // strikes exactly one, is consumed, and credits only the shooter's pid.
+  let r1 = { x: 0.0, y: 3.0, vx: 0.0, vy: 0.0, size: 1.0 } in
+  let r2 = { x: 0.3, y: 3.0, vx: 0.0, vy: 0.0, size: 1.0 } in
+  let b = { pid: 7.0, x: 0.0, y: 3.0, vx: 0.0, vy: 0.0, ttl: 0.5 } in
+  let hits = resolveHits([b], [r1, r2]) in
+  List.length(hits.struck) == 1.0
+    && List.length(hits.rocks) == 1.0
+    && List.length(hits.bullets) == 0.0
+    && (match List.head(hits.credits) with
+        | Option.Some(c) => c.pid == 7.0 && c.points == Protocol.pointsFor(1.0)
+        | Option.None => false)
 )

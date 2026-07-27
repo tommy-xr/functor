@@ -129,10 +129,12 @@ mp = initMultiplayerPanes({
   getSource: () => view.state.doc.toString(),
 });
 
-// The CLIENTS control only appears for samples that support multiplayer (a
-// server entry point) — N panes of a single-entry scene are just N copies.
-// It stays visible while #clients= forces panes, so there is always a way
-// back to 1; the hash keeps working everywhere as the dev seam.
+// The CLIENTS control only appears for multiplayer-structured samples (the
+// `multiplayer` flag). Until the netsim transport arc lands, panes run
+// INDEPENDENT copies of the scene — the control previews the multi-client
+// layout, not a shared world. It stays visible while #clients= forces
+// panes, so there is always a way back to 1; the hash keeps working
+// everywhere as the dev seam.
 const updateClientsStore = () => {
   const example = EXAMPLES.find((candidate) => candidate.id === picker.getSnapshot().selected);
   // Latched: once the control has appeared (a flagged sample, or a forcing

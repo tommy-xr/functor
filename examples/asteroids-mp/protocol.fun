@@ -26,13 +26,22 @@ type Score = { pid: float, points: float }
 type Intent = { turn: float, thrust: bool, fire: bool }
 
 // ---------- the wire ----------
-// Client -> server: Join once, then a Steer per intent change.
+// Client -> server: Join once, then a Steer per intent change. A Steer
+// carries NO player id — the server keys it by the connection it arrived
+// on (`Server.recv`'s senderPid), so a client can only ever steer itself.
 // Server -> client: Welcome with your pid, then a Snapshot per tick.
 type Wire =
   | Join
   | Welcome(pid: float)
-  | Steer(pid: float, intent: Intent)
+  | Steer(intent: Intent)
   | Snapshot(ships: List<Ship>, rocks: List<Rock>, bullets: List<Bullet>, scores: List<Score>)
+
+// Read the pid out of a Welcome — the one message a joining client must
+// decode. Any other variant answers -1 (join always answers a Welcome).
+let welcomePid = (wire: Wire): float =>
+  match wire with
+  | Welcome(pid) => pid
+  | _ => 0.0 - 1.0
 
 // ---------- shared geometry ----------
 // Wrap a coordinate onto the toroidal arena. Math.mod is Euclidean (always
@@ -89,6 +98,8 @@ expect (
   | Option.Some(oldest) => oldest == 19.0 - rttTicks
   | Option.None => false
 )
+
+expect welcomePid(Welcome(3.0)) == 3.0
 
 // The wrap helper is load-bearing for both roles — pin it.
 expect wrap(halfW + 1.0, halfW) == 1.0 - halfW
