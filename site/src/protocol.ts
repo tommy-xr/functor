@@ -81,6 +81,8 @@ export interface BridgeOptions {
   onResult: (ok: boolean, message: string) => void;
   debounceMs?: number;
   errorGraceMs?: number;
+  /** Aborting detaches the bridge's window listener (for disposable panes). */
+  signal?: AbortSignal;
 }
 
 // --- player → editor ---------------------------------------------------------

@@ -46,6 +46,7 @@ export class PlayerBridge {
       onResult,
       debounceMs = PUSH_DEBOUNCE_MS,
       errorGraceMs = ERROR_GRACE_MS,
+      signal,
     }: BridgeOptions
   ) {
     this.iframe = iframe;
@@ -57,7 +58,11 @@ export class PlayerBridge {
 
     // Replies and readiness from the player iframe. Only trust the iframe we
     // created (same-origin, but be explicit about the source anyway).
-    window.addEventListener("message", (event) => this.#onMessage(event));
+    window.addEventListener(
+      "message",
+      (event) => this.#onMessage(event),
+      signal !== undefined ? { signal } : undefined
+    );
 
     // Handshake: the player posts a one-shot `functor-lang-preview-ready` when it
     // boots, but under load that can fire before this bridge exists (its message
