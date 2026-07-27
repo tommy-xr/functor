@@ -26,6 +26,8 @@ const MAX_INSTANCES: usize = 8192;
 const MAX_GRASS_INSTANCES: usize = 20_000;
 /// First texture unit for the detail maps. Unit 0 stays the height texture.
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
+/// The baked macro map sits above the four detail units.
+const MACRO_TEXTURE_UNIT: i32 = 5;
 /// Furthest the detail band may reach, in metres from the camera.
 ///
 /// A cap, not a flat value. Detail stops being resolvable at a distance that
@@ -60,6 +62,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         out vec3 worldTangent;
         out vec3 worldPos;
         out float localHeight;
+        out vec2 terrainUv;
 
         float heightAt(vec2 uv) {
             ivec2 size = textureSize(heightmapTex, 0);
@@ -85,6 +88,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         void main() {
             vec2 uv = inPatch.xy + inGrid.xy * inPatch.zw;
+            terrainUv = uv;
             ivec2 texSize = textureSize(heightmapTex, 0);
             vec2 texel = 1.0 / vec2(max(texSize - ivec2(1), ivec2(1)));
 
@@ -119,6 +123,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec3 worldTangent;
         in vec3 worldPos;
         in float localHeight;
+        in vec2 terrainUv;
 
         uniform vec3 terrainColor;
         uniform int useLayers;
@@ -130,6 +135,11 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform float maxTerrainHeight;
         uniform float snowHeight;
         uniform int debugMode; // 0=lit, 1=normals, 2=tangents
+        uniform sampler2D macroTex;
+        // How much of the baked occlusion to apply. Full strength reads as
+        // painted-on shadow on flat ground; this keeps ridges and valleys
+        // legible without the terrain looking pre-shaded.
+        const float MACRO_STRENGTH = 0.55;
         uniform int useTextures;
         uniform sampler2D lowTex;
         uniform sampler2D highTex;
@@ -229,7 +239,22 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     }
                 }
             }
-            vec3 shaded = albedo * diffuseLight + specularLight;
+            // Baked occlusion, unique per world position. Tiled detail maps
+            // minify to their own average by construction, so past a few
+            // hundred metres they contribute nothing; this is what still
+            // distinguishes a valley from a ridge at four kilometres.
+            //
+            // Applied to the diffuse term only. Occlusion describes how much
+            // sky a point can see, which is an ambient/diffuse property —
+            // scaling the specular by it would dim highlights that come from a
+            // direction the geometry does not block.
+            // Squared before mixing. Horizon openness over real terrain is a
+            // narrow band — most of a landscape sees most of the sky, so the
+            // raw values cluster near 1.0 and mixing them straight barely
+            // reads. Squaring spreads that band without moving its top.
+            float sky = texture(macroTex, terrainUv).r;
+            float occlusion = mix(1.0, sky * sky, MACRO_STRENGTH);
+            vec3 shaded = albedo * diffuseLight * occlusion + specularLight;
             fragColor = vec4(applyFog(shaded, worldPos), 1.0);
         }
 "#;
@@ -351,6 +376,7 @@ struct TerrainUniforms {
     max_terrain_height: UniformLocation,
     snow_height: UniformLocation,
     debug_mode: UniformLocation,
+    macro_map: UniformLocation,
     use_textures: UniformLocation,
     detail_textures: [UniformLocation; 4],
     detail_tile: UniformLocation,
@@ -481,7 +507,24 @@ struct GrassGeometry {
 struct HeightTexture {
     revision: u64,
     texture: glow::Texture,
+    /// Baked occlusion, derived from the same samples and invalidated with
+    /// them — a heightmap reload must not leave stale shadows behind.
+    macro_texture: glow::Texture,
     last_used_frame: u64,
+}
+
+impl HeightTexture {
+    /// Both textures are created together and must die together; splitting
+    /// this across the two eviction sites leaked the macro map from one.
+    fn delete(&self, gl: &glow::Context) {
+        let counters = crate::gpu_counters::gpu_counters();
+        unsafe {
+            gl.delete_texture(self.texture);
+            gl.delete_texture(self.macro_texture);
+        }
+        counters.texture_deleted();
+        counters.texture_deleted();
+    }
 }
 
 #[derive(Default)]
@@ -490,7 +533,7 @@ pub(crate) struct TerrainRenderer {
     geometries: Vec<TerrainGeometry>,
     grass_program: Option<GrassProgram>,
     grass_geometries: Vec<GrassGeometry>,
-    height_textures: HashMap<String, HeightTexture>,
+    height_textures: HashMap<(String, [u32; 3]), HeightTexture>,
     current_frame: u64,
 }
 
@@ -500,14 +543,10 @@ impl TerrainRenderer {
             return;
         }
         self.current_frame = frame;
-        let counters = crate::gpu_counters::gpu_counters();
         self.height_textures.retain(|_, entry| {
             let recent = frame.wrapping_sub(entry.last_used_frame) <= 1;
             if !recent {
-                unsafe {
-                    gl.delete_texture(entry.texture);
-                }
-                counters.texture_deleted();
+                entry.delete(gl);
             }
             recent
         });
@@ -549,8 +588,14 @@ impl TerrainRenderer {
             viewport_height: ctx.viewport_height,
         };
         let geometry_index = self.ensure_geometry(ctx.gl, description, world, &patch_key);
-        let height_texture =
-            self.ensure_height_texture(ctx.gl, &description.heightmap, source.clone());
+        let (height_texture, macro_texture) = self.ensure_height_texture(
+            ctx.gl,
+            &description.heightmap,
+            source.clone(),
+            description.width,
+            description.depth,
+            description.max_height - description.min_height,
+        );
         let geometry = &mut self.geometries[geometry_index];
         let gl = ctx.gl;
 
@@ -656,6 +701,9 @@ impl TerrainRenderer {
                 DebugRenderMode::Default | DebugRenderMode::Physics => 0,
             };
             p.set_uniform_1i(gl, &u.debug_mode, debug_mode);
+            gl.active_texture(glow::TEXTURE0 + MACRO_TEXTURE_UNIT as u32);
+            gl.bind_texture(glow::TEXTURE_2D, Some(macro_texture));
+            p.set_uniform_1i(gl, &u.macro_map, MACRO_TEXTURE_UNIT);
             let detail = description
                 .textures
                 .as_ref()
@@ -757,6 +805,7 @@ impl TerrainRenderer {
             max_terrain_height: program.get_uniform_location(ctx.gl, "maxTerrainHeight"),
             snow_height: program.get_uniform_location(ctx.gl, "snowHeight"),
             debug_mode: program.get_uniform_location(ctx.gl, "debugMode"),
+            macro_map: program.get_uniform_location(ctx.gl, "macroTex"),
             use_textures: program.get_uniform_location(ctx.gl, "useTextures"),
             detail_textures: [
                 program.get_uniform_location(ctx.gl, "lowTex"),
@@ -1061,27 +1110,42 @@ impl TerrainRenderer {
         gl: &glow::Context,
         locator: &str,
         source: Arc<HeightmapData>,
-    ) -> glow::Texture {
-        if self
+        terrain_width: f32,
+        terrain_depth: f32,
+        height_range: f32,
+    ) -> (glow::Texture, glow::Texture) {
+        // The occlusion bake depends on the world span and vertical range the
+        // `.fun` declares, not just on the image — so those are part of the key,
+        // not merely checked against it. Keying by locator alone and comparing
+        // would make two terrains that share a heightmap at different scales
+        // evict and rebake each other on every single draw.
+        //
+        // The cost is a duplicated height texture in that (rare) case, which is
+        // the cheaper half of the trade: it is 2 MB, against a rebake per frame.
+        //
+        // Float bits, so the comparison is exact and the key stays hashable.
+        let key = (
+            locator.to_string(),
+            [
+                terrain_width.to_bits(),
+                terrain_depth.to_bits(),
+                height_range.to_bits(),
+            ],
+        );
+        if let Some(entry) = self
             .height_textures
-            .get(locator)
-            .is_some_and(|entry| entry.revision == source.revision)
+            .get_mut(&key)
+            .filter(|entry| entry.revision == source.revision)
         {
             crate::gpu_counters::gpu_counters().cache_hit();
-            self.height_textures
-                .get_mut(locator)
-                .expect("unchanged terrain texture exists")
-                .last_used_frame = self.current_frame;
-            return self.height_textures[locator].texture;
+            entry.last_used_frame = self.current_frame;
+            return (entry.texture, entry.macro_texture);
         }
 
         let counters = crate::gpu_counters::gpu_counters();
         counters.cache_miss();
-        if let Some(stale) = self.height_textures.remove(locator) {
-            unsafe {
-                gl.delete_texture(stale.texture);
-            }
-            counters.texture_deleted();
+        if let Some(stale) = self.height_textures.remove(&key) {
+            stale.delete(gl);
         }
 
         let max_size = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) }.max(2) as u32;
@@ -1145,16 +1209,234 @@ rendering a {}x{} height copy",
             gl.bind_texture(glow::TEXTURE_2D, None);
             texture
         };
+        // Baked from the same samples, on the same cache miss — so it can
+        // never disagree with the height texture it accompanies.
+        let (ao, macro_w, macro_h) = bake_macro_ao(
+            samples,
+            width,
+            height,
+            terrain_width,
+            terrain_depth,
+            height_range,
+        );
+        let macro_texture = unsafe {
+            let macro_texture = gl.create_texture().expect("terrain macro texture");
+            counters.texture_created();
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(macro_texture));
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::R8 as i32,
+                macro_w as i32,
+                macro_h as i32,
+                0,
+                glow::RED,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&ao)),
+            );
+            counters.uploaded(ao.len());
+            // Mipped and linear: this is sampled at every distance, and it is
+            // the one terrain texture that must stay smooth as it minifies.
+            gl.generate_mipmap(glow::TEXTURE_2D);
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR_MIPMAP_LINEAR as i32,
+            );
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            macro_texture
+        };
         self.height_textures.insert(
-            locator.to_string(),
+            key,
             HeightTexture {
                 revision: source.revision,
                 texture,
+                macro_texture,
                 last_used_frame: self.current_frame,
             },
         );
-        texture
+        (texture, macro_texture)
     }
+}
+
+/// Resolution of the baked macro map.
+///
+/// Deliberately coarser than the heightmap: occlusion from surrounding terrain
+/// is a low-frequency signal, so baking it at source resolution costs time and
+/// memory for detail that is not there. 256² over a 4 km world is one texel per
+/// ~16 m, which resolves valleys and ridge shadowing without resolving noise.
+///
+/// Measured against 512²: the rendered frame differs by 0.2/255 on average
+/// while the bake costs a quarter as much, so the extra resolution was paying
+/// for nothing.
+const MACRO_SIZE: u32 = 256;
+/// Horizon directions sampled per texel. Eight leaves visible eight-pointed
+/// star artifacts radiating from peaks — the rays are far enough apart that a
+/// ridge occludes along one and not its neighbour.
+const AO_DIRECTIONS: usize = 16;
+/// Steps taken along each direction, in macro texels.
+const AO_STEPS: usize = 16;
+/// How far the search reaches, as a fraction of the terrain's longest side.
+/// Beyond this, terrain occludes by being over the horizon rather than by
+/// being nearby, which the fog already expresses.
+const AO_REACH: f32 = 0.06;
+
+/// Bake ambient occlusion from the heightfield.
+///
+/// For each texel this walks outward in `AO_DIRECTIONS` and tracks the highest
+/// elevation angle any sample subtends — the horizon angle. A texel at the
+/// bottom of a valley sees terrain rising all around it and darkens; a ridge
+/// sees sky and stays bright.
+///
+/// This is what carries the FAR field. Tiled detail maps minify to their own
+/// average by construction, so past a few hundred metres they contribute
+/// nothing; occlusion is unique per world position and survives at any
+/// distance. It is the reason distant terrain reads as landform rather than
+/// as a smooth gradient.
+///
+/// The source is box-reduced to `MACRO_SIZE²` before marching. That is not an
+/// optimisation detail: point-sampling one source texel per macro texel would
+/// let a single noisy sample stand in for the 16-256 it represents, and it is
+/// what makes the cost depend only on `MACRO_SIZE`, not on how large a
+/// heightmap the game happens to ship.
+///
+/// `width_world`/`depth_world` are the terrain's world span. They are taken
+/// separately because a rectangular terrain has different metres-per-texel on
+/// each axis, and the horizon angle is only a real angle if the horizontal run
+/// is measured in metres. The `world` matrix's own scale is NOT considered —
+/// occlusion is baked in the terrain's local space.
+/// Macro-map dimensions for a terrain of this world span.
+///
+/// The long axis gets `MACRO_SIZE`; the short axis is scaled so a macro texel
+/// is SQUARE IN WORLD SPACE. That is what keeps the bake isotropic: on a square
+/// grid stretched over a 4000x1000 terrain, a step of one texel is 15.6 m one
+/// way and 3.9 m the other, so a fixed step count either overshoots features on
+/// one axis or oversamples on the other.
+fn macro_dims(width_world: f32, depth_world: f32) -> (u32, u32) {
+    let long = width_world.max(depth_world);
+    // Degenerate or non-finite spans fall back to the square grid rather than
+    // producing a zero/NaN dimension.
+    if !long.is_finite() || long <= 0.0 {
+        return (MACRO_SIZE, MACRO_SIZE);
+    }
+    let scale = |v: f32| {
+        ((v / long * MACRO_SIZE as f32).round() as u32).clamp(8, MACRO_SIZE)
+    };
+    (scale(width_world), scale(depth_world))
+}
+
+fn bake_macro_ao(
+    samples: &[u16],
+    width: u32,
+    height: u32,
+    width_world: f32,
+    depth_world: f32,
+    height_range: f32,
+) -> (Vec<u8>, u32, u32) {
+    let (mw, mh) = macro_dims(width_world, depth_world);
+    let open = || (vec![255u8; (mw * mh) as usize], mw, mh);
+
+    // Ground with no relief occludes nothing, so there is nothing to bake. This
+    // is a correctness shortcut that happens to pay for itself: the 2x2
+    // placeholder served while the real heightmap streams is constant, and
+    // without this it would pay the full fixed cost on every load before the
+    // real map arrives and pays it again.
+    //
+    // Keyed on the SAMPLES rather than on the dimensions: a small heightmap is
+    // still a heightmap, and `width < 4` would silently drop occlusion from a
+    // real one.
+    if width == 0 || height == 0 || samples.iter().all(|&s| s == samples[0]) {
+        return open();
+    }
+    let metres_per_texel = width_world.max(depth_world) / MACRO_SIZE as f32;
+    if !metres_per_texel.is_finite() || metres_per_texel <= 0.0 {
+        return open();
+    }
+
+    // Average each macro texel's footprint in the source. Expressed as a
+    // footprint rather than a scatter-add so it is also correct when the
+    // source is SMALLER than the macro grid — scattering leaves those macro
+    // texels with no contributor at all, and a zero-filled hole reads as a
+    // pit that occludes everything around it.
+    let (sw, sh) = (width as usize, height as usize);
+    let (nw, nh) = (mw as usize, mh as usize);
+    let mut grid = vec![0f32; nw * nh];
+    for mz in 0..nh {
+        let z0 = mz * sh / nh;
+        let z1 = ((mz + 1) * sh / nh).max(z0 + 1);
+        for mx in 0..nw {
+            let x0 = mx * sw / nw;
+            let x1 = ((mx + 1) * sw / nw).max(x0 + 1);
+            let mut sum = 0f64;
+            for z in z0..z1 {
+                for x in x0..x1 {
+                    sum += samples[z * sw + x] as f64;
+                }
+            }
+            let mean = sum / ((z1 - z0) * (x1 - x0)) as f64;
+            grid[mz * nw + mx] = (mean / 65535.0) as f32 * height_range;
+        }
+    }
+
+    // Texels are square in world space, so the reach is one distance in texels
+    // and the horizontal run is that distance times a single scale.
+    let reach = (AO_REACH * width_world.max(depth_world) / metres_per_texel).max(2.0);
+
+    // Hoisted: these are the same 16 directions for every texel.
+    let dirs: Vec<(f32, f32)> = (0..AO_DIRECTIONS)
+        .map(|dir| {
+            let angle = dir as f32 / AO_DIRECTIONS as f32 * std::f32::consts::TAU;
+            (angle.cos(), angle.sin())
+        })
+        .collect();
+
+    let (iw, ih) = (nw as i32, nh as i32);
+    let mut out = vec![0u8; nw * nh];
+    for mz in 0..ih {
+        for mx in 0..iw {
+            let here = grid[(mz * iw + mx) as usize];
+            let mut openness = 0.0f32;
+            for &(dx, dz) in &dirs {
+                let mut max_tan = 0.0f32;
+                for step in 1..=AO_STEPS {
+                    let t = step as f32 / AO_STEPS as f32 * reach;
+                    let x = mx + (dx * t) as i32;
+                    let z = mz + (dz * t) as i32;
+                    // Rays STOP at the edge rather than clamping. A clamped ray
+                    // slides along the border and keeps sampling it, so a peak
+                    // in one corner would occlude the whole edge beside it.
+                    if x < 0 || x >= iw || z < 0 || z >= ih {
+                        break;
+                    }
+                    let rise = grid[(z * iw + x) as usize] - here;
+                    if rise > 0.0 {
+                        // Run converted to metres, so this is a real tangent.
+                        max_tan = max_tan.max(rise / (t * metres_per_texel));
+                    }
+                }
+                // atan gives the horizon angle; the visible sky fraction in
+                // this direction is what is left above it.
+                openness += 1.0 - (max_tan.atan() / std::f32::consts::FRAC_PI_2);
+            }
+            let ao = (openness / AO_DIRECTIONS as f32).clamp(0.0, 1.0);
+            out[(mz * iw + mx) as usize] = (ao * 255.0) as u8;
+        }
+    }
+    (out, mw, mh)
 }
 
 fn build_grass_cluster() -> Vec<[f32; 3]> {
@@ -1670,6 +1952,201 @@ mod tests {
             -80.0,
             520.0,
         )
+    }
+
+    /// A cone rising from a flat plain: the ring at its foot is enclosed by
+    /// rising ground, the plain far from it sees open sky, and the summit sees
+    /// the most of all.
+    fn cone_heightmap() -> HeightmapData {
+        const N: u32 = 256;
+        let centre = N as f32 / 2.0;
+        let samples = (0..N * N)
+            .map(|i| {
+                let (x, z) = ((i % N) as f32, (i / N) as f32);
+                let r = ((x - centre).powi(2) + (z - centre).powi(2)).sqrt();
+                let h = (1.0 - r / 40.0).max(0.0);
+                (h * 65535.0) as u16
+            })
+            .collect();
+        HeightmapData {
+            samples,
+            width: N,
+            height: N,
+            revision: 1,
+        }
+    }
+
+    fn ao_at(map: &[u8], x: u32, z: u32) -> f32 {
+        map[(z * MACRO_SIZE + x) as usize] as f32 / 255.0
+    }
+
+    /// Square terrains keep the full MACRO_SIZE grid, so tests that use one can
+    /// index it directly.
+    fn bake_square(samples: &[u16], w: u32, h: u32, world: f32, range: f32) -> Vec<u8> {
+        let (map, mw, mh) = bake_macro_ao(samples, w, h, world, world, range);
+        assert_eq!((mw, mh), (MACRO_SIZE, MACRO_SIZE));
+        map
+    }
+
+    #[test]
+    fn baked_occlusion_darkens_ground_enclosed_by_rising_terrain() {
+        let hm = cone_heightmap();
+        let map = bake_square(&hm.samples, hm.width, hm.height, 4000.0, 600.0);
+        let mid = MACRO_SIZE / 2;
+        // 40/256 of the map is the cone's radius, so the foot sits just past it.
+        let foot = mid + (MACRO_SIZE as f32 * 45.0 / 256.0) as u32;
+        let summit = ao_at(&map, mid, mid);
+        let foot = ao_at(&map, foot, mid);
+        let plain = ao_at(&map, MACRO_SIZE - 4, mid);
+
+        assert!(
+            foot < plain,
+            "ground at the cone's foot should be occluded by it: {foot} vs open plain {plain}"
+        );
+        assert!(
+            summit > foot,
+            "the summit sees more sky than its foot: {summit} vs {foot}"
+        );
+        assert!(
+            plain > 0.98,
+            "flat ground far from any relief is essentially unoccluded, got {plain}"
+        );
+    }
+
+    #[test]
+    fn baked_occlusion_skips_ground_with_no_relief() {
+        // The early-out keys on the SAMPLES, not the dimensions, so this pins
+        // the 2x2 streaming placeholder and a flat 4 km plain with one rule.
+        for (samples, w, h) in [
+            (vec![0u16; 4], 2u32, 2u32),
+            (vec![1234u16; 64 * 64], 64, 64),
+        ] {
+            let map = bake_square(&samples, w, h, 4000.0, 600.0);
+            assert!(map.iter().all(|&v| v == 255), "{w}x{h} should be fully open");
+        }
+    }
+
+    #[test]
+    fn a_small_heightmap_still_gets_occlusion() {
+        // Guarding the early-out on `width < 4` silently threw away occlusion
+        // for real heightmaps this size. Relief is relief at any resolution.
+        let samples: Vec<u16> = (0..9).map(|i| if i == 4 { 60000 } else { 0 }).collect();
+        let map = bake_square(&samples, 3, 3, 4000.0, 600.0);
+        assert!(
+            map.iter().any(|&v| v < 250),
+            "a 3x3 map with a peak in the middle occludes something"
+        );
+    }
+
+    /// How far a pillar's occlusion reaches, in METRES, walking away from it
+    /// along one axis.
+    ///
+    /// The pillar is square IN WORLD SPACE — sized in source texels per axis so
+    /// that it is the same physical object however the terrain is proportioned.
+    /// Its shadow must then extend the same distance whichever way you walk.
+    fn pillar_shadow_metres(width_world: f32, depth_world: f32, along_x: bool) -> f32 {
+        const N: u32 = 512;
+        const PILLAR_M: f32 = 200.0;
+        let half_x = (PILLAR_M * N as f32 / width_world / 2.0).max(1.0) as u32;
+        let half_z = (PILLAR_M * N as f32 / depth_world / 2.0).max(1.0) as u32;
+        let samples: Vec<u16> = (0..N * N)
+            .map(|i| {
+                let (x, z) = (i % N, i / N);
+                if x.abs_diff(N / 2) <= half_x && z.abs_diff(N / 2) <= half_z {
+                    65535
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let (map, mw, mh) = bake_macro_ao(&samples, N, N, width_world, depth_world, 600.0);
+
+        let (nw, nh) = (mw as usize, mh as usize);
+        // Square in world space, so one scale covers both axes.
+        let metres_per_texel = width_world.max(depth_world) / MACRO_SIZE as f32;
+        let (cx, cz) = (nw / 2, nh / 2);
+        // Start clear of the pillar itself: standing on it, nothing occludes.
+        let start = (PILLAR_M / 2.0 / metres_per_texel).ceil() as usize + 1;
+        let limit = if along_x { nw - cx } else { nh - cz };
+        for step in start..limit {
+            let v = if along_x {
+                map[cz * nw + (cx + step)]
+            } else {
+                map[(cz + step) * nw + cx]
+            };
+            if v >= 254 {
+                return (step - start) as f32 * metres_per_texel;
+            }
+        }
+        f32::MAX
+    }
+
+    #[test]
+    fn occlusion_reaches_the_same_distance_on_both_axes_of_a_rectangular_terrain() {
+        // The same physical pillar on a 4000x1000 terrain must cast the same
+        // shadow in metres along X as along Z. A macro grid whose texels are not
+        // square in world space breaks this: a fixed step count then covers
+        // 15.6 m one way and 3.9 m the other.
+        //
+        // Note this is NOT the same as baking the terrain rotated and comparing
+        // — the whole computation is symmetric under transposing (x, width) with
+        // (z, depth), so that version passes even when the axes disagree.
+        let x = pillar_shadow_metres(4000.0, 1000.0, true);
+        let z = pillar_shadow_metres(4000.0, 1000.0, false);
+        assert!(
+            x.is_finite() && z.is_finite() && x > 0.0,
+            "the pillar should cast a measurable shadow: x={x} z={z}"
+        );
+        let ratio = x.max(z) / x.min(z);
+        assert!(
+            ratio < 1.3,
+            "occlusion reach is anisotropic: {x} m along X vs {z} m along Z"
+        );
+    }
+
+    #[test]
+    fn rays_stop_at_the_edge_instead_of_sliding_along_it() {
+        // A single spike in the corner, and a probe placed so that NO ray in the
+        // 16-direction set reaches it without first leaving the map: the two
+        // directions bracketing the spike either run straight past it or exit
+        // through the left edge well short of it.
+        //
+        // Clamping a departed ray pins it to x=0 and lets it keep walking DOWN
+        // that column into the spike, inventing occlusion from terrain the
+        // probe cannot see. Terminating the ray does not.
+        const N: u32 = 256;
+        let samples: Vec<u16> = (0..N * N)
+            .map(|i| if i == 0 { 65535 } else { 0 })
+            .collect();
+        let map = bake_square(&samples, N, N, 4000.0, 600.0);
+
+        let n = MACRO_SIZE as usize;
+        let probe = map[12 * n + 2];
+        assert!(
+            probe >= 254,
+            "a ray that left the map slid along the edge into the corner spike: {probe}"
+        );
+    }
+
+    #[test]
+    fn a_source_larger_than_the_macro_grid_is_averaged_not_point_sampled() {
+        // The reduce exists so a big heightmap is not represented by one
+        // arbitrary sample per macro texel.
+        const N: u32 = 1024;
+        let centre = N as f32 / 2.0;
+        let samples: Vec<u16> = (0..N * N)
+            .map(|i| {
+                let (x, z) = ((i % N) as f32, (i / N) as f32);
+                let r = ((x - centre).powi(2) + (z - centre).powi(2)).sqrt();
+                ((1.0 - r / 160.0).max(0.0) * 65535.0) as u16
+            })
+            .collect();
+        let map = bake_square(&samples, N, N, 4000.0, 600.0);
+        let mid = MACRO_SIZE / 2;
+        let summit = ao_at(&map, mid, mid);
+        let foot = ao_at(&map, mid + (MACRO_SIZE as f32 * 45.0 / 256.0) as u32, mid);
+        assert!(summit > foot, "summit {summit} should out-see its foot {foot}");
+        assert!(ao_at(&map, MACRO_SIZE - 4, mid) > 0.98, "the far plain is open");
     }
 
     #[test]
