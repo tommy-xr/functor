@@ -51,14 +51,14 @@ test(
 
     // Baseline: nothing held — structured snapshot AND game model.
     assert.equal(await game.isKeyDown("Up"), false, "Up should start released");
-    assert.equal(gameSawUp((await game.state()).model), false, "game should start with up released");
+    assert.equal(gameSawUp((await game.state()).model_debug), false, "game should start with up released");
 
     // Positive: press 'up', step a frame.
     await game.keyDown("up");
     await game.step();
     assert.equal(await game.isKeyDown("Up"), true, "runtime should report Up held");
     assert.equal(
-      gameSawUp((await game.state()).model),
+      gameSawUp((await game.state()).model_debug),
       true,
       "game should see up held (regression: input not reaching the game)",
     );
@@ -67,7 +67,7 @@ test(
     await game.keyUp("up");
     await game.step();
     assert.equal(await game.isKeyDown("Up"), false, "runtime should report Up released");
-    assert.equal(gameSawUp((await game.state()).model), false, "game should see up released");
+    assert.equal(gameSawUp((await game.state()).model_debug), false, "game should see up released");
 
     // The render path produces a valid PNG — windowed only (headless has no GL).
     if (!headless) {

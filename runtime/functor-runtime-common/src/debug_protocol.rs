@@ -21,7 +21,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `advance`, and made `/time` answer 409 under a `--fixed-time` pin. A client
 /// that batches advances or waits on `pending_steps` needs a v3 runtime: a v2
 /// one ignores `frames`, runs a single step, and reports no `pending_steps`.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 3;
+///
+/// 4 made `GET /state`'s `model` the structured (total, lossy) JSON view of
+/// the model and moved the Rust-`Debug` pretty-print to `model_debug`. This
+/// REDEFINES `model`: a pre-v4 runtime sends the Debug text under `model`
+/// and has no `model_debug`, so clients must gate on the version before
+/// reading `model` as data.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 4;
 
 /// Maximum accepted body size for either reload operation.
 pub const MAX_RELOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -70,7 +76,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse + optional xr), model (Debug text)",
+        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse + optional xr), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -184,7 +190,19 @@ pub struct RuntimeState {
     pub pending_steps: u32,
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
-    pub model: String,
+    /// The structured JSON view of the model
+    /// ([`crate::protocol::GameProducer::state_json`]) — the default thing to
+    /// read: parseable, total, lossy (callables/host values are sigil
+    /// placeholders). `Null` for producers without a structured model.
+    /// `default` because pre-v4 payloads carry Debug TEXT under this key —
+    /// version-gate before reading (see [`DEBUG_PROTOCOL_VERSION`]).
+    #[serde(default)]
+    pub model: serde_json::Value,
+    /// The Rust-`Debug` pretty-print of the model — the human/eyeball view,
+    /// strictly more faithful where `model` is lossy (full depth,
+    /// construction order, closure params). Opaque text; don't parse it.
+    #[serde(default)]
+    pub model_debug: String,
     pub input: InputSnapshot,
 }
 
@@ -384,7 +402,8 @@ mod tests {
             pending_steps: 3,
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
-            model: "Model {\n  label: \"hello\"\n}".into(),
+            model: json!({ "label": "hello" }),
+            model_debug: "Model {\n  label: \"hello\"\n}".into(),
             input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
                 mouse: crate::MouseSnapshot {
@@ -408,7 +427,8 @@ mod tests {
                     "name": "main",
                     "viewport": { "width": 1920, "height": 1080 }
                 }],
-                "model": "Model {\n  label: \"hello\"\n}",
+                "model": { "label": "hello" },
+                "model_debug": "Model {\n  label: \"hello\"\n}",
                 "input": {
                     "held_keys": ["W", "Up"],
                     "mouse": {
@@ -615,6 +635,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 3);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 4);
     }
 }

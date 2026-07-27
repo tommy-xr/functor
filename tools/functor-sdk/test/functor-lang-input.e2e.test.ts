@@ -39,7 +39,7 @@ test(
     });
     await runner.pause();
 
-    const model = async () => (await runner.state()).model;
+    const model = async () => (await runner.state()).model_debug;
     assert.match(await model(), /presses: 0/, "no input yet");
 
     // A press+release is two events; the key crosses as its `Key.*` variant.

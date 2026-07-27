@@ -50,11 +50,11 @@ test(
     });
 
     await runner.pause();
-    const base = xOf((await runner.state()).model);
+    const base = xOf((await runner.state()).model_debug);
     const DT = 0.25;
     await runner.step(DT);
     await runner.step(DT);
-    const before = xOf((await runner.state()).model);
+    const before = xOf((await runner.state()).model_debug);
     // The stored closure is makeSpin(2.0): each step adds k*dt = 0.5.
     assert.ok(
       Math.abs(before - base - 2 * (2.0 * DT)) < 1e-4,
@@ -76,7 +76,7 @@ test(
     );
 
     await runner.step(DT);
-    const after = xOf((await runner.state()).model);
+    const after = xOf((await runner.state()).model_debug);
     // THE assertion: new body (k*dt*10) with the OLD captured k = 2 —
     // and the old x, since the model itself survived too. (The edit must
     // stay dt-proportional: paused frames still tick with dt = 0, so a

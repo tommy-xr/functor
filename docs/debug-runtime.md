@@ -86,7 +86,7 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse` + optional typed device domains), `model` (Rust `Debug` text) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse` + optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
@@ -97,6 +97,36 @@ screenshot run has no reason to grab your mouse.
 | `POST /reload-asset` | upload one project-relative texture/model/audio asset as a binary path+bytes envelope |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
+
+### `model` in `GET /state`
+
+`model` is the structured view — a total, lossy JSON view of the live model,
+and the default thing to read. (`model_debug` is the Rust-`Debug` pretty-print:
+the human/eyeball view, strictly more faithful exactly where `model` is lossy —
+full depth, construction order — but opaque text; don't parse it. Before
+protocol v4, `model` carried that text and there was no structured view — gate
+on `GET /`'s `protocol_version` before reading `model` as data.)
+Plain data maps structurally
+(records as objects, lists as arrays, numbers/strings/bools as themselves);
+everything else becomes a sigil-keyed object no source-authored record field
+can collide with (`$` is not a Functor Lang identifier character — though a record
+key that arrived off the network in a typed message can carry one, so treat
+the sigils as a strong convention rather than a proof):
+
+```jsonc
+{"$tuple": [1.0, 2.0]}                 // tuples, kept distinct from lists
+{"$ctor": "Playing", "args": [7.0]}    // variants: constructor + positional args
+{"$fn": "<fn(dt)>"}                    // closures/callables (their Display form)
+{"$host": "SceneNode"}                 // opaque host values
+{"$number": "NaN"}                     // NaN/Infinity/-Infinity (JS spellings)
+{"$truncated": "max depth"}            // nesting past the bound (120 emitted
+                                       // containers — within what stock JSON
+                                       // parsers accept)
+```
+
+It is a one-way observation format (there is deliberately no parser back),
+and it is `null` for producers without a structured model (e.g. `--replay`,
+whose `model_debug` still describes the replay position).
 
 ### `POST /input`
 
@@ -400,7 +430,5 @@ point at either `http://127.0.0.1:8077` (desktop) or the adb-forwarded
   `--debug-port`, networked via `Sub.connect`/`Sub.listen`; pin all clocks and step
   them in lockstep, injecting input and observing state per client. This is the
   out-of-process counterpart to the in-process `functor-netsim` harness.
-- **Richer observation.** `/state.input` reports held keys, mouse, and optional
-  typed sampled-device domains as game-agnostic runtime data. Still open: a
-  parseable snapshot of the game *model* itself (today `Debug` text — the model
-  isn't `Serialize`).
+- **An MCP server.** `functor mcp` will expose this surface (sessions, state,
+  scene, capture, input, time, rewind) as standard MCP tools for coding agents.

@@ -637,7 +637,8 @@ fn service_debug_request(
                 pending_steps: clock.pending_steps(),
                 viewport: RuntimeViewport::new(width, height),
                 views,
-                model: game.state_debug(),
+                model: game.state_json(),
+                model_debug: game.state_debug(),
                 input: debug.input.clone(),
             });
         }
