@@ -77,13 +77,36 @@ URL plus, when the server launched it, the child process.
 | `init_game` | Scaffold a starter project on disk — the same `functor.json` + `game.fun` `functor init` writes. `template` is `"3d"` (default) or `"fps"`. Never overwrites; its `dir` goes straight into `launch_game`. |
 | `save_project` | Write a session's **current** source to a directory. The sources come from the RUNTIME (`GET /project`), so they include every wire-only edit. Refuses a directory that already holds a project unless `overwrite`. |
 
-**Reading the API.**
+**Learning the language and the API.** Two session-free tools, and they are
+different halves: `language_guide` is the LANGUAGE (how to write `.fun` at all),
+`api_reference` is the prelude API (what `Scene.cube` takes and returns).
 
 | Tool | What it does |
 | --- | --- |
+| `language_guide` | The Functor Lang language guide — syntax, semantics, modules, the `init`/`tick`/`draw` game contract, hot-reload rules. No args returns the table of contents plus the quick facts; `section` returns one section's full text. |
 | `api_reference` | Search the embedded `.funi` prelude — the same reference `functor docs` renders — by name, qualified path (`Scene.cube`), signature, or doc text. `module` narrows to one module, and lists all of it when `query` is omitted. **No session needed**: it answers before any game is launched. |
 
-Matches come back best-first — the item's own name, then its qualified path,
+`language_guide` exists because Functor Lang is **not** F# or OCaml, and an
+agent that guesses from those habits writes parse errors: assignment is `:=`,
+pipelines are thread-*last* (`x |> f(a)` is `f(a, x)`), `if/then/else` is only
+an expression, and there are no loops and no `<>`. Claude Code agents get this
+from the repository's `functor-lang` skill; over MCP, every other client gets
+the same text.
+
+It **is** that skill: `.claude/skills/functor-lang/SKILL.md` is embedded in the
+binary verbatim and split into sections by its own markdown headings, so there
+is no second copy to rot — the skill is already required to track the language
+(`CLAUDE.md`), and this surface follows it automatically. Sections are named by
+their slugged heading (`syntax-subset`, `semantics-rules-that-will-bite-you`); a
+unique fragment (`"game contract"`) resolves too, and an unknown or ambiguous
+one comes back as a teaching error naming the candidates.
+
+```jsonc
+language_guide {}                                // TOC + the quick facts
+language_guide { "section": "syntax-subset" }    // that section, verbatim
+```
+
+API matches come back best-first — the item's own name, then its qualified path,
 then its signature, then its prose — capped at 20 per search, with a line
 saying so. A `module` listing is never capped: the module is the narrowing.
 An unknown module, or a search with neither a query nor a module, answers with
@@ -218,5 +241,8 @@ tracking every frame).
 - [`docs/debug-runtime.md`](debug-runtime.md) — the HTTP surface these tools wrap,
   with the exact request/response shapes.
 - `e2e/mcp-server.mjs` — the end-to-end proof, speaking raw JSON-RPC to the server.
+- `.claude/skills/functor-lang/SKILL.md` — the language guide `language_guide`
+  serves, and the file to edit when the language changes.
+- [`docs/functor-lang.md`](functor-lang.md) — the language roadmap behind it.
 - `tools/functor-sdk` — the typed TypeScript SDK over the same endpoints, for
   scripts rather than agents.

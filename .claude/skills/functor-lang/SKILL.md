@@ -10,6 +10,38 @@ design notes: `~/notes/ideas/functor-lang/`). It is deliberately small; this
 file describes **everything that exists today**. If a construct isn't here,
 it doesn't parse — do not invent syntax from F#/OCaml habits.
 
+## Quick facts (do NOT guess from F#/OCaml)
+
+The habits that break first, in one place. Each is expanded below.
+
+- **Assignment is `:=`**, only on a `let mut … in` slot, and it must be
+  followed by `;` and a continuation expression. `<-` does not exist yet.
+- **Pipelines are thread-LAST**: `x |> f(a)` is `f(a, x)` — every builtin and
+  prelude function takes its subject (list, scene) LAST.
+- **`if cond then a else b` is an EXPRESSION**: both branches required (no
+  else-less `if`), chained with `else if` (there is no `elif`). A
+  bool-literal `match` is equally valid.
+- **Operators are exhaustive**: `+ - * /`, `< > <= >= == !=`, `&& || not`.
+  There is no `<>` (inequality is `!=` only), no `%` (`Math.mod`), no `^`
+  (`Math.pow`), and no string-concatenation operator (use `$"…"`).
+- **No loops** — iterate with `List.map` / `List.filter` / `List.fold`.
+- **All numbers are `float`** (f64); type names are lowercase (`float`,
+  `string`, `bool`, `List<…>`).
+- **Every `match` arm and every variant alternative needs a leading `|`**,
+  the first one included. Arm bodies are full expressions, so a nested
+  `match` must be parenthesized.
+- **Nullary constructors take no parens** (`Point`, never `Point()`), and
+  constructors resolve bare — `Shape.Circle` is an unknown external.
+- **Local bindings are `let … in`** inside a body; top-level defs are
+  mutually visible.
+- **File = module**: every sibling `.fun` in the entry's directory loads with
+  the project, referenced or not.
+- **The engine prelude (`Scene.*`, `Camera.*`, `Frame.*`, `Physics.*`) exists
+  only under the runner host**, not in plain `functor-lang run`. Its branded
+  values refuse bare numbers: `Angle.degrees(60.0)`, `Time.seconds(0.5)`.
+- **A game is `init` / `tick` / `draw`** plus optional hooks — see The game
+  contract below.
+
 ## Verification loop (always available, no GPU)
 
 Builtin-module MEMBER names are validated at `check` time: `List.tail`,
@@ -1495,6 +1527,8 @@ timeline effects — `Physics.pause`/`resume`/`stepOnce`/`rewindTo`/
 `timelineFrame` — were removed when the whole-game scrubber superseded
 them.)
 
+
+## The game contract (entry points, effects, hot reload)
 
 A runner-hosted game (`functor -d <project-dir> run native`, with
 `functor.json` selecting `game.fun`) defines:
