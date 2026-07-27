@@ -2973,9 +2973,10 @@ a:hover {
 
 .mp-rail-label {
   position: absolute;
-  /* Inside the rail, flush under the track (which ends at 18px): the rail
-     box is 30px tall, so hanging the label below it left a 12px void. */
-  top: 20px;
+  /* Tucked 2px up into the rail's bottom edge (reviewed at several offsets;
+     this one read best). A fixed offset, not a percentage, so the label
+     stays put if the rail's height ever changes. */
+  top: calc(100% - 2px);
   left: 50%;
   transform: translateX(-50%);
   font-size: 9px;
