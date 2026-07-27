@@ -2973,8 +2973,9 @@ a:hover {
 
 .mp-rail-label {
   position: absolute;
-  /* Snug under the rail, still clear of the playhead's focus ring. */
-  top: calc(100% + 2px);
+  /* Hugging the rail's bottom edge (the keyboard-focus ring may overlap the
+     label's first pixel row; acceptable — it only shows while tabbed). */
+  top: calc(100% - 1px);
   left: 50%;
   transform: translateX(-50%);
   font-size: 9px;
