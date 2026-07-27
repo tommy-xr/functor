@@ -51,6 +51,7 @@ const PAGES = [
   "docs.html",
   "docs/index.html",
   "manual/index.html",
+  "manual/debug-runtime/index.html",
   "demo-editor.html",
   "styles.css",
 ];
@@ -165,6 +166,13 @@ for (const page of PAGES) {
   }
 }
 
+// Repository-authored operational contracts, published byte-for-byte at
+// stable manual URLs. The HTML debug guide links these as the exhaustive,
+// machine-readable references rather than duplicating a second endpoint or
+// event schema in site/.
+await cp(`${root}docs/debug-runtime.md`, `${dist}/manual/debug-runtime.md`);
+await cp(`${root}docs/cli-output.md`, `${dist}/manual/cli-output.md`);
+
 // Machine-readable mirrors of the reference, at stable URLs. The JSON is the
 // exact artifact the page was rendered from; the Markdown is written straight
 // to disk by the generator (no piping, so no output-size ceiling).
@@ -202,6 +210,9 @@ await writeFile(
 - [API reference (JSON)](https://functor.games/docs/api.json): the same reference as structured data (modules → items with \`qualified_name\`, \`kind\`, \`declaration\`, \`docs\`).
 - [API reference (HTML)](https://functor.games/docs/): the searchable rendering of the same data.
 - [Manual](https://functor.games/manual/): getting started, the MVU game contract, language principles, topic guides.
+- [Debug automation guide](https://functor.games/manual/debug-runtime/): choose a deterministic capture workflow, replay input, or drive a hidden runtime over HTTP.
+- [Debug runtime contract (Markdown)](https://functor.games/manual/debug-runtime.md): the complete debug-server endpoint, clock, capture, input, and project-sync contract.
+- [CLI output contract (Markdown)](https://functor.games/manual/cli-output.md): the human and ndjson event streams, including \`frame_stats\` telemetry.
 - [Sandbox](https://functor.games/sandbox.html): run and edit the sample games in the browser.
 
 ## Source

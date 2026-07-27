@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="../../favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="../../favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../../favicon-32.png" />
+    <link rel="apple-touch-icon" href="../../apple-touch-icon.png" />
+    <title>debug automation — Functor manual</title>
+    <meta
+      name="description"
+      content="Capture Functor games deterministically, replay keyboard and mouse input, and drive a hidden runtime over HTTP."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../../styles.css" />
+  </head>
+  <body class="docs-page">
+    <!--@header prefix="../../" suffix="MANUAL" active="manual"-->
+    <!--/@header-->
+
+    <div class="docs-layout">
+      <nav class="docs-nav" aria-label="Debug automation topics">
+        <a href="../">← Manual</a>
+        <a href="#choose">Choose a workflow</a>
+        <a href="#script">Scripted capture</a>
+        <a href="#server">Hidden debug server</a>
+        <a href="#endpoints">Endpoint map</a>
+        <a href="#telemetry">Frame telemetry</a>
+        <a href="../debug-runtime.md">Full contract · MD</a>
+      </nav>
+
+      <main class="docs-main">
+        <h1>Debug automation</h1>
+        <p>
+          Functor can capture a fixed pose, replay gameplay frame by frame, or let an external
+          script inspect and drive a running game. All three use the native runner; game logic
+          remains the same interpreted <code>.fun</code> source you run interactively.
+        </p>
+        <p class="docs-callout">
+          This page is the practical path. The exhaustive
+          <a href="../debug-runtime.md">debug runtime contract</a> is published from the repository
+          documentation at a stable Markdown URL, including every endpoint, payload, status code,
+          model encoding, XR shape, and project-sync route.
+        </p>
+
+        <section id="choose">
+          <h2>Choose a deterministic workflow</h2>
+          <table>
+            <thead>
+              <tr><th>Goal</th><th>Clock</th><th>Capture</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>One authored pose or animation time</td>
+                <td><code>--fixed-time T</code> pins every frame to <code>tts = T</code> and <code>dts = 0</code></td>
+                <td><code>--capture-frame out.png</code></td>
+              </tr>
+              <tr>
+                <td>Gameplay after reproducible input</td>
+                <td><code>--input-script</code> advances by a fixed <code>--script-dt</code> per rendered frame</td>
+                <td><code>--capture-at-frame N --capture-frame out.png</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            These modes are intentionally incompatible. <code>--fixed-time</code> is a zero-delta
+            pin; an input script must advance the simulation. The CLI rejects
+            <code>--fixed-time</code> together with <code>--input-script</code>.
+          </p>
+          <pre class="shell"># static pose at tts = 3 seconds
+functor -d examples/hello run native \
+  --fixed-time 3 --capture-frame pose.png --capture-size 1280x720</pre>
+          <p>
+            Use the HTTP workflow when a driver needs to read the model between actions, inject
+            pointer motion, or choose its next input from the previous result.
+          </p>
+        </section>
+
+        <section id="script">
+          <h2>Scripted input and capture</h2>
+          <p>
+            An input file has one <code>&lt;frame&gt; &lt;control&gt; &lt;down|up&gt;</code> event
+            per line. Events run before that zero-based frame's tick.
+          </p>
+          <pre class="shell"># actions.input
+0  Right       down
+2  2           down     # digits are bare: 2, not Num2
+3  2           up
+4  Mouse.Left  down     # Mouse. is required for buttons
+28 Mouse.Left  up
+40 Right       up</pre>
+          <p>
+            Key names are case-insensitive: letters, <code>Up</code>/<code>Down</code>/
+            <code>Left</code>/<code>Right</code>, <code>Space</code>, <code>Enter</code>,
+            <code>Escape</code>, and bare digits <code>0</code>–<code>9</code>. A bare
+            <code>Left</code> is the arrow key, so mouse buttons use
+            <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>.
+            Pointer motion is available through HTTP injection, not input-script lines.
+          </p>
+          <pre class="shell">functor -d examples/hello run native \
+  --input-script actions.input --script-dt 0.016666667 \
+  --capture-at-frame 120 --capture-frame scripted.png \
+  --capture-size 1280x720</pre>
+          <p>
+            <code>--capture-at-frame</code> requires <code>--capture-frame</code> and is meaningful
+            only with <code>--input-script</code>. <code>--capture-frame</code> implies a hidden GL
+            window, so the run does not steal focus or capture the cursor.
+          </p>
+        </section>
+
+        <section id="server">
+          <h2>Drive a hidden debug server</h2>
+          <p>
+            Start with a hidden window when you need PNG captures. Use
+            <code>--headless</code> instead when model and scene JSON are enough; headless mode has
+            no pixels, so <code>POST /capture</code> returns <code>503</code>.
+          </p>
+          <pre class="shell">functor -d examples/hello run native --debug-port 8077 --hidden</pre>
+          <p>
+            The server binds <code>127.0.0.1</code> by default and has no authentication. Do not
+            use <code>--debug-bind 0.0.0.0</code> unless the network is trusted.
+          </p>
+          <pre class="shell">H=http://127.0.0.1:8077
+
+# Pin a movable clock. Do not launch with --fixed-time.
+curl -s -X POST "$H/time" -d '{"type":"set","tts":0}'
+
+# Keyboard, mouse button, and pointer motion use separate input payloads.
+curl -s -X POST "$H/input" -d '{"type":"key","key":"2","down":true}'
+curl -s -X POST "$H/input" -d '{"type":"mouse_button","button":"left","down":true}'
+curl -s -X POST "$H/input" -d '{"type":"mouse_move","x":320,"y":180}'
+
+# Queue four fixed steps. The response acknowledges the queue, not completion.
+curl -s -X POST "$H/time" -d '{"type":"advance","dts":0.016,"frames":4}'
+until [ "$(curl -s "$H/state" | jq .pending_steps)" -eq 0 ]; do :; done
+
+curl -s "$H/state" | jq '{frame, tts, model}'
+curl -s -X POST "$H/capture" -o step.png
+
+# Release held controls before the next sequence.
+curl -s -X POST "$H/input" -d '{"type":"key","key":"2","down":false}'
+curl -s -X POST "$H/input" -d '{"type":"mouse_button","button":"left","down":false}'</pre>
+          <p>
+            For input-dependent steps, advance one frame and wait after each action. Batches can
+            drain up to eight simulation steps per rendered frame, while input and network I/O are
+            serviced per rendered frame. Always poll <code>pending_steps</code> back to
+            <code>0</code> before treating a batch as settled.
+          </p>
+          <p class="docs-callout">
+            <code>POST /time</code> returns <code>409 Conflict</code> under
+            <code>--fixed-time</code>. To begin at a known time and then step, omit that flag and
+            send <code>{"type":"set","tts":T}</code>.
+          </p>
+        </section>
+
+        <section id="endpoints">
+          <h2>Endpoint map</h2>
+          <p><code>GET /</code> returns the runtime's own discoverable route index.</p>
+          <table>
+            <thead><tr><th>Route</th><th>Use</th></tr></thead>
+            <tbody>
+              <tr><td><code>GET /state</code></td><td>frame, time, pending steps, input, structured model, and views</td></tr>
+              <tr><td><code>GET /scene</code></td><td>camera, scene, and lights as JSON</td></tr>
+              <tr><td><code>POST /capture</code></td><td>the next rendered frame as <code>image/png</code></td></tr>
+              <tr><td><code>POST /input</code></td><td>keyboard, pointer, mouse button, wheel, UI, and desktop XR injection</td></tr>
+              <tr><td><code>POST /time</code></td><td>pause, advance one or many steps, or resume wall clock</td></tr>
+              <tr><td><code>POST /reload-source</code></td><td>validate and hot-swap one entry source with the model preserved</td></tr>
+              <tr><td><code>GET /project</code></td><td>read the running project's own sibling <code>.fun</code> sources</td></tr>
+            </tbody>
+          </table>
+          <p>
+            Project-wide reload, asset sync, rewind, traces, Quest forwarding, and the exact JSON
+            schemas are in the <a href="../debug-runtime.md">full Markdown contract</a>.
+          </p>
+        </section>
+
+        <section id="telemetry">
+          <h2>Find <code>frame_stats</code> telemetry</h2>
+          <p>
+            Run native with the global <code>--json</code> flag and filter the newline-delimited
+            event stream. <code>frame_stats</code> is emitted once per 300-frame averaging window,
+            not on every frame.
+          </p>
+          <pre class="shell">functor --json -d examples/lighting run native \
+  | jq 'select(.type == "frame_stats")'</pre>
+          <p>
+            The event separates interpreter <code>tick_us</code>/<code>draw_us</code> from native
+            GL <code>render_us</code>/<code>swap_us</code>, and includes total
+            <code>frame_us</code>, <code>budget_pct</code>, the averaging
+            <code>over_n_frames</code>, and optional GPU resource counters. See the published
+            <a href="../cli-output.md">CLI output contract</a> for the full schema and renderer
+            behavior.
+          </p>
+          <p class="docs-footnote">
+            Debug HTTP is also available through the typed TypeScript SDK in
+            <code>tools/functor-sdk</code> and the <code>functor mcp</code> server.
+          </p>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

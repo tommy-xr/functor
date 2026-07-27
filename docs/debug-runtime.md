@@ -79,6 +79,21 @@ screenshot run has no reason to grab your mouse.
 ./target/debug/functor -d examples/hello run native --debug-port 8077 --hidden
 ```
 
+## Choose a deterministic capture workflow
+
+These two modes answer different questions and cannot be combined:
+
+| Goal | Clock | Input | Capture |
+| --- | --- | --- | --- |
+| Capture one authored pose or animation time | `--fixed-time T` pins every frame to `tts = T` with `dts = 0` | none; `--input-script` conflicts with this mode | `--capture-frame out.png` (optionally pin pixels with `--capture-size WIDTHxHEIGHT`) |
+| Capture gameplay after a reproducible sequence | `--input-script actions.input --script-dt DT` advances exactly `DT` per rendered frame | events in `actions.input`, applied before that frame's tick | add `--capture-at-frame N --capture-frame out.png` |
+
+Use a hidden debug server instead when an external driver needs to inspect the
+model between actions, inject pointer motion, or decide its next input from the
+previous result. Start without `--fixed-time`, pause with `POST /time`, then
+alternate injected input, advances, state reads, and captures. See
+[Two workflows](#two-workflows) for the complete loop.
+
 ## Endpoints
 
 `GET /` returns this list as JSON (discoverability).
@@ -231,6 +246,8 @@ explicit `Mouse.` prefix:
 
 ```
 0  Right       down     # hold the right arrow key from frame 0
+2  2           down     # digit keys are bare: `2`, not `Num2`
+3  2           up
 4  Mouse.Left  down     # press and hold the left mouse button
 28 Mouse.Left  up
 ```
@@ -250,6 +267,19 @@ make the preview and the real run disagree.
 
 Pointer MOTION is not scriptable yet — `mouse_move` is injection-only, since it
 needs a two-coordinate line shape rather than this `<control> <down|up>` triple.
+
+For example, this captures deterministic gameplay at zero-based simulation
+frame 120 (one 60 Hz step per rendered frame):
+
+```sh
+./target/debug/functor -d examples/hello run native \
+  --input-script actions.input --script-dt 0.016666667 \
+  --capture-at-frame 120 --capture-frame scripted.png \
+  --capture-size 1280x720
+```
+
+Do not add `--fixed-time`: clap rejects that combination because fixed time
+means `dts = 0`, while scripted playback advances by `--script-dt`.
 
 ### Sampled input in `GET /state`
 
@@ -431,10 +461,20 @@ deterministic loop:
 H=localhost:8077
 curl -s -X POST $H/time  -d '{"type":"set","tts":0}'             # pause
 curl -s -X POST $H/input -d '{"type":"key","key":"up","down":true}'
-curl -s -X POST $H/time  -d '{"type":"advance","dts":0.016}'      # step one frame
-curl -s $H/state | jq .model                                     # see the effect
+curl -s -X POST $H/input -d '{"type":"mouse_button","button":"left","down":true}'
+curl -s -X POST $H/input -d '{"type":"mouse_move","x":320,"y":180}'
+curl -s -X POST $H/time  -d '{"type":"advance","dts":0.016,"frames":4}'
+until [ "$(curl -s $H/state | jq .pending_steps)" -eq 0 ]; do :; done
+curl -s $H/state | jq .model                                     # model after all queued ticks
 curl -s -X POST $H/capture -o step.png
 ```
+
+`pending_steps == 0` means the requested clock ticks have drained. HTTP, WebSocket,
+audio, and other asynchronous effects may complete later; poll an application-specific
+model condition when the workflow depends on one of those results.
+
+Digit keys use the same bare wire spelling here as in input scripts:
+`{"type":"key","key":"2","down":true}`, not `"Num2"`.
 
 ## Tooling
 

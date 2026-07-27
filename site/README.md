@@ -42,6 +42,9 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
   shared by both editors.
 - `manual/index.html` — getting started, the game contract, language principles,
   and topic guides. Runnable examples link directly into the sandbox.
+- `manual/debug-runtime/index.html` — the deterministic capture and HTTP-driving
+  workflow. The build also publishes the exhaustive repository contracts at
+  `/manual/debug-runtime.md` and `/manual/cli-output.md`.
 - `docs/index.html` / `src/api-reference-html.mjs` / `src/api-docs.ts` — the API
   reference. `site:build` regenerates gitignored `generated/api-reference.json`
   from the embedded prelude, then **prerenders** it into the page with
