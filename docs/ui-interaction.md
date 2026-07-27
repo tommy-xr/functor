@@ -93,14 +93,12 @@ game's perspective this is fully Elm-controlled.
 
 - **Routing policy.** Pointer: when the cursor is free, events feed egui.
   A click recaptures for free-look only when `functor.json` opts into
-  `viewer.camera.control = "game"`; otherwise the pointer remains available
-  to 2D/UI projects for the whole session. Keyboard: when egui wants keyboard
-  (a text field is focused), key events are suppressed from the game's
-  `input` hook. The raw `mouseButton`
-  game hook (click-to-shoot into the 3D world) has since LANDED on this same
-  plumbing: buttons reach the game only **while the cursor is captured**, which
-  is exactly the state in which egui does not want the pointer — so the two
-  consumers never contend for the same click.
+  `viewer.camera.control = "game"`; otherwise it remains available to UI for
+  the whole session. A `"cursor":"visible"` project instead
+  keeps absolute motion/buttons live for pointer-led gameplay; a primary click
+  the previous UI pass wanted remains owned by the widget, while right/middle
+  clicks reach the game. Keyboard: when egui wants keyboard (a text field is
+  focused), key events are suppressed from the game's `input` hook.
 
 - **Headless testability (LLM-native).** Because `UiEvent` is serializable
   and routed through one producer method, the debug server gains

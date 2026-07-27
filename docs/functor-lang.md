@@ -313,11 +313,14 @@ snapshots — no GPU, fully agent-verifiable.
       `Key.t` design applied to the pointer: an optional
       `mouseButton(model, button, isDown)` entry point whose `button` is the
       built-in `Mouse` module's variant (`<builtin>/Mouse.fun`, injected beside
-      `Key`): `Mouse.Left`/`Right`/`Middle`. Buttons reach game logic **while
-      the cursor is captured**, and capture is now an explicit project opt-in:
+      `Key`): `Mouse.Left`/`Right`/`Middle`. Captured buttons reach game logic
+      only after the explicit project opt-in
       `viewer.camera.control = "game"` in `functor.json`. Without it, native
       keeps the cursor free, web hides the mouse-look button, and the runtime
-      warns once about the inert hooks—especially important for 2D/UI projects.
+      warns once about otherwise-inert pointer hooks. A
+      `"cursor":"visible"` project instead receives absolute pointer motion
+      and button edges while keeping the system cursor free; the two ownership
+      modes are mutually exclusive.
       Native capture starts on a non-UI click and Escape releases it. This is
       the rule `mouseMove`/`mouseWheel` already followed and keeps clicks from
       being eaten by free-look capture.
@@ -690,7 +693,9 @@ Starts once A2 + B3 exist.
         "Up"; since typed as the `Key.t` variant — see the strong-typing
         track entry) — validated at load when present, reload-aware. And
         `functor.json` grows `"language": "functor-lang"` (+ optional `entry`,
-        default `game.fun`): `functor build` = parse+lower+**check as
+        default `game.fun`; later extended with optional
+        `cursor: "captured" | "visible"`): `functor build` =
+        parse+lower+**check as
         errors** (the strict gate; the runner keeps them warnings),
         `run native` spawns the interpreter (proven byte-identical to a
         direct runner invocation), `develop` = `run` (hot reload is built
@@ -794,6 +799,20 @@ Starts once A2 + B3 exist.
         per bind so a shared texture cannot inherit another draw's choice.
         Mario exercises the path with one character atlas and nearest-neighbor
         sampling.
+      - [x] **C4b-8. Resize-correct 2D pointer mapping** (done 2026-07-27):
+        `Input.mouse` carries `surfaceWidth` / `surfaceHeight` in the same
+        top-left-origin logical coordinate space as `x` / `y` (window points
+        natively, CSS pixels on web). `Camera2D.toWorld(mouse, camera)` shares
+        the renderer's aspect-fit math, maps through pan/zoom, and returns
+        `Option.None` in letterbox/pillarbox bars. `functor.json` makes pointer
+        ownership explicit with `"cursor":"visible"|"captured"`; captured is
+        the compatibility default, while visible delivers absolute motion and
+        buttons on both shells. `examples/pointer-2d` is the complete
+        pointer-led Sprite reference.
+        *Verify (done):* shared-camera tests cover resize, mismatched aspect,
+        Retina scaling, pan/zoom, and bar rejection; shell tests pin logical
+        surface sampling and debug injection; native and web captures exercise
+        the visible pointer policy.
 - [x] **C5. Wasm** (done 2026-07-03). `FunctorLangWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`
       seam: identical load-contract validation, MVU subscriptions pump,

@@ -107,7 +107,7 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (keyboard/mouse held + pressed/released sets and optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (keyboard/mouse position, logical surface, held + pressed/released sets, and optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
@@ -172,8 +172,13 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 game's `mouseButton` hook AND updates the held buttons that later steps'
 `sampledInput` sees (`mouse.buttons`), so holding one across several
 `/time advance` steps scripts full-auto fire. A release is delivered only if the
-game saw the press. Unlike window buttons it ignores cursor capture — a
-headless/hidden session has no capture to acquire.
+game saw the press. Injection ignores the project's cursor policy — a
+headless/hidden session has no window pointer to route.
+
+`mouse_move` replaces only `x` / `y`. The runtime-owned
+`surface_width` / `surface_height` remain the live logical window extent, so a
+debug-injected pointer goes through the same resize- and Retina-correct
+`Camera2D.toWorld` path as a physical pointer.
 
 The next fixed step also sees the transition in `pressedKeys`/`releasedKeys` or
 `mouse.pressed`/`mouse.released`. Repeating a down command while it is already
@@ -300,6 +305,8 @@ clients should treat absent edge arrays/button sets as empty.
   "mouse": {
     "x": 0,
     "y": 0,
+    "surface_width": 800,
+    "surface_height": 600,
     "buttons": { "left": false, "right": false, "middle": false },
     "pressed": { "left": false, "right": false, "middle": false },
     "released": { "left": false, "right": false, "middle": false }
@@ -336,6 +343,10 @@ clients should treat absent edge arrays/button sets as empty.
   }
 }
 ```
+
+Mouse surface fields require debug protocol v7. They are logical window points
+on desktop and CSS pixels on web, in the same top-left-origin coordinate space
+as `x` / `y`; `viewport` remains the physical render extent.
 
 Tracked poses use OpenXR's rig-local convention: +X right, +Y up, -Z forward;
 quaternions are `[x, y, z, w]`. Head and controller poses are relative to the

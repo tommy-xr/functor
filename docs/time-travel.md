@@ -180,7 +180,7 @@ construction (the invariant physics already proves with goldens).
 | Whole-game frame-clock pause/step/resume | **Shipped** as debug server `POST /time` (pins `dts=0`) — desktop only |
 | egui backend in both shells (real `Context` + `Painter`, v0.34) | **Shipped** (`ui.rs`, both runners) |
 | **egui receiving pointer input / clicks** | *Missing — `RawInput` is empty, every element `.interactable(false)`* |
-| **Mouse clicks reaching game/overlay at all** | **Shipped** as the `mouseButton` hook (`Mouse.Left`/`Right`/`Middle`) plus held `mouse.buttons` on the sampled snapshot; buttons reach the game while the cursor is captured |
+| **Mouse clicks reaching game/overlay at all** | **Shipped** as the `mouseButton` hook (`Mouse.Left`/`Right`/`Middle`) plus held `mouse.buttons` on the sampled snapshot; captured projects deliver while locked, and `"cursor":"visible"` projects deliver absolute-pointer clicks with primary UI arbitration |
 | Interactive UI (buttons with actions) | *Missing — `View` is `Empty/Text/Row/Column/Panel`, not parameterized over a message* |
 | Web debug server / control channel | *Missing — but egui itself runs on web* |
 | Serializable model (disk/wire) | *Missing (`Closure`/`HostData` aren't `Serialize`) — **not needed** for in-session rewind* |

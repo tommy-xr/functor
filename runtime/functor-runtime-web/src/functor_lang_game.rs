@@ -187,8 +187,9 @@ pub fn functor_lang_key_event(code: i32, is_down: bool) {
     push_input(InputEvent::Key { code, is_down });
 }
 
-/// Deliver a mouse position in window pixels (the page accumulates pointer-lock
-/// movement deltas, matching the desktop's absolute cursor position).
+/// Deliver a mouse position in logical CSS pixels for visible-pointer games.
+/// Captured games accumulate pointer-lock movement deltas, matching the
+/// desktop's relative free-look path.
 #[wasm_bindgen]
 pub fn functor_lang_mouse_move(x: i32, y: i32) {
     push_input(InputEvent::MouseMove { x, y });
@@ -275,6 +276,10 @@ thread_local! {
     /// Whether the overlay wanted the keyboard after the LAST frame's pass —
     /// what the page's keydown handler polls to pick a route.
     static UI_WANTS_KEYBOARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the overlay wanted primary-pointer input after the last pass.
+    /// Visible-pointer games use this to keep a widget click from also
+    /// reaching the game's `mouseButton` hook.
+    static UI_WANTS_POINTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Deliver a keydown for a focused text field. `key` is the DOM
@@ -323,6 +328,12 @@ pub fn functor_lang_ui_wants_keyboard() -> bool {
     UI_WANTS_KEYBOARD.with(|w| w.get())
 }
 
+/// Whether the game UI wanted pointer input after its last render.
+#[wasm_bindgen]
+pub fn functor_lang_ui_wants_pointer() -> bool {
+    UI_WANTS_POINTER.with(|w| w.get())
+}
+
 /// Drain the focused-field key queue (the frame loop, before the overlay
 /// pass). `deliver: false` (pinned clock) discards — typing is inert while
 /// pinned, like all other window input.
@@ -338,6 +349,10 @@ pub fn drain_ui_keys(deliver: bool) -> Vec<functor_runtime_common::ui::UiKeyboar
 /// Publish this frame's `wants_keyboard` for the page's keydown routing.
 pub fn set_ui_wants_keyboard(wants: bool) {
     UI_WANTS_KEYBOARD.with(|w| w.set(wants));
+}
+
+pub fn set_ui_wants_pointer(wants: bool) {
+    UI_WANTS_POINTER.with(|w| w.set(wants));
 }
 
 /// Drain the queued page input into the producer, in arrival order. Called by

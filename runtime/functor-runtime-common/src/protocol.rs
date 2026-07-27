@@ -15,7 +15,8 @@
 //! - [`crate::InputSnapshot`] — sampled held/device state plus deterministic
 //!   keyboard/mouse transitions, delivered once before each fixed step.
 //! - Input events, as scalars: key code ([`crate::Key`] as `i32`) + down flag,
-//!   mouse position (`i32` pixels), wheel delta (`i32`). The `Key` enum's
+//!   mouse position (`i32` logical window/CSS coordinates), wheel delta
+//!   (`i32`). The `Key` enum's
 //!   **`i32` discriminants** are the wire representation on both sides
 //!   (mirrored by F# `Input.ofKeyCode`) — inserting a variant mid-enum is a
 //!   protocol break even though serde names don't change.
@@ -70,6 +71,9 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v10: logical mouse surface extent — `InputSnapshot.mouse.surface_width` /
+/// `surface_height`, defaulted when decoding older samples.
+///
 /// v9: deterministic fixed-step keyboard/mouse transitions —
 /// [`crate::InputSnapshot::pressed_keys`],
 /// [`crate::InputSnapshot::released_keys`], and the pressed/released button
@@ -99,7 +103,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -282,7 +286,8 @@ pub trait GameProducer {
     /// Deliver a keyboard event. `code` is a [`crate::Key`] as `i32`.
     fn key_event(&mut self, code: i32, is_down: bool);
 
-    /// Deliver a mouse-move event in window pixel coordinates.
+    /// Deliver a mouse-move event in logical shell coordinates (window points
+    /// on desktop, CSS pixels on web).
     fn mouse_move(&mut self, x: i32, y: i32);
 
     /// Deliver a mouse-wheel event (vertical scroll offset).
@@ -466,7 +471,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -493,7 +498,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],

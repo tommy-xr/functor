@@ -284,6 +284,39 @@ Concretely: `asteroids2d`'s `shape.fun` is **reduced, not deleted**. Its
 exists. That is why jointed strokes head the follow-up queue rather than sitting
 further down it.
 
+## Slice 3 (landed): resize-correct pointer mapping
+
+Pointer-led Sprite games use the sampled mouse as one indivisible coordinate
+contract:
+
+```functor
+match Camera2D.toWorld(snapshot.mouse, camera) with
+| Option.Some(point) => pick(point)
+| Option.None => model
+```
+
+`snapshot.mouse.x` / `.y` use a top-left origin and travel with
+`surfaceWidth` / `surfaceHeight` in the same logical units: GLFW window points
+on native, CSS pixels on web. They deliberately do not use framebuffer pixels,
+so Retina/device-pixel-ratio changes do not move a pick. `toWorld` shares the
+renderer’s aspect-fit calculation, flips Y into the camera’s Y-up world, applies
+`Camera2D.at` and `zoom`, and returns `Option.None` in letterbox/pillarbox bars.
+The ideal half-open rectangle in logical units is authoritative for picking;
+the renderer rounds that same fit only at the integer framebuffer boundary, so
+a physical raster edge may differ by less than one logical pixel without making
+picks device-pixel-ratio-dependent.
+
+Pointer ownership is explicit in `functor.json`:
+
+```json
+{ "language": "functor-lang", "entry": "game.fun", "cursor": "visible" }
+```
+
+`visible` keeps the system pointer free and delivers absolute motion/buttons;
+`captured` is the compatibility default for relative free-look. On web,
+captured mode still needs the user-gesture “mouse look” button required by
+Pointer Lock. `examples/pointer-2d` is the complete picking reference.
+
 ## Later slices, in priority order
 
 0. **Jointed strokes** — `polyline` / `outline` over a point list, with a
@@ -297,22 +330,19 @@ further down it.
    its absence is what made a jam entry delete its `ui` hook. The insight is
    that a 2D frame has *two* coordinate systems, and no camera feature
    substitutes for admitting it.
-2. **`Camera2D.toWorld` / `Camera2D.viewport`** — mouse picking in a
-   letterboxed, zoomed scene currently requires the game to reverse-engineer
-   letterbox bars whose size it cannot query.
-3. **Atlas regions in the typed asset manifest** — `functor import` should emit
+2. **Atlas regions in the typed asset manifest** — `functor import` should emit
    named regions and animation clips for a sprite sheet the way it emits glTF
    clips, so games write `Assets.heroAtlas.walk1` instead of
    `Sprite.region(96, 0, 96, 96)`. Atlas geometry is the one asset-shaped thing
    the branded manifest does not cover. A `Sprite.animate(frames, fps, tts)`
    convenience belongs with it.
-4. **Blend modes** — `Sprite.blend(Blend.additive, …)`, so vector and neon 2D
+3. **Blend modes** — `Sprite.blend(Blend.additive, …)`, so vector and neon 2D
    can glow. `Scene.emissive` already establishes the vocabulary, and this is
    the one respect in which a 3D original beat its 2D port.
-5. **`Sprite.textBlock`** — multi-line with explicit line height and per-line
+4. **`Sprite.textBlock`** — multi-line with explicit line height and per-line
    alignment (left/center/right), for text blocks that want left alignment
    rather than slice 1's centered lines.
-6. **Font loading** — `Sprite.textFont(color, size, Asset.Font, string)` and
+5. **Font loading** — `Sprite.textFont(color, size, Asset.Font, string)` and
    proportional metrics. `measure` exists partly as the forward-compatible seam
    for exactly this: authors ask for metrics rather than multiplying by `size`
    themselves, so a proportional font is not a breaking change.
@@ -329,15 +359,12 @@ further down it.
   must preserve it, which is the constraint that put glyph expansion in lowering.
 - **Painter-order `group`** is simple, predictable, and composes.
 
-## Documentation debt
+## Documentation (landed)
 
-Worth recording because it is independent of the API, and because it was the
-single highest-leverage finding in the jam: **the manual does not mention 2D at
-all.** Searching the published manual for `Sprite`, `Camera2D`, `create2D`, or
-even the bare string `2D` returns nothing. The manual presents cameras as
-`Camera.lookAt` / `Camera.firstPerson`, both perspective, and reads
-unambiguously as a 3D-only engine — so a user following the docs concludes
-Functor cannot do 2D. Multiple jam entries only learned `Frame.create2D` exists
-by reading `examples/mario` and the `.funi` sources. A complete, well-designed
-2D subsystem is invisible to its audience, and a "2D games" manual section
-belongs alongside "A complete game".
+The jam's highest-leverage documentation finding was that the public manual did
+not mention 2D at all. Slice 3 closes that gap: the Prelude chapter now shows
+`Sprite`, `Camera2D`, `Frame.create2D`, resize-correct `toWorld`, and the
+visible-pointer project policy together, with `examples/pointer-2d` as the
+complete reference. Generated API docs remain derived from the documented
+`.funi` signatures, so the compact reference and the narrative manual share
+one source of truth.

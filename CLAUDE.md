@@ -77,10 +77,13 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
   warns once and keeps the hooks inert.
 - `mouseButton = (model, button, isDown) => model'` — OPTIONAL; mouse-button edges, buttons as
   the built-in `Mouse` module's variants (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`).
-  Delivered **while the cursor is captured** (the rule `mouseMove`/`mouseWheel` already follow),
-  so click-to-shoot works under free-look; a held button is swept released on focus loss
+  With the default `"cursor":"captured"` project policy these are delivered while the cursor is
+  captured, so click-to-shoot works under free-look. A `"cursor":"visible"` project instead gets
+  absolute pointer motion and buttons without capture; a held button is swept released on focus loss
 - `sampledInput = (model, snapshot: Input.snapshot) => model'` — OPTIONAL; per-fixed-step
   held/device state plus deterministic keyboard/mouse transitions.
+  `mouse.x`/`.y` and `mouse.surfaceWidth`/`.surfaceHeight` share logical
+  top-left-origin coordinates.
   `pressedKeys`/`releasedKeys` and `mouse.pressed`/`.released` are de-duplicated edges consumed
   by the next fixed step; `heldKeys` and `mouse.buttons` are levels for continuous behavior.
   Typed device domains (`xr` first; gamepad and mobile touch extend it as siblings) sit beside them.

@@ -1359,6 +1359,11 @@ async fn run_async() -> Result<(), JsValue> {
             // during the sim cannot leave the resumed game stuck.
             let sim_running = sim::is_running();
             let suspended = clock.is_pinned() || sim_running;
+            // Browser mouse events use CSS pixels. Sample the canvas's logical
+            // CSS extent beside them BEFORE sampledInput, independently of the
+            // Retina-scaled drawable buffer updated later in this frame.
+            input_snapshot.mouse.surface_width = canvas.client_width().max(0) as u32;
+            input_snapshot.mouse.surface_height = canvas.client_height().max(0) as u32;
             functor_lang_game::drain_input(
                 &mut **game,
                 &mut input_snapshot,
@@ -1676,6 +1681,7 @@ async fn run_async() -> Result<(), JsValue> {
                 &view,
             );
             functor_lang_game::set_ui_wants_keyboard(ui_out.wants_keyboard);
+            functor_lang_game::set_ui_wants_pointer(ui_out.wants_pointer);
             // `suspended`, not just pinned: a UI event reaches `update` too, so a
             // running sim must swallow it like every other input path.
             if !suspended {

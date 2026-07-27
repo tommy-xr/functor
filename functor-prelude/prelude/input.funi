@@ -39,12 +39,16 @@ type xr = {
 /// `mouse.pressed` / `mouse.released` use it for one-step transitions.
 type mouseButtons = { left: bool, right: bool, middle: bool }
 
-/// Mouse position in shell-provided surface coordinates, plus held levels and
-/// transitions since the previous fixed simulation step. A quick click may be
+/// Mouse position in top-left-origin logical surface coordinates, the matching
+/// logical extent, plus held levels and transitions since the previous fixed
+/// simulation step. Desktop uses window points; web uses CSS pixels, so this
+/// stays stable across Retina/device-pixel-ratio changes. A quick click may be
 /// both `pressed.left` and `released.left` in one sample.
 type mouse = {
   x: float,
   y: float,
+  surfaceWidth: float,
+  surfaceHeight: float,
   buttons: mouseButtons,
   pressed: mouseButtons,
   released: mouseButtons
