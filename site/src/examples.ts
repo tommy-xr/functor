@@ -33,7 +33,8 @@ export interface Example {
   /**
    * Marks a sample that declares a server entry point (the functor.json
    * `entries` shape, like examples/mp) or is otherwise structured for
-   * multiple clients — the sandbox shows its CLIENTS control only for those.
+   * multiple clients (like examples/orbs) — the sandbox shows its CLIENTS
+   * control only for those.
    */
   multiplayer?: boolean;
 }
@@ -41,8 +42,8 @@ export interface Example {
 /**
  * The dist path of an example's editable entry. The runtime derives the entry
  * MODULE name from the file stem, and stems must be identifiers — so a
- * hyphenated id maps to an underscore filename (`asteroids-mp` →
- * `examples/asteroids_mp.fun`). Both consumers (build.mjs copies, sandbox.tsx
+ * hyphenated id maps to an underscore filename (`my-game` →
+ * `examples/my_game.fun`). Both consumers (build.mjs copies, sandbox.tsx
  * fetches) derive the path through this one helper so they can't drift.
  */
 export const exampleEntryPath = (id: string): string =>
@@ -74,13 +75,13 @@ export const EXAMPLES: Example[] = [
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
   { id: "toss", label: "Bouncing balls", source: "examples/toss/game.fun" },
-  // Multiplayer-structured asteroids in ONE module (banner sections:
+  // The minimal multiplayer-mechanics sample in ONE module (banner sections:
   // PROTOCOL / SERVER / BOT / CLIENT), so the wire ADT and the authoritative
-  // sim are right there in the editable buffer.
+  // claim resolution are right there in the editable buffer.
   {
-    id: "asteroids-mp",
-    label: "Asteroids (multiplayer)",
-    source: "examples/asteroids-mp/game.fun",
+    id: "orbs",
+    label: "Orbs (multiplayer)",
+    source: "examples/orbs/game.fun",
     multiplayer: true,
   },
   {
