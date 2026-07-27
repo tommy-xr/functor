@@ -376,8 +376,7 @@ async fn run(args: &Args) -> io::Result<()> {
             }
             _ => (None, Vec::new()),
         };
-        let project =
-            config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
+        let project = config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
         return match &args.command {
             Command::Docs { .. }
             | Command::Init { .. }
