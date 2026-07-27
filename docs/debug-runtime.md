@@ -86,7 +86,7 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse` + optional typed device domains), `model` (Rust `Debug` text), `model_json` (structured — see below) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (structured `held_keys` + `mouse` + optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
@@ -98,10 +98,15 @@ screenshot run has no reason to grab your mouse.
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
 
-### `model_json` in `GET /state`
+### `model` in `GET /state`
 
-`model` is opaque `Debug` text; `model_json` is the **parseable** sibling — a
-total, lossy JSON view of the live model. Plain data maps structurally
+`model` is the structured view — a total, lossy JSON view of the live model,
+and the default thing to read. (`model_debug` is the Rust-`Debug` pretty-print:
+the human/eyeball view, strictly more faithful exactly where `model` is lossy —
+full depth, construction order — but opaque text; don't parse it. Before
+protocol v4, `model` carried that text and there was no structured view — gate
+on `GET /`'s `protocol_version` before reading `model` as data.)
+Plain data maps structurally
 (records as objects, lists as arrays, numbers/strings/bools as themselves);
 everything else becomes a sigil-keyed object no source-authored record field
 can collide with (`$` is not a Functor Lang identifier character — though a record
@@ -119,7 +124,8 @@ the sigils as a strong convention rather than a proof):
 ```
 
 It is a one-way observation format (there is deliberately no parser back),
-and it is `null` for producers without a structured model (e.g. `--replay`).
+and it is `null` for producers without a structured model (e.g. `--replay`,
+whose `model_debug` still describes the replay position).
 
 ### `POST /input`
 

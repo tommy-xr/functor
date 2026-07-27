@@ -172,8 +172,8 @@ async function drive(port, poseFn = poseAt) {
     if (before.input.xr !== undefined) {
       throw new Error(`expected no xr domain before injection, got ${JSON.stringify(before.input.xr)}`);
     }
-    if (field(before.model, "rightGripTracked") !== "false") {
-      throw new Error(`expected rightGripTracked false, model:\n${before.model}`);
+    if (field(before.model_debug, "rightGripTracked") !== "false") {
+      throw new Error(`expected rightGripTracked false, model_debug:\n${before.model_debug}`);
     }
 
     // Pin the clock so each pose gets exactly one fixed step.
@@ -211,23 +211,23 @@ check(
   after.input.xr?.right?.grip?.position?.[2] > 0,
   "the right hand is at positive z — a pose --emulate-xr cannot produce",
 );
-check(field(after.model, "leftGripTracked") === "true", "left hand tracked");
-check(field(after.model, "rightGripTracked") === "true", "right hand tracked");
-check(field(after.model, "grabbing") === "true", "injected trigger drove `grabbing`");
+check(field(after.model_debug, "leftGripTracked") === "true", "left hand tracked");
+check(field(after.model_debug, "rightGripTracked") === "true", "right hand tracked");
+check(field(after.model_debug, "grabbing") === "true", "injected trigger drove `grabbing`");
 
-console.log("\n▸ model_json mirrors the model as structured data (protocol v4)");
+console.log("\n▸ the structured model is the default read (protocol v4)");
 check(
-  after.model_json !== null && typeof after.model_json === "object",
-  "/state.model_json is a structured object",
+  after.model !== null && typeof after.model === "object",
+  "/state.model is a structured object",
 );
 check(
-  after.model_json?.grabbing === true,
-  "model_json.grabbing is a typed bool (no Debug-text matching needed)",
+  after.model?.grabbing === true,
+  "model.grabbing is a typed bool (no Debug-text matching needed)",
 );
 
 console.log("\n▸ the pose sequence drove the simulation");
-const orb = point(after.model, "orb");
-const aim = posePosition(after.model, "rightAim");
+const orb = point(after.model_debug, "orb");
+const aim = posePosition(after.model_debug, "rightAim");
 const init = { x: 0.0, y: 1.15, z: -0.7 };
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 const moved = dist(orb, init);
@@ -241,7 +241,7 @@ check(toAim < 0.5, `the orb was dragged to the injected aim (${toAim.toFixed(3)}
 // the swept hand ends 0.67 further back, and the orb has to follow it there.
 console.log("\n▸ the endpoint reflects the sequence, not just that XR was on");
 const control = await drive(8143, () => poseAt(0));
-const controlOrb = point(control.after.model, "orb");
+const controlOrb = point(control.after.model_debug, "orb");
 const spread = dist(orb, controlOrb);
 check(
   spread > 0.3,
@@ -261,7 +261,7 @@ check(
   "xr_clear dropped the xr domain (no --emulate-xr to fall back to)",
 );
 check(
-  field(first.cleared.model, "rightGripTracked") === "false",
+  field(first.cleared.model_debug, "rightGripTracked") === "false",
   "the game returned to its Option.None branch",
 );
 
@@ -270,13 +270,13 @@ console.log("\n▸ the sequence is deterministic");
 // (It is not a test of recorded-log REPLAY — that path has its own coverage.)
 const second = await drive(8142);
 check(
-  second.after.model === after.model,
+  second.after.model_debug === after.model_debug,
   "an identical injected sequence produced an identical model",
 );
 
 if (failures.length) {
   console.error(`\n✗ xr-pose-injection failed: ${failures.join(", ")}`);
-  console.error(`\nfinal model:\n${after.model}`);
+  console.error(`\nfinal model_debug:\n${after.model_debug}`);
   process.exit(1);
 }
 console.log("\n✓ xr-pose-injection passed");

@@ -805,8 +805,8 @@ fn service_debug_request(
                 pending_steps: clock.pending_steps(),
                 viewport: debug_server::RuntimeViewport::new(width, height),
                 views: vec![debug_server::RuntimeView::new("main", width, height)],
-                model: game.state_debug(),
-                model_json: game.state_json(),
+                model: game.state_json(),
+                model_debug: game.state_debug(),
                 input: state_input,
             });
         }

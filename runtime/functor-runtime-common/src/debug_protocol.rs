@@ -22,8 +22,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// that batches advances or waits on `pending_steps` needs a v3 runtime: a v2
 /// one ignores `frames`, runs a single step, and reports no `pending_steps`.
 ///
-/// 4 added `model_json` to `GET /state` — the structured (total, lossy) JSON
-/// view of the model. A pre-v4 runtime simply omits the field.
+/// 4 made `GET /state`'s `model` the structured (total, lossy) JSON view of
+/// the model and moved the Rust-`Debug` pretty-print to `model_debug`. This
+/// REDEFINES `model`: a pre-v4 runtime sends the Debug text under `model`
+/// and has no `model_debug`, so clients must gate on the version before
+/// reading `model` as data.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 4;
 
 /// Maximum accepted body size for either reload operation.
@@ -73,7 +76,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse + optional xr), model (Debug text), model_json (structured lossy JSON view of the model)",
+        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse + optional xr), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -187,14 +190,19 @@ pub struct RuntimeState {
     pub pending_steps: u32,
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
-    pub model: String,
-    /// A structured JSON view of the model
-    /// ([`crate::protocol::GameProducer::state_json`]):
-    /// parseable, total, lossy (callables/host values are sigil placeholders).
-    /// `Null` for producers without a structured model. `default` so payloads
-    /// from runtimes predating the field still deserialize.
+    /// The structured JSON view of the model
+    /// ([`crate::protocol::GameProducer::state_json`]) — the default thing to
+    /// read: parseable, total, lossy (callables/host values are sigil
+    /// placeholders). `Null` for producers without a structured model.
+    /// `default` because pre-v4 payloads carry Debug TEXT under this key —
+    /// version-gate before reading (see [`DEBUG_PROTOCOL_VERSION`]).
     #[serde(default)]
-    pub model_json: serde_json::Value,
+    pub model: serde_json::Value,
+    /// The Rust-`Debug` pretty-print of the model — the human/eyeball view,
+    /// strictly more faithful where `model` is lossy (full depth,
+    /// construction order, closure params). Opaque text; don't parse it.
+    #[serde(default)]
+    pub model_debug: String,
     pub input: InputSnapshot,
 }
 
@@ -394,8 +402,8 @@ mod tests {
             pending_steps: 3,
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
-            model: "Model {\n  label: \"hello\"\n}".into(),
-            model_json: json!({ "label": "hello" }),
+            model: json!({ "label": "hello" }),
+            model_debug: "Model {\n  label: \"hello\"\n}".into(),
             input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
                 mouse: crate::MouseSnapshot {
@@ -419,8 +427,8 @@ mod tests {
                     "name": "main",
                     "viewport": { "width": 1920, "height": 1080 }
                 }],
-                "model": "Model {\n  label: \"hello\"\n}",
-                "model_json": { "label": "hello" },
+                "model": { "label": "hello" },
+                "model_debug": "Model {\n  label: \"hello\"\n}",
                 "input": {
                     "held_keys": ["W", "Up"],
                     "mouse": {

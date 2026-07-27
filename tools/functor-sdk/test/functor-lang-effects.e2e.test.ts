@@ -60,13 +60,13 @@ test(
     });
 
     await runner.pause();
-    let model = (await runner.state()).model;
+    let model = (await runner.state()).model_debug;
     assert.equal(fieldOf(model, "roll"), -1, `sentinel intact: ${model}`);
 
     // One key press = one Effect.random, whose update chains an Effect.now.
     await runner.key("Space", true);
     await runner.step(0.1);
-    model = (await runner.state()).model;
+    model = (await runner.state()).model_debug;
     const roll = fieldOf(model, "roll");
     const at = fieldOf(model, "at");
     assert.ok(roll >= 0 && roll < 1, `roll in [0,1): ${model}`);

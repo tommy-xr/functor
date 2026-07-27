@@ -467,7 +467,7 @@ impl EffectValue {
 const VALUE_JSON_MAX_DEPTH: usize = 120;
 
 /// A total, LOSSY JSON view of a [`Value`], for observation surfaces (the
-/// debug server's `GET /state` `model_json`). Unlike
+/// debug server's `GET /state` `model`, protocol v4). Unlike
 /// [`effect_value_from_value`] it never fails: plain data maps structurally
 /// (numbers, strings, bools; lists as arrays; records as objects — field
 /// order is the serde_json map's, not construction order), and everything
@@ -7949,7 +7949,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         assert_eq!(back, value);
     }
 
-    /// The lossy model-JSON walker (`GET /state` `model_json`): plain data
+    /// The lossy model-JSON walker (`GET /state` `model`, v4): plain data
     /// maps structurally; callables, host values, and non-finite numbers
     /// become sigil placeholders instead of failing.
     #[test]
@@ -8024,10 +8024,10 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
 
     /// The bound is charged in emitted JSON containers (a tuple emits TWO —
     /// sigil object + args array), so even the deepest producible
-    /// `model_json`, wrapped in a full `RuntimeState`, stays inside
+    /// `model`, wrapped in a full `RuntimeState`, stays inside
     /// serde_json's default 128-container parse limit and round-trips.
     #[test]
-    fn deep_model_json_round_trips_through_runtime_state() {
+    fn deep_model_round_trips_through_runtime_state() {
         let mut value = Value::Number(0.0);
         for _ in 0..300 {
             value = Value::Tuple(Rc::new(vec![Value::Number(1.0), value]));
@@ -8038,13 +8038,13 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             pending_steps: 0,
             viewport: crate::debug_protocol::RuntimeViewport::new(1, 1),
             views: vec![],
-            model: String::new(),
-            model_json: value_to_json(&value),
+            model: value_to_json(&value),
+            model_debug: String::new(),
             input: crate::InputSnapshot::default(),
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
-            .expect("deep model_json must stay parseable by stock serde_json");
-        assert_eq!(back.model_json, state.model_json);
+            .expect("a deep model must stay parseable by stock serde_json");
+        assert_eq!(back.model, state.model);
     }
 
     /// A diverged replay fails loud with the position, not silently wrong.

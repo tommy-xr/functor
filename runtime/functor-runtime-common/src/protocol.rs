@@ -48,7 +48,7 @@
 //! - `emit_state_debug` → `String`: a Rust-`Debug` pretty-print of the live
 //!   model, surfaced as the `model` field of the debug server's `GET /state`.
 //!   Free-form by design; consumers must not parse it. The PARSEABLE sibling
-//!   is `state_json` → `model_json` (see [`GameProducer::state_json`]).
+//!   is `state_json` → the v4 `model` field (see [`GameProducer::state_json`]).
 //!
 //! # In-process only (NOT part of the data protocol — known limitations)
 //!
@@ -304,7 +304,7 @@ pub trait GameProducer {
     fn state_debug(&self) -> String;
 
     /// A structured JSON view of the live game model (the debug server's
-    /// `GET /state` `model_json` field) — the parseable sibling of
+    /// `GET /state` `model` field, protocol v4) — the parseable sibling of
     /// [`GameProducer::state_debug`], via `functor_lang_prelude::value_to_json`:
     /// total and lossy (callables and host values become sigil-keyed
     /// placeholders). The default, `Null`, is the honest answer for producers
