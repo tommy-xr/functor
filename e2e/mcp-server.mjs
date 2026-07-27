@@ -15,13 +15,22 @@
 //   5. send_input: counter's model reacts to a UI click (its `update` handles
 //      Inc), so a `ui_event` on slot 0 must increment `count` after a step.
 //      A `key` event is also injected to exercise that shape end to end.
-//   6. stop_game, then a clean shutdown of the server itself.
+//   6. the filesystem-less authoring journey: launch_game with the whole
+//      project INLINE (no directory anywhere), edit it live with
+//      reload_source (model preserved), then save_project — asserting the
+//      saved source is the EDITED source, i.e. the wire's truth rather than
+//      whatever the launch wrote.
+//   7. init_game scaffolds a starter project on disk and it boots.
+//   8. stop_game, then a clean shutdown of the server itself.
 //
 // Run manually (needs the CLI built; the wasm bundle is not required):
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/mcp-server.mjs
 import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -45,6 +54,8 @@ const EXPECTED_TOOLS = [
   "reload_source",
   "reload_project",
   "api_reference",
+  "init_game",
+  "save_project",
 ];
 
 /** A line-delimited JSON-RPC client over a child's stdio. */
@@ -220,6 +231,82 @@ try {
     unknown = error.message;
   }
   check(unknown !== null && unknown.includes(session), "an unknown session id names the sessions that do exist");
+
+  console.log("\n▸ authoring a game with no filesystem");
+  // The whole project inline — an entry plus a sibling module, neither of
+  // which exists anywhere on disk.
+  const ENTRY = `type Model = { n: float }
+
+let init = { n: 0.0 }
+
+let tick = (m: Model, dt, tts) => { m with n: m.n + Step.amount }
+
+let draw = (m: Model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube() |> Scene.rotateY(Angle.degrees(m.n)),
+  )
+`;
+  const EDITED = ENTRY.replace("m.n + Step.amount", "m.n + Step.amount * 10.0");
+
+  const inline = await rpc.call("launch_game", {
+    files: [
+      ["game.fun", ENTRY],
+      ["step.fun", "let amount = 1.0\n"],
+    ],
+    mode: "headless",
+  });
+  const authored = inline.session;
+  check(/^s\d+$/.test(authored), `an inline project launched (${authored}), from ${inline.dir}`);
+
+  await rpc.call("pause", { session: authored });
+  const ticked = await rpc.call("step", { session: authored });
+  check(ticked.model.n >= 1, `the inline game ran its own tick (n = ${ticked.model.n})`);
+
+  // A live edit of the ENTRY, with the pushed sibling still linked.
+  await rpc.call("reload_source", { session: authored, source: EDITED });
+  const beforeEdit = (await rpc.call("get_state", { session: authored })).model.n;
+  const afterEdit = (await rpc.call("step", { session: authored })).model.n;
+  check(afterEdit - beforeEdit === 10, `the edit took effect, model preserved (${beforeEdit} → ${afterEdit})`);
+
+  const saveDir = mkdtempSync(join(tmpdir(), "functor-mcp-e2e-save-"));
+  const saved = await rpc.call("save_project", { session: authored, dir: saveDir });
+  check(saved.files.includes("game.fun") && saved.files.includes("step.fun"), `save_project wrote ${saved.files}`);
+  const savedEntry = readFileSync(join(saveDir, "game.fun"), "utf8");
+  check(savedEntry === EDITED, "the SAVED source is the EDITED source (the runtime's truth, not the launch files)");
+  check(readFileSync(join(saveDir, "step.fun"), "utf8").trim() === "let amount = 1.0", "the pushed sibling was saved too");
+  check(JSON.parse(readFileSync(join(saveDir, "functor.json"), "utf8")).entry === "game.fun", "a functor.json was synthesized for the saved project");
+
+  await rpc.call("stop_game", { session: authored });
+  check(!existsSync(inline.dir), "the scratch project directory is removed with its session");
+
+  let bothSources = null;
+  try {
+    await rpc.call("launch_game", { dir: "examples/counter", files: [["game.fun", "let init = 1"]] });
+  } catch (error) {
+    bothSources = error.message;
+  }
+  check(bothSources !== null && /dir OR files/.test(bothSources), "launch_game refuses dir and files together");
+
+  console.log("\n▸ init_game scaffolds a project that boots");
+  const scaffoldRoot = mkdtempSync(join(tmpdir(), "functor-mcp-e2e-init-"));
+  const scaffold = join(scaffoldRoot, "game");
+  const scaffoldResult = await rpc.call("init_game", { dir: scaffold });
+  check(scaffoldResult.files.includes("game.fun"), `init_game wrote ${scaffoldResult.files} into ${scaffoldResult.dir}`);
+
+  const scaffolded = await rpc.call("launch_game", { dir: scaffold, mode: "headless" });
+  check(scaffolded.discovery?.service === "functor debug runtime", "the scaffolded project boots");
+  await rpc.call("stop_game", { session: scaffolded.session });
+
+  let reinit = null;
+  try {
+    await rpc.call("init_game", { dir: scaffold });
+  } catch (error) {
+    reinit = error.message;
+  }
+  check(reinit !== null && /game\.fun/.test(reinit), "init_game refuses to overwrite an existing project");
+  rmSync(saveDir, { recursive: true, force: true });
+  rmSync(scaffoldRoot, { recursive: true, force: true });
 
   console.log("\n▸ shutdown");
   const stopped = await rpc.call("stop_game", { session });

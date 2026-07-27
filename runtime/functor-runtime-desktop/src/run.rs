@@ -821,6 +821,9 @@ fn service_debug_request(
             // stable, so the producer replays it; otherwise it early-outs empty.
             let _ = resp.send(game.inspector_trace(clock.is_paused()));
         }
+        debug_server::DebugRequest::Project(resp) => {
+            let _ = resp.send(game.project_sources());
+        }
         debug_server::DebugRequest::ReloadSource(source, resp) => {
             let _ = resp.send(game.reload_source(&source));
         }
