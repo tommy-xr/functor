@@ -14,10 +14,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
+use functor_docgen::{ApiItem, ApiReference};
 use functor_runtime_common::debug_protocol::DEBUG_PROTOCOL_SERVICE;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -41,6 +42,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUIRED_PROTOCOL_VERSION: u64 = 4;
 /// Bytes of a launched child's stdout/stderr kept for failure reporting.
 const LOG_TAIL_BYTES: usize = 8 * 1024;
+/// How many API-reference items one `api_reference` call returns.
+const MAX_API_RESULTS: usize = 20;
 
 /// Serve MCP over stdio until the client disconnects.
 pub async fn execute() -> io::Result<()> {
@@ -171,6 +174,9 @@ impl Registry {
 pub struct FunctorMcp {
     http: reqwest::Client,
     sessions: Arc<Mutex<Registry>>,
+    /// The prelude API reference, generated on first use. The `.funi` sources
+    /// are embedded in this binary, so it cannot change while we run.
+    docs: Arc<OnceLock<Result<ApiReference, String>>>,
 }
 
 fn ok_text(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
@@ -263,6 +269,16 @@ pub struct ReloadProjectArgs {
     pub files: Vec<(String, String)>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ApiReferenceArgs {
+    /// What to look for, matched case-insensitively against item names,
+    /// qualified paths (`Scene.cube`), signatures and doc text. Omit it (with
+    /// `module` set) to list a whole module.
+    pub query: Option<String>,
+    /// Narrow to one prelude module, e.g. `"Scene"` or `"Effect"`.
+    pub module: Option<String>,
+}
+
 #[tool_router]
 impl FunctorMcp {
     pub fn new() -> Self {
@@ -272,7 +288,35 @@ impl FunctorMcp {
                 .build()
                 .expect("failed to build the MCP HTTP client"),
             sessions: Arc::new(Mutex::new(Registry::default())),
+            docs: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Search the engine API reference: the `.funi` prelude embedded in this
+    /// binary — every module, signature and doc comment `functor docs` renders.
+    /// `query` matches case-insensitively against item names, qualified paths
+    /// (`Scene.cube`), signatures and doc text; `module` narrows to one prelude
+    /// module, and browses all of its items when `query` is omitted. This tool
+    /// needs no session — it answers before any game is launched.
+    #[tool]
+    async fn api_reference(
+        &self,
+        Parameters(args): Parameters<ApiReferenceArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let reference = resolve!(self.api_docs());
+        let query = args.query.as_deref().unwrap_or("");
+        let hits = resolve!(search_api(reference, query, args.module.as_deref()));
+        if hits.is_empty() {
+            return tool_error(format!(
+                "no API items match {query:?}{}. The prelude modules are {}.",
+                match args.module.as_deref() {
+                    Some(module) => format!(" in module {module:?}"),
+                    None => String::new(),
+                },
+                module_names(reference).join(", ")
+            ));
+        }
+        ok_text(render_api_hits(&hits))
     }
 
     /// Start a game as a child process with its debug server on a free port,
@@ -702,6 +746,17 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
 }
 
 impl FunctorMcp {
+    /// The prelude API reference, generated once per process.
+    fn api_docs(&self) -> Result<&ApiReference, String> {
+        self.docs
+            .get_or_init(|| {
+                functor_docgen::generate()
+                    .map_err(|error| format!("could not read the embedded API reference: {error}"))
+            })
+            .as_ref()
+            .map_err(String::clone)
+    }
+
     fn release_port(&self, port: u16) {
         self.sessions
             .lock()
@@ -819,7 +874,8 @@ is structured JSON). Rebuild that runtime from this version of Functor."
 get_trace, capture_frame) and drive it (pause, send_input, step, resume, rewind, \
 reload_source). The deterministic loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \
-across steps."
+across steps. api_reference searches the engine's prelude API and needs no session, so it \
+answers language/API questions before anything is launched."
 )]
 impl ServerHandler for FunctorMcp {}
 
@@ -827,6 +883,117 @@ impl Default for FunctorMcp {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// One API-reference item that matched a search, with the rank that decides
+/// how prominently it is reported.
+#[derive(Debug)]
+struct ApiHit<'a> {
+    item: &'a ApiItem,
+    /// 0 = the item's own name, 1 = its path or signature, 2 = its prose.
+    rank: u8,
+}
+
+fn module_names(reference: &ApiReference) -> Vec<&str> {
+    reference
+        .modules
+        .iter()
+        .map(|module| module.name.as_str())
+        .collect()
+}
+
+/// Rank an item against an already-lowercased needle, or `None` if it misses.
+fn rank_api_item(needle: &str, item: &ApiItem) -> Option<u8> {
+    if item.name.eq_ignore_ascii_case(needle) || item.qualified_name.eq_ignore_ascii_case(needle) {
+        return Some(0);
+    }
+    if item.qualified_name.to_lowercase().contains(needle)
+        || item.declaration.to_lowercase().contains(needle)
+    {
+        return Some(1);
+    }
+    item.docs
+        .as_deref()
+        .is_some_and(|docs| docs.to_lowercase().contains(needle))
+        .then_some(2)
+}
+
+/// Search the reference, best matches first. `Err` is a teaching message: an
+/// unknown module, or a search with nothing to go on.
+fn search_api<'a>(
+    reference: &'a ApiReference,
+    query: &str,
+    module: Option<&str>,
+) -> Result<Vec<ApiHit<'a>>, String> {
+    let wanted = module.map(str::trim).filter(|name| !name.is_empty());
+    let modules = match wanted {
+        Some(wanted) => {
+            let matched: Vec<_> = reference
+                .modules
+                .iter()
+                .filter(|module| module.name.eq_ignore_ascii_case(wanted))
+                .collect();
+            if matched.is_empty() {
+                return Err(format!(
+                    "unknown module {wanted:?}: the prelude modules are {}",
+                    module_names(reference).join(", ")
+                ));
+            }
+            matched
+        }
+        None => reference.modules.iter().collect(),
+    };
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() && wanted.is_none() {
+        return Err(format!(
+            "give a query to search for, or a module to browse. The prelude modules are {}",
+            module_names(reference).join(", ")
+        ));
+    }
+    let mut hits: Vec<ApiHit> = modules
+        .into_iter()
+        .flat_map(|module| module.items.iter())
+        .filter_map(|item| {
+            let rank = if needle.is_empty() {
+                Some(1)
+            } else {
+                rank_api_item(&needle, item)
+            };
+            rank.map(|rank| ApiHit { item, rank })
+        })
+        .collect();
+    // A stable sort keeps the prelude's own order within a rank, which is how
+    // the module-browse listing reads best.
+    hits.sort_by_key(|hit| hit.rank);
+    Ok(hits)
+}
+
+/// Render matches as compact text: qualified name, signature, then the prose.
+fn render_api_hits(hits: &[ApiHit]) -> String {
+    let mut out = String::new();
+    for hit in hits.iter().take(MAX_API_RESULTS) {
+        out.push_str(&hit.item.qualified_name);
+        out.push('\n');
+        out.push_str("  ");
+        out.push_str(&hit.item.declaration);
+        out.push('\n');
+        if let Some(docs) = &hit.item.docs {
+            for line in docs.lines() {
+                out.push_str("  ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+    if hits.len() > MAX_API_RESULTS {
+        out.push_str(&format!(
+            "({} of {} matches shown — narrow with a more specific query, or a `module`)\n",
+            MAX_API_RESULTS,
+            hits.len()
+        ));
+    }
+    out
 }
 
 /// The runtime's current time, from a `/state` document. Never defaulted: a
@@ -896,7 +1063,82 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::Registry;
+    use super::{render_api_hits, search_api, Registry};
+    use functor_docgen::ApiReference;
+
+    fn reference() -> ApiReference {
+        functor_docgen::generate().expect("the embedded prelude documents itself")
+    }
+
+    #[test]
+    fn an_exact_name_match_is_reported_first() {
+        let reference = reference();
+        let hits = search_api(&reference, "Scene.cube", None).unwrap();
+
+        assert_eq!(hits[0].item.qualified_name, "Scene.cube");
+        assert_eq!(hits[0].rank, 0);
+        // The rendered text carries the signature and the prose, not just a name.
+        let rendered = render_api_hits(&hits);
+        assert!(rendered.contains("let cube : () => t"), "{rendered}");
+    }
+
+    #[test]
+    fn a_bare_item_name_finds_it_across_modules() {
+        let reference = reference();
+        let hits = search_api(&reference, "cube", None).unwrap();
+
+        assert_eq!(hits[0].rank, 0);
+        assert!(
+            hits.iter().any(|hit| hit.item.qualified_name == "Scene.cube"),
+            "Scene.cube must match its own bare name"
+        );
+    }
+
+    #[test]
+    fn a_module_filter_narrows_and_browses() {
+        let reference = reference();
+        let browsed = search_api(&reference, "", Some("effect")).unwrap();
+
+        assert!(browsed.len() > 1, "browsing a module lists its items");
+        assert!(browsed
+            .iter()
+            .all(|hit| hit.item.qualified_name.starts_with("Effect.")));
+    }
+
+    #[test]
+    fn an_unknown_module_names_the_modules_that_exist() {
+        let reference = reference();
+        let error = search_api(&reference, "cube", Some("Nope")).unwrap_err();
+
+        assert!(error.contains("unknown module"), "{error}");
+        assert!(error.contains("Scene"), "{error}");
+    }
+
+    #[test]
+    fn a_search_with_nothing_to_go_on_names_the_modules() {
+        let reference = reference();
+        let error = search_api(&reference, "  ", None).unwrap_err();
+
+        assert!(error.contains("Scene"), "{error}");
+    }
+
+    #[test]
+    fn a_query_matching_nothing_returns_no_hits() {
+        let reference = reference();
+        assert!(search_api(&reference, "zzzznotathing", None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_truncated_result_says_so() {
+        let reference = reference();
+        let hits = search_api(&reference, "", Some("Scene")).unwrap();
+        assert!(hits.len() > super::MAX_API_RESULTS, "Scene is a big module");
+
+        let rendered = render_api_hits(&hits);
+        assert!(rendered.contains("matches shown"), "{rendered}");
+    }
 
     #[test]
     fn ids_are_short_sequential_and_resolve_to_their_url() {

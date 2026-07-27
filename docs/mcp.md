@@ -69,6 +69,12 @@ URL plus, when the server launched it, the child process.
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
 | `reload_source` / `reload_project` | Hot-reload the entry, or every sibling module, with the live model preserved. |
 
+**Reading the API.**
+
+| Tool | What it does |
+| --- | --- |
+| `api_reference` | Search the embedded `.funi` prelude — the same reference `functor docs` renders — by name, qualified path (`Scene.cube`), signature, or doc text. `module` narrows to one module, and browses all of it when `query` is omitted. **No session needed**: it answers before any game is launched. |
+
 Two semantics are worth internalizing, because they are what make the loop
 deterministic rather than racy:
 

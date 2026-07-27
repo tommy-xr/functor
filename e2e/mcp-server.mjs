@@ -6,14 +6,16 @@
 //
 //   1. initialize / notifications/initialized / tools/list, asserting the whole
 //      documented tool surface is advertised.
-//   2. launch_game on examples/counter in HEADLESS mode (no GL, so this runs
+//   2. api_reference, called before any session exists (it is session-free):
+//      a known item's signature, a module listing, and the zero-match case.
+//   3. launch_game on examples/counter in HEADLESS mode (no GL, so this runs
 //      anywhere CI does), and assert /state's structured `model` arrives.
-//   3. pause, then step twice — asserting the frame advances and that `step`
+//   4. pause, then step twice — asserting the frame advances and that `step`
 //      only returns once the queued steps have landed (pending_steps == 0).
-//   4. send_input: counter's model reacts to a UI click (its `update` handles
+//   5. send_input: counter's model reacts to a UI click (its `update` handles
 //      Inc), so a `ui_event` on slot 0 must increment `count` after a step.
 //      A `key` event is also injected to exercise that shape end to end.
-//   5. stop_game, then a clean shutdown of the server itself.
+//   6. stop_game, then a clean shutdown of the server itself.
 //
 // Run manually (needs the CLI built; the wasm bundle is not required):
 //
@@ -42,6 +44,7 @@ const EXPECTED_TOOLS = [
   "rewind",
   "reload_source",
   "reload_project",
+  "api_reference",
 ];
 
 /** A line-delimited JSON-RPC client over a child's stdio. */
@@ -132,6 +135,23 @@ try {
     tools.every((tool) => (tool.description ?? "").length > 20),
     "every tool carries a real description (the agent-facing docs)",
   );
+
+  // Deliberately before any session exists: api_reference is session-free.
+  console.log("\n▸ the API reference, with no session");
+  const cube = await rpc.call("api_reference", { query: "Scene.cube" });
+  check(/Scene\.cube/.test(cube) && /let cube : \(\) => t/.test(cube), "api_reference returns Scene.cube's signature");
+
+  const effect = await rpc.call("api_reference", { module: "Effect" });
+  const effectItems = effect.split("\n").filter((line) => /^Effect\./.test(line));
+  check(effectItems.length > 1, `browsing a module lists its items (${effectItems.length} from Effect)`);
+
+  let missed = null;
+  try {
+    await rpc.call("api_reference", { query: "zzzznotathing" });
+  } catch (error) {
+    missed = error.message;
+  }
+  check(missed !== null && /Scene/.test(missed) && /Effect/.test(missed), "a query matching nothing names the available modules");
 
   console.log("\n▸ launching a game headlessly");
   const launched = await rpc.call("launch_game", { dir: "examples/counter", mode: "headless" });
