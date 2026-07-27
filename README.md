@@ -176,7 +176,7 @@ use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).
 | `functor -d <dir> init [3d\|fps]` | Scaffold a new Functor Lang project (`3d` is the default) |
 | `functor -d <dir> build [native\|wasm]` | Typecheck the `.fun` project (diagnostics are errors) |
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
-| `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime |
+| `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime — plus the debug runtime on `localhost:8077` (`--no-debug` to skip it) |
 | `functor docs [--format markdown\|json]` | Generate the engine API reference from the embedded `.funi` prelude |
 
 For build-from-source instructions and what `build`/`run` do under the hood, see

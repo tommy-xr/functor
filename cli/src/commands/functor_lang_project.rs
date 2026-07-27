@@ -19,6 +19,7 @@ use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
+use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
 
 use crate::output::{emit, Event, Severity};
 // `util` (the shell-command runner + wasm dev server) is only used by the
@@ -412,6 +413,10 @@ impl FunctorLangProject {
             "--game-path".to_string(),
             self.entry.clone(),
         ];
+        let (runner_args, debug_warning) = resolve_debug_args(develop, runner_args);
+        if let Some(message) = debug_warning {
+            emit(Event::Warning { message });
+        }
         argv.extend(runner_args.iter().cloned());
         let runtime_args = functor_runtime_desktop::Args::parse_from(argv);
 
@@ -804,6 +809,42 @@ relative path inside it (got {})",
             wasm_server_start.await
         }
     }
+}
+
+/// Resolve the debug-server args the desktop runtime is invoked with, and
+/// strip the CLI-only `--no-debug` (the runtime's clap would reject it).
+///
+/// `develop` serves the debug runtime on the well-known localhost port
+/// [`DEFAULT_DEVELOP_PORT`] by default, so an agent can attach to a human's
+/// live session without being told a port. `run` stays opt-in — only a session
+/// the developer explicitly called `develop` gets a listener for free. An
+/// explicit `--debug-port` (or `--debug-port=P`) always wins, `--no-debug`
+/// suppresses the default, and the added default carries
+/// `--debug-port-optional` so a second concurrent session degrades to "no
+/// debug server" instead of dying on the bind.
+///
+/// Returns the args to forward plus an optional warning to emit.
+fn resolve_debug_args(develop: bool, runner_args: &[String]) -> (Vec<String>, Option<String>) {
+    let explicit = runner_args
+        .iter()
+        .any(|arg| arg == "--debug-port" || arg.starts_with("--debug-port="));
+    let no_debug = runner_args.iter().any(|arg| arg == "--no-debug");
+    let mut args: Vec<String> = runner_args
+        .iter()
+        .filter(|arg| *arg != "--no-debug")
+        .cloned()
+        .collect();
+
+    if !develop || explicit || no_debug {
+        let warning = (no_debug && explicit)
+            .then(|| "--no-debug ignored: --debug-port was given explicitly".to_string());
+        return (args, warning);
+    }
+
+    args.push("--debug-port".to_string());
+    args.push(DEFAULT_DEVELOP_PORT.to_string());
+    args.push("--debug-port-optional".to_string());
+    (args, None)
 }
 
 /// Auto-reimport (B.2): regenerate a stale GENERATED `assets.fun` before the
@@ -1228,7 +1269,54 @@ fn entry_escapes_project(entry: &str) -> bool {
 mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
-    use super::{nth_line, project_asset_files, FunctorLangConfig, FunctorLangEntries};
+    use super::{
+        nth_line, project_asset_files, resolve_debug_args, FunctorLangConfig, FunctorLangEntries,
+    };
+
+    fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        resolve_debug_args(develop, &args)
+    }
+
+    #[test]
+    fn develop_defaults_to_the_well_known_debug_port() {
+        let (args, warning) = resolve(true, &["--hidden"]);
+        assert_eq!(
+            args,
+            ["--hidden", "--debug-port", "8077", "--debug-port-optional"]
+        );
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn run_stays_opt_in() {
+        assert_eq!(resolve(false, &["--hidden"]).0, ["--hidden"]);
+    }
+
+    #[test]
+    fn an_explicit_debug_port_wins() {
+        assert_eq!(
+            resolve(true, &["--debug-port", "9001"]).0,
+            ["--debug-port", "9001"]
+        );
+        assert_eq!(
+            resolve(true, &["--debug-port=9001"]).0,
+            ["--debug-port=9001"]
+        );
+    }
+
+    #[test]
+    fn no_debug_suppresses_the_default_and_never_reaches_the_runtime() {
+        assert_eq!(resolve(true, &["--no-debug", "--hidden"]).0, ["--hidden"]);
+        assert_eq!(resolve(false, &["--no-debug"]).0, Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_debug_with_an_explicit_port_warns() {
+        let (args, warning) = resolve(true, &["--no-debug", "--debug-port", "9001"]);
+        assert_eq!(args, ["--debug-port", "9001"]);
+        assert!(warning.is_some_and(|w| w.contains("--no-debug ignored")));
+    }
 
     fn single(entry: &str) -> FunctorLangConfig {
         FunctorLangConfig {

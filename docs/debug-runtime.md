@@ -6,16 +6,34 @@ game without a GPU window of its own. It is the runtime arm of Functor's LLM-nat
 goal: capture frames, query state, control the frame clock, and inject input over a
 localhost socket.
 
-On desktop, start it by passing `--debug-port <PORT>`:
+On desktop, **`functor develop` starts it by default** on the well-known localhost
+port **8077** — so a script or agent can attach to a live develop session without
+being told a port:
+
+```sh
+./target/debug/functor -d examples/hello develop native
+curl -s localhost:8077/ | jq
+```
+
+`run` stays opt-in: pass `--debug-port <PORT>` there (or on `develop`, to choose a
+different port).
 
 ```sh
 # the CLI runs the game in-process and interprets the .fun
 ./target/debug/functor -d examples/hello run native --debug-port 8077
 ```
 
+If 8077 is already taken — a second `functor develop`, or a stale process —
+`develop` logs one line and runs the game **without** a debug server rather than
+failing to start; pass `--debug-port <PORT>` for a second session, or `--no-debug`
+to skip the listener entirely. An explicit `--debug-port` that can't bind is still
+a fatal error (automation asked for *that* port and is waiting on it).
+
 The server binds **localhost by default** (`127.0.0.1:<PORT>`); `--debug-bind 0.0.0.0`
 exposes it to the LAN for remote develop (see `POST /reload-source`) — there is no auth,
-so bind wide only on networks where arbitrary game-code pushes are acceptable. HTTP
+so bind wide only on networks where arbitrary game-code pushes are acceptable. That is
+why only the *localhost* bind is on by default under `develop`: reaching it already
+requires code execution on the machine. `--debug-bind` is never widened implicitly. HTTP
 handlers never touch GL; each request is handed to the render loop and fulfilled once
 per frame.
 
