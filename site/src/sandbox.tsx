@@ -116,11 +116,11 @@ const dismissBootLoader = () =>
 
 const statusBar = createStatusBarStore();
 
-// The pane system mounts at every count, but its chrome is dark at one
-// client — no chrono bar, no pane frame, the stock in-frame scrubber. The
-// single-client chrono unification follows separately with the a11y parity
-// it requires. `getSource` lets a mirror added mid-session catch up to the
-// edited buffer (`view` exists by the time any pane is added).
+// One instrument at every client count: the chrono bar is the transport UI
+// for a single client and for N — the players mount their __scrub seam with
+// no bar of their own (?scrubber=hidden). `getSource` lets a mirror added
+// mid-session catch up to the edited buffer (`view` exists by the time any
+// pane is added).
 mp = initMultiplayerPanes({
   frame,
   count: requestedClients,
@@ -347,7 +347,9 @@ const loadInline = (b64u: string) => {
   // A fresh iframe on a `?src=` data: URL, so the inline program runs its OWN
   // `init` (a set-source push would preserve the default entry's model). The
   // loader derives module `Main` for a non-identifier entry label.
-  frame.src = `player.html?src=${b64u}`;
+  // scrubber=hidden: the page's chrono bar is the transport UI; the player
+  // mounts the __scrub seam with no bar of its own.
+  frame.src = `player.html?src=${b64u}&scrubber=hidden`;
   mp?.setSrc(frame.src);
   return true;
 };
@@ -393,7 +395,7 @@ const loadExample = async (id: string) => {
   // switching examples resets state; the ready announcement re-arms pushes.
   setDoc(source, siblings, assets);
   setStatus("busy", "◌ loading…");
-  const params = new URLSearchParams({ game: url });
+  const params = new URLSearchParams({ game: url, scrubber: "hidden" });
   for (const file of files) params.append("file", file);
   frame.src = `player.html?${params}`;
   mp?.setSrc(frame.src);

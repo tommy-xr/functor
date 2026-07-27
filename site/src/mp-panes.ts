@@ -19,12 +19,9 @@
 //  - the host chrono bar drives every pane through its `window.__scrub` seam
 //    (pause/step/seek/extrapolate broadcast; rail + markers mirror the
 //    focused pane);
-//  - mirror panes boot with `?scrubber=hidden` (the seam without the bar);
-//    pane 1 cannot re-boot (its model must survive), so while count > 1 its
-//    in-frame bar is suppressed with a REVERSIBLE injected style — removed
-//    the moment the count returns to 1, so single-client is exactly stock.
-//    The single-client unification (chrono bar at every N) follows separately
-//    with the a11y parity work it requires;
+//  - every pane (the sandbox player included) boots with `?scrubber=hidden`
+//    — the seam without the bar — and the chrono bar is the ONE transport
+//    instrument at every client count, single included;
 //  - the per-pane link chip (LAN / Wi-Fi / mobile / awful) records a
 //    LinkProfile per client but impairs nothing until the transport carries
 //    it. It is labelled as such.
@@ -45,15 +42,32 @@ interface ScrubSeam {
   seek(frame: number): void;
   togglePause(): void;
   step(): void;
+  model(): { preview: { enabled: boolean; seconds: number; rate: number } };
   view(): TimelineView | null;
+  setPreview(preview: {
+    enabled?: boolean;
+    seconds?: number;
+    rate?: number;
+    /** 1 trail / 2 strobe / 3 both / 4 ghost (scrubber.js seam extension). */
+    mode?: number;
+  }): void;
 }
 
 /** The slice of timeline-model's derived view the chrono bar renders. */
 interface TimelineView {
   viewport: { lo: number; hi: number };
+  recorded: { lo: number; hi: number };
   playheadUnit: number;
+  playheadClippedBefore: boolean;
+  playheadClippedAfter: boolean;
   recordedStartUnit: number;
   recordedEndUnit: number;
+  hasUnavailableHistory: boolean;
+  unavailableEndUnit: number;
+  unavailableAfterStartUnit: number;
+  previewEndUnit: number;
+  previewFrames: number;
+  previewClippedFrames: number;
   selectedFrame: number;
   paused: boolean;
   eventMarkers: {
@@ -122,39 +136,6 @@ const LINK_PRESETS: LinkProfile[] = [
   { name: "awful", ms: 400, jitter: 120, loss: 12 },
 ];
 
-const HIDE_SCRUBBER_CSS = "#scrubber { display: none !important; }";
-
-// Suppress (or restore) pane 1's own bottom-docked scrubber overlay. While
-// count > 1 the host chrono bar is the one instrument; back at 1 the style is
-// removed and the stock in-frame bar returns. The `__scrub` seam is live
-// either way (it is how the chrono bar drives the pane).
-const setInnerScrubberHidden = (iframe: HTMLIFrameElement, hidden: boolean) => {
-  try {
-    const doc = iframe.contentDocument;
-    if (!doc) return;
-    const existing = doc.getElementById("mp-hide-scrubber");
-    if (hidden && !existing) {
-      const style = doc.createElement("style");
-      style.id = "mp-hide-scrubber";
-      style.textContent = HIDE_SCRUBBER_CSS;
-      (doc.head || doc.documentElement).appendChild(style);
-    } else if (!hidden && existing) {
-      existing.remove();
-    }
-  } catch {
-    // A pane that is mid-navigation has no reachable document yet; the load
-    // listener re-runs this.
-  }
-};
-
-// Mirror panes get the honest mechanism: mountScrubber({ hidden }) via the
-// player's ?scrubber=hidden — the seam mounts, the bar's DOM never does.
-const withHiddenScrubber = (src: string) => {
-  const url = new URL(src, window.location.href);
-  url.searchParams.set("scrubber", "hidden");
-  return url.toString();
-};
-
 const seamOf = (iframe: HTMLIFrameElement): ScrubSeam | null => {
   try {
     return (iframe.contentWindow as (Window & { __scrub?: ScrubSeam }) | null)?.__scrub ?? null;
@@ -179,16 +160,38 @@ export function initMultiplayerPanes({
   chrono.innerHTML = `
     <button class="mp-sbtn" id="mp-pause" title="Pause / resume every client">⏸</button>
     <button class="mp-sbtn" id="mp-step" title="Step every client one frame">⏭</button>
-    <span class="mp-rail" id="mp-rail" title="Drag to seek every client">
+    <span class="mp-rail" id="mp-rail" title="Drag to seek every client"
+      role="slider" tabindex="0" aria-label="Time-travel timeline" aria-orientation="horizontal">
       <span class="mp-track"></span>
+      <span class="mp-unavailable" id="mp-unavailable"></span>
+      <span class="mp-unavailable mp-unavailable-after" id="mp-unavailable-after"></span>
       <span class="mp-recorded" id="mp-recorded"></span>
       <span class="mp-played" id="mp-played"></span>
+      <span class="mp-future" id="mp-future"></span>
       <span class="mp-ticks" id="mp-ticks"></span>
       <span class="mp-markers" id="mp-markers"></span>
       <span class="mp-playhead" id="mp-playhead"></span>
+      <span class="mp-preview-handle" id="mp-preview-handle" role="slider" tabindex="0"
+        aria-label="Extrapolation endpoint" aria-orientation="horizontal"
+        title="Drag to stretch the extrapolation window"></span>
+      <span class="mp-overflow" id="mp-overflow"></span>
       <span class="mp-evt-tip" id="mp-evt-tip" role="status"></span>
       <span class="mp-rail-label"><b>#f</b> <span id="mp-frame">—</span></span>
     </span>
+    <button class="mp-sbtn" id="mp-extrap" title="Extrapolate: speculatively simulate forward from the parked frame">🔮</button>
+    <details class="mp-adv" id="mp-adv">
+      <summary title="Extrapolation settings">⚙</summary>
+      <div class="mp-adv-pop">
+        <label>show
+          <select id="mp-adv-mode">
+            <option value="1">trail</option><option value="2">strobe</option>
+            <option value="3" selected>both</option><option value="4">ghost</option>
+          </select>
+        </label>
+        <label>window <input id="mp-adv-win" type="number" step="0.5" min="0.5" max="5" value="2" />s</label>
+        <label>rate <input id="mp-adv-rate" type="number" min="1" max="30" value="5" />/s</label>
+      </div>
+    </details>
     <span class="mp-viewseg" role="group" aria-label="Pane layout">
       <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every client visible">⊞ tiled</button>
       <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one client full-size (f)">▤ tabs</button>
@@ -261,18 +264,12 @@ export function initMultiplayerPanes({
       errStrip: shell.querySelector(".mp-pane-err") as HTMLElement,
     };
 
-    iframe.addEventListener("load", () => syncInnerScrubber());
     shell.querySelector(".mp-pane-hd")!.addEventListener("mousedown", () => focusPane(index));
     tab.addEventListener("click", () => focusPane(index));
     buildLinkMenu(pane, shell.querySelector(".mp-link-host") as HTMLElement, pane.scope.signal);
     panes.push(pane);
     return pane;
   };
-
-  // Pane 1's in-frame scrubber shows exactly when it is the ONLY pane.
-  function syncInnerScrubber() {
-    setInnerScrubberHidden(panes[0].iframe, panes.length > 1);
-  }
 
   // Pane 1 wraps the page's existing #player (lang-intel, the live trace, and
   // the primary bridge keep talking to it untouched). Panes 2..N are mirrors,
@@ -312,7 +309,7 @@ export function initMultiplayerPanes({
     // A mirror added mid-session boots the served program, then catches up to
     // the (possibly edited) buffer; the bridge holds the push until ready.
     if (frame.getAttribute("src")) {
-      iframe.src = withHiddenScrubber(frame.src);
+      iframe.src = frame.src; // already carries ?scrubber=hidden (the page adds it)
       if (pushCurrent) bridge.push(getSource());
     }
   };
@@ -348,6 +345,7 @@ export function initMultiplayerPanes({
     for (const menu of document.querySelectorAll<HTMLElement>(".mp-link-menu")) {
       menu.hidden = true;
     }
+    (chrono.querySelector("#mp-adv") as HTMLDetailsElement).open = false;
   };
 
   const moduleScope = new AbortController();
@@ -403,7 +401,6 @@ export function initMultiplayerPanes({
     $btn("mp-view-tiled").disabled = single;
     $btn("mp-view-tabs").disabled = single;
     if (single) setView("tiled", true);
-    syncInnerScrubber();
   };
 
   // Live client-count change: grow or shrink the mirror set in place. Pane 1
@@ -533,6 +530,73 @@ export function initMultiplayerPanes({
   $btn("mp-step").addEventListener("click", () => {
     for (const seam of seams()) seam.step();
   });
+  // The speculative preview (🔮): the pane simulates forward from its parked
+  // frame under the current code, replaying recorded input. Broadcast like
+  // pause (single-client-only in the UI; the CSS hides it at N > 1).
+  $btn("mp-extrap").addEventListener("click", () => {
+    const primary = primarySeam();
+    if (!primary) return;
+    const enabled = !primary.model().preview.enabled;
+    for (const seam of seams()) seam.setPreview({ enabled });
+  });
+
+  // ⚙ advanced — everything goes through the seam (the panes' scrubber DOM is
+  // never attached, so there is nothing to reach into cross-frame).
+  const advWin = chrono.querySelector("#mp-adv-win") as HTMLInputElement;
+  const advRate = chrono.querySelector("#mp-adv-rate") as HTMLInputElement;
+  const advMode = chrono.querySelector("#mp-adv-mode") as HTMLSelectElement;
+  const pushAdv = () => {
+    if (!advWin.validity.valid || !advRate.validity.valid) return;
+    for (const seam of seams()) {
+      seam.setPreview({ seconds: advWin.valueAsNumber, rate: advRate.valueAsNumber });
+    }
+  };
+  advWin.addEventListener("input", pushAdv);
+  advRate.addEventListener("input", pushAdv);
+  advMode.addEventListener("change", () => {
+    for (const seam of seams()) seam.setPreview({ mode: Number(advMode.value) });
+  });
+
+  // The pink preview handle: drag (or arrow keys) to stretch the window.
+  const previewHandle = $("mp-preview-handle");
+  let previewDrag: { x: number; seconds: number } | null = null;
+  previewHandle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    previewHandle.setPointerCapture(event.pointerId);
+    previewDrag = { x: event.clientX, seconds: primarySeam()?.model().preview.seconds ?? 2 };
+  });
+  previewHandle.addEventListener("pointermove", (event) => {
+    if (!previewDrag || !previewHandle.hasPointerCapture(event.pointerId)) return;
+    const current = primarySeam()?.view();
+    const width = rail.getBoundingClientRect().width;
+    const span = current ? current.viewport.hi - current.viewport.lo : 0;
+    if (width <= 0 || span <= 0) return;
+    const deltaFrames = ((event.clientX - previewDrag.x) / width) * span;
+    for (const seam of seams()) {
+      seam.setPreview({ seconds: previewDrag.seconds + deltaFrames / 60 });
+    }
+    const settled = primarySeam()?.model().preview.seconds;
+    if (settled !== undefined) advWin.value = String(settled);
+  });
+  const endPreviewDrag = () => {
+    previewDrag = null;
+  };
+  previewHandle.addEventListener("pointerup", endPreviewDrag);
+  previewHandle.addEventListener("pointercancel", endPreviewDrag);
+  previewHandle.addEventListener("keydown", (event) => {
+    const deltas: Record<string, number> = {
+      ArrowLeft: -0.5, ArrowDown: -0.5, ArrowRight: 0.5, ArrowUp: 0.5,
+    };
+    const delta = deltas[event.key];
+    if (delta === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const seconds = (primarySeam()?.model().preview.seconds ?? 2) + delta;
+    for (const seam of seams()) seam.setPreview({ seconds });
+    const settled = primarySeam()?.model().preview.seconds;
+    if (settled !== undefined) advWin.value = String(settled);
+  });
   const tip = $("mp-evt-tip");
   const showTip = (unit: number, text: string) => {
     tip.style.display = "block";
@@ -564,6 +628,26 @@ export function initMultiplayerPanes({
   rail.addEventListener("pointermove", (event) => {
     if (rail.hasPointerCapture(event.pointerId)) seekAt(event);
   });
+  rail.addEventListener("keydown", (event) => {
+    const current = primarySeam()?.view();
+    if (!current) return;
+    const steps = event.shiftKey ? 10 : 1;
+    const targets: Record<string, number> = {
+      ArrowLeft: current.selectedFrame - steps,
+      ArrowDown: current.selectedFrame - steps,
+      ArrowRight: current.selectedFrame + steps,
+      ArrowUp: current.selectedFrame + steps,
+      PageDown: current.selectedFrame - 60,
+      PageUp: current.selectedFrame + 60,
+      Home: current.viewport.lo,
+      End: current.viewport.hi,
+    };
+    const target = targets[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    for (const seam of seams()) seam.seek(Math.round(target));
+  });
 
   // The rail mirrors the FOCUSED pane (each pane is an independent sim in the
   // prototype, so one authoritative rail per focus is the honest picture; the
@@ -583,12 +667,69 @@ export function initMultiplayerPanes({
       $("mp-recorded").style.width =
         `${Math.max(current.recordedEndUnit - current.recordedStartUnit, 0) * 100}%`;
       $("mp-playhead").style.left = `${current.playheadUnit * 100}%`;
-      const labelText = `${current.selectedFrame} / ${Math.round(current.viewport.hi)}`;
-      if (labelText !== lastLabel) {
-        lastLabel = labelText;
-        $("mp-frame").textContent = labelText;
+      const outside = current.playheadClippedBefore || current.playheadClippedAfter;
+      $("mp-playhead").classList.toggle("outside", outside);
+      // Unavailable-history stripes: the frozen viewport's regions whose
+      // snapshots did not survive a reload (same geometry as the in-frame bar).
+      const striped = current.hasUnavailableHistory;
+      $("mp-unavailable").style.width = striped
+        ? `${current.unavailableEndUnit * 100}%`
+        : "0";
+      const unavailableAfter = $("mp-unavailable-after");
+      unavailableAfter.style.left = `${current.unavailableAfterStartUnit * 100}%`;
+      unavailableAfter.style.width = striped
+        ? `${Math.max(1 - current.unavailableAfterStartUnit, 0) * 100}%`
+        : "0";
+      const previewOn = primary.model().preview.enabled;
+      const future = $("mp-future");
+      future.style.left = `${current.playheadUnit * 100}%`;
+      future.style.width = previewOn
+        ? `${Math.max(current.previewEndUnit - current.playheadUnit, 0) * 100}%`
+        : "0";
+      previewHandle.style.display = previewOn ? "block" : "none";
+      previewHandle.style.left = `${current.previewEndUnit * 100}%`;
+      previewHandle.classList.toggle("clipped", current.previewClippedFrames > 0);
+      previewHandle.classList.toggle(
+        "fully-clipped",
+        previewOn && current.previewFrames > 0 && current.previewEndUnit <= current.playheadUnit
+      );
+      previewHandle.setAttribute(
+        "aria-valuetext",
+        `${primary.model().preview.seconds} seconds ahead` +
+          (current.previewClippedFrames ? `, ${current.previewClippedFrames} frames clipped` : "")
+      );
+      const overflow = $("mp-overflow");
+      overflow.style.display = previewOn && current.previewClippedFrames > 0 ? "block" : "none";
+      overflow.textContent = `+${current.previewClippedFrames}`;
+      $btn("mp-extrap").classList.toggle("on", previewOn);
+      $btn("mp-extrap").setAttribute("aria-pressed", String(previewOn));
+      const labelHtml =
+        `${current.selectedFrame}` +
+        (outside ? ` <span class="out">outside</span>` : "") +
+        (previewOn ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
+        ` / ${Math.round(current.viewport.hi)}`;
+      // The stripes' availability note is ARIA-only, but it shares the label's
+      // change guard so it repaints exactly when the label does.
+      const availability = striped
+        ? `, recorded frames ${Math.round(current.recorded.lo)} to ` +
+          `${Math.round(current.recorded.hi)}; striped history outside that range is unavailable`
+        : "";
+      if (labelHtml + availability !== lastLabel) {
+        lastLabel = labelHtml + availability;
+        $("mp-frame").innerHTML = labelHtml;
+        rail.setAttribute("aria-valuemin", String(Math.round(current.viewport.lo)));
+        rail.setAttribute("aria-valuemax", String(Math.round(current.viewport.hi)));
+        rail.setAttribute("aria-valuenow", String(current.selectedFrame));
+        rail.setAttribute(
+          "aria-valuetext",
+          `frame ${current.selectedFrame} of ${Math.round(current.viewport.hi)}` +
+            (outside ? ", outside the frozen viewport" : "") +
+            availability
+        );
       }
-      $btn("mp-pause").textContent = current.paused ? "▶" : "⏸";
+      const pauseBtn = $btn("mp-pause");
+      pauseBtn.textContent = current.paused ? "▶" : "⏸";
+      pauseBtn.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
       // A pane that boots while the session is parked must not run off on its
       // own: keep every seam's pause state converged on the focused pane's.
       // Idempotent, so this costs one boolean read per pane per frame.
@@ -658,10 +799,9 @@ export function initMultiplayerPanes({
   // the pointer at frame rate — a slow poll here reads as a sluggish sim.
   // The label and marker writes are change-guarded; the geometry writes are
   // plain style assignments (same shape as the in-frame scrubber's loop).
-  // At one client the chrono bar is display:none, so painting is skipped.
   let raf = 0;
   const tickLoop = () => {
-    if (panes.length > 1) paint();
+    paint();
     raf = requestAnimationFrame(tickLoop);
   };
   raf = requestAnimationFrame(tickLoop);
@@ -672,7 +812,7 @@ export function initMultiplayerPanes({
       for (const { pane, bridge } of mirrors) {
         bridge.reset();
         setPaneState(pane, "busy");
-        pane.iframe.src = withHiddenScrubber(src);
+        pane.iframe.src = src;
       }
     },
     // Mirror a debounced hot-reload push.

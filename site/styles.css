@@ -2483,7 +2483,7 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px 14px;
+  padding: 10px 12px 16px;
   font: 12px/1 var(--font-mono);
   color: var(--text);
   background: rgba(30, 24, 51, 0.92);
@@ -2546,6 +2546,23 @@ a:hover {
 
 .mp-recorded {
   background: rgba(65, 216, 230, 0.3);
+}
+
+/* Striped "history unavailable" regions of a frozen viewport (a reload that
+   could not carry its snapshots): the same hatch as the in-frame scrubber. */
+.mp-unavailable {
+  position: absolute;
+  top: 12px;
+  left: 0;
+  height: 6px;
+  width: 0;
+  border-radius: 3px;
+  background: repeating-linear-gradient(
+    110deg,
+    rgba(155, 148, 179, 0.3) 0 3px,
+    rgba(8, 7, 14, 0.72) 3px 12px
+  );
+  pointer-events: none;
 }
 
 .mp-played {
@@ -2943,7 +2960,8 @@ a:hover {
 
 .mp-rail-label {
   position: absolute;
-  top: 100%;
+  /* Clear of the rail's keyboard-focus ring (2px offset below the box). */
+  top: calc(100% + 4px);
   left: 50%;
   transform: translateX(-50%);
   font-size: 9px;
@@ -2975,13 +2993,12 @@ a:hover {
    header — digits, roles, and link chips are multiplayer vocabulary — and the
    focus glow, since there is nothing to disambiguate. */
 .preview-pane.mp[data-count="1"] .mp-pane-hd,
-.preview-pane.mp[data-count="1"] .mp-tabs,
-.preview-pane.mp[data-count="1"] .mp-chrono {
+.preview-pane.mp[data-count="1"] .mp-tabs {
   display: none;
 }
 
-/* One client is exactly today's sandbox: no chrome frame around the game and
-   the pane's own in-frame scrubber (the chrono bar appears at 2+). */
+/* One client keeps a flush, frameless game view — but the chrono bar above
+   it is the same instrument at every count. */
 .preview-pane.mp[data-count="1"] .mp-grid {
   padding: 0;
   gap: 0;
@@ -3040,10 +3057,18 @@ a:hover {
   pointer-events: none;
 }
 
-/* The 🔮 extrapolation surface ships with the single-client chrono
-   unification (it is single-client-only by design: whole-session forward
-   extrapolation means N speculative re-simulations). Until then the chrono
-   bar carries the view toggle alone. */
+/* 🔮 is single-client only (whole-session forward extrapolation means N
+   speculative re-simulations — not v1); multiplayer gets tiled/tabs in that
+   slot, and with one client the view toggle is meaningless. Hidden, not
+   disabled (design-multiplayer-ide-frontend.md §1). */
+.preview-pane.mp:not([data-count="1"]) #mp-extrap,
+.preview-pane.mp:not([data-count="1"]) .mp-adv {
+  display: none;
+}
+
+.preview-pane.mp[data-count="1"] .mp-viewseg {
+  display: none;
+}
 
 /* ---- second ticks along the rail (every 60 frames; heavier each 5s) ---- */
 
@@ -3073,6 +3098,171 @@ a:hover {
 
 .mp-link-menu input[type="number"]::-webkit-inner-spin-button,
 .mp-link-menu input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+
+/* ---- the extrapolation surface (single-client) + rail keyboard focus ---- */
+
+.mp-rail:focus-visible,
+.mp-preview-handle:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
+
+.mp-rail-label .fut {
+  color: var(--pink);
+}
+
+.mp-rail-label .out {
+  color: #ffd166;
+}
+
+/* Playhead parked outside the frozen viewport: a white ring on top of its
+   normal glow (mirrors the in-frame scrubber's outside state). */
+.mp-playhead.outside {
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.55),
+    0 0 12px rgba(65, 216, 230, 0.6);
+}
+
+.mp-future {
+  position: absolute;
+  top: 11px;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--pink);
+  opacity: 0.9;
+  box-shadow: 0 0 10px rgba(232, 88, 184, 0.5);
+}
+
+#mp-extrap.on {
+  border-color: var(--pink);
+  box-shadow: 0 0 0 1px var(--pink), 0 2px 10px rgba(232, 88, 184, 0.4);
+}
+
+.mp-preview-handle {
+  display: none;
+  position: absolute;
+  top: 15px;
+  z-index: 3;
+  width: 14px;
+  height: 20px;
+  border-radius: 4px;
+  transform: translate(-50%, -50%);
+  background: var(--pink);
+  border: 1px solid #ffd0ee;
+  box-shadow: 0 0 12px rgba(232, 88, 184, 0.6);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.mp-preview-handle.clipped {
+  border-radius: 4px 0 0 4px;
+}
+
+/* Fully clipped (the endpoint sits on the playhead): perch above the rail so
+   the cyan playhead stays independently visible and hittable. */
+.mp-preview-handle.fully-clipped {
+  top: 0;
+  z-index: 5;
+  height: 12px;
+}
+
+.mp-overflow {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: -6px;
+  z-index: 4;
+  padding: 2px 4px;
+  border: 1px solid var(--pink);
+  border-radius: 5px;
+  color: #ffd0ee;
+  background: rgba(30, 24, 51, 0.96);
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.mp-adv {
+  position: relative;
+}
+
+.mp-adv > summary {
+  list-style: none;
+  user-select: none;
+  font: 13px/1 var(--font-mono);
+  color: var(--text);
+  cursor: pointer;
+  background: rgba(65, 216, 230, 0.1);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.mp-adv > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mp-adv > summary:hover,
+.mp-adv[open] > summary {
+  border-color: var(--cyan);
+}
+
+.mp-adv-pop {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(30, 24, 51, 0.98);
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.mp-adv-pop label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+}
+
+.mp-adv-pop select,
+.mp-adv-pop input[type="number"] {
+  font: 12px/1 var(--font-mono);
+  color: var(--text);
+  background: rgba(65, 216, 230, 0.1);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 5px;
+}
+
+.mp-adv-pop select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 20px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%239b94b3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+}
+
+.mp-adv-pop input[type="number"] {
+  width: 46px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.mp-adv-pop input[type="number"]::-webkit-inner-spin-button,
+.mp-adv-pop input[type="number"]::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
