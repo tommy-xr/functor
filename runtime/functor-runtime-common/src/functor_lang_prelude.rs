@@ -5301,6 +5301,254 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
     }
 
     #[test]
+    fn filled_shapes_are_plain_inspectable_data() {
+        // Same discipline as text: the node keeps the AUTHOR'S parameters, and
+        // triangulation happens later at lowering — so a picture containing a
+        // circle still compares, serializes, and time-travels as plain data
+        // instead of carrying 32 expanded vertices around in the model.
+        let circle = eval("let main = () => Sprite.circle(Color.rgb(1.0, 0.5, 0.25), 3.0)");
+        assert!(!matches!(circle, Value::HostData(_)));
+        assert!(circle.is_reload_safe_snapshot());
+        assert_eq!(circle.to_string(), "Sprite.Circle(3, 1, 0.5, 0.25)");
+
+        let line = eval(
+            "let main = () =>\n\
+             Sprite.line(Color.rgb(1.0, 1.0, 1.0), 0.25, { x: 0.0, y: 0.0 }, { x: 4.0, y: 3.0 })",
+        );
+        assert!(line.is_reload_safe_snapshot());
+        assert_eq!(line.to_string(), "Sprite.Line(0.25, 0, 0, 4, 3, 1, 1, 1)");
+
+        let polygon = eval(
+            "let main = () =>\n\
+             Sprite.polygon(Color.rgb(0.0, 1.0, 0.0), [\n\
+               { x: 0.0, y: 0.0 }, { x: 2.0, y: 0.0 }, { x: 1.0, y: 1.5 }])",
+        );
+        assert!(polygon.is_reload_safe_snapshot());
+        assert_eq!(
+            polygon.to_string(),
+            "Sprite.Polygon([{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 1.5 }], 0, 1, 0)"
+        );
+        // Structural equality reaches the points.
+        assert!(matches!(
+            eval(
+                "let tri = (h) =>\n\
+                 Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\n\
+                   { x: 0.0, y: 0.0 }, { x: 2.0, y: 0.0 }, { x: 1.0, y: h }])\n\
+                 let main = () => tri(1.5) == tri(1.5) && not (tri(1.5) == tri(2.0))"
+            ),
+            Value::Bool(true)
+        ));
+    }
+
+    #[test]
+    fn a_concave_outline_is_rejected_rather_than_filled_wrongly() {
+        // The fill is a triangle fan, so a concave outline would paint outside
+        // the shape. That must be an error at the construction site, not a
+        // silently wrong picture.
+        let arrow = "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\
+                     { x: 0.0, y: 0.0 }, { x: 4.0, y: 0.0 }, \
+                     { x: 2.0, y: 1.0 }, { x: 4.0, y: 3.0 }, { x: 0.0, y: 3.0 }])";
+        let message = run_fail(&format!("let main = () => {arrow}"));
+        assert!(
+            message.contains("must form a CONVEX outline"),
+            "message: {message}"
+        );
+
+        // A STAR is the subtle case: it turns the same way at every vertex, so a
+        // sign-consistency check alone accepts it, and the fan then fills
+        // overlapping triangles instead of the star. A pentagram winds twice.
+        let pentagram = "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\
+                         { x: 1.0, y: 0.0 }, { x: -0.809, y: 0.588 }, \
+                         { x: 0.309, y: -0.951 }, { x: 0.309, y: 0.951 }, \
+                         { x: -0.809, y: -0.588 }])";
+        let message = run_fail(&format!("let main = () => {pentagram}"));
+        assert!(
+            message.contains("wind around 2.0 times"),
+            "message: {message}"
+        );
+
+        // ...and the legitimate cases still work, in EITHER winding.
+        for winding in [
+            "[{ x: 0.0, y: 0.0 }, { x: 2.0, y: 0.0 }, { x: 2.0, y: 2.0 }, { x: 0.0, y: 2.0 }]",
+            "[{ x: 0.0, y: 2.0 }, { x: 2.0, y: 2.0 }, { x: 2.0, y: 0.0 }, { x: 0.0, y: 0.0 }]",
+        ] {
+            let value = eval(&format!(
+                "let main = () => Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), {winding})"
+            ));
+            assert!(matches!(value, Value::Variant { .. }), "winding: {winding}");
+        }
+
+        // A 180-degree REVERSAL is the subtle one that a turning test alone misses:
+        // it contributes exactly pi, so a self-intersecting outline containing one
+        // can still total a single revolution and pass. This outline has
+        // same-signed turns and totals -2pi, yet edge (0,1)->(2,1) crosses the
+        // closing edge (3,2)->(0,0).
+        let spiked = "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\
+                      { x: 0.0, y: 0.0 }, { x: 0.0, y: 1.0 }, { x: 2.0, y: 1.0 }, \
+                      { x: 1.0, y: 1.0 }, { x: 3.0, y: 2.0 }])";
+        let message = run_fail(&format!("let main = () => {spiked}"));
+        assert!(message.contains("doubles back on itself"), "message: {message}");
+
+        // The 32-gon a circle lowers to must still pass, or circles break.
+        let ring = eval(
+            "let main = () =>\n\
+             Sprite.polygon(Color.rgb(1.0, 1.0, 1.0),\n\
+               List.range(32.0) |> List.map((i) =>\n\
+                 let a = i / 32.0 * 2.0 * Math.pi in\n\
+                 { x: Math.cos(a), y: Math.sin(a) }))",
+        );
+        assert!(matches!(ring, Value::Variant { .. }));
+
+        // A collinear vertex is convex, so it is allowed.
+        let straightened = eval(
+            "let main = () =>\n\
+             Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\n\
+               { x: 0.0, y: 0.0 }, { x: 1.0, y: 0.0 }, { x: 2.0, y: 0.0 }, { x: 1.0, y: 2.0 }])",
+        );
+        assert!(matches!(straightened, Value::Variant { .. }));
+    }
+
+    #[test]
+    fn shape_domains_fail_loudly() {
+        for (src, expected) in [
+            (
+                "Sprite.circle(Color.rgb(1.0, 1.0, 1.0), 0.0)",
+                "Sprite.circle radius must be a positive number",
+            ),
+            (
+                "Sprite.line(Color.rgb(1.0, 1.0, 1.0), -1.0, { x: 0.0, y: 0.0 }, { x: 1.0, y: 0.0 })",
+                "Sprite.line thickness must be a positive number",
+            ),
+            (
+                "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [{ x: 0.0, y: 0.0 }, { x: 1.0, y: 1.0 }])",
+                "needs at least 3 points",
+            ),
+            // All on one line: no area to fill.
+            (
+                "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\
+                 { x: 0.0, y: 0.0 }, { x: 1.0, y: 1.0 }, { x: 2.0, y: 2.0 }])",
+                "must enclose an area",
+            ),
+            // A point record is required — a tuple or bare number is not one.
+            (
+                "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [1.0, 2.0, 3.0])",
+                "expected a point record",
+            ),
+            // A tiny-but-positive f64 narrows to exactly 0.0 as f32, which would
+            // render invisibly instead of erroring (1e-60, spelled without
+            // scientific notation since the language has no such literal).
+            (
+                "Sprite.circle(Color.rgb(1.0, 1.0, 1.0), 1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0))",
+                "Sprite.circle radius must be a positive number",
+            ),
+            (
+                "Sprite.line(Color.rgb(1.0, 1.0, 1.0), 1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0), \
+                 { x: 0.0, y: 0.0 }, { x: 1.0, y: 0.0 })",
+                "Sprite.line thickness must be a positive number",
+            ),
+            // Each endpoint is representable as f32 (2e38 < f32::MAX) but their
+            // SPAN (4e38) is not, so the length must be rejected rather than
+            // becoming a silently infinite transform. `hypot` already covers the
+            // merely-large cases that squaring would have overflowed; this is the
+            // residue it cannot save.
+            (
+                "Sprite.line(Color.rgb(1.0, 1.0, 1.0), 1.0, \
+                 { x: 0.0 - 2.0 * 10000000000000000000.0 * 10000000000000000000.0, y: 0.0 }, \
+                 { x: 2.0 * 10000000000000000000.0 * 10000000000000000000.0, y: 0.0 })",
+                "too far apart to place",
+            ),
+            (
+                "Sprite.line(Color.rgb(1.0, 1.0, 1.0), 1.0, { x: 0.0 }, { x: 1.0, y: 0.0 })",
+                "missing `y`",
+            ),
+        ] {
+            let message = run_fail(&format!("let main = () => {src}"));
+            assert!(
+                message.contains(expected),
+                "`{src}` should contain `{expected}`, got `{message}`"
+            );
+        }
+    }
+
+    #[test]
+    fn create2d_lowers_shapes_into_serializable_geometry() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Sprite.group([\n\
+               Sprite.circle(Color.rgb(1.0, 0.0, 0.0), 2.0),\n\
+               Sprite.polygon(Color.rgb(0.0, 1.0, 0.0), [\n\
+                 { x: 0.0, y: 0.0 }, { x: 2.0, y: 0.0 }, { x: 1.0, y: 1.5 }]),\n\
+             ])\n\
+             |> Frame.create2D(Camera2D.create(16.0, 9.0))",
+        );
+        let json = serde_json::to_string(&frame).expect("shape frame serializes");
+        assert_eq!(json.matches(r#""ConvexPolygon""#).count(), 2, "json: {json}");
+        // The author's triangle survives verbatim — points are NOT re-centered.
+        assert!(
+            json.contains(r#""points":[[0.0,0.0],[2.0,0.0],[1.0,1.5]]"#),
+            "json: {json}"
+        );
+        // The circle is the unit ring (radius comes from the transform), so every
+        // circle in a frame shares one cached mesh.
+        assert!(json.contains(r#"[1.0,0.0]"#), "unit ring: {json}");
+        let back: Frame = serde_json::from_str(&json).expect("shape frame deserializes");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn a_zero_length_line_draws_nothing() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Sprite.line(Color.rgb(1.0, 1.0, 1.0), 0.5, { x: 1.0, y: 1.0 }, { x: 1.0, y: 1.0 })\n\
+             |> Frame.create2D(Camera2D.create(16.0, 9.0))",
+        );
+        let json = serde_json::to_string(&frame).expect("line frame serializes");
+        assert!(!json.contains("Emissive"), "no draw call: {json}");
+    }
+
+    #[test]
+    fn a_line_is_thick_across_its_own_axis_at_any_angle() {
+        // The artifact this avoids: building the quad then rotating the assembled
+        // GROUP makes thickness vary with angle. Thickness is applied in the
+        // segment's own frame, so a 45-degree line is as thick as a flat one.
+        let width_of = |to: &str| {
+            let frame = frame_of(&format!(
+                "let main = () =>\n\
+                 Sprite.line(Color.rgb(1.0, 1.0, 1.0), 0.5, {{ x: 0.0, y: 0.0 }}, {to})\n\
+                 |> Frame.create2D(Camera2D.create(16.0, 9.0))"
+            ));
+            // The leaf transform's basis: column 0 is the length axis, column 1
+            // the thickness axis. Its magnitude IS the rendered thickness.
+            fn thickness(scene: &Scene3D) -> Option<f32> {
+                if let SceneObject::Material(_, _) = &scene.obj {
+                    return None;
+                }
+                let m = scene.xform;
+                let candidate = (m.y.x * m.y.x + m.y.y * m.y.y).sqrt();
+                match &scene.obj {
+                    SceneObject::Group(items) => items
+                        .iter()
+                        .find_map(thickness)
+                        .or(if candidate > 0.0 { Some(candidate) } else { None }),
+                    _ => Some(candidate),
+                }
+            }
+            thickness(&frame.sprite_layers[0].scene).expect("a line lowers to a transform")
+        };
+        let flat = width_of("{ x: 4.0, y: 0.0 }");
+        let diagonal = width_of("{ x: 3.0, y: 3.0 }");
+        let steep = width_of("{ x: 1.0, y: 6.0 }");
+        for (label, value) in [("flat", flat), ("diagonal", diagonal), ("steep", steep)] {
+            assert!(
+                (value - 0.5).abs() < 1e-5,
+                "{label} line thickness should be 0.5, got {value}"
+            );
+        }
+    }
+
+    #[test]
     fn sprite_text_keeps_its_string_as_plain_inspectable_data() {
         // The whole point of expanding glyphs at LOWERING rather than in the
         // value: a picture containing text is still ordinary comparable,

@@ -67,6 +67,15 @@
       ]
     },
     {
+      "name": "shapes2d-t26",
+      "sample": "shapes2d",
+      "fixedTime": 2.6,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
       "name": "text2d-t9",
       "sample": "text2d",
       "fixedTime": 9.12,

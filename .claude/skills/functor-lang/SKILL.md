@@ -892,6 +892,42 @@ camera2d |> Camera2D.at(x, y)                              // pan the world-spac
 camera2d |> Camera2D.zoom(k)                               // positive zoom; larger = closer
 Sprite.blank()
 Sprite.rectangle(color, width, height) / Sprite.square(color, size)
+Sprite.circle(color, radius)                               // FILLED circle, centered like
+                                                           //   `square` — spans 2 * radius.
+                                                           //   A 32-gon under the hood (all
+                                                           //   circles share one cached mesh)
+Sprite.polygon(color, [{ x: 0.0, y: 0.0 }, …])              // FILLED convex polygon. Points are
+                                                           //   `Input.point2` records ({x, y} —
+                                                           //   the ONE shared point type; a
+                                                           //   second {x,y} record would make
+                                                           //   every bare point literal an
+                                                           //   ambiguous-record check error)
+                                                           //   and are used VERBATIM — a polygon
+                                                           //   is NOT re-centered, unlike every
+                                                           //   other primitive, so an outline
+                                                           //   computed in game logic lands
+                                                           //   where it was computed. Either
+                                                           //   winding works. NOT convex = a
+                                                           //   runtime ERROR (the fill is a
+                                                           //   triangle fan) — split it into
+                                                           //   convex pieces and Sprite.group
+                                                           //   them. That covers concave, a
+                                                           //   self-intersecting STAR (turns
+                                                           //   consistently but winds >once),
+                                                           //   <3 points, and all-collinear
+Sprite.line(color, thickness, from, to)                    // straight segment between two
+                                                           //   point2s, not re-centered.
+                                                           //   Thickness is exact at EVERY angle
+                                                           //   (it is applied in the segment's
+                                                           //   own frame). NO caps and NO joins:
+                                                           //   two lines meeting at an angle
+                                                           //   notch at the corner — a jointed
+                                                           //   polyline does not exist yet.
+                                                           //   Thickness is GEOMETRY, so scale()
+                                                           //   multiplies it and scaleXY() with
+                                                           //   unequal factors distorts it on a
+                                                           //   non-axis-aligned line. A zero-
+                                                           //   length line draws nothing
 Sprite.text(color, size, "SCORE")                          // text in the BUILT-IN font — no
                                                            //   asset needed, on every target.
                                                            //   `size` is the LINE HEIGHT in
