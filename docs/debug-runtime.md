@@ -27,13 +27,16 @@ If 8077 is already taken — a second `functor develop`, or a stale process —
 `develop` logs one line and runs the game **without** a debug server rather than
 failing to start; pass `--debug-port <PORT>` for a second session, or `--no-debug`
 to skip the listener entirely. An explicit `--debug-port` that can't bind is still
-a fatal error (automation asked for *that* port and is waiting on it).
+a fatal error (automation asked for *that* port and is waiting on it). Tooling that
+hard-codes 8077 — the TS SDK's `launch()`, the VS Code inspector's default — should
+therefore be pointed at its own port while a `develop` session is up.
 
 The server binds **localhost by default** (`127.0.0.1:<PORT>`); `--debug-bind 0.0.0.0`
 exposes it to the LAN for remote develop (see `POST /reload-source`) — there is no auth,
 so bind wide only on networks where arbitrary game-code pushes are acceptable. That is
 why only the *localhost* bind is on by default under `develop`: reaching it already
-requires code execution on the machine. `--debug-bind` is never widened implicitly. HTTP
+requires code execution on the machine. A bind is never widened implicitly —
+`develop --debug-bind …` starts no server unless `--debug-port` is given too. HTTP
 handlers never touch GL; each request is handed to the render loop and fulfilled once
 per frame.
 

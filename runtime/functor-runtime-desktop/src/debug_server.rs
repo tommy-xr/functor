@@ -22,7 +22,10 @@ pub fn spawn(bind: &str, port: u16, optional: bool) -> Option<Receiver<DebugRequ
     let address = format!("{bind}:{port}");
     let receiver = match functor_runtime_common::debug_http::spawn((bind, port)) {
         Ok(receiver) => receiver,
-        Err(error) if optional => {
+        // Only a TAKEN port degrades: any other bind failure (a bad interface,
+        // a permission denial) is a misconfiguration the fatal arm should
+        // report accurately rather than blame on another session.
+        Err(error) if optional && error.kind() == std::io::ErrorKind::AddrInUse => {
             // Stderr for the same reason as the listening notice below.
             eprintln!(
                 "[debug-server] {address} is already in use ({error}) — running without the \

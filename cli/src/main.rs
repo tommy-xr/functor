@@ -159,6 +159,11 @@ enum Command {
         #[arg(value_enum)]
         environment: Option<Environment>,
 
+        /// Start no debug server at all (skip the default port). Accepted
+        /// before or after the environment.
+        #[arg(long)]
+        no_debug: bool,
+
         /// Extra arguments forwarded to the in-process desktop runtime (native
         /// only). E.g. `develop native --debug-port 9001` to override the
         /// default debug port, or `--no-debug` to start no debug server at
@@ -373,12 +378,20 @@ async fn run(args: &Args) -> io::Result<()> {
         // (trailing_var_arg) — including a late `--entry server`. Honor it
         // here rather than forwarding it to the runtime's clap, which would
         // reject it with a confusing runtime-level error.
-        let (trailing_entry, runner_args) = match &args.command {
+        let (trailing_entry, mut runner_args) = match &args.command {
             Command::Run { runner_args, .. } | Command::Develop { runner_args, .. } => {
                 take_entry_arg(runner_args)?
             }
             _ => (None, Vec::new()),
         };
+        // `develop --no-debug` (before the environment) and `develop native
+        // --no-debug` (captured into runner_args) mean the same thing: fold the
+        // flag form into the args the runner-arg resolution already handles.
+        if matches!(&args.command, Command::Develop { no_debug: true, .. })
+            && !runner_args.iter().any(|arg| arg == "--no-debug")
+        {
+            runner_args.push("--no-debug".to_string());
+        }
         let project = config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
         return match &args.command {
             Command::Docs { .. }

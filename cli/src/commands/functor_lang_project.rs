@@ -823,11 +823,21 @@ relative path inside it (got {})",
 /// `--debug-port-optional` so a second concurrent session degrades to "no
 /// debug server" instead of dying on the bind.
 ///
+/// The default is LOCALHOST-ONLY by construction: `--debug-bind` (the flag that
+/// widens the server to the LAN, where it is an unauthenticated remote-code
+/// channel) suppresses it too, so a wide bind still takes an explicit
+/// `--debug-port`. Nothing here ever widens a bind implicitly.
+///
 /// Returns the args to forward plus an optional warning to emit.
 fn resolve_debug_args(develop: bool, runner_args: &[String]) -> (Vec<String>, Option<String>) {
-    let explicit = runner_args
-        .iter()
-        .any(|arg| arg == "--debug-port" || arg.starts_with("--debug-port="));
+    let has = |name: &str| {
+        let prefix = format!("{name}=");
+        runner_args
+            .iter()
+            .any(|arg| arg == name || arg.starts_with(&prefix))
+    };
+    let explicit = has("--debug-port");
+    let bind = has("--debug-bind");
     let no_debug = runner_args.iter().any(|arg| arg == "--no-debug");
     let mut args: Vec<String> = runner_args
         .iter()
@@ -835,9 +845,18 @@ fn resolve_debug_args(develop: bool, runner_args: &[String]) -> (Vec<String>, Op
         .cloned()
         .collect();
 
-    if !develop || explicit || no_debug {
-        let warning = (no_debug && explicit)
-            .then(|| "--no-debug ignored: --debug-port was given explicitly".to_string());
+    if !develop || explicit || no_debug || bind {
+        let warning = match (no_debug, explicit, bind) {
+            (true, true, _) => {
+                Some("--no-debug ignored: --debug-port was given explicitly".to_string())
+            }
+            (false, false, true) if develop => Some(
+                "--debug-bind without --debug-port: no debug server started (a non-localhost \
+bind is never implicit — pass --debug-port <PORT> to start one)"
+                    .to_string(),
+            ),
+            _ => None,
+        };
         return (args, warning);
     }
 
@@ -1309,6 +1328,25 @@ mod tests {
     fn no_debug_suppresses_the_default_and_never_reaches_the_runtime() {
         assert_eq!(resolve(true, &["--no-debug", "--hidden"]).0, ["--hidden"]);
         assert_eq!(resolve(false, &["--no-debug"]).0, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_bind_is_never_widened_implicitly() {
+        // The default listener has no auth, so `--debug-bind` (which exists to
+        // expose it) must not be handed a port it never asked for.
+        for args in [
+            vec!["--debug-bind", "0.0.0.0"],
+            vec!["--debug-bind=0.0.0.0"],
+        ] {
+            let (resolved, warning) = resolve(true, &args);
+            assert_eq!(resolved, args);
+            assert!(warning.is_some_and(|w| w.contains("--debug-bind")));
+        }
+        // …but an explicit port with a wide bind is still exactly what was asked.
+        assert_eq!(
+            resolve(true, &["--debug-bind", "0.0.0.0", "--debug-port", "9001"]).0,
+            ["--debug-bind", "0.0.0.0", "--debug-port", "9001"]
+        );
     }
 
     #[test]
