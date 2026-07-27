@@ -70,10 +70,11 @@ let circle : (Color.t, float) => t
 /// logic lands where it was computed. Either winding works (clockwise or
 /// counter-clockwise).
 ///
-/// The fill is a triangle fan, which is only correct for a convex outline, so a
-/// CONCAVE one is REJECTED with an error rather than filled wrongly — draw it as
-/// a group of convex pieces. Fewer than 3 points, or points that are all on one
-/// line, are errors too.
+/// The fill is a triangle fan, which is only correct for a convex outline, so
+/// anything else is REJECTED with an error rather than filled wrongly — draw it
+/// as a group of convex pieces instead. That covers a CONCAVE outline, a
+/// self-intersecting STAR (which turns consistently but winds around more than
+/// once), fewer than 3 points, and points that are all on one line.
 let polygon : (Color.t, List<Input.point2>) => t
 
 /// Draw a straight line of the given thickness between two points, in the

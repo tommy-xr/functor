@@ -907,12 +907,14 @@ Sprite.polygon(color, [{ x: 0.0, y: 0.0 }, …])              // FILLED convex p
                                                            //   other primitive, so an outline
                                                            //   computed in game logic lands
                                                            //   where it was computed. Either
-                                                           //   winding works. A CONCAVE outline
-                                                           //   is a runtime ERROR (the fill is a
+                                                           //   winding works. NOT convex = a
+                                                           //   runtime ERROR (the fill is a
                                                            //   triangle fan) — split it into
                                                            //   convex pieces and Sprite.group
-                                                           //   them; so are <3 points and
-                                                           //   all-collinear points
+                                                           //   them. That covers concave, a
+                                                           //   self-intersecting STAR (turns
+                                                           //   consistently but winds >once),
+                                                           //   <3 points, and all-collinear
 Sprite.line(color, thickness, from, to)                    // straight segment between two
                                                            //   point2s, not re-centered.
                                                            //   Thickness is exact at EVERY angle

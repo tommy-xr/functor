@@ -216,6 +216,24 @@ Collinear vertices are fine — they are convex — but a zero-area outline is
 rejected, since it cannot be filled and would give the mesh a degenerate
 bounding box.
 
+**Sign-consistency alone is not enough, which cost a review round.** The first
+implementation only checked that consecutive cross products agreed in sign. That
+is necessary but *not sufficient*: a **star** turns the same way at every vertex
+yet self-intersects, so a pentagram passed and filled as overlapping fan
+triangles — the exact failure this validation exists to prevent, in a shape a 2D
+game reaches for as readily as the notched hull. Convexity now also requires the
+outline to wind around exactly once (a pentagram winds twice, a 7/3 star three
+times).
+
+That second test is needed only above 4 points, and the bound is exact rather
+than cautious: if every turn has the same sign then each `|turn| < pi`, so the
+total turning is under `count * pi`; the total is also a whole number of
+revolutions, so `revolutions < count / 2`. Two or more revolutions therefore
+requires at least 5 points, and a consistently-turning triangle or quadrilateral
+is always simple. So the common cases skip the transcendentals and the check is
+free — `frame_bench shapes` measured 1.15 us/shape after the fix against 1.16
+before it.
+
 ### Lines have no caps and no joins, on purpose
 
 `Sprite.line` is one segment: it stops flat (butt caps) at each endpoint. Two
