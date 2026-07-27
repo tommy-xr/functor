@@ -2483,9 +2483,9 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  /* Near-equal vertical padding centers the transport row; the label fits
-     inside the trailing 14px. */
-  padding: 12px 12px 14px;
+  /* The label lives inside the rail now, so the padding is symmetric and
+     the transport row is truly centered. */
+  padding: 12px;
   font: 12px/1 var(--font-mono);
   color: var(--text);
   background: rgba(30, 24, 51, 0.92);
@@ -2973,9 +2973,9 @@ a:hover {
 
 .mp-rail-label {
   position: absolute;
-  /* Hugging the rail's bottom edge (the keyboard-focus ring may overlap the
-     label's first pixel row; acceptable — it only shows while tabbed). */
-  top: calc(100% - 1px);
+  /* Inside the rail, flush under the track (which ends at 18px): the rail
+     box is 30px tall, so hanging the label below it left a 12px void. */
+  top: 20px;
   left: 50%;
   transform: translateX(-50%);
   font-size: 9px;
