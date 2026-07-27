@@ -40,7 +40,7 @@ import type { MultiplayerPanes } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { asPlayerMessage } from "./protocol.js";
-import { EXAMPLES } from "./examples.js";
+import { EXAMPLES, exampleEntryPath } from "./examples.js";
 
 /** The sandbox's e2e seam (driven by e2e/site-sandbox.mjs). */
 interface SandboxSeam {
@@ -358,7 +358,7 @@ const loadExample = async (id: string) => {
   const token = ++loadToken;
   const example = EXAMPLES.find((candidate) => candidate.id === id);
   const files = [
-    `examples/${encodeURIComponent(id)}.fun`,
+    exampleEntryPath(id),
     ...(example?.siblings?.map(({ output }) => output) ?? []),
   ];
   const assetFiles = example?.assets ?? [];

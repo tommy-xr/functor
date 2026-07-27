@@ -32,12 +32,21 @@ export interface Example {
   assets?: ExampleCopy[];
   /**
    * Marks a sample that declares a server entry point (the functor.json
-   * `entries` shape, like examples/mp) — the sandbox shows its CLIENTS
-   * control only for those. No current sample qualifies; the flag seats the
-   * gate for an orbs-style client/server sample.
+   * `entries` shape, like examples/mp) or is otherwise structured for
+   * multiple clients — the sandbox shows its CLIENTS control only for those.
    */
   multiplayer?: boolean;
 }
+
+/**
+ * The dist path of an example's editable entry. The runtime derives the entry
+ * MODULE name from the file stem, and stems must be identifiers — so a
+ * hyphenated id maps to an underscore filename (`asteroids-mp` →
+ * `examples/asteroids_mp.fun`). Both consumers (build.mjs copies, sandbox.tsx
+ * fetches) derive the path through this one helper so they can't drift.
+ */
+export const exampleEntryPath = (id: string): string =>
+  `examples/${id.replace(/-/g, "_")}.fun`;
 
 export const EXAMPLES: Example[] = [
   { id: "hero", label: "Neon grid", source: "site/examples/hero.fun" },
@@ -65,6 +74,19 @@ export const EXAMPLES: Example[] = [
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
   { id: "toss", label: "Bouncing balls", source: "examples/toss/game.fun" },
+  // Multiplayer-structured asteroids: client.fun is the editable buffer;
+  // protocol.fun (the wire ADT) and server.fun (the pure authoritative sim)
+  // ride along as sibling modules (`file = module`).
+  {
+    id: "asteroids-mp",
+    label: "Asteroids (multiplayer)",
+    source: "examples/asteroids-mp/client.fun",
+    siblings: [
+      { source: "examples/asteroids-mp/protocol.fun", output: "examples/protocol.fun" },
+      { source: "examples/asteroids-mp/server.fun", output: "examples/server.fun" },
+    ],
+    multiplayer: true,
+  },
   {
     id: "mario",
     label: "Platformer",
