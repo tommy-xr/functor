@@ -53,6 +53,8 @@ any coding agent can build, run, inspect, and rewind your game — real Functor 
 scaffold a project, launch it, iterate on it, and save it to disk entirely through the server, with
 no filesystem of its own.
 
+![An MCP client launching examples/mario, pausing it, injecting a keypress, and stepping the jump frame by frame while reading the model back as JSON](site/media/feature-mcp-drive.gif)
+
 ```sh
 claude mcp add functor -- functor mcp
 ```
