@@ -49,7 +49,7 @@ Games run and respond headlessly. Drive and inspect a running game entirely over
 
 `functor mcp` serves that same runtime as [MCP](https://modelcontextprotocol.io) tools over stdio, so
 any coding agent can build, run, inspect, and rewind your game — real Functor code, deterministic
-(pin the clock, inject input, step frame by frame), exported to native and web. An agent can
+(pin the clock, inject input, step frame by frame), on the runtime that ships to native and web. An agent can
 scaffold a project, launch it, iterate on it, and save it to disk entirely through the server, with
 no filesystem of its own.
 

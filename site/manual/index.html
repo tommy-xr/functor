@@ -757,7 +757,7 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
           <h3>The tools</h3>
           <table>
             <tbody>
-              <tr><td><strong>Sessions</strong><br /><code>launch_game</code> · <code>connect_game</code> · <code>list_sessions</code> · <code>stop_game</code></td><td>spawn a game as a child process on a free port, or attach to a runtime someone else is running (another <code>--debug-port</code>, or a Quest). <code>launch_game</code>'s <code>mode</code> is <code>hidden</code> (renders, so frames can be captured) or <code>headless</code> (no GL context at all — CI-friendly, but nothing to read back)</td></tr>
+              <tr><td><strong>Sessions</strong><br /><code>launch_game</code> · <code>connect_game</code> · <code>list_sessions</code> · <code>stop_game</code></td><td>spawn a game as a child process on a free port, or attach to a runtime someone else is running (another <code>--debug-port</code>, or a Quest). <code>launch_game</code>'s <code>mode</code> is <code>hidden</code> (the default — it renders, so frames can be captured) or <code>headless</code> (no GL context at all — CI-friendly, but nothing to read back)</td></tr>
               <tr><td><strong>Observing</strong><br /><code>get_state</code> · <code>get_scene</code> · <code>get_trace</code> · <code>capture_frame</code></td><td>the model as structured JSON alongside <code>frame</code>/<code>tts</code>/sampled input; the camera, scene graph, and lights <code>draw</code> produced; the paused inspector trace; a PNG of the next frame</td></tr>
               <tr><td><strong>Driving</strong><br /><code>pause</code> · <code>step</code> · <code>resume</code> · <code>send_input</code> · <code>rewind</code> · <code>reload_source</code> / <code>reload_project</code></td><td>pin the clock, run <em>n</em> frames of a fixed <em>dt</em>, inject a key / mouse / UI / XR command, restore the model and physics to a recorded frame, or hot-reload the source with the live model preserved</td></tr>
               <tr><td><strong>Authoring</strong><br /><code>init_game</code> · <code>save_project</code></td><td>scaffold the same starter <code>functor init</code> writes, and write a session's <em>current</em> source out to a directory</td></tr>
@@ -797,6 +797,7 @@ step       { "session": "s1" }
           </p>
           <pre class="shell">launch_game  { "mode": "headless",
                "files": [["game.fun", "let init = { n: 0.0 }\n…"]] }
+// → {"session":"s1","dir":"/tmp/functor-mcp-…",…}
 get_state    { "session": "s1" }                          // → {"model":{"n":0},…}
 reload_source{ "session": "s1", "source": "…edited…" }     // model preserved
 save_project { "session": "s1", "dir": "./my-game" }</pre>
@@ -804,7 +805,9 @@ save_project { "session": "s1", "dir": "./my-game" }</pre>
             <code>save_project</code> asks the <em>runtime</em> what it is running rather than
             copying the launch directory, so a session edited only over the wire saves the edited
             source. It refuses a directory that already holds a project unless you pass
-            <code>overwrite</code>. The other direction is <code>init_game</code>, which scaffolds
+            <code>overwrite</code> — which also <em>deletes</em> any module the session does not
+            have, so the directory ends up being exactly the program that ran. The other
+            direction is <code>init_game</code>, which scaffolds
             the ordinary starter on disk for <code>launch_game</code> to open.
           </p>
 
