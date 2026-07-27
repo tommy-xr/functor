@@ -39,7 +39,8 @@ const STYLE = `
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
   display: none; align-items: center; gap: 8px; flex-wrap: nowrap;
   padding: 8px 12px 18px; color: var(--sb-text); background: var(--sb-bg);
-  border-top: 1px solid var(--sb-line); box-shadow: 0 -3px 16px rgba(0, 0, 0, 0.35);
+  border-top: 1px solid var(--sb-line);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.5), 0 -14px 36px rgba(0, 0, 0, 0.38);
   font: 12px/1 var(--sb-font);
 }
 #scrubber button, #scrub-adv > summary {
@@ -58,6 +59,9 @@ const STYLE = `
 #scrub-rail {
   position: relative; flex: 1; min-width: 80px; height: 30px; cursor: ew-resize;
   touch-action: none; user-select: none;
+  /* The handles overhang the rail ends by half their width; reserve that so a
+     fully-out playhead never crowds the step / extrapolate buttons. */
+  margin: 0 7px;
 }
 #scrub-timeline { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 #scrub-track-bg { fill: rgba(155, 148, 179, 0.18); }
@@ -66,9 +70,11 @@ const STYLE = `
 #scrub-played { fill: var(--sb-accent); opacity: 0.62; }
 #scrub-future { fill: var(--sb-future); opacity: 0.9; }
 .scrub-event { pointer-events: none; }
-.scrub-event.input { fill: #ffd166; }
+.scrub-event.input { fill: #ffd166; fill-opacity: 0.75; }
 .scrub-event.reload { fill: #b994ff; }
 .scrub-event.reload-error { fill: #ff6b7d; }
+.scrub-tick { fill: var(--sb-text); fill-opacity: 0.28; pointer-events: none; }
+.scrub-tick.major { fill: var(--sb-text); fill-opacity: 0.5; }
 .scrub-event-hit { cursor: pointer; outline: none; }
 .scrub-event-hit.active .scrub-event,
 .scrub-event-hit:focus .scrub-event { stroke: white; stroke-width: 2; }
@@ -155,6 +161,7 @@ const HTML = `
       <rect id="scrub-recorded" x="0" y="12" width="1000" height="6" rx="3" aria-hidden="true" />
       <rect id="scrub-played" x="0" y="12" width="0" height="6" rx="3" aria-hidden="true" />
       <rect id="scrub-future" x="0" y="11" width="0" height="8" rx="3" aria-hidden="true" />
+      <g id="scrub-ticks" aria-hidden="true"></g>
       <g id="scrub-events" aria-label="Recorded events"></g>
     </svg>
     <button id="scrub-playhead" class="scrub-handle" role="slider"
@@ -286,11 +293,13 @@ export function mountScrubber() {
         hit.setAttribute("height", "30");
         hit.setAttribute("fill", "transparent");
 
-        tick.setAttribute("x", String(-(reload ? 3 : 2)));
-        tick.setAttribute("y", reload ? "1" : "21");
-        tick.setAttribute("width", reload ? "6" : "4");
-        tick.setAttribute("height", reload ? "9" : "7");
-        tick.setAttribute("rx", reload ? "2" : "1");
+        // Full-height lines across the rail (thin amber input, heavier
+        // reload/error), matching the host chrono bar's markers.
+        tick.setAttribute("x", String(-(reload ? 1.5 : 1)));
+        tick.setAttribute("y", reload ? "2" : "3");
+        tick.setAttribute("width", reload ? "3" : "2");
+        tick.setAttribute("height", reload ? "26" : "24");
+        tick.setAttribute("rx", "1");
         tick.setAttribute(
           "class",
           `scrub-event ${marker.category}${marker.kind === "reload-error" ? " reload-error" : ""}`
@@ -350,6 +359,41 @@ export function mountScrubber() {
     } else {
       eventDetail.style.display = "none";
     }
+  };
+
+  // Ticks along the rail: one per second (TIMELINE_FPS frames), heavier every
+  // 5s. If a viewport ever spans enough seconds that ticks would smear
+  // together, the step widens (5s/30s) to keep them ≥ ~20 viewBox units
+  // apart. Skipped entirely when (lo, span) are unchanged since last render —
+  // the common paused case — so steady-state cost is one key comparison.
+  const ticksLayer = $("scrub-ticks");
+  let lastTickKey = "";
+  const renderTicks = (current) => {
+    const ns = "http://www.w3.org/2000/svg";
+    const lo = current.viewport.lo;
+    const span = Math.max(current.viewport.hi - lo, 1);
+    const perSecond = TIMELINE_FPS;
+    const step =
+      span / perSecond <= 50 ? perSecond : span / perSecond <= 250 ? 5 * perSecond : 30 * perSecond;
+    const tickKey = `${lo}:${span}:${step}`;
+    if (tickKey === lastTickKey) return;
+    lastTickKey = tickKey;
+    const frames = [];
+    for (let f = Math.ceil(lo / step) * step; f <= current.viewport.hi; f += step) frames.push(f);
+    while (ticksLayer.children.length > frames.length) ticksLayer.lastElementChild.remove();
+    while (ticksLayer.children.length < frames.length) {
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("width", "1.5");
+      ticksLayer.appendChild(rect);
+    }
+    frames.forEach((frame, index) => {
+      const rect = ticksLayer.children[index];
+      const major = frame % (5 * step) === 0;
+      rect.setAttribute("class", major ? "scrub-tick major" : "scrub-tick");
+      rect.setAttribute("x", String(((frame - lo) / span) * 1000));
+      rect.setAttribute("y", major ? "9" : "11");
+      rect.setAttribute("height", major ? "12" : "8");
+    });
   };
 
   const render = () => {
@@ -450,6 +494,7 @@ export function mountScrubber() {
     pause.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
     extrapolate.classList.toggle("on", state.preview.enabled);
     extrapolate.setAttribute("aria-pressed", String(state.preview.enabled));
+    renderTicks(current);
     renderMarkers(current);
   };
 
