@@ -2,7 +2,7 @@
 
 The `functor` CLI speaks **two languages from one source of truth**. Command logic
 (`build`/`run`/`develop`/`push`/`init`) never formats user-facing strings itself — it
-**emits typed [`Event`](../cli/src/output.rs)s**, and a single renderer, selected once at
+**emits typed [`Event`](https://github.com/tommy-xr/functor/blob/main/cli/src/output.rs)s**, and a single renderer, selected once at
 startup, turns that stream into either human-readable text or newline-delimited JSON
 (ndjson). This is design principle #2 (LLM-native): anything a human sees, an agent can get
 as structured data.
@@ -334,5 +334,3 @@ keypress in a focused window, never on a piped/`--json`/captured run.)
   `Event::Log { level: trace }`, keeping the `cli → runtime → functor_lang` dependency direction clean. The
   process-global sink survives hot-reload's `Session` rebuild. (See
   [Functor Lang `Debug.log`](#functor-lang-debuglog--the-always-visible-trace-tier-pr-4b).)
-</content>
-</invoke>
