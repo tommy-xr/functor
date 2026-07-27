@@ -375,9 +375,7 @@ impl PlainRenderer {
                 if let (Some(vaos), Some(buffers), Some(textures)) =
                     (gpu_live_vaos, gpu_live_buffers, gpu_live_textures)
                 {
-                    s.push_str(&format!(
-                        ", gpu vao {vaos}/buf {buffers}/tex {textures}"
-                    ));
+                    s.push_str(&format!(", gpu vao {vaos}/buf {buffers}/tex {textures}"));
                 }
                 if let Some(bytes) = gpu_bytes_per_frame {
                     s.push_str(&format!(", up {bytes:.0}B/frame"));
@@ -537,7 +535,9 @@ static LIVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// firehose of transitive deps (notify/mio/tokio/hyper/glow/egui/gltf all use
 /// `log`), and so a noisy dependency warning never lands in normal CLI output.
 fn is_functor_target(target: &str) -> bool {
-    target.starts_with("functor") || target == "functor-lang" || target.starts_with("functor_lang::")
+    target.starts_with("functor")
+        || target == "functor-lang"
+        || target.starts_with("functor_lang::")
 }
 
 /// A `log::Log` that funnels every Functor `log::{debug,info,warn,error}!` call

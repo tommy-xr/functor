@@ -290,7 +290,9 @@ fn execute_inner(dir: &Path, strict_remote: bool) -> io::Result<bool> {
     let mut input = ManifestInput::default();
     input.files = scanned.names();
     for path in &scanned.models {
-        let Some(file) = file_name(path) else { continue };
+        let Some(file) = file_name(path) else {
+            continue;
+        };
         let bytes = fs::read(path)?;
         let clips = match inspect_model(bytes, None, None) {
             Ok(report) => report
@@ -303,7 +305,9 @@ fn execute_inner(dir: &Path, strict_remote: bool) -> io::Result<bool> {
             // is real even when the clips are unknowable. Warn + no clips.
             Err(e) => {
                 emit(Event::Warning {
-                    message: format!("{file}: cannot inspect for clips ({e}) — importing without clip constants"),
+                    message: format!(
+                        "{file}: cannot inspect for clips ({e}) — importing without clip constants"
+                    ),
                 });
                 Vec::new()
             }
@@ -322,7 +326,9 @@ fn execute_inner(dir: &Path, strict_remote: bool) -> io::Result<bool> {
     // sidecar next to a same-named local file is its (future) config seat.
     let local_stems = scanned.local_stems();
     for path in &scanned.sidecars {
-        let Some(file) = file_name(path) else { continue };
+        let Some(file) = file_name(path) else {
+            continue;
+        };
         let name = file
             .strip_suffix(SIDECAR_SUFFIX)
             .expect("scan collected by suffix")
@@ -378,11 +384,7 @@ declares nothing"
                 // Auto-reimport keeps the download short: an unreachable
                 // host must not stall every `develop` launch. Explicit
                 // import affords the desktop fetcher's 300s for big models.
-                let timeout = std::time::Duration::from_secs(if strict_remote {
-                    30
-                } else {
-                    300
-                });
+                let timeout = std::time::Duration::from_secs(if strict_remote { 30 } else { 300 });
                 // The validator guards the disk cache for extensionless
                 // urls (verify_magic can only reject HTML there): a body
                 // inspect_model can't read is an error, never cached.
@@ -619,7 +621,9 @@ fn remove_stale(dir: &Path) -> io::Result<()> {
 /// The file's basename as a String (`None` for non-UTF-8 names, which are
 /// skipped — a manifest constant needs a printable path).
 fn file_name(path: &Path) -> Option<String> {
-    path.file_name().and_then(|s| s.to_str()).map(str::to_string)
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -647,12 +651,15 @@ mod tests {
         let (decl, warnings) =
             parse_sidecar(r#"{ "url": "https://cdn.example.com/shark.glb" }"#).unwrap();
         assert!(warnings.is_empty());
-        assert_eq!(decl.url.as_deref(), Some("https://cdn.example.com/shark.glb"));
+        assert_eq!(
+            decl.url.as_deref(),
+            Some("https://cdn.example.com/shark.glb")
+        );
         assert!(decl.kind.is_none());
 
         // Explicit kind.
-        let (decl, _) = parse_sidecar(r#"{ "kind": "sound", "url": "https://x/api/boom" }"#)
-            .unwrap();
+        let (decl, _) =
+            parse_sidecar(r#"{ "kind": "sound", "url": "https://x/api/boom" }"#).unwrap();
         assert!(matches!(decl.kind, Some(Kind::Sound)));
 
         // Unknown keys warn (a typo'd "ur" must not be silent).
@@ -680,9 +687,11 @@ mod tests {
 
         // An explicit kind contradicting a recognized url extension is an
         // error; agreeing or unrecognized-extension cases pass.
-        assert!(parse_sidecar(r#"{ "kind": "model", "url": "https://x/wood.png" }"#)
-            .unwrap_err()
-            .contains("extension"));
+        assert!(
+            parse_sidecar(r#"{ "kind": "model", "url": "https://x/wood.png" }"#)
+                .unwrap_err()
+                .contains("extension")
+        );
         assert!(parse_sidecar(r#"{ "kind": "texture", "url": "https://x/wood.png" }"#).is_ok());
         assert!(parse_sidecar(r#"{ "kind": "model", "url": "https://x/api/asset/9" }"#).is_ok());
     }
