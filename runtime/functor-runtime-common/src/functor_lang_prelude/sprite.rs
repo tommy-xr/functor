@@ -140,23 +140,24 @@ impl crate::host_registry::FromArg for FunctorLangSpriteRegion {
     }
 }
 
-/// Validate a text size: the height of one line in world units, and (because
-/// the built-in font is monospace with self-spacing cells) also the advance per
-/// character. Rejects NaN as well as zero/negative, since a NaN size would
-/// otherwise silently place every glyph nowhere.
+/// Validate a positive world-space dimension — a text size, a circle radius, a
+/// line thickness. Rejects zero and negatives, and NaN via the same test.
 ///
 /// The check is applied to the NARROWED `f32` the layout actually uses, not just
 /// the incoming `f64`. The registry's numeric conversion already rejects a value
 /// that overflows `f32`, but a tiny positive `f64` (say 1e-60) narrows to
 /// exactly `0.0` and passes it — which would let `Sprite.measure` report a
-/// positive box while `Sprite.text` laid out zero-sized quads. Both entry points
-/// go through here, so they cannot disagree about which sizes are legal.
-fn text_size(size: f64, path: &str) -> Result<f64, String> {
-    let narrowed = size as f32;
+/// positive box while `Sprite.text` laid out zero-sized quads, or make a circle
+/// silently invisible. Every dimension goes through here, so they cannot
+/// disagree about which values are legal.
+fn positive_dimension(value: f64, path: &str, noun: &str) -> Result<f64, String> {
+    let narrowed = value as f32;
     if !narrowed.is_finite() || narrowed <= 0.0 {
-        return Err(format!("{path} size must be a positive number, got {size}"));
+        return Err(format!(
+            "{path} {noun} must be a positive number, got {value}"
+        ));
     }
-    Ok(size)
+    Ok(value)
 }
 
 /// Segments in a `Sprite.circle`. Fixed rather than derived from the radius,
@@ -186,9 +187,10 @@ fn unit_circle_points() -> Vec<[f32; 2]> {
 ///
 /// EITHER winding is accepted (clockwise or counter-clockwise): a game computing
 /// points from angles can legitimately produce either, nothing culls back faces,
-/// and demanding one would be an invisible trap. Collinear vertices are fine —
-/// they are convex — but an outline with no area at all is rejected, since it
-/// cannot be filled and would give the mesh a degenerate bounding box.
+/// and demanding one would be an invisible trap. Collinear vertices that continue
+/// STRAIGHT are fine — they are convex — but an outline with no area at all is
+/// rejected, since it cannot be filled and would give the mesh a degenerate
+/// bounding box.
 fn convex_outline(points: Vec<FunctorLangPoint2>, path: &str) -> Result<Vec<[f32; 2]>, String> {
     let points: Vec<[f32; 2]> = points.into_iter().map(|point| point.0).collect();
     if points.len() < 3 {
@@ -203,28 +205,44 @@ fn convex_outline(points: Vec<FunctorLangPoint2>, path: &str) -> Result<Vec<[f32
     // fan-fill as overlapping triangles. Catching that needs the total turning,
     // which must be exactly one revolution for a simple outline.
     //
-    // It is only needed above 4 points, though. With every turn the same sign each
-    // |turn| is under pi, so the total is under `count * pi`; it is also a whole
-    // number of revolutions, so `revolutions < count / 2`. A star needs 2+
-    // revolutions and therefore at least 5 points — a triangle or quadrilateral
-    // that turns consistently is always simple. So triangles and quads, the
-    // overwhelming majority of game polygons, skip the transcendentals entirely.
+    // It is only needed above 4 points, though. Every turn is strictly under half a
+    // revolution (a 180-degree reversal is rejected just below), so with all turns
+    // sharing a sign the total is under `count * pi`; it is also a whole number of
+    // revolutions, hence `revolutions < count / 2`. A star needs 2+ revolutions and
+    // therefore at least 5 points — a triangle or quadrilateral that turns
+    // consistently is always simple. So triangles and quads, the overwhelming
+    // majority of game polygons, skip the transcendentals entirely.
     let needs_turning_check = count > 4;
     let mut sign = 0.0f32;
     let mut turning = 0.0f64;
+    let mut reversed = false;
     for index in 0..count {
         let a = points[index];
         let b = points[(index + 1) % count];
         let c = points[(index + 2) % count];
         let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
-        if needs_turning_check {
-            let dot = (b[0] - a[0]) as f64 * (c[0] - b[0]) as f64
-                + (b[1] - a[1]) as f64 * (c[1] - b[1]) as f64;
-            // Zero for a collinear or repeated vertex, which contribute no turn.
-            turning += (cross as f64).atan2(dot);
-        }
+        let dot = (b[0] - a[0]) as f64 * (c[0] - b[0]) as f64
+            + (b[1] - a[1]) as f64 * (c[1] - b[1]) as f64;
         if cross == 0.0 {
+            // Collinear. Continuing straight (or a repeated point) turns by zero and
+            // is convex, but DOUBLING BACK turns by exactly pi — a spike. Those must
+            // be rejected, and not only because a spike is degenerate: a reversal is
+            // the one turn that is not under half a revolution, so allowing it breaks
+            // the bound above and lets a self-intersecting outline total one
+            // revolution and pass. `[(0,0), (0,1), (2,1), (1,1), (3,2)]` is such an
+            // outline — same-signed turns, total -2pi, and yet edge (0,1)->(2,1)
+            // crosses the closing edge.
+            // Recorded rather than reported immediately: an outline that is ENTIRELY
+            // collinear also doubles back at its closing vertex, and "all on one
+            // line" is the clearer diagnosis for that, so the no-area check below
+            // gets first refusal.
+            if dot < 0.0 {
+                reversed = true;
+            }
             continue;
+        }
+        if needs_turning_check {
+            turning += (cross as f64).atan2(dot);
         }
         if sign == 0.0 {
             sign = cross.signum();
@@ -239,6 +257,11 @@ fn convex_outline(points: Vec<FunctorLangPoint2>, path: &str) -> Result<Vec<[f32
     if sign == 0.0 {
         return Err(format!(
             "{path} points must enclose an area, but these are all on one line"
+        ));
+    }
+    if reversed {
+        return Err(format!(
+            "{path} points must form a CONVEX outline — this one doubles back on itself              at a point, which is a spike rather than a corner. Remove the reversing              point, or split the shape into convex pieces."
         ));
     }
     if needs_turning_check && (turning.abs() - std::f64::consts::TAU).abs() > 1e-3 {
@@ -408,11 +431,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Sprite.circle",
         "Sprite.circle(color, radius)",
         |color: FunctorLangColor, radius: f64| {
-            if !(radius as f32).is_finite() || radius <= 0.0 {
-                return Err(format!(
-                    "Sprite.circle radius must be a positive number, got {radius}"
-                ));
-            }
+            let radius = positive_dimension(radius, "Sprite.circle", "radius")?;
             let (r, g, b) = color.0;
             Ok(sprite_node(
                 "Circle",
@@ -449,10 +468,24 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
          thickness: f64,
          from: FunctorLangPoint2,
          to: FunctorLangPoint2| {
-            if !(thickness as f32).is_finite() || thickness <= 0.0 {
-                return Err(format!(
-                    "Sprite.line thickness must be a positive number, got {thickness}"
-                ));
+            let thickness = positive_dimension(thickness, "Sprite.line", "thickness")?;
+            // Endpoints are individually representable but their SPAN may not be:
+            // `(0,0)` to `(2e20,0)` overflows f32 when squared, which would hand
+            // lowering an infinite length and midpoint. Check the derived values
+            // here, at the call site, rather than emitting a broken transform.
+            let span_x = to.0[0] as f64 - from.0[0] as f64;
+            let span_y = to.0[1] as f64 - from.0[1] as f64;
+            let derived = [
+                span_x.hypot(span_y),
+                (from.0[0] as f64 + to.0[0] as f64) * 0.5,
+                (from.0[1] as f64 + to.0[1] as f64) * 0.5,
+            ];
+            if derived.iter().any(|value| !(*value as f32).is_finite()) {
+                return Err(
+                    "Sprite.line endpoints are too far apart to place — their length or \
+                     midpoint overflows"
+                        .to_string(),
+                );
             }
             let (r, g, b) = color.0;
             Ok(sprite_node(
@@ -474,7 +507,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Sprite.text",
         "Sprite.text(color, size, text)",
         |color: FunctorLangColor, size: f64, text: String| {
-            let size = text_size(size, "Sprite.text")?;
+            let size = positive_dimension(size, "Sprite.text", "size")?;
             let (r, g, b) = color.0;
             Ok(sprite_node(
                 "Text",
@@ -492,7 +525,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Sprite.measure",
         "Sprite.measure(size, text)",
         |size: f64, text: String| {
-            let size = text_size(size, "Sprite.measure")?;
+            let size = positive_dimension(size, "Sprite.measure", "size")?;
             let (columns, rows) = sprite_font::measure_cells(&text);
             Ok(Value::Record(Rc::new(vec![
                 ("width".to_string(), Value::Number(size * columns)),
@@ -799,7 +832,9 @@ fn lower_sprite(
             let (x2, y2) = (sprite_number(x2, "Line")?, sprite_number(y2, "Line")?);
             let color = tinted(tint, r, g, b, "Line")?;
             let (dx, dy) = (x2 - x1, y2 - y1);
-            let length = (dx * dx + dy * dy).sqrt();
+            // `hypot`, not `sqrt(dx*dx + dy*dy)`: the squares can overflow f32 for
+            // far-apart endpoints even when the length itself is representable.
+            let length = dx.hypot(dy);
             // A zero-length line has no direction to orient, so it draws nothing
             // at all rather than issuing a degenerate draw call.
             if length == 0.0 {

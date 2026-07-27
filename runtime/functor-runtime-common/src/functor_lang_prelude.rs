@@ -5378,6 +5378,17 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             assert!(matches!(value, Value::Variant { .. }), "winding: {winding}");
         }
 
+        // A 180-degree REVERSAL is the subtle one that a turning test alone misses:
+        // it contributes exactly pi, so a self-intersecting outline containing one
+        // can still total a single revolution and pass. This outline has
+        // same-signed turns and totals -2pi, yet edge (0,1)->(2,1) crosses the
+        // closing edge (3,2)->(0,0).
+        let spiked = "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\
+                      { x: 0.0, y: 0.0 }, { x: 0.0, y: 1.0 }, { x: 2.0, y: 1.0 }, \
+                      { x: 1.0, y: 1.0 }, { x: 3.0, y: 2.0 }])";
+        let message = run_fail(&format!("let main = () => {spiked}"));
+        assert!(message.contains("doubles back on itself"), "message: {message}");
+
         // The 32-gon a circle lowers to must still pass, or circles break.
         let ring = eval(
             "let main = () =>\n\
@@ -5422,6 +5433,31 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             (
                 "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [1.0, 2.0, 3.0])",
                 "expected a point record",
+            ),
+            // A tiny-but-positive f64 narrows to exactly 0.0 as f32, which would
+            // render invisibly instead of erroring (1e-60, spelled without
+            // scientific notation since the language has no such literal).
+            (
+                "Sprite.circle(Color.rgb(1.0, 1.0, 1.0), 1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0))",
+                "Sprite.circle radius must be a positive number",
+            ),
+            (
+                "Sprite.line(Color.rgb(1.0, 1.0, 1.0), 1.0 / (100000000000000000000.0 \
+                 * 100000000000000000000.0 * 100000000000000000000.0), \
+                 { x: 0.0, y: 0.0 }, { x: 1.0, y: 0.0 })",
+                "Sprite.line thickness must be a positive number",
+            ),
+            // Each endpoint is representable as f32 (2e38 < f32::MAX) but their
+            // SPAN (4e38) is not, so the length must be rejected rather than
+            // becoming a silently infinite transform. `hypot` already covers the
+            // merely-large cases that squaring would have overflowed; this is the
+            // residue it cannot save.
+            (
+                "Sprite.line(Color.rgb(1.0, 1.0, 1.0), 1.0, \
+                 { x: 0.0 - 2.0 * 10000000000000000000.0 * 10000000000000000000.0, y: 0.0 }, \
+                 { x: 2.0 * 10000000000000000000.0 * 10000000000000000000.0, y: 0.0 })",
+                "too far apart to place",
             ),
             (
                 "Sprite.line(Color.rgb(1.0, 1.0, 1.0), 1.0, { x: 0.0 }, { x: 1.0, y: 0.0 })",

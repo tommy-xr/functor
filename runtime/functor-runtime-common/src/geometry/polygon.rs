@@ -31,9 +31,11 @@ pub struct PolygonMesh {
     vao: VertexArray,
     vbo: Buffer,
     ebo: Buffer,
-    /// Hash of the points currently in the VBO; re-upload is skipped when the
-    /// incoming points match (the all-circles case uploads exactly once).
-    points_hash: u64,
+    /// The points currently in the VBO. Re-upload is skipped when the incoming
+    /// points match EXACTLY — compared, not hashed, so no hash collision can
+    /// ever skip an upload that was needed. (Every circle lowers to the same
+    /// unit ring, so that case matches and uploads once for the process.)
+    uploaded: Vec<[f32; 2]>,
 }
 
 impl PolygonMesh {
@@ -98,7 +100,7 @@ impl PolygonMesh {
                 vao,
                 vbo,
                 ebo,
-                points_hash: hash_points(points),
+                uploaded: points.to_vec(),
             }
         }
     }
@@ -107,8 +109,7 @@ impl PolygonMesh {
     /// `points.len()` must equal the mesh's vertex count — guaranteed by the
     /// caller, which keys the mesh by point count.
     pub fn update(&mut self, gl: &glow::Context, points: &[[f32; 2]]) {
-        let hash = hash_points(points);
-        if hash == self.points_hash {
+        if self.uploaded == points {
             return;
         }
         let count = self.vertices.len();
@@ -120,7 +121,8 @@ impl PolygonMesh {
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             crate::gpu_counters::gpu_counters().uploaded(vertices_u8.len());
         }
-        self.points_hash = hash;
+        self.uploaded.clear();
+        self.uploaded.extend_from_slice(points);
     }
 
     pub fn draw(&self, gl: &glow::Context) {
@@ -197,18 +199,6 @@ fn vertices_bytes(vertices: &[VertexPositionTexture]) -> &[u8] {
     }
 }
 
-/// Cheap order-sensitive hash of the uploaded points (FNV-1a over the bits).
-fn hash_points(points: &[[f32; 2]]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for point in points {
-        for value in point {
-            hash ^= value.to_bits() as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    }
-    hash
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,20 +243,22 @@ mod tests {
     }
 
     #[test]
-    fn identical_points_hash_equal_so_static_shapes_skip_re_upload() {
+    fn equal_points_compare_equal_so_static_shapes_skip_re_upload() {
+        // The unit ring every circle lowers to must compare equal across calls,
+        // which is what makes all circles share one mesh with no re-upload.
         let ring: Vec<[f32; 2]> = (0..32)
             .map(|i| {
                 let a = i as f32 / 32.0 * std::f32::consts::TAU;
                 [a.cos(), a.sin()]
             })
             .collect();
-        assert_eq!(hash_points(&ring), hash_points(&ring.clone()));
+        assert_eq!(ring, ring.clone());
         let mut moved = ring.clone();
         moved[7][0] += 0.001;
-        assert_ne!(hash_points(&ring), hash_points(&moved));
+        assert_ne!(ring, moved);
         // Order matters — a reversed outline is a different upload.
         let mut reversed = ring.clone();
         reversed.reverse();
-        assert_ne!(hash_points(&ring), hash_points(&reversed));
+        assert_ne!(ring, reversed);
     }
 }
