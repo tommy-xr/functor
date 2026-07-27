@@ -162,6 +162,53 @@ let draw = (m: float, tts: float) =>
     )
 }
 
+/// A text-bearing 2D frame: `lines` rows of `columns` characters drawn with
+/// `Sprite.text`, plus a measured panel behind them, in a `Frame.create2D`
+/// sprite pass.
+///
+/// This is a NEW workload, not a variant of the one above — text draws no 3D
+/// scene, so the two tables are not comparable to each other. Its purpose is to
+/// price glyph expansion: every visible glyph lowers to its own quad + material
+/// during `Frame.create2D`, so `allocs/frame` here scales with glyph count and
+/// is the number to watch when that expansion is optimized (batching is the
+/// named follow-up in `docs/2d-presentation.md`).
+fn text_workload(columns: u32, lines: u32) -> String {
+    // A fixed, repeating ASCII line — content is irrelevant to cost as long as
+    // every character is a visible glyph, which is the worst case.
+    let line: String = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        .chars()
+        .cycle()
+        .take(columns as usize)
+        .collect();
+    let rows: Vec<String> = (0..lines)
+        .map(|row| {
+            format!(
+                "    Sprite.text(Color.rgb(0.8, 0.9, 1.0), 0.6, \"{line}\") \
+                 |> Sprite.moveY({}.0 - {row}.0 * 0.7),",
+                lines / 2
+            )
+        })
+        .collect();
+    format!(
+        r#"
+let caption = "{line}"
+
+let init = 0.0
+
+let tick = (m: float, dt: float, tts: float) => m
+
+let draw = (m: float, tts: float) =>
+  let box = Sprite.measure(0.6, caption) in
+  Sprite.group([
+    Sprite.rectangle(Color.rgb(0.08, 0.05, 0.16), box.width + 1.0, box.height + 1.0),
+{}
+  ])
+  |> Frame.create2D(Camera2D.create(64.0, 36.0))
+"#,
+        rows.join("\n")
+    )
+}
+
 // --- The harness -----------------------------------------------------------
 
 /// Warmup wall-clock before timing begins (caches / branch predictor).
@@ -183,10 +230,9 @@ struct SizeResult {
     bytes_per_frame: u64,
 }
 
-/// Parse + lower + load the workload at `side` under the engine prelude.
-fn load_session(side: u32) -> (functor_lang::Session, Value) {
-    let src = workload(side);
-    let module = functor_lang::lower(functor_lang::parse(&src).expect("workload parses"))
+/// Parse + lower + load a workload under the engine prelude.
+fn load_source(src: &str) -> (functor_lang::Session, Value) {
+    let module = functor_lang::lower(functor_lang::parse(src).expect("workload parses"))
         .expect("workload lowers");
     let session = functor_lang::Session::load(&module, &mut FunctorHost)
         .unwrap_or_else(|f| panic!("workload load failed: {}", f.error.message));
@@ -218,8 +264,17 @@ fn draw_frame(session: &functor_lang::Session, model: &Value, last_frame: &mut O
     black_box(last_frame);
 }
 
-fn bench_size(side: u32) -> SizeResult {
-    let (session, model) = load_session(side);
+/// The measured columns for one workload source: wall time (min + median over
+/// `SAMPLES` frames) and the deterministic alloc counters.
+struct Measured {
+    min_us: f64,
+    median_us: f64,
+    allocs_per_frame: u64,
+    bytes_per_frame: u64,
+}
+
+fn bench_source(src: &str) -> Measured {
+    let (session, model) = load_source(src);
     let mut last_frame: Option<Frame> = None;
 
     // Warmup.
@@ -247,10 +302,7 @@ fn bench_size(side: u32) -> SizeResult {
     }
     samples_ns.sort_unstable();
 
-    let cells = side as u64 * side as u64;
-    SizeResult {
-        side,
-        cells,
+    Measured {
         min_us: samples_ns[0] as f64 / 1_000.0,
         median_us: samples_ns[samples_ns.len() / 2] as f64 / 1_000.0,
         allocs_per_frame,
@@ -258,10 +310,22 @@ fn bench_size(side: u32) -> SizeResult {
     }
 }
 
+fn bench_size(side: u32) -> SizeResult {
+    let m = bench_source(&workload(side));
+    SizeResult {
+        side,
+        cells: side as u64 * side as u64,
+        min_us: m.min_us,
+        median_us: m.median_us,
+        allocs_per_frame: m.allocs_per_frame,
+        bytes_per_frame: m.bytes_per_frame,
+    }
+}
+
 /// `tick` is the identity in this workload, so this is pure entry-point call
 /// overhead — reported once for completeness (it does not depend on the grid).
 fn bench_tick(side: u32) -> f64 {
-    let (session, model) = load_session(side);
+    let (session, model) = load_source(&workload(side));
     let call = |n: u64| {
         let start = Instant::now();
         for _ in 0..n {
@@ -280,6 +344,37 @@ fn bench_tick(side: u32) -> f64 {
     call(10_000).as_nanos() as f64 / 10_000.0 / 1_000.0 // us/call
 }
 
+/// The 2D text table: cost as a function of glyphs on screen. Reported
+/// per-glyph as well as per-frame, since glyph count is the thing a game
+/// controls.
+fn bench_text() {
+    println!("frame_bench: headless per-frame cost under the engine prelude (no GL)");
+    println!("workload: Sprite.text 2D pass — a measured panel plus N lines of text");
+    println!("NOTE: a NEW workload, not comparable to the synthwave table; it draws no 3D scene.");
+    println!("NOTE: CPU only. This cannot see the GPU cost of one draw call per glyph.");
+    println!();
+    println!(
+        "{:>7} {:>9} {:>15} {:>15} {:>10} {:>13} {:>12}",
+        "glyphs", "layout", "us/frame(min)", "us/frame(med)", "us/glyph", "allocs/frame",
+        "bytes/frame"
+    );
+    // 20 glyphs ~ a score line; 400 ~ a dense HUD; 1500 ~ a full screen of text.
+    for (columns, lines) in [(20, 1), (40, 10), (60, 25)] {
+        let glyphs = columns as u64 * lines as u64;
+        let m = bench_source(&text_workload(columns, lines));
+        println!(
+            "{:>7} {:>9} {:>15.1} {:>15.1} {:>10.3} {:>13} {:>12}",
+            glyphs,
+            format!("{columns}x{lines}"),
+            m.min_us,
+            m.median_us,
+            m.min_us / glyphs as f64,
+            m.allocs_per_frame,
+            m.bytes_per_frame,
+        );
+    }
+}
+
 fn main() {
     if cfg!(debug_assertions) {
         eprintln!("========================================================================");
@@ -292,6 +387,14 @@ fn main() {
     // Optional args: grid sides (NxN). Default 20 / 40 / 56 = 400 / 1600 /
     // 3136 cells; 40 is examples/synthwave's shipped resolution.
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // `text` selects the 2D text workload instead (a separate table — the two
+    // are not comparable to each other).
+    if args.first().is_some_and(|a| a == "text") {
+        bench_text();
+        return;
+    }
+
     let sides: Vec<u32> = if args.is_empty() {
         vec![20, 40, 56]
     } else {

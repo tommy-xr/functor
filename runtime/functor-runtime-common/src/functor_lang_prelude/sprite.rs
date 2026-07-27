@@ -5,6 +5,8 @@
 
 use super::*;
 
+use crate::{scene3d::BuiltinTexture, sprite_font};
+
 /// A center-origin, Y-up [`Camera2D`] used by sprite frame passes.
 struct FunctorLangCamera2D(Camera2D);
 
@@ -96,6 +98,25 @@ impl crate::host_registry::FromArg for FunctorLangSpriteRegion {
     }
 }
 
+/// Validate a text size: the height of one line in world units, and (because
+/// the built-in font is monospace with self-spacing cells) also the advance per
+/// character. Rejects NaN as well as zero/negative, since a NaN size would
+/// otherwise silently place every glyph nowhere.
+///
+/// The check is applied to the NARROWED `f32` the layout actually uses, not just
+/// the incoming `f64`. The registry's numeric conversion already rejects a value
+/// that overflows `f32`, but a tiny positive `f64` (say 1e-60) narrows to
+/// exactly `0.0` and passes it — which would let `Sprite.measure` report a
+/// positive box while `Sprite.text` laid out zero-sized quads. Both entry points
+/// go through here, so they cannot disagree about which sizes are legal.
+fn text_size(size: f64, path: &str) -> Result<f64, String> {
+    let narrowed = size as f32;
+    if !narrowed.is_finite() || narrowed <= 0.0 {
+        return Err(format!("{path} size must be a positive number, got {size}"));
+    }
+    Ok(size)
+}
+
 fn sprite_node(name: &str, args: Vec<Value>) -> Value {
     Value::Variant {
         ctor: Rc::from(format!("Sprite.{name}")),
@@ -134,6 +155,13 @@ fn sprite_texture_parts(texture: FunctorLangTexture) -> Result<(String, Vec<Stri
         } => Ok((file, while_pending)),
         TextureDescription::RenderTarget(_) => {
             Err("Sprite images expect an image asset, not a render target".to_string())
+        }
+        // Unreachable from game code: `Asset.texture` only ever produces file
+        // locators, and the built-in atlas is reachable only through
+        // `Sprite.text`. Rejected rather than ignored so a future builtin
+        // exposed as an asset cannot silently lose its region.
+        TextureDescription::Builtin(_) => {
+            Err("Sprite images expect an image asset, not a built-in texture".to_string())
         }
     }
 }
@@ -225,6 +253,36 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                     Value::Number(b as f64),
                 ],
             ))
+        },
+    );
+    reg.fn3(
+        "Sprite.text",
+        "Sprite.text(color, size, text)",
+        |color: FunctorLangColor, size: f64, text: String| {
+            let size = text_size(size, "Sprite.text")?;
+            let (r, g, b) = color.0;
+            Ok(sprite_node(
+                "Text",
+                vec![
+                    Value::Number(size),
+                    Value::Number(r as f64),
+                    Value::Number(g as f64),
+                    Value::Number(b as f64),
+                    Value::String(Rc::from(text.as_str())),
+                ],
+            ))
+        },
+    );
+    reg.fn2(
+        "Sprite.measure",
+        "Sprite.measure(size, text)",
+        |size: f64, text: String| {
+            let size = text_size(size, "Sprite.measure")?;
+            let (columns, rows) = sprite_font::measure_cells(&text);
+            Ok(Value::Record(Rc::new(vec![
+                ("width".to_string(), Value::Number(size * columns)),
+                ("height".to_string(), Value::Number(size * rows)),
+            ])))
         },
     );
     reg.fn3(
@@ -455,6 +513,16 @@ fn lower_sprite(
             );
             Ok(transformed(leaf, Matrix4::from_nonuniform_scale(width, height, 1.0)).0)
         }
+        ("Sprite.Text", [size, r, g, b, Value::String(text)]) => {
+            let size = sprite_number(size, "Text")?;
+            let color = [
+                sprite_number(r, "Text")? * tint[0],
+                sprite_number(g, "Text")? * tint[1],
+                sprite_number(b, "Text")? * tint[2],
+                tint[3],
+            ];
+            Ok(lower_sprite_text(size, color, text, sampling))
+        }
         ("Sprite.Image", [width, height, path, pending]) => {
             lower_sprite_image(width, height, None, path, pending, tint, sampling)
         }
@@ -521,6 +589,70 @@ fn lower_sprite(
         ("Sprite.Linear", [child]) => lower_sprite(child, tint, SpriteSampling::Linear),
         _ => Err(format!("invalid Sprite data: malformed {ctor} node")),
     }
+}
+
+/// Expand a text node into one textured quad per VISIBLE glyph, every quad
+/// sampling its own cell of the compiled-in font atlas.
+///
+/// Expansion happens here, at lowering, and never in the `Sprite.t` value: the
+/// sprite tree keeps the string itself, so a picture containing text still
+/// compares, inspects, serializes, and survives time travel as plain data. A
+/// blank character (a space, or anything outside printable ASCII) emits no quad
+/// at all but still advances the pen, so unsupported text reads as gaps rather
+/// than sliding the rest of the line.
+///
+/// The run is centered on its own box, like every other sprite primitive, so
+/// `Sprite.move` places text the same way it places a rectangle. `\n` starts a
+/// new line, stacked at exactly one `size` of line height and centered within
+/// the run's box (left-aligned blocks are the follow-up `textBlock`'s job).
+fn lower_sprite_text(
+    size: f32,
+    color: [f32; 4],
+    text: &str,
+    sampling: SpriteSampling,
+) -> Scene3D {
+    let (_, rows) = sprite_font::measure_cells(text);
+    let rows = rows as f32;
+    let mut glyphs = Vec::new();
+    for (row, line) in sprite_font::lines(text).enumerate() {
+        let count = sprite_font::advance_count(line) as f32;
+        // Lines run top to bottom in +Y-up space, so row 0 sits highest. The
+        // stride is exactly `size`, which is also `measure(...).height / rows`
+        // -- the invariant that lets callers stack blocks without overlap.
+        let y = size * (rows * 0.5 - row as f32 - 0.5);
+        let mut pen = size * (0.5 - count * 0.5);
+        for character in line.chars() {
+            if let Some((cell_x, cell_y, cell_width, cell_height)) =
+                sprite_font::glyph_cell(character)
+            {
+                let leaf = material_scene(
+                    MaterialDescription::sprite_texture_tinted(
+                        TextureDescription::Builtin(BuiltinTexture::FontAtlas),
+                        Some([cell_x, cell_y, cell_width, cell_height]),
+                        sampling,
+                        color[0],
+                        color[1],
+                        color[2],
+                        color[3],
+                    ),
+                    FunctorLangScene(Scene3D::quad()),
+                );
+                // Negative Y for the same reason `Sprite.image` flips: the atlas
+                // is uploaded top-row-first while GL's v = 0 is the bottom, and
+                // the glyph cell is addressed with a top-left origin.
+                glyphs.push(
+                    transformed(
+                        leaf,
+                        Matrix4::from_translation(cgmath::vec3(pen, y, 0.0))
+                            * Matrix4::from_nonuniform_scale(size, -size, 1.0),
+                    )
+                    .0,
+                );
+            }
+            pen += size;
+        }
+    }
+    group(glyphs, Matrix4::from_scale(1.0))
 }
 
 fn lower_sprite_image(

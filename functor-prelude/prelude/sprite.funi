@@ -13,12 +13,51 @@ type t
 /// top-left corner.
 type region
 
+/// The size of a laid-out run of text, in the same world units as the sprite
+/// itself.
+type metrics = {
+  width: float,
+  height: float
+}
+
 /// Create an empty picture.
 let blank : () => t
 /// Create a centered rectangle with positive width and height.
 let rectangle : (Color.t, float, float) => t
 /// Create a centered square with a positive side length.
 let square : (Color.t, float) => t
+/// Draw text in the built-in font, centered on its own box like every other
+/// primitive, with `size` the height of one line in world units. Needs no
+/// asset: the font is compiled into the runtime. The text comes last, so a
+/// formatted value pipes straight in:
+///
+///     Text.fixed(model.score, 0.0) |> Sprite.text(Color.rgb(0.0, 1.0, 1.0), 1.2)
+///
+/// The font is a monospace 8x8 bitmap, so each character advances by exactly
+/// `size` — ask `measure` for a run's size rather than assuming it. `\n` starts
+/// a new line, stacked at exactly one `size` of line height, and each line is
+/// centered within the block. That stride is the glyph cell, so lines never
+/// overlap but sit tight — a descender nearly meets the next line's capitals,
+/// as in a terminal. For airier text, draw the lines yourself and space them by
+/// more than `size` with `group` and `moveY`. Characters outside printable ASCII
+/// occupy their cell but draw nothing, so unsupported text leaves gaps instead
+/// of shifting the rest of the line.
+///
+/// Text is centered, so align it by shifting half its measured width —
+/// `Sprite.moveX(Sprite.measure(size, s).width * 0.5, …)` puts its LEFT edge at
+/// the origin, and negating that puts its right edge there. That aligns the
+/// BLOCK: with several lines only the widest reaches the edge, since each line
+/// stays centered until a left-aligning text block exists.
+///
+/// Glyphs are sampled like any other sprite image, so `nearest` gives crisp
+/// pixel edges and the default `linear` gives smoother ones at large sizes.
+let text : (Color.t, float, string) => t
+/// Measure what `text` at `size` would occupy, without rendering it, so labels
+/// and columns can be laid out in game logic. The width is the widest line's;
+/// the height is `size` per line, counting a trailing newline as a line, so
+/// stacking blocks by their measured height never overlaps them.
+let measure : (float, string) => metrics
+
 /// Create a centered, textured rectangle with positive width and height.
 let image : (float, float, Asset.Texture) => t
 /// Select a source rectangle without requiring the image's full dimensions.

@@ -72,6 +72,10 @@ pub struct SceneContext {
     render_targets: RefCell<HashMap<String, RenderTargetBuffers>>,
     render_target_warned: RefCell<HashSet<String>>,
     fallback_texture: RefCell<Option<glow::Texture>>,
+    // Compiled-in textures, hydrated on first bind and kept for the process
+    // lifetime like the fallback texture: they have no locator to evict by and
+    // there is at most one per variant.
+    builtin_textures: RefCell<HashMap<BuiltinTexture, glow::Texture>>,
     // Cubemap skyboxes, keyed by the joined six face paths. Like render
     // targets they persist across frames/hot reloads and are never evicted
     // (TODO). Faces decode through `raw_image_pipeline` (no GL hydration);
@@ -242,6 +246,7 @@ impl SceneContext {
             render_targets: RefCell::new(HashMap::new()),
             render_target_warned: RefCell::new(HashSet::new()),
             fallback_texture: RefCell::new(None),
+            builtin_textures: RefCell::new(HashMap::new()),
             raw_image_pipeline: asset::build_pipeline(Box::new(RawImagePipeline)),
             skyboxes: RefCell::new(HashMap::new()),
             skybox_program: RefCell::new(None),
@@ -684,6 +689,43 @@ impl SceneContext {
             );
             gl.bind_texture(glow::TEXTURE_2D, None);
             texture
+        })
+    }
+
+    /// A texture compiled into the runtime, uploaded on first use and cached
+    /// for the process lifetime. No asset cache, no IO, no fetch — so it is
+    /// ready on the very first frame that draws it, on every target.
+    ///
+    /// Filtering is deliberately NOT set here: `bind_texture_description`
+    /// reasserts wrap and filter on every bind (builtin textures share one GL
+    /// object across draws, exactly like file textures), so a `Sprite.nearest`
+    /// subtree and a `Sprite.linear` one can sample the same atlas in one
+    /// frame.
+    pub fn builtin_texture(&self, gl: &glow::Context, which: BuiltinTexture) -> glow::Texture {
+        let mut textures = self.builtin_textures.borrow_mut();
+        *textures.entry(which).or_insert_with(|| {
+            let data = match which {
+                BuiltinTexture::FontAtlas => crate::sprite_font::atlas_texture_data(),
+            };
+            unsafe {
+                let texture = gl.create_texture().expect("builtin texture");
+                crate::gpu_counters::gpu_counters().texture_created();
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    data.width as i32,
+                    data.height as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&data.bytes)),
+                );
+                crate::gpu_counters::gpu_counters().uploaded(data.bytes.len());
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                texture
+            }
         })
     }
 

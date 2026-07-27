@@ -278,6 +278,20 @@ fn bind_texture_description(
             set_bound_texture_wrap(unit, false, context);
             set_bound_texture_filter(unit, sampling, context);
         }
+        TextureDescription::Builtin(which) => {
+            // Select the unit BEFORE the lazy upload, for the same reason the
+            // render-target fallback does: creating the texture binds/unbinds
+            // TEXTURE_2D on the active unit.
+            unsafe {
+                context.gl.active_texture(glow::TEXTURE0 + unit);
+            }
+            let texture = scene_context.builtin_texture(context.gl, *which);
+            unsafe {
+                context.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            }
+            set_bound_texture_wrap(unit, false, context);
+            set_bound_texture_filter(unit, sampling, context);
+        }
         TextureDescription::RenderTarget(id) => {
             // Select the unit BEFORE any lazy fallback creation: creating the
             // fallback binds/unbinds TEXTURE_2D on the active unit, which would
