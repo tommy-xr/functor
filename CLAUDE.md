@@ -304,6 +304,12 @@ whole directory's expects run whichever role you name.
 drives the interpreter/typechecker headlessly (the plain-`functor-lang` prelude, no engine host). See the
 `functor-lang` skill.
 
+**Drive a game as an MCP client.** `functor mcp` serves the debug runtime
+(`docs/debug-runtime.md`) as MCP tools over stdio — launch/attach N game sessions, read
+`model_json`, pause/step the clock, inject input, capture frames, hot-reload source. Register
+it with `claude mcp add functor -- functor mcp`; see `docs/mcp.md`. It ignores `-d` (each
+launched game names its own directory) and owns stdout for JSON-RPC.
+
 **Capture a frame to PNG** (no OS screen-recording permission needed — the runner reads back its
 own framebuffer; ideal for verifying rendering changes). The CLI forwards extra args to
 the built-in desktop runtime (a leading `--` is optional):

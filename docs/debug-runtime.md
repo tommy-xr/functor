@@ -424,11 +424,13 @@ session for simulating multiplayer games) lives in `tools/functor-sdk`. A client
 point at either `http://127.0.0.1:8077` (desktop) or the adb-forwarded
 `http://127.0.0.1:8123` (Quest) without changing API calls.
 
+An **MCP server** over the same endpoints ships as `functor mcp` — sessions,
+state, scene, capture, input, time, and rewind as standard tools for coding
+agents (docs/mcp.md).
+
 ## Future directions
 
 - **Multiplayer simulation.** Launch N runner instances, each on its own
   `--debug-port`, networked via `Sub.connect`/`Sub.listen`; pin all clocks and step
   them in lockstep, injecting input and observing state per client. This is the
   out-of-process counterpart to the in-process `functor-netsim` harness.
-- **An MCP server.** `functor mcp` will expose this surface (sessions, state,
-  scene, capture, input, time, rewind) as standard MCP tools for coding agents.
