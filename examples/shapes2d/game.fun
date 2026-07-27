@@ -92,8 +92,17 @@ let draw = (model, tts) =>
 // `ngon` is pure geometry, so it is testable with no renderer.
 expect List.length(ngon(5.0, 1.0, 0.0, 0.0)) == 5.0
 expect List.length(ngon(9.0, 2.0, 1.0, 1.0)) == 9.0
-// The first vertex of a unit n-gon centred on the origin sits at angle 0.
+// Its real invariant: every vertex sits exactly `radius` from the centre. The
+// worst deviation over all vertices must be ~0, which is what actually pins the
+// trigonometry (a bound like `< 3.0` would hold for any vertex of any n-gon).
 expect (
-  let first = ngon(6.0, 2.0, 0.0, 0.0) |> List.fold((_, p) => p, { x: 0.0, y: 0.0 }) in
-  Math.abs(first.x) < 3.0
+  let cx = 1.0 in
+  let cy = 0.5 in
+  let worst =
+    ngon(6.0, 2.0, cx, cy)
+      |> List.fold((acc, p) =>
+           let dx = p.x - cx in
+           let dy = p.y - cy in
+           Math.max(acc, Math.abs(Math.sqrt(dx * dx + dy * dy) - 2.0)), 0.0) in
+  worst < 0.0001
 )

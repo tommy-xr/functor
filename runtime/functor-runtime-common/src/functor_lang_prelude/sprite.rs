@@ -198,12 +198,31 @@ fn convex_outline(points: Vec<FunctorLangPoint2>, path: &str) -> Result<Vec<[f32
         ));
     }
     let count = points.len();
+    // Sign-consistency alone does NOT imply convexity: a STAR (a pentagram) turns
+    // the same way at every vertex yet self-intersects, so it would pass and
+    // fan-fill as overlapping triangles. Catching that needs the total turning,
+    // which must be exactly one revolution for a simple outline.
+    //
+    // It is only needed above 4 points, though. With every turn the same sign each
+    // |turn| is under pi, so the total is under `count * pi`; it is also a whole
+    // number of revolutions, so `revolutions < count / 2`. A star needs 2+
+    // revolutions and therefore at least 5 points — a triangle or quadrilateral
+    // that turns consistently is always simple. So triangles and quads, the
+    // overwhelming majority of game polygons, skip the transcendentals entirely.
+    let needs_turning_check = count > 4;
     let mut sign = 0.0f32;
+    let mut turning = 0.0f64;
     for index in 0..count {
         let a = points[index];
         let b = points[(index + 1) % count];
         let c = points[(index + 2) % count];
         let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if needs_turning_check {
+            let dot = (b[0] - a[0]) as f64 * (c[0] - b[0]) as f64
+                + (b[1] - a[1]) as f64 * (c[1] - b[1]) as f64;
+            // Zero for a collinear or repeated vertex, which contribute no turn.
+            turning += (cross as f64).atan2(dot);
+        }
         if cross == 0.0 {
             continue;
         }
@@ -220,6 +239,14 @@ fn convex_outline(points: Vec<FunctorLangPoint2>, path: &str) -> Result<Vec<[f32
     if sign == 0.0 {
         return Err(format!(
             "{path} points must enclose an area, but these are all on one line"
+        ));
+    }
+    if needs_turning_check && (turning.abs() - std::f64::consts::TAU).abs() > 1e-3 {
+        return Err(format!(
+            "{path} points must form a SIMPLE outline that winds around once, but these \
+             wind around {:.1} times — a self-intersecting star fills as overlapping fan \
+             triangles, not as the star. Draw it as a group of convex pieces.",
+            turning.abs() / std::f64::consts::TAU
         ));
     }
     Ok(points)

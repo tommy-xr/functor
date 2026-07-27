@@ -1,10 +1,8 @@
-use cgmath::{vec2, vec3};
+use cgmath::{vec2, vec3, vec4};
 use glow::{Buffer, HasContext, VertexArray};
 
 use crate::render::vertex::{Vertex, VertexAttributeType};
 use crate::render::VertexPositionTexture;
-
-use super::compute_tangents;
 
 /// A filled convex polygon in the XY plane (z = 0), facing +Z — the geometry
 /// behind `Sprite.polygon` and `Sprite.circle`.
@@ -27,8 +25,8 @@ use super::compute_tangents;
 pub struct PolygonMesh {
     /// Reused CPU-side vertex scratch, recomputed in place when points change.
     vertices: Vec<VertexPositionTexture>,
-    /// Fan indices — constant for the point count, so built once and kept for
-    /// re-tangenting on each vertex update (never re-uploaded after `create`).
+    /// Fan indices — constant for the point count, so uploaded once at `create`
+    /// and never re-uploaded. Retained only for the draw call's element count.
     indices: Vec<u32>,
     vao: VertexArray,
     vbo: Buffer,
@@ -46,7 +44,7 @@ impl PolygonMesh {
         let count = points.len().max(3);
         let indices = build_fan_indices(count);
         let mut vertices = Vec::with_capacity(count);
-        fill_vertices(&mut vertices, count, points, &indices);
+        fill_vertices(&mut vertices, count, points);
 
         unsafe {
             let indices_u8: &[u8] = core::slice::from_raw_parts(
@@ -114,7 +112,7 @@ impl PolygonMesh {
             return;
         }
         let count = self.vertices.len();
-        fill_vertices(&mut self.vertices, count, points, &self.indices);
+        fill_vertices(&mut self.vertices, count, points);
         unsafe {
             let vertices_u8 = vertices_bytes(&self.vertices);
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
@@ -152,17 +150,13 @@ fn build_fan_indices(count: usize) -> Vec<u32> {
 
 /// Recompute the vertex scratch in place from `points`.
 ///
-/// UVs are normalized over the polygon's bounding box. Nothing samples them
-/// today (filled shapes use the untextured emissive material), but a degenerate
-/// UV set would make `compute_tangents` divide by zero and write NaNs into the
-/// buffer, so they are given real values. A zero-extent axis cannot occur for a
-/// polygon with area, and `Sprite.polygon` rejects zero-area outlines.
-fn fill_vertices(
-    vertices: &mut Vec<VertexPositionTexture>,
-    count: usize,
-    points: &[[f32; 2]],
-    indices: &[u32],
-) {
+/// UVs are normalized over the polygon's bounding box, and the tangent is the
+/// CONSTANT +X with `w = 1`. That is not a shortcut: the polygon is planar in XY
+/// facing +Z with axis-aligned bbox UVs, so +X/+Y/+Z is exactly the tangent
+/// frame the general solver would derive — computing it per upload would be the
+/// same answer for more work, on a mesh re-uploaded every frame. (Nothing samples
+/// either today; filled shapes use the untextured emissive material.)
+fn fill_vertices(vertices: &mut Vec<VertexPositionTexture>, count: usize, points: &[[f32; 2]]) {
     let mut min = [f32::INFINITY, f32::INFINITY];
     let mut max = [f32::NEG_INFINITY, f32::NEG_INFINITY];
     for point in points.iter().take(count) {
@@ -181,16 +175,17 @@ fn fill_vertices(
     vertices.clear();
     for index in 0..count {
         let point = points.get(index).copied().unwrap_or([0.0, 0.0]);
-        vertices.push(VertexPositionTexture::new(
+        let mut vertex = VertexPositionTexture::new(
             vec3(point[0], point[1], 0.0),
             vec2(
                 (point[0] - min[0]) / span[0],
                 (point[1] - min[1]) / span[1],
             ),
             normal,
-        ));
+        );
+        vertex.tangent = vec4(1.0, 0.0, 0.0, 1.0);
+        vertices.push(vertex);
     }
-    compute_tangents(vertices, indices);
 }
 
 fn vertices_bytes(vertices: &[VertexPositionTexture]) -> &[u8] {
@@ -231,9 +226,8 @@ mod tests {
         // An off-origin triangle must stay off-origin: the points ARE the
         // geometry, unlike rectangle/circle which are centered by definition.
         let points = [[10.0, 10.0], [12.0, 10.0], [10.0, 14.0]];
-        let indices = build_fan_indices(3);
         let mut vertices = Vec::new();
-        fill_vertices(&mut vertices, 3, &points, &indices);
+        fill_vertices(&mut vertices, 3, &points);
         assert_eq!(vertices.len(), 3);
         for (vertex, expected) in vertices.iter().zip(points.iter()) {
             assert_eq!(vertex.position.x, expected[0]);
@@ -245,9 +239,8 @@ mod tests {
     #[test]
     fn uvs_span_the_bounding_box_and_never_produce_nan_tangents() {
         let points = [[-2.0, -1.0], [2.0, -1.0], [2.0, 3.0], [-2.0, 3.0]];
-        let indices = build_fan_indices(4);
         let mut vertices = Vec::new();
-        fill_vertices(&mut vertices, 4, &points, &indices);
+        fill_vertices(&mut vertices, 4, &points);
         let us: Vec<f32> = vertices.iter().map(|v| v.uv.x).collect();
         let vs: Vec<f32> = vertices.iter().map(|v| v.uv.y).collect();
         assert_eq!(us, vec![0.0, 1.0, 1.0, 0.0]);

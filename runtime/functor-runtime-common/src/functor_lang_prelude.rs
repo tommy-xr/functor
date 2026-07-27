@@ -5354,6 +5354,19 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             "message: {message}"
         );
 
+        // A STAR is the subtle case: it turns the same way at every vertex, so a
+        // sign-consistency check alone accepts it, and the fan then fills
+        // overlapping triangles instead of the star. A pentagram winds twice.
+        let pentagram = "Sprite.polygon(Color.rgb(1.0, 1.0, 1.0), [\
+                         { x: 1.0, y: 0.0 }, { x: -0.809, y: 0.588 }, \
+                         { x: 0.309, y: -0.951 }, { x: 0.309, y: 0.951 }, \
+                         { x: -0.809, y: -0.588 }])";
+        let message = run_fail(&format!("let main = () => {pentagram}"));
+        assert!(
+            message.contains("wind around 2.0 times"),
+            "message: {message}"
+        );
+
         // ...and the legitimate cases still work, in EITHER winding.
         for winding in [
             "[{ x: 0.0, y: 0.0 }, { x: 2.0, y: 0.0 }, { x: 2.0, y: 2.0 }, { x: 0.0, y: 2.0 }]",
@@ -5364,6 +5377,16 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             ));
             assert!(matches!(value, Value::Variant { .. }), "winding: {winding}");
         }
+
+        // The 32-gon a circle lowers to must still pass, or circles break.
+        let ring = eval(
+            "let main = () =>\n\
+             Sprite.polygon(Color.rgb(1.0, 1.0, 1.0),\n\
+               List.range(32.0) |> List.map((i) =>\n\
+                 let a = i / 32.0 * 2.0 * Math.pi in\n\
+                 { x: Math.cos(a), y: Math.sin(a) }))",
+        );
+        assert!(matches!(ring, Value::Variant { .. }));
 
         // A collinear vertex is convex, so it is allowed.
         let straightened = eval(
