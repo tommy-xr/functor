@@ -27,14 +27,15 @@
       html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0221; }
       /* Fill the frame; the runtime sizes the drawable buffer (and GL
          viewport) to match this displayed size each frame, scaled for HiDPI. */
-      #canvas { display: block; width: 100%; height: 100%; }
+      #canvas { display: block; width: 100%; height: calc(100% - var(--functor-scrubber-h, 0px)); margin-top: var(--functor-scrubber-h, 0px); }
       /* Explicit mouse-look toggle. The cursor stays FREE by default so the
          time-travel scrubber (and the sandbox editor) is usable without the
          pointer being grabbed on every canvas click; press this (or Esc to
          release) to control the camera. */
       #mouselook {
-        /* Bottom-left: the top edge belongs to the (top-docked) scrubber. */
-        position: fixed; bottom: 10px; left: 10px; z-index: 10;
+        /* Bottom-right: the top edge belongs to the (top-docked) scrubber and
+           bottom-left is Ui.bottomLeft's anchor corner. */
+        position: fixed; bottom: 10px; right: 10px; z-index: 10;
         font: 12px/1 var(--scrub-font); padding: 6px 10px; cursor: pointer;
         color: var(--scrub-text); background: var(--scrub-bg);
         border: 1px solid var(--scrub-line); border-radius: 6px;
@@ -53,7 +54,7 @@
          stylesheet can't restyle the page chrome). Only handler-carrying
          elements take pointer input — the rules live inside the shadow root.
          Kept in sync with index-functor-lang.html. */
-      #webview { position: fixed; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+      #webview { position: fixed; top: var(--functor-scrubber-h, 0px); right: 0; bottom: 0; left: 0; z-index: 5; pointer-events: none; overflow: hidden; }
     </style>
   </head>
   <body>

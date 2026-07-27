@@ -100,7 +100,8 @@ const STYLE = `
   pointer-events: none;
 }
 #scrub-event-detail {
-  position: absolute; z-index: 5; top: calc(100% + 7px); display: none;
+  /* Below the frame label (which hangs at 100%+2px..+11px). */
+  position: absolute; z-index: 12; top: calc(100% + 13px); display: none;
   max-width: min(280px, 80vw); padding: 5px 7px; transform: translateX(-50%);
   border: 1px solid var(--sb-line); border-radius: 6px; color: var(--sb-text);
   background: rgba(30, 24, 51, 0.98); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
@@ -208,7 +209,15 @@ export function mountScrubber({ hidden = false } = {}) {
   const el = document.createElement("div");
   el.id = "scrubber";
   el.innerHTML = HTML;
-  if (!hidden) document.body.appendChild(el);
+  if (!hidden) {
+    document.body.appendChild(el);
+    // Reserve the bar's height from MOUNT (not first display): host pages lay
+    // the canvas out below `--functor-scrubber-h`, so the top-docked bar
+    // never occludes in-game UI (Ui.topLeft anchors) and the layout never
+    // jumps when a recording appears. 57px = 30px rail + 8/18px padding + 1px
+    // border (the bar's fixed metrics above).
+    document.documentElement.style.setProperty("--functor-scrubber-h", "57px");
+  }
 
   const $ = (id) => el.querySelector(`#${id}`);
   const rail = $("scrub-rail");
@@ -713,6 +722,7 @@ export function mountScrubber({ hidden = false } = {}) {
     destroy() {
       cancelAnimationFrame(raf);
       el.remove();
+      document.documentElement.style.removeProperty("--functor-scrubber-h");
       if (window.__scrub === seam) delete window.__scrub;
     },
   };
