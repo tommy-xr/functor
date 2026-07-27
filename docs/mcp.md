@@ -10,7 +10,8 @@ drive a Functor game with no bespoke script, no HTTP plumbing, and no screen:
 model back as structured JSON.
 
 It is a plain HTTP client of the runtimes and lives entirely in the CLI. The
-runtimes are unchanged.
+one runtime-side addition it needs is `GET /project` (debug protocol v5), the
+read half of the project-push routes, which `save_project` is built on.
 
 ## Registering it
 
@@ -44,7 +45,7 @@ URL plus, when the server launched it, the child process.
 
 | Tool | What it does |
 | --- | --- |
-| `launch_game` | Spawn a game as a child on a free port and return its session id. `mode` is `hidden` (default) or `headless` — see below. |
+| `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `mode` is `hidden` (default) or `headless`. |
 | `connect_game` | Attach to a runtime this server does **not** own (someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game; merely forget an attached one. |
@@ -68,6 +69,13 @@ URL plus, when the server launched it, the child process.
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
 | `reload_source` / `reload_project` | Hot-reload the entry, or every sibling module, with the live model preserved. |
+
+**Authoring.**
+
+| Tool | What it does |
+| --- | --- |
+| `init_game` | Scaffold a starter project on disk — the same `functor.json` + `game.fun` `functor init` writes. `template` is `"3d"` (default) or `"fps"`. Never overwrites; its `dir` goes straight into `launch_game`. |
+| `save_project` | Write a session's **current** source to a directory. The sources come from the RUNTIME (`GET /project`), so they include every wire-only edit. Refuses a directory that already holds a project unless `overwrite`. |
 
 **Reading the API.**
 
@@ -104,7 +112,8 @@ guarantees above quietly stop holding: a pre-v3 runtime ignores a batched
 landed after one), and a pre-v4 one sends Debug text under `model` instead of
 structured JSON. This matters most
 for a device APK, which versions independently of the CLI — rebuild it from the
-same Functor version.
+same Functor version. `save_project` additionally needs **v5** (`GET /project`)
+and says so on an older runtime.
 
 Launched games are killed when the server stops, whether its client closes
 stdin or signals it (SIGTERM/Ctrl-C). Attached ones are always left running.
@@ -121,6 +130,50 @@ stdin or signals it (SIGTERM/Ctrl-C). Attached ones are always left running.
   (the game's `draw` is pure data), but there is nothing to read back:
   **`capture_frame` fails** with an explanation. Audio is silent too, so
   `Audio.playThen` completion messages are not delivered.
+
+## Authoring a game with no filesystem
+
+An agent with no filesystem of its own (an MCP client in a chat app, say) can
+still go from nothing to a running game to a durable project. `launch_game`
+takes `files` — `[path, source]` pairs, the entry `.fun` first — instead of
+`dir`:
+
+```jsonc
+launch_game { "mode": "headless",
+              "files": [["game.fun", "type Model = { n: float }\n\nlet init = …"],
+                        ["step.fun", "let amount = 1.0\n"]] }
+// → {"session":"s1","dir":"/tmp/functor-mcp-…",…}
+
+get_state     { "session": "s1" }                    // → {"model":{"n":0},…}
+reload_source { "session": "s1", "source": "…edited…" }   // model preserved
+save_project  { "session": "s1", "dir": "./my-game" }
+// → {"dir":"/abs/my-game","files":["game.fun","step.fun","functor.json"]}
+```
+
+The server writes the inline files to a scratch directory it owns and launches
+them normally, so file-watch hot reload, `reload_source` and `reload_project`
+all behave exactly as for a project on disk. That directory is **removed when
+the session stops** (or the server shuts down): an inline game has no durable
+home until `save_project` gives it one.
+
+`save_project` deliberately does not copy the launch directory. It asks the
+runtime for what it is *running* (`GET /project`, debug protocol v5), so a
+session edited only over the wire saves the edited source rather than the text
+it booted with.
+
+A directory that already holds a project (a `functor.json` or any `.fun` /
+`.funi`) is **refused** — nearly every project's entry is named `game.fun`, so
+a matching name is no evidence that it is the same project. Pass
+`overwrite: true` to replace it; that also **deletes modules the session does
+not have**, since `file = module` means a leftover sibling would still load and
+the saved copy would not be the program that ran. A `functor.json` is
+synthesized only when the directory has none — an existing manifest is never
+rewritten, and a multi-entry one is not reconstructed (`/project` reports
+modules, not project metadata).
+
+The other direction is `init_game`, which scaffolds the ordinary starter on
+disk — `init_game { "dir": "./my-game" }` then
+`launch_game { "dir": "./my-game" }`.
 
 ## Driving a game deterministically
 

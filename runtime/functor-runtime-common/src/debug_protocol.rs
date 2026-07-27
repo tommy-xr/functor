@@ -27,7 +27,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// REDEFINES `model`: a pre-v4 runtime sends the Debug text under `model`
 /// and has no `model_debug`, so clients must gate on the version before
 /// reading `model` as data.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 4;
+///
+/// 5 added `GET /project`, the read half of the project-push routes: the
+/// `.fun` sources the program is CURRENTLY running, which for a
+/// wire-authored session exist nowhere else. Purely additive — every v4
+/// shape is unchanged, so a v4 client needs no revision and only a caller of
+/// `/project` needs a v5 runtime (a v4 one answers 404).
+pub const DEBUG_PROTOCOL_VERSION: u32 = 5;
 
 /// Maximum accepted body size for either reload operation.
 pub const MAX_RELOAD_BYTES: usize = 4 * 1024 * 1024;
@@ -112,6 +118,11 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/load-project",
         description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/project",
+        description: "the running program's own .fun sources as a JSON array of [path, source] pairs (entry first) — the wire truth after a pushed edit; 501 for producers whose logic is not source-shaped",
     },
     DebugRoute {
         method: "POST",
@@ -377,6 +388,9 @@ pub enum DebugRequest {
     /// `Err` is a conflict the operator must resolve — today, a `/time` command
     /// under an unconditional `--fixed-time` pin, which the clock cannot honor.
     Time(TimeCommand, Sender<Result<(), String>>),
+    /// `None` when the producer's logic is not source-shaped (a replay, a
+    /// compiled dylib) — reported as 501 rather than an empty project.
+    Project(Sender<Option<ProjectSources>>),
     ReloadSource(String, Sender<Result<String, String>>),
     ReloadProject(ProjectSources, Sender<Result<String, String>>),
     LoadProject(ProjectSources, Sender<Result<String, String>>),
@@ -605,6 +619,7 @@ mod tests {
             "GET /state",
             "GET /scene",
             "GET /trace",
+            "GET /project",
             "POST /input",
             "POST /time",
             "POST /reload-source",
@@ -635,6 +650,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 4);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 5);
     }
 }

@@ -734,6 +734,9 @@ tracking); use the desktop runtime's --headless/--debug-port path"
         DebugRequest::Time(command, response) => {
             let _ = response.send(clock.apply(command));
         }
+        DebugRequest::Project(response) => {
+            let _ = response.send(game.project_sources());
+        }
         DebugRequest::ReloadSource(source, response) => {
             let _ = response.send(game.reload_source(&source));
         }
