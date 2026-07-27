@@ -47,6 +47,20 @@ Games run and respond headlessly. Drive and inspect a running game entirely over
 
 ![A terminal driving a headless game over HTTP: pausing it and inspecting its render tree](site/media/feature-llm-native.gif)
 
+`functor mcp` serves that same runtime as [MCP](https://modelcontextprotocol.io) tools over stdio, so
+any coding agent can build, run, inspect, and rewind your game — real Functor code, deterministic
+(pin the clock, inject input, step frame by frame), exported to native and web. An agent can
+scaffold a project, launch it, iterate on it, and save it to disk entirely through the server, with
+no filesystem of its own.
+
+```sh
+claude mcp add functor -- functor mcp
+```
+
+Any other MCP client registers it as an ordinary stdio server (`command: "functor"`, `args: ["mcp"]`) —
+see [docs/mcp.md](docs/mcp.md) for the full tool surface, or
+[Driving games with agents](https://functor.games/manual/#agents) in the manual.
+
 ### Platform support
 
 - __Browser:__ WebAssembly

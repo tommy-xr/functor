@@ -242,6 +242,8 @@ tracking every frame).
 
 ## See also
 
+- [Driving games with agents](https://functor.games/manual/#agents) — the same story as a
+  manual section, for readers who arrive from the site rather than the repo.
 - [`docs/debug-runtime.md`](debug-runtime.md) — the HTTP surface these tools wrap,
   with the exact request/response shapes.
 - `e2e/mcp-server.mjs` — the end-to-end proof, speaking raw JSON-RPC to the server.
