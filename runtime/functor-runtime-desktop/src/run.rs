@@ -190,6 +190,23 @@ fn release_held_mouse_buttons(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EscapeAction {
+    ReleaseCursor,
+    ArmQuit,
+    Quit,
+}
+
+fn escape_action(cursor_captured: bool, quit_armed: bool) -> EscapeAction {
+    if cursor_captured {
+        EscapeAction::ReleaseCursor
+    } else if quit_armed {
+        EscapeAction::Quit
+    } else {
+        EscapeAction::ArmQuit
+    }
+}
+
 /// Apply one mouse-button edge with the held-state discipline every *injected*
 /// path shares (`POST /input` and `--input-script`): a press enters the held
 /// set and is delivered; a release is delivered only if the game saw the press,
@@ -1210,6 +1227,14 @@ pub fn run(args: Args) {
         std::process::exit(1);
     };
 
+    if args.camera_control == CameraControl::None && game.uses_captured_mouse_input() {
+        eprintln!(
+            "[runner] warning: this game defines captured mouse hooks, but \
+`viewer.camera.control` is absent or `none`; add \
+`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json"
+        );
+    }
+
     // Scripted deterministic input (docs/time-travel.md T6b). Parsed up front so
     // a malformed script is a clean CLI error before any window/GL work. None
     // (the default) leaves live input and the wall-clock capture trigger
@@ -1333,9 +1358,9 @@ pub fn run(args: Args) {
             // cmd-tabbing away hands the pointer back.
             if !hidden && !args.emulate_xr && args.camera_control == CameraControl::Game {
                 window.set_cursor_mode(glfw::CursorMode::Normal);
-                println!(
+                eprintln!(
                     "[runner] game mouse control available — click the window to capture; \
-Escape releases"
+Escape releases while captured"
                 );
             }
 
@@ -1485,6 +1510,7 @@ Escape releases"
         // receives the events that would toggle this).
         let game_camera_control = args.camera_control == CameraControl::Game;
         let mut cursor_captured = false;
+        let mut escape_armed = false;
 
         use glfw::Context;
 
@@ -1679,7 +1705,8 @@ Escape releases"
                     // game runs — the hot-reload workflow); Escape again while
                     // released quits, preserving the Esc-Esc exit.
                     glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                        if cursor_captured {
+                        let action = escape_action(cursor_captured, escape_armed);
+                        if action == EscapeAction::ReleaseCursor {
                             // Releasing the cursor stops delivering button
                             // events, so anything held must get its up edge now.
                             release_held_mouse_buttons(
@@ -1703,12 +1730,16 @@ Escape releases"
                             }
                             window.set_cursor_mode(glfw::CursorMode::Normal);
                             cursor_captured = false;
-                            println!(
+                            escape_armed = true;
+                            eprintln!(
                                 "[runner] cursor released — click the window to recapture, \
 Escape again to quit"
                             );
+                        } else if action == EscapeAction::ArmQuit {
+                            escape_armed = true;
+                            eprintln!("[runner] cursor is free — Escape again to quit");
                         } else {
-                            window.set_should_close(true)
+                            window.set_should_close(true);
                         }
                     }
                     // `~` toggles the time-travel console. Opening it frees the
@@ -1755,6 +1786,7 @@ Escape again to quit"
                                 cursor_captured = false;
                             }
                         }
+                        escape_armed = false;
                     }
                     // Left click while released: overlay hits drive the
                     // overlay; otherwise game-owned camera control recaptures
@@ -1769,6 +1801,7 @@ Escape again to quit"
                     {
                         match action {
                             Action::Press => {
+                                escape_armed = false;
                                 // Any overlay wanting the pointer — the
                                 // scrubber, the game UI's widgets, or the
                                 // webview — means the click is for it, not a
@@ -1934,6 +1967,7 @@ Escape again to quit"
                         // (cmd-tab to the editor); a click recaptures.
                         window.set_cursor_mode(glfw::CursorMode::Normal);
                         cursor_captured = false;
+                        escape_armed = false;
                         // A button held at focus-loss may never get its release
                         // (alt-tab), which would leave egui holding a stuck
                         // press — clear it so the scrubber stays live. [xreview]
@@ -2946,6 +2980,25 @@ mod tests {
     use super::*;
     use functor_runtime_common::{TrackingPose, XrControllerSnapshot};
     use std::io::Write;
+
+    #[test]
+    fn escape_releases_or_arms_before_it_quits() {
+        assert_eq!(
+            escape_action(true, false),
+            EscapeAction::ReleaseCursor,
+            "captured Escape releases the pointer"
+        );
+        assert_eq!(
+            escape_action(false, false),
+            EscapeAction::ArmQuit,
+            "the first free-pointer Escape must not close the game"
+        );
+        assert_eq!(
+            escape_action(false, true),
+            EscapeAction::Quit,
+            "the second free-pointer Escape closes the game"
+        );
+    }
 
     #[test]
     fn camera_control_arg_defaults_to_none_and_accepts_game() {

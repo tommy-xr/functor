@@ -203,6 +203,14 @@ let draw = (m, tts) =>
             </tbody>
           </table>
           <p>
+            The three mouse hooks receive live shell input only while the cursor is captured.
+            Opt in with <code>"viewer": { "camera": { "control": "game" } }</code> in
+            <code>functor.json</code>; without it the runtime warns once and leaves them inert.
+            Native capture starts on a non-UI click and <code>Escape</code> releases it.
+            Manifest-less site IDE and inline-sandbox sessions use <code>?camera=game</code>
+            on the page URL.
+          </p>
+          <p>
             The model-returning entry points (<code>tick</code>, <code>input</code>,
             <code>sampledInput</code>, <code>mouseMove</code>, <code>mouseWheel</code>,
             <code>mouseButton</code>, <code>update</code>) may instead

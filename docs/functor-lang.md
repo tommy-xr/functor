@@ -316,9 +316,11 @@ snapshots — no GPU, fully agent-verifiable.
       `Key`): `Mouse.Left`/`Right`/`Middle`. Buttons reach game logic **while
       the cursor is captured**, and capture is now an explicit project opt-in:
       `viewer.camera.control = "game"` in `functor.json`. Without it, native
-      keeps the cursor free and web hides the mouse-look button—especially
-      important for 2D/UI projects. This is the rule `mouseMove`/`mouseWheel`
-      already followed and keeps clicks from being eaten by free-look capture.
+      keeps the cursor free, web hides the mouse-look button, and the runtime
+      warns once about the inert hooks—especially important for 2D/UI projects.
+      Native capture starts on a non-UI click and Escape releases it. This is
+      the rule `mouseMove`/`mouseWheel` already followed and keeps clicks from
+      being eaten by free-look capture.
       A held button is swept released on focus loss, Escape, and the console
       toggle so it cannot fire forever. The held level state rides on the
       sampled snapshot as `mouse.buttons.{left,right,middle}`, making

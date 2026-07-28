@@ -113,6 +113,7 @@
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
         functor_lang_mouse_button,
+        functor_lang_uses_captured_mouse_input,
         functor_lang_ui_pointer,
         functor_lang_ui_pointer_leave,
         functor_lang_ui_wants_keyboard,
@@ -142,6 +143,20 @@
       // file, so `?camera=game` is the host-page equivalent of
       // viewer.camera.control = "game". Absent means no pointer lock/chrome.
       const gameCameraControl = params.get("camera") === "game";
+      const warnMissingCameraControl = () => {
+        if (gameCameraControl) return;
+        const poll = () => {
+          if (!functor_lang_is_running()) {
+            setTimeout(poll, 50);
+          } else if (functor_lang_uses_captured_mouse_input()) {
+            console.warn(
+              '[functor-lang] captured mouse hooks are inert without ' +
+              'viewer.camera.control = "game" (or ?camera=game for this manifest-less host)'
+            );
+          }
+        };
+        poll();
+      };
       // ?src=<base64url> carries an inline program (the docs' "try it"
       // buttons): the runtime fetches __functorLangGamePath as a URL, and a data:
       // URL delivers the source with a fresh init — unlike a set-source
@@ -541,6 +556,7 @@
         setupWebview();
         setupInspectorRelay();
         announceWhenReady();
+        warnMissingCameraControl();
       });
 
       // Relay the paused-inspector trace to the embedding sandbox/IDE page

@@ -783,6 +783,10 @@ impl FunctorLangGame {
 }
 
 impl Game for FunctorLangGame {
+    fn uses_captured_mouse_input(&self) -> bool {
+        self.has_mouse_move || self.has_mouse_wheel || self.has_mouse_button
+    }
+
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {
         // Poll every project file's mtime (a few stats per frame is ~free)
         // and swap in a new session on change — editing a SIBLING module
@@ -1527,6 +1531,40 @@ mod tests {
     // The net conn-command queue is process-global, so the two net tests
     // below must not run concurrently — serialize them.
     static NET_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn captured_mouse_capability_matches_declared_hooks() {
+        for (suffix, hook, expected) in [
+            ("none", "", false),
+            ("move", "let mouseMove = (model, x, y) => model\n", true),
+        ] {
+            let dir = std::env::temp_dir().join(format!(
+                "functor-lang-captured-mouse-{suffix}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("game.fun"),
+                format!(
+                    "let init = {{}}\n\
+                     {hook}\
+                     let tick = (model, dt, tts) => model\n\
+                     let draw = (model, tts) => \
+                       Frame.create(\
+                         Camera.lookAt(\
+                           Vec3.make(0.0, 0.0, -3.0), \
+                           Vec3.make(0.0, 0.0, 0.0)), \
+                         Scene.cube())\n"
+                ),
+            )
+            .unwrap();
+
+            let game = FunctorLangGame::create(dir.join("game.fun").to_str().unwrap());
+            assert_eq!(game.uses_captured_mouse_input(), expected, "{suffix}");
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 
     /// The whole networking path, headless — no socket, no GL. Drives a
     /// live `FunctorLangGame` for the wsdemo port: declaring `Sub.connect`

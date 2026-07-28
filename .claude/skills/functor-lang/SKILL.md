@@ -1594,6 +1594,13 @@ let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; conti
                                             // frame (needs no `update`)
 ```
 
+The three mouse hooks receive live shell input only while the cursor is
+captured. Opt the project in with
+`"viewer": { "camera": { "control": "game" } }` in `functor.json`; without it
+the runtime warns once and leaves the hooks inert. Native capture starts on a
+non-UI click and Escape releases it. Manifest-less site IDE/inline sessions use
+`?camera=game` on the page URL.
+
 Subscription timers are **stateless**: `Sub.every` fires when an integer
 multiple of its period lies in `(prevTts, tts]` — the global time grid, so
 a long frame fires ONCE (missed boundaries collapse) and timers tick right

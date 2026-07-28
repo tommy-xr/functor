@@ -50,6 +50,7 @@
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
         functor_lang_mouse_button,
+        functor_lang_uses_captured_mouse_input,
         functor_lang_ui_pointer,
         functor_lang_ui_pointer_leave,
         functor_lang_ui_key,
@@ -96,6 +97,20 @@
       // pointer free and hides camera chrome. The CLI substitutes this from
       // functor.json's viewer.camera.control.
       const gameCameraControl = "__FUNCTOR_CAMERA_CONTROL__" === "game";
+      const warnMissingCameraControl = () => {
+        if (gameCameraControl) return;
+        const poll = () => {
+          if (!functor_lang_is_running()) {
+            setTimeout(poll, 50);
+          } else if (functor_lang_uses_captured_mouse_input()) {
+            console.warn(
+              '[functor-lang] captured mouse hooks are inert without ' +
+              'viewer.camera.control = "game" in functor.json'
+            );
+          }
+        };
+        poll();
+      };
 
       // Map a browser KeyboardEvent.code to the canonical key code expected by
       // the game (functor_runtime_common::Key as i32 — the same mapping as
@@ -450,6 +465,7 @@
         // then (paused clocks drop interactions runtime-side anyway).
         setupWebview();
         setupSetSource();
+        warnMissingCameraControl();
       });
     </script>
   </body>
