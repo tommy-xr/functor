@@ -67,6 +67,12 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
           <p>An Functor Lang project is a directory with two files:</p>
           <pre class="shell"># functor.json
 { "language": "functor-lang", "entry": "game.fun" }</pre>
+          <p>
+            The pointer stays free by default. A game-owned mouse-look controller opts in with
+            <code>"viewer": { "camera": { "control": "game" } }</code>; this enables native
+            cursor capture and the web player's mouse-look button. Leave it absent for 2D and UI
+            projects.
+          </p>
           <p>And the game itself — here is the smallest interesting one:</p>
           <pre class="functor-lang runnable">let init = {}
 let tick = (m, dt, tts) => m
@@ -196,6 +202,14 @@ let draw = (m, tts) =>
               <tr><td><code>soundScape</code></td><td><code>(model) => AudioScene.create(…)</code></td><td>optional; declarative positional audio, reconciled like physics</td></tr>
             </tbody>
           </table>
+          <p>
+            The three mouse hooks receive live shell input only while the cursor is captured.
+            Opt in with <code>"viewer": { "camera": { "control": "game" } }</code> in
+            <code>functor.json</code>; without it the runtime warns once and leaves them inert.
+            Native capture starts on a non-UI click and <code>Escape</code> releases it.
+            Manifest-less site IDE and inline-sandbox sessions use <code>?camera=game</code>
+            on the page URL.
+          </p>
           <p>
             The model-returning entry points (<code>tick</code>, <code>input</code>,
             <code>sampledInput</code>, <code>mouseMove</code>, <code>mouseWheel</code>,
@@ -881,7 +895,7 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             <li><code>x |> f(a)</code> is <code>f(a, x)</code> — pipelines <em>append</em> (thread-last).</li>
             <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
             <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
-            <li>Mouse buttons only reach <code>mouseButton</code> while the cursor is <em>captured</em> — the same rule <code>mouseMove</code> follows. Click the window first (or you will see nothing), and note a held button is force-released on focus loss.</li>
+            <li>Mouse buttons only reach <code>mouseButton</code> while the cursor is <em>captured</em> — the same rule <code>mouseMove</code> follows. Opt in with <code>viewer.camera.control = "game"</code> in <code>functor.json</code>; without it the pointer remains free and web hides the mouse-look button. A held button is force-released on focus loss.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>

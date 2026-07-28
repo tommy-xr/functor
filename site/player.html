@@ -60,7 +60,7 @@
   <body>
     <canvas id="canvas"></canvas>
     <div id="webview"></div>
-    <button id="mouselook" title="Control the camera with the mouse; Esc to release">🖱 mouse look</button>
+    <button id="mouselook" title="Control the camera with the mouse; Esc to release" hidden>🖱 mouse look</button>
     <script type="module">
 
       // Forward console traces to the embedding page's Output panel. Functor Lang
@@ -113,6 +113,7 @@
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
         functor_lang_mouse_button,
+        functor_lang_uses_captured_mouse_input,
         functor_lang_ui_pointer,
         functor_lang_ui_pointer_leave,
         functor_lang_ui_wants_keyboard,
@@ -138,6 +139,26 @@
       // interpreter producer. The runtime fetches it as a URL, so encode each
       // path segment while keeping subdirectories.
       const params = new URLSearchParams(window.location.search);
+      // Site examples do not carry a functor.json beside each flattened .fun
+      // file, so `?camera=game` is the host-page equivalent of
+      // viewer.camera.control = "game". Absent means no pointer lock/chrome.
+      const gameCameraControl = params.get("camera") === "game";
+      const warnMissingCameraControl = () => {
+        if (gameCameraControl) return;
+        const poll = () => {
+          if (functor_lang_is_running() && functor_lang_uses_captured_mouse_input()) {
+            console.warn(
+              '[functor-lang] captured mouse hooks are inert without ' +
+              'viewer.camera.control = "game"; reload this manifest-less host with ?camera=game'
+            );
+            return;
+          }
+          // Keep watching after the initial program loads: a hot reload can
+          // add one of these hooks. The return above makes this warn once.
+          setTimeout(poll, 250);
+        };
+        poll();
+      };
       // ?src=<base64url> carries an inline program (the docs' "try it"
       // buttons): the runtime fetches __functorLangGamePath as a URL, and a data:
       // URL delivers the source with a fresh init — unlike a set-source
@@ -259,21 +280,24 @@
         // releases the lock (browser default). We accumulate movement into a
         // running position so the game's "delta = current - lastMouse" works
         // the same as on native.
-        document
-          .getElementById("mouselook")
-          .addEventListener("click", () => canvas.requestPointerLock());
+        const mouseLookButton = document.getElementById("mouselook");
+        if (gameCameraControl) {
+          mouseLookButton.hidden = false;
+          mouseLookButton.addEventListener("click", () => canvas.requestPointerLock());
+        }
         let ax = 0;
         let ay = 0;
         document.addEventListener("mousemove", (e) => {
           // Only drive the camera while in look mode (pointer locked); otherwise
           // moving the cursor to the scrubber must not rotate the view.
-          if (document.pointerLockElement !== canvas) return;
+          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
           ax += e.movementX;
           ay += e.movementY;
           functor_lang_mouse_move(ax, ay);
         });
 
         canvas.addEventListener("wheel", (e) => {
+          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
           e.preventDefault();
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
         });
@@ -289,7 +313,7 @@
           button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 3 : 0;
         const gameButtons = new Set();
         canvas.addEventListener("mousedown", (e) => {
-          if (document.pointerLockElement !== canvas) return;
+          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
           const code = buttonCode(e.button);
           if (code === 0) return;
           e.preventDefault();
@@ -304,7 +328,7 @@
         });
         // Right-click while aiming must fire, not open the context menu.
         canvas.addEventListener("contextmenu", (e) => {
-          if (document.pointerLockElement === canvas) e.preventDefault();
+          if (gameCameraControl && document.pointerLockElement === canvas) e.preventDefault();
         });
         // A button released outside the window (or after the lock drops) may
         // never emit a mouseup here — synthesize releases so the edge hook and
@@ -534,6 +558,7 @@
         setupWebview();
         setupInspectorRelay();
         announceWhenReady();
+        warnMissingCameraControl();
       });
 
       // Relay the paused-inspector trace to the embedding sandbox/IDE page

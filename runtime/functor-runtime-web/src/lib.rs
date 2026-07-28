@@ -245,6 +245,18 @@ pub fn functor_lang_is_running() -> bool {
     GAME.with(|g| g.borrow().is_some())
 }
 
+/// Does the live producer define any hook that shell input reaches only while
+/// the pointer is captured? Host pages use this at load and after source pushes
+/// to teach about a missing `viewer.camera.control = "game"` opt-in.
+#[wasm_bindgen]
+pub fn functor_lang_uses_captured_mouse_input() -> bool {
+    GAME.with(|g| {
+        g.borrow()
+            .as_ref()
+            .is_some_and(|game| game.borrow().uses_captured_mouse_input())
+    })
+}
+
 /// A queued push: the classic single-buffer text push (the sandbox / VSCode
 /// preview editing the entry over served siblings), or the whole-project
 /// push (the IDE, which owns every file in memory).

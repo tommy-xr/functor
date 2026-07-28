@@ -1594,6 +1594,13 @@ let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; conti
                                             // frame (needs no `update`)
 ```
 
+The three mouse hooks receive live shell input only while the cursor is
+captured. Opt the project in with
+`"viewer": { "camera": { "control": "game" } }` in `functor.json`; without it
+the runtime warns once and leaves the hooks inert. Native capture starts on a
+non-UI click and Escape releases it. Manifest-less site IDE/inline sessions use
+`?camera=game` on the page URL.
+
 Subscription timers are **stateless**: `Sub.every` fires when an integer
 multiple of its period lies in `(prevTts, tts]` — the global time grid, so
 a long frame fires ONCE (missed boundaries collapse) and timers tick right
@@ -1681,6 +1688,14 @@ reload is native-only — reload the page to pick up saved edits, or push
 source with a `{ type: "functor-lang-set-source", source }` postMessage to the page
 for a model-preserving in-place reload; the VSCode **"Functor: Open Live
 Preview"** command does exactly that from the live buffer as you type).
+Captured mouse camera input is an explicit shell opt-in:
+`"viewer": { "camera": { "control": "game" } }`. `game` enables native
+click-to-capture and the web mouse-look button, routing captured
+`mouseMove`/`mouseWheel`/`mouseButton` input into the ordinary game hooks.
+On native, a non-UI click captures; Escape or focus loss releases. Absent (or
+explicit `"none"`) keeps the pointer free and hides the button, which is the
+default for 2D, UI, and fixed-camera projects. `orbit`/`fps` detached
+shell-owned modes are not implemented spellings yet.
 
 `examples/hello/game.fun` is the reference
 (`examples/physics/game.fun` for the physics hook, including the

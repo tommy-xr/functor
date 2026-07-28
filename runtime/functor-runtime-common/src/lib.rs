@@ -102,6 +102,7 @@ pub mod texture;
 pub mod timetravel;
 pub mod trajectory;
 pub mod ui;
+pub mod viewer;
 pub mod webview;
 mod viewport;
 

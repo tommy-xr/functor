@@ -179,6 +179,24 @@ functor -d examples/primitives run wasm
 ```
 
 `native` is the default environment, so `... run` is equivalent to `... run native`.
+The pointer stays free by default. A game that implements captured mouse-look
+opts in explicitly:
+
+```json
+{
+  "language": "functor-lang",
+  "entry": "game.fun",
+  "viewer": { "camera": { "control": "game" } }
+}
+```
+
+That enables click-to-capture camera input on native and the web player’s
+mouse-look button, routing captured motion/buttons to the game’s
+`mouseMove`/`mouseButton` hooks. On native, a non-UI click enters capture;
+Escape or focus loss releases it.
+Projects without the setting—including 2D games—show no camera control and
+never capture an ordinary click.
+
 XR games can use the Quest-isomorphic desktop adapter with
 `... run native --emulate-xr`; see [the VR guide](docs/vr.md#desktop-xr-emulation)
 for its mouse/keyboard controls and deterministic `--input-script` path.

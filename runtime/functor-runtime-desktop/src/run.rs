@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::viewer::CameraControl;
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, MouseButtons, MouseSnapshot,
     RecordedInput, SceneContext, XrInputSnapshot,
@@ -186,6 +187,23 @@ fn release_held_mouse_buttons(
                 game.mouse_button(button as i32, false);
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EscapeAction {
+    ReleaseCursor,
+    ArmQuit,
+    Quit,
+}
+
+fn escape_action(cursor_captured: bool, quit_armed: bool) -> EscapeAction {
+    if cursor_captured {
+        EscapeAction::ReleaseCursor
+    } else if quit_armed {
+        EscapeAction::Quit
+    } else {
+        EscapeAction::ArmQuit
     }
 }
 
@@ -464,6 +482,13 @@ pub struct Args {
     /// Prints per-frame eval cost every 300 frames.
     #[arg(long)]
     functor_lang: bool,
+
+    /// Main-viewport camera input ownership. `none` keeps the pointer free;
+    /// `game` enables cursor capture and routes relative mouse input to the
+    /// Functor Lang hooks. The Functor CLI derives this from
+    /// `functor.json`'s `viewer.camera.control`.
+    #[arg(long, default_value_t = CameraControl::None)]
+    camera_control: CameraControl,
 
     /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
     /// or a JSON array of them — the exact format `GET /scene` emits) and replay
@@ -1202,6 +1227,25 @@ pub fn run(args: Args) {
         std::process::exit(1);
     };
 
+    // Hidden/headless/emulated-XR sessions do not have a live captured-pointer
+    // path; their debug/script injection remains available without this viewer
+    // setting, so a capture warning would prescribe the wrong fix.
+    let interactive_camera_warning =
+        !args.headless && !args.hidden && args.capture_frame.is_none() && !args.emulate_xr;
+    let mut warned_missing_camera_control = false;
+    if interactive_camera_warning
+        && args.camera_control == CameraControl::None
+        && game.uses_captured_mouse_input()
+    {
+        eprintln!(
+            "[runner] warning: this game defines captured mouse hooks, but \
+`viewer.camera.control` is absent or `none`; add \
+`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json, \
+then restart the runner"
+        );
+        warned_missing_camera_control = true;
+    }
+
     // Scripted deterministic input (docs/time-travel.md T6b). Parsed up front so
     // a malformed script is a clean CLI error before any window/GL work. None
     // (the default) leaves live input and the wall-clock capture trigger
@@ -1314,16 +1358,22 @@ pub fn run(args: Args) {
             window.set_cursor_pos_polling(true);
             window.set_scroll_polling(true);
             window.set_mouse_button_polling(true);
+            window.set_focus_polling(true);
             window.set_framebuffer_size_polling(true);
-            // Capture and hide the cursor so the game gets continuous relative
-            // mouse motion (free-look) instead of the pointer stopping at the
-            // window edges. Escape RELEASES the cursor (essential for the
-            // hot-reload loop: tweak code in the editor while the game runs);
-            // click recaptures; Escape while released quits. Losing focus
-            // also releases, so cmd-tabbing away hands the pointer back.
-            // A hidden window never gets focus, so it must not grab the cursor.
-            if !hidden && !args.emulate_xr {
-                window.set_cursor_mode(glfw::CursorMode::Disabled);
+            // Captured game input is available only by manifest opt-in, and
+            // capture itself is still a user gesture: start with the cursor
+            // free, then a non-overlay click disables it so GLFW reports
+            // unbounded relative-like virtual motion. Escape RELEASES the
+            // cursor (essential for the hot-reload loop: tweak code in the
+            // editor while the game runs); a later click recaptures, and
+            // Escape while released quits. Losing focus also releases, so
+            // cmd-tabbing away hands the pointer back.
+            if !hidden && !args.emulate_xr && args.camera_control == CameraControl::Game {
+                window.set_cursor_mode(glfw::CursorMode::Normal);
+                eprintln!(
+                    "[runner] game mouse control available — click the window to capture; \
+Escape releases while captured"
+                );
             }
 
             let gl =
@@ -1466,10 +1516,13 @@ pub fn run(args: Args) {
             window.get_size(),
             xr_override.as_ref(),
         );
-        // Whether the window owns the pointer (free-look). See the Escape /
-        // MouseButton / Focus arms in the event loop. A hidden window never
-        // captures (and never receives the events that would toggle this).
-        let mut cursor_captured = !hidden && !args.emulate_xr;
+        // Whether the window owns the pointer (free-look). Capture is always
+        // entered by a non-overlay click; see the Escape / MouseButton / Focus
+        // arms in the event loop. A hidden window never captures (and never
+        // receives the events that would toggle this).
+        let game_camera_control = args.camera_control == CameraControl::Game;
+        let mut cursor_captured = false;
+        let mut escape_armed = false;
 
         use glfw::Context;
 
@@ -1598,6 +1651,22 @@ pub fn run(args: Args) {
             // poll), and 4Hz is plenty for a save-and-look loop.
             if last_asset_poll.elapsed().as_millis() >= 250 {
                 last_asset_poll = Instant::now();
+                // The producer can gain captured mouse hooks on hot reload.
+                // Re-check at the existing 4 Hz shell poll, but teach only
+                // once per session.
+                if interactive_camera_warning
+                    && !warned_missing_camera_control
+                    && args.camera_control == CameraControl::None
+                    && game.uses_captured_mouse_input()
+                {
+                    eprintln!(
+                        "[runner] warning: this game defines captured mouse hooks, but \
+`viewer.camera.control` is absent or `none`; add \
+`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json, \
+then restart the runner"
+                    );
+                    warned_missing_camera_control = true;
+                }
                 for path in asset_watcher.changed(asset_cache.loaded_paths()) {
                     log::info!("asset '{}' changed on disk; reloading", path);
                     asset_cache.evict(&path);
@@ -1664,7 +1733,8 @@ pub fn run(args: Args) {
                     // game runs — the hot-reload workflow); Escape again while
                     // released quits, preserving the Esc-Esc exit.
                     glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
-                        if cursor_captured {
+                        let action = escape_action(cursor_captured, escape_armed);
+                        if action == EscapeAction::ReleaseCursor {
                             // Releasing the cursor stops delivering button
                             // events, so anything held must get its up edge now.
                             release_held_mouse_buttons(
@@ -1688,12 +1758,16 @@ pub fn run(args: Args) {
                             }
                             window.set_cursor_mode(glfw::CursorMode::Normal);
                             cursor_captured = false;
-                            println!(
+                            escape_armed = true;
+                            eprintln!(
                                 "[runner] cursor released — click the window to recapture, \
 Escape again to quit"
                             );
+                        } else if action == EscapeAction::ArmQuit {
+                            escape_armed = true;
+                            eprintln!("[runner] cursor is free — Escape again to quit");
                         } else {
-                            window.set_should_close(true)
+                            window.set_should_close(true);
                         }
                     }
                     // `~` toggles the time-travel console. Opening it frees the
@@ -1732,24 +1806,30 @@ Escape again to quit"
                             } else if args.emulate_xr {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
                                 cursor_captured = false;
-                            } else {
+                            } else if game_camera_control {
                                 window.set_cursor_mode(glfw::CursorMode::Disabled);
                                 cursor_captured = true;
+                            } else {
+                                window.set_cursor_mode(glfw::CursorMode::Normal);
+                                cursor_captured = false;
                             }
                         }
+                        escape_armed = false;
                     }
-                    // Left click while released: if it lands on a scrubber
-                    // control (egui wanted the pointer last frame) it drives the
-                    // scrubber; otherwise it recaptures for free-look. Press/
-                    // release edges feed egui's click detection. Never on a
-                    // hidden window — it must not grab the pointer. These arms
-                    // sit BEFORE the `ignore_user_input` catch-all so the
-                    // scrubber stays usable while the clock is pinned (paused).
+                    // Left click while released: overlay hits drive the
+                    // overlay; otherwise game-owned camera control recaptures
+                    // for free-look. With no camera opt-in every click remains
+                    // an overlay click. Press/release edges feed egui's click
+                    // detection. Never on a hidden window — it must not grab
+                    // the pointer. These arms sit BEFORE the
+                    // `ignore_user_input` catch-all so the scrubber stays
+                    // usable while the clock is pinned (paused).
                     glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, action, _)
                         if !cursor_captured && !hidden =>
                     {
                         match action {
                             Action::Press => {
+                                escape_armed = false;
                                 // Any overlay wanting the pointer — the
                                 // scrubber, the game UI's widgets, or the
                                 // webview — means the click is for it, not a
@@ -1771,7 +1851,7 @@ Escape again to quit"
                                 } else if args.emulate_xr {
                                     xr_primary_down = !ignore_user_input;
                                     xr_primary_clicked = xr_primary_down;
-                                } else {
+                                } else if game_camera_control {
                                     window.set_cursor_mode(glfw::CursorMode::Disabled);
                                     cursor_captured = true;
                                     // Entering free-look: blur any focused
@@ -1783,6 +1863,14 @@ Escape again to quit"
                                     if webview_wants_keyboard {
                                         webview_keys.push(WebviewKey::Escape);
                                     }
+                                } else {
+                                    // With no camera-control opt-in the pointer
+                                    // belongs to the overlays for the whole
+                                    // session. Feed the click through instead
+                                    // of turning an ordinary 2D/UI click into
+                                    // an invisible cursor-capture transition.
+                                    mouse_primary_down = true;
+                                    mouse_primary_clicked = true;
                                 }
                             }
                             Action::Release => {
@@ -1907,6 +1995,7 @@ Escape again to quit"
                         // (cmd-tab to the editor); a click recaptures.
                         window.set_cursor_mode(glfw::CursorMode::Normal);
                         cursor_captured = false;
+                        escape_armed = false;
                         // A button held at focus-loss may never get its release
                         // (alt-tab), which would leave egui holding a stuck
                         // press — clear it so the scrubber stays live. [xreview]
@@ -2919,6 +3008,50 @@ mod tests {
     use super::*;
     use functor_runtime_common::{TrackingPose, XrControllerSnapshot};
     use std::io::Write;
+
+    #[test]
+    fn escape_releases_or_arms_before_it_quits() {
+        assert_eq!(
+            escape_action(true, false),
+            EscapeAction::ReleaseCursor,
+            "captured Escape releases the pointer"
+        );
+        assert_eq!(
+            escape_action(false, false),
+            EscapeAction::ArmQuit,
+            "the first free-pointer Escape must not close the game"
+        );
+        assert_eq!(
+            escape_action(false, true),
+            EscapeAction::Quit,
+            "the second free-pointer Escape closes the game"
+        );
+    }
+
+    #[test]
+    fn camera_control_arg_defaults_to_none_and_accepts_game() {
+        let default = Args::try_parse_from(["functor", "--game-path", "game.fun"]).unwrap();
+        assert_eq!(default.camera_control, CameraControl::None);
+
+        let game = Args::try_parse_from([
+            "functor",
+            "--game-path",
+            "game.fun",
+            "--camera-control",
+            "game",
+        ])
+        .unwrap();
+        assert_eq!(game.camera_control, CameraControl::Game);
+
+        assert!(Args::try_parse_from([
+            "functor",
+            "--game-path",
+            "game.fun",
+            "--camera-control",
+            "orbit",
+        ])
+        .is_err());
+    }
 
     fn write_tmp(name: &str, contents: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(name);

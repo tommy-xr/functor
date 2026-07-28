@@ -72,7 +72,12 @@ const frame = document.getElementById("player") as HTMLIFrameElement;
 // #src=<base64url> becomes the editor buffer and the player's ?src= data:
 // URL, so it starts with a fresh init — no served file involved.
 const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
-const requested = new URLSearchParams(window.location.search).get("example");
+const pageParams = new URLSearchParams(window.location.search);
+const requested = pageParams.get("example");
+// Inline programs have no manifest, so `?camera=game` is their explicit
+// project-setting seam. Example metadata remains authoritative when present;
+// source hooks never imply ownership.
+const pageCameraControl = pageParams.get("camera") === "game" ? "game" : null;
 const initialExample = EXAMPLES.some((e) => e.id === requested) ? requested! : EXAMPLES[0].id;
 
 const picker = createStore<PickerState>({
@@ -351,7 +356,9 @@ const loadInline = (b64u: string) => {
   // loader derives module `Main` for a non-identifier entry label.
   // scrubber=hidden: the page's chrono bar is the transport UI; the player
   // mounts the __scrub seam with no bar of its own.
-  frame.src = `player.html?src=${b64u}&scrubber=hidden`;
+  const params = new URLSearchParams({ src: b64u, scrubber: "hidden" });
+  if (pageCameraControl) params.set("camera", pageCameraControl);
+  frame.src = `player.html?${params}`;
   mp?.setSrc(frame.src);
   return true;
 };
@@ -398,6 +405,8 @@ const loadExample = async (id: string) => {
   setDoc(source, siblings, assets);
   setStatus("busy", "◌ loading…");
   const params = new URLSearchParams({ game: url, scrubber: "hidden" });
+  const cameraControl = example?.cameraControl ?? pageCameraControl;
+  if (cameraControl) params.set("camera", cameraControl);
   for (const file of files) params.append("file", file);
   frame.src = `player.html?${params}`;
   mp?.setSrc(frame.src);

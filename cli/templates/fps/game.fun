@@ -1,5 +1,6 @@
-// A first-person Functor starter. Move with WASD or the arrow keys and look
-// with the mouse. Saving this file while the game runs hot-reloads it.
+// A first-person Functor starter. Move with WASD or the arrow keys; click the
+// window, then look with the mouse (Escape releases it). Saving this file while
+// the game runs hot-reloads it.
 
 let moveSpeed = 4.0
 let mouseSensitivity = 0.003

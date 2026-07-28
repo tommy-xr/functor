@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
+use functor_runtime_common::viewer::CameraControl;
 
 use crate::output::{emit, Event, Severity};
 // `util` (the shell-command runner + wasm dev server) is only used by the
@@ -33,6 +34,22 @@ use crate::Environment;
 pub struct FunctorLangProject {
     /// The game source, relative to the project dir (default `game.fun`).
     pub entry: String,
+    /// Main-viewport input ownership selected by `viewer.camera.control`.
+    pub camera_control: CameraControl,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewerSettings {
+    #[serde(default)]
+    camera: ViewerCameraSettings,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewerCameraSettings {
+    #[serde(default)]
+    control: CameraControl,
 }
 
 /// The entry layout `functor.json` declares: the classic single `entry`, or a
@@ -52,6 +69,16 @@ enum FunctorLangEntries {
 /// What `detect` reads from `functor.json`, before an entry is selected.
 pub struct FunctorLangConfig {
     entries: FunctorLangEntries,
+    camera_control: Result<CameraControl, String>,
+}
+
+fn manifest_camera_control(json: &serde_json::Value) -> Result<CameraControl, String> {
+    let Some(viewer) = json.get("viewer") else {
+        return Ok(CameraControl::None);
+    };
+    serde_json::from_value::<ViewerSettings>(viewer.clone())
+        .map(|settings| settings.camera.control)
+        .map_err(|error| format!("invalid functor.json `viewer` settings: {error}"))
 }
 
 /// Read `functor.json` and return the Functor Lang project settings when
@@ -79,7 +106,10 @@ pub fn detect(working_directory: &str) -> Option<FunctorLangConfig> {
                 .to_string(),
         ),
     };
-    Some(FunctorLangConfig { entries })
+    Some(FunctorLangConfig {
+        entries,
+        camera_control: manifest_camera_control(&json),
+    })
 }
 
 impl FunctorLangConfig {
@@ -87,6 +117,14 @@ impl FunctorLangConfig {
     /// `--entry <name>`; a `Named` project with no request defaults to
     /// `client`, or the sole entry.
     pub fn select(&self, requested: Option<&str>) -> Result<FunctorLangProject, Error> {
+        let camera_control = *self
+            .camera_control
+            .as_ref()
+            .map_err(|message| Error::other(message.clone()))?;
+        let project = |entry: String| FunctorLangProject {
+            entry,
+            camera_control,
+        };
         match &self.entries {
             FunctorLangEntries::Conflicting => Err(Error::other(
                 "functor.json declares both `entry` and `entries` — keep one",
@@ -96,9 +134,7 @@ impl FunctorLangConfig {
 (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"})",
             )),
             FunctorLangEntries::Single(entry) => match requested {
-                None => Ok(FunctorLangProject {
-                    entry: entry.clone(),
-                }),
+                None => Ok(project(entry.clone())),
                 Some(name) => Err(Error::other(format!(
                     "--entry {name}: this project has a single `entry` — `--entry` picks from \
 an `entries` map in functor.json"
@@ -112,9 +148,7 @@ an `entries` map in functor.json"
                         .join(", ")
                 };
                 let pick = |name: &str, value: &serde_json::Value| match value.as_str() {
-                    Some(entry) if !entry.is_empty() => Ok(FunctorLangProject {
-                        entry: entry.to_string(),
-                    }),
+                    Some(entry) if !entry.is_empty() => Ok(project(entry.to_string())),
                     _ => Err(Error::other(format!(
                         "functor.json entry `{name}` must be a path to a .fun file"
                     ))),
@@ -412,6 +446,8 @@ impl FunctorLangProject {
             "--functor-lang".to_string(),
             "--game-path".to_string(),
             self.entry.clone(),
+            "--camera-control".to_string(),
+            self.camera_control.to_string(),
         ];
         let (runner_args, debug_warning) = resolve_debug_args(develop, runner_args);
         if let Some(message) = debug_warning {
@@ -693,7 +729,11 @@ relative path inside it (got {})",
                     self.entry
                 )));
             }
-            let export = util::export_functor_lang_wasm(working_directory, &self.entry)?;
+            let export = util::export_functor_lang_wasm(
+                working_directory,
+                &self.entry,
+                self.camera_control,
+            )?;
             for name in &export.shadowed {
                 emit(Event::Warning {
                     message: format!(
@@ -785,8 +825,11 @@ relative path inside it (got {})",
                 });
             }
 
-            let wasm_server_start =
-                WasmDevServer::start_functor_lang(working_directory, &self.entry);
+            let wasm_server_start = WasmDevServer::start_functor_lang(
+                working_directory,
+                &self.entry,
+                self.camera_control,
+            );
             if no_open {
                 emit(Event::Info {
                     message: "--no-open: skipping browser launch".to_string(),
@@ -1298,7 +1341,8 @@ mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
     use super::{
-        nth_line, project_asset_files, resolve_debug_args, FunctorLangConfig, FunctorLangEntries,
+        manifest_camera_control, nth_line, project_asset_files, resolve_debug_args, CameraControl,
+        FunctorLangConfig, FunctorLangEntries,
     };
 
     fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
@@ -1385,6 +1429,7 @@ mod tests {
     fn single(entry: &str) -> FunctorLangConfig {
         FunctorLangConfig {
             entries: FunctorLangEntries::Single(entry.to_string()),
+            camera_control: Ok(CameraControl::None),
         }
     }
 
@@ -1396,6 +1441,48 @@ mod tests {
                     .map(|(k, v)| (k.to_string(), serde_json::Value::from(*v)))
                     .collect(),
             ),
+            camera_control: Ok(CameraControl::None),
+        }
+    }
+
+    #[test]
+    fn camera_control_is_opt_in_and_nested_under_viewer() {
+        assert_eq!(
+            manifest_camera_control(&serde_json::json!({
+                "language": "functor-lang",
+                "entry": "game.fun"
+            }))
+            .unwrap(),
+            CameraControl::None
+        );
+        assert_eq!(
+            manifest_camera_control(&serde_json::json!({
+                "viewer": { "camera": { "control": "game" } }
+            }))
+            .unwrap(),
+            CameraControl::Game
+        );
+        assert_eq!(
+            manifest_camera_control(&serde_json::json!({
+                "viewer": { "camera": { "control": "none" } }
+            }))
+            .unwrap(),
+            CameraControl::None
+        );
+    }
+
+    #[test]
+    fn unimplemented_or_malformed_camera_controls_are_refused() {
+        for json in [
+            serde_json::json!({ "viewer": { "camera": { "control": "orbit" } } }),
+            serde_json::json!({ "viewer": { "camera": { "controls": "game" } } }),
+            serde_json::json!({ "viewer": { "camrea": { "control": "game" } } }),
+            serde_json::json!({ "viewer": { "control": "game" } }),
+            serde_json::json!({ "viewer": { "camera": "game" } }),
+            serde_json::json!({ "viewer": "game" }),
+        ] {
+            let error = manifest_camera_control(&json).unwrap_err();
+            assert!(error.contains("invalid functor.json `viewer`"), "{error}");
         }
     }
 
@@ -1448,6 +1535,7 @@ mod tests {
     fn conflicting_entry_and_entries_are_refused() {
         let config = FunctorLangConfig {
             entries: FunctorLangEntries::Conflicting,
+            camera_control: Ok(CameraControl::None),
         };
         let err = config.select(None).unwrap_err();
         assert!(
@@ -1465,6 +1553,7 @@ mod tests {
                 "client".to_string(),
                 serde_json::Value::from(3),
             )]),
+            camera_control: Ok(CameraControl::None),
         };
         let err = config.select(None).unwrap_err();
         assert!(err.to_string().contains("must be a path"), "{err}");
