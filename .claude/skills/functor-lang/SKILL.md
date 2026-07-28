@@ -221,8 +221,17 @@ SAME directory of sibling modules; `functor --entry <name>` picks one
 (default `client`, or the sole entry). Each entry is its own program (its
 bindings are the bare `init`/`tick`/`draw` roots; the other entry is just a
 qualified sibling module), so roles share code — `examples/mp`'s client and
-server share a `protocol.fun` wire codec — without drifting. `entry` and
-`entries` together are refused.
+server share a `protocol.fun` wire codec — without drifting. A role may also
+be an object pointing at a **shared file** with a binding prefix —
+`"server": { "file": "game.fun", "prefix": "server" }` — resolving every
+canonical entry binding through the prefix as camelCase
+(`serverInit`/`serverTick`/`serverDraw`/…; empty/absent prefix = the plain
+names), so two roles live in ONE file and hot-reload atomically.
+`examples/orbs` is the same-file reference (both roles prefixed). Prefixed
+roles run on native and wasm (`run wasm`/`build wasm` bake the prefix into
+the page's boot config; the site player takes `?prefix=<ident>`); vr still
+loads the unprefixed contract only. `entry` and `entries` together are
+refused.
 
 ```functor
 // utils.fun                                  // → module Utils

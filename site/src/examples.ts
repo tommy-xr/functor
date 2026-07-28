@@ -41,6 +41,12 @@ export interface Example {
    * control only for those.
    */
   multiplayer?: boolean;
+  /**
+   * The entry-point binding prefix of the role the sandbox plays (same-file
+   * entries, like examples/orbs's `client` role resolving
+   * clientInit/clientTick/…). Passed to the player as `?prefix=`.
+   */
+  prefix?: string;
 }
 
 /**
@@ -123,6 +129,9 @@ export const EXAMPLES: Example[] = [
     label: "Orbs (multiplayer)",
     source: "examples/orbs/game.fun",
     multiplayer: true,
+    // The sandbox plays the `client` role of the same-file entries —
+    // functor.json maps it to { "file": "game.fun", "prefix": "client" }.
+    prefix: "client",
   },
   {
     id: "mario",

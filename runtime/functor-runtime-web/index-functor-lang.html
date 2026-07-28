@@ -119,6 +119,11 @@
       window.__functorLangProjectFiles = ("__FUNCTOR_LANG_PROJECT_FILES__")
         .map((p) => p.split("/").map(encodeURIComponent).join("/"));
 
+      // The role's entry-point binding prefix (same-file entries): the runtime
+      // resolves `serverInit`/`serverTick`/… through it. Empty = the classic
+      // unprefixed contract. Substituted by the CLI like the entry above.
+      window.__functorLangEntryPrefix = "__FUNCTOR_LANG_ENTRY_PREFIX__";
+
       // Captured game mouse input defaults on. A project can opt out with
       // mouseCapture: false; programs without captured mouse hooks never show
       // capture chrome. The debug camera owns its input independently.

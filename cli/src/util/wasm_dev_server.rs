@@ -37,6 +37,9 @@ fn script_safe(json: String) -> String {
 ///   module`) load EVERY module, not just the entry (docs/functor-lang.md Track C5).
 /// - `"__FUNCTOR_MOUSE_CAPTURE__"` becomes the manifest's captured-game-input
 ///   boolean.
+/// - `"__FUNCTOR_LANG_ENTRY_PREFIX__"` becomes a JSON string literal →
+///   `window.__functorLangEntryPrefix`, the role's binding prefix (same-file
+///   entries; empty = the classic unprefixed contract).
 ///
 /// All substitutions are valid JS for any path (quotes/backslashes included).
 pub(crate) fn render_functor_lang_index(
@@ -44,6 +47,7 @@ pub(crate) fn render_functor_lang_index(
     files: &[String],
     mouse_capture: bool,
     cursor: &str,
+    prefix: &str,
 ) -> String {
     let entry_literal =
         script_safe(serde_json::to_string(entry).expect("a string always serializes"));
@@ -53,11 +57,14 @@ pub(crate) fn render_functor_lang_index(
         serde_json::to_string(&mouse_capture).expect("a boolean always serializes");
     let cursor_literal =
         script_safe(serde_json::to_string(cursor).expect("a string always serializes"));
+    let prefix_literal =
+        script_safe(serde_json::to_string(prefix).expect("a string always serializes"));
     INDEX_FUNCTOR_LANG_HTML
         .replace("\"__FUNCTOR_LANG_ENTRY__\"", &entry_literal)
         .replace("\"__FUNCTOR_LANG_PROJECT_FILES__\"", &files_literal)
         .replace("\"__FUNCTOR_MOUSE_CAPTURE__\"", &mouse_capture_literal)
         .replace("\"__FUNCTOR_CURSOR_POLICY__\"", &cursor_literal)
+        .replace("\"__FUNCTOR_LANG_ENTRY_PREFIX__\"", &prefix_literal)
 }
 
 /// The project's file list as URLs relative to the served directory (entry
@@ -93,11 +100,12 @@ impl WasmDevServer {
         entry: &str,
         mouse_capture: bool,
         cursor: &str,
+        prefix: &str,
     ) -> Result<(), io::Error> {
         let files = project_file_urls(working_directory, entry);
         Self::serve(
             working_directory,
-            render_functor_lang_index(entry, &files, mouse_capture, cursor).into_bytes(),
+            render_functor_lang_index(entry, &files, mouse_capture, cursor, prefix).into_bytes(),
         )
         .await
     }
@@ -181,8 +189,13 @@ mod tests {
 
     #[test]
     fn substitutes_the_entry_as_a_js_string() {
-        let html =
-            render_functor_lang_index("game.fun", &["game.fun".to_string()], true, "captured");
+        let html = render_functor_lang_index(
+            "game.fun",
+            &["game.fun".to_string()],
+            true,
+            "captured",
+            "",
+        );
         assert!(html.contains("window.__functorLangGamePath = \"game.fun\""));
         assert!(html.contains("const gameMouseCapture = true"));
         assert!(html.contains("Press <kbd>Esc</kbd> to release mouse"));
@@ -200,6 +213,7 @@ mod tests {
             &["game.fun".to_string(), "pieces.fun".to_string()],
             false,
             "visible",
+            "",
         );
         assert!(html.contains("(["));
         assert!(html.contains("\"game.fun\",\"pieces.fun\""));
@@ -209,8 +223,13 @@ mod tests {
 
     #[test]
     fn visible_pointer_keeps_non_primary_webview_input_game_owned() {
-        let html =
-            render_functor_lang_index("game.fun", &["game.fun".to_string()], false, "visible");
+        let html = render_functor_lang_index(
+            "game.fun",
+            &["game.fun".to_string()],
+            false,
+            "visible",
+            "",
+        );
         for expected in [
             r#"window.addEventListener("mousemove""#,
             "if (!visiblePointer || debugCameraOwnsInput()) return;",
@@ -254,6 +273,7 @@ mod tests {
             &["we\"ird\\name.fun".to_string()],
             true,
             "captured",
+            "",
         );
         assert!(html.contains("we\\\"ird\\\\name.fun"));
     }
@@ -265,6 +285,7 @@ mod tests {
             &["bad</script>.fun".to_string()],
             true,
             "captured",
+            "",
         );
         assert!(html.contains("bad<\\/script>.fun"));
     }

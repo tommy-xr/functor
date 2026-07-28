@@ -68,6 +68,7 @@ pub fn export_functor_lang_wasm(
     entry: &str,
     mouse_capture: bool,
     cursor: &str,
+    prefix: &str,
 ) -> Result<WasmExport, Error> {
     let root = Path::new(working_directory);
 
@@ -119,7 +120,7 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
     // The runtime files go in last so nothing in the project can shadow them.
     std::fs::write(
         out.join("index.html"),
-        render_functor_lang_index(entry, &files, mouse_capture, cursor),
+        render_functor_lang_index(entry, &files, mouse_capture, cursor, prefix),
     )?;
     std::fs::write(out.join("scrubber.js"), SCRUBBER_JS)?;
     std::fs::write(out.join("timeline-model.js"), TIMELINE_MODEL_JS)?;
@@ -305,7 +306,7 @@ mod tests {
         dir.write("dist/web/stale.txt", "from a previous export");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", false, "visible").unwrap();
+        let export = export_functor_lang_wasm(&wd, "game.fun", false, "visible", "").unwrap();
 
         let out = &export.out_dir;
         let index = fs::read_to_string(out.join("index.html")).unwrap();
@@ -359,7 +360,7 @@ mod tests {
         dir.write("pkg/junk.js", "not the runtime");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured").unwrap();
+        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "").unwrap();
 
         let out = &export.out_dir;
         let index = fs::read_to_string(out.join("index.html")).unwrap();
@@ -417,7 +418,7 @@ let g = "pkg/tex.png"
         dir.write(".hidden.fun", "let ghost = 1");
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured").unwrap();
+        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "").unwrap();
         assert_eq!(export.file_count, 1, "only game.fun ships");
         assert!(
             !export.out_dir.join(".hidden.fun").exists(),
@@ -434,7 +435,7 @@ let g = "pkg/tex.png"
         std::os::unix::fs::symlink(dir.path().join("elsewhere"), dir.path().join("dist")).unwrap();
 
         let wd = dir.path().to_string_lossy().to_string();
-        let err = export_functor_lang_wasm(&wd, "game.fun", true, "captured").unwrap_err();
+        let err = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "").unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
         assert!(
             dir.path().join("elsewhere/precious.txt").is_file(),
@@ -457,7 +458,7 @@ let g = "pkg/tex.png"
         std::os::unix::fs::symlink(dir.path(), dir.path().join("loop")).unwrap();
 
         let wd = dir.path().to_string_lossy().to_string();
-        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured").unwrap();
+        let export = export_functor_lang_wasm(&wd, "game.fun", true, "captured", "").unwrap();
         assert_eq!(
             fs::read(export.out_dir.join("linked.glb")).unwrap(),
             b"glb-bytes",

@@ -418,6 +418,9 @@ const loadExample = async (id: string) => {
     params.set("cursor", cursorPolicy);
   }
   for (const file of files) params.append("file", file);
+  // A same-file-entries sample plays its declared role: the player boots the
+  // prefixed contract (e.g. orbs' clientInit/clientTick/…).
+  if (example?.prefix) params.set("prefix", example.prefix);
   frame.src = `player.html?${params}`;
   mp?.setSrc(frame.src);
 };

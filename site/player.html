@@ -209,6 +209,18 @@
         requested && !requested.startsWith("/") && !requested.includes(":")
           ? requested
           : "examples/hero.fun";
+      // ?prefix=<ident>: the role's entry-point binding prefix (same-file
+      // entries) — the runtime resolves clientInit/clientTick/… through it.
+      // Identifier or absent; anything else warns and boots unprefixed (the
+      // scrubber param's fail-visible style).
+      const prefix = params.get("prefix");
+      if (prefix !== null) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(prefix)) {
+          window.__functorLangEntryPrefix = prefix;
+        } else {
+          console.warn(`[player] invalid ?prefix=${prefix} (not an identifier); booting the unprefixed contract`);
+        }
+      }
       if (!inlineProject) {
         window.__functorLangGamePath = src
           ? "data:text/plain;base64," + src.replace(/-/g, "+").replace(/_/g, "/")

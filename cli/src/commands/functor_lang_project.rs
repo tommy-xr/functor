@@ -539,13 +539,14 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
-        // A prefixed role is native-only for now: the wasm page and the VR
-        // push path build the embedded producer with the unprefixed contract,
-        // so running them would silently play the wrong role.
-        if !self.prefix.is_empty() && !matches!(environment, Environment::Native) {
+        // A prefixed role can't run on VR yet: the device push path boots the
+        // APK's embedded producer with the unprefixed contract, so running it
+        // would silently play the wrong role. (Native passes --entry-prefix;
+        // wasm bakes the prefix into the served page's boot config.)
+        if !self.prefix.is_empty() && matches!(environment, Environment::Vr) {
             return Err(Error::other(format!(
-                "entry prefix `{}` is native-only for now — run this role with \
-`run native` (the wasm/vr shells load the unprefixed contract)",
+                "entry prefix `{}` is not supported on vr yet — run this role with \
+`run native` or `run wasm` (the vr shell loads the unprefixed contract)",
                 self.prefix
             )));
         }
@@ -877,14 +878,6 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         #[cfg(feature = "web")]
         {
             self.entry_path(working_directory)?;
-            // The exported page boots the unprefixed contract (see `run`).
-            if !self.prefix.is_empty() {
-                return Err(Error::other(format!(
-                    "entry prefix `{}` is native-only for now — the exported web bundle \
-loads the unprefixed contract",
-                    self.prefix
-                )));
-            }
             // Same constraint as `run wasm`: the bundle carries the project
             // directory, so the entry must live inside it.
             if entry_escapes_project(&self.entry) {
@@ -899,6 +892,7 @@ relative path inside it (got {})",
                 &self.entry,
                 self.mouse_capture,
                 self.cursor.as_str(),
+                &self.prefix,
             )?;
             for name in &export.shadowed {
                 emit(Event::Warning {
@@ -996,6 +990,7 @@ relative path inside it (got {})",
                 &self.entry,
                 self.mouse_capture,
                 self.cursor.as_str(),
+                &self.prefix,
             );
             if no_open {
                 emit(Event::Info {
