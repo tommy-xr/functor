@@ -44,25 +44,30 @@ a launched runtime's own output is captured rather than inherited.
 URL plus, when the server launched it, the child process. State-changing calls
 on one session share an async operation gate: an overlapping call waits for the
 active call to finish, then runs without interleaving. This is mutual exclusion,
-not a promised FIFO sequencer; relative waiter order is unspecified. A cancelled
-request stops waiting and never begins its mutation. Exact normalized base-URL
-aliases created by this MCP server share the same gate, while different exact
-URLs continue concurrently. Normalization currently removes trailing `/` only,
-so hostname aliases such as `localhost` versus `127.0.0.1` are not recognized,
-and direct HTTP clients outside this MCP process are not coordinated. Read-only
+not a promised FIFO sequencer; relative waiter order is unspecified. Cancellation
+while queued stops waiting and prevents the mutation. Once a mutation acquires
+the gate, it runs to its operation boundary even if its MCP response is
+cancelled. Exact normalized base-URL aliases created by this MCP server share
+the same gate, while different exact URLs continue concurrently. `connect_game`
+reserves that gate before discovery, so it cannot race stop and insert a dead
+alias afterward. Normalization currently removes trailing `/` only, so hostname
+aliases such as `localhost` versus `127.0.0.1` are not recognized, and direct
+HTTP clients outside this MCP process are not coordinated. Read-only
 `get_state`/`get_scene`/`get_trace` calls do not take the gate.
 
-`stop_game` marks that session id closing before it waits for the gate. New and
-already-queued mutations on that id reject without runtime I/O; stop drains the
-active mutation before removing/killing/detaching the session. Another id
-attached to the same exact URL remains independently registered.
+`stop_game` marks closing before it waits for the gate and completes cleanup
+after that mark even if its MCP response is cancelled. Stopping an attached
+session closes/removes only that id and leaves other aliases valid. Stopping an
+owned session closes the owner, every exact-URL alias, and any pending connect;
+keeps those closing records through child kill/wait; then removes the group.
+New and already-queued mutations on a closing id reject without runtime I/O.
 
 | Tool | What it does |
 | --- | --- |
 | `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `mode` is `hidden` (default) or `headless`. |
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
-| `stop_game` | Kill a launched game; merely forget an attached one. |
+| `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |
 
 **Observing.**
 
@@ -232,13 +237,13 @@ one at a time as image blocks are built. Declared `Content-Length` is checked
 before allocation and the same limit is enforced while chunks stream; an error
 reports the used and allowed byte counts.
 
-Execution is ordered but not transactional. Complete parse and budget failure
-is side-effect free, including when a valid mutating prefix has an invalid
-suffix. Once a valid plan begins, a later runtime, assertion, or runtime-output
-cap failure can leave earlier steps applied. The session operation gate is held
-for the whole plan, so concurrent mutating calls wait and cannot splice input
-or clock operations into it; calls for other exact URLs remain independent.
-This PoC
+Execution is ordered but not transactional. Complete parse and static
+plan-budget rejection is side-effect free, including when a valid mutating
+prefix has an invalid suffix. Once a valid plan begins, a later runtime,
+assertion, or runtime-output cap failure can leave earlier steps applied. The
+session operation gate is held for the whole plan, so concurrent mutating calls
+wait and cannot splice input or clock operations into it; calls for other exact
+URLs remain independent. This PoC
 intentionally has no variables, branching, loops, retry conditions, arbitrary
 JavaScript expressions, or rollback.
 

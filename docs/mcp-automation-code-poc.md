@@ -182,10 +182,14 @@ context.
 - A per-runtime async gate makes mutating tool calls and whole automation plans
   non-interleaving. Calls that overlap on one exact normalized base URL wait
   for the active operation to finish, but waiter order is unspecified; use an
-  explicit sequencer when relative ordering itself matters. Normalization only
-  strips trailing `/`, so `localhost` and `127.0.0.1` aliases are not unified.
-  This is process-local coordination, not a distributed lock against a separate
-  HTTP client driving the same attached runtime directly.
+  explicit sequencer when relative ordering itself matters. Queued cancellation
+  prevents a mutation; after gate acquisition the operation runs to its
+  boundary. Connect reserves the same lifecycle before discovery, and owned
+  stop closes pending connects and completes cleanup even when its response is
+  cancelled. Normalization only strips trailing `/`, so `localhost` and
+  `127.0.0.1` aliases are not unified. This is process-local coordination, not
+  a distributed lock against a separate HTTP client driving the same attached
+  runtime directly.
 - Rust and TypeScript do not yet pin the canonical spelling of negative zero
   across languages; cross-language fixtures should cover that edge case.
 - There is no per-session capability policy beyond the existing MCP session:

@@ -16,7 +16,7 @@ use std::future::Future;
 use std::io;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -122,6 +122,8 @@ struct Session {
     /// Per-session lifecycle marker. Exact-URL aliases share the operation
     /// gate but remain independently stoppable registry entries.
     closing: Arc<AtomicBool>,
+    /// Stable even while stop temporarily takes `child` out to await it.
+    owned: bool,
     /// The port this server reserved for a launched runtime, held so a
     /// concurrent launch cannot be handed the same one.
     port: Option<u16>,
@@ -141,6 +143,20 @@ struct SessionTarget {
     url: String,
     operation_gate: Arc<tokio::sync::Mutex<()>>,
     closing: Arc<AtomicBool>,
+}
+
+struct PendingConnect {
+    operation_gate: Arc<tokio::sync::Mutex<()>>,
+    closing: Arc<AtomicBool>,
+    reservations: usize,
+}
+
+struct ConnectReservation {
+    registry: Weak<Mutex<Registry>>,
+    url: String,
+    operation_gate: Arc<tokio::sync::Mutex<()>>,
+    closing: Arc<AtomicBool>,
+    active: bool,
 }
 
 #[derive(Default)]
@@ -216,6 +232,9 @@ fn scratch_dir() -> Result<ScratchDir, String> {
 struct Registry {
     next_id: u32,
     sessions: BTreeMap<String, Session>,
+    /// Transient exact-URL lifecycles created before connect discovery. Each
+    /// entry is removed when its RAII reservations complete or are cancelled.
+    pending_connects: BTreeMap<String, PendingConnect>,
     /// Ports handed to a launch. The OS never offers a port a live runtime
     /// already holds, but it happily offers the same one twice inside the
     /// window between `free_port` and the child's own bind — and MCP tool calls
@@ -231,26 +250,83 @@ impl Registry {
         child: Option<Child>,
         scratch: Option<ScratchDir>,
     ) -> String {
+        let operation_gate = self
+            .pending_connects
+            .get(&url)
+            .map(|pending| pending.operation_gate.clone())
+            .or_else(|| {
+                self.sessions
+                    .values()
+                    .find(|session| session.url == url)
+                    .map(|session| session.operation_gate.clone())
+            })
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        self.insert_with_gate(url, port, child, scratch, operation_gate)
+    }
+
+    fn insert_with_gate(
+        &mut self,
+        url: String,
+        port: Option<u16>,
+        child: Option<Child>,
+        scratch: Option<ScratchDir>,
+        operation_gate: Arc<tokio::sync::Mutex<()>>,
+    ) -> String {
         self.next_id += 1;
         let id = format!("s{}", self.next_id);
-        let operation_gate = self
-            .sessions
-            .values()
-            .find(|session| session.url == url)
-            .map(|session| session.operation_gate.clone())
-            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        let owned = child.is_some();
         self.sessions.insert(
             id.clone(),
             Session {
                 url,
                 operation_gate,
                 closing: Arc::new(AtomicBool::new(false)),
+                owned,
                 port,
                 child,
                 scratch,
             },
         );
         id
+    }
+
+    fn reserve_connect(&mut self, url: &str) -> (Arc<tokio::sync::Mutex<()>>, Arc<AtomicBool>) {
+        if let Some(pending) = self.pending_connects.get_mut(url) {
+            pending.reservations += 1;
+            return (pending.operation_gate.clone(), pending.closing.clone());
+        }
+        let operation_gate = self
+            .sessions
+            .values()
+            .find(|session| session.url == url)
+            .map(|session| session.operation_gate.clone())
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+        let owned_stop_in_progress = self.sessions.values().any(|session| {
+            session.url == url && session.owned && session.closing.load(Ordering::Acquire)
+        });
+        let closing = Arc::new(AtomicBool::new(owned_stop_in_progress));
+        self.pending_connects.insert(
+            url.to_string(),
+            PendingConnect {
+                operation_gate: operation_gate.clone(),
+                closing: closing.clone(),
+                reservations: 1,
+            },
+        );
+        (operation_gate, closing)
+    }
+
+    fn release_connect(&mut self, url: &str, lifecycle: &Arc<AtomicBool>) {
+        let remove = match self.pending_connects.get_mut(url) {
+            Some(pending) if Arc::ptr_eq(&pending.closing, lifecycle) => {
+                pending.reservations = pending.reservations.saturating_sub(1);
+                pending.reservations == 0
+            }
+            _ => false,
+        };
+        if remove {
+            self.pending_connects.remove(url);
+        }
     }
 
     /// Claim a port no other session has been handed.
@@ -312,18 +388,57 @@ impl Registry {
         }
     }
 
-    /// Mark one session id as closing while holding the registry mutex, then
-    /// return its await-safe lifecycle to drain the exact-URL operation gate.
-    fn begin_stop(&mut self, id: &str) -> Result<SessionTarget, String> {
+    /// Mark the appropriate lifecycle closing while holding the registry
+    /// mutex. Owned stop closes the whole exact-URL group and pending connects;
+    /// attached stop closes only the requested id.
+    fn begin_stop(&mut self, id: &str) -> Result<(SessionTarget, bool), String> {
         let Some(session) = self.sessions.get(id) else {
             return Err(self.url(id).expect_err("id is absent"));
         };
-        session.closing.store(true, Ordering::Release);
-        Ok(SessionTarget {
-            url: session.url.clone(),
-            operation_gate: session.operation_gate.clone(),
-            closing: session.closing.clone(),
-        })
+        if session.closing.load(Ordering::Acquire) {
+            return Err(format!("session {id:?} is already stopping"));
+        }
+        let url = session.url.clone();
+        let operation_gate = session.operation_gate.clone();
+        let closing = session.closing.clone();
+        let owned = session.owned;
+        if owned {
+            for alias in self.sessions.values().filter(|alias| alias.url == url) {
+                alias.closing.store(true, Ordering::Release);
+            }
+            if let Some(pending) = self.pending_connects.get(&url) {
+                pending.closing.store(true, Ordering::Release);
+            }
+        } else {
+            closing.store(true, Ordering::Release);
+        }
+        Ok((
+            SessionTarget {
+                url,
+                operation_gate,
+                closing,
+            },
+            owned,
+        ))
+    }
+
+    fn take_child(&mut self, id: &str) -> Result<Option<Child>, String> {
+        self.sessions
+            .get_mut(id)
+            .map(|session| session.child.take())
+            .ok_or_else(|| self.url(id).expect_err("id is absent"))
+    }
+
+    fn remove_url(&mut self, url: &str) -> Vec<Session> {
+        let ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.url == url)
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.remove(&id).ok())
+            .collect()
     }
 
     /// Kill every owned child. Attached sessions are only forgotten.
@@ -333,6 +448,67 @@ impl Registry {
             if let Some(child) = session.child.as_mut() {
                 let _ = child.start_kill();
             }
+        }
+    }
+}
+
+impl ConnectReservation {
+    fn target(&self) -> SessionTarget {
+        SessionTarget {
+            url: self.url.clone(),
+            operation_gate: self.operation_gate.clone(),
+            closing: self.closing.clone(),
+        }
+    }
+
+    fn finish(mut self) -> Result<String, String> {
+        let registry = self
+            .registry
+            .upgrade()
+            .ok_or_else(|| "the MCP session registry shut down during connect".to_string())?;
+        let mut guard = registry.lock().expect("mcp registry poisoned");
+        let same_lifecycle = guard
+            .pending_connects
+            .get(&self.url)
+            .is_some_and(|pending| {
+                Arc::ptr_eq(&pending.operation_gate, &self.operation_gate)
+                    && Arc::ptr_eq(&pending.closing, &self.closing)
+            });
+        let result = if self.closing.load(Ordering::Acquire) {
+            Err(format!(
+                "runtime at {} is stopping; connect did not create a session",
+                self.url
+            ))
+        } else if !same_lifecycle {
+            Err(format!(
+                "the connection lifecycle for {} changed before insertion",
+                self.url
+            ))
+        } else {
+            Ok(guard.insert_with_gate(
+                self.url.clone(),
+                None,
+                None,
+                None,
+                self.operation_gate.clone(),
+            ))
+        };
+        guard.release_connect(&self.url, &self.closing);
+        self.active = false;
+        result
+    }
+}
+
+impl Drop for ConnectReservation {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Some(registry) = self.registry.upgrade() {
+            registry
+                .lock()
+                .expect("mcp registry poisoned")
+                .release_connect(&self.url, &self.closing);
         }
     }
 }
@@ -757,15 +933,16 @@ files writes the inline project to a scratch directory this server owns",
     async fn connect_game(
         &self,
         Parameters(args): Parameters<ConnectArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let url = args.url.trim_end_matches('/').to_string();
+        let reservation = self.reserve_connect(&url);
+        let target = reservation.target();
+        let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let discovery = resolve!(self.discover(&url).await);
-        let id = self.sessions.lock().expect("mcp registry poisoned").insert(
-            url.clone(),
-            None,
-            None,
-            None,
-        );
+        // Discovery may have overlapped an owned stop marking this transient
+        // lifecycle closing. Recheck atomically with insertion.
+        let id = resolve!(reservation.finish());
         ok_text(
             serde_json::json!({
                 "session": id,
@@ -786,7 +963,7 @@ files writes the inline project to a scratch directory this server owns",
             guard
                 .sessions
                 .iter()
-                .map(|(id, session)| (id.clone(), session.url.clone(), session.child.is_some()))
+                .map(|(id, session)| (id.clone(), session.url.clone(), session.owned))
                 .collect()
         };
         let mut sessions = Vec::with_capacity(known.len());
@@ -806,8 +983,9 @@ files writes the inline project to a scratch directory this server owns",
         ok_text(serde_json::json!({ "sessions": sessions }).to_string())
     }
 
-    /// Drop a session. A launched (owned) game is killed; an attached one is
-    /// only forgotten.
+    /// Stop a session. An attached id is detached independently. Stopping a
+    /// launched owner closes/removes all exact-URL aliases and pending
+    /// connects, and keeps closing tombstones visible until its child exits.
     #[tool]
     async fn stop_game(
         &self,
@@ -820,7 +998,7 @@ files writes the inline project to a scratch directory this server owns",
                 args.session
             ));
         }
-        let target = resolve!(self
+        let (target, owned) = resolve!(self
             .sessions
             .lock()
             .expect("mcp registry poisoned")
@@ -829,15 +1007,31 @@ files writes the inline project to a scratch directory this server owns",
         // drain the current operation and finish cleanup even if its own MCP
         // request is subsequently cancelled.
         let _operation = target.operation_gate.clone().lock_owned().await;
-        let mut session = resolve!(self
+        let mut child = resolve!(self
             .sessions
             .lock()
             .expect("mcp registry poisoned")
-            .remove(&args.session));
-        let owned = session.child.is_some();
-        if let Some(child) = session.child.as_mut() {
+            .take_child(&args.session));
+        if let Some(child) = child.as_mut() {
             let _ = child.start_kill();
             let _ = child.wait().await;
+        }
+        if owned {
+            // The owner and every exact-URL alias remain closing tombstones
+            // until child cleanup finishes. Only now can the group disappear.
+            let removed = self
+                .sessions
+                .lock()
+                .expect("mcp registry poisoned")
+                .remove_url(&target.url);
+            drop(removed);
+        } else {
+            let session = resolve!(self
+                .sessions
+                .lock()
+                .expect("mcp registry poisoned")
+                .remove(&args.session));
+            drop(session);
         }
         ok_text(format!(
             "stopped session {} ({})",
@@ -961,8 +1155,14 @@ files writes the inline project to a scratch directory this server owns",
                 )
             }
         };
-        let target = resolve!(self.target(&args.session));
-        let _operation = resolve!(self.acquire_operation(&target, &context).await);
+        let target = match self.target(&args.session) {
+            Ok(target) => target,
+            Err(message) => return automation_tool_error(message),
+        };
+        let _operation = match self.acquire_operation(&target, &context).await {
+            Ok(operation) => operation,
+            Err(message) => return automation_tool_error(message),
+        };
         match self.execute_automation(&target.url, &plan).await {
             Ok((summary, captures)) => match automation_call_result(summary, captures) {
                 Ok(result) => Ok(result),
@@ -1205,6 +1405,21 @@ impl FunctorMcp {
             .lock()
             .expect("mcp registry poisoned")
             .release_port(port);
+    }
+
+    fn reserve_connect(&self, url: &str) -> ConnectReservation {
+        let (operation_gate, closing) = self
+            .sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .reserve_connect(url);
+        ConnectReservation {
+            registry: Arc::downgrade(&self.sessions),
+            url: url.to_string(),
+            operation_gate,
+            closing,
+            active: true,
+        }
     }
 
     fn url(&self, session: &str) -> Result<String, String> {
@@ -2490,11 +2705,11 @@ mod tests {
         encoded_capture_total, extend_bounded, find_guide_section, guide_sections,
         json_encoded_len, read_body, read_bounded_response, render_api_hits, render_guide_contents,
         render_guide_section, search_api, serialize_json_bounded, strip_front_matter,
-        truncate_automation_error, AutomationOutputBudget, Registry, LANGUAGE_GUIDE,
+        truncate_automation_error, AutomationOutputBudget, FunctorMcp, Registry, LANGUAGE_GUIDE,
         MAX_AUTOMATION_CAPTURE_BYTES, MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
-    use std::sync::Arc;
+    use std::sync::{atomic::Ordering, Arc};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     fn reference() -> ApiReference {
@@ -3054,7 +3269,8 @@ mod tests {
             );
         tokio::task::yield_now().await;
 
-        let stopping = registry.begin_stop("s1").unwrap();
+        let (stopping, owned) = registry.begin_stop("s1").unwrap();
+        assert!(!owned);
         let Err(stopping_error) = registry.target("s1") else {
             panic!("the stopping id must reject new targets");
         };
@@ -3067,6 +3283,61 @@ mod tests {
         assert!(error.contains("queued operation did not run"), "{error}");
         registry.remove("s1").unwrap();
         assert_eq!(registry.url("s2").unwrap(), "http://127.0.0.1:1");
+    }
+
+    #[tokio::test]
+    async fn owned_stop_closes_a_queued_connect_and_keeps_tombstones_until_cleanup() {
+        let server = FunctorMcp::new();
+        {
+            let mut registry = server.sessions.lock().unwrap();
+            registry.insert("http://127.0.0.1:1".into(), None, None, None);
+            registry.insert("http://127.0.0.1:1".into(), None, None, None);
+            registry.sessions.get_mut("s1").unwrap().owned = true;
+        }
+        let reservation = server.reserve_connect("http://127.0.0.1:1");
+        let target = reservation.target();
+        let held = target.operation_gate.clone().lock_owned().await;
+        let waiter =
+            tokio::spawn(
+                async move { acquire_target_operation(&target, std::future::pending()).await },
+            );
+        tokio::task::yield_now().await;
+
+        let stopping = {
+            let mut registry = server.sessions.lock().unwrap();
+            let (stopping, owned) = registry.begin_stop("s1").unwrap();
+            assert!(owned);
+            assert!(registry.target("s2").is_err(), "owned stop closes aliases");
+            assert!(
+                registry
+                    .pending_connects
+                    .get("http://127.0.0.1:1")
+                    .unwrap()
+                    .closing
+                    .load(Ordering::Acquire),
+                "owned stop closes the pending connect lifecycle"
+            );
+            stopping
+        };
+        assert_eq!(stopping.url, "http://127.0.0.1:1");
+
+        drop(held);
+        let error = waiter.await.unwrap().unwrap_err();
+        assert!(error.contains("queued operation did not run"), "{error}");
+        let error = reservation.finish().unwrap_err();
+        assert!(error.contains("stopping"), "{error}");
+        let mut registry = server.sessions.lock().unwrap();
+        assert!(
+            registry.pending_connects.is_empty(),
+            "the transient lifecycle is released"
+        );
+        assert_eq!(
+            registry.sessions.len(),
+            2,
+            "owner and alias remain closing tombstones until cleanup"
+        );
+        registry.remove_url("http://127.0.0.1:1");
+        assert!(registry.sessions.is_empty());
     }
 
     #[test]

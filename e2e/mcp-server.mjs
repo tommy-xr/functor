@@ -248,6 +248,22 @@ try {
     "callbacks, globals, and unknown calls are rejected with a source diagnostic",
   );
 
+  let oversizedSessionError = null;
+  try {
+    await rpc.call("run_automation_code", {
+      session: "s".repeat(4 * 1024 * 1024 + 1024),
+      code: `automation("bounded lookup error").pause()`,
+    });
+  } catch (error) {
+    oversizedSessionError = error.message;
+  }
+  check(
+    oversizedSessionError !== null &&
+      /automation error truncated/.test(oversizedSessionError) &&
+      Buffer.byteLength(oversizedSessionError) <= 4 * 1024 * 1024 + 128,
+    "run_automation_code caps even an oversized session-lookup error",
+  );
+
   console.log("\n▸ launching a game headlessly");
   const launched = await rpc.call("launch_game", { dir: "examples/counter", mode: "headless" });
   session = launched.session;
@@ -460,7 +476,48 @@ let draw = (m: Model, tts) =>
       afterRelease.input?.held_keys?.length === 0,
     "stopping the attached alias left the original session valid and independently mutable",
   );
-  await rpc.call("stop_game", { session: gatedSession });
+
+  console.log("\n▸ a connect queued during owned stop cannot survive as a dead session");
+  const stopRaceRun = rpc.call("run_automation_code", {
+    session: gatedSession,
+    code: `automation("owned stop boundary")
+      .pause()
+      .keyDown("space")
+      .step({ frames: 2000, dts: 0.016 })
+      .keyUp("space")`,
+  });
+  let stopRaceHeld = false;
+  for (let attempt = 0; attempt < 200 && !stopRaceHeld; attempt += 1) {
+    const during = await rpc.call("get_state", { session: gatedSession });
+    stopRaceHeld = during.input?.held_keys?.includes("Space") === true;
+    if (!stopRaceHeld) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check(stopRaceHeld, "the owned runtime gate is held before the racing connect starts");
+  const racingConnect = rpc.call("connect_game", { url: gateGame.url }).then(
+    (value) => ({ value }),
+    (error) => ({ error: error.message }),
+  );
+  const connectWaited = await Promise.race([
+    racingConnect.then(() => false),
+    new Promise((resolve) => setTimeout(() => resolve(true), 30)),
+  ]);
+  check(connectWaited, "connect reserves and waits on the existing exact-URL gate before discovery");
+  const ownerStop = rpc.call("stop_game", { session: gatedSession });
+  const [, connectOutcome, ownerStopped] = await Promise.all([
+    stopRaceRun,
+    racingConnect,
+    ownerStop,
+  ]);
+  check(
+    /stopping/.test(connectOutcome.error ?? ""),
+    "owned stop closes the queued connect lifecycle before it can insert",
+  );
+  check(/killed/.test(ownerStopped), "owned stop completed child cleanup");
+  const afterOwnedStop = await rpc.call("list_sessions");
+  check(
+    !afterOwnedStop.sessions.some((known) => known.url === gateGame.url),
+    "owner, aliases, and the rejected connect leave no dead session record",
+  );
 
   console.log("\n▸ pause + step is a deterministic clock");
   await rpc.call("pause", { session });
