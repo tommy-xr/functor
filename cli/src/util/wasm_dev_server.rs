@@ -215,6 +215,9 @@ mod tests {
     fn visible_pointer_keeps_non_primary_webview_input_game_owned() {
         let html = render_functor_lang_index("game.fun", &["game.fun".to_string()], "visible");
         for expected in [
+            r#"window.addEventListener("mousemove""#,
+            "const rect = canvas.getBoundingClientRect();",
+            "e.clientX - rect.left, e.clientY - rect.top",
             r#"window.addEventListener("mousedown""#,
             "if (!visiblePointer || (code !== 2 && code !== 3)) return;",
             "if (visiblePointer && code !== 1) return;",
@@ -227,6 +230,10 @@ mod tests {
                 "rendered wasm host omitted `{expected}`"
             );
         }
+        assert!(
+            !html.contains("functor_lang_mouse_move(e.offsetX, e.offsetY)"),
+            "visible movement must not be delivered by both window and canvas"
+        );
     }
 
     #[test]

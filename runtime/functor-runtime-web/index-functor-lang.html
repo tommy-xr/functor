@@ -231,9 +231,14 @@
           ay += e.movementY;
           functor_lang_mouse_move(ax, ay);
         });
-        canvas.addEventListener("mousemove", (e) => {
-          if (visiblePointer) functor_lang_mouse_move(e.offsetX, e.offsetY);
-        });
+        // Native visible-pointer games keep receiving absolute movement over
+        // overlays. Capture at window scope so shadow-DOM webviews do too, then
+        // translate the page point back into the canvas's CSS-pixel space.
+        window.addEventListener("mousemove", (e) => {
+          if (!visiblePointer) return;
+          const rect = canvas.getBoundingClientRect();
+          functor_lang_mouse_move(e.clientX - rect.left, e.clientY - rect.top);
+        }, { capture: true });
 
         const deliverGameWheel = (e) => {
           e.preventDefault();
