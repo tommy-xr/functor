@@ -47,6 +47,14 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUIRED_PROTOCOL_VERSION: u64 = 4;
 /// Bytes of a launched child's stdout/stderr kept for failure reporting.
 const LOG_TAIL_BYTES: usize = 8 * 1024;
+/// Maximum body retained from any ordinary debug-runtime text response.
+const MAX_RUNTIME_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum raw bytes retained for one `POST /capture` response.
+const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum serialized JSON text returned by one automation run.
+const MAX_AUTOMATION_TEXT_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum raw PNG bytes retained across all captures in one automation run.
+const MAX_AUTOMATION_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 /// How many API-reference items one `api_reference` call returns.
 const MAX_API_RESULTS: usize = 20;
 /// The Functor Lang language guide, embedded verbatim from the `functor-lang`
@@ -100,6 +108,10 @@ async fn shutdown_signal() {
 /// One game the server can talk to.
 struct Session {
     url: String,
+    /// Serializes state-changing operations for this session. It is cloned out
+    /// of the registry before awaiting, so the synchronous registry mutex is
+    /// never held across runtime I/O.
+    operation_gate: Arc<tokio::sync::Mutex<()>>,
     /// The port this server reserved for a launched runtime, held so a
     /// concurrent launch cannot be handed the same one.
     port: Option<u16>,
@@ -111,6 +123,42 @@ struct Session {
     /// Never read — its `Drop` is the whole point.
     #[allow(dead_code)]
     scratch: Option<ScratchDir>,
+}
+
+/// The await-safe part of a registry session.
+#[derive(Clone)]
+struct SessionTarget {
+    url: String,
+    operation_gate: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Default)]
+struct AutomationOutputBudget {
+    retained_text_bytes: usize,
+    capture_bytes: usize,
+}
+
+impl AutomationOutputBudget {
+    fn retain_json(&mut self, value: &Value) -> Result<(), String> {
+        let bytes = json_encoded_len(value)?;
+        self.retained_text_bytes = checked_output_total(
+            self.retained_text_bytes,
+            bytes,
+            MAX_AUTOMATION_TEXT_BYTES,
+            "automation aggregate text output",
+        )?;
+        Ok(())
+    }
+
+    fn retain_capture(&mut self, bytes: usize) -> Result<(), String> {
+        self.capture_bytes = checked_output_total(
+            self.capture_bytes,
+            bytes,
+            MAX_AUTOMATION_CAPTURE_BYTES,
+            "automation aggregate raw capture output",
+        )?;
+        Ok(())
+    }
 }
 
 /// A project directory this server created and owns. Dropping it (when the
@@ -178,6 +226,7 @@ impl Registry {
             id.clone(),
             Session {
                 url,
+                operation_gate: Arc::new(tokio::sync::Mutex::new(())),
                 port,
                 child,
                 scratch,
@@ -204,8 +253,17 @@ impl Registry {
     /// The session's base URL, or an error naming the sessions that do exist —
     /// a stale id is the most common agent mistake, so it must be self-correcting.
     fn url(&self, id: &str) -> Result<String, String> {
+        self.target(id).map(|target| target.url)
+    }
+
+    /// Clone the runtime address and async operation gate while holding the
+    /// registry briefly. Callers may then drop the registry guard and await.
+    fn target(&self, id: &str) -> Result<SessionTarget, String> {
         match self.sessions.get(id) {
-            Some(session) => Ok(session.url.clone()),
+            Some(session) => Ok(SessionTarget {
+                url: session.url.clone(),
+                operation_gate: session.operation_gate.clone(),
+            }),
             None if self.sessions.is_empty() => Err(format!(
                 "unknown session {id:?}: no sessions yet — start one with launch_game or connect_game"
             )),
@@ -770,14 +828,16 @@ files writes the inline project to a scratch directory this server owns",
 
     /// Render the next frame and return it as a PNG image. Requires a GL
     /// context: a session launched in `headless` mode has no pixels and this
-    /// fails — relaunch it in `hidden` mode.
+    /// fails — relaunch it in `hidden` mode. Raw capture responses are capped
+    /// at 8 MiB.
     #[tool]
     async fn capture_frame(
         &self,
         Parameters(args): Parameters<SessionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.url(&args.session));
-        let body = resolve!(self.capture_png(&url).await);
+        let target = resolve!(self.target(&args.session));
+        let _operation = target.operation_gate.lock().await;
+        let body = resolve!(self.capture_png(&target.url).await);
         Ok(CallToolResult::success(vec![ContentBlock::image(
             base64::engine::general_purpose::STANDARD.encode(&body),
             "image/png",
@@ -800,7 +860,7 @@ files writes the inline project to a scratch directory this server owns",
         &self,
         Parameters(args): Parameters<InputArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.proxy_post(&args.session, "/input", args.command.to_string())
+        self.proxy_mutating_post(&args.session, "/input", args.command.to_string())
             .await
     }
 
@@ -812,9 +872,12 @@ files writes the inline project to a scratch directory this server owns",
     /// `inspect` snapshots state in the result; `capture` appends PNG image
     /// blocks and needs a hidden (not headless) session. Execution is ordered
     /// but not transactional: a runtime failure can leave earlier valid steps
-    /// applied. Deterministic sequencing assumes no other mutating call
-    /// concurrently targets this session; this PoC has no operation lock. Call
-    /// `validate_automation_code` first for parse-only feedback.
+    /// applied. The per-session operation gate holds for the whole plan:
+    /// overlapping mutating calls wait, then run in acquisition order without
+    /// interleaving. Other sessions have independent gates. The serialized
+    /// summary is capped at 4 MiB; each raw capture at 8 MiB and all captures
+    /// together at 16 MiB. Call `validate_automation_code` first for parse-only
+    /// feedback.
     #[tool]
     async fn run_automation_code(
         &self,
@@ -836,10 +899,11 @@ files writes the inline project to a scratch directory this server owns",
                 )
             }
         };
-        let url = resolve!(self.url(&args.session));
-        match self.execute_automation(&url, &plan).await {
+        let target = resolve!(self.target(&args.session));
+        let _operation = target.operation_gate.lock().await;
+        match self.execute_automation(&target.url, &plan).await {
             Ok((summary, captures)) => {
-                let mut content = vec![ContentBlock::text(summary.to_string())];
+                let mut content = vec![ContentBlock::text(summary)];
                 content.extend(captures.into_iter().map(|(_, png)| {
                     ContentBlock::image(
                         base64::engine::general_purpose::STANDARD.encode(png),
@@ -861,8 +925,9 @@ files writes the inline project to a scratch directory this server owns",
         &self,
         Parameters(args): Parameters<PauseArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.url(&args.session));
-        ok_text(resolve!(self.pin(&url, args.tts).await))
+        let target = resolve!(self.target(&args.session));
+        let _operation = target.operation_gate.lock().await;
+        ok_text(resolve!(self.pin(&target.url, args.tts).await))
     }
 
     /// Run exactly `frames` simulation steps of `dts` seconds each, WAIT for
@@ -875,10 +940,15 @@ files writes the inline project to a scratch directory this server owns",
         &self,
         Parameters(args): Parameters<StepArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.url(&args.session));
+        let target = resolve!(self.target(&args.session));
+        let _operation = target.operation_gate.lock().await;
         let state = resolve!(
-            self.advance(&url, args.dts.unwrap_or(0.016), args.frames.unwrap_or(1))
-                .await
+            self.advance(
+                &target.url,
+                args.dts.unwrap_or(0.016),
+                args.frames.unwrap_or(1)
+            )
+            .await
         );
         ok_text(state.to_string())
     }
@@ -890,7 +960,7 @@ files writes the inline project to a scratch directory this server owns",
         &self,
         Parameters(args): Parameters<SessionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.proxy_post(
+        self.proxy_mutating_post(
             &args.session,
             "/time",
             serde_json::json!({ "type": "resume" }).to_string(),
@@ -907,15 +977,16 @@ files writes the inline project to a scratch directory this server owns",
         &self,
         Parameters(args): Parameters<RewindArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.url(&args.session));
-        let tts = resolve!(tts_of(&resolve!(self.state(&url).await)));
+        let target = resolve!(self.target(&args.session));
+        let _operation = target.operation_gate.lock().await;
+        let tts = resolve!(tts_of(&resolve!(self.state(&target.url).await)));
         // The clock must be pinned before a rewind or the next wall-clock frame
         // would immediately overwrite the restored model. `/state` does not
         // report whether it already is, so this re-pins at the CURRENT time —
         // a no-op for an already-paused session.
         resolve!(
             self.post(
-                &url,
+                &target.url,
                 "/time",
                 serde_json::json!({ "type": "set", "tts": tts }).to_string(),
             )
@@ -923,13 +994,13 @@ files writes the inline project to a scratch directory this server owns",
         );
         resolve!(
             self.post(
-                &url,
+                &target.url,
                 "/rewind",
                 serde_json::json!({ "frame": args.frame }).to_string(),
             )
             .await
         );
-        ok_text(resolve!(self.state(&url).await).to_string())
+        ok_text(resolve!(self.state(&target.url).await).to_string())
     }
 
     /// Hot-reload the entry module from new source, preserving the live model.
@@ -940,7 +1011,7 @@ files writes the inline project to a scratch directory this server owns",
         &self,
         Parameters(args): Parameters<ReloadSourceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.proxy_post(&args.session, "/reload-source", args.source)
+        self.proxy_mutating_post(&args.session, "/reload-source", args.source)
             .await
     }
 
@@ -993,8 +1064,9 @@ or \"fps\" (a first-person WASD + mouse-look scene)"
         &self,
         Parameters(args): Parameters<SaveProjectArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.url(&args.session));
-        let body = match self.get(&url, "/project").await {
+        let target = resolve!(self.target(&args.session));
+        let _operation = target.operation_gate.lock().await;
+        let body = match self.get(&target.url, "/project").await {
             Ok(body) => body,
             // A 404 is specifically "this runtime predates the route"; a 501
             // is a producer that has no sources at all, which rebuilding
@@ -1039,7 +1111,7 @@ rebuild that runtime from this version of Functor."
             .into_iter()
             .map(|(path, source)| vec![path, source])
             .collect();
-        self.proxy_post(
+        self.proxy_mutating_post(
             &args.session,
             "/reload-project",
             serde_json::to_string(&files).expect("string pairs serialize"),
@@ -1076,19 +1148,27 @@ impl FunctorMcp {
             .url(session)
     }
 
+    fn target(&self, session: &str) -> Result<SessionTarget, String> {
+        self.sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .target(session)
+    }
+
     async fn proxy_get(&self, session: &str, path: &str) -> Result<CallToolResult, ErrorData> {
         let url = resolve!(self.url(session));
         ok_text(resolve!(self.get(&url, path).await))
     }
 
-    async fn proxy_post(
+    async fn proxy_mutating_post(
         &self,
         session: &str,
         path: &str,
         body: String,
     ) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.url(session));
-        ok_text(resolve!(self.post(&url, path, body).await))
+        let target = resolve!(self.target(session));
+        let _operation = target.operation_gate.lock().await;
+        ok_text(resolve!(self.post(&target.url, path, body).await))
     }
 
     async fn get(&self, url: &str, path: &str) -> Result<String, String> {
@@ -1171,11 +1251,13 @@ impl FunctorMcp {
             .send()
             .await
             .map_err(|error| format!("POST /capture on {url} failed: {error}"))?;
-        let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|error| format!("reading the captured PNG failed: {error}"))?;
+        let (status, body) = read_bounded_response(
+            response,
+            MAX_CAPTURE_BYTES,
+            "individual capture response",
+            "the captured PNG",
+        )
+        .await?;
         // 503 is "no pixels right now", and the runtime says WHICH reason —
         // headless, a dozing XR session, a capture timeout. Pass its own words
         // through and only append the hint, so an attached Quest is not told to
@@ -1193,17 +1275,18 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                 String::from_utf8_lossy(&body)
             ));
         }
-        Ok(body.to_vec())
+        Ok(body)
     }
 
     async fn execute_automation(
         &self,
         url: &str,
         plan: &AutomationPlan,
-    ) -> Result<(Value, Vec<(Option<String>, Vec<u8>)>), String> {
+    ) -> Result<(String, Vec<(Option<String>, Vec<u8>)>), String> {
         let mut observations = Vec::new();
         let mut assertions = Vec::new();
         let mut captures = Vec::new();
+        let mut output_budget = AutomationOutputBudget::default();
 
         for (index, step) in plan.steps.iter().enumerate() {
             let step_number = index + 1;
@@ -1325,10 +1408,12 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                 }
                 AutomationStep::Inspect { label } => match self.state(url).await {
                     Ok(state) => {
-                        observations.push(serde_json::json!({
+                        let observation = serde_json::json!({
                             "label": label,
                             "state": state,
-                        }));
+                        });
+                        output_budget.retain_json(&observation)?;
+                        observations.push(observation);
                         Ok(())
                     }
                     Err(error) => Err(error),
@@ -1338,12 +1423,14 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                         let model = &state["model"];
                         match model_value_at(model, path) {
                             Some(actual) if actual == equals => {
-                                assertions.push(serde_json::json!({
+                                let assertion = serde_json::json!({
                                     "path": path,
                                     "expected": equals,
                                     "actual": actual,
                                     "passed": true,
-                                }));
+                                });
+                                output_budget.retain_json(&assertion)?;
+                                assertions.push(assertion);
                                 Ok(())
                             }
                             Some(actual) => Err(format!(
@@ -1369,13 +1456,15 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                                 Some(actual_number)
                                     if (actual_number - expected).abs() <= *abs_tolerance =>
                                 {
-                                    assertions.push(serde_json::json!({
+                                    let assertion = serde_json::json!({
                                         "path": path,
                                         "expected": expected,
                                         "actual": actual,
                                         "abs_tolerance": abs_tolerance,
                                         "passed": true,
-                                    }));
+                                    });
+                                    output_budget.retain_json(&assertion)?;
+                                    assertions.push(assertion);
                                     Ok(())
                                 }
                                 Some(actual_number) => Err(format!(
@@ -1394,6 +1483,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                 },
                 AutomationStep::Capture { label } => match self.capture_png(url).await {
                     Ok(png) => {
+                        output_budget.retain_capture(png.len())?;
                         captures.push((label.clone(), png));
                         Ok(())
                     }
@@ -1412,6 +1502,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             .state(url)
             .await
             .map_err(|error| format!("automation completed but final state failed: {error}"))?;
+        output_budget.retain_json(&final_state)?;
         let capture_metadata: Vec<Value> = captures
             .iter()
             .enumerate()
@@ -1434,6 +1525,11 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             "captures": capture_metadata,
             "final_state": final_state,
         });
+        let summary = serialize_json_bounded(
+            &summary,
+            MAX_AUTOMATION_TEXT_BYTES,
+            "automation aggregate text output",
+        )?;
         Ok((summary, captures))
     }
 
@@ -1501,7 +1597,9 @@ pause/input/step/assert/inspect/capture sequence into one restricted SDK builder
 that is parsed into data and never evaluated as JavaScript. The lower-level deterministic \
 loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \
-across steps. language_guide teaches the LANGUAGE (Functor Lang is not F#/OCaml — read it \
+across steps. Mutating calls on one session share an async operation gate: overlaps WAIT \
+and then run without interleaving, while different sessions remain independent. \
+language_guide teaches the LANGUAGE (Functor Lang is not F#/OCaml — read it \
 before writing any .fun) and api_reference searches the engine's prelude API; neither needs \
 a session, so both answer before anything is launched. A game can also be AUTHORED \
 here with no filesystem of your own: launch_game with inline `files` runs source that has \
@@ -2008,16 +2106,150 @@ fn tts_of(state: &Value) -> Result<f64, String> {
 /// runtime's own text — the 400s from `/input`, `/time` and the reload routes
 /// are teaching errors, so they must reach the caller verbatim.
 async fn read_body(path: &str, response: reqwest::Response) -> Result<String, String> {
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("reading the {path} response failed: {error}"))?;
+    let (status, body) = read_bounded_response(
+        response,
+        MAX_RUNTIME_TEXT_BYTES,
+        "generic runtime text response",
+        &format!("{path} response"),
+    )
+    .await?;
+    let body = String::from_utf8(body).map_err(|error| {
+        format!("reading the {path} response failed: body is not UTF-8: {error}")
+    })?;
     if status.is_success() {
         Ok(body)
     } else {
         Err(format!("{path} → {status}: {body}"))
     }
+}
+
+fn output_limit_error(cap_name: &str, used: usize, limit: usize) -> String {
+    format!("{cap_name} cap exceeded: used {used} bytes, limit {limit} bytes")
+}
+
+fn checked_output_total(
+    retained: usize,
+    additional: usize,
+    limit: usize,
+    cap_name: &str,
+) -> Result<usize, String> {
+    let used = retained
+        .checked_add(additional)
+        .ok_or_else(|| output_limit_error(cap_name, usize::MAX, limit))?;
+    if used > limit {
+        Err(output_limit_error(cap_name, used, limit))
+    } else {
+        Ok(used)
+    }
+}
+
+/// Append only after proving the retained buffer remains within its cap.
+/// A rejected chunk is never copied into `body`.
+fn extend_bounded(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+    cap_name: &str,
+) -> Result<(), String> {
+    let used = body
+        .len()
+        .checked_add(chunk.len())
+        .ok_or_else(|| output_limit_error(cap_name, usize::MAX, limit))?;
+    if used > limit {
+        return Err(output_limit_error(cap_name, used, limit));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    bytes: usize,
+}
+
+impl io::Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(buf.len())
+            .ok_or_else(|| io::Error::other("serialized JSON byte count overflowed"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_encoded_len(value: &Value) -> Result<usize, String> {
+    let mut writer = CountingWriter::default();
+    serde_json::to_writer(&mut writer, value)
+        .map_err(|error| format!("could not account for automation JSON output: {error}"))?;
+    Ok(writer.bytes)
+}
+
+struct BoundedWriter<'a> {
+    body: Vec<u8>,
+    limit: usize,
+    cap_name: &'a str,
+}
+
+impl io::Write for BoundedWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        extend_bounded(&mut self.body, buf, self.limit, self.cap_name).map_err(io::Error::other)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_json_bounded(value: &Value, limit: usize, cap_name: &str) -> Result<String, String> {
+    let mut writer = BoundedWriter {
+        body: Vec::new(),
+        limit,
+        cap_name,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|error| error.to_string())?;
+    String::from_utf8(writer.body)
+        .map_err(|error| format!("serialized automation JSON was not UTF-8: {error}"))
+}
+
+/// Read an HTTP response without trusting `Content-Length`: reject an
+/// oversized declared length before body allocation, then enforce the same cap
+/// as chunks arrive (including chunked responses with no declared length).
+async fn read_bounded_response(
+    mut response: reqwest::Response,
+    limit: usize,
+    cap_name: &str,
+    context: &str,
+) -> Result<(reqwest::StatusCode, Vec<u8>), String> {
+    let status = response.status();
+    let declared = response.content_length();
+    if declared.is_some_and(|used| used > limit as u64) {
+        return Err(output_limit_error(
+            cap_name,
+            declared
+                .unwrap_or(u64::MAX)
+                .try_into()
+                .unwrap_or(usize::MAX),
+            limit,
+        ));
+    }
+    let capacity = declared
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(8 * 1024)
+        .min(limit);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("reading {context} failed: {error}"))?
+    {
+        extend_bounded(&mut body, &chunk, limit, cap_name)?;
+    }
+    Ok((status, body))
 }
 
 /// Claim a free localhost port by binding and immediately releasing it. There
@@ -2061,14 +2293,111 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        find_guide_section, guide_sections, render_api_hits, render_guide_contents,
-        render_guide_section, search_api, strip_front_matter, Registry, LANGUAGE_GUIDE,
-        QUICK_FACTS_SLUG,
+        checked_output_total, extend_bounded, find_guide_section, guide_sections, json_encoded_len,
+        read_body, read_bounded_response, render_api_hits, render_guide_contents,
+        render_guide_section, search_api, serialize_json_bounded, strip_front_matter,
+        AutomationOutputBudget, Registry, LANGUAGE_GUIDE, MAX_AUTOMATION_CAPTURE_BYTES,
+        MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     fn reference() -> ApiReference {
         functor_docgen::generate().expect("the embedded prelude documents itself")
+    }
+
+    async fn fake_http_response(raw: &'static [u8]) -> reqwest::Response {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket.write_all(raw).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        reqwest::get(format!("http://{address}/")).await.unwrap()
+    }
+
+    #[test]
+    fn output_accounting_rejects_before_retaining_an_oversized_chunk() {
+        assert_eq!(checked_output_total(10, 6, 16, "test output").unwrap(), 16);
+        let total_error = checked_output_total(10, 7, 16, "test output").unwrap_err();
+        assert!(total_error.contains("used 17 bytes"), "{total_error}");
+        assert!(total_error.contains("limit 16 bytes"), "{total_error}");
+
+        let mut retained = b"123456789".to_vec();
+        let error = extend_bounded(&mut retained, b"abcdefghi", 16, "test stream").unwrap_err();
+        assert_eq!(retained, b"123456789", "the rejected chunk is not copied");
+        assert!(error.contains("used 18 bytes"), "{error}");
+        assert!(error.contains("limit 16 bytes"), "{error}");
+    }
+
+    #[test]
+    fn automation_json_and_capture_budgets_are_explicit_and_bounded() {
+        let value = serde_json::json!({"answer": 42, "ready": true});
+        let encoded = serde_json::to_string(&value).unwrap();
+        assert_eq!(json_encoded_len(&value).unwrap(), encoded.len());
+        assert_eq!(
+            serialize_json_bounded(&value, encoded.len(), "test JSON").unwrap(),
+            encoded
+        );
+        let error = serialize_json_bounded(&value, encoded.len() - 1, "test JSON").unwrap_err();
+        assert!(error.contains("test JSON cap exceeded"), "{error}");
+
+        let mut budget = AutomationOutputBudget {
+            retained_text_bytes: MAX_AUTOMATION_TEXT_BYTES - 1,
+            capture_bytes: MAX_AUTOMATION_CAPTURE_BYTES - 1,
+        };
+        budget.retain_json(&serde_json::json!(0)).unwrap();
+        let text_error = budget.retain_json(&serde_json::json!(0)).unwrap_err();
+        assert!(text_error.contains("automation aggregate text output"));
+        budget.retain_capture(1).unwrap();
+        let capture_error = budget.retain_capture(1).unwrap_err();
+        assert!(capture_error.contains("automation aggregate raw capture output"));
+    }
+
+    #[tokio::test]
+    async fn bounded_http_reader_rejects_declared_and_streamed_oversize_bodies() {
+        let declared = fake_http_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 17\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let declared_error =
+            read_bounded_response(declared, 16, "test declared body", "test response")
+                .await
+                .unwrap_err();
+        assert!(declared_error.contains("used 17 bytes"), "{declared_error}");
+        assert!(
+            declared_error.contains("limit 16 bytes"),
+            "{declared_error}"
+        );
+
+        let streamed = fake_http_response(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+9\r\n123456789\r\n9\r\nabcdefghi\r\n0\r\n\r\n",
+        )
+        .await;
+        let streamed_error =
+            read_bounded_response(streamed, 16, "test streamed body", "test response")
+                .await
+                .unwrap_err();
+        assert!(streamed_error.contains("used 18 bytes"), "{streamed_error}");
+        assert!(
+            streamed_error.contains("limit 16 bytes"),
+            "{streamed_error}"
+        );
+
+        let teaching = fake_http_response(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 19\r\nConnection: close\r\n\r\nunknown key Frobble",
+        )
+        .await;
+        let teaching_error = read_body("/input", teaching).await.unwrap_err();
+        assert!(
+            teaching_error.contains("400 Bad Request: unknown key Frobble"),
+            "{teaching_error}"
+        );
     }
 
     #[test]
@@ -2440,6 +2769,17 @@ mod tests {
         assert_eq!(first, "s1");
         assert_eq!(second, "s2");
         assert_eq!(registry.url("s2").unwrap(), "http://127.0.0.1:2");
+        let first_target = registry.target("s1").unwrap();
+        let first_again = registry.target("s1").unwrap();
+        let second_target = registry.target("s2").unwrap();
+        assert!(
+            Arc::ptr_eq(&first_target.operation_gate, &first_again.operation_gate),
+            "one session always resolves to the same operation gate"
+        );
+        assert!(
+            !Arc::ptr_eq(&first_target.operation_gate, &second_target.operation_gate),
+            "different sessions must never block each other"
+        );
     }
 
     #[test]

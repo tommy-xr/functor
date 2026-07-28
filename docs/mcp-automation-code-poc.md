@@ -74,7 +74,11 @@ including:
 Limits are 16 KiB of source, 64 logical steps, eight levels of literal nesting,
 10,000 total requested frames, and four captures. Strings used as names, labels,
 keys, and model paths have narrower byte limits. Mouse and UI values are also
-bounded to their runtime wire domains.
+bounded to their runtime wire domains. Ordinary runtime text and individual raw
+capture responses are capped at 8 MiB; an automation result has a 4 MiB
+serialized text cap and a 16 MiB aggregate raw-capture cap. Response readers
+reject an oversized `Content-Length` before allocation and enforce the same cap
+as chunks arrive.
 
 The run tool completes this entire parse and validation before looking up the
 session. The MCP E2E submits a valid mutating prefix followed by an invalid
@@ -155,12 +159,14 @@ context.
   dataflow, or rollback.
 - `pressKey` owns one fixed 16ms step. More input macros need explicit timing
   semantics rather than silently growing an ad hoc scripting language.
-- Result payloads include full observations/final state and captures are held
-  in memory. Production needs output-size accounting and possibly selective
-  model reads.
-- Execution is deterministic only for an uncontended session. Production needs
-  a per-session operation lock so another mutating tool call cannot interleave
-  with a running plan.
+- Result payloads still include full observations/final state and captures are
+  held in memory within explicit byte caps. Production may also want selective
+  model reads to spend those budgets more deliberately.
+- A per-session async gate makes mutating tool calls and whole automation plans
+  non-interleaving. Calls that overlap on one session wait for the active
+  operation to finish; different sessions use independent gates. This is
+  process-local coordination, not a distributed lock against a separate HTTP
+  client driving the same attached runtime directly.
 - Rust and TypeScript do not yet pin the canonical spelling of negative zero
   across languages; cross-language fixtures should cover that edge case.
 - There is no per-session capability policy beyond the existing MCP session:
@@ -178,7 +184,6 @@ fresh agent transcripts rather than reconstructed workflows, then decide
 whether static plans are enough.
 
 Before production, make the plan schema single-source/versioned, fuzz the
-parser, add output/capture byte budgets and a capability policy, and choose
-whether conditionals should be explicit bounded plan nodes or remain in trusted
-standalone TypeScript. Do not add arbitrary callbacks or a JavaScript VM to the
-MCP dialect.
+parser, add a capability policy, and choose whether conditionals should be
+explicit bounded plan nodes or remain in trusted standalone TypeScript. Do not
+add arbitrary callbacks or a JavaScript VM to the MCP dialect.

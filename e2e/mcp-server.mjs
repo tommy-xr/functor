@@ -304,6 +304,90 @@ try {
   );
   check(automated.final_state?.model?.count === 1, "the automation returned fresh final state");
 
+  console.log("\n▸ mutating calls serialize per session, while other sessions stay independent");
+  const EDGE_COUNTER = `type Model = { count: float, held: bool }
+
+let init: Model = { count: 0.0, held: false }
+
+let input = (m: Model, key: Key.t, isDown: bool): Model =>
+  if key == Key.Space then
+    if isDown then
+      if m.held then m else { m with count: m.count + 1.0, held: true }
+    else { m with held: false }
+  else m
+
+let tick = (m: Model, dt, tts) => m
+
+let draw = (m: Model, tts) =>
+  Frame.create(
+    Camera.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube(),
+  )
+`;
+  const gateGame = await rpc.call("launch_game", {
+    files: [["game.fun", EDGE_COUNTER]],
+    mode: "headless",
+  });
+  const gatedSession = gateGame.session;
+  let longFinished = false;
+  const longRun = rpc.call("run_automation_code", {
+    session: gatedSession,
+    code: `automation("hold gate")
+      .pause()
+      .keyDown("space")
+      .step({ frames: 2000, dts: 0.016 })
+      .keyUp("space")
+      .inspect("released")`,
+  });
+  longRun.then(
+    () => { longFinished = true; },
+    () => { longFinished = true; },
+  );
+
+  let observedHeld = false;
+  for (let attempt = 0; attempt < 200 && !observedHeld; attempt += 1) {
+    const during = await rpc.call("get_state", { session: gatedSession });
+    observedHeld = during.input?.held_keys?.includes("Space") === true;
+    if (!observedHeld) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check(observedHeld, "a read-only state call observed Space held inside the long automation");
+
+  const otherSession = await rpc.call("run_automation_code", {
+    session,
+    code: `automation("independent session").step()`,
+  });
+  check(
+    otherSession.ok === true && !longFinished,
+    "a mutating call on another session completed without waiting for the held gate",
+  );
+
+  const queuedInput = rpc.call("send_input", {
+    session: gatedSession,
+    command: { type: "key", key: "space", down: true },
+  });
+  const queuedWaited = await Promise.race([
+    queuedInput.then(() => false),
+    new Promise((resolve) => setTimeout(() => resolve(true), 30)),
+  ]);
+  check(queuedWaited, "the overlapping lower-level input call waited behind the session gate");
+
+  const [heldResult] = await Promise.all([longRun, queuedInput]);
+  await rpc.call("step", { session: gatedSession });
+  const afterQueuedInput = await rpc.call("get_state", { session: gatedSession });
+  await rpc.call("send_input", {
+    session: gatedSession,
+    command: { type: "key", key: "space", down: false },
+  });
+  const afterRelease = await rpc.call("get_state", { session: gatedSession });
+  check(
+    heldResult.final_state?.model?.count === 1 &&
+      afterQueuedInput.model?.count === 2 &&
+      afterQueuedInput.input?.held_keys?.includes("Space") &&
+      afterRelease.input?.held_keys?.length === 0,
+    "serialized automation/input lifecycles produced two rising edges and a released final state",
+  );
+  await rpc.call("stop_game", { session: gatedSession });
+
   console.log("\n▸ pause + step is a deterministic clock");
   await rpc.call("pause", { session });
   const paused = await rpc.call("get_state", { session });
