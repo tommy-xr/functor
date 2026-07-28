@@ -835,6 +835,7 @@ step       { "session": "s1" }
           <pre class="shell">functor -d examples/counter run native --debug-port 8077 --hidden &amp;
 RUNTIME_PID=$!
 H=http://127.0.0.1:8077
+until curl -sf $H/ &gt;/dev/null; do sleep 0.05; done
 
 curl -s $H/state | jq '.frame, .tts, .model'
 curl -s -X POST $H/time -d '{"type":"set","tts":0}'              # pause
@@ -843,6 +844,7 @@ curl -s -X POST $H/input -d '{"type":"mouse_move","x":120,"y":80}'
 curl -s -X POST $H/input -d '{"type":"mouse_button","button":"left","down":true}'
 curl -s -X POST $H/input -d '{"type":"ui_event","slot":0,"kind":"Clicked"}'
 curl -s -X POST $H/time -d '{"type":"advance","dts":0.016}'
+until [ "$(curl -s $H/state | jq -r .pending_steps)" = 0 ]; do sleep 0.01; done
 curl -s $H/state | jq '.model'
 curl -s -X POST $H/capture -o frame.png
 
