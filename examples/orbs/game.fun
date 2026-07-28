@@ -242,3 +242,24 @@ let draw = (m, tts: float) =>
         |> List.append(m.world.pilots |> List.map((p) => shipSprite(m, p)))
         |> List.append([hud(m)])))
     |> Frame.withClearColor(bg())
+
+// ========================  SERVER ROLE  ===============================
+// The same file is ALSO the `server` entry: functor.json maps the role to
+// { "file": "game.fun", "prefix": "server" }, so the runner resolves
+// serverInit/serverTick/serverDraw here (functor -d examples/orbs run
+// native --entry server) — one buffer, both roles, one hot reload. The
+// role is the authoritative SERVER section stepped directly, with the bot
+// steering both seats so the view moves on its own.
+
+let serverInit = init
+
+let serverTick = (m, dt: float, tts: float) =>
+  let steer = (pid: float, w: World): World =>
+    (match shipOf(pid, w) with
+     | Option.None => w
+     | Option.Some(s) =>
+       let i = botIntent(s, w.orbs) in
+       w |> recv(pid, Steer(i)) |> sendClaim(pid, i)) in
+  { m with world: m.world |> steer(m.myPid) |> steer(m.botPid) |> step(dt) }
+
+let serverDraw = draw   // the same board, seen from the authority

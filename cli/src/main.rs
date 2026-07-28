@@ -414,7 +414,17 @@ async fn run(args: &Args) -> io::Result<()> {
             // either target (native interprets the file; wasm ships it as
             // text). `build wasm` then also writes the static web bundle.
             Command::Build { environment } => {
-                project.build(&working_directory_str, true)?;
+                // The strict gate validates EVERY declared role, not just the
+                // selected one: the sibling-module set is shared, so asset
+                // verification runs once (the first role), while each role
+                // re-roots the typecheck at its own entry and validates its
+                // own — possibly prefixed — entry-point contract
+                // (`serverInit`/`serverTick`/… for a `{ "file", "prefix" }`
+                // role; see check_contract).
+                for (i, role) in config.all()?.iter().enumerate() {
+                    let loaded = role.build(&working_directory_str, i == 0)?;
+                    role.check_contract(&loaded)?;
+                }
                 match environment {
                     Some(Environment::Wasm) => project.export_wasm(&working_directory_str),
                     _ => Ok(()),

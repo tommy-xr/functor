@@ -568,6 +568,14 @@ pub struct Args {
     #[arg(long)]
     mouse_capture: bool,
 
+    /// The role's entry-point prefix (same-file entries): resolve every
+    /// canonical entry binding through it as camelCase (`server` →
+    /// `serverInit`/`serverTick`/…). Empty = the classic unprefixed names.
+    /// The CLI passes it for a functor.json role declared as
+    /// `{ "file": …, "prefix": … }`.
+    #[arg(long, default_value = "")]
+    entry_prefix: String,
+
     /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
     /// or a JSON array of them — the exact format `GET /scene` emits) and replay
     /// it instead of loading a game dylib. A proof producer for the
@@ -1295,8 +1303,9 @@ pub fn run(args: Args) {
     let mut game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
     } else if args.functor_lang {
-        Box::new(functor_lang_game::FunctorLangGame::create(
+        Box::new(functor_lang_game::FunctorLangGame::create_with_prefix(
             game_path.as_str(),
+            &args.entry_prefix,
         ))
     } else {
         // Functor Lang is the only game producer now (the F#/dylib path was removed in

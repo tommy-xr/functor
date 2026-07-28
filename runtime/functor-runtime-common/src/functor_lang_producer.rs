@@ -45,6 +45,259 @@ use crate::timetravel::SceneRecorder;
 use crate::{Frame, FrameTime};
 
 // ---------------------------------------------------------------------------
+// Per-role entry-point names (same-file entries).
+// ---------------------------------------------------------------------------
+
+/// Intern a resolved entry name as `&'static str`, deduped process-wide so
+/// repeated hot reloads of the same role never grow the leak (the distinct
+/// set is tiny: one batch of names per prefix ever seen).
+fn intern(name: String) -> &'static str {
+    use std::sync::{Mutex, OnceLock};
+    static INTERNED: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+    let mut names = INTERNED
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .expect("entry-name intern table");
+    if let Some(existing) = names.iter().find(|s| **s == name) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(name.into_boxed_str());
+    names.push(leaked);
+    leaked
+}
+
+/// The resolved entry-point binding names for one ROLE (same-file entries).
+/// A functor.json role declared as `{ "file": "game.fun", "prefix": "server" }`
+/// resolves every canonical entry binding through the prefix as camelCase —
+/// `serverInit`, `serverTick`, `serverDraw`, … — so two roles can share one
+/// file (and hot-reload atomically from one buffer). An empty prefix is the
+/// classic unprefixed contract. Built once per load; every canonical-name
+/// lookup, contract check, journal entry, and user-facing error message goes
+/// through these fields — never ad-hoc string concatenation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntryNames {
+    pub init: &'static str,
+    pub tick: &'static str,
+    pub draw: &'static str,
+    pub update: &'static str,
+    pub input: &'static str,
+    pub sampled_input: &'static str,
+    pub mouse_move: &'static str,
+    pub mouse_wheel: &'static str,
+    pub mouse_button: &'static str,
+    pub subscriptions: &'static str,
+    pub physics: &'static str,
+    pub sound_scape: &'static str,
+    pub ui: &'static str,
+    pub webview: &'static str,
+}
+
+impl EntryNames {
+    /// The classic contract: plain `init`/`tick`/`draw`/… binding names.
+    pub const UNPREFIXED: EntryNames = EntryNames {
+        init: "init",
+        tick: "tick",
+        draw: "draw",
+        update: "update",
+        input: "input",
+        sampled_input: "sampledInput",
+        mouse_move: "mouseMove",
+        mouse_wheel: "mouseWheel",
+        mouse_button: "mouseButton",
+        subscriptions: "subscriptions",
+        physics: "physics",
+        sound_scape: "soundScape",
+        ui: "ui",
+        webview: "webview",
+    };
+
+    /// The name-mapping rule: `prefix` + the Capitalized canonical base, as
+    /// camelCase (`"server"` → `serverInit`, `serverSampledInput`, …). An
+    /// empty prefix resolves to the unprefixed names.
+    pub fn with_prefix(prefix: &str) -> EntryNames {
+        if prefix.is_empty() {
+            return EntryNames::UNPREFIXED;
+        }
+        let n = |base: &'static str| {
+            let mut name = String::with_capacity(prefix.len() + base.len());
+            name.push_str(prefix);
+            let mut chars = base.chars();
+            if let Some(first) = chars.next() {
+                name.extend(first.to_uppercase());
+                name.push_str(chars.as_str());
+            }
+            intern(name)
+        };
+        let u = EntryNames::UNPREFIXED;
+        EntryNames {
+            init: n(u.init),
+            tick: n(u.tick),
+            draw: n(u.draw),
+            update: n(u.update),
+            input: n(u.input),
+            sampled_input: n(u.sampled_input),
+            mouse_move: n(u.mouse_move),
+            mouse_wheel: n(u.mouse_wheel),
+            mouse_button: n(u.mouse_button),
+            subscriptions: n(u.subscriptions),
+            physics: n(u.physics),
+            sound_scape: n(u.sound_scape),
+            ui: n(u.ui),
+            webview: n(u.webview),
+        }
+    }
+}
+
+/// A load-time-validated game contract: the role's `init` value plus which
+/// optional entry points the program defines. One shared implementation for
+/// the desktop and embedded producers' load paths AND the CLI's `build`
+/// gate, so the rules — and their teaching errors, which name the role's
+/// RESOLVED bindings (`serverTick`, never `tick`) — cannot drift.
+pub struct GameContract {
+    pub init: Value,
+    pub has_input: bool,
+    pub has_sampled_input: bool,
+    pub has_mouse_move: bool,
+    pub has_mouse_wheel: bool,
+    pub has_mouse_button: bool,
+    pub has_subscriptions: bool,
+    pub has_physics: bool,
+    pub has_soundscape: bool,
+    pub has_ui: bool,
+    pub has_webview: bool,
+}
+
+/// Contract-validate a loaded session against a role's entry names. The
+/// producer contract is knowable at load — fail here, not once per frame:
+/// `init` must be a model VALUE, `tick`/`draw` functions of the right arity,
+/// and each OPTIONAL entry point, when present, must honor its shape.
+pub fn validate_contract(
+    path: &str,
+    session: &Session,
+    names: &EntryNames,
+) -> Result<GameContract, String> {
+    let init = session
+        .global(names.init)
+        .ok_or_else(|| format!("{path} has no top-level `let {} = …`", names.init))?;
+    if matches!(
+        init,
+        Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
+    ) {
+        return Err(format!(
+            "{path}: `{}` must be a model value, not a function",
+            names.init
+        ));
+    }
+    if contains_effect(&init) {
+        return Err(format!(
+            "{path}: `{}` contains an Effect value — Effects are commands, not data; \
+return them beside the model as `(model, effect)`",
+            names.init
+        ));
+    }
+    require_function(path, session, names.tick, 3)?;
+    require_function(path, session, names.draw, 2)?;
+    // `input` is optional (many games are non-interactive), but when
+    // present it must honor the contract: (model, key, isDown) => model.
+    let has_input = session.global(names.input).is_some();
+    if has_input {
+        require_function(path, session, names.input, 3)?;
+    }
+    let has_sampled_input = session.global(names.sampled_input).is_some();
+    if has_sampled_input {
+        require_function(path, session, names.sampled_input, 2)?;
+    }
+    // Same deal for the mouse: `mouseMove(model, x, y)` in logical shell coordinates,
+    // `mouseWheel(model, delta)`.
+    let has_mouse_move = session.global(names.mouse_move).is_some();
+    if has_mouse_move {
+        require_function(path, session, names.mouse_move, 3)?;
+    }
+    let has_mouse_wheel = session.global(names.mouse_wheel).is_some();
+    if has_mouse_wheel {
+        require_function(path, session, names.mouse_wheel, 2)?;
+    }
+    // `mouseButton(model, button, isDown)` — the `input` twin for the pointer.
+    let has_mouse_button = session.global(names.mouse_button).is_some();
+    if has_mouse_button {
+        require_function(path, session, names.mouse_button, 3)?;
+    }
+    // The MVU pair: `subscriptions(model)` declares timers whose fired
+    // messages fold through `update(model, msg)` — so subscriptions
+    // without an update have nowhere to deliver.
+    let has_subscriptions = session.global(names.subscriptions).is_some();
+    if has_subscriptions {
+        require_function(path, session, names.subscriptions, 1)?;
+        if session.global(names.update).is_none() {
+            return Err(format!(
+                "{path}: `{}` produces messages but there is no \
+`let {} = (model, msg) => …` to receive them",
+                names.subscriptions, names.update
+            ));
+        }
+    }
+    if session.global(names.update).is_some() {
+        require_function(path, session, names.update, 2)?;
+    }
+    // Optional physics: `physics(model) => Physics.scene(…)` declares the
+    // bodies that should exist; the host reconciles + fixed-steps the
+    // world after each tick (docs/physics.md).
+    let has_physics = session.global(names.physics).is_some();
+    if has_physics {
+        require_function(path, session, names.physics, 1)?;
+    }
+    // Optional soundscape: `soundScape(model)` returns an AudioScene (the
+    // continuous, reconciled half of audio). No `update` requirement — the
+    // scene is reconciled by the shell, not folded back as a message.
+    let has_soundscape = session.global(names.sound_scape).is_some();
+    if has_soundscape {
+        require_function(path, session, names.sound_scape, 1)?;
+    }
+    // Optional HUD: `ui(model)` returns a View (Ui.text / Ui.column /
+    // Ui.panel), lowered to the shared text overlay.
+    let has_ui = session.global(names.ui).is_some();
+    if has_ui {
+        require_function(path, session, names.ui, 1)?;
+    }
+    // Optional webview: `webview(model)` returns an Html node (Html.div /
+    // Html.text / …), rendered by shells that have an HTML overlay.
+    let has_webview = session.global(names.webview).is_some();
+    if has_webview {
+        require_function(path, session, names.webview, 1)?;
+    }
+    Ok(GameContract {
+        init,
+        has_input,
+        has_sampled_input,
+        has_mouse_move,
+        has_mouse_wheel,
+        has_mouse_button,
+        has_subscriptions,
+        has_physics,
+        has_soundscape,
+        has_ui,
+        has_webview,
+    })
+}
+
+/// `name` must be a function of `arity` params — a contract violation is
+/// reportable at load, and the alternative is one error per frame, forever.
+fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> Result<(), String> {
+    match session.global(name) {
+        Some(Value::Closure(closure)) if closure.params.len() == arity => Ok(()),
+        Some(Value::Closure(closure)) => Err(format!(
+            "{path}: `{name}` must take {arity} parameter(s), takes {}",
+            closure.params.len()
+        )),
+        Some(other) => Err(format!(
+            "{path}: `{name}` must be a function, got {}",
+            other.kind_name()
+        )),
+        None => Err(format!("{path} has no top-level `let {name} = …`")),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The paused-inspector replay journal (visual-debugger PR2).
 //
 // During normal play the producer records nothing and renders no Display text —
@@ -324,6 +577,9 @@ impl Reporter {
 /// needs to run frame work, and dropped at the end of the call.
 pub struct FrameCtx<'a> {
     pub session: &'a Session,
+    /// The role's resolved entry-point names (same-file entries) — every
+    /// canonical lookup and error message in the frame body goes through it.
+    pub names: &'a EntryNames,
     pub model: &'a mut Value,
     pub physics_rt: &'a mut SteppedPhysics,
     /// The physics world's current fixed frame (what the coupled scene
@@ -426,10 +682,10 @@ impl FrameCtx<'_> {
             Value::Number(frame_time.dts as f64),
             Value::Number(frame_time.tts as f64),
         ];
-        journal_push("tick", &args, Provenance::Tick);
-        match self.session.call("tick", args, &mut FunctorHost) {
+        journal_push(self.names.tick, &args, Provenance::Tick);
+        match self.session.call(self.names.tick, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error("tick", &err),
+            Err(err) => self.reporter.frame_error(self.names.tick, &err),
         }
     }
 
@@ -472,10 +728,11 @@ impl FrameCtx<'_> {
         // CURRENT model's subscriptions — post-step, alongside query answers.
         let events = std::mem::take(self.pending_events);
         if !events.is_empty() && self.has_subscriptions {
-            match self
-                .session
-                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-            {
+            match self.session.call(
+                self.names.subscriptions,
+                vec![self.model.clone()],
+                &mut FunctorHost,
+            ) {
                 Ok(subs) => match physics_event_taggers(&subs) {
                     Ok(taggers) if !taggers.is_empty() => {
                         let mut reports: Vec<String> = Vec::new();
@@ -498,7 +755,7 @@ impl FrameCtx<'_> {
                         .reporter
                         .report_once(format!("[functor-lang] {message}")),
                 },
-                Err(err) => self.reporter.frame_error("subscriptions", &err),
+                Err(err) => self.reporter.frame_error(self.names.subscriptions, &err),
             }
         }
     }
@@ -611,14 +868,14 @@ impl FrameCtx<'_> {
                     let ui_handlers = events
                         .iter()
                         .any(|e| matches!(e, RecordedInput::UiEvent(_)))
-                        .then(|| self.eval_handler_table("ui"))
+                        .then(|| self.eval_handler_table(self.names.ui))
                         .unwrap_or_default();
                     // Webview events carry their OWN table: same step-top
                     // rebuild, from `webview(model)` instead of `ui(model)`.
                     let webview_handlers = events
                         .iter()
                         .any(|e| matches!(e, RecordedInput::WebviewEvent(_)))
-                        .then(|| self.eval_handler_table("webview"))
+                        .then(|| self.eval_handler_table(self.names.webview))
                         .unwrap_or_default();
                     for event in events {
                         match event {
@@ -731,12 +988,12 @@ impl FrameCtx<'_> {
                     return; // unrecognized code / Key::Unknown — dropped, like live.
                 };
                 (
-                    "input",
+                    self.names.input,
                     vec![self.model.clone(), key_value, Value::Bool(is_down)],
                 )
             }
             RecordedInput::MouseMove { x, y } => (
-                "mouseMove",
+                self.names.mouse_move,
                 vec![
                     self.model.clone(),
                     Value::Number(x as f64),
@@ -744,7 +1001,7 @@ impl FrameCtx<'_> {
                 ],
             ),
             RecordedInput::MouseWheel { delta } => (
-                "mouseWheel",
+                self.names.mouse_wheel,
                 vec![self.model.clone(), Value::Number(delta as f64)],
             ),
             RecordedInput::MouseButton { button, is_down } => {
@@ -752,7 +1009,7 @@ impl FrameCtx<'_> {
                     return; // unrecognized code / Unknown — dropped, like live.
                 };
                 (
-                    "mouseButton",
+                    self.names.mouse_button,
                     vec![self.model.clone(), button_value, Value::Bool(is_down)],
                 )
             }
@@ -783,14 +1040,17 @@ impl FrameCtx<'_> {
     /// snapshot beside edge events; dry-run replay calls the same body with
     /// `record = false`.
     pub fn deliver_sampled_input(&mut self, snapshot: &crate::InputSnapshot, record: bool) {
-        if self.session.global("sampledInput").is_none() {
+        if self.session.global(self.names.sampled_input).is_none() {
             return;
         }
         let args = vec![self.model.clone(), crate::input_snapshot_value(snapshot)];
-        journal_push("sampledInput", &args, Provenance::SampledInput);
-        match self.session.call("sampledInput", args, &mut FunctorHost) {
+        journal_push(self.names.sampled_input, &args, Provenance::SampledInput);
+        match self
+            .session
+            .call(self.names.sampled_input, args, &mut FunctorHost)
+        {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error("sampledInput", &err),
+            Err(err) => self.reporter.frame_error(self.names.sampled_input, &err),
         }
         if record {
             self.input_buf
@@ -817,12 +1077,12 @@ not data; return them beside the model as `(model, effect)` instead of storing t
         let Some(effects) = effects else { return };
         // Only MESSAGE-producing effects need an `update` to receive them —
         // tagger-less physics commands must not be dropped over a missing hook.
-        if needs_update(&effects) && self.session.global("update").is_none() {
-            self.reporter.report_once(
-                "[functor-lang] effects returned but there is no `let update = (model, msg) => …` \
-to receive their messages; dropping them"
-                    .to_string(),
-            );
+        if needs_update(&effects) && self.session.global(self.names.update).is_none() {
+            self.reporter.report_once(format!(
+                "[functor-lang] effects returned but there is no `let {} = (model, msg) => …` \
+to receive their messages; dropping them",
+                self.names.update
+            ));
             return;
         }
         let mut reports: Vec<String> = Vec::new();
@@ -860,14 +1120,14 @@ to receive their messages; dropping them"
             }
             return;
         }
-        let subs =
-            match self
-                .session
-                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-            {
-                Ok(subs) => subs,
-                Err(err) => return self.reporter.frame_error("subscriptions", &err),
-            };
+        let subs = match self.session.call(
+            self.names.subscriptions,
+            vec![self.model.clone()],
+            &mut FunctorHost,
+        ) {
+            Ok(subs) => subs,
+            Err(err) => return self.reporter.frame_error(self.names.subscriptions, &err),
+        };
         // Reconcile connections EVERY frame — including frame one (before the
         // timer window exists), so a declared connection opens immediately.
         self.reconcile_connections(&subs);
@@ -887,10 +1147,10 @@ to receive their messages; dropping them"
         };
         for msg in msgs {
             let args = vec![self.model.clone(), msg];
-            journal_push("update", &args, Provenance::Subscription);
-            match self.session.call("update", args, &mut FunctorHost) {
+            journal_push(self.names.update, &args, Provenance::Subscription);
+            match self.session.call(self.names.update, args, &mut FunctorHost) {
                 Ok(returned) => self.absorb(returned),
-                Err(err) => self.reporter.frame_error("update", &err),
+                Err(err) => self.reporter.frame_error(self.names.update, &err),
             }
         }
     }
@@ -935,10 +1195,10 @@ to receive their messages; dropping them"
             };
             any_delivered = true;
             let args = vec![self.model.clone(), msg];
-            journal_push("update", &args, Provenance::Subscription);
-            match self.session.call("update", args, &mut FunctorHost) {
+            journal_push(self.names.update, &args, Provenance::Subscription);
+            match self.session.call(self.names.update, args, &mut FunctorHost) {
                 Ok(returned) => self.absorb(returned),
-                Err(err) => self.reporter.frame_error("update", &err),
+                Err(err) => self.reporter.frame_error(self.names.update, &err),
             }
         }
         // Only mark delivered when a tagger actually received it — an
@@ -961,7 +1221,10 @@ to receive their messages; dropping them"
             return 0;
         }
         let args = vec![self.model.clone()];
-        match self.session.call("physics", args, &mut FunctorHost) {
+        match self
+            .session
+            .call(self.names.physics, args, &mut FunctorHost)
+        {
             Ok(value) => match physics_scene_value(&value) {
                 Some(scene) => {
                     // The recorded drive (Phase 6): every fixed frame goes
@@ -985,7 +1248,7 @@ to receive their messages; dropping them"
                     value.kind_name()
                 )),
             },
-            Err(err) => self.reporter.frame_error("physics", &err),
+            Err(err) => self.reporter.frame_error(self.names.physics, &err),
         }
         0
     }
@@ -1055,14 +1318,14 @@ to receive their messages; dropping them"
         if !self.has_subscriptions {
             return;
         }
-        let subs =
-            match self
-                .session
-                .call("subscriptions", vec![self.model.clone()], &mut FunctorHost)
-            {
-                Ok(subs) => subs,
-                Err(err) => return self.reporter.frame_error("subscriptions", &err),
-            };
+        let subs = match self.session.call(
+            self.names.subscriptions,
+            vec![self.model.clone()],
+            &mut FunctorHost,
+        ) {
+            Ok(subs) => subs,
+            Err(err) => return self.reporter.frame_error(self.names.subscriptions, &err),
+        };
         let conns = match net_conn_subs(&subs) {
             Ok(conns) => conns,
             Err(message) => {
@@ -1085,10 +1348,10 @@ to receive their messages; dropping them"
             Err(err) => return self.reporter.frame_error("net event", &err),
         };
         let args = vec![self.model.clone(), msg];
-        journal_push("update", &args, Provenance::NetEvent);
-        match self.session.call("update", args, &mut FunctorHost) {
+        journal_push(self.names.update, &args, Provenance::NetEvent);
+        match self.session.call(self.names.update, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error("update", &err),
+            Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
 
@@ -1109,10 +1372,10 @@ to receive their messages; dropping them"
             Err(err) => return self.reporter.frame_error("http response", &err),
         };
         let args = vec![self.model.clone(), msg];
-        journal_push("update", &args, Provenance::HttpResponse);
-        match self.session.call("update", args, &mut FunctorHost) {
+        journal_push(self.names.update, &args, Provenance::HttpResponse);
+        match self.session.call(self.names.update, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error("update", &err),
+            Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
 
@@ -1128,12 +1391,12 @@ to receive their messages; dropping them"
         // Check the receiver exists before doing any work (the `absorb` rule)
         // — a game with widgets but no `update` gets the teaching error, not
         // a wasted tagger application.
-        if self.session.global("update").is_none() {
-            return self.reporter.report_once(
+        if self.session.global(self.names.update).is_none() {
+            return self.reporter.report_once(format!(
                 "[functor-lang] a ui widget produced a message but there is no \
-`let update = (model, msg) => …` to receive it; dropping it"
-                    .to_string(),
-            );
+`let {} = (model, msg) => …` to receive it; dropping it",
+                self.names.update
+            ));
         }
         let Some(handler) = handlers.get(event.slot as usize) else {
             return self.reporter.report_once(format!(
@@ -1175,10 +1438,10 @@ carries no payload to tag; dropped",
             }
         };
         let args = vec![self.model.clone(), msg];
-        journal_push("update", &args, Provenance::UiEvent);
-        match self.session.call("update", args, &mut FunctorHost) {
+        journal_push(self.names.update, &args, Provenance::UiEvent);
+        match self.session.call(self.names.update, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error("update", &err),
+            Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
 
@@ -1192,10 +1455,10 @@ carries no payload to tag; dropped",
             return;
         };
         let args = vec![self.model.clone(), message];
-        journal_push("update", &args, Provenance::AudioFinished);
-        match self.session.call("update", args, &mut FunctorHost) {
+        journal_push(self.names.update, &args, Provenance::AudioFinished);
+        match self.session.call(self.names.update, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error("update", &err),
+            Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
 
@@ -1208,10 +1471,10 @@ carries no payload to tag; dropped",
             return;
         };
         let args = vec![self.model.clone(), message];
-        journal_push("update", &args, Provenance::PreloadSettled);
-        match self.session.call("update", args, &mut FunctorHost) {
+        journal_push(self.names.update, &args, Provenance::PreloadSettled);
+        match self.session.call(self.names.update, args, &mut FunctorHost) {
             Ok(returned) => self.absorb(returned),
-            Err(err) => self.reporter.frame_error("update", &err),
+            Err(err) => self.reporter.frame_error(self.names.update, &err),
         }
     }
 }
@@ -1291,6 +1554,7 @@ impl Drop for DryWorld {
 #[allow(clippy::too_many_arguments)]
 fn forward_step_scene_with_error(
     session: &Session,
+    names: &EntryNames,
     model: &Value,
     has_physics: bool,
     has_subscriptions: bool,
@@ -1368,6 +1632,7 @@ fn forward_step_scene_with_error(
         let mut clock = clock;
         let mut ctx = FrameCtx {
             session,
+            names,
             model: &mut model,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
@@ -1409,6 +1674,7 @@ fn forward_step_scene_with_error(
 #[allow(clippy::too_many_arguments)]
 pub fn forward_step_scene(
     session: &Session,
+    names: &EntryNames,
     model: &Value,
     has_physics: bool,
     has_subscriptions: bool,
@@ -1421,6 +1687,7 @@ pub fn forward_step_scene(
 ) -> Vec<(Value, Option<physics::PhysicsSnapshot>)> {
     forward_step_scene_with_error(
         session,
+        names,
         model,
         has_physics,
         has_subscriptions,
@@ -1451,19 +1718,20 @@ pub fn forward_step_scene(
 /// yet capture. Physics games likewise need historical world replay.
 pub fn materialize_counterfactual_history(
     session: &Session,
+    names: &EntryNames,
     model: &mut Value,
     recorder: &mut SceneRecorder,
     has_physics: bool,
     has_subscriptions: bool,
     preserve_selected_model: bool,
 ) -> Result<Option<usize>, String> {
-    if has_physics || session.global("update").is_some() {
+    if has_physics || session.global(names.update).is_some() {
         return Ok(None);
     }
     let Some((lo, _, hi)) = recorder.counterfactual_replay_span()? else {
         return Ok(None);
     };
-    let Some(init) = session.global("init") else {
+    let Some(init) = session.global(names.init) else {
         return Ok(None);
     };
     let recorded_frames = hi as usize + 1;
@@ -1471,6 +1739,7 @@ pub fn materialize_counterfactual_history(
     let steps = prefix_len + recorded_frames;
     let (stepped, replay_error) = forward_step_scene_with_error(
         session,
+        names,
         &init,
         false,
         has_subscriptions,
@@ -1531,6 +1800,7 @@ pub fn materialize_counterfactual_history(
 #[allow(clippy::too_many_arguments)]
 pub fn ghost_frames(
     session: &Session,
+    names: &EntryNames,
     model: &Value,
     recorder: &SceneRecorder,
     has_physics: bool,
@@ -1568,6 +1838,7 @@ pub fn ghost_frames(
         .and_then(|frame| recorder.sampled_input_at_or_before(frame));
     let stepped = forward_step_scene_with_error(
         session,
+        names,
         model,
         has_physics,
         has_subscriptions,
@@ -1613,7 +1884,7 @@ pub fn ghost_frames(
         let tts = start_tts as f32 + (i as f32 + 1.0) * steps_per_division as f32 * sub_dt;
         let args = vec![model_i.clone(), Value::Number(tts as f64)];
         // A draw error or non-Frame return for a division is skipped, not fatal.
-        if let Ok(value) = session.call("draw", args, &mut FunctorHost) {
+        if let Ok(value) = session.call(names.draw, args, &mut FunctorHost) {
             if let Some(frame) = frame_value(&value) {
                 frames.push((frame.clone(), FrameTime { dts: 0.0, tts }));
             }
@@ -1659,6 +1930,30 @@ mod tests {
     }
 
     #[test]
+    fn entry_names_resolve_the_prefix_as_camel_case() {
+        let names = EntryNames::with_prefix("server");
+        assert_eq!(names.init, "serverInit");
+        assert_eq!(names.tick, "serverTick");
+        assert_eq!(names.draw, "serverDraw");
+        assert_eq!(names.update, "serverUpdate");
+        assert_eq!(names.input, "serverInput");
+        assert_eq!(names.sampled_input, "serverSampledInput");
+        assert_eq!(names.mouse_move, "serverMouseMove");
+        assert_eq!(names.mouse_wheel, "serverMouseWheel");
+        assert_eq!(names.mouse_button, "serverMouseButton");
+        assert_eq!(names.subscriptions, "serverSubscriptions");
+        assert_eq!(names.physics, "serverPhysics");
+        assert_eq!(names.sound_scape, "serverSoundScape");
+        assert_eq!(names.ui, "serverUi");
+        assert_eq!(names.webview, "serverWebview");
+        // Empty/absent prefix = the classic unprefixed contract.
+        assert_eq!(EntryNames::with_prefix(""), EntryNames::UNPREFIXED);
+        // Interned: rebuilding the same prefix (every hot reload) reuses the
+        // same leaked names instead of growing the table.
+        assert!(std::ptr::eq(EntryNames::with_prefix("server").tick, names.tick));
+    }
+
+    #[test]
     fn failed_counterfactual_replay_keeps_the_old_history_atomically() {
         let src = "\
             let init = 0.0\n\
@@ -1684,6 +1979,7 @@ mod tests {
         let error =
             materialize_counterfactual_history(
                 &session,
+                &EntryNames::UNPREFIXED,
                 &mut model,
                 &mut recorder,
                 false,
@@ -1733,6 +2029,7 @@ mod tests {
         recorder.finish_reload(&model, physics_frame, true);
         materialize_counterfactual_history(
             &session,
+            &EntryNames::UNPREFIXED,
             &mut model,
             &mut recorder,
             false,
@@ -1797,6 +2094,7 @@ mod tests {
         assert_eq!(
             materialize_counterfactual_history(
                 &session,
+                &EntryNames::UNPREFIXED,
                 &mut model,
                 &mut recorder,
                 false,
@@ -1838,6 +2136,7 @@ mod tests {
         };
         let stepped = forward_step_scene(
             &session,
+            &EntryNames::UNPREFIXED,
             &Value::Number(0.0),
             false,
             false,
@@ -1866,6 +2165,7 @@ mod tests {
         };
         let (from_live_tail, error) = forward_step_scene_with_error(
             &session,
+            &EntryNames::UNPREFIXED,
             &Value::Number(0.0),
             false,
             false,
@@ -1968,6 +2268,7 @@ mod tests {
 
         let stepped = forward_step_scene(
             &session,
+            &EntryNames::UNPREFIXED,
             &Value::Number(0.0),
             false,
             false,
@@ -2017,6 +2318,7 @@ mod tests {
         );
         let mut ctx = FrameCtx {
             session,
+            names: &EntryNames::UNPREFIXED,
             model,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
@@ -2182,6 +2484,7 @@ mod tests {
         );
         let mut ctx = FrameCtx {
             session,
+            names: &EntryNames::UNPREFIXED,
             model,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
@@ -2242,6 +2545,7 @@ mod tests {
         );
         let mut ctx = FrameCtx {
             session,
+            names: &EntryNames::UNPREFIXED,
             model,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
@@ -2390,6 +2694,7 @@ mod tests {
         // the freshly-armed journal is still empty (ghost calls excluded).
         let _ = forward_step_scene(
             &session,
+            &EntryNames::UNPREFIXED,
             &m,
             false, // has_physics
             true,  // has_subscriptions

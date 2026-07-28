@@ -27,11 +27,12 @@ use functor_lang::{Session, Value};
 
 use crate::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    contains_effect, frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog,
+    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog,
     EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
-    journal_arm, journal_swap, FrameCtx, JournalEntry, Reporter, SpanSource,
+    journal_arm, journal_swap, validate_contract, EntryNames, FrameCtx, JournalEntry, Reporter,
+    SpanSource,
 };
 use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
@@ -84,6 +85,10 @@ impl ProducerPlatform for NativePlatform {
 
 pub struct FunctorLangEmbeddedGame {
     path: String,
+    /// The role's resolved entry-point names (same-file entries): built once
+    /// from the role's prefix at create time and reused by every reload —
+    /// every canonical lookup and contract error goes through it.
+    names: EntryNames,
     /// The project's source files (entry FIRST, then siblings) as
     /// `(path, source)` — the in-memory stand-in for the on-disk directory the
     /// desktop producer re-reads on reload. A push (`reload_source`) replaces
@@ -225,7 +230,7 @@ struct Loaded {
 /// is every project file as `(path, source)`, the ENTRY first, then siblings
 /// (`file = module`, so `pieces.fun` is module `Pieces`). Errors come back as
 /// fully rendered strings (`path:line:col: message`).
-fn load_source(sources: &[(String, String)]) -> Result<Loaded, String> {
+fn load_source(sources: &[(String, String)], names: &EntryNames) -> Result<Loaded, String> {
     let path = sources
         .first()
         .map(|(p, _)| p.clone())
@@ -257,110 +262,26 @@ fn load_source(sources: &[(String, String)]) -> Result<Loaded, String> {
             source_map.render(f.error.span.start, &f.error.message)
         )
     })?;
-    // The producer contract is knowable at load — fail here, not once per
-    // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
-    // right arity.
-    let init = session
-        .global("init")
-        .ok_or_else(|| format!("{path} has no top-level `let init = …`"))?;
-    if matches!(
-        init,
-        Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
-    ) {
-        return Err(format!(
-            "{path}: `init` must be a model value, not a function"
-        ));
-    }
-    if contains_effect(&init) {
-        return Err(format!(
-            "{path}: `init` contains an Effect value — Effects are commands, not data; \
-return them beside the model as `(model, effect)`"
-        ));
-    }
-    require_function(&path, &session, "tick", 3)?;
-    require_function(&path, &session, "draw", 2)?;
-    // `input` is optional (many games are non-interactive), but when
-    // present it must honor the contract: (model, key, isDown) => model.
-    let has_input = session.global("input").is_some();
-    if has_input {
-        require_function(&path, &session, "input", 3)?;
-    }
-    let has_sampled_input = session.global("sampledInput").is_some();
-    if has_sampled_input {
-        require_function(&path, &session, "sampledInput", 2)?;
-    }
-    // Same deal for the mouse: `mouseMove(model, x, y)` in logical shell coordinates,
-    // `mouseWheel(model, delta)`.
-    let has_mouse_move = session.global("mouseMove").is_some();
-    if has_mouse_move {
-        require_function(&path, &session, "mouseMove", 3)?;
-    }
-    let has_mouse_wheel = session.global("mouseWheel").is_some();
-    if has_mouse_wheel {
-        require_function(&path, &session, "mouseWheel", 2)?;
-    }
-    // `mouseButton(model, button, isDown)` — the `input` twin for the pointer.
-    let has_mouse_button = session.global("mouseButton").is_some();
-    if has_mouse_button {
-        require_function(&path, &session, "mouseButton", 3)?;
-    }
-    // The MVU pair: `subscriptions(model)` declares timers whose fired
-    // messages fold through `update(model, msg)` — so subscriptions
-    // without an update have nowhere to deliver.
-    let has_subscriptions = session.global("subscriptions").is_some();
-    if has_subscriptions {
-        require_function(&path, &session, "subscriptions", 1)?;
-        if session.global("update").is_none() {
-            return Err(format!(
-                "{path}: `subscriptions` produces messages but there is no \
-`let update = (model, msg) => …` to receive them"
-            ));
-        }
-    }
-    if session.global("update").is_some() {
-        require_function(&path, &session, "update", 2)?;
-    }
-    // Optional physics: `physics(model) => Physics.scene(…)` declares the
-    // bodies that should exist; the host reconciles + fixed-steps the
-    // world after each tick (docs/physics.md).
-    let has_physics = session.global("physics").is_some();
-    if has_physics {
-        require_function(&path, &session, "physics", 1)?;
-    }
-    // Optional soundscape: `soundScape(model)` returns an AudioScene (the
-    // continuous, reconciled half of audio). No `update` requirement — the
-    // scene is reconciled by the shell, not folded back as a message.
-    let has_soundscape = session.global("soundScape").is_some();
-    if has_soundscape {
-        require_function(&path, &session, "soundScape", 1)?;
-    }
-    // Optional HUD: `ui(model)` returns a View (Ui.text / Ui.column /
-    // Ui.panel), lowered to the shared text overlay.
-    let has_ui = session.global("ui").is_some();
-    if has_ui {
-        require_function(&path, &session, "ui", 1)?;
-    }
-    // Optional webview: `webview(model)` returns an Html node (Html.div /
-    // Html.text / …), rendered by shells that have an HTML overlay.
-    let has_webview = session.global("webview").is_some();
-    if has_webview {
-        require_function(&path, &session, "webview", 1)?;
-    }
+    // The producer contract (init a value, tick/draw functions of the right
+    // arity, optional hooks well-shaped) is shared with the desktop producer
+    // and the CLI's build gate — errors name the ROLE'S resolved bindings
+    // (`serverTick`, not `tick`) via `names`.
+    let contract = validate_contract(&path, &session, names)?;
     Ok(Loaded {
         sources: source_map,
         module,
         session,
-        init,
-        has_input,
-        has_sampled_input,
-        has_mouse_move,
-        has_mouse_wheel,
-        has_mouse_button,
-        has_subscriptions,
-        has_physics,
-        has_soundscape,
-        has_ui,
-        has_webview,
+        init: contract.init,
+        has_input: contract.has_input,
+        has_sampled_input: contract.has_sampled_input,
+        has_mouse_move: contract.has_mouse_move,
+        has_mouse_wheel: contract.has_mouse_wheel,
+        has_mouse_button: contract.has_mouse_button,
+        has_subscriptions: contract.has_subscriptions,
+        has_physics: contract.has_physics,
+        has_soundscape: contract.has_soundscape,
+        has_ui: contract.has_ui,
+        has_webview: contract.has_webview,
     })
 }
 
@@ -372,14 +293,27 @@ impl FunctorLangEmbeddedGame {
         sources: Vec<(String, String)>,
         platform: Box<dyn ProducerPlatform>,
     ) -> Result<FunctorLangEmbeddedGame, String> {
+        Self::create_with_prefix(sources, "", platform)
+    }
+
+    /// [`Self::create`] for a PREFIXED role (same-file entries): every
+    /// canonical entry binding resolves through `prefix` as camelCase
+    /// (`"server"` → `serverInit`/`serverTick`/…). An empty prefix is the
+    /// classic unprefixed contract.
+    pub fn create_with_prefix(
+        sources: Vec<(String, String)>,
+        prefix: &str,
+        platform: Box<dyn ProducerPlatform>,
+    ) -> Result<FunctorLangEmbeddedGame, String> {
         // Install the shell's diagnostics sinks BEFORE the first load so load
         // errors surface (native: the `log` sink; web: console/event bridge).
         platform.install_sinks();
+        let names = EntryNames::with_prefix(prefix);
         let path = sources
             .first()
             .map(|(p, _)| p.clone())
             .unwrap_or_else(|| "game.fun".to_string());
-        let loaded = load_source(&sources)?;
+        let loaded = load_source(&sources, &names)?;
         log::info!("[functor-lang] loaded {path}");
         // Arm the paused-inspector journal on this thread: from now on every
         // live model-updating call is journaled (a cheap Rc-clone push).
@@ -395,6 +329,7 @@ impl FunctorLangEmbeddedGame {
             source_hashes,
             sources,
             path,
+            names,
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
@@ -506,6 +441,7 @@ impl FunctorLangEmbeddedGame {
         let replay_started = now_ms();
         let history_replay = match crate::functor_lang_producer::materialize_counterfactual_history(
             &self.session,
+            &self.names,
             &mut self.model,
             &mut self.recorder,
             self.has_physics,
@@ -597,6 +533,7 @@ impl FunctorLangEmbeddedGame {
     fn ctx(&mut self) -> FrameCtx<'_> {
         FrameCtx {
             session: &self.session,
+            names: &self.names,
             model: &mut self.model,
             physics_rt: &mut self.physics_rt,
             physics_frame: &mut self.physics_frame,
@@ -653,7 +590,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         } else {
             sources.push((self.path.clone(), source.to_string()));
         }
-        let loaded = load_source(&sources)?;
+        let loaded = load_source(&sources, &self.names)?;
         self.sources = sources;
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
@@ -680,7 +617,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files)?;
+        let loaded = load_source(files, &self.names)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         let (rebound, history_replay) = self.swap_in(loaded);
@@ -706,7 +643,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files)?;
+        let loaded = load_source(files, &self.names)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         self.reset_in(loaded);
@@ -804,6 +741,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
     ) -> Vec<(Frame, FrameTime)> {
         crate::functor_lang_producer::ghost_frames(
             &self.session,
+            &self.names,
             &self.model,
             &self.recorder,
             self.has_physics,
@@ -859,9 +797,9 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return; // unrecognized code / Key::Unknown — never delivered.
         };
         let args = vec![self.model.clone(), key_value, Value::Bool(is_down)];
-        match self.session.call("input", args, &mut FunctorHost) {
+        match self.session.call(self.names.input, args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("input", &err),
+            Err(err) => self.reporter.frame_error(self.names.input, &err),
         }
         // Buffer the raw event for the frame-indexed input log (T6b): flushed
         // into the recorder by `record_frame`, replayed by the forward-step.
@@ -878,9 +816,12 @@ impl GameProducer for FunctorLangEmbeddedGame {
             Value::Number(x as f64),
             Value::Number(y as f64),
         ];
-        match self.session.call("mouseMove", args, &mut FunctorHost) {
+        match self
+            .session
+            .call(self.names.mouse_move, args, &mut FunctorHost)
+        {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("mouseMove", &err),
+            Err(err) => self.reporter.frame_error(self.names.mouse_move, &err),
         }
         self.input_buf
             .push(crate::RecordedInput::MouseMove { x, y });
@@ -891,9 +832,12 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return;
         }
         let args = vec![self.model.clone(), Value::Number(delta as f64)];
-        match self.session.call("mouseWheel", args, &mut FunctorHost) {
+        match self
+            .session
+            .call(self.names.mouse_wheel, args, &mut FunctorHost)
+        {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("mouseWheel", &err),
+            Err(err) => self.reporter.frame_error(self.names.mouse_wheel, &err),
         }
         self.input_buf
             .push(crate::RecordedInput::MouseWheel { delta });
@@ -910,9 +854,12 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return; // unrecognized code / MouseButton::Unknown — never delivered.
         };
         let args = vec![self.model.clone(), button_value, Value::Bool(is_down)];
-        match self.session.call("mouseButton", args, &mut FunctorHost) {
+        match self
+            .session
+            .call(self.names.mouse_button, args, &mut FunctorHost)
+        {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("mouseButton", &err),
+            Err(err) => self.reporter.frame_error(self.names.mouse_button, &err),
         }
         self.input_buf
             .push(crate::RecordedInput::MouseButton { button, is_down });
@@ -956,7 +903,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             .scrub_render_tts()
             .unwrap_or(frame_time.tts as f64);
         let args = vec![self.model.clone(), Value::Number(tts)];
-        match self.session.call("draw", args, &mut FunctorHost) {
+        match self.session.call(self.names.draw, args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => {
                     self.last_frame = frame.clone();
@@ -966,7 +913,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
                 }
                 None => {
                     let rendered = format!(
-                        "[functor-lang] draw must return Frame.create(camera, scene), got {}",
+                        "[functor-lang] {} must return Frame.create(camera, scene), got {}",
+                        self.names.draw,
                         value.kind_name()
                     );
                     self.platform.set_draw_overlay(Some(&rendered));
@@ -974,7 +922,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
                 }
             },
             Err(err) => {
-                let rendered = self.reporter.render_frame_error("draw", &err);
+                let rendered = self.reporter.render_frame_error(self.names.draw, &err);
                 self.platform.set_draw_overlay(Some(&rendered));
                 self.reporter.report_once(rendered);
             }
@@ -985,7 +933,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         if self.has_ui {
             match self
                 .session
-                .call("ui", vec![self.model.clone()], &mut FunctorHost)
+                .call(self.names.ui, vec![self.model.clone()], &mut FunctorHost)
             {
                 Ok(value) => match view_value(&value) {
                     Some(view) => {
@@ -997,7 +945,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
                     None => {
                         let _ = take_ui_handlers();
                         self.reporter.report_once(format!(
-                            "[functor-lang] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                            "[functor-lang] {} must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                            self.names.ui,
                             value.kind_name()
                         ))
                     }
@@ -1006,17 +955,18 @@ impl GameProducer for FunctorLangEmbeddedGame {
                     // A failed evaluation keeps the last good view AND its
                     // handlers; drop the partial table it registered.
                     let _ = take_ui_handlers();
-                    self.reporter.frame_error("ui", &err)
+                    self.reporter.frame_error(self.names.ui, &err)
                 }
             }
         }
         // The optional webview, evaluated beside `draw` like `ui` — same
         // caching, same handler-adoption lockstep, its own handler table.
         if self.has_webview {
-            match self
-                .session
-                .call("webview", vec![self.model.clone()], &mut FunctorHost)
-            {
+            match self.session.call(
+                self.names.webview,
+                vec![self.model.clone()],
+                &mut FunctorHost,
+            ) {
                 Ok(value) => match html_node_value(&value) {
                     Some(node) => {
                         self.last_webview = Some(node.clone());
@@ -1025,14 +975,15 @@ impl GameProducer for FunctorLangEmbeddedGame {
                     None => {
                         let _ = take_ui_handlers();
                         self.reporter.report_once(format!(
-                            "[functor-lang] webview must return an Html node (Html.div / Html.text / …), got {}",
+                            "[functor-lang] {} must return an Html node (Html.div / Html.text / …), got {}",
+                            self.names.webview,
                             value.kind_name()
                         ))
                     }
                 },
                 Err(err) => {
                     let _ = take_ui_handlers();
-                    self.reporter.frame_error("webview", &err)
+                    self.reporter.frame_error(self.names.webview, &err)
                 }
             }
         }
@@ -1040,19 +991,21 @@ impl GameProducer for FunctorLangEmbeddedGame {
         // model) and cached — `audio_scene_json` is a `&self` accessor, and
         // errors need `&mut` dedupe (the `ui` pattern).
         if self.has_soundscape {
-            match self
-                .session
-                .call("soundScape", vec![self.model.clone()], &mut FunctorHost)
-            {
+            match self.session.call(
+                self.names.sound_scape,
+                vec![self.model.clone()],
+                &mut FunctorHost,
+            ) {
                 Ok(value) => match audio_scene_of(&value) {
                     Some(scene) => self.last_soundscape_json = crate::audio::scene_to_json(scene),
                     None => self.reporter.report_once(format!(
-                        "[functor-lang] soundScape must return an AudioScene (AudioScene.create / \
+                        "[functor-lang] {} must return an AudioScene (AudioScene.create / \
 AudioScene.empty), got {}",
+                        self.names.sound_scape,
                         value.kind_name()
                     )),
                 },
-                Err(err) => self.reporter.frame_error("soundScape", &err),
+                Err(err) => self.reporter.frame_error(self.names.sound_scape, &err),
             }
         }
         // On failure this is the last good frame — a bad draw must not blank
@@ -1171,23 +1124,6 @@ AudioScene.empty), got {}",
     }
 }
 
-/// `name` must be a function of `arity` params — a contract violation is
-/// reportable at load, and the alternative is one error per frame, forever.
-fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> Result<(), String> {
-    match session.global(name) {
-        Some(Value::Closure(closure)) if closure.params.len() == arity => Ok(()),
-        Some(Value::Closure(closure)) => Err(format!(
-            "{path}: `{name}` must take {arity} parameter(s), takes {}",
-            closure.params.len()
-        )),
-        Some(other) => Err(format!(
-            "{path}: `{name}` must be a function, got {}",
-            other.kind_name()
-        )),
-        None => Err(format!("{path} has no top-level `let {name} = …`")),
-    }
-}
-
 /// The embedded `Reporter` sink: per-frame problems go through the `log`
 /// facade (the shell owns the logger).
 fn report_to_log(message: &str) {
@@ -1276,6 +1212,52 @@ let draw = (model, tts) =>
         let ft = frame_time(0.1, 0.016);
         game.tick(ft.clone());
         let _ = game.render(ft); // still renders under the old program
+    }
+
+    #[test]
+    fn a_prefixed_role_resolves_and_names_the_prefixed_contract() {
+        // The boot scene as a `server` role (same-file entries): every entry
+        // binding resolves through the prefix as camelCase.
+        let server_boot = BOOT
+            .replace("let init", "let serverInit")
+            .replace("let tick", "let serverTick")
+            .replace("let draw", "let serverDraw");
+        let mut game = FunctorLangEmbeddedGame::create_with_prefix(
+            vec![("game.fun".to_string(), server_boot)],
+            "server",
+            Box::new(NativePlatform),
+        )
+        .expect("prefixed role loads");
+        let ft = frame_time(0.016, 0.016);
+        game.tick(ft.clone());
+        let frame = game.render(ft);
+        assert!(
+            !matches!(&frame.scene.obj, crate::SceneObject::Group(children) if children.is_empty()),
+            "serverDraw produced the game's scene, not the empty fallback"
+        );
+        assert!(game.state_debug().contains("spin"), "serverTick advanced the model");
+
+        // The prefixed sibling of the broken-push case below: a push missing
+        // the role's tick names `serverTick`, never the canonical `tick`.
+        let err = game
+            .reload_source("let serverInit = { spin: 0.0 }")
+            .expect_err("missing serverTick/serverDraw is a load error");
+        assert!(
+            err.contains("serverTick"),
+            "the error names the prefixed contract: {err}"
+        );
+
+        // An UNPREFIXED program under the server role misses the contract —
+        // and the error teaches the resolved name it looked for.
+        let err = match FunctorLangEmbeddedGame::create_with_prefix(
+            vec![("game.fun".to_string(), BOOT.to_string())],
+            "server",
+            Box::new(NativePlatform),
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("unprefixed bindings don't satisfy a prefixed role"),
+        };
+        assert!(err.contains("serverInit"), "{err}");
     }
 
     #[test]
