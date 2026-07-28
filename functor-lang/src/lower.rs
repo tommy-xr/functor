@@ -214,7 +214,7 @@ fn lower_module(
                 // types), yielding nonsense like "expected float, got float".
                 if matches!(
                     decl.name.as_str(),
-                    "float" | "bool" | "string" | "unknown" | "List"
+                    "float" | "bool" | "string" | "unknown" | "List" | "Map"
                 ) {
                     return Err(LowerError {
                         message: format!("cannot redeclare builtin type `{}`", decl.name),

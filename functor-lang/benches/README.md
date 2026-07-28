@@ -119,6 +119,8 @@ when the currying spike lands.
 | `pattern_match.fun` | nested bool-literal `match` dispatch over 200k |
 | `adt.fun` | ADT construct + variant-pattern match over 100k |
 | `record_update.fun` | `{ r with … }` record update threaded through a 100k fold |
+| `map_from_list.fun` | canonical `Map.fromList` over reversed input plus 20k binary-search lookups |
+| `map_updates.fun` | 1.5k persistent inserts followed by removals (search + ordered-vector copies) |
 
 ## Micro-suite vs the frame bench (which to use when)
 

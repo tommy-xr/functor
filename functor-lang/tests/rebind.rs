@@ -199,6 +199,43 @@ fn plain_data_is_preserved() {
 }
 
 #[test]
+fn map_plain_data_is_reload_safe_and_preserves_canonical_order() {
+    let a = module("let main = () => Map.fromList([(\"b\", [2.0]), (\"a\", [1.0])])");
+    let b = module("let main = () => Map.empty()");
+    let stored = main_value(&a);
+    let (rebound, report) = rebind_value(&stored, &a, &b);
+    assert_eq!(report.rebound, 0);
+    assert!(report.warnings.is_empty());
+    assert_eq!(
+        rebound.to_string(),
+        "Map.fromList([(\"a\", [1]), (\"b\", [2])])"
+    );
+    assert!(stored.is_reload_safe_snapshot());
+}
+
+#[test]
+fn closures_nested_in_maps_rebind_and_keep_snapshots_unsafe() {
+    let a = module(&format!(
+        "{APPLY}let behavior = (x) => x + 1.0\n\
+         let main = () => Map.empty() |> Map.insert(\"behavior\", behavior)"
+    ));
+    let b = module(&format!(
+        "{APPLY}let behavior = (x) => x + 10.0\n\
+         let main = () => Map.empty() |> Map.insert(\"behavior\", behavior)"
+    ));
+    let stored = main_value(&a);
+    assert!(!stored.is_reload_safe_snapshot());
+    let (rebound, report) = rebind_value(&stored, &a, &b);
+    assert_eq!(report.rebound, 1);
+    assert!(report.warnings.is_empty());
+    let Value::Map(entries) = rebound else {
+        panic!("expected map");
+    };
+    assert_eq!(entries.len(), 1);
+    assert_eq!(num(&apply(&b, entries[0].1.clone(), 2.0)), 12.0);
+}
+
+#[test]
 fn stored_closures_make_a_snapshot_reload_unsafe() {
     let module = module(&format!(
         "{APPLY}let mul = (k) => (x) => x * k\nlet main = () => {{ nested: [mul(3.0)] }}"
