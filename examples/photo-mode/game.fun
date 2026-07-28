@@ -9,21 +9,36 @@
 //
 // Controls:
 //   1/2/3       authored viewpoints
+//   Mouse       free-look from the selected viewpoint
 //   W/S, A/D    dolly and strafe
 //   Up/Down     narrow and widen the lens
 //   P / V       toggle the 4:3 guides and the in-world monitor
 //   Space       record an exposure in the model
 //
 // gallery: Mistline Observatory — compose photographs across a fog-bound sculptural coast.
-// gallery-controls: 1/2/3 viewpoints · WASD compose · Up/Down lens · P 4:3 guides · V monitor · Space exposure
+// gallery-controls: 1/2/3 viewpoints · Mouse look · WASD compose · Up/Down lens · P guides · V monitor · Space exposure
 
 let monitor = RenderTarget.named("photo-mode-monitor")
   |> RenderTarget.sized(480.0, 270.0)
+
+// Mouse sensitivity is radians per pixel. Pitch stops just short of vertical
+// so free-look cannot flip the authored composition upside down.
+let mouseSensitivity = 0.003
+let pitchLimit = 1.45
+
+// Mouse positions are absolute window pixels. The first sample establishes a
+// baseline so entering pointer capture or selecting a view never causes a jump.
+type Mouse =
+  | NoMouse
+  | MouseAt(x: float, y: float)
 
 let init = {
   view: 1.0,
   x: 0.0,
   z: 0.0,
+  yawOffset: 0.0,
+  pitchOffset: 0.0,
+  lastMouse: NoMouse,
   fov: 42.0,
   guides: true,
   monitor: true,
@@ -39,11 +54,39 @@ let yawFor = (view) =>
   | 3.0 => -68.0
   | _ => 2.5
 
+let pitchFor = (view) =>
+  match view with
+  | 2.0 => -5.0
+  | 3.0 => 8.0
+  | _ => 5.0
+
+let radians = (degrees) => degrees * Math.pi / 180.0
+
+let yawRadians = (model) =>
+  radians(yawFor(model.view)) + model.yawOffset
+
+let pitchRadians = (model) =>
+  radians(pitchFor(model.view)) + model.pitchOffset
+
+let clamp = (value, low, high) =>
+  if value < low then low
+  else if value > high then high
+  else value
+
 let nudge = (model, forward, right) =>
-  let yaw = yawFor(model.view) * Math.pi / 180.0 in
+  let yaw = yawRadians(model) in
   let dx = Math.sin(yaw) * forward + Math.cos(yaw) * right in
   let dz = Math.cos(yaw) * forward - Math.sin(yaw) * right in
   { model with x: model.x + dx, z: model.z + dz }
+
+let selectView = (model, view) =>
+  { model with
+      view: view,
+      x: 0.0,
+      z: 0.0,
+      yawOffset: 0.0,
+      pitchOffset: 0.0,
+      lastMouse: NoMouse }
 
 let input = (model, key, isDown) =>
   match isDown with
@@ -55,9 +98,9 @@ let input = (model, key, isDown) =>
      | _ => model)
   | true =>
     match key with
-    | Key.Num1 => { model with view: 1.0, x: 0.0, z: 0.0 }
-    | Key.Num2 => { model with view: 2.0, x: 0.0, z: 0.0 }
-    | Key.Num3 => { model with view: 3.0, x: 0.0, z: 0.0 }
+    | Key.Num1 => selectView(model, 1.0)
+    | Key.Num2 => selectView(model, 2.0)
+    | Key.Num3 => selectView(model, 3.0)
     | Key.A => nudge(model, 0.0, -0.35)
     | Key.D => nudge(model, 0.0, 0.35)
     | Key.W => nudge(model, 0.35, 0.0)
@@ -74,6 +117,24 @@ let input = (model, key, isDown) =>
       if model.spaceHeld then model
       else { model with shots: model.shots + 1.0, spaceHeld: true }
     | _ => model
+
+// Mouse right turns the camera right and mouse up looks up. Offsets are kept
+// relative to each authored view, so pressing 1/2/3 restores its exact framing.
+let mouseMove = (model, x, y) =>
+  match model.lastMouse with
+  | NoMouse => { model with lastMouse: MouseAt(x, y) }
+  | MouseAt(lastX, lastY) =>
+    let basePitch = radians(pitchFor(model.view)) in
+    let nextPitch =
+      clamp(
+        basePitch + model.pitchOffset - (y - lastY) * mouseSensitivity,
+        0.0 - pitchLimit,
+        pitchLimit)
+    in
+    { model with
+        yawOffset: model.yawOffset - (x - lastX) * mouseSensitivity,
+        pitchOffset: nextPitch - basePitch,
+        lastMouse: MouseAt(x, y) }
 
 // GLFW may repeat key-down edges, so the toggles and exposure action latch
 // until their matching release. Movement and lens controls intentionally keep
@@ -94,6 +155,48 @@ expect (
 expect (
   let moved = input({ init with view: 2.0 }, Key.W, true) in
   moved.x > 0.0 && moved.z > 0.0
+)
+
+expect (
+  let sampled = mouseMove(init, 400.0, 300.0) in
+  sampled.yawOffset == 0.0
+    && sampled.pitchOffset == 0.0
+    && (match sampled.lastMouse with
+        | MouseAt(x, y) => x == 400.0 && y == 300.0
+        | NoMouse => false)
+)
+
+expect (
+  let sampled = mouseMove(init, 400.0, 300.0) in
+  let turned = mouseMove(sampled, 600.0, 200.0) in
+  turned.yawOffset < -0.59
+    && turned.yawOffset > -0.61
+    && turned.pitchOffset > 0.29
+    && turned.pitchOffset < 0.31
+)
+
+expect (
+  let sampled = mouseMove(init, 400.0, 300.0) in
+  let looked = mouseMove(sampled, 600.0, -1000.0) in
+  pitchRadians(looked) > 1.44 && pitchRadians(looked) <= pitchLimit
+)
+
+expect (
+  let sampled = mouseMove(init, 400.0, 300.0) in
+  let looked = mouseMove(sampled, 600.0, 200.0) in
+  let selected = input(looked, Key.Num2, true) in
+  selected.view == 2.0
+    && selected.yawOffset == 0.0
+    && selected.pitchOffset == 0.0
+    && (match selected.lastMouse with
+        | NoMouse => true
+        | MouseAt(_, _) => false)
+)
+
+expect (
+  let looked = { init with yawOffset: Math.pi / 2.0 } in
+  let moved = input(looked, Key.W, true) in
+  moved.x > 0.3 && moved.z < 0.0
 )
 
 let tick = (model, dt, tts) => model
@@ -173,21 +276,23 @@ let world = (showMonitor) =>
   ])
 
 let cameraFor = (model) =>
+  let yaw = Angle.radians(yawRadians(model)) in
+  let pitch = Angle.radians(pitchRadians(model)) in
   match model.view with
   | 2.0 => Camera.firstPerson(
       Vec3.make(-6.8 + model.x, 3.2, 2.0 + model.z),
-      Angle.degrees(yawFor(model.view)),
-      Angle.degrees(-5.0),
+      yaw,
+      pitch,
       Angle.degrees(model.fov))
   | 3.0 => Camera.firstPerson(
       Vec3.make(5.6 + model.x, 1.65, 7.0 + model.z),
-      Angle.degrees(yawFor(model.view)),
-      Angle.degrees(8.0),
+      yaw,
+      pitch,
       Angle.degrees(model.fov))
   | _ => Camera.firstPerson(
       Vec3.make(-0.7 + model.x, 1.55, -4.8 + model.z),
-      Angle.degrees(yawFor(model.view)),
-      Angle.degrees(5.0),
+      yaw,
+      pitch,
       Angle.degrees(model.fov))
 
 // The observer drifts across the fixed composition. Only the monitor sees this
@@ -247,6 +352,7 @@ let ui = (model) =>
     Ui.text(Text.concat("VIEW 0", Text.fixed(model.view, 0.0))),
     Ui.text(Text.concat("LENS ", Text.concat(Text.fixed(model.fov, 0.0), " DEG"))),
     Ui.text(Text.concat("EXPOSURES ", Text.fixed(model.shots, 0.0))),
-    Ui.text("1 2 3 VIEW  /  WASD COMPOSE  /  UP DOWN LENS"),
+    Ui.text("1 2 3 VIEW  /  MOUSE LOOK  /  WASD COMPOSE"),
+    Ui.text("UP DOWN LENS"),
     Ui.text("P 4:3 GUIDES  /  V MONITOR  /  SPACE EXPOSURE"),
   ]) |> Ui.panel(Ui.bottomLeft())
