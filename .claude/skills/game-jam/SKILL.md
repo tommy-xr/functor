@@ -38,19 +38,24 @@ consolidated roadmap, and promotion.
    exactly `N-B` backlog briefs. Without `--entries`, use the explicit briefs,
    or 10 backlog briefs when `B=0`. Reject `B>N`, more than 10 explicit briefs,
    and duplicate slugs; never discard an explicit brief.
-2. Create a dedicated clean bootstrap worktree at the exact baseline SHA every
+2. Create one exclusive per-run root outside the checkout (for example, the
+   exact path returned by `mktemp -d /tmp/functor-jam.XXXXXX`). Put bootstrap,
+   entry/fixer worktrees, immutable artifacts, gallery output, and a run ledger
+   beneath it. Record every agent id/worktree and every shell-launched
+   background process's PID, process group, cwd, command, and owner at launch.
+3. Create a dedicated clean bootstrap worktree at the exact baseline SHA every
    jam branch uses. Build the release CLI **once** there and fetch shared assets:
    `npm run build:cli && npm run fetch:assets`. Run it in the background and
    launch agents immediately — they spend their first stretch reading docs.
    A SHA recorded from a dirty checkout is not valid provenance. No agent may
    build, capture, or run debug verification until the orchestrator confirms
    setup succeeded and records the binary's source SHA.
-3. All Phase 1 game-builder agents share the bootstrap worktree's
+4. All Phase 1 game-builder agents share the bootstrap worktree's
    `target/release/functor` by absolute path. The binary interprets each game's
    `.fun` files, so builders must never build it themselves (ten cargo builds
    would thrash the machine). Phase 1.5 fixers build changed code only inside
    their dedicated fixer worktrees.
-4. Skim `examples/` and recent `jam/*` branches first so briefs do not duplicate
+5. Skim `examples/` and recent `jam/*` branches first so briefs do not duplicate
    existing or just-completed samples (e.g.
    `mario` is already a 2D sprite platformer; `asteroids` is top-down 3D).
 
@@ -66,13 +71,13 @@ Choose the game-builder model before spawning:
   applies only to those agents, not to nested tools such as `xreview`, which
   retain their own model policy.
 
-Create a git worktree and `jam/<slug>` branch for every brief, then spawn one
-subagent per brief with the chosen model and its absolute worktree path. Require
-that path as the cwd for every command; use a host-provided worktree-isolation
-option when available. On OpenAI, use a non-full-history fork when passing an
-explicit model and include all required context in the prompt. Pace the fleet;
-do not run everything at once (see "Concurrency limits" below). Each prompt
-must include:
+Create every git worktree beneath the exclusive per-run root and a
+`jam/<slug>` branch for every brief, then spawn one subagent per brief with the
+chosen model and its absolute worktree path. Require that path as the cwd for
+every command; use a host-provided worktree-isolation option when available.
+On OpenAI, use a non-full-history fork when passing an explicit model and
+include all required context in the prompt. Pace the fleet; do not run
+everything at once (see "Concurrency limits" below). Each prompt must include:
 
 - **The brief**: game, slug, and the specific engine surfaces it exists to
   stress (physics, XR input, 2D ergonomics, chase camera, UI/dialog, …).
@@ -150,11 +155,13 @@ numbers. Rules:
 - **Disk hygiene between fixers (learned mid-run: a full disk killed a fixer
   mid-build).** Every heavy fixer leaves a multi-GB `target/` cache in its
   worktree; a long fixer queue fills the drive. Before deleting a fixer's
-  `target/`, copy the verified release CLI (with its embedded wasm bundle) to
-  `/tmp/functor-jam/<fix-head-sha>/functor`, record its checksum, and use that
-  immutable artifact for covered adoptions; otherwise retain the cache through
-  adoption. Resolve finished worktrees individually, validate each absolute
-  path against `git worktree list --porcelain`, and remove only the explicit
+  `target/`, create a new non-existing artifact directory under the exclusive
+  run root, copy the verified release CLI (with embedded wasm) through a
+  temporary name and atomically rename it, make it read-only, and record its
+  checksum. Verify that checksum immediately before every adoption/gallery use;
+  otherwise retain the cache through adoption. Resolve finished worktrees
+  individually, validate each absolute path against
+  `git worktree list --porcelain`, and remove only the explicit
   `<finished-worktree>/target` — never use a fleet-wide wildcard. Check `df -h`
   before each heavy launch. Long-running heavy agents should report, not
   self-remediate outside their worktree, if disk runs low mid-task.
@@ -202,8 +209,10 @@ immutable artifact, and rerun all affected adoption proofs.
   workflow. Never pad the round with cosmetic P3 work.
 - If an entry has no qualifying P0/P1 or workflow-blocking P2, run one
   additional targeted docs-first stress workflow. If that still yields none,
-  replace the brief; if no replacement exposes a real blocker, report the jam
-  blocked rather than fabricate work or count the entry complete.
+  replace an auto-filled backlog brief in the same roster slot. Never replace
+  an explicit user brief without their authorization: report that entry blocked
+  and request direction. If no permitted replacement exposes a real blocker,
+  report the jam blocked rather than fabricate work or change the requested N.
 - For a large gap, ship the smallest principled slice that removes one proven
   workaround from the entry. An issue or design sketch alone does not count.
 - Dedupe shared root causes. One PR may cover several entries only when it has
@@ -222,9 +231,10 @@ immutable artifact, and rerun all affected adoption proofs.
    preserve fake/replay determinism, rebuild wasm for web claims, and run the
    required before/after benchmarks for hot-path changes.
 3. Run `xreview`, fix every Critical/High, disposition all findings in a draft
-   PR, rerun verification, wait for the complete CI matrix, then mark the PR
-   ready. Run one cargo-building fixer at a time and clear only its rebuildable
-   worktree cache before launching the next.
+   PR, rerun verification, and wait for the complete CI matrix at the recorded
+   head — but keep the PR draft until every covered entry proves adoption. Run
+   one cargo-building fixer at a time and clear only its rebuildable worktree
+   cache before launching the next.
 4. For dependent fixes, branch and target each downstream PR on its immediate
    dependency. Record each PR's own commit range and tested head.
 
@@ -243,6 +253,12 @@ After its fix PR is ready, resume the original builder in `jam/<slug>`:
   prove the blocker is gone, reopen the fixer; a green unit test alone is
   insufficient. The orchestrator independently reruns every row's acceptance
   proof before declaring it complete.
+
+Only after every adoption row covered by a fixer head passes, its adoption
+reviews are dispositioned, and the orchestrator's proof reruns succeed: confirm
+the fixer PR still has that exact head, require the full expected CI set green,
+then mark it ready as the final action. A changed head invokes the invalidation
+rule above and returns the PR to the proof cycle.
 
 When several unmerged fixes are needed for final gallery testing, create a
 disposable local integration branch from their common base. Cherry-pick only
@@ -314,9 +330,14 @@ gallery exercises the adopted APIs rather than a stale main build.
      recorded jam descendants; never kill by executable-name match alone.
    - **Worktrees, only after synthesis**: first confirm every entry's work is
      committed to its `jam/<slug>` branch (branches survive worktree removal;
-     staged-but-uncommitted work does not), save JAM_NOTES content into the
-     synthesis report, then remove the worktrees — including their multi-GB
-     `target/` dirs from fixer builds.
+     staged-but-uncommitted work does not), save JAM_NOTES and required captures
+     outside the per-run root, and inspect `git status --porcelain` in each
+     worktree. The only permitted untracked paths are explicitly inventoried
+     disposable captures; archive them, remove those exact paths, and use normal
+     `git worktree remove` without `--force`. After every registered worktree and
+     process is gone and final evidence is preserved elsewhere, validate the
+     exact per-run root and remove it, retiring bootstrap, artifact, gallery,
+     and ledger scratch together.
 
 ## Backlog — future jam briefs and what each stresses
 
