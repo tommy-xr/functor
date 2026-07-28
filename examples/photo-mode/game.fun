@@ -1,5 +1,21 @@
+// photo-mode — an asset-free composition vignette.
+//
+// Mistline Observatory combines three authored viewpoints, an adjustable lens,
+// atmospheric fog, a rule-of-thirds overlay, and a live alternate-camera
+// monitor. The monitor's writer renders world(false), which deliberately omits
+// the monitor itself and avoids render-target feedback.
+//
+//   functor -d examples/photo-mode run native
+//
+// Controls:
+//   1/2/3       authored viewpoints
+//   W/S, A/D    dolly and strafe
+//   Up/Down     narrow and widen the lens
+//   P / V       toggle guides and the in-world monitor
+//   Space       record an exposure in the model
+//
 // gallery: Mistline Observatory — compose photographs across a fog-bound sculptural coast.
-// gallery-controls: 1/2/3 viewpoints · A/D strafe · W/S dolly · Up/Down lens · P guides · V monitor
+// gallery-controls: 1/2/3 viewpoints · WASD compose · Up/Down lens · P guides · V monitor · Space exposure
 
 let monitor = RenderTarget.named("photo-mode-monitor")
   |> RenderTarget.sized(480.0, 270.0)
@@ -46,6 +62,22 @@ let input = (model, key, isDown) =>
       if model.spaceHeld then model
       else { model with shots: model.shots + 1.0, spaceHeld: true }
     | _ => model
+
+// GLFW may repeat key-down edges, so the toggles and exposure action latch
+// until their matching release. Movement and lens controls intentionally keep
+// repeat stepping.
+expect (
+  let first = input(init, Key.P, true) in
+  let repeated = input(first, Key.P, true) in
+  not repeated.guides && repeated.pHeld
+)
+
+expect (
+  let first = input(init, Key.Space, true) in
+  let released = input(first, Key.Space, false) in
+  let second = input(released, Key.Space, true) in
+  second.shots == 2.0 && second.spaceHeld
+)
 
 let tick = (model, dt, tts) => model
 
@@ -173,6 +205,7 @@ let guides = (enabled) =>
 
 let draw = (model, tts) =>
   let scene = world(model.monitor) in
+  // Excluding the monitor from its own feed prevents recursive self-sampling.
   let monitorFrame = Frame.createLit(observerCamera, world(false), lights)
     |> Frame.withFog(fog)
     |> Frame.withClearColor(clear) in
@@ -188,5 +221,6 @@ let ui = (model) =>
     Ui.text(Text.concat("VIEW 0", Text.fixed(model.view, 0.0))),
     Ui.text(Text.concat("LENS ", Text.concat(Text.fixed(model.fov, 0.0), " DEG"))),
     Ui.text(Text.concat("EXPOSURES ", Text.fixed(model.shots, 0.0))),
-    Ui.text("1 2 3 VIEW  /  WASD COMPOSE  /  P GUIDES  /  V MONITOR"),
+    Ui.text("1 2 3 VIEW  /  WASD COMPOSE  /  UP DOWN LENS"),
+    Ui.text("P GUIDES  /  V MONITOR  /  SPACE EXPOSURE"),
   ]) |> Ui.panel(Ui.bottomLeft())
