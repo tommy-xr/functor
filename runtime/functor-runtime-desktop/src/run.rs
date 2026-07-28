@@ -137,6 +137,12 @@ fn sampled_input_snapshot(
     snapshot
 }
 
+/// Convert GLFW's fractional visible-cursor coordinates without snapping a
+/// point just above/left of the window inside at zero.
+fn visible_cursor_position(x: f64, y: f64) -> (i32, i32) {
+    (x.floor() as i32, y.floor() as i32)
+}
+
 /// Build this step's sampled input.
 ///
 /// `xr_override` is a debug-injected XR sample (`POST /input` `{"type":"xr"}`).
@@ -1955,9 +1961,9 @@ Escape again to quit"
                     // project also receives this absolute logical position;
                     // captured projects reserve released motion for chrome.
                     glfw::WindowEvent::CursorPos(x, y) if !cursor_captured => {
-                        mouse_pos = (x as i32, y as i32);
+                        mouse_pos = visible_cursor_position(x, y);
                         if args.cursor == CursorPolicyArg::Visible && !ignore_user_input {
-                            game.mouse_move(x as i32, y as i32);
+                            game.mouse_move(mouse_pos.0, mouse_pos.1);
                         }
                     }
                     // F1 recenters head tracking (runner-level, never reaches
@@ -3427,6 +3433,11 @@ mod tests {
         assert_eq!(after.mouse.y, 123);
         assert_eq!(after.mouse.surface_width, 1440);
         assert_eq!(after.mouse.surface_height, 900);
+    }
+
+    #[test]
+    fn visible_cursor_floors_fractional_negative_coordinates() {
+        assert_eq!(visible_cursor_position(-0.25, 10.75), (-1, 10));
     }
 
     /// A pose an emulated desktop rig CANNOT produce: the emulator pins both
