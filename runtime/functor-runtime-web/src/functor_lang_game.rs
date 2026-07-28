@@ -346,10 +346,10 @@ pub fn set_ui_wants_keyboard(wants: bool) {
 ///
 /// Admitted transitions accumulate in `edges` until the frame loop consumes
 /// its next fixed step. When `deliver` is false, the queue is drained without
-/// changing the sampled pointer or admitting new presses. Interactive pause may set
-/// `recover_releases`: releases then update physical held state so a key
-/// released while paused cannot stick on resume. Fixed-time capture leaves the
-/// entire snapshot frozen.
+/// changing the sampled pointer or admitting new presses. A suppressed
+/// interactive transport (pause or netsim) may set `recover_releases`:
+/// releases then update physical held state so a key cannot stick on resume.
+/// Fixed-time capture leaves the entire snapshot frozen.
 pub fn drain_input(
     game: &mut dyn GameProducer,
     snapshot: &mut functor_runtime_common::InputSnapshot,

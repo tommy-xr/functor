@@ -107,12 +107,11 @@ pub struct InputEdges {
 }
 
 impl InputEdges {
-    /// Record a keyboard level transition. Returns `true` only for an actual
-    /// transition, so callers can preserve their legacy event-hook policy
-    /// independently (including native OS-repeat delivery).
-    pub fn key_transition(&mut self, key: Key, was_down: bool, is_down: bool) -> bool {
+    /// Record an actual keyboard level transition, ignoring unknown keys and
+    /// unchanged levels (including native OS repeat).
+    pub fn key_transition(&mut self, key: Key, was_down: bool, is_down: bool) {
         if key == Key::Unknown || was_down == is_down {
-            return false;
+            return;
         }
         let keys = if is_down {
             &mut self.pressed_keys
@@ -122,21 +121,18 @@ impl InputEdges {
         if let Err(index) = keys.binary_search(&key) {
             keys.insert(index, key);
         }
-        true
     }
 
-    /// Record a modeled mouse-button level transition. Returns `true` only
-    /// when the level changed.
-    pub fn mouse_transition(&mut self, button: MouseButton, was_down: bool, is_down: bool) -> bool {
+    /// Record an actual modeled mouse-button level transition.
+    pub fn mouse_transition(&mut self, button: MouseButton, was_down: bool, is_down: bool) {
         if button == MouseButton::Unknown || was_down == is_down {
-            return false;
+            return;
         }
         if is_down {
             self.pressed_mouse.set(button, true);
         } else {
             self.released_mouse.set(button, true);
         }
-        true
     }
 
     /// Copy the pending transitions into a step snapshot.
@@ -1115,5 +1111,18 @@ mod tests {
         assert!(!snapshot.mouse.buttons.right);
         assert!(snapshot.released_keys.is_empty());
         assert_eq!(snapshot.mouse.released, MouseButtons::default());
+
+        // Once physical recovery removed the stale level, a fresh press is a
+        // real edge again.
+        assert!(apply_key_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            Key::Enter,
+            true,
+            true,
+        ));
+        edges.apply_to(&mut snapshot);
+        assert_eq!(snapshot.held_keys, vec![Key::Enter]);
+        assert_eq!(snapshot.pressed_keys, vec![Key::Enter]);
     }
 }

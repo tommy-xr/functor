@@ -223,13 +223,11 @@ fn refresh_fixed_input_levels(
     snapshot: &mut InputSnapshot,
     held_keys: &BTreeSet<InputKey>,
     held_buttons: MouseButtons,
-    edges: &InputEdges,
     xr_primary_down: bool,
     xr_override: Option<&XrInputSnapshot>,
 ) {
     snapshot.held_keys = held_keys.iter().copied().collect();
     snapshot.mouse.buttons = held_buttons;
-    edges.apply_to(snapshot);
     // An injected sample owns the whole XR domain — window keys must not
     // re-derive its trigger/thumbstick out from under the driver.
     match xr_override {
@@ -1684,7 +1682,6 @@ pub fn run(args: Args) {
                                     &mut fixed_input_snapshot,
                                     &held_keys,
                                     held_buttons,
-                                    &input_edges,
                                     false,
                                     xr_override.as_ref(),
                                 );
@@ -1724,7 +1721,6 @@ Escape again to quit"
                                 &mut fixed_input_snapshot,
                                 &held_keys,
                                 held_buttons,
-                                &input_edges,
                                 false,
                                 xr_override.as_ref(),
                             );
@@ -1846,7 +1842,6 @@ Escape again to quit"
                                 &mut fixed_input_snapshot,
                                 &held_keys,
                                 held_buttons,
-                                &input_edges,
                                 xr_primary_down || xr_primary_clicked,
                                 xr_override.as_ref(),
                             );
@@ -1895,7 +1890,6 @@ Escape again to quit"
                                     &mut fixed_input_snapshot,
                                     &held_keys,
                                     held_buttons,
-                                    &input_edges,
                                     xr_primary_down || xr_primary_clicked,
                                     xr_override.as_ref(),
                                 );
@@ -1934,7 +1928,6 @@ Escape again to quit"
                                 &mut fixed_input_snapshot,
                                 &held_keys,
                                 held_buttons,
-                                &input_edges,
                                 false,
                                 xr_override.as_ref(),
                             );
@@ -3108,7 +3101,6 @@ mod tests {
             &mut snapshot,
             &held,
             buttons,
-            &InputEdges::default(),
             false,
             None,
         );
@@ -3258,7 +3250,6 @@ mod tests {
             &mut snapshot,
             &held,
             MouseButtons::default(),
-            &InputEdges::default(),
             true,
             Some(&injected),
         );
