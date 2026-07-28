@@ -2,17 +2,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::TrackingPose;
 
-/// Runtime-owned input sampled for one simulation frame.
+/// Runtime-owned input sampled for one fixed simulation step.
 ///
 /// Keyboard and mouse retain their event entry points, while this plain-data
-/// snapshot is the extensible shell → producer seam for continuously sampled
-/// devices. XR is the first typed domain; gamepads and mobile touches can add
-/// sibling fields without turning device capabilities into stringly-typed
-/// maps or adding target-specific producer methods.
+/// snapshot exposes both levels and de-duplicated transitions through the
+/// extensible shell → producer seam. XR is the first typed device domain;
+/// gamepads and mobile touches can add sibling fields without turning device
+/// capabilities into stringly-typed maps or adding target-specific producer
+/// methods.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InputSnapshot {
     /// Keys currently held, in canonical discriminant order.
     pub held_keys: Vec<Key>,
+    /// Keys whose level changed from up to down since the previous simulation
+    /// step, in canonical discriminant order.
+    #[serde(default)]
+    pub pressed_keys: Vec<Key>,
+    /// Keys whose level changed from down to up since the previous simulation
+    /// step, in canonical discriminant order.
+    #[serde(default)]
+    pub released_keys: Vec<Key>,
     /// Last known mouse position in output pixels.
     pub mouse: MouseSnapshot,
     /// Live XR tracking/controller state when the target supplies it.
@@ -23,7 +32,7 @@ pub struct InputSnapshot {
     pub xr: Option<XrInputSnapshot>,
 }
 
-/// Last known mouse position in output pixels, plus which buttons are held.
+/// Last known mouse position, held buttons, and this step's button transitions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseSnapshot {
     pub x: i32,
@@ -33,14 +42,22 @@ pub struct MouseSnapshot {
     /// hand-written debug injection) still deserializes.
     #[serde(default)]
     pub buttons: MouseButtons,
+    /// Buttons whose level changed from up to down since the previous
+    /// simulation step.
+    #[serde(default)]
+    pub pressed: MouseButtons,
+    /// Buttons whose level changed from down to up since the previous
+    /// simulation step.
+    #[serde(default)]
+    pub released: MouseButtons,
 }
 
-/// Which mouse buttons are held for one sampled step.
+/// A fixed set of modeled mouse buttons.
 ///
-/// A record rather than a `Vec<MouseButton>`: held buttons are a tiny fixed
-/// set, and a game asks "is fire held?" (`snapshot.mouse.buttons.left`) far
-/// more often than it iterates them — no list-membership helper needed on the
-/// hot path. Further buttons (back/forward) can join as sibling fields.
+/// A record rather than a `Vec<MouseButton>`: buttons are a tiny fixed set,
+/// and a game asks a named question (`snapshot.mouse.buttons.left` or
+/// `snapshot.mouse.pressed.left`) rather than iterating them. Further buttons
+/// (back/forward) can join as sibling fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseButtons {
     pub left: bool,
@@ -49,9 +66,8 @@ pub struct MouseButtons {
 }
 
 impl MouseButtons {
-    /// Fold one button edge into the held set. `MouseButton::Unknown` (a
-    /// platform button Functor does not model) leaves the set untouched — it
-    /// is never delivered as an edge either.
+    /// Set one named member. `MouseButton::Unknown` (a platform button Functor
+    /// does not model) leaves the set untouched.
     pub fn set(&mut self, button: MouseButton, is_down: bool) {
         match button {
             MouseButton::Left => self.left = is_down,
@@ -70,6 +86,142 @@ impl MouseButtons {
             MouseButton::Unknown => false,
         }
     }
+}
+
+/// Transient keyboard and mouse transitions waiting for the next fixed
+/// simulation step.
+///
+/// Shells retain one accumulator across render frames, copy it into the first
+/// fixed-step [`InputSnapshot`], then clear it. This makes a transition
+/// deterministic when rendering and simulation run at different rates:
+/// zero-step render frames cannot lose it, while catch-up substeps cannot
+/// repeat it. Each control is a set, not an event count — a down/up/down burst
+/// may appear in both halves while the separately sampled held level records
+/// the final state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InputEdges {
+    pressed_keys: Vec<Key>,
+    released_keys: Vec<Key>,
+    pressed_mouse: MouseButtons,
+    released_mouse: MouseButtons,
+}
+
+impl InputEdges {
+    /// Record an actual keyboard level transition, ignoring unknown keys and
+    /// unchanged levels (including native OS repeat).
+    pub fn key_transition(&mut self, key: Key, was_down: bool, is_down: bool) {
+        if key == Key::Unknown || was_down == is_down {
+            return;
+        }
+        let keys = if is_down {
+            &mut self.pressed_keys
+        } else {
+            &mut self.released_keys
+        };
+        if let Err(index) = keys.binary_search(&key) {
+            keys.insert(index, key);
+        }
+    }
+
+    /// Record an actual modeled mouse-button level transition.
+    pub fn mouse_transition(&mut self, button: MouseButton, was_down: bool, is_down: bool) {
+        if button == MouseButton::Unknown || was_down == is_down {
+            return;
+        }
+        if is_down {
+            self.pressed_mouse.set(button, true);
+        } else {
+            self.released_mouse.set(button, true);
+        }
+    }
+
+    /// Copy the pending transitions into a step snapshot.
+    pub fn apply_to(&self, snapshot: &mut InputSnapshot) {
+        snapshot.pressed_keys.clone_from(&self.pressed_keys);
+        snapshot.released_keys.clone_from(&self.released_keys);
+        snapshot.mouse.pressed = self.pressed_mouse;
+        snapshot.mouse.released = self.released_mouse;
+    }
+
+    /// Clear consumed transitions while retaining key-vector capacity for the
+    /// next burst.
+    pub fn clear(&mut self) {
+        self.pressed_keys.clear();
+        self.released_keys.clear();
+        self.pressed_mouse = MouseButtons::default();
+        self.released_mouse = MouseButtons::default();
+    }
+}
+
+impl InputSnapshot {
+    /// Remove already-consumed edge fields while preserving continuously
+    /// sampled levels and poses.
+    pub fn clear_edges(&mut self) {
+        self.pressed_keys.clear();
+        self.released_keys.clear();
+        self.mouse.pressed = MouseButtons::default();
+        self.mouse.released = MouseButtons::default();
+    }
+}
+
+/// Fold one keyboard level change into a sampled snapshot.
+///
+/// `record_edge` separates physical-state recovery from a model-visible
+/// transition: shells pass `false` when a release must unstick a paused or
+/// suppressed input level without inventing an edge the game never received.
+/// Returns whether the modeled level actually changed.
+pub fn apply_key_transition_to_snapshot(
+    snapshot: &mut InputSnapshot,
+    edges: &mut InputEdges,
+    key: Key,
+    is_down: bool,
+    record_edge: bool,
+) -> bool {
+    if key == Key::Unknown {
+        return false;
+    }
+    let index = snapshot.held_keys.binary_search(&key);
+    let was_down = index.is_ok();
+    if was_down == is_down {
+        return false;
+    }
+    match index {
+        Ok(index) => {
+            snapshot.held_keys.remove(index);
+        }
+        Err(index) => {
+            snapshot.held_keys.insert(index, key);
+        }
+    }
+    if record_edge {
+        edges.key_transition(key, was_down, is_down);
+    }
+    true
+}
+
+/// Fold one modeled mouse-button level change into a sampled snapshot.
+///
+/// See [`apply_key_transition_to_snapshot`] for `record_edge`'s recovery-only
+/// semantics. Returns whether the level actually changed.
+pub fn apply_mouse_transition_to_snapshot(
+    snapshot: &mut InputSnapshot,
+    edges: &mut InputEdges,
+    button: MouseButton,
+    is_down: bool,
+    record_edge: bool,
+) -> bool {
+    if button == MouseButton::Unknown {
+        return false;
+    }
+    let was_down = snapshot.mouse.buttons.is_down(button);
+    if was_down == is_down {
+        return false;
+    }
+    snapshot.mouse.buttons.set(button, is_down);
+    if record_edge {
+        edges.mouse_transition(button, was_down, is_down);
+    }
+    true
 }
 
 /// One frame of XR input in the tracking rig's local coordinates.
@@ -257,9 +409,10 @@ pub enum RecordedInput {
     /// The continuously sampled input delivered before one simulation tick.
     ///
     /// Unlike edge events above, this is recorded every tick whose game
-    /// defines `sampledInput`: held controls and tracked poses can drive pure
-    /// game logic continuously, and forward replay re-runs the same hook with
-    /// the same sample.
+    /// defines `sampledInput`: held controls, fixed-step transitions, and
+    /// tracked poses can drive pure game logic, and replay re-runs the same
+    /// hook with the same sample. Projection clears transitions after that
+    /// step while carrying continuous levels/poses.
     // Box the dense payload so adding sampled input does not inflate every
     // legacy key/mouse/UI event stored in the sparse session log.
     Snapshot(Box<InputSnapshot>),
@@ -554,11 +707,20 @@ fn controller_value(controller: &XrControllerSnapshot) -> functor_lang::Value {
 /// `Input.snapshot` record delivered to a Functor Lang game's optional
 /// `sampledInput` hook.
 pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
-    let held_keys = snapshot
-        .held_keys
-        .iter()
-        .filter_map(|key| key_input_value(*key as i32))
-        .collect();
+    let key_values = |keys: &[Key]| {
+        functor_lang::Value::List(std::rc::Rc::new(
+            keys.iter()
+                .filter_map(|key| key_input_value(*key as i32))
+                .collect(),
+        ))
+    };
+    let mouse_buttons_value = |buttons: MouseButtons| {
+        record([
+            ("left", functor_lang::Value::Bool(buttons.left)),
+            ("right", functor_lang::Value::Bool(buttons.right)),
+            ("middle", functor_lang::Value::Bool(buttons.middle)),
+        ])
+    };
     let xr = snapshot.xr.as_ref().map(|xr| {
         record([
             ("head", option_value(xr.head.map(tracking_pose_value))),
@@ -567,32 +729,17 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
         ])
     });
     record([
-        (
-            "heldKeys",
-            functor_lang::Value::List(std::rc::Rc::new(held_keys)),
-        ),
+        ("heldKeys", key_values(&snapshot.held_keys)),
+        ("pressedKeys", key_values(&snapshot.pressed_keys)),
+        ("releasedKeys", key_values(&snapshot.released_keys)),
         (
             "mouse",
             record([
                 ("x", functor_lang::Value::Number(snapshot.mouse.x as f64)),
                 ("y", functor_lang::Value::Number(snapshot.mouse.y as f64)),
-                (
-                    "buttons",
-                    record([
-                        (
-                            "left",
-                            functor_lang::Value::Bool(snapshot.mouse.buttons.left),
-                        ),
-                        (
-                            "right",
-                            functor_lang::Value::Bool(snapshot.mouse.buttons.right),
-                        ),
-                        (
-                            "middle",
-                            functor_lang::Value::Bool(snapshot.mouse.buttons.middle),
-                        ),
-                    ]),
-                ),
+                ("buttons", mouse_buttons_value(snapshot.mouse.buttons)),
+                ("pressed", mouse_buttons_value(snapshot.mouse.pressed)),
+                ("released", mouse_buttons_value(snapshot.mouse.released)),
             ]),
         ),
         ("xr", option_value(xr)),
@@ -602,9 +749,10 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        input_snapshot_value, mouse_button_input_value, tracking_pose_from_value,
-        tracking_pose_value, InputSnapshot, Key, MouseButton, MouseButtons, MouseSnapshot,
-        RecordedInput, XrControllerSnapshot, XrInputSnapshot,
+        apply_key_transition_to_snapshot, apply_mouse_transition_to_snapshot, input_snapshot_value,
+        mouse_button_input_value, tracking_pose_from_value, tracking_pose_value, InputEdges,
+        InputSnapshot, Key, MouseButton, MouseButtons, MouseSnapshot, RecordedInput,
+        XrControllerSnapshot, XrInputSnapshot,
     };
     use crate::TrackingPose;
 
@@ -779,25 +927,35 @@ mod tests {
                 ..Default::default()
             },
             xr: None,
+            ..InputSnapshot::default()
         };
         let desktop_json = serde_json::to_value(&desktop).unwrap();
         assert_eq!(
             desktop_json,
             serde_json::json!({
                 "held_keys": ["W"],
+                "pressed_keys": [],
+                "released_keys": [],
                 "mouse": {
                     "x": 10,
                     "y": 20,
-                    "buttons": { "left": false, "right": false, "middle": false }
+                    "buttons": { "left": false, "right": false, "middle": false },
+                    "pressed": { "left": false, "right": false, "middle": false },
+                    "released": { "left": false, "right": false, "middle": false }
                 }
             })
         );
         // Mouse buttons are defaulted on the wire, so a capture taken before
         // they existed (and a hand-written injection) still decodes.
-        let legacy: InputSnapshot =
-            serde_json::from_value(serde_json::json!({ "held_keys": [], "mouse": { "x": 1, "y": 2 } }))
-                .unwrap();
+        let legacy: InputSnapshot = serde_json::from_value(
+            serde_json::json!({ "held_keys": [], "mouse": { "x": 1, "y": 2 } }),
+        )
+        .unwrap();
         assert_eq!(legacy.mouse.buttons, MouseButtons::default());
+        assert!(legacy.pressed_keys.is_empty());
+        assert!(legacy.released_keys.is_empty());
+        assert_eq!(legacy.mouse.pressed, MouseButtons::default());
+        assert_eq!(legacy.mouse.released, MouseButtons::default());
 
         let xr = InputSnapshot {
             xr: Some(XrInputSnapshot {
@@ -821,6 +979,8 @@ mod tests {
     fn functor_value_preserves_the_typed_snapshot_shape() {
         let snapshot = InputSnapshot {
             held_keys: vec![Key::W, Key::Space],
+            pressed_keys: vec![Key::Space],
+            released_keys: vec![Key::Enter],
             mouse: MouseSnapshot {
                 x: 12,
                 y: -4,
@@ -828,6 +988,14 @@ mod tests {
                     left: true,
                     right: false,
                     middle: false,
+                },
+                pressed: MouseButtons {
+                    left: true,
+                    ..MouseButtons::default()
+                },
+                released: MouseButtons {
+                    right: true,
+                    ..MouseButtons::default()
                 },
             },
             xr: Some(XrInputSnapshot {
@@ -847,9 +1015,11 @@ mod tests {
             rendered.contains("heldKeys: [Key.W, Key.Space]"),
             "{rendered}"
         );
+        assert!(rendered.contains("pressedKeys: [Key.Space]"), "{rendered}");
+        assert!(rendered.contains("releasedKeys: [Key.Enter]"), "{rendered}");
         assert!(
             rendered.contains(
-                "mouse: { x: 12, y: -4, buttons: { left: true, right: false, middle: false } }"
+                "buttons: { left: true, right: false, middle: false }, pressed: { left: true, right: false, middle: false }, released: { left: false, right: true, middle: false }"
             ),
             "{rendered}"
         );
@@ -865,5 +1035,94 @@ mod tests {
             tracking_pose_from_value(&tracking_pose_value(pose)).unwrap(),
             pose
         );
+    }
+
+    #[test]
+    fn snapshot_transition_reducer_handles_repeat_quick_tap_and_recovery() {
+        let mut snapshot = InputSnapshot::default();
+        let mut edges = InputEdges::default();
+
+        assert!(apply_key_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            Key::Space,
+            true,
+            true,
+        ));
+        assert!(!apply_key_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            Key::Space,
+            true,
+            true,
+        ));
+        assert!(apply_key_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            Key::Space,
+            false,
+            true,
+        ));
+        assert!(apply_mouse_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            MouseButton::Left,
+            true,
+            true,
+        ));
+        assert!(apply_mouse_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            MouseButton::Left,
+            false,
+            true,
+        ));
+
+        edges.apply_to(&mut snapshot);
+        assert!(snapshot.held_keys.is_empty());
+        assert_eq!(snapshot.pressed_keys, vec![Key::Space]);
+        assert_eq!(snapshot.released_keys, vec![Key::Space]);
+        assert!(!snapshot.mouse.buttons.left);
+        assert!(snapshot.mouse.pressed.left);
+        assert!(snapshot.mouse.released.left);
+
+        // Recovery-only releases fix final physical levels without creating
+        // model-visible sampled edges.
+        snapshot.clear_edges();
+        edges.clear();
+        snapshot.held_keys.push(Key::Enter);
+        snapshot.mouse.buttons.right = true;
+        assert!(apply_key_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            Key::Enter,
+            false,
+            false,
+        ));
+        assert!(apply_mouse_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            MouseButton::Right,
+            false,
+            false,
+        ));
+        edges.apply_to(&mut snapshot);
+        assert!(snapshot.held_keys.is_empty());
+        assert!(!snapshot.mouse.buttons.right);
+        assert!(snapshot.released_keys.is_empty());
+        assert_eq!(snapshot.mouse.released, MouseButtons::default());
+
+        // Once physical recovery removed the stale level, a fresh press is a
+        // real edge again.
+        assert!(apply_key_transition_to_snapshot(
+            &mut snapshot,
+            &mut edges,
+            Key::Enter,
+            true,
+            true,
+        ));
+        edges.apply_to(&mut snapshot);
+        assert_eq!(snapshot.held_keys, vec![Key::Enter]);
+        assert_eq!(snapshot.pressed_keys, vec![Key::Enter]);
     }
 }

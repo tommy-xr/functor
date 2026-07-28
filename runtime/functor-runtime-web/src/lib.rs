@@ -17,7 +17,9 @@ use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
-use functor_runtime_common::{Frame, FrameTime, GameClock, InputSnapshot, SceneContext};
+use functor_runtime_common::{
+    Frame, FrameTime, GameClock, InputEdges, InputSnapshot, SceneContext,
+};
 use glow::*;
 use js_sys::{Function, Object, Reflect, WebAssembly};
 use wasm_bindgen::JsValue;
@@ -121,6 +123,13 @@ fn fixed_time_from_url() -> Option<f32> {
         }
     }
     None
+}
+
+/// Releases suppressed by an interactive transport still update physical
+/// levels, so resuming cannot leave a key or button stuck. Deterministic
+/// fixed-time capture keeps the entire snapshot frozen.
+fn recover_suppressed_releases(clock: &GameClock, sim_running: bool) -> bool {
+    !clock.is_fixed_time() && (clock.is_paused() || sim_running)
 }
 
 /// The wasm counterpart of the desktop `--functor-lang --game-path` flags: the page
@@ -1166,6 +1175,9 @@ async fn run_async() -> Result<(), JsValue> {
         let initial_time = performance.now() as f32;
         let mut last_time = initial_time;
         let mut input_snapshot = InputSnapshot::default();
+        // rAF can produce zero or several fixed steps. Keep transitions until
+        // the first step, then clear them before any catch-up step.
+        let mut input_edges = InputEdges::default();
         // let texture_future = async {
         //     let bytes = load_bytes_async("crate.png").await;
         //     sleep(Duration::from_secs(1)).await;
@@ -1327,17 +1339,20 @@ async fn run_async() -> Result<(), JsValue> {
             // fixed-time frame must stay deterministic for captures), and
             // draining stops the queue bursting on resume.
             // A running netsim suspends the single game the same way a pinned
-            // clock does — drain-and-DISCARD. Delivering input here would fold
-            // it through the single game's `update`, whose effects land on the
-            // queues the sim instances share, and the sim's next step would
-            // attribute that stray `Effect.send` to instance 0. Typing in a
-            // suspended game must not inject packets into the simulation.
-            let suspended = clock.is_pinned() || sim::is_running();
+            // clock does. Delivering input here would fold it through the
+            // single game's `update`, whose effects land on the queues the sim
+            // instances share, and the sim's next step would attribute that
+            // stray `Effect.send` to instance 0. New presses are discarded,
+            // while recovery-only releases clear physical levels so a blur
+            // during the sim cannot leave the resumed game stuck.
+            let sim_running = sim::is_running();
+            let suspended = clock.is_pinned() || sim_running;
             functor_lang_game::drain_input(
                 &mut **game,
                 &mut input_snapshot,
+                &mut input_edges,
                 !suspended,
-                clock.is_paused() && !clock.is_fixed_time(),
+                recover_suppressed_releases(&clock, sim_running),
             );
 
             // Webview interactions drain HERE, before render replaces the
@@ -1381,8 +1396,11 @@ async fn run_async() -> Result<(), JsValue> {
 
                 for sub in &sub_frames {
                     if game.samples_input() {
+                        input_edges.apply_to(&mut input_snapshot);
                         game.sampled_input(&input_snapshot);
                     }
+                    input_edges.clear();
+                    input_snapshot.clear_edges();
                     game.tick(sub.clone());
                 }
 
