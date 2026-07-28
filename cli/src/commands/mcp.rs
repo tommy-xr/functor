@@ -30,6 +30,11 @@ use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
+use super::automation::{
+    canonical_code, limits as automation_limits, model_value_at, parse_automation,
+    usage as automation_usage, AutomationPlan, AutomationStep, AUTOMATION_DIALECT,
+};
+
 /// How long `launch_game` waits for a spawned runtime to answer discovery.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `step` tolerates a queued batch making NO progress before giving
@@ -383,6 +388,23 @@ pub struct LanguageGuideArgs {
     pub section: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ValidateAutomationCodeArgs {
+    /// One restricted JavaScript-shaped builder expression, for example:
+    /// `automation("proof").pause().keyDown("w").step().expectModel("held.w", true)`.
+    /// It is parsed into data and is never evaluated as JavaScript.
+    pub code: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RunAutomationCodeArgs {
+    /// Session id from `launch_game` / `connect_game`.
+    pub session: String,
+    /// A complete restricted automation builder expression. The entire plan is
+    /// parsed and validated before the first runtime request is made.
+    pub code: String,
+}
+
 #[tool_router]
 impl FunctorMcp {
     pub fn new() -> Self {
@@ -454,6 +476,50 @@ impl FunctorMcp {
                 ok_text(render_guide_section(&sections, index))
             }
             None => ok_text(render_guide_contents(intro, &sections)),
+        }
+    }
+
+    /// Parse restricted TypeScript/JavaScript-shaped Functor automation source
+    /// into a serializable plan, without a session and without side effects.
+    /// The source must be ONE `automation("name").method(...)` chain. Allowed
+    /// methods: pause, keyDown/keyUp/pressKey, mouseMove/mouseDown/mouseUp/
+    /// mouseWheel, uiClick, step, inspect, expectModel, and capture. Success
+    /// returns the normalized plan, deterministic canonical source that parses
+    /// back to that same plan, and used/maximum budgets. Arguments are literals;
+    /// imports, variables, callbacks/functions, loops, async/await, `new`,
+    /// eval/Function/require, globals, fetch/timers, dynamic properties, and
+    /// unknown calls are rejected. This parser never evaluates JavaScript.
+    #[tool]
+    async fn validate_automation_code(
+        &self,
+        Parameters(args): Parameters<ValidateAutomationCodeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match parse_automation(&args.code) {
+            Ok(plan) => ok_text(
+                serde_json::json!({
+                    "valid": true,
+                    "dialect": AUTOMATION_DIALECT,
+                    "canonical_code": canonical_code(&plan),
+                    "budget": {
+                        "used": automation_usage(&args.code, &plan),
+                        "limits": automation_limits(),
+                    },
+                    "plan": plan,
+                })
+                .to_string(),
+            ),
+            Err(diagnostic) => ok_text(
+                serde_json::json!({
+                    "valid": false,
+                    "dialect": AUTOMATION_DIALECT,
+                    "errors": [diagnostic],
+                    "budget": {
+                        "used": { "source_bytes": args.code.len() },
+                        "limits": automation_limits(),
+                    },
+                })
+                .to_string(),
+            ),
         }
     }
 
@@ -710,34 +776,7 @@ files writes the inline project to a scratch directory this server owns",
         Parameters(args): Parameters<SessionArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let url = resolve!(self.url(&args.session));
-        let response = resolve!(self
-            .http
-            .post(format!("{url}/capture"))
-            .send()
-            .await
-            .map_err(|error| format!("POST /capture on {} failed: {error}", args.session)));
-        let status = response.status();
-        let body = resolve!(response
-            .bytes()
-            .await
-            .map_err(|error| format!("reading the captured PNG failed: {error}")));
-        // 503 is "no pixels right now", and the runtime says WHICH reason —
-        // headless, a dozing XR session, a capture timeout. Pass its own words
-        // through and only append the hint, so an attached Quest is not told to
-        // relaunch a process this server does not own.
-        if status.as_u16() == 503 {
-            return tool_error(format!(
-                "POST /capture -> 503: {}\n\nA session launched with mode \"headless\" has no GL \
-context at all — relaunch it with mode \"hidden\" to capture frames.",
-                String::from_utf8_lossy(&body)
-            ));
-        }
-        if !status.is_success() {
-            return tool_error(format!(
-                "POST /capture → {status}: {}",
-                String::from_utf8_lossy(&body)
-            ));
-        }
+        let body = resolve!(self.capture_png(&url).await);
         Ok(CallToolResult::success(vec![ContentBlock::image(
             base64::engine::general_purpose::STANDARD.encode(&body),
             "image/png",
@@ -764,6 +803,52 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             .await
     }
 
+    /// Parse and run one restricted automation builder expression against a
+    /// session. The whole source is lowered to a bounded, serializable plan
+    /// BEFORE session lookup or any runtime request; it is never evaluated as
+    /// JavaScript. This collapses the deterministic jam loop into one call:
+    /// `automation("proof").pause().keyDown("w").step().expectModel("x", 1)`.
+    /// `inspect` snapshots state in the result; `capture` appends PNG image
+    /// blocks and needs a hidden (not headless) session. Execution is ordered
+    /// but not transactional: a runtime failure can leave earlier valid steps
+    /// applied. Call `validate_automation_code` first for parse-only feedback.
+    #[tool]
+    async fn run_automation_code(
+        &self,
+        Parameters(args): Parameters<RunAutomationCodeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // This ordering is the security boundary: syntax, allowlists, literal
+        // shapes, and every resource budget are settled before even resolving
+        // a session, let alone issuing an HTTP request.
+        let plan = match parse_automation(&args.code) {
+            Ok(plan) => plan,
+            Err(diagnostic) => {
+                return tool_error(
+                    serde_json::json!({
+                        "valid": false,
+                        "dialect": AUTOMATION_DIALECT,
+                        "errors": [diagnostic],
+                    })
+                    .to_string(),
+                )
+            }
+        };
+        let url = resolve!(self.url(&args.session));
+        match self.execute_automation(&url, &plan).await {
+            Ok((summary, captures)) => {
+                let mut content = vec![ContentBlock::text(summary.to_string())];
+                content.extend(captures.into_iter().map(|(_, png)| {
+                    ContentBlock::image(
+                        base64::engine::general_purpose::STANDARD.encode(png),
+                        "image/png",
+                    )
+                }));
+                Ok(CallToolResult::success(content))
+            }
+            Err(message) => tool_error(message),
+        }
+    }
+
     /// Pause: pin the clock to a constant time, so nothing advances until
     /// `step` or `resume`. Window keyboard/mouse input is ignored while pinned,
     /// but injected `send_input` still applies — this is how a driver gets
@@ -774,18 +859,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         Parameters(args): Parameters<PauseArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let url = resolve!(self.url(&args.session));
-        let tts = match args.tts {
-            Some(tts) => tts,
-            None => resolve!(tts_of(&resolve!(self.state(&url).await))),
-        };
-        ok_text(resolve!(
-            self.post(
-                &url,
-                "/time",
-                serde_json::json!({ "type": "set", "tts": tts }).to_string(),
-            )
-            .await
-        ))
+        ok_text(resolve!(self.pin(&url, args.tts).await))
     }
 
     /// Run exactly `frames` simulation steps of `dts` seconds each, WAIT for
@@ -799,36 +873,11 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         Parameters(args): Parameters<StepArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let url = resolve!(self.url(&args.session));
-        let body = serde_json::json!({
-            "type": "advance",
-            "dts": args.dts.unwrap_or(0.016),
-            "frames": args.frames.unwrap_or(1),
-        });
-        resolve!(self.post(&url, "/time", body.to_string()).await);
-        // The timeout is a STALL timeout, not a total one: a large batch drains
-        // at up to 8 steps per rendered frame, so a legitimate 100k-step skip
-        // takes minutes. Every observed step resets the clock; only a queue that
-        // stops moving is a failure.
-        let mut deadline = Instant::now() + STEP_STALL_TIMEOUT;
-        let mut remaining = u64::MAX;
-        loop {
-            let state = resolve!(self.state(&url).await);
-            let pending = state["pending_steps"].as_u64().unwrap_or(0);
-            if pending == 0 {
-                return ok_text(state.to_string());
-            }
-            if pending < remaining {
-                remaining = pending;
-                deadline = Instant::now() + STEP_STALL_TIMEOUT;
-            } else if Instant::now() >= deadline {
-                return tool_error(format!(
-                    "the queued steps stopped draining ({pending} still pending, no progress for \
-{}s) — the game loop may be stuck or the runtime paused from elsewhere",
-                    STEP_STALL_TIMEOUT.as_secs()
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let state = resolve!(
+            self.advance(&url, args.dts.unwrap_or(0.016), args.frames.unwrap_or(1))
+                .await
+        );
+        ok_text(state.to_string())
     }
 
     /// Un-pin the clock: the game follows wall-clock time again, and window
@@ -1066,6 +1115,284 @@ impl FunctorMcp {
             .map_err(|error| format!("GET /state returned invalid JSON: {error}"))
     }
 
+    async fn pin(&self, url: &str, requested_tts: Option<f64>) -> Result<String, String> {
+        let tts = match requested_tts {
+            Some(tts) => tts,
+            None => tts_of(&self.state(url).await?)?,
+        };
+        self.post(
+            url,
+            "/time",
+            serde_json::json!({ "type": "set", "tts": tts }).to_string(),
+        )
+        .await
+    }
+
+    async fn advance(&self, url: &str, dts: f64, frames: u32) -> Result<Value, String> {
+        let body = serde_json::json!({
+            "type": "advance",
+            "dts": dts,
+            "frames": frames,
+        });
+        self.post(url, "/time", body.to_string()).await?;
+        // The timeout is a STALL timeout, not a total one: a large batch drains
+        // at up to 8 steps per rendered frame, so a legitimate 100k-step skip
+        // takes minutes. Every observed step resets the clock; only a queue that
+        // stops moving is a failure.
+        let mut deadline = Instant::now() + STEP_STALL_TIMEOUT;
+        let mut remaining = u64::MAX;
+        loop {
+            let state = self.state(url).await?;
+            let pending = state["pending_steps"].as_u64().unwrap_or(0);
+            if pending == 0 {
+                return Ok(state);
+            }
+            if pending < remaining {
+                remaining = pending;
+                deadline = Instant::now() + STEP_STALL_TIMEOUT;
+            } else if Instant::now() >= deadline {
+                return Err(format!(
+                    "the queued steps stopped draining ({pending} still pending, no progress for \
+{}s) — the game loop may be stuck or the runtime paused from elsewhere",
+                    STEP_STALL_TIMEOUT.as_secs()
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn capture_png(&self, url: &str) -> Result<Vec<u8>, String> {
+        let response = self
+            .http
+            .post(format!("{url}/capture"))
+            .send()
+            .await
+            .map_err(|error| format!("POST /capture on {url} failed: {error}"))?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| format!("reading the captured PNG failed: {error}"))?;
+        // 503 is "no pixels right now", and the runtime says WHICH reason —
+        // headless, a dozing XR session, a capture timeout. Pass its own words
+        // through and only append the hint, so an attached Quest is not told to
+        // relaunch a process this server does not own.
+        if status.as_u16() == 503 {
+            return Err(format!(
+                "POST /capture -> 503: {}\n\nA session launched with mode \"headless\" has no GL \
+context at all — relaunch it with mode \"hidden\" to capture frames.",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        if !status.is_success() {
+            return Err(format!(
+                "POST /capture → {status}: {}",
+                String::from_utf8_lossy(&body)
+            ));
+        }
+        Ok(body.to_vec())
+    }
+
+    async fn execute_automation(
+        &self,
+        url: &str,
+        plan: &AutomationPlan,
+    ) -> Result<(Value, Vec<(Option<String>, Vec<u8>)>), String> {
+        let mut observations = Vec::new();
+        let mut assertions = Vec::new();
+        let mut captures = Vec::new();
+
+        for (index, step) in plan.steps.iter().enumerate() {
+            let step_number = index + 1;
+            let result: Result<(), String> = match step {
+                AutomationStep::Pause { tts } => self.pin(url, *tts).await.map(|_| ()),
+                AutomationStep::Key { key, down } => self
+                    .post(
+                        url,
+                        "/input",
+                        serde_json::json!({
+                            "type": "key",
+                            "key": key,
+                            "down": down,
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .map(|_| ()),
+                AutomationStep::PressKey { key } => {
+                    let press = self
+                        .post(
+                            url,
+                            "/input",
+                            serde_json::json!({
+                                "type": "key",
+                                "key": key,
+                                "down": true,
+                            })
+                            .to_string(),
+                        )
+                        .await;
+                    match press {
+                        Ok(_) => {
+                            let advanced = self.advance(url, 0.016, 1).await.map(|_| ());
+                            let released = self
+                                .post(
+                                    url,
+                                    "/input",
+                                    serde_json::json!({
+                                        "type": "key",
+                                        "key": key,
+                                        "down": false,
+                                    })
+                                    .to_string(),
+                                )
+                                .await
+                                .map(|_| ());
+                            match (advanced, released) {
+                                (Ok(()), Ok(())) => Ok(()),
+                                (Err(step_error), Ok(())) => Err(step_error),
+                                (Ok(()), Err(release_error)) => Err(release_error),
+                                (Err(step_error), Err(release_error)) => Err(format!(
+                                    "{step_error}; best-effort key release also failed: {release_error}"
+                                )),
+                            }
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                AutomationStep::MouseMove { x, y } => self
+                    .post(
+                        url,
+                        "/input",
+                        serde_json::json!({
+                            "type": "mouse_move",
+                            "x": x,
+                            "y": y,
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .map(|_| ()),
+                AutomationStep::MouseButton { button, down } => self
+                    .post(
+                        url,
+                        "/input",
+                        serde_json::json!({
+                            "type": "mouse_button",
+                            "button": button,
+                            "down": down,
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .map(|_| ()),
+                AutomationStep::MouseWheel { delta } => self
+                    .post(
+                        url,
+                        "/input",
+                        serde_json::json!({
+                            "type": "mouse_wheel",
+                            "delta": delta,
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .map(|_| ()),
+                AutomationStep::UiClick { slot } => self
+                    .post(
+                        url,
+                        "/input",
+                        serde_json::json!({
+                            "type": "ui_event",
+                            "slot": slot,
+                            "kind": "Clicked",
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .map(|_| ()),
+                AutomationStep::Step { frames, dts } => {
+                    self.advance(url, *dts, *frames).await.map(|_| ())
+                }
+                AutomationStep::Inspect { label } => match self.state(url).await {
+                    Ok(state) => {
+                        observations.push(serde_json::json!({
+                            "label": label,
+                            "state": state,
+                        }));
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+                AutomationStep::ExpectModel { path, equals } => match self.state(url).await {
+                    Ok(state) => {
+                        let model = &state["model"];
+                        match model_value_at(model, path) {
+                            Some(actual) if actual == equals => {
+                                assertions.push(serde_json::json!({
+                                    "path": path,
+                                    "expected": equals,
+                                    "actual": actual,
+                                    "passed": true,
+                                }));
+                                Ok(())
+                            }
+                            Some(actual) => Err(format!(
+                                "model assertion failed at {path:?}: expected {}, got {}",
+                                equals, actual
+                            )),
+                            None => Err(format!(
+                                "model assertion path {path:?} does not exist; model is {model}"
+                            )),
+                        }
+                    }
+                    Err(error) => Err(error),
+                },
+                AutomationStep::Capture { label } => match self.capture_png(url).await {
+                    Ok(png) => {
+                        captures.push((label.clone(), png));
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                },
+            };
+            if let Err(error) = result {
+                return Err(format!(
+                    "automation step {step_number} ({}) failed: {error}",
+                    automation_step_name(step)
+                ));
+            }
+        }
+
+        let final_state = self
+            .state(url)
+            .await
+            .map_err(|error| format!("automation completed but final state failed: {error}"))?;
+        let capture_metadata: Vec<Value> = captures
+            .iter()
+            .enumerate()
+            .map(|(index, (label, png))| {
+                serde_json::json!({
+                    "label": label,
+                    "content_index": index + 1,
+                    "mime_type": "image/png",
+                    "bytes": png.len(),
+                })
+            })
+            .collect();
+        let summary = serde_json::json!({
+            "ok": true,
+            "dialect": AUTOMATION_DIALECT,
+            "plan": plan,
+            "steps_executed": plan.steps.len(),
+            "assertions": assertions,
+            "observations": observations,
+            "captures": capture_metadata,
+            "final_state": final_state,
+        });
+        Ok((summary, captures))
+    }
+
     /// Fetch and validate the discovery document, so an `http://…` that answers
     /// something else is rejected here rather than at the first real call.
     async fn discover(&self, url: &str) -> Result<Value, String> {
@@ -1125,7 +1452,10 @@ is structured JSON). Rebuild that runtime from this version of Functor."
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
 (launch_game / connect_game), then observe it (get_state — read model — get_scene, \
 get_trace, capture_frame) and drive it (pause, send_input, step, resume, rewind, \
-reload_source). The deterministic loop is pause → send_input → step → get_state: while the \
+reload_source). `validate_automation_code` and `run_automation_code` collapse a whole \
+pause/input/step/assert/inspect/capture sequence into one restricted SDK builder expression \
+that is parsed into data and never evaluated as JavaScript. The lower-level deterministic \
+loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \
 across steps. language_guide teaches the LANGUAGE (Functor Lang is not F#/OCaml — read it \
 before writing any .fun) and api_reference searches the engine's prelude API; neither needs \
@@ -1139,6 +1469,24 @@ impl ServerHandler for FunctorMcp {}
 impl Default for FunctorMcp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn automation_step_name(step: &AutomationStep) -> &'static str {
+    match step {
+        AutomationStep::Pause { .. } => "pause",
+        AutomationStep::Key { down: true, .. } => "keyDown",
+        AutomationStep::Key { down: false, .. } => "keyUp",
+        AutomationStep::PressKey { .. } => "pressKey",
+        AutomationStep::MouseMove { .. } => "mouseMove",
+        AutomationStep::MouseButton { down: true, .. } => "mouseDown",
+        AutomationStep::MouseButton { down: false, .. } => "mouseUp",
+        AutomationStep::MouseWheel { .. } => "mouseWheel",
+        AutomationStep::UiClick { .. } => "uiClick",
+        AutomationStep::Step { .. } => "step",
+        AutomationStep::Inspect { .. } => "inspect",
+        AutomationStep::ExpectModel { .. } => "expectModel",
+        AutomationStep::Capture { .. } => "capture",
     }
 }
 

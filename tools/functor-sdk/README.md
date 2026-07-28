@@ -5,6 +5,43 @@ A Playwright-style TypeScript SDK for driving the functor **debug runtime** — 
 [`docs/debug-runtime.md`](../../docs/debug-runtime.md)). It lets a script, test, or
 LLM **observe** and **drive** a running game headlessly.
 
+## Declarative automation plans (MCP architecture PoC)
+
+The SDK also exports a small fluent plan builder:
+
+```ts
+import { automation, runAutomation } from "@functor/sdk";
+
+const proof = automation("mouse-look proof")
+  .pause(2)
+  .mouseMove(400, 300)
+  .mouseMove(600, 200)
+  .step({ frames: 2, dts: 0.016 })
+  .expectModel("yawOffset", -0.6)
+  .inspect("settled")
+  .capture("proof");
+
+console.log(proof.toPlan()); // versioned, serializable plain data
+console.log(proof.toCode()); // restricted source accepted by functor mcp
+const result = await runAutomation(game, proof);
+```
+
+This vocabulary is shared with MCP's `validate_automation_code` and
+`run_automation_code` tools. The distinction is important:
+
+- standalone SDK programs are trusted, full TypeScript and may use normal
+  variables, loops, and callbacks around plans;
+- source submitted through MCP is one literal `automation().…` chain, parsed by
+  a restricted Rust parser and **never evaluated as JavaScript**.
+
+`pressKey("r")` is the edge-action shortcut: down, one waited 16ms step, then
+best-effort release. `expectModel` reads static dotted paths or JSON Pointers
+from structured state. `capture` needs a rendered (normally hidden) client, not
+headless mode.
+
+The PoC rationale, security boundary, and game-jam evaluation are documented in
+[`docs/mcp-automation-code-poc.md`](../../docs/mcp-automation-code-poc.md).
+
 ## Install & build
 
 ```sh

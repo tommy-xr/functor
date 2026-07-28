@@ -69,6 +69,8 @@ URL plus, when the server launched it, the child process.
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
 | `reload_source` / `reload_project` | Hot-reload the entry, or every sibling module, with the live model preserved. |
+| `validate_automation_code` | Parse one restricted SDK builder expression without a session or side effects; return its normalized plan, canonical round-trip source, diagnostics, and budget use. |
+| `run_automation_code` | Fully validate, then execute a restricted SDK builder expression as one ordered pause/input/step/assert/inspect/capture plan. |
 
 **Authoring.**
 
@@ -144,6 +146,71 @@ and says so on an older runtime.
 
 Launched games are killed when the server stops, whether its client closes
 stdin or signals it (SIGTERM/Ctrl-C). Attached ones are always left running.
+
+## Restricted automation-code PoC
+
+The two automation-code tools are a deliberately small experiment inspired by
+n8n's code-shaped workflow builder. They do **not** add a JavaScript runtime to
+`functor mcp`. Submitted source is parsed as one allowlisted fluent expression,
+lowered to plain JSON-like plan data, and fully validated before a session is
+looked up or any runtime HTTP request is made:
+
+```text
+restricted SDK source → lexer/parser → normalized AutomationPlan
+                      → budgets + semantic validation
+                      → existing typed debug-runtime operations
+```
+
+```js
+automation("photo mouse-look proof")
+  .pause(2)
+  .mouseMove(400, 300)
+  .mouseMove(600, 200)
+  .step({ frames: 2, dts: 0.016 })
+  .expectModel("yawOffset", -0.6)
+  .inspect("settled")
+  .capture("proof");
+```
+
+Call `validate_automation_code` without a session first. On success it returns
+the normalized `plan`, deterministic `canonical_code`, and both used and maximum
+budgets. Submitting `canonical_code` to validation again produces the identical
+plan. Invalid validation also succeeds as a tool call but returns `valid: false`
+with a line/column diagnostic, so an agent can repair source without decoding a
+protocol error.
+
+Allowed methods are `pause`, `keyDown`, `keyUp`, `pressKey`, `mouseMove`,
+`mouseDown`, `mouseUp`, `mouseWheel`, `uiClick`, `step`, `inspect`,
+`expectModel`, and `capture`. `pressKey("r")` lowers to key down → one waited
+16ms step → key up, including a best-effort release if stepping fails; it is the
+edge-action shortcut jam authors repeatedly needed. Model paths are static
+strings: convenient dotted paths (`camera.yawOffset`, `players.0.score`) or JSON
+Pointers (`/odd.key/value`).
+
+Only literal strings, finite numbers, booleans, nulls, arrays, and objects are
+accepted as arguments. Duplicate object keys are rejected. The grammar cannot
+represent imports, declarations/variables, callbacks/functions, loops,
+classes/`new`, async/await, `eval`, `Function`, `require`, `process`,
+`globalThis`, browser globals, fetch/timers, dynamic properties, or unknown
+calls. There is no `eval`, `new Function`, Node `vm`, JavaScript engine, module
+resolution, filesystem access, or network access in the parser.
+
+The budgets are 16 KiB of source, 64 logical steps, eight levels of literal
+nesting, 10,000 total requested frames, and four captures. `run_automation_code`
+returns the normalized plan, passed assertions, labeled state observations, and
+fresh final state in its first text block. Each `capture` adds a PNG image block
+and therefore requires a `hidden` session; headless sessions still support every
+data/input/clock operation.
+
+Execution is ordered but not transactional. Complete parse and budget failure
+is side-effect free, including when a valid mutating prefix has an invalid
+suffix. Once a valid plan begins, a later runtime or assertion failure can
+leave earlier steps applied. This PoC intentionally has no variables,
+branching, loops, retry conditions, arbitrary JavaScript expressions, or
+rollback.
+
+The complete architecture, jam-friction evaluation, and productionization
+questions are in [the PoC note](mcp-automation-code-poc.md).
 
 ## `hidden` vs `headless`
 

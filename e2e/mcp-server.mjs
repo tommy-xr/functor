@@ -29,6 +29,8 @@
 //
 //   cargo build -p functor-cli --no-default-features
 //   node e2e/mcp-server.mjs
+//
+// Set FUNCTOR_BIN when the build uses a shared CARGO_TARGET_DIR.
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,7 +38,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const BIN = `${ROOT}target/debug/functor`;
+const BIN = process.env.FUNCTOR_BIN ?? `${ROOT}target/debug/functor`;
 
 /** Every tool the server must advertise (docs/mcp.md). */
 const EXPECTED_TOOLS = [
@@ -57,6 +59,8 @@ const EXPECTED_TOOLS = [
   "reload_project",
   "api_reference",
   "language_guide",
+  "validate_automation_code",
+  "run_automation_code",
   "init_game",
   "save_project",
 ];
@@ -199,6 +203,33 @@ try {
   }
   check(badSection !== null && /syntax-subset/.test(badSection), "an unknown section names the sections that exist");
 
+  console.log("\n▸ restricted automation source validates without a session");
+  const automationSource = `automation("round trip")
+    .pause()
+    .pressKey("2")
+    .step({ frames: 3, dts: 0.02 })
+    .expectModel("count", 0)
+    .capture("proof")`;
+  const validated = await rpc.call("validate_automation_code", { code: automationSource });
+  check(validated.valid === true && validated.plan?.steps?.length === 5, "validation returns the normalized serializable plan");
+  check(typeof validated.canonical_code === "string" && /automation\("round trip"\)/.test(validated.canonical_code), "validation returns deterministic canonical SDK source");
+  check(validated.budget?.used?.total_frames === 4, "validation reports expanded frame-budget use (pressKey + step)");
+  const roundTripped = await rpc.call("validate_automation_code", { code: validated.canonical_code });
+  check(
+    JSON.stringify(roundTripped.plan) === JSON.stringify(validated.plan),
+    "canonical source parses back to the identical plan",
+  );
+
+  const rejectedAutomation = await rpc.call("validate_automation_code", {
+    code: `automation().pause().then(() => process.exit())`,
+  });
+  check(
+    rejectedAutomation.valid === false &&
+      rejectedAutomation.errors?.[0]?.line === 1 &&
+      /unknown automation method|restricted/.test(rejectedAutomation.errors?.[0]?.message ?? ""),
+    "callbacks, globals, and unknown calls are rejected with a source diagnostic",
+  );
+
   console.log("\n▸ launching a game headlessly");
   const launched = await rpc.call("launch_game", { dir: "examples/counter", mode: "headless" });
   session = launched.session;
@@ -216,6 +247,49 @@ try {
     "get_state carries model as a structured object",
   );
   check(state.model?.count === 0, `the counter starts at 0 (model.count = ${state.model?.count})`);
+
+  console.log("\n▸ an automation plan is fully validated before its first action");
+  await rpc.call("pause", { session });
+  const beforeRejectedRun = await rpc.call("get_state", { session });
+  let rejectedRun = null;
+  try {
+    // The prefix is a VALID mutating action. The invalid suffix must prevent
+    // the prefix from being sent, proving whole-plan validation comes first.
+    await rpc.call("run_automation_code", {
+      session,
+      code: `automation("must stay pure").uiClick(0).unknown()`,
+    });
+  } catch (error) {
+    rejectedRun = error.message;
+  }
+  const afterRejectedRun = await rpc.call("get_state", { session });
+  check(rejectedRun !== null && /unknown automation method/.test(rejectedRun), "run rejects an invalid suffix");
+  check(
+    afterRejectedRun.model.count === beforeRejectedRun.model.count &&
+      afterRejectedRun.tts === beforeRejectedRun.tts,
+    "the valid action prefix had no model or clock side effect",
+  );
+
+  console.log("\n▸ one automation call replaces raw pause/input/step/assert choreography");
+  const automated = await rpc.call("run_automation_code", {
+    session,
+    code: `automation("counter proof")
+      .pause()
+      .uiClick(0)
+      .step()
+      .expectModel("count", 1)
+      .keyDown("w")
+      .step()
+      .inspect("while held")
+      .keyUp("w")`,
+  });
+  check(automated.ok === true && automated.steps_executed === 8, "the complete normalized plan executed");
+  check(automated.assertions?.[0]?.passed === true, "expectModel passed against structured model data");
+  check(
+    automated.observations?.[0]?.state?.input?.held_keys?.includes("W"),
+    "inspect observed typed held input between deterministic steps",
+  );
+  check(automated.final_state?.model?.count === 1, "the automation returned fresh final state");
 
   console.log("\n▸ pause + step is a deterministic clock");
   await rpc.call("pause", { session });
