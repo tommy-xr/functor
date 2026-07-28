@@ -5,7 +5,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-const MANIFEST: &str = include_str!("../../templates/functor.json");
+const MANIFEST_3D: &str = include_str!("../../templates/functor.json");
+const MANIFEST_FPS: &str = include_str!("../../templates/fps/functor.json");
 const GAME_3D: &str = include_str!("../../templates/3d/game.fun");
 const GAME_FPS: &str = include_str!("../../templates/fps/game.fun");
 
@@ -34,14 +35,14 @@ impl Template {
     }
 
     fn files(&self) -> [TemplateFile; 2] {
-        let game = match self {
-            Self::ThreeD => GAME_3D,
-            Self::Fps => GAME_FPS,
+        let (manifest, game) = match self {
+            Self::ThreeD => (MANIFEST_3D, GAME_3D),
+            Self::Fps => (MANIFEST_FPS, GAME_FPS),
         };
         [
             TemplateFile {
                 name: "functor.json",
-                contents: MANIFEST,
+                contents: manifest,
             },
             TemplateFile {
                 name: "game.fun",
@@ -133,7 +134,7 @@ fn rollback(directory: &Path, created_directory: bool, created_files: &[PathBuf]
 
 #[cfg(test)]
 mod tests {
-    use super::{execute, Template, GAME_3D, GAME_FPS, MANIFEST};
+    use super::{execute, Template, GAME_3D, GAME_FPS, MANIFEST_3D, MANIFEST_FPS};
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -177,7 +178,7 @@ mod tests {
 
         assert_eq!(
             fs::read_to_string(directory.0.join("functor.json")).unwrap(),
-            MANIFEST
+            MANIFEST_3D
         );
         assert_eq!(
             fs::read_to_string(directory.0.join("game.fun")).unwrap(),
@@ -191,6 +192,10 @@ mod tests {
         let directory = TestDir::new("fps");
         execute(&directory.0, &Template::Fps).unwrap();
 
+        assert_eq!(
+            fs::read_to_string(directory.0.join("functor.json")).unwrap(),
+            MANIFEST_FPS
+        );
         assert_eq!(
             fs::read_to_string(directory.0.join("game.fun")).unwrap(),
             GAME_FPS

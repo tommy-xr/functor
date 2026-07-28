@@ -87,6 +87,19 @@ interface LangSeam {
 
 const STORAGE_KEY = "functor-ide-project-v1";
 const ENTRY = "game.fun"; // the program root; every other .fun is a sibling module
+// The in-memory IDE has no functor.json to parse, so its URL is the explicit
+// project-setting seam: `/ide.html?camera=game` opts the preview and downloaded
+// manifest into game-owned captured mouse input. Absent keeps the 2D-safe
+// default; never infer ownership from a source hook.
+const cameraControl =
+  new URLSearchParams(window.location.search).get("camera") === "game"
+    ? "game"
+    : null;
+const playerUrl = () => {
+  const params = new URLSearchParams({ project: "inline" });
+  if (cameraControl) params.set("camera", cameraControl);
+  return `player.html?${params}`;
+};
 // A valid project file: a bare module name + `.fun` (the project is a flat
 // module space — no path separators). Enforced on BOTH created and loaded
 // files, so a hand-edited/corrupt localStorage can't smuggle in a `../x.fun`
@@ -414,9 +427,16 @@ const deleteFile = (path: string) => {
 const download = () => {
   // Include the functor.json the CLI needs to recognise the project, so the
   // zip drops straight into `functor -d <dir> build wasm` (per the README).
+  const config = cameraControl
+    ? {
+        language: "functor-lang",
+        entry: ENTRY,
+        viewer: { camera: { control: cameraControl } },
+      }
+    : { language: "functor-lang", entry: ENTRY };
   const manifest = {
     path: "functor.json",
-    source: JSON.stringify({ language: "functor-lang", entry: ENTRY }, null, 2) + "\n",
+    source: JSON.stringify(config, null, 2) + "\n",
   };
   const blob = zipFiles([manifest, ...project.files]);
   const url = URL.createObjectURL(blob);
@@ -434,7 +454,7 @@ const download = () => {
 const restart = () => {
   bridge.reset();
   setStatus("busy", "◌ loading…");
-  els.player.src = "player.html?project=inline";
+  els.player.src = playerUrl();
   bridge.setProject(project.files);
   runtimeTarget.restart();
 };
@@ -472,7 +492,7 @@ setStatus("busy", "◌ loading…");
 // Store the file set BEFORE the iframe loads, so the bridge can flush it the
 // moment the player announces it's ready (no lost first push).
 bridge.setProject(project.files);
-els.player.src = "player.html?project=inline";
+els.player.src = playerUrl();
 
 // Test seam for the headless e2e (e2e/ide-page.mjs): drive files without
 // synthesizing DOM events, and read status.

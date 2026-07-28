@@ -265,6 +265,14 @@ pub trait GameProducer {
         false
     }
 
+    /// Whether the game defines any hook whose live shell input is available
+    /// only while the pointer is captured (`mouseMove`, `mouseWheel`, or
+    /// `mouseButton`). Shells use this capability to teach about a missing
+    /// camera-control opt-in instead of leaving a valid hook silently inert.
+    fn uses_captured_mouse_input(&self) -> bool {
+        false
+    }
+
     /// Deliver held/device levels plus this fixed step's keyboard/mouse
     /// transitions immediately before one [`GameProducer::tick`]. The default
     /// drops it for replay/legacy producers; Functor Lang producers call

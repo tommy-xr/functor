@@ -623,6 +623,10 @@ impl GameProducer for FunctorLangEmbeddedGame {
     // embedded producer's reload.
     fn check_hot_reload(&mut self, _frame_time: FrameTime) {}
 
+    fn uses_captured_mouse_input(&self) -> bool {
+        self.has_mouse_move || self.has_mouse_wheel || self.has_mouse_button
+    }
+
     fn push_asset_progress(&mut self, progress: crate::asset::AssetProgress) {
         // Stored, not delivered here: the producer compares it against what
         // the game last saw during the frame's subscription phase.

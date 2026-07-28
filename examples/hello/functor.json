@@ -1,4 +1,9 @@
 {
   "language": "functor-lang",
-  "entry": "game.fun"
+  "entry": "game.fun",
+  "viewer": {
+    "camera": {
+      "control": "game"
+    }
+  }
 }

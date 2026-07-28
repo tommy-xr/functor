@@ -71,7 +71,10 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `init` — the initial model, a plain Functor Lang value
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as the built-in
   `Key` module's variants (`Key.W`, `Key.Up`, `Key.Space`, `Key.Num0`..`Key.Num9`).
-  `mouseMove`/`mouseWheel`/`mouseButton` are the analogous optional entry points
+  `mouseMove`/`mouseWheel`/`mouseButton` are the analogous optional entry points. They receive
+  live shell input only while the cursor is captured, so projects defining them opt in with
+  `"viewer": { "camera": { "control": "game" } }` in `functor.json`; otherwise the runtime
+  warns once and keeps the hooks inert.
 - `mouseButton = (model, button, isDown) => model'` — OPTIONAL; mouse-button edges, buttons as
   the built-in `Mouse` module's variants (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`).
   Delivered **while the cursor is captured** (the rule `mouseMove`/`mouseWheel` already follow),

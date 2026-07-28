@@ -91,10 +91,12 @@ game's perspective this is fully Elm-controlled.
   get the cheap version: the live drag value wins for display while egui
   reports dragging; the model wins otherwise.
 
-- **Routing policy.** Pointer: when the cursor is free, events feed egui;
-  when egui doesn't want the pointer, a click recaptures for free-look (as
-  today). Keyboard: when egui wants keyboard (a text field is focused), key
-  events are suppressed from the game's `input` hook. The raw `mouseButton`
+- **Routing policy.** Pointer: when the cursor is free, events feed egui.
+  A click recaptures for free-look only when `functor.json` opts into
+  `viewer.camera.control = "game"`; otherwise the pointer remains available
+  to 2D/UI projects for the whole session. Keyboard: when egui wants keyboard
+  (a text field is focused), key events are suppressed from the game's
+  `input` hook. The raw `mouseButton`
   game hook (click-to-shoot into the 3D world) has since LANDED on this same
   plumbing: buttons reach the game only **while the cursor is captured**, which
   is exactly the state in which egui does not want the pointer — so the two
