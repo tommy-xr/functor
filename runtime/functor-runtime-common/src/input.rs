@@ -1042,43 +1042,6 @@ mod tests {
     }
 
     #[test]
-    fn input_edges_deduplicate_transitions_and_clear_after_consumption() {
-        let mut edges = InputEdges::default();
-        assert!(edges.key_transition(Key::Space, false, true));
-        assert!(!edges.key_transition(Key::Space, true, true));
-        assert!(edges.key_transition(Key::Space, true, false));
-        assert!(edges.key_transition(Key::Space, false, true));
-        assert!(edges.mouse_transition(MouseButton::Left, false, true));
-        assert!(!edges.mouse_transition(MouseButton::Left, true, true));
-        assert!(edges.mouse_transition(MouseButton::Left, true, false));
-
-        let mut snapshot = InputSnapshot {
-            held_keys: vec![Key::Space],
-            mouse: MouseSnapshot {
-                buttons: MouseButtons {
-                    left: false,
-                    ..MouseButtons::default()
-                },
-                ..MouseSnapshot::default()
-            },
-            ..InputSnapshot::default()
-        };
-        edges.apply_to(&mut snapshot);
-        assert_eq!(snapshot.pressed_keys, vec![Key::Space]);
-        assert_eq!(snapshot.released_keys, vec![Key::Space]);
-        assert!(snapshot.mouse.pressed.left);
-        assert!(snapshot.mouse.released.left);
-
-        edges.clear();
-        edges.apply_to(&mut snapshot);
-        assert!(snapshot.pressed_keys.is_empty());
-        assert!(snapshot.released_keys.is_empty());
-        assert_eq!(snapshot.mouse.pressed, MouseButtons::default());
-        assert_eq!(snapshot.mouse.released, MouseButtons::default());
-        assert_eq!(snapshot.held_keys, vec![Key::Space]);
-    }
-
-    #[test]
     fn snapshot_transition_reducer_handles_repeat_quick_tap_and_recovery() {
         let mut snapshot = InputSnapshot::default();
         let mut edges = InputEdges::default();

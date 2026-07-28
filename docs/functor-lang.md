@@ -299,12 +299,9 @@ snapshots — no GPU, fully agent-verifiable.
       the cursor is captured** — the rule `mouseMove`/`mouseWheel` already
       followed, and the fix for clicks being eaten by free-look capture — and a
       held button is swept released on focus loss, Escape, and the console
-      toggle so it cannot fire forever. The sampled snapshot exposes held
-      levels as `mouse.buttons.{left,right,middle}` and deterministic fixed-step
-      transitions as `mouse.pressed.*` / `mouse.released.*`; keyboard has the
-      same split as `heldKeys` / `pressedKeys` / `releasedKeys`. This lets
-      `sampledInput` express both continuous and one-shot behavior without a
-      model-resident latch.
+      toggle so it cannot fire forever. The held level state rides on the
+      sampled snapshot as `mouse.buttons.{left,right,middle}`, making
+      `mouseButton` the edge and `sampledInput` the level (semi- vs. full-auto).
       All three producers plus the replay path build the variant from one shared
       conversion, so live input, forward-step projection, and the journal agree;
       `POST /input {"type":"mouse_button","button":"left","down":true}` scripts

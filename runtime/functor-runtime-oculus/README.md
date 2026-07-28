@@ -89,9 +89,6 @@ half of the input seam: runtime/debug tooling can inspect it. Functor Lang
 games consume the same portable record once per fixed step through the optional
 `sampledInput(model, snapshot: Input.snapshot)` hook; `Camera.mapTrackedPose`
 maps its rig-local poses through the game's authored `Frame.camera`.
-Debug-injected keyboard/mouse controls follow the desktop contract: held levels
-live in `heldKeys`/`mouse.buttons`, while `pressedKeys`/`releasedKeys` and
-`mouse.pressed`/`mouse.released` appear for exactly the next fixed step.
 
 ## Benchmark on the actual headset
 

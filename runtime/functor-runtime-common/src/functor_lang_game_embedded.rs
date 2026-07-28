@@ -1405,10 +1405,10 @@ let draw = (model, tts) =>
         .expect("sampled-input game loads");
         let snapshot = |x| crate::InputSnapshot {
             mouse: crate::MouseSnapshot {
-                x,
-                y: 0,
-                ..Default::default()
-            },
+                    x,
+                    y: 0,
+                    ..Default::default()
+                },
             ..crate::InputSnapshot::default()
         };
 

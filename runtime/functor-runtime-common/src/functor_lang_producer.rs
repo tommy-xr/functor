@@ -625,9 +625,6 @@ impl FrameCtx<'_> {
                             RecordedInput::Snapshot(snapshot) => {
                                 sampled_input = Some(snapshot.as_ref().clone());
                                 delivered_sample = true;
-                                // The dense sample already contains the
-                                // transitions live delivery saw this step.
-                                projected_edges.clear();
                             }
                             RecordedInput::Key { code, is_down } => {
                                 if let Some(key) = crate::Key::from_i32(*code)

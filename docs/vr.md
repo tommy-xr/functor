@@ -116,9 +116,6 @@ the identity head pose appear in `/state.input.xr`, including under
 controller levels for deterministic captures without adding a desktop-only
 game API. This is one shell adapter over the canonical snapshot; future
 gamepad/mobile adapters should produce that same target-neutral record.
-Keyboard/mouse debug injection is target-conformant with desktop and web:
-held levels persist, while pressed/released sets are consumed by one fixed
-simulation step and recorded for deterministic replay.
 
 The emulator's fidelity is deliberately low: both hands sit on a fixed
 rig-local plane (`z = -0.55`) with **identity orientations**, so gestures that

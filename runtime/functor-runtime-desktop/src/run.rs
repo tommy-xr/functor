@@ -3149,28 +3149,6 @@ mod tests {
         assert!(!snapshot.mouse.buttons.left);
     }
 
-    #[test]
-    fn fixed_snapshot_edges_can_be_refreshed_then_consumed_once() {
-        let mut edges = InputEdges::default();
-        edges.key_transition(InputKey::Enter, false, true);
-        edges.mouse_transition(functor_runtime_common::MouseButton::Right, false, true);
-        let held = BTreeSet::from([InputKey::Enter]);
-        let mut held_buttons = MouseButtons::default();
-        held_buttons.set(functor_runtime_common::MouseButton::Right, true);
-        let mut snapshot = InputSnapshot::default();
-
-        refresh_fixed_input_levels(&mut snapshot, &held, held_buttons, &edges, false, None);
-        assert_eq!(snapshot.pressed_keys, vec![InputKey::Enter]);
-        assert!(snapshot.mouse.pressed.right);
-        assert!(snapshot.mouse.buttons.right);
-
-        snapshot.clear_edges();
-        assert!(snapshot.pressed_keys.is_empty());
-        assert_eq!(snapshot.mouse.pressed, MouseButtons::default());
-        assert_eq!(snapshot.held_keys, vec![InputKey::Enter]);
-        assert!(snapshot.mouse.buttons.right);
-    }
-
     /// A pose an emulated desktop rig CANNOT produce: the emulator pins both
     /// hands to z = -0.55 with identity orientation, so a hand pulled BACK
     /// toward the face with a rotated grip is exactly the gesture that was
