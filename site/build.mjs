@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
-import { EXAMPLES } from "./src/examples.ts";
+import { EXAMPLES, exampleEntryPath } from "./src/examples.ts";
 import { renderApiReference } from "./src/api-reference-html.mjs";
 import { injectHeader } from "./src/header.ts";
 
@@ -202,6 +202,7 @@ await writeFile(
 - [API reference (JSON)](https://functor.games/docs/api.json): the same reference as structured data (modules → items with \`qualified_name\`, \`kind\`, \`declaration\`, \`docs\`).
 - [API reference (HTML)](https://functor.games/docs/): the searchable rendering of the same data.
 - [Manual](https://functor.games/manual/): getting started, the MVU game contract, language principles, topic guides.
+- [Driving games with agents](https://functor.games/manual/#agents): register \`functor mcp\` and drive a game over MCP — launch or attach a session, read its model, pause and step the clock, inject input, capture frames, hot-reload source.
 - [Sandbox](https://functor.games/sandbox.html): run and edit the sample games in the browser.
 
 ## Source
@@ -227,7 +228,7 @@ await cp(TIMELINE_MODEL, `${dist}/timeline-model.js`);
 await cp(`${site}media`, `${dist}/media`, { recursive: true }).catch(() => {});
 for (const example of EXAMPLES) {
   const files = [
-    { source: example.source, output: `examples/${example.id}.fun` },
+    { source: example.source, output: exampleEntryPath(example.id) },
     ...(example.siblings ?? []),
   ];
   for (const { source, output } of [...files, ...(example.assets ?? [])]) {

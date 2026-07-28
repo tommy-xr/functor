@@ -38,7 +38,7 @@ fn window() -> web_sys::Window {
 /// The red error overlay's inline style — a fixed panel pinned to the top of
 /// the page, above the canvas, scrollable if the message is long. Kept as one
 /// string so `show`/`hide` toggle the same element.
-const ERROR_OVERLAY_STYLE: &str = "position:fixed;top:0;left:0;right:0;max-height:60%;\
+const ERROR_OVERLAY_STYLE: &str = "position:fixed;top:var(--functor-scrubber-h, 0px);left:0;right:0;max-height:60%;\
 overflow:auto;z-index:2147483647;margin:0;padding:12px 16px;background:#2b0a0a;color:#ffb3b3;\
 border-bottom:2px solid #ff5555;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\
 white-space:pre-wrap;box-shadow:0 2px 12px rgba(0,0,0,.5)";

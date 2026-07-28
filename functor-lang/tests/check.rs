@@ -31,6 +31,77 @@ fn assert_clean(src: &str) {
     assert!(diags.is_empty(), "expected no diagnostics, got {diags:?}");
 }
 
+// ------------------------------------------------------------- immutable Map
+
+#[test]
+fn map_operations_infer_key_and_value_types_through_pipelines() {
+    assert_clean(
+        r#"
+let build = (pairs: List<(string, float)>): Map<string, float> =>
+  Map.fromList(pairs) |> Map.insert("bonus", 4.0)
+let read = (map: Map<string, float>) => map |> Map.get("bonus")
+let entries = (map: Map<string, float>): List<(string, float)> => Map.toList(map)
+"#,
+    );
+}
+
+#[test]
+fn map_operations_reject_inconsistent_key_and_value_types() {
+    let diags = check_src(
+        r#"
+let map = Map.empty() |> Map.insert("a", 1.0)
+let badKey = map |> Map.get(2.0)
+let badValue = map |> Map.insert("b", true)
+"#,
+    );
+    let messages: Vec<&str> = diags
+        .iter()
+        .map(|(message, _, _)| message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("expected Map<float, float>, got Map<string, float>")),
+        "missing key mismatch: {messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("expected Map<string, bool>, got Map<string, float>")),
+        "missing value mismatch: {messages:?}"
+    );
+}
+
+#[test]
+fn map_key_domain_is_checked_for_concrete_calls_and_annotations() {
+    let (message, _, _) = single_diag("let bad = () => Map.empty() |> Map.insert([1.0], \"x\")");
+    assert_eq!(
+        message,
+        "Map keys must be bool, finite float, or string; got List<float>"
+    );
+
+    let (message, _, _) = single_diag("let bad = (map: Map<List<float>, string>) => map");
+    assert_eq!(
+        message,
+        "Map keys must be bool, finite float, or string; got List<float>"
+    );
+}
+
+#[test]
+fn map_type_arity_is_checked() {
+    let (message, _, _) = single_diag("let bad = (map: Map<string>) => map");
+    assert_eq!(message, "`Map` takes 2 type argument(s), got 1");
+}
+
+#[test]
+fn map_builtin_namespace_is_closed() {
+    let (message, _, _) = single_diag("let bad = Map.lookup");
+    assert!(
+        message.starts_with("`Map` has no builtin `lookup`"),
+        "{message}"
+    );
+}
+
 #[test]
 fn interpolation_is_string_and_checks_every_hole() {
     assert_clean(

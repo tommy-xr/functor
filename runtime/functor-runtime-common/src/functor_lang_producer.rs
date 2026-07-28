@@ -1074,7 +1074,9 @@ to receive their messages; dropping them"
         let Some(sub) = conns.into_iter().find(|c| c.key == key) else {
             return; // an event for a no-longer-declared connection: drop it
         };
-        let value = net_event_value(kind, conn as u64, &text).to_functor_lang();
+        let value = net_event_value(kind, conn as u64, &text)
+            .to_functor_lang()
+            .expect("decoded network events contain only JSON-finite map keys");
         let msg = match self
             .session
             .apply(sub.tagger, vec![value], "net event", &mut FunctorHost)

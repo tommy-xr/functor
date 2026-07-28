@@ -46,6 +46,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Net",
     "Key",
     "List",
+    "Map",
     "Text",
     "Math",
     "Random",

@@ -46,7 +46,7 @@ URL plus, when the server launched it, the child process.
 | Tool | What it does |
 | --- | --- |
 | `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `mode` is `hidden` (default) or `headless`. |
-| `connect_game` | Attach to a runtime this server does **not** own (someone else's `--debug-port`, or an adb-forwarded Quest). |
+| `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game; merely forget an attached one. |
 
@@ -220,6 +220,30 @@ Nothing advanced between the click and the step, and `step` returned only once
 the step had actually run — so `model.count` is the click's effect, not a
 sample of a still-moving game.
 
+## Debugging a human's live session
+
+`functor develop` serves the debug runtime on **http://127.0.0.1:8077** by default
+(`docs/debug-runtime.md`), so there is no port to relay: the human runs their game,
+the agent attaches to the well-known port.
+
+```sh
+functor -d examples/counter develop        # the human's window, hot-reloading on save
+```
+
+```jsonc
+connect_game { "url": "http://127.0.0.1:8077" }
+// → {"session":"s1","url":"http://127.0.0.1:8077","owned":false,…}
+```
+
+The session is **attached**: `get_state`, `get_scene`, `capture_frame`, `pause`,
+`step`, and `send_input` all drive the human's live window, and `stop_game` merely
+forgets it. Remember that pausing or injecting input affects what they are looking
+at — `resume` when done.
+
+If the human is running two develop sessions, only the first holds 8077 (the second
+logs that it is running without a debug server); ask them to start the one you need
+with an explicit `--debug-port`.
+
 ## Connecting to a Quest
 
 The device runtime serves the same protocol on loopback port 8123. Forward it
@@ -242,6 +266,8 @@ tracking every frame).
 
 ## See also
 
+- [Driving games with agents](https://functor.games/manual/#agents) — the same story as a
+  manual section, for readers who arrive from the site rather than the repo.
 - [`docs/debug-runtime.md`](debug-runtime.md) — the HTTP surface these tools wrap,
   with the exact request/response shapes.
 - `e2e/mcp-server.mjs` — the end-to-end proof, speaking raw JSON-RPC to the server.

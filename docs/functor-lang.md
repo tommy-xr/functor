@@ -259,6 +259,24 @@ snapshots — no GPU, fully agent-verifiable.
       state/replay invariants survive untouched. Typechecked: slot types fix
       at the initializer; updates check against declared record types.
       *Verify:* 18 semantics/error/diagnostic tests + example goldens. (done)
+- [x] **Deterministic immutable `Map`** (2026-07-27; #543). A language-owned
+      `Map<'key, 'value>` value and closed `Map.*` builtin namespace:
+      `empty` / `get` / `insert` / `remove` / `member` / `values` /
+      `toList` / `fromList`. Keys are deliberately bounded to bool, finite
+      float, and string; `-0.0` canonicalizes to `0.0`, and NaN/infinities are
+      rejected. Storage is one immutable vector sorted by an explicit
+      cross-target order (bool < float < string; false < true; ascending
+      numeric/text order), with unique keys and last-write-wins
+      `fromList`. That representation makes iteration, structural equality,
+      display (`Map.fromList([…])`), native/wasm behavior, and typed-message
+      wire order deterministic. HM inference carries both key and value
+      types; direct concrete invalid keys diagnose at check time and the
+      runtime repeats the boundary check for generic/`unknown` seams.
+      Map values walk through closure rebinding, reload-safety classification,
+      debug JSON (`$map`), and `EffectValue`, so a plain map remains model
+      data for hot reload, time travel, and networking. Every scan/search/copy
+      is charged under bounded expect evaluation. `groupBy` and
+      `List.updateAt` remain separately scoped follow-ups.
 - [x] **Units, tier 1: branded `Angle` values** (2026-07-03; design:
       `~/notes/ideas/functor-lang/units.md`). `Angle.degrees(n)` /
       `Angle.radians(n)` opaque host values; rotations and camera angles

@@ -47,6 +47,22 @@ Games run and respond headlessly. Drive and inspect a running game entirely over
 
 ![A terminal driving a headless game over HTTP: pausing it and inspecting its render tree](site/media/feature-llm-native.gif)
 
+`functor mcp` serves that same runtime as [MCP](https://modelcontextprotocol.io) tools over stdio, so
+any coding agent can build, run, inspect, and rewind your game — real Functor code, deterministic
+(pin the clock, inject input, step frame by frame), on the runtime that ships to native and web. An agent can
+scaffold a project, launch it, iterate on it, and save it to disk entirely through the server, with
+no filesystem of its own.
+
+![An MCP client launching examples/mario, pausing it, injecting a keypress, and stepping the jump four frames at a time while reading the model back as JSON](site/media/feature-mcp-drive.gif)
+
+```sh
+claude mcp add functor -- functor mcp
+```
+
+Any other MCP client registers it as an ordinary stdio server (`command: "functor"`, `args: ["mcp"]`) —
+see [docs/mcp.md](docs/mcp.md) for the full tool surface, or
+[Driving games with agents](https://functor.games/manual/#agents) in the manual.
+
 ### Platform support
 
 - __Browser:__ WebAssembly
@@ -176,7 +192,7 @@ use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).
 | `functor -d <dir> init [3d\|fps]` | Scaffold a new Functor Lang project (`3d` is the default) |
 | `functor -d <dir> build [native\|wasm]` | Typecheck the `.fun` project (diagnostics are errors) |
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
-| `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime |
+| `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime — plus, on native, the debug runtime on `localhost:8077` (`--no-debug` to skip it) |
 | `functor docs [--format markdown\|json]` | Generate the engine API reference from the embedded `.funi` prelude |
 
 For build-from-source instructions and what `build`/`run` do under the hood, see

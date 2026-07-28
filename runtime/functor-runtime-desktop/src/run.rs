@@ -559,6 +559,13 @@ pub struct Args {
     #[arg(long)]
     debug_port: Option<u16>,
 
+    /// Treat a failed debug-server bind as non-fatal: log one line and run the
+    /// game without the server. `functor develop` sets this for its default
+    /// well-known port, so a second concurrent session (which finds the port
+    /// taken) still runs. An explicitly requested port stays fatal.
+    #[arg(long, requires = "debug_port")]
+    debug_port_optional: bool,
+
     /// Interface the debug server binds to. The default keeps it local;
     /// 0.0.0.0 exposes it to the LAN for remote develop (a dev machine
     /// pushing source to this runner). No auth — bind wide only on networks
@@ -1228,10 +1235,10 @@ pub fn run(args: Args) {
 
     // Optional debug control server. Runs on its own thread; the GL loop drains
     // its request channel once per frame (see below). None when --debug-port is
-    // not given, so behavior is unchanged.
+    // not given — or when an optional (default) port was already taken.
     let debug_requests = args
         .debug_port
-        .map(|port| debug_server::spawn(&args.debug_bind, port));
+        .and_then(|port| debug_server::spawn(&args.debug_bind, port, args.debug_port_optional));
 
     // Headless: drive the game + debug server with no GL window, and return.
     if args.headless {

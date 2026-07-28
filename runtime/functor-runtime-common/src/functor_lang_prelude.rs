@@ -401,6 +401,35 @@ fn active_world_raycast(origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> Effec
 /// INSIDE the drain, so the bound holds even mid-frame.
 pub const EFFECT_LOG_CAP: usize = 256;
 
+/// A serializable key for an [`EffectValue::Map`]. It mirrors Functor Lang's
+/// deliberately bounded scalar key domain.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum EffectMapKey {
+    Bool(bool),
+    Number(f64),
+    Text(String),
+}
+
+impl EffectMapKey {
+    fn to_functor_lang(&self) -> Result<functor_lang::value::MapKey, String> {
+        match self {
+            EffectMapKey::Bool(value) => Ok(functor_lang::value::MapKey::Bool(*value)),
+            // JSON refuses NaN/infinity, but fake/replay values are also
+            // publicly constructible in memory. Validate that external seam
+            // instead of letting MapKey::compare panic or admitting infinity.
+            EffectMapKey::Number(value) if value.is_finite() => Ok(
+                functor_lang::value::MapKey::Number(if *value == 0.0 { 0.0 } else { *value }),
+            ),
+            EffectMapKey::Number(value) => Err(format!(
+                "effect map keys must be finite; got {value} (NaN/Infinity cannot be map keys)"
+            )),
+            EffectMapKey::Text(value) => Ok(functor_lang::value::MapKey::String(Rc::from(
+                value.as_str(),
+            ))),
+        }
+    }
+}
+
 /// A performed effect's structured result: the serializable plain-data
 /// subset of [`Value`] — no closures, no host data — which is what makes
 /// results loggable, replayable, and fakeable. `now`/`random` results are
@@ -411,6 +440,8 @@ pub enum EffectValue {
     Bool(bool),
     Text(String),
     List(Vec<EffectValue>),
+    /// Canonically key-sorted immutable map data.
+    Map(Vec<(EffectMapKey, EffectValue)>),
     /// Structural tuple (at least two elements), mirroring [`Value::Tuple`] —
     /// so an `Effect.sendMsg` payload carrying a tuple field roundtrips as a
     /// tuple, not a list.
@@ -424,29 +455,52 @@ pub enum EffectValue {
 }
 
 impl EffectValue {
-    /// The Functor Lang value handed to the effect's tagger.
-    pub fn to_functor_lang(&self) -> Value {
-        match self {
+    /// The Functor Lang value handed to the effect's tagger. External
+    /// fake/replay map keys are validated here; malformed structured data is
+    /// an error rather than a host panic.
+    pub fn to_functor_lang(&self) -> Result<Value, String> {
+        Ok(match self {
             EffectValue::Number(n) => Value::Number(*n),
             EffectValue::Bool(b) => Value::Bool(*b),
             EffectValue::Text(s) => Value::String(Rc::from(s.as_str())),
-            EffectValue::List(items) => {
-                Value::List(Rc::new(items.iter().map(EffectValue::to_functor_lang).collect()))
+            EffectValue::List(items) => Value::List(Rc::new(
+                items
+                    .iter()
+                    .map(EffectValue::to_functor_lang)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            EffectValue::Map(entries) => {
+                let sorted = entries
+                    .iter()
+                    .map(|(key, value)| Ok((key.to_functor_lang()?, value.to_functor_lang()?)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                // Replay/network data is an external seam, so restore the
+                // same canonical order and last-write-wins rule as
+                // Map.fromList instead of trusting serialized entry order.
+                let (canonical, _) = functor_lang::value::canonicalize_map_entries(sorted);
+                Value::Map(Rc::new(canonical))
             }
-            EffectValue::Tuple(items) => {
-                Value::Tuple(Rc::new(items.iter().map(EffectValue::to_functor_lang).collect()))
-            }
+            EffectValue::Tuple(items) => Value::Tuple(Rc::new(
+                items
+                    .iter()
+                    .map(EffectValue::to_functor_lang)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
             EffectValue::Record(fields) => Value::Record(Rc::new(
                 fields
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.to_functor_lang()))
-                    .collect(),
+                    .map(|(k, v)| Ok((k.clone(), v.to_functor_lang()?)))
+                    .collect::<Result<Vec<_>, String>>()?,
             )),
             EffectValue::Variant(ctor, args) => Value::Variant {
                 ctor: Rc::from(ctor.as_str()),
-                args: Rc::new(args.iter().map(EffectValue::to_functor_lang).collect()),
+                args: Rc::new(
+                    args.iter()
+                        .map(EffectValue::to_functor_lang)
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
             },
-        }
+        })
     }
 }
 
@@ -469,13 +523,15 @@ const VALUE_JSON_MAX_DEPTH: usize = 120;
 /// A total, LOSSY JSON view of a [`Value`], for observation surfaces (the
 /// debug server's `GET /state` `model`, protocol v4). Unlike
 /// [`effect_value_from_value`] it never fails: plain data maps structurally
-/// (numbers, strings, bools; lists as arrays; records as objects — field
-/// order is the serde_json map's, not construction order), and everything
+/// (numbers, strings, bools; lists as arrays; maps as `$map` entry arrays;
+/// records as objects — field order is the serde_json map's, not construction
+/// order), and everything
 /// else becomes a sigil-keyed object no source-authored record field can
 /// collide with (`$` is not a Functor Lang identifier character; a record key
 /// arriving off the network via a typed message CAN carry `$`, so treat
 /// sigils as a strong convention, not a proof):
 ///
+/// - maps: `{"$map": [[key, value], ...]}` (canonical key order)
 /// - tuples: `{"$tuple": [...]}` (so they stay distinct from lists)
 /// - variants: `{"$ctor": "Some", "args": [...]}`
 /// - callables: `{"$fn": "<fn(dt)>"}` — the `Display` form
@@ -511,6 +567,17 @@ fn value_to_json_at(value: &Value, depth: usize) -> serde_json::Value {
         Value::String(s) => json!(s.as_ref()),
         Value::Bool(b) => json!(b),
         Value::List(items) => Json::Array(items_json(items, 1)),
+        Value::Map(entries) => json!({
+            "$map": entries
+                .iter()
+                .map(|(key, value)| {
+                    Json::Array(vec![
+                        value_to_json_at(&key.to_value(), depth + 3),
+                        value_to_json_at(value, depth + 3),
+                    ])
+                })
+                .collect::<Vec<_>>()
+        }),
         Value::Tuple(items) => json!({ "$tuple": items_json(items, 2) }),
         Value::Record(fields) => Json::Object(
             fields
@@ -549,6 +616,21 @@ pub fn effect_value_from_value(value: &Value) -> Result<EffectValue, String> {
         Value::List(items) => Ok(EffectValue::List(
             items.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
         )),
+        Value::Map(entries) => Ok(EffectValue::Map(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    let key = match key {
+                        functor_lang::value::MapKey::Bool(value) => EffectMapKey::Bool(*value),
+                        functor_lang::value::MapKey::Number(value) => EffectMapKey::Number(*value),
+                        functor_lang::value::MapKey::String(value) => {
+                            EffectMapKey::Text(value.to_string())
+                        }
+                    };
+                    Ok((key, effect_value_from_value(value)?))
+                })
+                .collect::<Result<_, String>>()?,
+        )),
         Value::Tuple(items) => Ok(EffectValue::Tuple(
             items.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
         )),
@@ -564,7 +646,7 @@ pub fn effect_value_from_value(value: &Value) -> Result<EffectValue, String> {
         )),
         other => Err(format!(
             "not plain data: {} — a message must be numbers, strings, bools, \
-lists, tuples, records, and variants of those (no functions, no host values)",
+lists, maps, tuples, records, and variants of those (no functions, no host values)",
             value_kind(other)
         )),
     }
@@ -577,6 +659,7 @@ fn value_kind(value: &Value) -> &'static str {
         Value::String(_) => "a string",
         Value::Bool(_) => "a bool",
         Value::List(_) => "a list",
+        Value::Map(_) => "a map",
         Value::Tuple(_) => "a tuple",
         Value::Record(_) => "a record",
         Value::Variant { .. } => "a variant",
@@ -4006,7 +4089,9 @@ pub fn http_response_value(result: &crate::net::HttpResult) -> Value {
     } else {
         EffectValue::Variant("Net.Failure".into(), vec![EffectValue::Text(result.error_text())])
     };
-    variant.to_functor_lang()
+    variant
+        .to_functor_lang()
+        .expect("host-built HTTP responses have no map keys")
 }
 
 thread_local! {
@@ -4417,6 +4502,7 @@ pub fn contains_effect(value: &Value) -> bool {
     match value {
         Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangEffect>().is_some(),
         Value::Tuple(items) | Value::List(items) => items.iter().any(contains_effect),
+        Value::Map(entries) => entries.iter().any(|(_, value)| contains_effect(value)),
         Value::Record(fields) => fields.iter().any(|(_, v)| contains_effect(v)),
         Value::Variant { args, .. } => args.iter().any(contains_effect),
         _ => false,
@@ -4785,7 +4871,15 @@ dropping the rest"
             EffectTree::Random { tagger } => ("random", runner.random().into(), tagger),
         };
         let value: EffectValue = value;
-        let functor_lang_value = value.to_functor_lang();
+        let functor_lang_value = match value.to_functor_lang() {
+            Ok(value) => value,
+            Err(error) => {
+                report(format!(
+                    "[functor-lang] Effect.{kind} produced invalid structured data: {error}"
+                ));
+                continue;
+            }
+        };
         log.push(EffectRecord { kind, value });
         if log.len() > EFFECT_LOG_CAP {
             log.remove(0);
@@ -5108,7 +5202,7 @@ fn sync_cast(
         w.raycast_excluding([ox, oy, oz], [dx, dy, dz], max_dist, exclude)
     })
     .flatten();
-    Ok(ray_result_value(hit).to_functor_lang())
+    ray_result_value(hit).to_functor_lang()
 }
 
 fn no_body(tag: &str) -> String {
@@ -8494,19 +8588,75 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             ("hit".to_string(), EffectValue::Bool(true)),
             ("distance".to_string(), EffectValue::Number(4.25)),
             ("tag".to_string(), EffectValue::Text("crate-1".to_string())),
+            (
+                "scores".to_string(),
+                EffectValue::Map(vec![
+                    (
+                        EffectMapKey::Number(1.0),
+                        EffectValue::Text("one".to_string()),
+                    ),
+                    (
+                        EffectMapKey::Text("two".to_string()),
+                        EffectValue::Number(2.0),
+                    ),
+                ]),
+            ),
         ]);
-        let functor_lang = value.to_functor_lang();
+        let functor_lang = value.to_functor_lang().unwrap();
         let Value::Record(fields) = &functor_lang else {
             panic!("expected a record, got {}", functor_lang.kind_name());
         };
-        assert_eq!(fields.len(), 3);
+        assert_eq!(fields.len(), 4);
         assert_eq!(fields[0].0, "hit");
         assert!(matches!(fields[0].1, Value::Bool(true)));
         assert!(matches!(fields[1].1, Value::Number(n) if n == 4.25));
+        assert!(matches!(&fields[3].1, Value::Map(entries) if entries.len() == 2));
 
         let json = serde_json::to_string(&value).expect("serialize");
         let back: EffectValue = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, value);
+        assert_eq!(effect_value_from_value(&functor_lang).unwrap(), value);
+    }
+
+    #[test]
+    fn effect_map_values_restore_canonical_order_at_the_replay_seam() {
+        let value = EffectValue::Map(vec![
+            (
+                EffectMapKey::Text("z".to_string()),
+                EffectValue::Number(1.0),
+            ),
+            (
+                EffectMapKey::Number(-0.0),
+                EffectValue::Text("old".to_string()),
+            ),
+            (EffectMapKey::Bool(false), EffectValue::Number(2.0)),
+            (
+                EffectMapKey::Number(0.0),
+                EffectValue::Text("new".to_string()),
+            ),
+        ])
+        .to_functor_lang()
+        .unwrap();
+
+        assert_eq!(
+            value.to_string(),
+            r#"Map.fromList([(false, 2), (0, "new"), ("z", 1)])"#
+        );
+    }
+
+    #[test]
+    fn effect_map_values_reject_non_finite_keys_at_the_replay_seam() {
+        for key in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let value = EffectValue::List(vec![EffectValue::Map(vec![(
+                EffectMapKey::Number(key),
+                EffectValue::Bool(true),
+            )])]);
+            let error = value
+                .to_functor_lang()
+                .err()
+                .expect("a non-finite map key must be rejected");
+            assert!(error.contains("effect map keys must be finite"), "{error}");
+        }
     }
 
     /// The lossy model-JSON walker (`GET /state` `model`, v4): plain data
@@ -8532,6 +8682,19 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
                 Value::List(Rc::new(vec![Value::Number(1.0), Value::Number(2.0)])),
             ),
             (
+                "scores".to_string(),
+                Value::Map(Rc::new(vec![
+                    (
+                        functor_lang::value::MapKey::String(Rc::from("a")),
+                        Value::Number(1.0),
+                    ),
+                    (
+                        functor_lang::value::MapKey::String(Rc::from("b")),
+                        Value::Number(2.0),
+                    ),
+                ])),
+            ),
+            (
                 "pos".to_string(),
                 Value::Tuple(Rc::new(vec![Value::Number(1.0), Value::Number(2.0)])),
             ),
@@ -8555,6 +8718,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
                 "name": "hello",
                 "alive": true,
                 "items": [1.0, 2.0],
+                "scores": { "$map": [["a", 1.0], ["b", 2.0]] },
                 "pos": { "$tuple": [1.0, 2.0] },
                 "state": { "$ctor": "Playing", "args": [7.0] },
                 "spawn": { "$fn": "<host Scene.cube>" },
@@ -8719,6 +8883,11 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
             ))])),
         )]));
         assert!(contains_effect(&nested));
+        let in_map = Value::Map(std::rc::Rc::new(vec![(
+            functor_lang::value::MapKey::String(std::rc::Rc::from("command")),
+            nested,
+        )]));
+        assert!(contains_effect(&in_map));
         assert!(!contains_effect(&Value::Number(1.0)));
     }
 
@@ -9335,7 +9504,9 @@ the game dir"
     /// binds them.
     #[test]
     fn net_event_value_matches_the_net_module() {
-        let ev = net_event_value(NetEventKind::Message, 3, "yo").to_functor_lang();
+        let ev = net_event_value(NetEventKind::Message, 3, "yo")
+            .to_functor_lang()
+            .unwrap();
         match ev {
             Value::Variant { ctor, args } => {
                 assert_eq!(ctor.as_ref(), "Net.Message");
@@ -9369,7 +9540,7 @@ the game dir"
         assert!(wire.starts_with(TYPED_MSG_PREFIX));
         assert_eq!(decode_typed_msg(&wire).unwrap().unwrap(), payload);
         assert_eq!(
-            effect_value_from_value(&payload.to_functor_lang()).unwrap(),
+            effect_value_from_value(&payload.to_functor_lang().unwrap()).unwrap(),
             payload
         );
 
@@ -10066,8 +10237,9 @@ a number",
                 .collect();
             (m, sends)
         }
-        let event =
-            |kind, id: u64, text: &str| net_event_value(kind, id, text).to_functor_lang();
+        let event = |kind, id: u64, text: &str| {
+            net_event_value(kind, id, text).to_functor_lang().unwrap()
+        };
 
         // The listener is declared on the arena address.
         let subs = call(&session, "subscriptions", vec![session.global("init").unwrap()]);
@@ -10174,7 +10346,9 @@ a number",
                 })
                 .collect()
         }
-        let event = |kind, id: u64, text: &str| net_event_value(kind, id, text).to_functor_lang();
+        let event = |kind, id: u64, text: &str| {
+            net_event_value(kind, id, text).to_functor_lang().unwrap()
+        };
         // Keys are the built-in `Key` module's variants (`Key.W`), as the
         // producers deliver them.
         let key = |k: &str| Value::Variant {
