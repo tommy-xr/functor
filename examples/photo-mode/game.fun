@@ -26,8 +26,8 @@ let monitor = RenderTarget.named("photo-mode-monitor")
 let mouseSensitivity = 0.003
 let pitchLimit = 1.45
 
-// Mouse positions are absolute window pixels. The first sample establishes a
-// baseline so entering pointer capture or selecting a view never causes a jump.
+// Mouse positions are absolute window pixels. The initial sample and the first
+// sample after selecting a view establish a baseline instead of turning.
 type Mouse =
   | NoMouse
   | MouseAt(x: float, y: float)
@@ -67,11 +67,6 @@ let yawRadians = (model) =>
 
 let pitchRadians = (model) =>
   radians(pitchFor(model.view)) + model.pitchOffset
-
-let clamp = (value, low, high) =>
-  if value < low then low
-  else if value > high then high
-  else value
 
 let nudge = (model, forward, right) =>
   let yaw = yawRadians(model) in
@@ -128,10 +123,10 @@ let mouseMove = (model, x, y) =>
   | MouseAt(lastX, lastY) =>
     let basePitch = radians(pitchFor(model.view)) in
     let nextPitch =
-      clamp(
-        basePitch + model.pitchOffset - (y - lastY) * mouseSensitivity,
+      Math.clamp(
         0.0 - pitchLimit,
-        pitchLimit)
+        pitchLimit,
+        basePitch + model.pitchOffset - (y - lastY) * mouseSensitivity)
     in
     { model with
         yawOffset: model.yawOffset - (x - lastX) * mouseSensitivity,
@@ -181,6 +176,12 @@ expect (
   let sampled = mouseMove(init, 400.0, 300.0) in
   let looked = mouseMove(sampled, 600.0, -1000.0) in
   pitchRadians(looked) > 1.44 && pitchRadians(looked) <= pitchLimit
+)
+
+expect (
+  let sampled = mouseMove(init, 400.0, 300.0) in
+  let looked = mouseMove(sampled, 600.0, 1600.0) in
+  pitchRadians(looked) < -1.44 && pitchRadians(looked) >= 0.0 - pitchLimit
 )
 
 expect (
