@@ -12,11 +12,19 @@ let init = {
   guides: true,
   monitor: true,
   shots: 0.0,
+  pHeld: false,
+  vHeld: false,
+  spaceHeld: false,
 }
 
 let input = (model, key, isDown) =>
   match isDown with
-  | false => model
+  | false =>
+    (match key with
+     | Key.P => { model with pHeld: false }
+     | Key.V => { model with vHeld: false }
+     | Key.Space => { model with spaceHeld: false }
+     | _ => model)
   | true =>
     match key with
     | Key.Num1 => { model with view: 1.0, x: 0.0, z: 0.0 }
@@ -28,9 +36,15 @@ let input = (model, key, isDown) =>
     | Key.S => { model with z: model.z - 0.35 }
     | Key.Up => { model with fov: Math.max(24.0, model.fov - 3.0) }
     | Key.Down => { model with fov: Math.min(70.0, model.fov + 3.0) }
-    | Key.P => { model with guides: not model.guides }
-    | Key.V => { model with monitor: not model.monitor }
-    | Key.Space => { model with shots: model.shots + 1.0 }
+    | Key.P =>
+      if model.pHeld then model
+      else { model with guides: not model.guides, pHeld: true }
+    | Key.V =>
+      if model.vHeld then model
+      else { model with monitor: not model.monitor, vHeld: true }
+    | Key.Space =>
+      if model.spaceHeld then model
+      else { model with shots: model.shots + 1.0, spaceHeld: true }
     | _ => model
 
 let tick = (model, dt, tts) => model
@@ -113,12 +127,12 @@ let cameraFor = (model) =>
   match model.view with
   | 2.0 => Camera.firstPerson(
       Vec3.make(-6.8 + model.x, 3.2, 2.0 + model.z),
-      Angle.degrees(30.0),
+      Angle.degrees(52.0),
       Angle.degrees(-5.0),
       Angle.degrees(model.fov))
   | 3.0 => Camera.firstPerson(
       Vec3.make(5.6 + model.x, 1.65, 7.0 + model.z),
-      Angle.degrees(-24.0),
+      Angle.degrees(-68.0),
       Angle.degrees(8.0),
       Angle.degrees(model.fov))
   | _ => Camera.firstPerson(
