@@ -42,11 +42,20 @@ a launched runtime's own output is captured rather than inherited.
 
 **Sessions.** The server manages N concurrent games at once. A session is a base
 URL plus, when the server launched it, the child process. State-changing calls
-on one session share a FIFO-style async operation gate: an overlapping call
-waits for the active call to finish, then runs without interleaving. There is no
-separate queue timeout; the caller remains pending while it waits. Different
-sessions have independent gates and continue concurrently. Read-only
+on one session share an async operation gate: an overlapping call waits for the
+active call to finish, then runs without interleaving. This is mutual exclusion,
+not a promised FIFO sequencer; relative waiter order is unspecified. A cancelled
+request stops waiting and never begins its mutation. Exact normalized base-URL
+aliases created by this MCP server share the same gate, while different exact
+URLs continue concurrently. Normalization currently removes trailing `/` only,
+so hostname aliases such as `localhost` versus `127.0.0.1` are not recognized,
+and direct HTTP clients outside this MCP process are not coordinated. Read-only
 `get_state`/`get_scene`/`get_trace` calls do not take the gate.
+
+`stop_game` marks that session id closing before it waits for the gate. New and
+already-queued mutations on that id reject without runtime I/O; stop drains the
+active mutation before removing/killing/detaching the session. Another id
+attached to the same exact URL remains independently registered.
 
 | Tool | What it does |
 | --- | --- |
@@ -69,7 +78,7 @@ sessions have independent gates and continue concurrently. Read-only
 | Tool | What it does |
 | --- | --- |
 | `pause` | Pin the clock (defaults to the current `tts`), so nothing advances on its own. |
-| `step` | Run `frames` steps of `dts` each, **wait for them to land**, and return the fresh state. |
+| `step` | Run 1–10,000 `frames` of `dts` each, **wait for them to land**, and return the fresh state. |
 | `resume` | Follow wall-clock time again. |
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
@@ -216,17 +225,20 @@ fresh final state in its first text block. Each `capture` adds a PNG image block
 and therefore requires a `hidden` session; headless sessions still support every
 data/input/clock operation. Runtime text responses and individual raw capture
 responses are each capped at 8 MiB. An automation run additionally caps its
-serialized text summary (including observations and final state) at 4 MiB and
-all retained raw captures together at 16 MiB. Declared `Content-Length` is
-checked before allocation and the same limit is enforced while chunks stream;
-an error reports the used and allowed byte counts.
+serialized text summary and error text at 4 MiB, all retained raw captures
+together at 16 MiB, and their base64 MCP image content at 24 MiB. The encoded
+aggregate is checked before base64 construction, then raw captures are consumed
+one at a time as image blocks are built. Declared `Content-Length` is checked
+before allocation and the same limit is enforced while chunks stream; an error
+reports the used and allowed byte counts.
 
 Execution is ordered but not transactional. Complete parse and budget failure
 is side-effect free, including when a valid mutating prefix has an invalid
-suffix. Once a valid plan begins, a later runtime or assertion failure can
-leave earlier steps applied. The session operation gate is held for the whole
-plan, so concurrent mutating calls wait and cannot splice input or clock
-operations into it; calls for other sessions remain independent. This PoC
+suffix. Once a valid plan begins, a later runtime, assertion, or runtime-output
+cap failure can leave earlier steps applied. The session operation gate is held
+for the whole plan, so concurrent mutating calls wait and cannot splice input
+or clock operations into it; calls for other exact URLs remain independent.
+This PoC
 intentionally has no variables, branching, loops, retry conditions, arbitrary
 JavaScript expressions, or rollback.
 

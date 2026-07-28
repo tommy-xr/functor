@@ -99,16 +99,34 @@ class Rpc {
     this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   }
 
-  request(method, params) {
+  beginRequest(method, params) {
     const id = this.nextId++;
-    this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    return new Promise((resolve, reject) => {
+    const result = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} timed out\nstderr:\n${this.stderr}`));
       }, 60000);
       this.pending.set(id, { resolve, reject, timer });
     });
+    this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    return { id, result };
+  }
+
+  request(method, params) {
+    return this.beginRequest(method, params).result;
+  }
+
+  cancelRequest(id, reason) {
+    this.notify("notifications/cancelled", { requestId: id, reason });
+    // MCP deliberately sends no response for a cancelled request. Settle the
+    // local waiter while the state assertion below proves the server did not
+    // execute the queued mutation after dropping that response.
+    const waiter = this.pending.get(id);
+    if (waiter) {
+      this.pending.delete(id);
+      clearTimeout(waiter.timer);
+      waiter.resolve({ cancelled: true });
+    }
   }
 
   /** Call a tool and return its single text content block, parsed if it is JSON. */
@@ -304,6 +322,21 @@ try {
   );
   check(automated.final_state?.model?.count === 1, "the automation returned fresh final state");
 
+  const beforeOversizedStep = await rpc.call("get_state", { session });
+  let oversizedStep = null;
+  try {
+    await rpc.call("step", { session, frames: 10001 });
+  } catch (error) {
+    oversizedStep = error.message;
+  }
+  const afterOversizedStep = await rpc.call("get_state", { session });
+  check(
+    oversizedStep !== null &&
+      /between 1 and 10000/.test(oversizedStep) &&
+      afterOversizedStep.frame === beforeOversizedStep.frame,
+    "the lower-level step cap rejects 10,001 frames before changing the session",
+  );
+
   console.log("\n▸ mutating calls serialize per session, while other sessions stay independent");
   const EDGE_COUNTER = `type Model = { count: float, held: bool }
 
@@ -329,6 +362,7 @@ let draw = (m: Model, tts) =>
     mode: "headless",
   });
   const gatedSession = gateGame.session;
+  const gateAlias = (await rpc.call("connect_game", { url: gateGame.url })).session;
   let longFinished = false;
   const longRun = rpc.call("run_automation_code", {
     session: gatedSession,
@@ -361,30 +395,70 @@ let draw = (m: Model, tts) =>
     "a mutating call on another session completed without waiting for the held gate",
   );
 
-  const queuedInput = rpc.call("send_input", {
+  const queuedInput = rpc.beginRequest("tools/call", {
+    name: "send_input",
+    arguments: {
+      session: gateAlias,
+      command: { type: "key", key: "space", down: true },
+    },
+  });
+  const queuedWaited = await Promise.race([
+    queuedInput.result.then(() => false),
+    new Promise((resolve) => setTimeout(() => resolve(true), 30)),
+  ]);
+  check(queuedWaited, "an exact-URL alias shares the active session gate");
+  rpc.cancelRequest(queuedInput.id, "prove a cancelled queued mutation never runs");
+  await queuedInput.result;
+
+  // Mark the attached alias closing while the long operation still owns the
+  // shared gate. A new target on that id must reject immediately, and stop
+  // itself must drain the active operation before detaching.
+  const aliasStop = rpc.call("stop_game", { session: gateAlias });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  let afterStopStarted = null;
+  try {
+    await rpc.call("send_input", {
+      session: gateAlias,
+      command: { type: "key", key: "space", down: true },
+    });
+  } catch (error) {
+    afterStopStarted = error.message;
+  }
+  check(
+    afterStopStarted !== null && /stopping/.test(afterStopStarted),
+    "a new mutation on an attached session is rejected after stop marks it closing",
+  );
+
+  const [heldResult, stoppedAlias] = await Promise.all([longRun, aliasStop]);
+  check(/detached/.test(stoppedAlias), "stop drained the gate before detaching the attached alias");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const afterCancelledInput = await rpc.call("get_state", { session: gatedSession });
+  check(
+    heldResult.final_state?.model?.count === 1 &&
+      afterCancelledInput.model?.count === 1 &&
+      afterCancelledInput.input?.held_keys?.length === 0,
+    "the cancelled queued input never landed after the gate became available",
+  );
+
+  await rpc.call("send_input", {
+    session: gatedSession,
+    command: { type: "key", key: "space", down: false },
+  });
+  await rpc.call("send_input", {
     session: gatedSession,
     command: { type: "key", key: "space", down: true },
   });
-  const queuedWaited = await Promise.race([
-    queuedInput.then(() => false),
-    new Promise((resolve) => setTimeout(() => resolve(true), 30)),
-  ]);
-  check(queuedWaited, "the overlapping lower-level input call waited behind the session gate");
-
-  const [heldResult] = await Promise.all([longRun, queuedInput]);
-  await rpc.call("step", { session: gatedSession });
-  const afterQueuedInput = await rpc.call("get_state", { session: gatedSession });
+  const afterQueuedInput = await rpc.call("step", { session: gatedSession });
   await rpc.call("send_input", {
     session: gatedSession,
     command: { type: "key", key: "space", down: false },
   });
   const afterRelease = await rpc.call("get_state", { session: gatedSession });
   check(
-    heldResult.final_state?.model?.count === 1 &&
-      afterQueuedInput.model?.count === 2 &&
+    afterQueuedInput.model?.count === 2 &&
       afterQueuedInput.input?.held_keys?.includes("Space") &&
       afterRelease.input?.held_keys?.length === 0,
-    "serialized automation/input lifecycles produced two rising edges and a released final state",
+    "stopping the attached alias left the original session valid and independently mutable",
   );
   await rpc.call("stop_game", { session: gatedSession });
 

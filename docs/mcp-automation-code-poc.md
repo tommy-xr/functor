@@ -78,7 +78,9 @@ bounded to their runtime wire domains. Ordinary runtime text and individual raw
 capture responses are capped at 8 MiB; an automation result has a 4 MiB
 serialized text cap and a 16 MiB aggregate raw-capture cap. Response readers
 reject an oversized `Content-Length` before allocation and enforce the same cap
-as chunks arrive.
+as chunks arrive. Automation error text is centrally truncated to 4 MiB, and
+the final base64 MCP image content has its own 24 MiB aggregate cap checked
+before encoding begins.
 
 The run tool completes this entire parse and validation before looking up the
 session. The MCP E2E submits a valid mutating prefix followed by an invalid
@@ -135,6 +137,20 @@ and fixed a real protocol mismatch in the first implementation: mouse
 coordinates and wheel deltas must lower to signed 32-bit integers, not JSON
 floating-point values.
 
+Two fresh agent trials then used only the canonical builder vocabulary for
+their gameplay proofs—no fallback raw `/input`, `/time`, `/state`, or
+`pending_steps` choreography:
+
+- Marble Golf completed a 23-step proof with 12 model assertions. Its submitted
+  source canonicalized and revalidated to the identical plan before execution.
+- Tower Defense completed a 20-step proof with 10 model assertions, likewise
+  round-tripping through canonical source before execution.
+
+Those trials confirmed the one-call architecture, while exposing the next
+bounded vocabulary gaps: relational/changed/collection-length assertions,
+`stepUntil`/polling, atomic launch-paused startup, and a headless viewport
+configuration seam.
+
 It does **not** improve engine/API blockers discovered by the entries:
 camera-space picking/orientation, quaternion transforms and camera up, compound
 or rotated colliders, procedural collision terrain, 3D lines, efficient keyed
@@ -151,8 +167,9 @@ context.
 - Rust and TypeScript currently duplicate the plan schema and validators.
   Tests pin each side and canonical round trips, but production should generate
   both from one versioned schema and add cross-language fixtures.
-- Execution is not transactional. Parse/budget rejection has no side effects;
-  a runtime failure after execution starts can leave earlier steps applied.
+- Execution is not transactional. Static parse/plan-budget rejection has no
+  side effects; after execution starts, a runtime, assertion, or runtime-output
+  cap failure can leave earlier steps applied.
 - `expectModel` provides exact JSON equality and `expectModelClose` provides
   finite numeric absolute tolerance at static literal paths. There are no
   other comparisons, predicates, polling-until, branching, variables, loops,
@@ -162,11 +179,13 @@ context.
 - Result payloads still include full observations/final state and captures are
   held in memory within explicit byte caps. Production may also want selective
   model reads to spend those budgets more deliberately.
-- A per-session async gate makes mutating tool calls and whole automation plans
-  non-interleaving. Calls that overlap on one session wait for the active
-  operation to finish; different sessions use independent gates. This is
-  process-local coordination, not a distributed lock against a separate HTTP
-  client driving the same attached runtime directly.
+- A per-runtime async gate makes mutating tool calls and whole automation plans
+  non-interleaving. Calls that overlap on one exact normalized base URL wait
+  for the active operation to finish, but waiter order is unspecified; use an
+  explicit sequencer when relative ordering itself matters. Normalization only
+  strips trailing `/`, so `localhost` and `127.0.0.1` aliases are not unified.
+  This is process-local coordination, not a distributed lock against a separate
+  HTTP client driving the same attached runtime directly.
 - Rust and TypeScript do not yet pin the canonical spelling of negative zero
   across languages; cross-language fixtures should cover that edge case.
 - There is no per-session capability policy beyond the existing MCP session:

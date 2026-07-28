@@ -12,8 +12,10 @@
 //! by this server.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::io;
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -22,8 +24,9 @@ use functor_docgen::{ApiItem, ApiReference};
 use functor_runtime_common::debug_protocol::DEBUG_PROTOCOL_SERVICE;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::service::RequestContext;
 use rmcp::transport::stdio;
-use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler, ServiceExt};
+use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -55,6 +58,10 @@ const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AUTOMATION_TEXT_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum raw PNG bytes retained across all captures in one automation run.
 const MAX_AUTOMATION_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum base64 text placed in MCP image content across one automation run.
+const MAX_AUTOMATION_ENCODED_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
+/// Maximum frame batch accepted by the lower-level `step` tool.
+const MAX_STEP_FRAMES: u32 = 10_000;
 /// How many API-reference items one `api_reference` call returns.
 const MAX_API_RESULTS: usize = 20;
 /// The Functor Lang language guide, embedded verbatim from the `functor-lang`
@@ -112,6 +119,9 @@ struct Session {
     /// of the registry before awaiting, so the synchronous registry mutex is
     /// never held across runtime I/O.
     operation_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Per-session lifecycle marker. Exact-URL aliases share the operation
+    /// gate but remain independently stoppable registry entries.
+    closing: Arc<AtomicBool>,
     /// The port this server reserved for a launched runtime, held so a
     /// concurrent launch cannot be handed the same one.
     port: Option<u16>,
@@ -130,6 +140,7 @@ struct Session {
 struct SessionTarget {
     url: String,
     operation_gate: Arc<tokio::sync::Mutex<()>>,
+    closing: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -222,11 +233,18 @@ impl Registry {
     ) -> String {
         self.next_id += 1;
         let id = format!("s{}", self.next_id);
+        let operation_gate = self
+            .sessions
+            .values()
+            .find(|session| session.url == url)
+            .map(|session| session.operation_gate.clone())
+            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
         self.sessions.insert(
             id.clone(),
             Session {
                 url,
-                operation_gate: Arc::new(tokio::sync::Mutex::new(())),
+                operation_gate,
+                closing: Arc::new(AtomicBool::new(false)),
                 port,
                 child,
                 scratch,
@@ -260,9 +278,13 @@ impl Registry {
     /// registry briefly. Callers may then drop the registry guard and await.
     fn target(&self, id: &str) -> Result<SessionTarget, String> {
         match self.sessions.get(id) {
+            Some(session) if session.closing.load(Ordering::Acquire) => {
+                Err(format!("session {id:?} is stopping; no new operation can start"))
+            }
             Some(session) => Ok(SessionTarget {
                 url: session.url.clone(),
                 operation_gate: session.operation_gate.clone(),
+                closing: session.closing.clone(),
             }),
             None if self.sessions.is_empty() => Err(format!(
                 "unknown session {id:?}: no sessions yet — start one with launch_game or connect_game"
@@ -288,6 +310,20 @@ impl Registry {
             }
             None => Err(self.url(id).expect_err("id is absent")),
         }
+    }
+
+    /// Mark one session id as closing while holding the registry mutex, then
+    /// return its await-safe lifecycle to drain the exact-URL operation gate.
+    fn begin_stop(&mut self, id: &str) -> Result<SessionTarget, String> {
+        let Some(session) = self.sessions.get(id) else {
+            return Err(self.url(id).expect_err("id is absent"));
+        };
+        session.closing.store(true, Ordering::Release);
+        Ok(SessionTarget {
+            url: session.url.clone(),
+            operation_gate: session.operation_gate.clone(),
+            closing: session.closing.clone(),
+        })
     }
 
     /// Kill every owned child. Attached sessions are only forgotten.
@@ -318,6 +354,10 @@ fn ok_text(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
 /// caller should read (a 400 from `/input`, a load error from `/reload-source`).
 fn tool_error(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![ContentBlock::text(text)]))
+}
+
+fn automation_tool_error(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
+    tool_error(truncate_automation_error(text.into()))
 }
 
 /// Collapse an early `Err(String)` into a tool error, or run the body.
@@ -381,7 +421,7 @@ pub struct StepArgs {
     pub session: String,
     /// Delta time for each step, in seconds (default 0.016).
     pub dts: Option<f64>,
-    /// How many steps to queue (default 1).
+    /// How many steps to queue (default 1, maximum 10,000).
     pub frames: Option<u32>,
 }
 
@@ -720,11 +760,12 @@ files writes the inline project to a scratch directory this server owns",
     ) -> Result<CallToolResult, ErrorData> {
         let url = args.url.trim_end_matches('/').to_string();
         let discovery = resolve!(self.discover(&url).await);
-        let id = self
-            .sessions
-            .lock()
-            .expect("mcp registry poisoned")
-            .insert(url.clone(), None, None, None);
+        let id = self.sessions.lock().expect("mcp registry poisoned").insert(
+            url.clone(),
+            None,
+            None,
+            None,
+        );
         ok_text(
             serde_json::json!({
                 "session": id,
@@ -771,7 +812,23 @@ files writes the inline project to a scratch directory this server owns",
     async fn stop_game(
         &self,
         Parameters(args): Parameters<SessionArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        if context.ct.is_cancelled() {
+            return tool_error(format!(
+                "request for session {:?} was cancelled before stop began",
+                args.session
+            ));
+        }
+        let target = resolve!(self
+            .sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .begin_stop(&args.session));
+        // Stop is a lifecycle boundary: after `closing` is visible it must
+        // drain the current operation and finish cleanup even if its own MCP
+        // request is subsequently cancelled.
+        let _operation = target.operation_gate.clone().lock_owned().await;
         let mut session = resolve!(self
             .sessions
             .lock()
@@ -834,9 +891,10 @@ files writes the inline project to a scratch directory this server owns",
     async fn capture_frame(
         &self,
         Parameters(args): Parameters<SessionArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let target = resolve!(self.target(&args.session));
-        let _operation = target.operation_gate.lock().await;
+        let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let body = resolve!(self.capture_png(&target.url).await);
         Ok(CallToolResult::success(vec![ContentBlock::image(
             base64::engine::general_purpose::STANDARD.encode(&body),
@@ -859,8 +917,9 @@ files writes the inline project to a scratch directory this server owns",
     async fn send_input(
         &self,
         Parameters(args): Parameters<InputArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.proxy_mutating_post(&args.session, "/input", args.command.to_string())
+        self.proxy_mutating_post(&args.session, "/input", args.command.to_string(), &context)
             .await
     }
 
@@ -873,23 +932,26 @@ files writes the inline project to a scratch directory this server owns",
     /// blocks and needs a hidden (not headless) session. Execution is ordered
     /// but not transactional: a runtime failure can leave earlier valid steps
     /// applied. The per-session operation gate holds for the whole plan:
-    /// overlapping mutating calls wait, then run in acquisition order without
-    /// interleaving. Other sessions have independent gates. The serialized
-    /// summary is capped at 4 MiB; each raw capture at 8 MiB and all captures
-    /// together at 16 MiB. Call `validate_automation_code` first for parse-only
-    /// feedback.
+    /// overlapping mutating calls wait and then run without interleaving
+    /// (relative waiter order is unspecified). Exact normalized URL aliases
+    /// share that gate; different URLs have independent gates. The serialized
+    /// summary and any error text are capped at 4 MiB; each raw capture at 8
+    /// MiB, all captures together at 16 MiB raw and 24 MiB base64 MCP image
+    /// content. Call `validate_automation_code` first for parse-only feedback.
     #[tool]
     async fn run_automation_code(
         &self,
         Parameters(args): Parameters<RunAutomationCodeArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         // This ordering is the security boundary: syntax, allowlists, literal
-        // shapes, and every resource budget are settled before even resolving
-        // a session, let alone issuing an HTTP request.
+        // shapes, and static plan budgets are settled before even resolving a
+        // session, let alone issuing an HTTP request. Runtime-output budgets
+        // are enforced as responses arrive and can fail after earlier steps.
         let plan = match parse_automation(&args.code) {
             Ok(plan) => plan,
             Err(diagnostic) => {
-                return tool_error(
+                return automation_tool_error(
                     serde_json::json!({
                         "valid": false,
                         "dialect": AUTOMATION_DIALECT,
@@ -900,19 +962,13 @@ files writes the inline project to a scratch directory this server owns",
             }
         };
         let target = resolve!(self.target(&args.session));
-        let _operation = target.operation_gate.lock().await;
+        let _operation = resolve!(self.acquire_operation(&target, &context).await);
         match self.execute_automation(&target.url, &plan).await {
-            Ok((summary, captures)) => {
-                let mut content = vec![ContentBlock::text(summary)];
-                content.extend(captures.into_iter().map(|(_, png)| {
-                    ContentBlock::image(
-                        base64::engine::general_purpose::STANDARD.encode(png),
-                        "image/png",
-                    )
-                }));
-                Ok(CallToolResult::success(content))
-            }
-            Err(message) => tool_error(message),
+            Ok((summary, captures)) => match automation_call_result(summary, captures) {
+                Ok(result) => Ok(result),
+                Err(message) => automation_tool_error(message),
+            },
+            Err(message) => automation_tool_error(message),
         }
     }
 
@@ -924,9 +980,10 @@ files writes the inline project to a scratch directory this server owns",
     async fn pause(
         &self,
         Parameters(args): Parameters<PauseArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let target = resolve!(self.target(&args.session));
-        let _operation = target.operation_gate.lock().await;
+        let _operation = resolve!(self.acquire_operation(&target, &context).await);
         ok_text(resolve!(self.pin(&target.url, args.tts).await))
     }
 
@@ -934,21 +991,25 @@ files writes the inline project to a scratch directory this server owns",
     /// them to land (polling until `pending_steps` is 0), then return the fresh
     /// `/state`. Step one frame at a time when the game must see input or I/O
     /// between steps — a batch runs up to 8 ticks per rendered frame, so it has
-    /// proportionally fewer input/network/render points.
+    /// proportionally fewer input/network/render points. `frames` must be
+    /// between 1 and 10,000.
     #[tool]
     async fn step(
         &self,
         Parameters(args): Parameters<StepArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        let frames = args.frames.unwrap_or(1);
+        if !(1..=MAX_STEP_FRAMES).contains(&frames) {
+            return tool_error(format!(
+                "step frames must be between 1 and {MAX_STEP_FRAMES}; got {frames}"
+            ));
+        }
         let target = resolve!(self.target(&args.session));
-        let _operation = target.operation_gate.lock().await;
+        let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let state = resolve!(
-            self.advance(
-                &target.url,
-                args.dts.unwrap_or(0.016),
-                args.frames.unwrap_or(1)
-            )
-            .await
+            self.advance(&target.url, args.dts.unwrap_or(0.016), frames)
+                .await
         );
         ok_text(state.to_string())
     }
@@ -959,11 +1020,13 @@ files writes the inline project to a scratch directory this server owns",
     async fn resume(
         &self,
         Parameters(args): Parameters<SessionArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         self.proxy_mutating_post(
             &args.session,
             "/time",
             serde_json::json!({ "type": "resume" }).to_string(),
+            &context,
         )
         .await
     }
@@ -976,9 +1039,10 @@ files writes the inline project to a scratch directory this server owns",
     async fn rewind(
         &self,
         Parameters(args): Parameters<RewindArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let target = resolve!(self.target(&args.session));
-        let _operation = target.operation_gate.lock().await;
+        let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let tts = resolve!(tts_of(&resolve!(self.state(&target.url).await)));
         // The clock must be pinned before a rewind or the next wall-clock frame
         // would immediately overwrite the restored model. `/state` does not
@@ -1010,8 +1074,9 @@ files writes the inline project to a scratch directory this server owns",
     async fn reload_source(
         &self,
         Parameters(args): Parameters<ReloadSourceArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.proxy_mutating_post(&args.session, "/reload-source", args.source)
+        self.proxy_mutating_post(&args.session, "/reload-source", args.source, &context)
             .await
     }
 
@@ -1063,9 +1128,10 @@ or \"fps\" (a first-person WASD + mouse-look scene)"
     async fn save_project(
         &self,
         Parameters(args): Parameters<SaveProjectArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let target = resolve!(self.target(&args.session));
-        let _operation = target.operation_gate.lock().await;
+        let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let body = match self.get(&target.url, "/project").await {
             Ok(body) => body,
             // A 404 is specifically "this runtime predates the route"; a 501
@@ -1080,9 +1146,8 @@ rebuild that runtime from this version of Functor."
             }
             Err(message) => return tool_error(message),
         };
-        let files: Vec<(String, String)> = resolve!(serde_json::from_str(&body).map_err(
-            |error| format!("GET /project did not return [path, source] pairs: {error}")
-        ));
+        let files: Vec<(String, String)> = resolve!(serde_json::from_str(&body)
+            .map_err(|error| format!("GET /project did not return [path, source] pairs: {error}")));
         let dir = std::path::PathBuf::from(&args.dir);
         let written = resolve!(save_project_to(
             &dir,
@@ -1105,6 +1170,7 @@ rebuild that runtime from this version of Functor."
     async fn reload_project(
         &self,
         Parameters(args): Parameters<ReloadProjectArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let files: Vec<Vec<String>> = args
             .files
@@ -1115,6 +1181,7 @@ rebuild that runtime from this version of Functor."
             &args.session,
             "/reload-project",
             serde_json::to_string(&files).expect("string pairs serialize"),
+            &context,
         )
         .await
     }
@@ -1125,10 +1192,9 @@ impl FunctorMcp {
     fn api_docs(&self) -> Result<&ApiReference, String> {
         self.docs
             .get_or_init(|| {
-                functor_docgen::generate()
-                    .map_err(|error| {
-                        format!("could not generate the embedded API reference: {error}")
-                    })
+                functor_docgen::generate().map_err(|error| {
+                    format!("could not generate the embedded API reference: {error}")
+                })
             })
             .as_ref()
             .map_err(String::clone)
@@ -1155,6 +1221,14 @@ impl FunctorMcp {
             .target(session)
     }
 
+    async fn acquire_operation(
+        &self,
+        target: &SessionTarget,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        acquire_target_operation(target, context.ct.cancelled()).await
+    }
+
     async fn proxy_get(&self, session: &str, path: &str) -> Result<CallToolResult, ErrorData> {
         let url = resolve!(self.url(session));
         ok_text(resolve!(self.get(&url, path).await))
@@ -1165,9 +1239,10 @@ impl FunctorMcp {
         session: &str,
         path: &str,
         body: String,
+        context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let target = resolve!(self.target(session));
-        let _operation = target.operation_gate.lock().await;
+        let _operation = resolve!(self.acquire_operation(&target, context).await);
         ok_text(resolve!(self.post(&target.url, path, body).await))
     }
 
@@ -1412,9 +1487,13 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                             "label": label,
                             "state": state,
                         });
-                        output_budget.retain_json(&observation)?;
-                        observations.push(observation);
-                        Ok(())
+                        match output_budget.retain_json(&observation) {
+                            Ok(()) => {
+                                observations.push(observation);
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
                     }
                     Err(error) => Err(error),
                 },
@@ -1429,16 +1508,20 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                                     "actual": actual,
                                     "passed": true,
                                 });
-                                output_budget.retain_json(&assertion)?;
-                                assertions.push(assertion);
-                                Ok(())
+                                match output_budget.retain_json(&assertion) {
+                                    Ok(()) => {
+                                        assertions.push(assertion);
+                                        Ok(())
+                                    }
+                                    Err(error) => Err(error),
+                                }
                             }
                             Some(actual) => Err(format!(
                                 "model assertion failed at {path:?}: expected {}, got {}",
                                 equals, actual
                             )),
                             None => Err(format!(
-                                "model assertion path {path:?} does not exist; model is {model}"
+                                "model assertion path {path:?} does not exist in the current model"
                             )),
                         }
                     }
@@ -1463,9 +1546,13 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                                         "abs_tolerance": abs_tolerance,
                                         "passed": true,
                                     });
-                                    output_budget.retain_json(&assertion)?;
-                                    assertions.push(assertion);
-                                    Ok(())
+                                    match output_budget.retain_json(&assertion) {
+                                        Ok(()) => {
+                                            assertions.push(assertion);
+                                            Ok(())
+                                        }
+                                        Err(error) => Err(error),
+                                    }
                                 }
                                 Some(actual_number) => Err(format!(
                                     "numeric model assertion failed at {path:?}: expected {expected} ± {abs_tolerance}, got {actual_number}"
@@ -1475,18 +1562,20 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                                 )),
                             },
                             None => Err(format!(
-                                "model assertion path {path:?} does not exist; model is {model}"
+                                "model assertion path {path:?} does not exist in the current model"
                             )),
                         }
                     }
                     Err(error) => Err(error),
                 },
                 AutomationStep::Capture { label } => match self.capture_png(url).await {
-                    Ok(png) => {
-                        output_budget.retain_capture(png.len())?;
-                        captures.push((label.clone(), png));
-                        Ok(())
-                    }
+                    Ok(png) => match output_budget.retain_capture(png.len()) {
+                        Ok(()) => {
+                            captures.push((label.clone(), png));
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    },
                     Err(error) => Err(error),
                 },
             };
@@ -1502,7 +1591,9 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             .state(url)
             .await
             .map_err(|error| format!("automation completed but final state failed: {error}"))?;
-        output_budget.retain_json(&final_state)?;
+        output_budget.retain_json(&final_state).map_err(|error| {
+            format!("automation completed but final-state output failed: {error}")
+        })?;
         let capture_metadata: Vec<Value> = captures
             .iter()
             .enumerate()
@@ -1587,6 +1678,40 @@ is structured JSON). Rebuild that runtime from this version of Functor."
     }
 }
 
+async fn acquire_target_operation(
+    target: &SessionTarget,
+    cancelled: impl Future<Output = ()>,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    if target.closing.load(Ordering::Acquire) {
+        return Err(format!(
+            "session at {} is stopping; no new operation can start",
+            target.url
+        ));
+    }
+    let gate = target.operation_gate.clone();
+    tokio::pin!(cancelled);
+    let guard = tokio::select! {
+        biased;
+        _ = &mut cancelled => {
+            return Err(format!(
+                "request for session at {} was cancelled before its operation began",
+                target.url
+            ));
+        }
+        guard = gate.lock_owned() => guard,
+    };
+    // Stop can mark this cloned target while it waits. Holding the gate here
+    // proves no runtime operation is active, but it must still reject rather
+    // than issue I/O behind the stop boundary.
+    if target.closing.load(Ordering::Acquire) {
+        return Err(format!(
+            "session at {} is stopping; queued operation did not run",
+            target.url
+        ));
+    }
+    Ok(guard)
+}
+
 #[tool_handler(
     name = "functor",
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
@@ -1598,7 +1723,8 @@ that is parsed into data and never evaluated as JavaScript. The lower-level dete
 loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \
 across steps. Mutating calls on one session share an async operation gate: overlaps WAIT \
-and then run without interleaving, while different sessions remain independent. \
+and then run without interleaving (waiter order is unspecified); exact normalized URL \
+aliases share the gate, while different URLs remain independent. \
 language_guide teaches the LANGUAGE (Functor Lang is not F#/OCaml — read it \
 before writing any .fun) and api_reference searches the engine's prelude API; neither needs \
 a session, so both answer before anything is launched. A game can also be AUTHORED \
@@ -1816,7 +1942,9 @@ fn guide_sections(guide: &str) -> (&str, Vec<GuideSection<'_>>) {
         }
         offset += line.len();
     }
-    let intro = headings.first().map_or(body, |(start, _, _)| &body[..*start]);
+    let intro = headings
+        .first()
+        .map_or(body, |(start, _, _)| &body[..*start]);
     let sections = headings
         .iter()
         .enumerate()
@@ -1906,7 +2034,11 @@ fn render_guide_section(sections: &[GuideSection], index: usize) -> String {
         .collect();
     match children.is_empty() {
         true => section.text.to_string(),
-        false => format!("{}\n\nContinues in: {}\n", section.text, children.join(", ")),
+        false => format!(
+            "{}\n\nContinues in: {}\n",
+            section.text,
+            children.join(", ")
+        ),
     }
 }
 
@@ -2216,6 +2348,67 @@ fn serialize_json_bounded(value: &Value, limit: usize, cap_name: &str) -> Result
         .map_err(|error| format!("serialized automation JSON was not UTF-8: {error}"))
 }
 
+fn base64_encoded_len(raw_bytes: usize) -> Result<usize, String> {
+    raw_bytes
+        .checked_add(2)
+        .map(|bytes| bytes / 3)
+        .and_then(|groups| groups.checked_mul(4))
+        .ok_or_else(|| "base64 encoded capture byte count overflowed".to_string())
+}
+
+fn encoded_capture_total(
+    capture_lengths: impl IntoIterator<Item = usize>,
+    limit: usize,
+) -> Result<usize, String> {
+    capture_lengths.into_iter().try_fold(0, |retained, raw| {
+        checked_output_total(
+            retained,
+            base64_encoded_len(raw)?,
+            limit,
+            "automation aggregate encoded MCP image content",
+        )
+    })
+}
+
+fn automation_call_result(
+    summary: String,
+    captures: Vec<(Option<String>, Vec<u8>)>,
+) -> Result<CallToolResult, String> {
+    // Account for every base64 string before constructing any of them. The
+    // raw aggregate has already been checked while executing the plan.
+    encoded_capture_total(
+        captures.iter().map(|(_, png)| png.len()),
+        MAX_AUTOMATION_ENCODED_CAPTURE_BYTES,
+    )?;
+
+    let mut content = Vec::with_capacity(captures.len() + 1);
+    content.push(ContentBlock::text(summary));
+    for (_, png) in captures {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        drop(png);
+        content.push(ContentBlock::image(encoded, "image/png"));
+    }
+    Ok(CallToolResult::success(content))
+}
+
+fn truncate_automation_error(mut text: String) -> String {
+    if text.len() <= MAX_AUTOMATION_TEXT_BYTES {
+        return text;
+    }
+    let used = text.len();
+    let suffix = format!(
+        "\n… automation error truncated: used {used} bytes, limit {MAX_AUTOMATION_TEXT_BYTES} bytes"
+    );
+    let keep = MAX_AUTOMATION_TEXT_BYTES.saturating_sub(suffix.len());
+    let mut boundary = keep.min(text.len());
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text.truncate(boundary);
+    text.push_str(&suffix[..suffix.len().min(MAX_AUTOMATION_TEXT_BYTES - text.len())]);
+    text
+}
+
 /// Read an HTTP response without trusting `Content-Length`: reject an
 /// oversized declared length before body allocation, then enforce the same cap
 /// as chunks arrive (including chunked responses with no declared length).
@@ -2293,11 +2486,12 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        checked_output_total, extend_bounded, find_guide_section, guide_sections, json_encoded_len,
-        read_body, read_bounded_response, render_api_hits, render_guide_contents,
+        acquire_target_operation, automation_call_result, base64_encoded_len, checked_output_total,
+        encoded_capture_total, extend_bounded, find_guide_section, guide_sections,
+        json_encoded_len, read_body, read_bounded_response, render_api_hits, render_guide_contents,
         render_guide_section, search_api, serialize_json_bounded, strip_front_matter,
-        AutomationOutputBudget, Registry, LANGUAGE_GUIDE, MAX_AUTOMATION_CAPTURE_BYTES,
-        MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
+        truncate_automation_error, AutomationOutputBudget, Registry, LANGUAGE_GUIDE,
+        MAX_AUTOMATION_CAPTURE_BYTES, MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
     use std::sync::Arc;
@@ -2356,6 +2550,38 @@ mod tests {
         budget.retain_capture(1).unwrap();
         let capture_error = budget.retain_capture(1).unwrap_err();
         assert!(capture_error.contains("automation aggregate raw capture output"));
+    }
+
+    #[test]
+    fn encoded_capture_accounting_precedes_final_mcp_result_construction() {
+        assert_eq!(base64_encoded_len(0).unwrap(), 0);
+        assert_eq!(base64_encoded_len(1).unwrap(), 4);
+        assert_eq!(base64_encoded_len(2).unwrap(), 4);
+        assert_eq!(base64_encoded_len(3).unwrap(), 4);
+        assert_eq!(base64_encoded_len(4).unwrap(), 8);
+        assert_eq!(encoded_capture_total([1, 2, 3], 12).unwrap(), 12);
+        let error = encoded_capture_total([1, 2, 3], 11).unwrap_err();
+        assert!(error.contains("encoded MCP image content"), "{error}");
+
+        let result = automation_call_result(
+            "{\"ok\":true}".into(),
+            vec![(Some("one".into()), vec![1, 2, 3]), (None, vec![4])],
+        )
+        .unwrap();
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["content"].as_array().unwrap().len(), 3);
+        assert_eq!(value["content"][0]["text"], "{\"ok\":true}");
+        assert_eq!(value["content"][1]["data"], "AQID");
+        assert_eq!(value["content"][2]["data"], "BA==");
+    }
+
+    #[test]
+    fn automation_error_text_is_centrally_utf8_truncated() {
+        let original = format!("{}é", "x".repeat(MAX_AUTOMATION_TEXT_BYTES));
+        let truncated = truncate_automation_error(original);
+        assert_eq!(truncated.len(), MAX_AUTOMATION_TEXT_BYTES);
+        assert!(truncated.contains("automation error truncated"));
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 
     #[tokio::test]
@@ -2539,7 +2765,10 @@ mod tests {
 
         let ambiguous = find_guide_section(&sections, "sound").unwrap_err();
         assert!(ambiguous.contains("matches several"), "{ambiguous}");
-        assert!(ambiguous.contains("sound-design, sound-effects"), "{ambiguous}");
+        assert!(
+            ambiguous.contains("sound-design, sound-effects"),
+            "{ambiguous}"
+        );
     }
 
     #[test]
@@ -2725,7 +2954,10 @@ mod tests {
             std::fs::read_to_string(dir.join("game.fun")).unwrap(),
             "let init = 2"
         );
-        assert!(!dir.join("util.fun").exists(), "a dropped module is removed");
+        assert!(
+            !dir.join("util.fun").exists(),
+            "a dropped module is removed"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("functor.json")).unwrap(),
             "{\"entry\":\"game.fun\"}",
@@ -2764,22 +2996,77 @@ mod tests {
     fn ids_are_short_sequential_and_resolve_to_their_url() {
         let mut registry = Registry::default();
         let first = registry.insert("http://127.0.0.1:1".into(), None, None, None);
+        let alias = registry.insert("http://127.0.0.1:1".into(), None, None, None);
         let second = registry.insert("http://127.0.0.1:2".into(), None, None, None);
 
         assert_eq!(first, "s1");
-        assert_eq!(second, "s2");
-        assert_eq!(registry.url("s2").unwrap(), "http://127.0.0.1:2");
+        assert_eq!(alias, "s2");
+        assert_eq!(second, "s3");
+        assert_eq!(registry.url("s3").unwrap(), "http://127.0.0.1:2");
         let first_target = registry.target("s1").unwrap();
-        let first_again = registry.target("s1").unwrap();
-        let second_target = registry.target("s2").unwrap();
+        let alias_target = registry.target("s2").unwrap();
+        let second_target = registry.target("s3").unwrap();
         assert!(
-            Arc::ptr_eq(&first_target.operation_gate, &first_again.operation_gate),
-            "one session always resolves to the same operation gate"
+            Arc::ptr_eq(&first_target.operation_gate, &alias_target.operation_gate),
+            "exact normalized URL aliases serialize on the same operation gate"
+        );
+        assert!(
+            !Arc::ptr_eq(&first_target.closing, &alias_target.closing),
+            "aliases remain independently stoppable session ids"
         );
         assert!(
             !Arc::ptr_eq(&first_target.operation_gate, &second_target.operation_gate),
-            "different sessions must never block each other"
+            "different exact URLs must never block each other"
         );
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_while_a_mutating_request_waits_for_the_gate() {
+        let mut registry = Registry::default();
+        registry.insert("http://127.0.0.1:1".into(), None, None, None);
+        let target = registry.target("s1").unwrap();
+        let held = target.operation_gate.clone().lock_owned().await;
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let waiter = tokio::spawn(async move {
+            acquire_target_operation(&target, async {
+                let _ = cancelled.await;
+            })
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        cancel.send(()).unwrap();
+        let error = waiter.await.unwrap().unwrap_err();
+        assert!(error.contains("cancelled before"), "{error}");
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn stop_closing_rejects_queued_clones_but_not_an_alias_id() {
+        let mut registry = Registry::default();
+        registry.insert("http://127.0.0.1:1".into(), None, None, None);
+        registry.insert("http://127.0.0.1:1".into(), None, None, None);
+        let queued = registry.target("s1").unwrap();
+        let held = queued.operation_gate.clone().lock_owned().await;
+        let waiter =
+            tokio::spawn(
+                async move { acquire_target_operation(&queued, std::future::pending()).await },
+            );
+        tokio::task::yield_now().await;
+
+        let stopping = registry.begin_stop("s1").unwrap();
+        let Err(stopping_error) = registry.target("s1") else {
+            panic!("the stopping id must reject new targets");
+        };
+        assert!(stopping_error.contains("stopping"), "{stopping_error}");
+        let alias = registry.target("s2").expect("the alias id remains valid");
+        assert!(Arc::ptr_eq(&stopping.operation_gate, &alias.operation_gate));
+
+        drop(held);
+        let error = waiter.await.unwrap().unwrap_err();
+        assert!(error.contains("queued operation did not run"), "{error}");
+        registry.remove("s1").unwrap();
+        assert_eq!(registry.url("s2").unwrap(), "http://127.0.0.1:1");
     }
 
     #[test]
