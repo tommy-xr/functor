@@ -75,8 +75,10 @@ let clamp = (value, low, high) =>
 
 let nudge = (model, forward, right) =>
   let yaw = yawRadians(model) in
-  let dx = Math.sin(yaw) * forward + Math.cos(yaw) * right in
-  let dz = Math.cos(yaw) * forward - Math.sin(yaw) * right in
+  // With yaw zero looking down +Z in this right-handed view, camera-right is
+  // -X. Rotate that basis with yaw so A/D stay relative to the visible gaze.
+  let dx = Math.sin(yaw) * forward - Math.cos(yaw) * right in
+  let dz = Math.cos(yaw) * forward + Math.sin(yaw) * right in
   { model with x: model.x + dx, z: model.z + dz }
 
 let selectView = (model, view) =>
@@ -197,6 +199,11 @@ expect (
   let looked = { init with yawOffset: Math.pi / 2.0 } in
   let moved = input(looked, Key.W, true) in
   moved.x > 0.3 && moved.z < 0.0
+)
+
+expect (
+  let strafed = input(init, Key.D, true) in
+  strafed.x < -0.3 && strafed.z > 0.0
 )
 
 let tick = (model, dt, tts) => model
