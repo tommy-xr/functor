@@ -108,6 +108,29 @@ This PoC materially improves three parts of that evidence:
    Structured model assertions avoid parsing Debug text, while captures return
    ordinary MCP image blocks.
 
+### Real-entry trial
+
+The finished PoC was exercised through the actual MCP stdio tools against two
+jam entries rather than only the synthetic counter E2E:
+
+- The fixed photo vignette (`ebfa750`) used `pause`, two integer `mouseMove`
+  events, one `step`, and tolerant assertions for `yawOffset = -0.6` and
+  `pitchOffset = 0.3`. Validation returned a seven-step plan, canonical source
+  revalidated to the identical plan, and execution passed both assertions.
+- Swarm Survival used `pressKey("3")`, held `d` across ten frames, released it,
+  stepped once so `sampledInput` observed the release, and asserted the result.
+  Validation returned a ten-step plan using twelve frames; execution raised the
+  target from 96 to 144 enemies, moved the player from `0` to `0.8320000395`,
+  and finished with `moveX = 0` and no held keys.
+
+The photo proof replaces roughly five raw pause/input/step/state calls with
+`validate_automation_code` plus `run_automation_code`; the fuller swarm proof
+replaces roughly ten with those same two calls. A caller that does not need the
+separate parse-only checkpoint can use only the run call. The trial also found
+and fixed a real protocol mismatch in the first implementation: mouse
+coordinates and wheel deltas must lower to signed 32-bit integers, not JSON
+floating-point values.
+
 It does **not** improve engine/API blockers discovered by the entries:
 camera-space picking/orientation, quaternion transforms and camera up, compound
 or rotated colliders, procedural collision terrain, 3D lines, efficient keyed
@@ -149,10 +172,10 @@ context.
 
 The PoC proves the core shape: the useful jam loop becomes significantly
 shorter, the source round-trips to inspectable data, the same builder works
-standalone, and no JavaScript evaluator is needed. The next slice should use
-real agent transcripts on two representative entries (photo-mode mouse look
-and a key-driven stress/control case), measure tool-call/error reduction, and
-decide whether static plans are enough.
+standalone, no JavaScript evaluator is needed, and the two representative jam
+trials above work as static plans. The next slice should measure this against
+fresh agent transcripts rather than reconstructed workflows, then decide
+whether static plans are enough.
 
 Before production, make the plan schema single-source/versioned, fuzz the
 parser, add output/capture byte budgets and a capability policy, and choose
