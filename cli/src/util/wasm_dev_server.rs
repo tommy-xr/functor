@@ -212,6 +212,24 @@ mod tests {
     }
 
     #[test]
+    fn visible_pointer_keeps_non_primary_webview_input_game_owned() {
+        let html = render_functor_lang_index("game.fun", &["game.fun".to_string()], "visible");
+        for expected in [
+            r#"window.addEventListener("mousedown""#,
+            "if (!visiblePointer || (code !== 2 && code !== 3)) return;",
+            "if (visiblePointer && code !== 1) return;",
+            r#"window.addEventListener("wheel""#,
+            "{ capture: true, passive: false }",
+            r#"window.addEventListener("contextmenu""#,
+        ] {
+            assert!(
+                html.contains(expected),
+                "rendered wasm host omitted `{expected}`"
+            );
+        }
+    }
+
+    #[test]
     fn escapes_entries_that_would_break_the_script() {
         let html = render_functor_lang_index(
             "we\"ird\\name.fun",

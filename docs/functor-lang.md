@@ -319,8 +319,9 @@ snapshots — no GPU, fully agent-verifiable.
       keeps the cursor free, web hides the mouse-look button, and the runtime
       warns once about otherwise-inert pointer hooks. A
       `"cursor":"visible"` project instead receives absolute pointer motion
-      and button edges while keeping the system cursor free; the two ownership
-      modes are mutually exclusive.
+      and clicks not owned by a primary overlay interaction, while keeping the
+      system cursor free; right/middle buttons and wheel input remain
+      game-owned over overlays. The two ownership modes are mutually exclusive.
       Native capture starts on a non-UI click and Escape releases it. This is
       the rule `mouseMove`/`mouseWheel` already followed and keeps clicks from
       being eaten by free-look capture.

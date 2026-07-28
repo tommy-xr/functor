@@ -97,8 +97,9 @@ game's perspective this is fully Elm-controlled.
   the whole session. A `"cursor":"visible"` project instead
   keeps absolute motion/buttons live for pointer-led gameplay; a primary click
   the previous UI pass wanted remains owned by the widget, while right/middle
-  clicks reach the game. Keyboard: when egui wants keyboard (a text field is
-  focused), key events are suppressed from the game's `input` hook.
+  clicks and wheel input remain game-owned over overlays on both native and
+  web. Keyboard: when egui wants keyboard (a text field is focused), key events
+  are suppressed from the game's `input` hook.
 
 - **Headless testability (LLM-native).** Because `UiEvent` is serializable
   and routed through one producer method, the debug server gains

@@ -235,11 +235,21 @@
           if (visiblePointer) functor_lang_mouse_move(e.offsetX, e.offsetY);
         });
 
-        canvas.addEventListener("wheel", (e) => {
-          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
+        const deliverGameWheel = (e) => {
           e.preventDefault();
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
+        };
+        canvas.addEventListener("wheel", (e) => {
+          if (visiblePointer) return;
+          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
+          deliverGameWheel(e);
         });
+        // Native visible-pointer games own wheel input everywhere in the
+        // window, including over an interactive webview rectangle. Shadow-DOM
+        // targets never bubble through the canvas, so capture at window scope.
+        window.addEventListener("wheel", (e) => {
+          if (visiblePointer) deliverGameWheel(e);
+        }, { capture: true, passive: false });
 
         // Captured projects deliver mouse buttons only while pointer-locked.
         // Visible projects deliver absolute canvas buttons without locking,
@@ -249,6 +259,17 @@
         const buttonCode = (button) =>
           button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 3 : 0;
         const gameButtons = new Set();
+        // Match native visible-pointer ownership: only primary is arbitrated
+        // with overlays. Right/middle remain game buttons even when a real DOM
+        // webview descendant is the event target (and therefore bypasses the
+        // canvas listener below).
+        window.addEventListener("mousedown", (e) => {
+          const code = buttonCode(e.button);
+          if (!visiblePointer || (code !== 2 && code !== 3)) return;
+          e.preventDefault();
+          functor_lang_mouse_button(code, true);
+          gameButtons.add(code);
+        }, { capture: true });
         canvas.addEventListener("mousedown", (e) => {
           if (
             !visiblePointer &&
@@ -256,6 +277,8 @@
           ) return;
           const code = buttonCode(e.button);
           if (code === 0) return;
+          // The window capture listener above owns these in visible mode.
+          if (visiblePointer && code !== 1) return;
           // Same previous-frame arbitration as native: a primary click on a
           // declarative UI widget belongs to that widget alone.
           if (visiblePointer && code === 1 && functor_lang_ui_wants_pointer()) return;
@@ -276,6 +299,10 @@
             (gameCameraControl && document.pointerLockElement === canvas)
           ) e.preventDefault();
         });
+        // A shadow-DOM webview target also bypasses the canvas listener.
+        window.addEventListener("contextmenu", (e) => {
+          if (visiblePointer) e.preventDefault();
+        }, { capture: true });
         // A button released outside the window (or after the lock drops) may
         // never emit a mouseup here — synthesize releases so the edge hook and
         // the next sampled snapshot both recover, mirroring `blur` for keys.

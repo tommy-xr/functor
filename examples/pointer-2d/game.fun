@@ -21,6 +21,8 @@ let hitTarget = (point) =>
   else if inside(5.0) then 1.0
   else 0.0 - 1.0
 
+// Input is resolved at fixed-step granularity: a latched press selects against
+// the latest sampled pointer when the next simulation step begins.
 let sampledInput = (model, snapshot: Input.snapshot) =>
   let pointer = Camera2D.toWorld(snapshot.mouse, camera) in
   match pointer with
