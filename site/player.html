@@ -146,14 +146,16 @@
       const warnMissingCameraControl = () => {
         if (gameCameraControl) return;
         const poll = () => {
-          if (!functor_lang_is_running()) {
-            setTimeout(poll, 50);
-          } else if (functor_lang_uses_captured_mouse_input()) {
+          if (functor_lang_is_running() && functor_lang_uses_captured_mouse_input()) {
             console.warn(
               '[functor-lang] captured mouse hooks are inert without ' +
-              'viewer.camera.control = "game" (or ?camera=game for this manifest-less host)'
+              'viewer.camera.control = "game"; reload this manifest-less host with ?camera=game'
             );
+            return;
           }
+          // Keep watching after the initial program loads: a hot reload can
+          // add one of these hooks. The return above makes this warn once.
+          setTimeout(poll, 250);
         };
         poll();
       };

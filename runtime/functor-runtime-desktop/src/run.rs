@@ -1227,12 +1227,23 @@ pub fn run(args: Args) {
         std::process::exit(1);
     };
 
-    if args.camera_control == CameraControl::None && game.uses_captured_mouse_input() {
+    // Hidden/headless/emulated-XR sessions do not have a live captured-pointer
+    // path; their debug/script injection remains available without this viewer
+    // setting, so a capture warning would prescribe the wrong fix.
+    let interactive_camera_warning =
+        !args.headless && !args.hidden && args.capture_frame.is_none() && !args.emulate_xr;
+    let mut warned_missing_camera_control = false;
+    if interactive_camera_warning
+        && args.camera_control == CameraControl::None
+        && game.uses_captured_mouse_input()
+    {
         eprintln!(
             "[runner] warning: this game defines captured mouse hooks, but \
 `viewer.camera.control` is absent or `none`; add \
-`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json"
+`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json, \
+then restart the runner"
         );
+        warned_missing_camera_control = true;
     }
 
     // Scripted deterministic input (docs/time-travel.md T6b). Parsed up front so
@@ -1347,6 +1358,7 @@ pub fn run(args: Args) {
             window.set_cursor_pos_polling(true);
             window.set_scroll_polling(true);
             window.set_mouse_button_polling(true);
+            window.set_focus_polling(true);
             window.set_framebuffer_size_polling(true);
             // Captured game input is available only by manifest opt-in, and
             // capture itself is still a user gesture: start with the cursor
@@ -1639,6 +1651,22 @@ Escape releases while captured"
             // poll), and 4Hz is plenty for a save-and-look loop.
             if last_asset_poll.elapsed().as_millis() >= 250 {
                 last_asset_poll = Instant::now();
+                // The producer can gain captured mouse hooks on hot reload.
+                // Re-check at the existing 4 Hz shell poll, but teach only
+                // once per session.
+                if interactive_camera_warning
+                    && !warned_missing_camera_control
+                    && args.camera_control == CameraControl::None
+                    && game.uses_captured_mouse_input()
+                {
+                    eprintln!(
+                        "[runner] warning: this game defines captured mouse hooks, but \
+`viewer.camera.control` is absent or `none`; add \
+`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json, \
+then restart the runner"
+                    );
+                    warned_missing_camera_control = true;
+                }
                 for path in asset_watcher.changed(asset_cache.loaded_paths()) {
                     log::info!("asset '{}' changed on disk; reloading", path);
                     asset_cache.evict(&path);

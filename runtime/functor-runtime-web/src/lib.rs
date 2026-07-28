@@ -246,8 +246,8 @@ pub fn functor_lang_is_running() -> bool {
 }
 
 /// Does the live producer define any hook that shell input reaches only while
-/// the pointer is captured? Host pages use this once at load to teach about a
-/// missing `viewer.camera.control = "game"` opt-in.
+/// the pointer is captured? Host pages use this at load and after source pushes
+/// to teach about a missing `viewer.camera.control = "game"` opt-in.
 #[wasm_bindgen]
 pub fn functor_lang_uses_captured_mouse_input() -> bool {
     GAME.with(|g| {
