@@ -825,6 +825,42 @@ step       { "session": "s1" }
             time when the game must see input or I/O between steps.
           </p>
 
+          <h3>Raw HTTP from a shell</h3>
+          <p>
+            MCP is the convenient agent workflow above. Use the runtime's raw HTTP surface when a
+            shell script or test needs a few direct requests, or to attach to a game already running
+            with <code>--debug-port</code>. <code>--hidden</code> keeps pixels available for capture
+            without showing a window:
+          </p>
+          <pre class="shell">functor -d examples/counter run native --debug-port 8077 --hidden &amp;
+RUNTIME_PID=$!
+H=http://127.0.0.1:8077
+
+curl -s $H/state | jq '.frame, .tts, .model'
+curl -s -X POST $H/time -d '{"type":"set","tts":0}'              # pause
+curl -s -X POST $H/input -d '{"type":"key","key":"3","down":true}' # digits are bare "0"…"9"
+curl -s -X POST $H/input -d '{"type":"mouse_move","x":120,"y":80}'
+curl -s -X POST $H/input -d '{"type":"mouse_button","button":"left","down":true}'
+curl -s -X POST $H/input -d '{"type":"ui_event","slot":0,"kind":"Clicked"}'
+curl -s -X POST $H/time -d '{"type":"advance","dts":0.016}'
+curl -s $H/state | jq '.model'
+curl -s -X POST $H/capture -o frame.png
+
+curl -s -X POST $H/input -d '{"type":"key","key":"3","down":false}'
+curl -s -X POST $H/input -d '{"type":"mouse_button","button":"left","down":false}'
+curl -s -X POST $H/time -d '{"type":"resume"}'
+kill $RUNTIME_PID</pre>
+          <p>
+            The URL is the <code>[debug-server] listening on …</code> address printed at launch.
+            Input is held until its matching release, and UI slots follow interactive-widget
+            construction order. Keep an inspectable persistent model as plain data: a
+            <code>{"$host":"…"}</code> value in <code>/state</code> is a lossy marker for opaque
+            engine data that should normally stay in <code>draw</code> or another host-facing hook.
+            See the
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/debug-runtime.md">full debug-runtime reference</a>
+            for every endpoint, payload, headless mode, batched stepping, and remote-device setup.
+          </p>
+
           <h3>Authoring without a filesystem</h3>
           <p>
             An agent with no disk of its own can still go from nothing to a durable project.
