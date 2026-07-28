@@ -314,9 +314,12 @@ snapshots — no GPU, fully agent-verifiable.
       `mouseButton(model, button, isDown)` entry point whose `button` is the
       built-in `Mouse` module's variant (`<builtin>/Mouse.fun`, injected beside
       `Key`): `Mouse.Left`/`Right`/`Middle`. Buttons reach game logic **while
-      the cursor is captured** — the rule `mouseMove`/`mouseWheel` already
-      followed, and the fix for clicks being eaten by free-look capture — and a
-      held button is swept released on focus loss, Escape, and the console
+      the cursor is captured**, and capture is now an explicit project opt-in:
+      `viewer.camera.control = "game"` in `functor.json`. Without it, native
+      keeps the cursor free and web hides the mouse-look button—especially
+      important for 2D/UI projects. This is the rule `mouseMove`/`mouseWheel`
+      already followed and keeps clicks from being eaten by free-look capture.
+      A held button is swept released on focus loss, Escape, and the console
       toggle so it cannot fire forever. The held level state rides on the
       sampled snapshot as `mouse.buttons.{left,right,middle}`, making
       `mouseButton` the edge and `sampledInput` the level (semi- vs. full-auto).

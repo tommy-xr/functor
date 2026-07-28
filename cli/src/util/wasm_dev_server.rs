@@ -1,5 +1,6 @@
 use std::io;
 
+use functor_runtime_common::viewer::CameraControl;
 use warp::{http::Response, Filter};
 
 pub struct WasmDevServer;
@@ -33,16 +34,25 @@ fn script_safe(json: String) -> String {
 /// - `"__FUNCTOR_LANG_PROJECT_FILES__"` becomes a JSON array literal (entry first, then
 ///   siblings) → `window.__functorLangProjectFiles`, so multi-file games (`file =
 ///   module`) load EVERY module, not just the entry (docs/functor-lang.md Track C5).
+/// - `"__FUNCTOR_CAMERA_CONTROL__"` becomes the manifest's main-viewport input
+///   ownership mode.
 ///
 /// Both are valid JS for any path (quotes/backslashes included).
-pub(crate) fn render_functor_lang_index(entry: &str, files: &[String]) -> String {
+pub(crate) fn render_functor_lang_index(
+    entry: &str,
+    files: &[String],
+    camera_control: CameraControl,
+) -> String {
     let entry_literal =
         script_safe(serde_json::to_string(entry).expect("a string always serializes"));
     let files_literal =
         script_safe(serde_json::to_string(files).expect("a string slice always serializes"));
+    let camera_control_literal =
+        serde_json::to_string(camera_control.as_str()).expect("a static string always serializes");
     INDEX_FUNCTOR_LANG_HTML
         .replace("\"__FUNCTOR_LANG_ENTRY__\"", &entry_literal)
         .replace("\"__FUNCTOR_LANG_PROJECT_FILES__\"", &files_literal)
+        .replace("\"__FUNCTOR_CAMERA_CONTROL__\"", &camera_control_literal)
 }
 
 /// The project's file list as URLs relative to the served directory (entry
@@ -73,11 +83,15 @@ impl WasmDevServer {
     /// bundle + filesystem routes, but the index page is the Functor Lang one — there
     /// is no game wasm module; the runtime fetches the entry file, which the
     /// filesystem route serves straight from the project directory.
-    pub async fn start_functor_lang(working_directory: &str, entry: &str) -> Result<(), io::Error> {
+    pub async fn start_functor_lang(
+        working_directory: &str,
+        entry: &str,
+        camera_control: CameraControl,
+    ) -> Result<(), io::Error> {
         let files = project_file_urls(working_directory, entry);
         Self::serve(
             working_directory,
-            render_functor_lang_index(entry, &files).into_bytes(),
+            render_functor_lang_index(entry, &files, camera_control).into_bytes(),
         )
         .await
     }
@@ -158,12 +172,16 @@ impl WasmDevServer {
 #[cfg(test)]
 mod tests {
     use super::render_functor_lang_index;
+    use functor_runtime_common::viewer::CameraControl;
 
     #[test]
     fn substitutes_the_entry_as_a_js_string() {
-        let html = render_functor_lang_index("game.fun", &["game.fun".to_string()]);
+        let html =
+            render_functor_lang_index("game.fun", &["game.fun".to_string()], CameraControl::None);
         assert!(html.contains("window.__functorLangGamePath = \"game.fun\""));
+        assert!(html.contains("const gameCameraControl = \"none\" === \"game\""));
         assert!(!html.contains("__FUNCTOR_LANG_ENTRY__"));
+        assert!(!html.contains("__FUNCTOR_CAMERA_CONTROL__"));
     }
 
     #[test]
@@ -171,6 +189,7 @@ mod tests {
         let html = render_functor_lang_index(
             "game.fun",
             &["game.fun".to_string(), "pieces.fun".to_string()],
+            CameraControl::None,
         );
         assert!(html.contains("(["));
         assert!(html.contains("\"game.fun\",\"pieces.fun\""));
@@ -179,14 +198,29 @@ mod tests {
 
     #[test]
     fn escapes_entries_that_would_break_the_script() {
-        let html =
-            render_functor_lang_index("we\"ird\\name.fun", &["we\"ird\\name.fun".to_string()]);
+        let html = render_functor_lang_index(
+            "we\"ird\\name.fun",
+            &["we\"ird\\name.fun".to_string()],
+            CameraControl::None,
+        );
         assert!(html.contains("we\\\"ird\\\\name.fun"));
     }
 
     #[test]
     fn escapes_a_script_terminator_in_the_entry() {
-        let html = render_functor_lang_index("bad</script>.fun", &["bad</script>.fun".to_string()]);
+        let html = render_functor_lang_index(
+            "bad</script>.fun",
+            &["bad</script>.fun".to_string()],
+            CameraControl::None,
+        );
         assert!(html.contains("bad<\\/script>.fun"));
+    }
+
+    #[test]
+    fn substitutes_the_camera_control_mode() {
+        let html =
+            render_functor_lang_index("game.fun", &["game.fun".to_string()], CameraControl::Game);
+        assert!(html.contains("const gameCameraControl = \"game\" === \"game\""));
+        assert!(!html.contains("__FUNCTOR_CAMERA_CONTROL__"));
     }
 }

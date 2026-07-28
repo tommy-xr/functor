@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::viewer::CameraControl;
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, MouseButtons, MouseSnapshot,
     RecordedInput, SceneContext, XrInputSnapshot,
@@ -464,6 +465,13 @@ pub struct Args {
     /// Prints per-frame eval cost every 300 frames.
     #[arg(long)]
     functor_lang: bool,
+
+    /// Main-viewport camera input ownership. `none` keeps the pointer free;
+    /// `game` enables cursor capture and routes relative mouse input to the
+    /// Functor Lang hooks. The Functor CLI derives this from
+    /// `functor.json`'s `viewer.camera.control`.
+    #[arg(long, default_value_t = CameraControl::None)]
+    camera_control: CameraControl,
 
     /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
     /// or a JSON array of them — the exact format `GET /scene` emits) and replay
@@ -1319,10 +1327,11 @@ pub fn run(args: Args) {
             // mouse motion (free-look) instead of the pointer stopping at the
             // window edges. Escape RELEASES the cursor (essential for the
             // hot-reload loop: tweak code in the editor while the game runs);
-            // click recaptures; Escape while released quits. Losing focus
-            // also releases, so cmd-tabbing away hands the pointer back.
+            // With game-owned camera control, click recaptures; Escape while
+            // released quits. Losing focus also releases, so cmd-tabbing away
+            // hands the pointer back.
             // A hidden window never gets focus, so it must not grab the cursor.
-            if !hidden && !args.emulate_xr {
+            if !hidden && !args.emulate_xr && args.camera_control == CameraControl::Game {
                 window.set_cursor_mode(glfw::CursorMode::Disabled);
             }
 
@@ -1469,7 +1478,8 @@ pub fn run(args: Args) {
         // Whether the window owns the pointer (free-look). See the Escape /
         // MouseButton / Focus arms in the event loop. A hidden window never
         // captures (and never receives the events that would toggle this).
-        let mut cursor_captured = !hidden && !args.emulate_xr;
+        let game_camera_control = args.camera_control == CameraControl::Game;
+        let mut cursor_captured = !hidden && !args.emulate_xr && game_camera_control;
 
         use glfw::Context;
 
@@ -1732,19 +1742,23 @@ Escape again to quit"
                             } else if args.emulate_xr {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
                                 cursor_captured = false;
-                            } else {
+                            } else if game_camera_control {
                                 window.set_cursor_mode(glfw::CursorMode::Disabled);
                                 cursor_captured = true;
+                            } else {
+                                window.set_cursor_mode(glfw::CursorMode::Normal);
+                                cursor_captured = false;
                             }
                         }
                     }
-                    // Left click while released: if it lands on a scrubber
-                    // control (egui wanted the pointer last frame) it drives the
-                    // scrubber; otherwise it recaptures for free-look. Press/
-                    // release edges feed egui's click detection. Never on a
-                    // hidden window — it must not grab the pointer. These arms
-                    // sit BEFORE the `ignore_user_input` catch-all so the
-                    // scrubber stays usable while the clock is pinned (paused).
+                    // Left click while released: overlay hits drive the
+                    // overlay; otherwise game-owned camera control recaptures
+                    // for free-look. With no camera opt-in every click remains
+                    // an overlay click. Press/release edges feed egui's click
+                    // detection. Never on a hidden window — it must not grab
+                    // the pointer. These arms sit BEFORE the
+                    // `ignore_user_input` catch-all so the scrubber stays
+                    // usable while the clock is pinned (paused).
                     glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, action, _)
                         if !cursor_captured && !hidden =>
                     {
@@ -1771,7 +1785,7 @@ Escape again to quit"
                                 } else if args.emulate_xr {
                                     xr_primary_down = !ignore_user_input;
                                     xr_primary_clicked = xr_primary_down;
-                                } else {
+                                } else if game_camera_control {
                                     window.set_cursor_mode(glfw::CursorMode::Disabled);
                                     cursor_captured = true;
                                     // Entering free-look: blur any focused
@@ -1783,6 +1797,14 @@ Escape again to quit"
                                     if webview_wants_keyboard {
                                         webview_keys.push(WebviewKey::Escape);
                                     }
+                                } else {
+                                    // With no camera-control opt-in the pointer
+                                    // belongs to the overlays for the whole
+                                    // session. Feed the click through instead
+                                    // of turning an ordinary 2D/UI click into
+                                    // an invisible cursor-capture transition.
+                                    mouse_primary_down = true;
+                                    mouse_primary_clicked = true;
                                 }
                             }
                             Action::Release => {
@@ -2919,6 +2941,31 @@ mod tests {
     use super::*;
     use functor_runtime_common::{TrackingPose, XrControllerSnapshot};
     use std::io::Write;
+
+    #[test]
+    fn camera_control_arg_defaults_to_none_and_accepts_game() {
+        let default = Args::try_parse_from(["functor", "--game-path", "game.fun"]).unwrap();
+        assert_eq!(default.camera_control, CameraControl::None);
+
+        let game = Args::try_parse_from([
+            "functor",
+            "--game-path",
+            "game.fun",
+            "--camera-control",
+            "game",
+        ])
+        .unwrap();
+        assert_eq!(game.camera_control, CameraControl::Game);
+
+        assert!(Args::try_parse_from([
+            "functor",
+            "--game-path",
+            "game.fun",
+            "--camera-control",
+            "orbit",
+        ])
+        .is_err());
+    }
 
     fn write_tmp(name: &str, contents: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(name);
