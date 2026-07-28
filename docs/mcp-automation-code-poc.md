@@ -38,7 +38,7 @@ const proof = automation("stress setting")
   .pause()
   .pressKey("3")
   .step({ frames: 120 })
-  .expectModel("enemyTarget", 144)
+  .expectModelClose("enemyTarget", 144, 0)
   .inspect("settled")
   .capture("stress");
 
@@ -126,14 +126,20 @@ context.
   both from one versioned schema and add cross-language fixtures.
 - Execution is not transactional. Parse/budget rejection has no side effects;
   a runtime failure after execution starts can leave earlier steps applied.
-- Assertions are exact JSON equality at static literal paths. There are no
-  comparisons, predicates, polling-until, branching, variables, loops,
+- `expectModel` provides exact JSON equality and `expectModelClose` provides
+  finite numeric absolute tolerance at static literal paths. There are no
+  other comparisons, predicates, polling-until, branching, variables, loops,
   dataflow, or rollback.
 - `pressKey` owns one fixed 16ms step. More input macros need explicit timing
   semantics rather than silently growing an ad hoc scripting language.
 - Result payloads include full observations/final state and captures are held
   in memory. Production needs output-size accounting and possibly selective
   model reads.
+- Execution is deterministic only for an uncontended session. Production needs
+  a per-session operation lock so another mutating tool call cannot interleave
+  with a running plan.
+- Rust and TypeScript do not yet pin the canonical spelling of negative zero
+  across languages; cross-language fixtures should cover that edge case.
 - There is no per-session capability policy beyond the existing MCP session:
   a valid plan can perform any operation in this allowlist.
 

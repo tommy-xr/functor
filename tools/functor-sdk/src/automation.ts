@@ -21,6 +21,12 @@ export type AutomationStep =
   | { type: "step"; frames: number; dts: number }
   | { type: "inspect"; label?: string }
   | { type: "expect_model"; path: string; equals: ModelJson }
+  | {
+      type: "expect_model_close";
+      path: string;
+      expected: number;
+      abs_tolerance: number;
+    }
   | { type: "capture"; label?: string };
 
 export interface AutomationPlan {
@@ -43,6 +49,7 @@ export interface AutomationAssertion {
   path: string;
   expected: ModelJson;
   actual: ModelJson;
+  absTolerance?: number;
   passed: true;
 }
 
@@ -159,6 +166,16 @@ export class AutomationBuilder {
     return this;
   }
 
+  expectModelClose(path: string, expected: number, absTolerance: number): this {
+    this.#steps.push({
+      type: "expect_model_close",
+      path,
+      expected,
+      abs_tolerance: absTolerance,
+    });
+    return this;
+  }
+
   capture(label?: string): this {
     this.#steps.push(
       label === undefined ? { type: "capture" } : { type: "capture", label },
@@ -236,6 +253,9 @@ function renderCanonicalCode(plan: AutomationPlan): string {
       case "expect_model":
         code += `expectModel(${JSON.stringify(step.path)}, ${JSON.stringify(step.equals)})`;
         break;
+      case "expect_model_close":
+        code += `expectModelClose(${JSON.stringify(step.path)}, ${step.expected}, ${step.abs_tolerance})`;
+        break;
       case "capture":
         code +=
           step.label === undefined
@@ -273,24 +293,32 @@ export async function runAutomation(
           await (step.down ? client.keyDown(step.key) : client.keyUp(step.key));
           break;
         case "press_key": {
-          await client.keyDown(step.key);
-          let stepError: unknown;
+          let actionError: unknown;
           try {
-            await client.stepFrames(1, AUTOMATION_DEFAULT_STEP_DT);
+            await client.keyDown(step.key);
           } catch (error) {
-            stepError = error;
+            actionError = error;
           }
+          if (actionError === undefined) {
+            try {
+              await client.stepFrames(1, AUTOMATION_DEFAULT_STEP_DT);
+            } catch (error) {
+              actionError = error;
+            }
+          }
+          // A timeout/error response may still have applied keyDown. Release
+          // is therefore best-effort even when keyDown itself reports failure.
           try {
             await client.keyUp(step.key);
           } catch (releaseError) {
-            if (stepError !== undefined) {
+            if (actionError !== undefined) {
               throw new Error(
-                `${String(stepError)}; best-effort key release also failed: ${String(releaseError)}`,
+                `${String(actionError)}; best-effort key release also failed: ${String(releaseError)}`,
               );
             }
             throw releaseError;
           }
-          if (stepError !== undefined) throw stepError;
+          if (actionError !== undefined) throw actionError;
           break;
         }
         case "mouse_move":
@@ -334,6 +362,33 @@ export async function runAutomation(
             path: step.path,
             expected: step.equals,
             actual,
+            passed: true,
+          });
+          break;
+        }
+        case "expect_model_close": {
+          const state = await client.state();
+          const actual = modelValueAt(state.model, step.path);
+          if (actual === undefined) {
+            throw new Error(
+              `model assertion path ${JSON.stringify(step.path)} does not exist`,
+            );
+          }
+          if (typeof actual !== "number" || !Number.isFinite(actual)) {
+            throw new Error(
+              `numeric model assertion at ${JSON.stringify(step.path)} requires a numeric value, got ${JSON.stringify(actual)}`,
+            );
+          }
+          if (Math.abs(actual - step.expected) > step.abs_tolerance) {
+            throw new Error(
+              `numeric model assertion failed at ${JSON.stringify(step.path)}: expected ${step.expected} ± ${step.abs_tolerance}, got ${actual}`,
+            );
+          }
+          assertions.push({
+            path: step.path,
+            expected: step.expected,
+            actual,
+            absTolerance: step.abs_tolerance,
             passed: true,
           });
           break;
@@ -431,11 +486,8 @@ function validateStep(step: AutomationStep): void {
       }
       break;
     case "mouse_move":
-      finite("mouse x", step.x);
-      finite("mouse y", step.y);
-      if (Math.abs(step.x) > 1_000_000 || Math.abs(step.y) > 1_000_000) {
-        throw new Error("mouse coordinates must be within ±1,000,000");
-      }
+      signedI32("mouse x", step.x);
+      signedI32("mouse y", step.y);
       break;
     case "mouse_button":
       if (!["left", "right", "middle"].includes(step.button)) {
@@ -443,10 +495,7 @@ function validateStep(step: AutomationStep): void {
       }
       break;
     case "mouse_wheel":
-      finite("mouse wheel delta", step.delta);
-      if (Math.abs(step.delta) > 1_000_000) {
-        throw new Error("mouse wheel delta must be within ±1,000,000");
-      }
+      signedI32("mouse wheel delta", step.delta);
       break;
     case "ui_click":
       if (
@@ -480,21 +529,7 @@ function validateStep(step: AutomationStep): void {
       }
       break;
     case "expect_model":
-      if (utf8Length(step.path) > 256) throw new Error("model path is too long");
-      if (
-        !step.path.startsWith("/") &&
-        step.path !== "" &&
-        (step.path.split(".").some((segment) => segment === "") ||
-          step.path
-            .split(".")
-            .some((segment) =>
-              ["__proto__", "prototype", "constructor"].includes(segment),
-            ))
-      ) {
-        throw new Error(
-          "dotted model paths cannot contain empty or prototype-related segments",
-        );
-      }
+      validateModelPath(step.path);
       validateLiteral(step.equals);
       if (literalDepth(step.equals) > AUTOMATION_MAX_LITERAL_DEPTH) {
         throw new Error(
@@ -502,10 +537,46 @@ function validateStep(step: AutomationStep): void {
         );
       }
       break;
+    case "expect_model_close":
+      validateModelPath(step.path);
+      finite("expected model value", step.expected);
+      finite("absolute tolerance", step.abs_tolerance);
+      if (step.abs_tolerance < 0) {
+        throw new Error("absolute tolerance must be non-negative");
+      }
+      break;
     default:
       throw new Error(
         `unknown automation step ${String((step as { type?: unknown }).type)}`,
       );
+  }
+}
+
+function signedI32(name: string, value: number): void {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < -0x8000_0000 ||
+    value > 0x7fff_ffff
+  ) {
+    throw new Error(`${name} must be a signed 32-bit integer`);
+  }
+}
+
+function validateModelPath(path: string): void {
+  if (utf8Length(path) > 256) throw new Error("model path is too long");
+  if (
+    !path.startsWith("/") &&
+    path !== "" &&
+    (path.split(".").some((segment) => segment === "") ||
+      path
+        .split(".")
+        .some((segment) =>
+          ["__proto__", "prototype", "constructor"].includes(segment),
+        ))
+  ) {
+    throw new Error(
+      "dotted model paths cannot contain empty or prototype-related segments",
+    );
   }
 }
 

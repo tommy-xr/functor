@@ -278,16 +278,29 @@ try {
       .uiClick(0)
       .step()
       .expectModel("count", 1)
+      .expectModelClose("count", 1.0001, 0.001)
+      .mouseMove(400, 300)
+      .mouseWheel(-1)
       .keyDown("w")
       .step()
       .inspect("while held")
       .keyUp("w")`,
   });
-  check(automated.ok === true && automated.steps_executed === 8, "the complete normalized plan executed");
+  check(automated.ok === true && automated.steps_executed === 11, "the complete normalized plan executed");
   check(automated.assertions?.[0]?.passed === true, "expectModel passed against structured model data");
+  check(
+    automated.assertions?.[1]?.passed === true &&
+      automated.assertions?.[1]?.abs_tolerance === 0.001,
+    "expectModelClose passed a bounded numeric assertion",
+  );
   check(
     automated.observations?.[0]?.state?.input?.held_keys?.includes("W"),
     "inspect observed typed held input between deterministic steps",
+  );
+  check(
+    automated.final_state?.input?.mouse?.x === 400 &&
+      automated.final_state?.input?.mouse?.y === 300,
+    "mouseMove and mouseWheel used integer debug-protocol payloads successfully",
   );
   check(automated.final_state?.model?.count === 1, "the automation returned fresh final state");
 

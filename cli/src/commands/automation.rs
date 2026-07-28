@@ -44,15 +44,15 @@ pub enum AutomationStep {
         key: String,
     },
     MouseMove {
-        x: f64,
-        y: f64,
+        x: i32,
+        y: i32,
     },
     MouseButton {
         button: String,
         down: bool,
     },
     MouseWheel {
-        delta: f64,
+        delta: i32,
     },
     UiClick {
         slot: u32,
@@ -68,6 +68,11 @@ pub enum AutomationStep {
     ExpectModel {
         path: String,
         equals: Value,
+    },
+    ExpectModelClose {
+        path: String,
+        expected: f64,
+        abs_tolerance: f64,
     },
     Capture {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,7 +217,7 @@ pub fn canonical_code(plan: &AutomationPlan) -> String {
             AutomationStep::Key { key, down: false } => format!("keyUp({})", quote(key)),
             AutomationStep::PressKey { key } => format!("pressKey({})", quote(key)),
             AutomationStep::MouseMove { x, y } => {
-                format!("mouseMove({}, {})", number(*x), number(*y))
+                format!("mouseMove({x}, {y})")
             }
             AutomationStep::MouseButton { button, down: true } => {
                 format!("mouseDown({})", quote(button))
@@ -222,7 +227,7 @@ pub fn canonical_code(plan: &AutomationPlan) -> String {
                 down: false,
             } => format!("mouseUp({})", quote(button)),
             AutomationStep::MouseWheel { delta } => {
-                format!("mouseWheel({})", number(*delta))
+                format!("mouseWheel({delta})")
             }
             AutomationStep::UiClick { slot } => format!("uiClick({slot})"),
             AutomationStep::Step { frames, dts } => {
@@ -236,6 +241,16 @@ pub fn canonical_code(plan: &AutomationPlan) -> String {
                 "expectModel({}, {})",
                 quote(path),
                 serde_json::to_string(equals).expect("a JSON value serializes")
+            ),
+            AutomationStep::ExpectModelClose {
+                path,
+                expected,
+                abs_tolerance,
+            } => format!(
+                "expectModelClose({}, {}, {})",
+                quote(path),
+                number(*expected),
+                number(*abs_tolerance)
             ),
             AutomationStep::Capture { label: None } => "capture()".to_owned(),
             AutomationStep::Capture { label: Some(label) } => {
@@ -724,18 +739,13 @@ impl<'a> Parser<'a> {
                 }
             }
             "mouseMove" => {
-                let x = self.take_number("mouseMove(x, y) requires numeric literals")?;
+                let x_token = self.current.clone();
+                let x = self.take_number("mouseMove(x, y) requires integer literals")?;
                 self.expect(TokenKind::Comma, "',' between mouseMove coordinates")?;
-                let y = self.take_number("mouseMove(x, y) requires numeric literals")?;
-                for (name, value) in [("x", x), ("y", y)] {
-                    if value.abs() > 1_000_000.0 {
-                        return Err(Diagnostic::at(
-                            format!("mouse {name} is outside the ±1,000,000 PoC bound"),
-                            method_token.line,
-                            method_token.column,
-                        ));
-                    }
-                }
+                let y_token = self.current.clone();
+                let y = self.take_number("mouseMove(x, y) requires integer literals")?;
+                let x = bounded_i32(x, "mouse x", &x_token)?;
+                let y = bounded_i32(y, "mouse y", &y_token)?;
                 Ok(AutomationStep::MouseMove { x, y })
             }
             "mouseDown" | "mouseUp" => {
@@ -757,14 +767,9 @@ impl<'a> Parser<'a> {
                 })
             }
             "mouseWheel" => {
-                let delta = self.take_number("mouseWheel(delta) requires a numeric literal")?;
-                if delta.abs() > 1_000_000.0 {
-                    return Err(Diagnostic::at(
-                        "mouse wheel delta is outside the ±1,000,000 PoC bound",
-                        method_token.line,
-                        method_token.column,
-                    ));
-                }
+                let token = self.current.clone();
+                let delta = self.take_number("mouseWheel(delta) requires an integer literal")?;
+                let delta = bounded_i32(delta, "mouse wheel delta", &token)?;
                 Ok(AutomationStep::MouseWheel { delta })
             }
             "uiClick" => {
@@ -812,6 +817,34 @@ impl<'a> Parser<'a> {
                 let equals = self.parse_literal(0)?;
                 Ok(AutomationStep::ExpectModel { path, equals })
             }
+            "expectModelClose" => {
+                let path_token = self.current.clone();
+                let path = self.take_string(
+                    "expectModelClose(path, expected, absTolerance) requires a literal model path",
+                )?;
+                check_text_len("model path", &path, MAX_MODEL_PATH_BYTES, &path_token)?;
+                validate_model_path(&path, &path_token)?;
+                self.expect(TokenKind::Comma, "',' after model path")?;
+                let expected = self.take_number(
+                    "expectModelClose(path, expected, absTolerance) requires a numeric expected value",
+                )?;
+                self.expect(TokenKind::Comma, "',' before absolute tolerance")?;
+                let abs_tolerance = self.take_number(
+                    "expectModelClose(path, expected, absTolerance) requires a numeric absolute tolerance",
+                )?;
+                if abs_tolerance < 0.0 {
+                    return Err(Diagnostic::at(
+                        "absolute tolerance must be non-negative",
+                        method_token.line,
+                        method_token.column,
+                    ));
+                }
+                Ok(AutomationStep::ExpectModelClose {
+                    path,
+                    expected,
+                    abs_tolerance,
+                })
+            }
             "capture" => {
                 self.captures += 1;
                 if self.captures > MAX_CAPTURES {
@@ -826,7 +859,7 @@ impl<'a> Parser<'a> {
             }
             _ => Err(Diagnostic::at(
                 format!(
-                    "unknown automation method {method:?}; allowed methods are pause, keyDown, keyUp, pressKey, mouseMove, mouseDown, mouseUp, mouseWheel, uiClick, step, inspect, expectModel, capture"
+                    "unknown automation method {method:?}; allowed methods are pause, keyDown, keyUp, pressKey, mouseMove, mouseDown, mouseUp, mouseWheel, uiClick, step, inspect, expectModel, expectModelClose, capture"
                 ),
                 method_token.line,
                 method_token.column,
@@ -1086,6 +1119,17 @@ fn bounded_u32(value: f64, name: &str, max: u32, token: &Token) -> Result<u32, D
     Ok(value as u32)
 }
 
+fn bounded_i32(value: f64, name: &str, token: &Token) -> Result<i32, Diagnostic> {
+    if value.fract() != 0.0 || value < i32::MIN as f64 || value > i32::MAX as f64 {
+        return Err(Diagnostic::at(
+            format!("{name} must be a signed 32-bit integer"),
+            token.line,
+            token.column,
+        ));
+    }
+    Ok(value as i32)
+}
+
 fn check_text_len(name: &str, text: &str, max: usize, token: &Token) -> Result<(), Diagnostic> {
     if text.len() > max {
         return Err(Diagnostic::at(
@@ -1173,7 +1217,7 @@ automation("photo mouse-look proof")
   .mouseMove(400, 300)
   .mouseMove(600, 200)
   .step({ frames: 2, dts: 0.016 })
-  .expectModel("yawOffset", -0.6)
+  .expectModelClose("yawOffset", -0.6, 0.0001)
   .inspect("after mouse look")
   .capture("proof");
 "#,
@@ -1192,8 +1236,16 @@ automation("photo mouse-look proof")
         );
         assert_eq!(
             serde_json::to_value(&plan).unwrap()["steps"][4],
-            json!({"type":"expect_model","path":"yawOffset","equals":-0.6})
+            json!({
+                "type":"expect_model_close",
+                "path":"yawOffset",
+                "expected":-0.6,
+                "abs_tolerance":0.0001
+            })
         );
+        let serialized = serde_json::to_string(&plan).unwrap();
+        assert!(serialized.contains(r#""x":400,"y":300"#));
+        assert!(!serialized.contains(r#""x":400.0"#));
     }
 
     #[test]
@@ -1203,10 +1255,11 @@ automation("photo mouse-look proof")
               .keyDown("3").keyUp("3").pressKey("r")
               .mouseDown().mouseUp("right").mouseWheel(-1)
               .uiClick(0)
-              .expectModel("", { ready: true, values: [1, null, "ok"] });"#,
+              .expectModel("", { ready: true, values: [1, null, "ok"] })
+              .expectModelClose("camera.yaw", -0.6, 0.001);"#,
         )
         .unwrap();
-        assert_eq!(plan.steps.len(), 8);
+        assert_eq!(plan.steps.len(), 9);
         assert_eq!(usage("ignored", &plan).total_frames, 1);
     }
 
@@ -1225,6 +1278,86 @@ automation("photo mouse-look proof")
         assert_eq!(reparsed, plan);
         assert!(canonical.starts_with("automation(\"round trip\")\n"));
         assert!(canonical.contains(".step({ frames: 3, dts: 0.02 })"));
+    }
+
+    #[test]
+    fn input_numbers_match_the_debug_protocol_wire_domains() {
+        let plan = parse_automation(
+            "automation().mouseMove(-2147483648, 2147483647).mouseWheel(-2147483648).uiClick(4294967295)",
+        )
+        .unwrap();
+        assert_eq!(
+            plan.steps[0],
+            AutomationStep::MouseMove {
+                x: i32::MIN,
+                y: i32::MAX,
+            }
+        );
+        assert_eq!(
+            plan.steps[1],
+            AutomationStep::MouseWheel { delta: i32::MIN }
+        );
+        assert_eq!(
+            serde_json::to_value(&plan).unwrap()["steps"][2]["slot"],
+            json!(u32::MAX)
+        );
+        let canonical = canonical_code(&plan);
+        assert!(canonical.contains(".mouseMove(-2147483648, 2147483647)"));
+        assert!(canonical.contains(".mouseWheel(-2147483648)"));
+
+        for source in [
+            "automation().mouseMove(1.5, 0)",
+            "automation().mouseMove(2147483648, 0)",
+            "automation().mouseWheel(-2147483649)",
+            "automation().mouseWheel(0.5)",
+        ] {
+            assert!(
+                parse_automation(source)
+                    .unwrap_err()
+                    .message
+                    .contains("signed 32-bit integer"),
+                "{source}"
+            );
+        }
+        for source in [
+            "automation().uiClick(0.5)",
+            "automation().uiClick(4294967296)",
+        ] {
+            assert!(
+                parse_automation(source)
+                    .unwrap_err()
+                    .message
+                    .contains("integer from 0"),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn close_assertions_require_finite_values_and_nonnegative_tolerance() {
+        let plan =
+            parse_automation("automation().expectModelClose('camera.yaw', -0.6, 0.001)").unwrap();
+        assert_eq!(
+            plan.steps[0],
+            AutomationStep::ExpectModelClose {
+                path: "camera.yaw".into(),
+                expected: -0.6,
+                abs_tolerance: 0.001,
+            }
+        );
+        assert_eq!(parse_automation(&canonical_code(&plan)).unwrap(), plan);
+        assert!(
+            parse_automation("automation().expectModelClose('x', 1, -0.1)")
+                .unwrap_err()
+                .message
+                .contains("non-negative")
+        );
+        assert!(
+            parse_automation("automation().expectModelClose('x', 1e999, 0.1)")
+                .unwrap_err()
+                .message
+                .contains("finite")
+        );
     }
 
     #[test]

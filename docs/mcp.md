@@ -167,7 +167,7 @@ automation("photo mouse-look proof")
   .mouseMove(400, 300)
   .mouseMove(600, 200)
   .step({ frames: 2, dts: 0.016 })
-  .expectModel("yawOffset", -0.6)
+  .expectModelClose("yawOffset", -0.6, 0.0001)
   .inspect("settled")
   .capture("proof");
 ```
@@ -181,11 +181,20 @@ protocol error.
 
 Allowed methods are `pause`, `keyDown`, `keyUp`, `pressKey`, `mouseMove`,
 `mouseDown`, `mouseUp`, `mouseWheel`, `uiClick`, `step`, `inspect`,
-`expectModel`, and `capture`. `pressKey("r")` lowers to key down → one waited
-16ms step → key up, including a best-effort release if stepping fails; it is the
-edge-action shortcut jam authors repeatedly needed. Model paths are static
-strings: convenient dotted paths (`camera.yawOffset`, `players.0.score`) or JSON
-Pointers (`/odd.key/value`).
+`expectModel`, `expectModelClose`, and `capture`. `pressKey("r")` lowers to key
+down → one waited 16ms step → key up, including a best-effort release if either
+the down request or step fails; it is the edge-action shortcut jam authors
+repeatedly needed. `expectModelClose(path, expected, absTolerance)` is the
+bounded assertion for floating-point game state; both numeric arguments must be
+finite and tolerance must be non-negative. Model paths are static strings:
+convenient dotted paths (`camera.yawOffset`, `players.0.score`) or JSON Pointers
+(`/odd.key/value`).
+
+Mouse coordinates and wheel deltas are signed 32-bit integer literals, matching
+the debug protocol; UI slots are unsigned 32-bit integers. Input release becomes
+sampled game state on the next step. For example, a proof that releases `d`
+should end with `.keyUp("d").step().expectModel("moveX", 0)`, not assert
+`moveX` immediately after `keyUp`.
 
 Only literal strings, finite numbers, booleans, nulls, arrays, and objects are
 accepted as arguments. Duplicate object keys are rejected. The grammar cannot
@@ -205,9 +214,11 @@ data/input/clock operation.
 Execution is ordered but not transactional. Complete parse and budget failure
 is side-effect free, including when a valid mutating prefix has an invalid
 suffix. Once a valid plan begins, a later runtime or assertion failure can
-leave earlier steps applied. This PoC intentionally has no variables,
-branching, loops, retry conditions, arbitrary JavaScript expressions, or
-rollback.
+leave earlier steps applied. Deterministic sequencing currently assumes
+uncontended execution: the PoC has no per-session operation lock, so concurrent
+mutating calls can interleave with a plan. This PoC intentionally has no
+variables, branching, loops, retry conditions, arbitrary JavaScript
+expressions, or rollback.
 
 The complete architecture, jam-friction evaluation, and productionization
 questions are in [the PoC note](mcp-automation-code-poc.md).

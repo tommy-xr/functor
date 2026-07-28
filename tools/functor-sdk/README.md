@@ -17,7 +17,7 @@ const proof = automation("mouse-look proof")
   .mouseMove(400, 300)
   .mouseMove(600, 200)
   .step({ frames: 2, dts: 0.016 })
-  .expectModel("yawOffset", -0.6)
+  .expectModelClose("yawOffset", -0.6, 0.0001)
   .inspect("settled")
   .capture("proof");
 
@@ -35,9 +35,13 @@ This vocabulary is shared with MCP's `validate_automation_code` and
   a restricted Rust parser and **never evaluated as JavaScript**.
 
 `pressKey("r")` is the edge-action shortcut: down, one waited 16ms step, then
-best-effort release. `expectModel` reads static dotted paths or JSON Pointers
-from structured state. `capture` needs a rendered (normally hidden) client, not
-headless mode.
+best-effort release, including when the down request itself reports an error.
+`expectModel` reads static dotted paths or JSON Pointers from structured state;
+`expectModelClose` adds finite numeric absolute tolerance. Mouse coordinates and
+wheel deltas are signed 32-bit integer wire values; UI slots are unsigned
+32-bit integers. A key release reaches sampled game state on the next step, so
+use `keyUp("d").step().expectModel("moveX", 0)` when proving release. `capture`
+needs a rendered (normally hidden) client, not headless mode.
 
 The PoC rationale, security boundary, and game-jam evaluation are documented in
 [`docs/mcp-automation-code-poc.md`](../../docs/mcp-automation-code-poc.md).

@@ -483,8 +483,9 @@ impl FunctorMcp {
     /// into a serializable plan, without a session and without side effects.
     /// The source must be ONE `automation("name").method(...)` chain. Allowed
     /// methods: pause, keyDown/keyUp/pressKey, mouseMove/mouseDown/mouseUp/
-    /// mouseWheel, uiClick, step, inspect, expectModel, and capture. Success
-    /// returns the normalized plan, deterministic canonical source that parses
+    /// mouseWheel, uiClick, step, inspect, expectModel, expectModelClose, and
+    /// capture. Success returns the normalized plan, deterministic canonical
+    /// source that parses
     /// back to that same plan, and used/maximum budgets. Arguments are literals;
     /// imports, variables, callbacks/functions, loops, async/await, `new`,
     /// eval/Function/require, globals, fetch/timers, dynamic properties, and
@@ -811,7 +812,9 @@ files writes the inline project to a scratch directory this server owns",
     /// `inspect` snapshots state in the result; `capture` appends PNG image
     /// blocks and needs a hidden (not headless) session. Execution is ordered
     /// but not transactional: a runtime failure can leave earlier valid steps
-    /// applied. Call `validate_automation_code` first for parse-only feedback.
+    /// applied. Deterministic sequencing assumes no other mutating call
+    /// concurrently targets this session; this PoC has no operation lock. Call
+    /// `validate_automation_code` first for parse-only feedback.
     #[tool]
     async fn run_automation_code(
         &self,
@@ -1220,7 +1223,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     .await
                     .map(|_| ()),
                 AutomationStep::PressKey { key } => {
-                    let press = self
+                    let pressed = self
                         .post(
                             url,
                             "/input",
@@ -1231,33 +1234,39 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                             })
                             .to_string(),
                         )
-                        .await;
-                    match press {
-                        Ok(_) => {
-                            let advanced = self.advance(url, 0.016, 1).await.map(|_| ());
-                            let released = self
-                                .post(
-                                    url,
-                                    "/input",
-                                    serde_json::json!({
-                                        "type": "key",
-                                        "key": key,
-                                        "down": false,
-                                    })
-                                    .to_string(),
-                                )
-                                .await
-                                .map(|_| ());
-                            match (advanced, released) {
-                                (Ok(()), Ok(())) => Ok(()),
-                                (Err(step_error), Ok(())) => Err(step_error),
-                                (Ok(()), Err(release_error)) => Err(release_error),
-                                (Err(step_error), Err(release_error)) => Err(format!(
-                                    "{step_error}; best-effort key release also failed: {release_error}"
-                                )),
-                            }
-                        }
-                        Err(error) => Err(error),
+                        .await
+                        .map(|_| ());
+                    let advanced = match &pressed {
+                        Ok(()) => self.advance(url, 0.016, 1).await.map(|_| ()),
+                        Err(_) => Ok(()),
+                    };
+                    // A timed-out/error response may still have applied the
+                    // key-down request. Always attempt release, even when the
+                    // down call itself did not report success.
+                    let released = self
+                        .post(
+                            url,
+                            "/input",
+                            serde_json::json!({
+                                "type": "key",
+                                "key": key,
+                                "down": false,
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .map(|_| ());
+                    match (pressed, advanced, released) {
+                        (Ok(()), Ok(()), Ok(())) => Ok(()),
+                        (Err(press_error), _, Ok(())) => Err(press_error),
+                        (Err(press_error), _, Err(release_error)) => Err(format!(
+                            "{press_error}; best-effort key release also failed: {release_error}"
+                        )),
+                        (Ok(()), Err(step_error), Ok(())) => Err(step_error),
+                        (Ok(()), Ok(()), Err(release_error)) => Err(release_error),
+                        (Ok(()), Err(step_error), Err(release_error)) => Err(format!(
+                            "{step_error}; best-effort key release also failed: {release_error}"
+                        )),
                     }
                 }
                 AutomationStep::MouseMove { x, y } => self
@@ -1341,6 +1350,41 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                                 "model assertion failed at {path:?}: expected {}, got {}",
                                 equals, actual
                             )),
+                            None => Err(format!(
+                                "model assertion path {path:?} does not exist; model is {model}"
+                            )),
+                        }
+                    }
+                    Err(error) => Err(error),
+                },
+                AutomationStep::ExpectModelClose {
+                    path,
+                    expected,
+                    abs_tolerance,
+                } => match self.state(url).await {
+                    Ok(state) => {
+                        let model = &state["model"];
+                        match model_value_at(model, path) {
+                            Some(actual) => match actual.as_f64() {
+                                Some(actual_number)
+                                    if (actual_number - expected).abs() <= *abs_tolerance =>
+                                {
+                                    assertions.push(serde_json::json!({
+                                        "path": path,
+                                        "expected": expected,
+                                        "actual": actual,
+                                        "abs_tolerance": abs_tolerance,
+                                        "passed": true,
+                                    }));
+                                    Ok(())
+                                }
+                                Some(actual_number) => Err(format!(
+                                    "numeric model assertion failed at {path:?}: expected {expected} ± {abs_tolerance}, got {actual_number}"
+                                )),
+                                None => Err(format!(
+                                    "numeric model assertion at {path:?} requires a numeric value, got {actual}"
+                                )),
+                            },
                             None => Err(format!(
                                 "model assertion path {path:?} does not exist; model is {model}"
                             )),
@@ -1486,6 +1530,7 @@ fn automation_step_name(step: &AutomationStep) -> &'static str {
         AutomationStep::Step { .. } => "step",
         AutomationStep::Inspect { .. } => "inspect",
         AutomationStep::ExpectModel { .. } => "expectModel",
+        AutomationStep::ExpectModelClose { .. } => "expectModelClose",
         AutomationStep::Capture { .. } => "capture",
     }
 }

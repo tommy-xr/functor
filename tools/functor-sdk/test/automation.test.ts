@@ -28,6 +28,7 @@ test("the fluent vocabulary produces the same serializable plan as MCP", () => {
     .mouseMove(600, 200)
     .step({ frames: 2, dts: 0.02 })
     .expectModel("stats.kills", 8)
+    .expectModelClose("camera.yaw", -0.6, 0.001)
     .inspect("settled")
     .capture("proof")
     .toPlan();
@@ -41,6 +42,12 @@ test("the fluent vocabulary produces the same serializable plan as MCP", () => {
       { type: "mouse_move", x: 600, y: 200 },
       { type: "step", frames: 2, dts: 0.02 },
       { type: "expect_model", path: "stats.kills", equals: 8 },
+      {
+        type: "expect_model_close",
+        path: "camera.yaw",
+        expected: -0.6,
+        abs_tolerance: 0.001,
+      },
       { type: "inspect", label: "settled" },
       { type: "capture", label: "proof" },
     ],
@@ -74,7 +81,7 @@ test("standalone execution drives typed operations, asserts, inspects, and captu
     stepFrames: async (frames: number, dts: number) => {
       calls.push(`step:${frames}@${dts}`);
     },
-    state: async () => state({ stats: { kills: 8 } }),
+    state: async () => state({ stats: { kills: 8 }, camera: { yaw: -0.60001 } }),
     capture: async () => png,
   } as AutomationClient;
 
@@ -86,6 +93,7 @@ test("standalone execution drives typed operations, asserts, inspects, and captu
       .mouseMove(600, 200)
       .step({ frames: 2, dts: 0.02 })
       .expectModel("stats.kills", 8)
+      .expectModelClose("camera.yaw", -0.6, 0.001)
       .inspect("settled")
       .capture("proof"),
   );
@@ -99,9 +107,19 @@ test("standalone execution drives typed operations, asserts, inspects, and captu
     "step:2@0.02",
   ]);
   assert.equal(result.assertions[0].passed, true);
+  assert.deepEqual(result.assertions[1], {
+    path: "camera.yaw",
+    expected: -0.6,
+    actual: -0.60001,
+    absTolerance: 0.001,
+    passed: true,
+  });
   assert.equal(result.observations[0].label, "settled");
   assert.equal(result.captures[0].png, png);
-  assert.deepEqual(result.finalState.model, { stats: { kills: 8 } });
+  assert.deepEqual(result.finalState.model, {
+    stats: { kills: 8 },
+    camera: { yaw: -0.60001 },
+  });
 });
 
 test("pressKey releases the key when its deterministic step fails", async () => {
@@ -125,14 +143,48 @@ test("pressKey releases the key when its deterministic step fails", async () => 
   assert.deepEqual(calls, ["down:space", "up:space"]);
 });
 
+test("pressKey attempts release when keyDown itself reports failure", async () => {
+  const calls: string[] = [];
+  const client = {
+    keyDown: async (key: string) => {
+      calls.push(`down:${key}`);
+      throw new Error("down timed out");
+    },
+    keyUp: async (key: string) => {
+      calls.push(`up:${key}`);
+    },
+    stepFrames: async () => {
+      calls.push("unexpected step");
+    },
+  } as unknown as AutomationClient;
+
+  await assert.rejects(
+    runAutomation(client, automation().pressKey("space")),
+    /down timed out/,
+  );
+  assert.deepEqual(calls, ["down:space", "up:space"]);
+});
+
 test("standalone plan validation matches MCP's literal and wire bounds", async () => {
   const neverUsed = {} as AutomationClient;
   await assert.rejects(
-    runAutomation(neverUsed, automation().mouseMove(1_000_001, 0)),
-    /±1,000,000/,
+    runAutomation(neverUsed, automation().mouseMove(1.5, 0)),
+    /signed 32-bit integer/,
+  );
+  await assert.rejects(
+    runAutomation(neverUsed, automation().mouseMove(0x8000_0000, 0)),
+    /signed 32-bit integer/,
+  );
+  await assert.rejects(
+    runAutomation(neverUsed, automation().mouseWheel(-0x8000_0001)),
+    /signed 32-bit integer/,
   );
   await assert.rejects(
     runAutomation(neverUsed, automation().uiClick(0x1_0000_0000)),
+    /unsigned 32-bit/,
+  );
+  await assert.rejects(
+    runAutomation(neverUsed, automation().uiClick(0.5)),
     /unsigned 32-bit/,
   );
   await assert.rejects(
@@ -142,6 +194,17 @@ test("standalone plan validation matches MCP's literal and wire bounds", async (
   await assert.rejects(
     runAutomation(neverUsed, automation().expectModel("x", Number.NaN)),
     /finite numbers/,
+  );
+  await assert.rejects(
+    runAutomation(
+      neverUsed,
+      automation().expectModelClose("x", 1, Number.NaN),
+    ),
+    /absolute tolerance must be finite/,
+  );
+  await assert.rejects(
+    runAutomation(neverUsed, automation().expectModelClose("x", 1, -0.1)),
+    /absolute tolerance must be non-negative/,
   );
   await assert.rejects(
     runAutomation(
