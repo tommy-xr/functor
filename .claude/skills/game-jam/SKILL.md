@@ -240,7 +240,8 @@ immutable artifact, and rerun all affected adoption proofs.
 
 ### Make the entry adopt the fix
 
-After its fix PR is ready, resume the original builder in `jam/<slug>`:
+After the draft fixer PR passes implementation review, verification, and CI at
+its recorded head, resume the original builder in `jam/<slug>`:
 
 - For code-facing fixes, remove the workaround/use the new surface, update
   `JAM_NOTES.md` with before/after evidence and the PR, rerun tests, scripted
@@ -291,7 +292,7 @@ put every entry behind one URL and hand it over:
 ```sh
 node .claude/skills/game-jam/scripts/build-gallery.mjs \
   platformer=<worktree>/examples/platformer racer=<worktree>/examples/racer \
-  --out /tmp/jam-gallery --serve 8321
+  --out <run-root>/gallery --serve 8321
 ```
 
 It builds each project, copies the bundles, and generates a card index —
