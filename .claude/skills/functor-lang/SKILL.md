@@ -1683,11 +1683,12 @@ for a model-preserving in-place reload; the VSCode **"Functor: Open Live
 Preview"** command does exactly that from the live buffer as you type).
 Captured mouse camera input is an explicit shell opt-in:
 `"viewer": { "camera": { "control": "game" } }`. `game` enables native
-cursor capture and the web mouse-look button, routing captured
+click-to-capture and the web mouse-look button, routing captured
 `mouseMove`/`mouseWheel`/`mouseButton` input into the ordinary game hooks.
-Absent (or explicit `"none"`) keeps the pointer free and hides the button,
-which is the default for 2D, UI, and fixed-camera projects. `orbit`/`fps`
-detached shell-owned modes are not implemented spellings yet.
+On native, a non-UI click captures; Escape or focus loss releases. Absent (or
+explicit `"none"`) keeps the pointer free and hides the button, which is the
+default for 2D, UI, and fixed-camera projects. `orbit`/`fps` detached
+shell-owned modes are not implemented spellings yet.
 
 `examples/hello/game.fun` is the reference
 (`examples/physics/game.fun` for the physics hook, including the

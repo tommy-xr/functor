@@ -1323,16 +1323,20 @@ pub fn run(args: Args) {
             window.set_scroll_polling(true);
             window.set_mouse_button_polling(true);
             window.set_framebuffer_size_polling(true);
-            // Capture and hide the cursor so the game gets continuous relative
-            // mouse motion (free-look) instead of the pointer stopping at the
-            // window edges. Escape RELEASES the cursor (essential for the
-            // hot-reload loop: tweak code in the editor while the game runs);
-            // With game-owned camera control, click recaptures; Escape while
-            // released quits. Losing focus also releases, so cmd-tabbing away
-            // hands the pointer back.
-            // A hidden window never gets focus, so it must not grab the cursor.
+            // Captured game input is available only by manifest opt-in, and
+            // capture itself is still a user gesture: start with the cursor
+            // free, then a non-overlay click disables it so GLFW reports
+            // unbounded relative-like virtual motion. Escape RELEASES the
+            // cursor (essential for the hot-reload loop: tweak code in the
+            // editor while the game runs); a later click recaptures, and
+            // Escape while released quits. Losing focus also releases, so
+            // cmd-tabbing away hands the pointer back.
             if !hidden && !args.emulate_xr && args.camera_control == CameraControl::Game {
-                window.set_cursor_mode(glfw::CursorMode::Disabled);
+                window.set_cursor_mode(glfw::CursorMode::Normal);
+                println!(
+                    "[runner] game mouse control available — click the window to capture; \
+Escape releases"
+                );
             }
 
             let gl =
@@ -1475,11 +1479,12 @@ pub fn run(args: Args) {
             window.get_size(),
             xr_override.as_ref(),
         );
-        // Whether the window owns the pointer (free-look). See the Escape /
-        // MouseButton / Focus arms in the event loop. A hidden window never
-        // captures (and never receives the events that would toggle this).
+        // Whether the window owns the pointer (free-look). Capture is always
+        // entered by a non-overlay click; see the Escape / MouseButton / Focus
+        // arms in the event loop. A hidden window never captures (and never
+        // receives the events that would toggle this).
         let game_camera_control = args.camera_control == CameraControl::Game;
-        let mut cursor_captured = !hidden && !args.emulate_xr && game_camera_control;
+        let mut cursor_captured = false;
 
         use glfw::Context;
 

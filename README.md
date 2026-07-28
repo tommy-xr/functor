@@ -190,8 +190,10 @@ opts in explicitly:
 }
 ```
 
-That enables native cursor capture and the web player’s mouse-look button,
-routing captured motion/buttons to the game’s `mouseMove`/`mouseButton` hooks.
+That enables click-to-capture camera input on native and the web player’s
+mouse-look button, routing captured motion/buttons to the game’s
+`mouseMove`/`mouseButton` hooks. On native, a non-UI click enters capture;
+Escape or focus loss releases it.
 Projects without the setting—including 2D games—show no camera control and
 never capture an ordinary click.
 
