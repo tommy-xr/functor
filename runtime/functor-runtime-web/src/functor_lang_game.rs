@@ -344,14 +344,16 @@ pub fn set_ui_wants_keyboard(wants: bool) {
 /// the frame loop before `tick`. Empty (and free) on the F# path — its page
 /// never calls the `functor_lang_*` exports.
 ///
-/// When `deliver` is false, the queue is drained without changing the sampled
-/// pointer or admitting new presses. Interactive pause may set
-/// `recover_releases`: releases then update physical held state so a key
-/// released while paused cannot stick on resume. Fixed-time capture leaves the
-/// entire snapshot frozen.
+/// Admitted transitions accumulate in `edges` until the frame loop consumes
+/// its next fixed step. When `deliver` is false, the queue is drained without
+/// changing the sampled pointer or admitting new presses. A suppressed
+/// interactive transport (pause or netsim) may set `recover_releases`:
+/// releases then update physical held state so a key cannot stick on resume.
+/// Fixed-time capture leaves the entire snapshot frozen.
 pub fn drain_input(
     game: &mut dyn GameProducer,
     snapshot: &mut functor_runtime_common::InputSnapshot,
+    edges: &mut functor_runtime_common::InputEdges,
     deliver: bool,
     recover_releases: bool,
 ) {
@@ -363,12 +365,13 @@ pub fn drain_input(
                     .filter(|key| *key != functor_runtime_common::Key::Unknown)
                 {
                     if is_down && deliver {
-                        if !snapshot.held_keys.contains(&key) {
-                            snapshot.held_keys.push(key);
-                            snapshot.held_keys.sort_unstable();
-                        }
+                        functor_runtime_common::apply_key_transition_to_snapshot(
+                            snapshot, edges, key, true, true,
+                        );
                     } else if !is_down && (deliver || recover_releases) {
-                        snapshot.held_keys.retain(|held| *held != key);
+                        functor_runtime_common::apply_key_transition_to_snapshot(
+                            snapshot, edges, key, false, deliver,
+                        );
                     }
                 }
                 if deliver {
@@ -396,9 +399,13 @@ pub fn drain_input(
                     .filter(|b| *b != functor_runtime_common::MouseButton::Unknown)
                 {
                     if is_down && deliver {
-                        snapshot.mouse.buttons.set(mapped, true);
+                        functor_runtime_common::apply_mouse_transition_to_snapshot(
+                            snapshot, edges, mapped, true, true,
+                        );
                     } else if !is_down && (deliver || recover_releases) {
-                        snapshot.mouse.buttons.set(mapped, false);
+                        functor_runtime_common::apply_mouse_transition_to_snapshot(
+                            snapshot, edges, mapped, false, deliver,
+                        );
                     }
                 }
                 if deliver {

@@ -704,16 +704,21 @@ impl SceneRecorder {
         if end < lo {
             return None;
         }
-        self.input_history
-            .events
-            .range(lo..=end)
-            .rev()
-            .find_map(|(_, events)| {
-                events.iter().rev().find_map(|event| match event {
-                    RecordedInput::Snapshot(snapshot) => Some(snapshot.as_ref().clone()),
-                    _ => None,
-                })
-            })
+        let mut snapshot =
+            self.input_history
+                .events
+                .range(lo..=end)
+                .rev()
+                .find_map(|(_, events)| {
+                    events.iter().rev().find_map(|event| match event {
+                        RecordedInput::Snapshot(snapshot) => Some(snapshot.as_ref().clone()),
+                        _ => None,
+                    })
+                })?;
+        // The sample at `frame` has already been delivered. Projection carries
+        // continuous levels/poses, never those consumed transitions.
+        snapshot.clear_edges();
+        Some(snapshot)
     }
 
     /// The render clock `tts` to draw at WHILE SCRUBBING — the recorded `tts` of
@@ -956,6 +961,40 @@ mod tests {
             [RecordedInput::Snapshot(snapshot)]
                 if snapshot.as_ref() == &crate::InputSnapshot::default()
         ));
+    }
+
+    #[test]
+    fn sampled_input_carry_clears_already_consumed_edges() {
+        let mut recorder = SceneRecorder::new();
+        recorder.record_inputs(vec![RecordedInput::Snapshot(Box::new(
+            crate::InputSnapshot {
+                held_keys: vec![crate::Key::Space],
+                pressed_keys: vec![crate::Key::Space],
+                mouse: crate::MouseSnapshot {
+                    buttons: crate::MouseButtons {
+                        left: true,
+                        ..crate::MouseButtons::default()
+                    },
+                    pressed: crate::MouseButtons {
+                        left: true,
+                        ..crate::MouseButtons::default()
+                    },
+                    ..crate::MouseSnapshot::default()
+                },
+                ..crate::InputSnapshot::default()
+            },
+        ))]);
+        recorder.record(&Value::Number(0.0), 0, 0.0);
+
+        let carried = recorder
+            .sampled_input_at_or_before(0)
+            .expect("recorded sample");
+        assert_eq!(carried.held_keys, vec![crate::Key::Space]);
+        assert!(carried.mouse.buttons.left);
+        assert!(carried.pressed_keys.is_empty());
+        assert!(carried.released_keys.is_empty());
+        assert_eq!(carried.mouse.pressed, crate::MouseButtons::default());
+        assert_eq!(carried.mouse.released, crate::MouseButtons::default());
     }
 
     #[test]

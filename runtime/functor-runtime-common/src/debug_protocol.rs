@@ -33,7 +33,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// wire-authored session exist nowhere else. Purely additive — every v4
 /// shape is unchanged, so a v4 client needs no revision and only a caller of
 /// `/project` needs a v5 runtime (a v4 one answers 404).
-pub const DEBUG_PROTOCOL_VERSION: u32 = 5;
+///
+/// 6 added deterministic fixed-step edge fields to `GET /state`'s `input`:
+/// `pressed_keys`, `released_keys`, `mouse.pressed`, and `mouse.released`.
+/// This is additive; clients that support older runtimes can treat absent
+/// fields as empty.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 6;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -431,6 +436,7 @@ mod tests {
                     ..Default::default()
                 },
                 xr: None,
+                ..InputSnapshot::default()
             },
         };
 
@@ -450,10 +456,14 @@ mod tests {
                 "model_debug": "Model {\n  label: \"hello\"\n}",
                 "input": {
                     "held_keys": ["W", "Up"],
+                    "pressed_keys": [],
+                    "released_keys": [],
                     "mouse": {
                         "x": 10,
                         "y": 20,
-                        "buttons": { "left": false, "right": false, "middle": false }
+                        "buttons": { "left": false, "right": false, "middle": false },
+                        "pressed": { "left": false, "right": false, "middle": false },
+                        "released": { "left": false, "right": false, "middle": false }
                     }
                 }
             })
@@ -655,6 +665,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 5);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 6);
     }
 }

@@ -29,7 +29,7 @@ export interface XrControllerSnapshot {
   menu_pressed: boolean;
 }
 
-/** XR tracking and controllers sampled for one simulation frame. */
+/** XR tracking and controllers sampled for one fixed simulation step. */
 export interface XrInputSnapshot {
   head: TrackingPose | null;
   left: XrControllerSnapshot;
@@ -39,7 +39,7 @@ export interface XrInputSnapshot {
 /** Wire spelling of a mouse button for `POST /input`. */
 export type MouseButtonName = "left" | "right" | "middle";
 
-/** Which mouse buttons are held, as reported in an `InputSnapshot`. */
+/** A fixed mouse-button set, used for held, pressed, and released fields. */
 export interface MouseButtons {
   left: boolean;
   right: boolean;
@@ -54,11 +54,26 @@ export interface MouseButtons {
 export interface InputSnapshot {
   /** Keys currently held, by canonical name. */
   held_keys: KeyName[];
-  /** Last known cursor position in window pixels, plus the buttons held.
+  /** Keys pressed since the previous fixed simulation step.
    *
-   * `buttons` is absent from older runtimes' `/state`; treat a missing field
-   * as "no button held". */
-  mouse: { x: number; y: number; buttons?: MouseButtons };
+   * Absent on runtimes predating deterministic sampled edges. */
+  pressed_keys?: KeyName[];
+  /** Keys released since the previous fixed simulation step.
+   *
+   * A quick tap can place the same key in both edge arrays. Absent on older
+   * runtimes. */
+  released_keys?: KeyName[];
+  /** Last known cursor position in window pixels, plus held and edge sets.
+   *
+   * `buttons`, `pressed`, and `released` are absent from older runtimes'
+   * `/state`; treat a missing field as no buttons in that set. */
+  mouse: {
+    x: number;
+    y: number;
+    buttons?: MouseButtons;
+    pressed?: MouseButtons;
+    released?: MouseButtons;
+  };
   /** Present while an XR target has valid head tracking. */
   xr?: XrInputSnapshot;
 }

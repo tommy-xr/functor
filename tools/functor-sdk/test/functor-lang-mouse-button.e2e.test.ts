@@ -6,25 +6,40 @@ import { test } from "node:test";
 
 import { findRepoRoot, FunctorRunner } from "../src/index.js";
 
-// Mouse buttons reach the Functor Lang model two ways, and this pins BOTH:
+// Mouse buttons reach the Functor Lang model three ways, and this pins all:
 //   * the edge, through the optional `mouseButton` entry point —
 //     (model, button, isDown) => model, buttons as the built-in `Mouse`
 //     module's variants (Mouse.Left, Mouse.Right, Mouse.Middle);
-//   * the level, through `sampledInput`'s `snapshot.mouse.buttons`.
+//   * the held level, through `sampledInput`'s `snapshot.mouse.buttons`;
+//   * deterministic fixed-step edges through `.pressed` / `.released`.
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
 // `edges` counts left PRESSES, `heldSteps` counts fixed steps during which the
 // left button was held, and `rights` proves the variant is discriminated rather
 // than collapsed to "a click happened".
-const GAME = `let init = { edges: 0.0, heldSteps: 0.0, rights: 0.0 }
+const GAME = `let init = {
+  edges: 0.0,
+  heldSteps: 0.0,
+  sampledPresses: 0.0,
+  sampledReleases: 0.0,
+  rights: 0.0
+}
 let mouseButton = (m, button, isDown) =>
   match button with
   | Mouse.Left => (if isDown then { m with edges: m.edges + 1.0 } else m)
   | Mouse.Right => (if isDown then { m with rights: m.rights + 1.0 } else m)
   | _ => m
 let sampledInput = (m, snapshot: Input.snapshot) =>
-  if snapshot.mouse.buttons.left then { m with heldSteps: m.heldSteps + 1.0 } else m
+  {
+    m with
+      heldSteps:
+        m.heldSteps + (if snapshot.mouse.buttons.left then 1.0 else 0.0),
+      sampledPresses:
+        m.sampledPresses + (if snapshot.mouse.pressed.left then 1.0 else 0.0),
+      sampledReleases:
+        m.sampledReleases + (if snapshot.mouse.released.left then 1.0 else 0.0)
+  }
 let tick = (m, dt, tts) => m
 let draw = (m, tts) =>
   Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
@@ -38,7 +53,7 @@ function field(model: string, name: string): number {
 }
 
 test(
-  "mouse buttons reach the model as edges (mouseButton) and levels (sampledInput)",
+  "mouse hooks, held levels, and sampled edges agree",
   { skip: !e2eEnabled, timeout: 120_000 },
   async () => {
     const repoRoot = findRepoRoot(process.cwd());
@@ -77,6 +92,7 @@ test(
     await runner.mouseDown("left");
     await runner.step();
     assert.equal(field(await model(), "edges"), 1, "the press fired mouseButton once");
+    assert.equal(field(await model(), "sampledPresses"), 1);
     assert.equal((await buttons()).left, true, "the runtime reports left held");
 
     // Held across further steps: no new edges, but the level keeps sampling —
@@ -85,6 +101,11 @@ test(
     await runner.step();
     await runner.step();
     assert.equal(field(await model(), "edges"), 1, "holding does not re-fire the edge");
+    assert.equal(
+      field(await model(), "sampledPresses"),
+      1,
+      "sampled press is consumed after one fixed step",
+    );
     assert.ok(
       field(await model(), "heldSteps") > heldAfterFirst,
       "the held level keeps accumulating while the button is down",
@@ -108,6 +129,7 @@ test(
     await runner.mouseUp("left");
     await runner.step();
     assert.equal((await buttons()).left, false, "the release cleared the level");
+    assert.equal(field(await model(), "sampledReleases"), 1);
     const heldAtRelease = field(await model(), "heldSteps");
     await runner.step();
     assert.equal(
@@ -115,12 +137,26 @@ test(
       heldAtRelease,
       "a released button stops sampling",
     );
+    assert.equal(
+      field(await model(), "sampledReleases"),
+      1,
+      "sampled release is consumed after one fixed step",
+    );
+
+    // A complete click between fixed steps appears in BOTH sampled edge sets,
+    // while the final held level remains false.
+    await runner.mouseDown("left");
+    await runner.mouseUp("left");
+    await runner.step();
+    assert.equal(field(await model(), "sampledPresses"), 2);
+    assert.equal(field(await model(), "sampledReleases"), 2);
+    assert.equal((await buttons()).left, false);
 
     // The right button lands on its own match arm and its own level bit.
     await runner.mouseDown("right");
     await runner.step();
     assert.equal(field(await model(), "rights"), 1, "Mouse.Right is discriminated");
-    assert.equal(field(await model(), "edges"), 1, "...and did not count as a left click");
+    assert.equal(field(await model(), "edges"), 2, "...and did not count as a left click");
     assert.deepEqual(await buttons(), { left: false, right: true, middle: false });
   },
 );

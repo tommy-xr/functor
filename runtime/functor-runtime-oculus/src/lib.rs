@@ -581,6 +581,8 @@ const RELOAD_PORT: u16 = 8123;
 struct DebugLoopState {
     frame_count: u64,
     input: InputSnapshot,
+    // Debug requests may arrive while paused or between device fixed steps.
+    input_edges: functor_runtime_common::InputEdges,
     last_frame: Option<Frame>,
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
 }
@@ -631,6 +633,8 @@ fn service_debug_request(
                     )
                 })
                 .collect();
+            let mut input = debug.input.clone();
+            debug.input_edges.apply_to(&mut input);
             let _ = response.send(RuntimeState {
                 frame: debug.frame_count,
                 tts: clock.current_tts(),
@@ -639,7 +643,7 @@ fn service_debug_request(
                 views,
                 model: game.state_json(),
                 model_debug: game.state_debug(),
-                input: debug.input.clone(),
+                input,
             });
         }
         DebugRequest::Scene(response) => {
@@ -660,20 +664,23 @@ fn service_debug_request(
                 InputCommand::Key { key, down } => match Key::from_name(&key) {
                     Some(key) if down => {
                         game.key_event(key as i32, true);
-                        if !debug.input.held_keys.contains(&key) {
-                            debug.input.held_keys.push(key);
-                            debug.input.held_keys.sort_unstable();
-                        }
+                        functor_runtime_common::apply_key_transition_to_snapshot(
+                            &mut debug.input,
+                            &mut debug.input_edges,
+                            key,
+                            true,
+                            true,
+                        );
                         Ok(())
                     }
                     Some(key) => {
-                        if let Some(index) = debug
-                            .input
-                            .held_keys
-                            .iter()
-                            .position(|candidate| *candidate == key)
-                        {
-                            debug.input.held_keys.remove(index);
+                        if functor_runtime_common::apply_key_transition_to_snapshot(
+                            &mut debug.input,
+                            &mut debug.input_edges,
+                            key,
+                            false,
+                            true,
+                        ) {
                             game.key_event(key as i32, false);
                         }
                         Ok(())
@@ -697,10 +704,21 @@ fn service_debug_request(
                     match functor_runtime_common::MouseButton::from_name(&button) {
                         Some(b) => {
                             if down {
-                                debug.input.mouse.buttons.set(b, true);
+                                functor_runtime_common::apply_mouse_transition_to_snapshot(
+                                    &mut debug.input,
+                                    &mut debug.input_edges,
+                                    b,
+                                    true,
+                                    true,
+                                );
                                 game.mouse_button(b as i32, true);
-                            } else if debug.input.mouse.buttons.is_down(b) {
-                                debug.input.mouse.buttons.set(b, false);
+                            } else if functor_runtime_common::apply_mouse_transition_to_snapshot(
+                                &mut debug.input,
+                                &mut debug.input_edges,
+                                b,
+                                false,
+                                true,
+                            ) {
                                 game.mouse_button(b as i32, false);
                             }
                             Ok(())
@@ -1301,8 +1319,11 @@ pub fn android_main(app: AndroidApp) {
         }
         for sub_frame in &sub_frames {
             if game.samples_input() {
+                debug.input_edges.apply_to(&mut debug.input);
                 game.sampled_input(&debug.input);
             }
+            debug.input_edges.clear();
+            debug.input.clear_edges();
             game.tick(sub_frame.clone());
             debug.frame_count += 1;
         }
