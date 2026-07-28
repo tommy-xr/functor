@@ -31,9 +31,9 @@ than a survey row of primitives.
 - **P2 — No camera roll/custom up vector.** Dutch angles and portrait-orientation framing cannot
   be expressed by a camera. `Camera.lookAt` uses fixed +Y up and `firstPerson` exposes yaw/pitch
   only.
-- **P2 — Input is edge-oriented but key repeat arrives as repeated down events.** The compact
-  stepped controls intentionally accept OS repeat. A fully robust one-action toggle needs a
-  per-key latch in the model or sampled input.
+- **P2 — Rising-edge actions require hand-authored per-key latches.** Because repeated key-down
+  events are documented, the two toggles and exposure action carry three booleans in the model.
+  Movement/lens controls intentionally retain key-repeat stepping.
 - **P3 — Render-target screens have no documented tone/filter/aspect-fit controls.** The monitor
   is manually sized to 16:9 and presented as emissive.
 - **P3 — UI panels do not expose custom framing chrome.** The photographic grid is therefore a
@@ -55,3 +55,16 @@ than a survey row of primitives.
 The alternate camera renders `world(false)`, which excludes the monitor itself. The main world
 then displays that target. This intentionally avoids render-target feedback/recursion and keeps
 the feature to one writer and one reader.
+
+## xreview disposition
+
+- **High — repeated key-down events retriggered toggles/exposures:** fixed with explicit rising-edge
+  latches for `P`, `V`, and `Space`; repeated-down behavior was reverified through the debug server.
+- **Medium/Low:** the independent adversarial pass found no additional correctness or simplicity
+  issues requiring changes. The monitor feed visibly differs from the main camera and avoids
+  self-sampling.
+- **Degraded reviewer mode:** the required Claude/Opus reviewer model was unavailable in this
+  environment. The Codex CLI reviewer also failed before startup because its installed package
+  lacks `@openai/codex-darwin-x64`. Review therefore consisted of an independent manual adversarial
+  pass plus the orchestrator's separate spot-check; duplication scanning was attempted but did not
+  finish within the interactive window.
