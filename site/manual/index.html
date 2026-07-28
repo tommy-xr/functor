@@ -832,26 +832,42 @@ step       { "session": "s1" }
             with <code>--debug-port</code>. <code>--hidden</code> keeps pixels available for capture
             without showing a window:
           </p>
-          <pre class="shell">functor -d examples/counter run native --debug-port 8077 --hidden &amp;
-RUNTIME_PID=$!
+          <pre class="shell">(
+set -euo pipefail
 H=http://127.0.0.1:8077
-until curl -sf $H/ &gt;/dev/null; do sleep 0.05; done
+RUNTIME_LOG=$(mktemp)
+functor -d examples/counter run native --debug-port 8077 --hidden 2&gt;"$RUNTIME_LOG" &amp;
+RUNTIME_PID=$!
+cleanup() { kill "$RUNTIME_PID" 2&gt;/dev/null || true; wait "$RUNTIME_PID" 2&gt;/dev/null || true; rm -f "$RUNTIME_LOG"; }
+trap cleanup EXIT INT TERM
 
-curl -s $H/state | jq '.frame, .tts, .model'
-curl -s -X POST $H/time -d '{"type":"set","tts":0}'              # pause
-curl -s -X POST $H/input -d '{"type":"key","key":"3","down":true}' # digits are bare "0"…"9"
-curl -s -X POST $H/input -d '{"type":"mouse_move","x":120,"y":80}'
-curl -s -X POST $H/input -d '{"type":"mouse_button","button":"left","down":true}'
-curl -s -X POST $H/input -d '{"type":"ui_event","slot":0,"kind":"Clicked"}'
-curl -s -X POST $H/time -d '{"type":"advance","dts":0.016}'
-until [ "$(curl -s $H/state | jq -r .pending_steps)" = 0 ]; do sleep 0.01; done
-curl -s $H/state | jq '.model'
-curl -s -X POST $H/capture -o frame.png
+for _ in {1..200}; do
+  grep -q '\[debug-server\] listening' "$RUNTIME_LOG" &amp;&amp; break
+  kill -0 "$RUNTIME_PID" 2&gt;/dev/null || { wait "$RUNTIME_PID"; exit 1; }
+  sleep 0.05
+done
+grep -q '\[debug-server\] listening' "$RUNTIME_LOG" || { echo "debug server timed out" &gt;&amp;2; exit 1; }
 
-curl -s -X POST $H/input -d '{"type":"key","key":"3","down":false}'
-curl -s -X POST $H/input -d '{"type":"mouse_button","button":"left","down":false}'
-curl -s -X POST $H/time -d '{"type":"resume"}'
-kill $RUNTIME_PID</pre>
+curl -fsS $H/state | jq '.frame, .tts, .model'
+curl -fsS -X POST $H/time -d '{"type":"set","tts":0}'               # pause
+curl -fsS -X POST $H/input -d '{"type":"key","key":"3","down":true}' # digits are bare "0"…"9"
+curl -fsS -X POST $H/input -d '{"type":"mouse_move","x":120,"y":80}'
+curl -fsS -X POST $H/input -d '{"type":"mouse_button","button":"left","down":true}'
+curl -fsS -X POST $H/input -d '{"type":"ui_event","slot":0,"kind":"Clicked"}'
+curl -fsS -X POST $H/time -d '{"type":"advance","dts":0.016}'
+for _ in {1..200}; do
+  PENDING=$(curl -fsS $H/state | jq -er .pending_steps)
+  [ "$PENDING" = 0 ] &amp;&amp; break
+  sleep 0.01
+done
+[ "$PENDING" = 0 ] || { echo "step timed out" &gt;&amp;2; exit 1; }
+curl -fsS $H/state | jq '.model'
+curl -fsS -X POST $H/capture -o frame.png
+
+curl -fsS -X POST $H/input -d '{"type":"key","key":"3","down":false}'
+curl -fsS -X POST $H/input -d '{"type":"mouse_button","button":"left","down":false}'
+curl -fsS -X POST $H/time -d '{"type":"resume"}'
+)</pre>
           <p>
             The URL is the <code>[debug-server] listening on …</code> address printed at launch.
             Input is held until its matching release, and UI slots follow interactive-widget
