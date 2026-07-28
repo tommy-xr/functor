@@ -1,7 +1,7 @@
 // photo-mode — an asset-free composition vignette.
 //
 // Mistline Observatory combines three authored viewpoints, an adjustable lens,
-// atmospheric fog, a rule-of-thirds overlay, and a live alternate-camera
+// atmospheric fog, a 4:3 rule-of-thirds overlay, and a live alternate-camera
 // monitor. The monitor's writer renders world(false), which deliberately omits
 // the monitor itself and avoids render-target feedback.
 //
@@ -11,11 +11,11 @@
 //   1/2/3       authored viewpoints
 //   W/S, A/D    dolly and strafe
 //   Up/Down     narrow and widen the lens
-//   P / V       toggle guides and the in-world monitor
+//   P / V       toggle the 4:3 guides and the in-world monitor
 //   Space       record an exposure in the model
 //
 // gallery: Mistline Observatory — compose photographs across a fog-bound sculptural coast.
-// gallery-controls: 1/2/3 viewpoints · WASD compose · Up/Down lens · P guides · V monitor · Space exposure
+// gallery-controls: 1/2/3 viewpoints · WASD compose · Up/Down lens · P 4:3 guides · V monitor · Space exposure
 
 let monitor = RenderTarget.named("photo-mode-monitor")
   |> RenderTarget.sized(480.0, 270.0)
@@ -33,6 +33,18 @@ let init = {
   spaceHeld: false,
 }
 
+let yawFor = (view) =>
+  match view with
+  | 2.0 => 52.0
+  | 3.0 => -68.0
+  | _ => 2.5
+
+let nudge = (model, forward, right) =>
+  let yaw = yawFor(model.view) * Math.pi / 180.0 in
+  let dx = Math.sin(yaw) * forward + Math.cos(yaw) * right in
+  let dz = Math.cos(yaw) * forward - Math.sin(yaw) * right in
+  { model with x: model.x + dx, z: model.z + dz }
+
 let input = (model, key, isDown) =>
   match isDown with
   | false =>
@@ -46,10 +58,10 @@ let input = (model, key, isDown) =>
     | Key.Num1 => { model with view: 1.0, x: 0.0, z: 0.0 }
     | Key.Num2 => { model with view: 2.0, x: 0.0, z: 0.0 }
     | Key.Num3 => { model with view: 3.0, x: 0.0, z: 0.0 }
-    | Key.A => { model with x: model.x - 0.35 }
-    | Key.D => { model with x: model.x + 0.35 }
-    | Key.W => { model with z: model.z + 0.35 }
-    | Key.S => { model with z: model.z - 0.35 }
+    | Key.A => nudge(model, 0.0, -0.35)
+    | Key.D => nudge(model, 0.0, 0.35)
+    | Key.W => nudge(model, 0.35, 0.0)
+    | Key.S => nudge(model, -0.35, 0.0)
     | Key.Up => { model with fov: Math.max(24.0, model.fov - 3.0) }
     | Key.Down => { model with fov: Math.min(70.0, model.fov + 3.0) }
     | Key.P =>
@@ -77,6 +89,11 @@ expect (
   let released = input(first, Key.Space, false) in
   let second = input(released, Key.Space, true) in
   second.shots == 2.0 && second.spaceHeld
+)
+
+expect (
+  let moved = input({ init with view: 2.0 }, Key.W, true) in
+  moved.x > 0.0 && moved.z > 0.0
 )
 
 let tick = (model, dt, tts) => model
@@ -159,23 +176,27 @@ let cameraFor = (model) =>
   match model.view with
   | 2.0 => Camera.firstPerson(
       Vec3.make(-6.8 + model.x, 3.2, 2.0 + model.z),
-      Angle.degrees(52.0),
+      Angle.degrees(yawFor(model.view)),
       Angle.degrees(-5.0),
       Angle.degrees(model.fov))
   | 3.0 => Camera.firstPerson(
       Vec3.make(5.6 + model.x, 1.65, 7.0 + model.z),
-      Angle.degrees(-68.0),
+      Angle.degrees(yawFor(model.view)),
       Angle.degrees(8.0),
       Angle.degrees(model.fov))
   | _ => Camera.firstPerson(
       Vec3.make(-0.7 + model.x, 1.55, -4.8 + model.z),
-      Angle.degrees(2.5),
+      Angle.degrees(yawFor(model.view)),
       Angle.degrees(5.0),
       Angle.degrees(model.fov))
 
-let observerCamera = Camera.lookAt(
-  Vec3.make(7.4, 6.0, -1.0),
-  Vec3.make(0.0, 2.0, 8.0))
+// The observer drifts across the fixed composition. Only the monitor sees this
+// camera, so its motion makes the offscreen pass visibly live without moving
+// the player's authored photograph.
+let observerCamera = (tts) =>
+  Camera.lookAt(
+    Vec3.make(7.4 + Math.sin(tts * 0.8) * 2.0, 6.0, -1.0),
+    Vec3.make(0.0, 2.0, 8.0))
 
 let lights = [
   Light.ambient(Color.rgb(0.18, 0.24, 0.28)),
@@ -195,10 +216,10 @@ let guides = (enabled) =>
   | true =>
     let ink = Color.rgb(0.88, 0.82, 0.65) in
     Sprite.group([
-      Sprite.line(ink, 0.025, {x: -5.33, y: 2.0}, {x: 5.33, y: 2.0}),
-      Sprite.line(ink, 0.025, {x: -5.33, y: -2.0}, {x: 5.33, y: -2.0}),
-      Sprite.line(ink, 0.025, {x: -2.67, y: -3.0}, {x: -2.67, y: 3.0}),
-      Sprite.line(ink, 0.025, {x: 2.67, y: -3.0}, {x: 2.67, y: 3.0}),
+      Sprite.line(ink, 0.025, {x: -8.0, y: 2.0}, {x: 8.0, y: 2.0}),
+      Sprite.line(ink, 0.025, {x: -8.0, y: -2.0}, {x: 8.0, y: -2.0}),
+      Sprite.line(ink, 0.025, {x: -2.67, y: -6.0}, {x: -2.67, y: 6.0}),
+      Sprite.line(ink, 0.025, {x: 2.67, y: -6.0}, {x: 2.67, y: 6.0}),
       Sprite.line(ink, 0.04, {x: -0.22, y: 0.0}, {x: 0.22, y: 0.0}),
       Sprite.line(ink, 0.04, {x: 0.0, y: -0.22}, {x: 0.0, y: 0.22}),
     ])
@@ -206,14 +227,19 @@ let guides = (enabled) =>
 let draw = (model, tts) =>
   let scene = world(model.monitor) in
   // Excluding the monitor from its own feed prevents recursive self-sampling.
-  let monitorFrame = Frame.createLit(observerCamera, world(false), lights)
+  let monitorFrame = Frame.createLit(observerCamera(tts), world(false), lights)
     |> Frame.withFog(fog)
     |> Frame.withClearColor(clear) in
-  Frame.createLit(cameraFor(model), scene, lights)
+  let baseFrame = Frame.createLit(cameraFor(model), scene, lights)
     |> Frame.withFog(fog)
-    |> Frame.withClearColor(clear)
-    |> Frame.withRenderTarget(monitor, monitorFrame)
-    |> Frame.with2D(Camera2D.create(16.0, 9.0), guides(model.guides))
+    |> Frame.withClearColor(clear) in
+  let withMonitor =
+    if model.monitor
+    then baseFrame |> Frame.withRenderTarget(monitor, monitorFrame)
+    else baseFrame
+  in
+  withMonitor
+    |> Frame.with2D(Camera2D.create(16.0, 12.0), guides(model.guides))
 
 let ui = (model) =>
   Ui.column([
@@ -222,5 +248,5 @@ let ui = (model) =>
     Ui.text(Text.concat("LENS ", Text.concat(Text.fixed(model.fov, 0.0), " DEG"))),
     Ui.text(Text.concat("EXPOSURES ", Text.fixed(model.shots, 0.0))),
     Ui.text("1 2 3 VIEW  /  WASD COMPOSE  /  UP DOWN LENS"),
-    Ui.text("P GUIDES  /  V MONITOR  /  SPACE EXPOSURE"),
+    Ui.text("P 4:3 GUIDES  /  V MONITOR  /  SPACE EXPOSURE"),
   ]) |> Ui.panel(Ui.bottomLeft())
