@@ -31,7 +31,7 @@
 //!   nominal, by name.
 //! - Declared variant types (`type Shape = | Circle(radius: float) | Point`)
 //!   — nominal, by name, like records.
-//! - `List<T>`.
+//! - `List<T>` and `Map<K, V>`.
 //! - Function types, from lambda annotations
 //!   (`(a: float, b: float): float => …`); an unannotated return type is the
 //!   body's type when that is known (inferred in a single quiet enrichment
@@ -103,6 +103,10 @@ pub enum Type {
     String,
     Bool,
     List(Box<Type>),
+    /// An immutable keyed collection. Runtime keys are bounded to bool,
+    /// finite float, and string; inference keeps a map's key type
+    /// homogeneous in ordinary (non-`unknown`) code.
+    Map(Box<Type>, Box<Type>),
     /// A product type: `Float * Float` in annotations. Structural, like the
     /// runtime.
     Tuple(Vec<Type>),
@@ -128,6 +132,7 @@ impl fmt::Display for Type {
             Type::String => write!(f, "string"),
             Type::Bool => write!(f, "bool"),
             Type::List(elem) => write!(f, "List<{elem}>"),
+            Type::Map(key, value) => write!(f, "Map<{key}, {value}>"),
             Type::Tuple(elems) => {
                 write!(f, "(")?;
                 for (i, elem) in elems.iter().enumerate() {
@@ -199,6 +204,7 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
             true
         }
         (Type::List(x), Type::List(y)) => compatible(x, y),
+        (Type::Map(xk, xv), Type::Map(yk, yv)) => compatible(xk, yk) && compatible(xv, yv),
         (Type::Tuple(xs), Type::Tuple(ys)) => {
             xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y))
         }
@@ -221,6 +227,7 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
 fn contains_fn(ty: &Type) -> bool {
     match ty {
         Type::Fn(..) => true,
+        Type::Map(key, value) => contains_fn(key) || contains_fn(value),
         Type::Tuple(elems) => elems.iter().any(contains_fn),
         // A generic nominal can carry a function in its ARGUMENTS
         // (`Box<(Float) => Float>`) even when the declaration's own fields
@@ -280,6 +287,10 @@ fn subst_params(ty: &Type, args: &[Type]) -> Type {
             .cloned()
             .unwrap_or_else(|| Type::Var(*v)),
         Type::List(e) => Type::List(Box::new(subst_params(e, args))),
+        Type::Map(key, value) => Type::Map(
+            Box::new(subst_params(key, args)),
+            Box::new(subst_params(value, args)),
+        ),
         Type::Tuple(es) => Type::Tuple(es.iter().map(|e| subst_params(e, args)).collect()),
         Type::Fn(ps, r) => Type::Fn(
             ps.iter().map(|p| subst_params(p, args)).collect(),
@@ -303,6 +314,10 @@ fn renumber_with(ty: &Type, order: &[u32]) -> Type {
             Type::Var(idx)
         }
         Type::List(e) => Type::List(Box::new(renumber_with(e, order))),
+        Type::Map(key, value) => Type::Map(
+            Box::new(renumber_with(key, order)),
+            Box::new(renumber_with(value, order)),
+        ),
         Type::Tuple(es) => Type::Tuple(es.iter().map(|e| renumber_with(e, order)).collect()),
         Type::Fn(ps, r) => Type::Fn(
             ps.iter().map(|p| renumber_with(p, order)).collect(),
@@ -329,6 +344,10 @@ fn free_vars_of(ty: &Type, out: &mut Vec<u32>) {
             }
         }
         Type::List(elem) => free_vars_of(elem, out),
+        Type::Map(key, value) => {
+            free_vars_of(key, out);
+            free_vars_of(value, out);
+        }
         Type::Tuple(elems) => {
             for elem in elems {
                 free_vars_of(elem, out);
@@ -556,6 +575,43 @@ pub fn builtin_signature(b: Builtin) -> Type {
                 List(Box::new(Var(0))),
             ],
             List(Box::new(Var(1))),
+        ),
+        // Map keys infer normally but are dynamically bounded to bool,
+        // finite float, and string (the HM type language has no type-class
+        // constraint syntax). Every operation preserves one K/V pair.
+        // Map.empty : () => Map<'key, 'value>
+        Builtin::MapEmpty => func(vec![], Map(Box::new(Var(0)), Box::new(Var(1)))),
+        // Subject-LAST. Map.get : ('key, Map<'key, 'value>) => Option.t<'value>
+        Builtin::MapGet => func(
+            vec![Var(0), Map(Box::new(Var(0)), Box::new(Var(1)))],
+            option(Var(1)),
+        ),
+        // Subject-LAST. Map.insert : ('key, 'value, Map<'key, 'value>) => Map<'key, 'value>
+        Builtin::MapInsert => func(
+            vec![Var(0), Var(1), Map(Box::new(Var(0)), Box::new(Var(1)))],
+            Map(Box::new(Var(0)), Box::new(Var(1))),
+        ),
+        // Subject-LAST. Map.remove : ('key, Map<'key, 'value>) => Map<'key, 'value>
+        Builtin::MapRemove => func(
+            vec![Var(0), Map(Box::new(Var(0)), Box::new(Var(1)))],
+            Map(Box::new(Var(0)), Box::new(Var(1))),
+        ),
+        // Subject-LAST. Map.member : ('key, Map<'key, 'value>) => bool
+        Builtin::MapMember => func(vec![Var(0), Map(Box::new(Var(0)), Box::new(Var(1)))], Bool),
+        // Map.values : (Map<'key, 'value>) => List<'value>
+        Builtin::MapValues => func(
+            vec![Map(Box::new(Var(0)), Box::new(Var(1)))],
+            List(Box::new(Var(1))),
+        ),
+        // Map.toList : (Map<'key, 'value>) => List<('key, 'value)>
+        Builtin::MapToList => func(
+            vec![Map(Box::new(Var(0)), Box::new(Var(1)))],
+            List(Box::new(Tuple(vec![Var(0), Var(1)]))),
+        ),
+        // Map.fromList : (List<('key, 'value)>) => Map<'key, 'value>
+        Builtin::MapFromList => func(
+            vec![List(Box::new(Tuple(vec![Var(0), Var(1)])))],
+            Map(Box::new(Var(0)), Box::new(Var(1))),
         ),
         // Text.concat : (String, String) => String
         Builtin::TextConcat => func(vec![String, String], String),
@@ -1128,6 +1184,9 @@ impl Checker<'_> {
                 None => Type::Var(*v),
             },
             Type::List(elem) => Type::List(Box::new(self.zonk(elem))),
+            Type::Map(key, value) => {
+                Type::Map(Box::new(self.zonk(key)), Box::new(self.zonk(value)))
+            }
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.zonk(e)).collect()),
             Type::Fn(params, ret) => Type::Fn(
                 params.iter().map(|p| self.zonk(p)).collect(),
@@ -1182,6 +1241,9 @@ impl Checker<'_> {
                 ok
             }
             (Type::List(x), Type::List(y)) => self.unify_rec(x, y, span, what),
+            (Type::Map(xk, xv), Type::Map(yk, yv)) => {
+                self.unify_rec(xk, yk, span, what) & self.unify_rec(xv, yv, span, what)
+            }
             (Type::Tuple(xs), Type::Tuple(ys)) if xs.len() == ys.len() => {
                 let mut ok = true;
                 for (x, y) in xs.clone().iter().zip(ys.clone().iter()) {
@@ -1232,6 +1294,45 @@ impl Checker<'_> {
         self.diag(span, format!("{what}: expected {expected}, got {got}"));
     }
 
+    /// Enforce Map's deliberately bounded key domain when a direct builtin
+    /// call has made the key type concrete. Unsolved variables and `unknown`
+    /// remain valid gradual/generic seams; the evaluator repeats the check on
+    /// every operation, so an invalid value can never enter a Map even when a
+    /// polymorphic helper delayed the concrete type beyond this call site.
+    fn check_map_key_domain(&mut self, callee: &Expr, args: &[Expr], params: &[Type]) {
+        let ExprKind::External(path) = &callee.kind else {
+            return;
+        };
+        let Some(builtin) = builtin(path) else {
+            return;
+        };
+        let (key_ty, span) = match builtin {
+            Builtin::MapGet | Builtin::MapInsert | Builtin::MapRemove | Builtin::MapMember => {
+                match (params.first(), args.first()) {
+                    (Some(key), Some(arg)) => (self.zonk(key), arg.span),
+                    _ => return,
+                }
+            }
+            Builtin::MapFromList => match (params.first(), args.first()) {
+                (Some(Type::List(entries)), Some(arg)) => match entries.as_ref() {
+                    Type::Tuple(pair) if pair.len() == 2 => (self.zonk(&pair[0]), arg.span),
+                    _ => return,
+                },
+                _ => return,
+            },
+            _ => return,
+        };
+        if !matches!(
+            key_ty,
+            Type::Bool | Type::Float | Type::String | Type::Unknown | Type::Var(_)
+        ) {
+            self.diag(
+                span,
+                format!("Map keys must be bool, finite float, or string; got {key_ty}"),
+            );
+        }
+    }
+
     /// Instantiate a scheme: quantified variables become fresh ones.
     fn instantiate(&mut self, scheme: &Scheme) -> Type {
         if scheme.vars.is_empty() {
@@ -1242,6 +1343,9 @@ impl Checker<'_> {
             match ty {
                 Type::Var(v) => mapping.get(v).cloned().unwrap_or(Type::Var(*v)),
                 Type::List(e) => Type::List(Box::new(walk(e, mapping))),
+                Type::Map(key, value) => {
+                    Type::Map(Box::new(walk(key, mapping)), Box::new(walk(value, mapping)))
+                }
                 Type::Tuple(es) => Type::Tuple(es.iter().map(|e| walk(e, mapping)).collect()),
                 Type::Fn(ps, r) => Type::Fn(
                     ps.iter().map(|p| walk(p, mapping)).collect(),
@@ -1335,6 +1439,27 @@ impl Checker<'_> {
                     return arity_error(self, 1);
                 }
                 Type::List(Box::new(self.resolve_type(&ty.args[0], report)))
+            }
+            "Map" => {
+                if ty.args.len() != 2 {
+                    return arity_error(self, 2);
+                }
+                let key = self.resolve_type(&ty.args[0], report);
+                if report
+                    && !matches!(
+                        key,
+                        Type::Bool | Type::Float | Type::String | Type::Unknown | Type::Var(_)
+                    )
+                {
+                    self.diag(
+                        ty.args[0].span,
+                        format!("Map keys must be bool, finite float, or string; got {key}"),
+                    );
+                }
+                Type::Map(
+                    Box::new(key),
+                    Box::new(self.resolve_type(&ty.args[1], report)),
+                )
             }
             // The parser encodes a tuple annotation (`(Float, Float)`) as the
             // reserved name `*` with the elements as args.
@@ -1479,7 +1604,7 @@ the type: `type Name<{name}> = …`"
         // three-edit one that spends its budget on the capital F. Budget: 2
         // for a name long enough that two edits still leave it recognizable,
         // 1 for short names where 2 edits could reach anything.
-        let mut candidates: Vec<&str> = vec!["float", "string", "bool", "unknown", "List"];
+        let mut candidates: Vec<&str> = vec!["float", "string", "bool", "unknown", "List", "Map"];
         candidates.extend(declared);
         let budget = if name.chars().count() >= 4 { 2 } else { 1 };
         let near = candidates
@@ -2064,6 +2189,7 @@ missing {missing}. Did you forget an argument?"
                             let what = format!("argument {} of `{}`", i + 1, callee_label(callee));
                             self.expect(arg, param_ty, &what);
                         }
+                        self.check_map_key_domain(callee, args, &params);
                         match args.len().cmp(&params.len()) {
                             std::cmp::Ordering::Equal => *ret,
                             // Under-applied: the value is a function of the
