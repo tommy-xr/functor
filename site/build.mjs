@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
-import { EXAMPLES } from "./src/examples.ts";
+import { EXAMPLES, exampleEntryPath } from "./src/examples.ts";
 import { renderApiReference } from "./src/api-reference-html.mjs";
 import { injectHeader } from "./src/header.ts";
 
@@ -228,7 +228,7 @@ await cp(TIMELINE_MODEL, `${dist}/timeline-model.js`);
 await cp(`${site}media`, `${dist}/media`, { recursive: true }).catch(() => {});
 for (const example of EXAMPLES) {
   const files = [
-    { source: example.source, output: `examples/${example.id}.fun` },
+    { source: example.source, output: exampleEntryPath(example.id) },
     ...(example.siblings ?? []),
   ];
   for (const { source, output } of [...files, ...(example.assets ?? [])]) {

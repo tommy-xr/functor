@@ -32,12 +32,22 @@ export interface Example {
   assets?: ExampleCopy[];
   /**
    * Marks a sample that declares a server entry point (the functor.json
-   * `entries` shape, like examples/mp) — the sandbox shows its CLIENTS
-   * control only for those. No current sample qualifies; the flag seats the
-   * gate for an orbs-style client/server sample.
+   * `entries` shape, like examples/mp) or is otherwise structured for
+   * multiple clients (like examples/orbs) — the sandbox shows its CLIENTS
+   * control only for those.
    */
   multiplayer?: boolean;
 }
+
+/**
+ * The dist path of an example's editable entry. The runtime derives the entry
+ * MODULE name from the file stem, and stems must be identifiers — so a
+ * hyphenated id maps to an underscore filename (`my-game` →
+ * `examples/my_game.fun`). Both consumers (build.mjs copies, sandbox.tsx
+ * fetches) derive the path through this one helper so they can't drift.
+ */
+export const exampleEntryPath = (id: string): string =>
+  `examples/${encodeURIComponent(id.replace(/-/g, "_"))}.fun`;
 
 export const EXAMPLES: Example[] = [
   { id: "hero", label: "Neon grid", source: "site/examples/hero.fun" },
@@ -65,6 +75,15 @@ export const EXAMPLES: Example[] = [
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
   { id: "toss", label: "Bouncing balls", source: "examples/toss/game.fun" },
+  // The minimal multiplayer-mechanics sample in ONE module (banner sections:
+  // PROTOCOL / SERVER / BOT / CLIENT), so the wire ADT and the authoritative
+  // claim resolution are right there in the editable buffer.
+  {
+    id: "orbs",
+    label: "Orbs (multiplayer)",
+    source: "examples/orbs/game.fun",
+    multiplayer: true,
+  },
   {
     id: "mario",
     label: "Platformer",
