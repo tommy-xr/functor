@@ -430,6 +430,22 @@ namespace `Scene` — rename the file"
     );
 }
 
+#[test]
+fn map_namespace_module_name_is_refused() {
+    let err = load_err(
+        "protected-map",
+        &[
+            ("game.fun", "let main = () => 0.0\n"),
+            ("map.fun", "let empty = 1.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "map.fun:1:1: module name `Map` (from map.fun) collides with the builtin/prelude \
+namespace `Map` — rename the file"
+    );
+}
+
 /// `Debug` is protected (the `Debug.log` builtin's namespace), so a sibling
 /// `debug.fun` can't shadow it — a load error names the collision.
 #[test]

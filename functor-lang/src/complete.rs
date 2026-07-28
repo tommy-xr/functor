@@ -872,6 +872,16 @@ mod tests {
             Some("List.map : (('a) => 'b, List<'a>) => List<'b>")
         );
         assert_eq!(find(&items, "map").kind, CompletionKind::Function);
+
+        let maps = game(STUB, &[], "let m = Map.");
+        assert_eq!(
+            labels(&maps),
+            vec!["empty", "fromList", "get", "insert", "member", "remove", "toList", "values"]
+        );
+        assert_eq!(
+            find(&maps, "insert").detail.as_deref(),
+            Some("Map.insert : ('a, 'b, Map<'a, 'b>) => Map<'a, 'b>")
+        );
     }
 
     // Bundled stdlib modules complete from their ordinary inferred `.fun`
@@ -1033,6 +1043,7 @@ mod tests {
         assert_eq!(find(&items, "Utils").kind, CompletionKind::Module);
         assert_eq!(find(&items, "Scene").kind, CompletionKind::Module);
         assert_eq!(find(&items, "List").kind, CompletionKind::Module);
+        assert_eq!(find(&items, "Map").kind, CompletionKind::Module);
         assert!(!has(&items, "Utils.clamp"), "qualified label leaked");
         assert!(!has(&items, "Game"), "entry name offered as a module");
     }

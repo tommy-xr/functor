@@ -76,8 +76,10 @@ export interface RuntimeView {
 }
 
 /** A structured JSON view of a Functor Lang value: plain data maps structurally
- * (records as objects, lists as arrays), and everything else is a sigil-keyed
- * object no record field can collide with — `{"$tuple": [...]}`,
+ * (records as objects, lists as arrays, maps as canonical entry arrays), and
+ * everything else is a sigil-keyed object no record field can collide with —
+ * `{"$map": [[key, value], ...]}`,
+ * `{"$tuple": [...]}`,
  * `{"$ctor": "Some", "args": [...]}`, `{"$fn": "<fn(dt)>"}`,
  * `{"$host": "SceneNode"}`, `{"$number": "NaN"}`, and
  * `{"$truncated": "max depth"}` past the nesting bound. */

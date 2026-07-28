@@ -581,9 +581,9 @@ let pos = model.pos |> Vec3.add(step)</pre>
             These modules are part of the <em>language</em>, not the engine — unlike the prelude
             above, they resolve everywhere Functor Lang runs, including the bare
             <code>functor-lang</code> interpreter. The collection and container functions
-            (<code>List</code>, <code>Option</code>, <code>Result</code>) take their subject
-            <strong>last</strong>, so they pipe. The numeric and formatting helpers instead read
-            as ordinary notation — <code>Text.fixed(n, decimals)</code> and the two-argument
+            (<code>List</code>, <code>Map</code>, <code>Option</code>, <code>Result</code>) take
+            their subject <strong>last</strong>, so they pipe. The numeric and formatting helpers
+            instead read as ordinary notation — <code>Text.fixed(n, decimals)</code> and the two-argument
             <code>Math</code> functions (<code>pow</code>, <code>atan2</code>, <code>mod</code>,
             <code>min</code>, <code>max</code>) take their number <em>first</em>, so a pipeline
             would feed the wrong slot: write <code>Text.fixed(hp, 0.0)</code>, not
@@ -654,6 +654,45 @@ let pos = model.pos |> Vec3.add(step)</pre>
 match enemies |> List.find((e) =&gt; e.hp &lt;= 0.0) with
 | Option.Some(dead) =&gt; respawn(dead)
 | Option.None =&gt; model</code></pre>
+
+          <h3 id="stdlib-map">Map</h3>
+          <p>
+            Deterministic immutable keyed data. A <code>Map&lt;key, value&gt;</code> accepts
+            <code>bool</code>, finite <code>float</code>, or <code>string</code> keys;
+            ordinary inference keeps one key type per map. Every iteration surface uses canonical
+            key order on native and wasm: bools before floats before strings, then
+            <code>false</code> before <code>true</code>, ascending numbers, and ascending Unicode
+            scalar-value strings (lexicographic, not locale-aware). <code>-0.0</code> is the same
+            key as <code>0.0</code>; NaN and infinities are rejected.
+          </p>
+          <pre class="functor-lang">let occupied =
+  Map.empty()
+  |> Map.insert("4,7", Player)
+  |> Map.insert("8,2", Wall)
+
+match occupied |> Map.get("4,7") with
+| Option.Some(cell) =&gt; drawCell(cell)
+| Option.None =&gt; Scene.group([])</pre>
+          <table>
+            <tbody>
+              <tr><td><code>Map.empty()</code></td><td>an empty <code>Map&lt;'key, 'value&gt;</code>; later operations infer both types</td></tr>
+              <tr><td><code>Map.get(key, map)</code></td><td><code>Option.Some(value)</code>, or <code>Option.None</code></td></tr>
+              <tr><td><code>Map.insert(key, value, map)</code></td><td>return a new map; replacing an existing key leaves the original map untouched</td></tr>
+              <tr><td><code>Map.remove(key, map)</code></td><td>return a new map without the key; removing an absent key is a no-op</td></tr>
+              <tr><td><code>Map.member(key, map)</code></td><td>whether the key exists</td></tr>
+              <tr><td><code>Map.values(map)</code></td><td>values in canonical key order</td></tr>
+              <tr><td><code>Map.toList(map)</code></td><td>canonical <code>List&lt;(key, value)&gt;</code></td></tr>
+              <tr><td><code>Map.fromList(entries)</code></td><td>build from <code>(key, value)</code> tuples; the last value for a duplicate key wins</td></tr>
+            </tbody>
+          </table>
+          <p>
+            Lookup and membership are logarithmic. Because the collection is immutable,
+            insertion and removal copy the ordered entry vector and are linear. Maps compare
+            structurally, display as <code>Map.fromList([…])</code>, and remain plain model data.
+            <code>values</code> and <code>toList</code> are linear;
+            <code>fromList</code> is <em>O(n log n)</em>. Plain maps survive hot reload and work
+            with time travel, debug state, and typed messages.
+          </p>
 
           <h3 id="stdlib-text">Text</h3>
           <table>

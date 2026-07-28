@@ -228,6 +228,9 @@ mod tests {
     fn hover_on_a_builtin_shows_its_signature() {
         let text = hover_at("let f = (xs) => xs |> List.maximum", "List.maximum").unwrap();
         assert_eq!(text, "List.maximum : (List<float>) => float");
+
+        let text = hover_at("let f = (xs) => xs |> Map.fromList", "Map.fromList").unwrap();
+        assert_eq!(text, "Map.fromList : (List<('a, 'b)>) => Map<'a, 'b>");
     }
 
     #[test]
