@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
-import { EXAMPLES } from "./src/examples.ts";
+import { EXAMPLES, exampleEntryPath } from "./src/examples.ts";
 import { renderApiReference } from "./src/api-reference-html.mjs";
 import { injectHeader } from "./src/header.ts";
 
@@ -213,6 +213,7 @@ await writeFile(
 - [Debug automation guide](https://functor.games/manual/debug-runtime/): choose a deterministic capture workflow, replay input, or drive a hidden runtime over HTTP.
 - [Debug runtime contract (Markdown)](https://functor.games/manual/debug-runtime.md): the complete debug-server endpoint, clock, capture, input, and project-sync contract.
 - [CLI output contract (Markdown)](https://functor.games/manual/cli-output.md): the human and ndjson event streams, including \`frame_stats\` telemetry.
+- [Driving games with agents](https://functor.games/manual/#agents): register \`functor mcp\` and drive a game over MCP — launch or attach a session, read its model, pause and step the clock, inject input, capture frames, hot-reload source.
 - [Sandbox](https://functor.games/sandbox.html): run and edit the sample games in the browser.
 
 ## Source
@@ -238,7 +239,7 @@ await cp(TIMELINE_MODEL, `${dist}/timeline-model.js`);
 await cp(`${site}media`, `${dist}/media`, { recursive: true }).catch(() => {});
 for (const example of EXAMPLES) {
   const files = [
-    { source: example.source, output: `examples/${example.id}.fun` },
+    { source: example.source, output: exampleEntryPath(example.id) },
     ...(example.siblings ?? []),
   ];
   for (const { source, output } of [...files, ...(example.assets ?? [])]) {

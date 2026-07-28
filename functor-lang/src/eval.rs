@@ -19,8 +19,8 @@
 //!
 //! [`ExprKind::External`] names resolve against the builtin registry at
 //! evaluation time ([`builtin`]): `List.map`/`filter`/`fold`/`maximum`,
-//! `Text.concat`/`fromFloat`/`toBullets`, `Math.clamp01`. An unregistered
-//! external is a spanned runtime error.
+//! `Map.get`/`insert`/`fromList`, `Text.concat`/`fromFloat`/`toBullets`,
+//! `Math.clamp01`. An unregistered external is a spanned runtime error.
 //!
 //! ## Tracing
 //!
@@ -34,8 +34,9 @@ use crate::ir::{
     BindingId, Def, ExpectDef, Expr, ExprKind, Module, Pattern, PatternKind, StringPart,
 };
 use crate::span::Span;
-use crate::value::{Closure, Env, Value};
+use crate::value::{canonicalize_map_entries, Closure, Env, MapKey, Value};
 use crate::RunError;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -465,8 +466,8 @@ pub fn run_expects(
 /// so one runaway is blamed precisely and cannot starve the rest). Exceeding
 /// it is a spanned [`ExpectOutcome::Error`] (or the returned `Err` when the
 /// def load itself exceeds it). A step is one function call, or one
-/// element/byte a bulk list/text builtin materializes or scans (see
-/// [`Fuel`] — growth builtins charge their OUTPUT, closing the
+/// element/byte/entry a bulk list/text/map builtin materializes, scans, or
+/// compares (see [`Fuel`] — growth builtins charge their OUTPUT, closing the
 /// doubling-amplifier hole) — the honest runaway proxy for a loop-free
 /// language, chosen over per-eval-node charging to keep the frame loop's
 /// hot path branch-free. Total interpreter work is O(budget), so the budget
@@ -691,7 +692,8 @@ impl Session {
 /// arithmetic), or one element/byte a bulk builtin materializes or scans
 /// (`List.range`'s count; `List.append`/`flatten` output elements;
 /// `Text.concat`/`join`/`toBullets` output bytes; `reverse`/`maximum`/
-/// `split` input size). Charging GROWTH builtins by output is what makes
+/// `split` input size; Map key comparisons, copied entries, and materialized
+/// iteration output). Charging GROWTH builtins by output is what makes
 /// the budget honest — `(x) => List.append(x, x)` doubles per call, so a
 /// per-call-only charge would allow exponential work under a linear budget.
 /// The general per-node eval path is deliberately uncharged so the frame
@@ -867,6 +869,43 @@ impl Interp<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Refuse work whose conservative upper bound cannot fit, without
+    /// consuming that bound. The operation charges its actual work afterward,
+    /// so successful realistic inputs are not double-charged.
+    fn preflight_charge(&self, units: u64, span: Span) -> Result<(), RunError> {
+        if let Some(fuel) = self.fuel {
+            if fuel.remaining < units {
+                return Err(step_budget_error(fuel.limit, span));
+            }
+        }
+        Ok(())
+    }
+
+    /// Binary-search a canonical Map vector, charging before each key
+    /// comparison. Precharging matters for strings: their shared prefix can
+    /// be arbitrarily long, so charging only after `str::cmp` would let the
+    /// comparison itself escape the evaluator's bound.
+    fn map_search(
+        &mut self,
+        entries: &[(MapKey, Value)],
+        key: &MapKey,
+        span: Span,
+    ) -> Result<Result<usize, usize>, RunError> {
+        let mut left = 0usize;
+        let mut right = entries.len();
+        while left < right {
+            let mid = left + (right - left) / 2;
+            let candidate = &entries[mid].0;
+            self.charge(candidate.comparison_units(key), span)?;
+            match candidate.compare(key) {
+                Ordering::Less => left = mid + 1,
+                Ordering::Greater => right = mid,
+                Ordering::Equal => return Ok(Ok(mid)),
+            }
+        }
+        Ok(Err(left))
     }
 
     fn eval(&mut self, expr: &Expr, env: &Env) -> Result<Value, RunError> {
@@ -2118,6 +2157,145 @@ most 1000000 cells"
                 }
                 _ => err("List.concatMap(fn, list) expects a function and a list".to_string()),
             },
+            Builtin::MapEmpty => match args.as_slice() {
+                [] => Ok(Value::Map(Rc::new(Vec::new()))),
+                _ => unreachable!("builtin arity checked before dispatch"),
+            },
+            // Maps are immutable sorted vectors. Lookup is binary search;
+            // updates copy one canonical vector and preserve key order.
+            // Subject-LAST throughout, so `map |> Map.get(key)` works.
+            Builtin::MapGet => match args.as_slice() {
+                [key, Value::Map(entries)] => {
+                    let key = map_key_from_value(key, builtin_name(b))
+                        .map_err(|message| RunError { message, span })?;
+                    let found = self.map_search(entries, &key, span)?;
+                    Ok(option_value(
+                        found.ok().map(|index| entries[index].1.clone()),
+                    ))
+                }
+                _ => err("Map.get(key, map) expects a key and a map".to_string()),
+            },
+            Builtin::MapInsert => match args.as_slice() {
+                [key, value, Value::Map(entries)] => {
+                    let key = map_key_from_value(key, builtin_name(b))
+                        .map_err(|message| RunError { message, span })?;
+                    let found = self.map_search(entries, &key, span)?;
+                    let out_len = if found.is_ok() {
+                        entries.len()
+                    } else {
+                        entries.len().saturating_add(1)
+                    };
+                    // Pre-charge the immutable copy so a low-budget tool
+                    // cannot allocate it before discovering it is over fuel.
+                    self.charge(out_len as u64, span)?;
+                    let mut out = entries.as_ref().clone();
+                    match found {
+                        Ok(index) => out[index].1 = value.clone(),
+                        Err(index) => out.insert(index, (key, value.clone())),
+                    }
+                    Ok(Value::Map(Rc::new(out)))
+                }
+                _ => {
+                    err("Map.insert(key, value, map) expects a key, a value, and a map".to_string())
+                }
+            },
+            Builtin::MapRemove => match args.as_slice() {
+                [key, Value::Map(entries)] => {
+                    let key = map_key_from_value(key, builtin_name(b))
+                        .map_err(|message| RunError { message, span })?;
+                    let found = self.map_search(entries, &key, span)?;
+                    let Ok(index) = found else {
+                        return Ok(Value::Map(entries.clone()));
+                    };
+                    self.charge(entries.len().saturating_sub(1) as u64, span)?;
+                    let mut out = entries.as_ref().clone();
+                    out.remove(index);
+                    Ok(Value::Map(Rc::new(out)))
+                }
+                _ => err("Map.remove(key, map) expects a key and a map".to_string()),
+            },
+            Builtin::MapMember => match args.as_slice() {
+                [key, Value::Map(entries)] => {
+                    let key = map_key_from_value(key, builtin_name(b))
+                        .map_err(|message| RunError { message, span })?;
+                    let found = self.map_search(entries, &key, span)?;
+                    Ok(Value::Bool(found.is_ok()))
+                }
+                _ => err("Map.member(key, map) expects a key and a map".to_string()),
+            },
+            Builtin::MapValues => match args.as_slice() {
+                [Value::Map(entries)] => {
+                    self.charge(entries.len() as u64, span)?;
+                    Ok(Value::List(Rc::new(
+                        entries.iter().map(|(_, value)| value.clone()).collect(),
+                    )))
+                }
+                _ => err("Map.values(map) expects one map".to_string()),
+            },
+            Builtin::MapToList => match args.as_slice() {
+                [Value::Map(entries)] => {
+                    // Each entry materializes a two-cell tuple.
+                    self.charge((entries.len() as u64).saturating_mul(2), span)?;
+                    Ok(Value::List(Rc::new(
+                        entries
+                            .iter()
+                            .map(|(key, value)| {
+                                Value::Tuple(Rc::new(vec![key.to_value(), value.clone()]))
+                            })
+                            .collect(),
+                    )))
+                }
+                _ => err("Map.toList(map) expects one map".to_string()),
+            },
+            Builtin::MapFromList => match args.as_slice() {
+                [Value::List(items)] => {
+                    // Charge entry cloning up front. After validating the
+                    // keys, refuse an over-budget sort before its first
+                    // comparison. The preflight is conservative; actual
+                    // comparison work is charged afterward.
+                    self.charge(items.len() as u64, span)?;
+                    let mut sorted = Vec::with_capacity(items.len());
+                    let mut max_comparison_units = 1u64;
+                    for (index, item) in items.iter().enumerate() {
+                        let Value::Tuple(pair) = item else {
+                            return err(format!(
+                                "Map.fromList(entries) expects (key, value) tuples; entry {index} is {}",
+                                item.kind_name()
+                            ));
+                        };
+                        let [key, value] = pair.as_slice() else {
+                            return err(format!(
+                                "Map.fromList(entries) expects 2-tuples; entry {index} has {} items",
+                                pair.len()
+                            ));
+                        };
+                        let key = map_key_from_value(key, builtin_name(b)).map_err(|message| {
+                            RunError {
+                                message: format!("{message} at entry {index}"),
+                                span,
+                            }
+                        })?;
+                        max_comparison_units =
+                            max_comparison_units.max(key.comparison_unit_ceiling());
+                        sorted.push((key, value.clone()));
+                    }
+                    let comparison_count_ceiling = stable_sort_comparison_ceiling(items.len())
+                        .saturating_add(
+                            u64::try_from(items.len().saturating_sub(1))
+                                .unwrap_or(u64::MAX),
+                        );
+                    let comparison_work_ceiling =
+                        comparison_count_ceiling.saturating_mul(max_comparison_units);
+                    self.preflight_charge(comparison_work_ceiling, span)?;
+                    let (out, comparison_work) = canonicalize_map_entries(sorted);
+                    debug_assert!(comparison_work <= comparison_work_ceiling);
+                    self.charge(comparison_work, span)?;
+                    Ok(Value::Map(Rc::new(out)))
+                }
+                _ => {
+                    err("Map.fromList(entries) expects one list of (key, value) tuples".to_string())
+                }
+            },
             Builtin::TextConcat => match args.as_slice() {
                 [Value::String(a), Value::String(b)] => {
                     // Growth builtin: charge output BYTES (the List.append
@@ -2675,12 +2853,20 @@ fn value_eq(
     /// still fires first, exactly like the old interleaved walk).
     enum Work<'a> {
         Pair(&'a Value, &'a Value),
+        Key(&'a MapKey, &'a MapKey),
         MissingField,
     }
     let mut work: Vec<Work> = vec![Work::Pair(a, b)];
     while let Some(item) = work.pop() {
         let (a, b) = match item {
             Work::Pair(a, b) => (a, b),
+            Work::Key(a, b) => {
+                *compared += 1;
+                if a != b {
+                    return Ok(false);
+                }
+                continue;
+            }
             Work::MissingField => return Ok(false),
         };
         *compared += 1;
@@ -2706,6 +2892,15 @@ fn value_eq(
                     return Ok(false);
                 }
                 work.extend(xs.iter().zip(ys.iter()).rev().map(|(x, y)| Work::Pair(x, y)));
+            }
+            (Value::Map(xs), Value::Map(ys)) => {
+                if xs.len() != ys.len() {
+                    return Ok(false);
+                }
+                for ((xk, xv), (yk, yv)) in xs.iter().zip(ys.iter()).rev() {
+                    work.push(Work::Pair(xv, yv));
+                    work.push(Work::Key(xk, yk));
+                }
             }
             (Value::Record(xs), Value::Record(ys)) => {
                 if xs.len() != ys.len() {
@@ -2809,6 +3004,40 @@ fn sort_key_cmp(a: f64, b: f64) -> std::cmp::Ordering {
     }
 }
 
+/// Validate and canonicalize one public Map key. `-0.0` becomes `0.0` so
+/// language equality, lookup, and ordering all agree; non-finite floats are
+/// refused because NaN has no equality-compatible ordering and cannot cross
+/// the plain-data wire.
+fn map_key_from_value(value: &Value, operation: &str) -> Result<MapKey, String> {
+    match value {
+        Value::Bool(value) => Ok(MapKey::Bool(*value)),
+        Value::Number(value) if value.is_finite() => Ok(MapKey::Number(*value + 0.0)),
+        Value::Number(value) => Err(format!(
+            "{operation} keys must be finite; got {value} (NaN/Infinity cannot be map keys)"
+        )),
+        Value::String(value) => Ok(MapKey::String(value.clone())),
+        other => Err(format!(
+            "{operation} keys must be bools, finite floats, or strings; got {}",
+            other.kind_name()
+        )),
+    }
+}
+
+/// Conservative comparison ceiling for Rust's stable O(n log n) slice sort.
+///
+/// `Map.fromList` uses this only as a non-consuming preflight; it charges the
+/// actual comparison work afterward. The factor of two leaves headroom for
+/// run detection/merge bookkeeping while keeping realistic editor budgets
+/// proportional to the work they permit.
+fn stable_sort_comparison_ceiling(len: usize) -> u64 {
+    let n = u64::try_from(len).unwrap_or(u64::MAX);
+    if n < 2 {
+        return 0;
+    }
+    let levels = u64::from(u64::BITS - (n - 1).leading_zeros());
+    n.saturating_mul(levels).saturating_mul(2)
+}
+
 /// Wrap a "maybe absent" result as the language's `Option.t` — the shared
 /// answer of every PARTIAL builtin (`List.nth`/`head`/`last`/`find`).
 ///
@@ -2872,7 +3101,8 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::ListGrid
         | Builtin::RandomRange
         | Builtin::TextReplace
-        | Builtin::MathClamp => 3,
+        | Builtin::MathClamp
+        | Builtin::MapInsert => 3,
         Builtin::ListMap
         | Builtin::ListFilter
         | Builtin::ListAppend
@@ -2897,7 +3127,10 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::MathMax
         | Builtin::MathPow
         | Builtin::RandomFork
-        | Builtin::DebugLog => 2,
+        | Builtin::DebugLog
+        | Builtin::MapGet
+        | Builtin::MapRemove
+        | Builtin::MapMember => 2,
         Builtin::ListRange
         | Builtin::ListMaximum
         | Builtin::ListLength
@@ -2929,10 +3162,13 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::MathCeil
         | Builtin::MathLog
         | Builtin::MathExp
-        | Builtin::MathSign => 1,
+        | Builtin::MathSign
+        | Builtin::MapValues
+        | Builtin::MapToList
+        | Builtin::MapFromList => 1,
         // `Math.pi` resolves straight to a number in `eval` (it's a constant,
         // never a callable value), so this arity is never consulted.
-        Builtin::MathPi => 0,
+        Builtin::MathPi | Builtin::MapEmpty => 0,
         Builtin::RandomSeed | Builtin::RandomStep => 1,
     }
 }
@@ -2974,6 +3210,14 @@ pub enum Builtin {
     ListDrop,
     ListSum,
     ListConcatMap,
+    MapEmpty,
+    MapGet,
+    MapInsert,
+    MapRemove,
+    MapMember,
+    MapValues,
+    MapToList,
+    MapFromList,
     TextConcat,
     TextFromFloat,
     TextFixed,
@@ -3101,7 +3345,7 @@ fn unknown_external_error(path: &[String], joined: String, span: Span) -> RunErr
 /// these is a typo (a plain error), never a host-provided external — the
 /// distinction the unknown-external error message (and through it the
 /// expect gutter's `unrunnable` classification) rests on.
-pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Text", "Math", "Random", "Debug"];
+pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random", "Debug"];
 
 /// The complete builtin registry as a list. Hand-listed because [`Builtin`] is
 /// not iterable — keep in sync with the enum (`builtins_list_is_exhaustive`
@@ -3110,7 +3354,7 @@ pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Text", "Math", "Random", "Deb
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
-pub const ALL_BUILTINS: [Builtin; 65] = [
+pub const ALL_BUILTINS: [Builtin; 73] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
@@ -3135,6 +3379,14 @@ pub const ALL_BUILTINS: [Builtin; 65] = [
     Builtin::ListDrop,
     Builtin::ListSum,
     Builtin::ListConcatMap,
+    Builtin::MapEmpty,
+    Builtin::MapGet,
+    Builtin::MapInsert,
+    Builtin::MapRemove,
+    Builtin::MapMember,
+    Builtin::MapValues,
+    Builtin::MapToList,
+    Builtin::MapFromList,
     Builtin::MathSin,
     Builtin::MathCos,
     Builtin::MathSqrt,
@@ -3217,6 +3469,14 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.drop" => Builtin::ListDrop,
         "List.sum" => Builtin::ListSum,
         "List.concatMap" => Builtin::ListConcatMap,
+        "Map.empty" => Builtin::MapEmpty,
+        "Map.get" => Builtin::MapGet,
+        "Map.insert" => Builtin::MapInsert,
+        "Map.remove" => Builtin::MapRemove,
+        "Map.member" => Builtin::MapMember,
+        "Map.values" => Builtin::MapValues,
+        "Map.toList" => Builtin::MapToList,
+        "Map.fromList" => Builtin::MapFromList,
         "Text.concat" => Builtin::TextConcat,
         "Text.fromFloat" => Builtin::TextFromFloat,
         "Text.fixed" => Builtin::TextFixed,
@@ -3289,6 +3549,14 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListDrop => "List.drop",
         Builtin::ListSum => "List.sum",
         Builtin::ListConcatMap => "List.concatMap",
+        Builtin::MapEmpty => "Map.empty",
+        Builtin::MapGet => "Map.get",
+        Builtin::MapInsert => "Map.insert",
+        Builtin::MapRemove => "Map.remove",
+        Builtin::MapMember => "Map.member",
+        Builtin::MapValues => "Map.values",
+        Builtin::MapToList => "Map.toList",
+        Builtin::MapFromList => "Map.fromList",
         Builtin::TextConcat => "Text.concat",
         Builtin::TextFromFloat => "Text.fromFloat",
         Builtin::TextFixed => "Text.fixed",
@@ -3367,7 +3635,7 @@ pub fn render_trace(events: &[TraceEvent]) -> String {
 
 #[cfg(test)]
 mod sort_key_tests {
-    use super::sort_key_cmp;
+    use super::{sort_key_cmp, stable_sort_comparison_ceiling};
     use std::cmp::Ordering;
 
     /// THE CROSS-PLATFORM LOCK. `List.sortBy`'s order must not depend on a
@@ -3423,6 +3691,15 @@ mod sort_key_tests {
         assert_eq!(sort_key_cmp(2.0, 1.0), Ordering::Greater);
         assert_eq!(sort_key_cmp(2.0, 2.0), Ordering::Equal);
         assert_eq!(sort_key_cmp(f64::NEG_INFINITY, f64::INFINITY), Ordering::Less);
+    }
+
+    #[test]
+    fn map_sort_preflight_is_zero_for_trivial_inputs_and_n_log_n_afterward() {
+        assert_eq!(stable_sort_comparison_ceiling(0), 0);
+        assert_eq!(stable_sort_comparison_ceiling(1), 0);
+        assert_eq!(stable_sort_comparison_ceiling(2), 4);
+        assert_eq!(stable_sort_comparison_ceiling(8), 48);
+        assert_eq!(stable_sort_comparison_ceiling(1000), 20_000);
     }
 }
 
@@ -3486,6 +3763,14 @@ mod builtin_registry_tests {
                 | Builtin::ListDrop
                 | Builtin::ListSum
                 | Builtin::ListConcatMap
+                | Builtin::MapEmpty
+                | Builtin::MapGet
+                | Builtin::MapInsert
+                | Builtin::MapRemove
+                | Builtin::MapMember
+                | Builtin::MapValues
+                | Builtin::MapToList
+                | Builtin::MapFromList
                 | Builtin::MathSin
                 | Builtin::MathCos
                 | Builtin::MathSqrt
@@ -3529,7 +3814,7 @@ mod builtin_registry_tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(ALL_BUILTINS.len(), 65, "ALL_BUILTINS must list every Builtin");
+        assert_eq!(ALL_BUILTINS.len(), 73, "ALL_BUILTINS must list every Builtin");
 
         // The length check alone would accept a DUPLICATE entry standing in
         // for a missing one.

@@ -72,6 +72,10 @@ mod tests {
     fn infers_an_unannotated_signature() {
         // The whole signature is recovered with no annotations written.
         assert_eq!(sigs("let f = (x) => x + 1.0"), vec!["f : (float) => float"]);
+        assert_eq!(
+            sigs("let cells = Map.empty() |> Map.insert(\"origin\", 0.0)"),
+            vec!["cells : Map<string, float>"]
+        );
     }
 
     #[test]

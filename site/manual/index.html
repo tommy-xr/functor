@@ -32,6 +32,7 @@
         <a href="#language">The language</a>
         <a href="#prelude">The prelude</a>
         <a href="#builtins">Standard library</a>
+        <a href="#agents">Driving with agents</a>
         <a href="#sharp-edges">Sharp edges</a>
         <a href="debug-runtime/">Debug automation</a>
       </nav>
@@ -581,9 +582,9 @@ let pos = model.pos |> Vec3.add(step)</pre>
             These modules are part of the <em>language</em>, not the engine — unlike the prelude
             above, they resolve everywhere Functor Lang runs, including the bare
             <code>functor-lang</code> interpreter. The collection and container functions
-            (<code>List</code>, <code>Option</code>, <code>Result</code>) take their subject
-            <strong>last</strong>, so they pipe. The numeric and formatting helpers instead read
-            as ordinary notation — <code>Text.fixed(n, decimals)</code> and the two-argument
+            (<code>List</code>, <code>Map</code>, <code>Option</code>, <code>Result</code>) take
+            their subject <strong>last</strong>, so they pipe. The numeric and formatting helpers
+            instead read as ordinary notation — <code>Text.fixed(n, decimals)</code> and the two-argument
             <code>Math</code> functions (<code>pow</code>, <code>atan2</code>, <code>mod</code>,
             <code>min</code>, <code>max</code>) take their number <em>first</em>, so a pipeline
             would feed the wrong slot: write <code>Text.fixed(hp, 0.0)</code>, not
@@ -654,6 +655,45 @@ let pos = model.pos |> Vec3.add(step)</pre>
 match enemies |> List.find((e) =&gt; e.hp &lt;= 0.0) with
 | Option.Some(dead) =&gt; respawn(dead)
 | Option.None =&gt; model</code></pre>
+
+          <h3 id="stdlib-map">Map</h3>
+          <p>
+            Deterministic immutable keyed data. A <code>Map&lt;key, value&gt;</code> accepts
+            <code>bool</code>, finite <code>float</code>, or <code>string</code> keys;
+            ordinary inference keeps one key type per map. Every iteration surface uses canonical
+            key order on native and wasm: bools before floats before strings, then
+            <code>false</code> before <code>true</code>, ascending numbers, and ascending Unicode
+            scalar-value strings (lexicographic, not locale-aware). <code>-0.0</code> is the same
+            key as <code>0.0</code>; NaN and infinities are rejected.
+          </p>
+          <pre class="functor-lang">let occupied =
+  Map.empty()
+  |> Map.insert("4,7", Player)
+  |> Map.insert("8,2", Wall)
+
+match occupied |> Map.get("4,7") with
+| Option.Some(cell) =&gt; drawCell(cell)
+| Option.None =&gt; Scene.group([])</pre>
+          <table>
+            <tbody>
+              <tr><td><code>Map.empty()</code></td><td>an empty <code>Map&lt;'key, 'value&gt;</code>; later operations infer both types</td></tr>
+              <tr><td><code>Map.get(key, map)</code></td><td><code>Option.Some(value)</code>, or <code>Option.None</code></td></tr>
+              <tr><td><code>Map.insert(key, value, map)</code></td><td>return a new map; replacing an existing key leaves the original map untouched</td></tr>
+              <tr><td><code>Map.remove(key, map)</code></td><td>return a new map without the key; removing an absent key is a no-op</td></tr>
+              <tr><td><code>Map.member(key, map)</code></td><td>whether the key exists</td></tr>
+              <tr><td><code>Map.values(map)</code></td><td>values in canonical key order</td></tr>
+              <tr><td><code>Map.toList(map)</code></td><td>canonical <code>List&lt;(key, value)&gt;</code></td></tr>
+              <tr><td><code>Map.fromList(entries)</code></td><td>build from <code>(key, value)</code> tuples; the last value for a duplicate key wins</td></tr>
+            </tbody>
+          </table>
+          <p>
+            Lookup and membership are logarithmic. Because the collection is immutable,
+            insertion and removal copy the ordered entry vector and are linear. Maps compare
+            structurally, display as <code>Map.fromList([…])</code>, and remain plain model data.
+            <code>values</code> and <code>toList</code> are linear;
+            <code>fromList</code> is <em>O(n log n)</em>. Plain maps survive hot reload and work
+            with time travel, debug state, and typed messages.
+          </p>
 
           <h3 id="stdlib-text">Text</h3>
           <table>
@@ -728,6 +768,107 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
               <tr><td><code>Mouse.t</code></td><td><code>Mouse.Left</code>, <code>Mouse.Right</code>, <code>Mouse.Middle</code> — the <code>mouseButton</code> hook's <code>button</code></td></tr>
             </tbody>
           </table>
+        </section>
+
+        <section id="agents">
+          <h2>Driving games with agents</h2>
+          <p>
+            A Functor game runs and answers questions with no window and no human: the model is
+            plain data, <code>draw</code> is pure data, and the clock can be pinned. The
+            <code>functor mcp</code> command serves exactly that as an
+            <a href="https://modelcontextprotocol.io">MCP</a> server over stdio, so any
+            MCP-speaking coding agent can build, run, inspect, and rewind your game — with no
+            bespoke script and no screen.
+          </p>
+          <p>Register it with Claude Code:</p>
+          <pre class="shell">claude mcp add functor -- functor mcp</pre>
+          <p>Any other MCP client takes the ordinary stdio-server shape:</p>
+          <pre class="shell">{
+  "mcpServers": {
+    "functor": { "command": "functor", "args": ["mcp"] }
+  }
+}</pre>
+          <p>
+            The server speaks JSON-RPC on stdout, so it takes no <code>-d</code> — every game
+            names its own directory as it is launched, and the server can hold several sessions
+            at once.
+          </p>
+
+          <h3>The tools</h3>
+          <table>
+            <tbody>
+              <tr><td><strong>Sessions</strong><br /><code>launch_game</code> · <code>connect_game</code> · <code>list_sessions</code> · <code>stop_game</code></td><td>spawn a game as a child process on a free port, or attach to a runtime someone else is running (another <code>--debug-port</code>, or a Quest). <code>launch_game</code>'s <code>mode</code> is <code>hidden</code> (the default — it renders, so frames can be captured) or <code>headless</code> (no GL context at all — CI-friendly, but nothing to read back)</td></tr>
+              <tr><td><strong>Observing</strong><br /><code>get_state</code> · <code>get_scene</code> · <code>get_trace</code> · <code>capture_frame</code></td><td>the model as structured JSON alongside <code>frame</code>/<code>tts</code>/sampled input; the camera, scene graph, and lights <code>draw</code> produced; the paused inspector trace; a PNG of the next frame</td></tr>
+              <tr><td><strong>Driving</strong><br /><code>pause</code> · <code>step</code> · <code>resume</code> · <code>send_input</code> · <code>rewind</code> · <code>reload_source</code> / <code>reload_project</code></td><td>pin the clock, run <em>n</em> frames of a fixed <em>dt</em>, inject a key / mouse / UI / XR command, restore the model and physics to a recorded frame, or hot-reload the source with the live model preserved</td></tr>
+              <tr><td><strong>Authoring</strong><br /><code>init_game</code> · <code>save_project</code></td><td>scaffold the same starter <code>functor init</code> writes, and write a session's <em>current</em> source out to a directory</td></tr>
+              <tr><td><strong>Knowledge</strong><br /><code>language_guide</code> · <code>api_reference</code></td><td>the two halves of learning Functor, and neither needs a session: the language guide (syntax, semantics, the game contract) and a search over the same <code>.funi</code> prelude this site's <a href="../docs/">API reference</a> is generated from</td></tr>
+            </tbody>
+          </table>
+
+          <h3>A deterministic loop</h3>
+          <p>
+            Pin the clock, act, step, read. Nothing advances on its own in between, and
+            <code>step</code> does not return until the steps have actually landed — so what comes
+            back is the effect of the input, not a sample of a still-moving game:
+          </p>
+          <pre class="shell">launch_game { "dir": "examples/counter", "mode": "headless" }
+// → {"session":"s1","url":"http://127.0.0.1:53127","owned":true,…}
+
+pause      { "session": "s1" }
+send_input { "session": "s1", "command": {"type":"ui_event","slot":0,"kind":"Clicked"} }
+step       { "session": "s1" }
+// → {"frame":9,"tts":0.13,"pending_steps":0,…,"model":{"count":1}}</pre>
+          <p>
+            <strong>Input is level state.</strong> A key, a held mouse button, and an injected XR
+            sample stay in force across steps until released or replaced — that is how you script a
+            paused session: press, step a few frames, release. And a batch
+            (<code>frames</code> &gt; 1) runs up to 8 ticks per rendered frame, so step one at a
+            time when the game must see input or I/O between steps.
+          </p>
+
+          <h3>Authoring without a filesystem</h3>
+          <p>
+            An agent with no disk of its own can still go from nothing to a durable project.
+            <code>launch_game</code> accepts <code>files</code> — <code>[path, source]</code> pairs,
+            the entry first — instead of <code>dir</code>; the server writes them to a scratch
+            directory it owns and runs them normally, so hot reload behaves exactly as it does for
+            a project on disk. That scratch directory is removed when the session stops, so the
+            game has no durable home until <code>save_project</code> gives it one:
+          </p>
+          <pre class="shell">launch_game  { "mode": "headless",
+               "files": [["game.fun", "let init = { n: 0.0 }\n…"]] }
+// → {"session":"s1","dir":"/tmp/functor-mcp-…",…}
+get_state    { "session": "s1" }                          // → {"model":{"n":0},…}
+reload_source{ "session": "s1", "source": "…edited…" }     // model preserved
+save_project { "session": "s1", "dir": "./my-game" }</pre>
+          <p>
+            <code>save_project</code> asks the <em>runtime</em> what it is running rather than
+            copying the launch directory, so a session edited only over the wire saves the edited
+            source. It refuses a directory that already holds a project unless you pass
+            <code>overwrite</code> — which also <em>deletes</em> any module the session does not
+            have, so the directory ends up being exactly the program that ran. The other
+            direction is <code>init_game</code>, which scaffolds
+            the ordinary starter on disk for <code>launch_game</code> to open.
+          </p>
+
+          <h3>Attaching to a Quest</h3>
+          <p>
+            The device runtime serves the same protocol on loopback port 8123. Forward it over USB
+            and attach — the session is <em>attached</em>, not owned, so <code>stop_game</code>
+            forgets it and leaves the headset running:
+          </p>
+          <pre class="shell">adb forward tcp:8123 tcp:8123
+connect_game { "url": "http://127.0.0.1:8123" }</pre>
+          <p>
+            Everything else is identical. <code>capture_frame</code> returns the two raw eye
+            buffers side by side, and injected <code>xr</code> samples are rejected on device —
+            the headset resamples live tracking every frame.
+          </p>
+          <p class="docs-footnote">
+            The full tool-by-tool reference — every argument, the protocol versions each tool
+            needs, and the errors they surface — is
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/mcp.md">docs/mcp.md</a>.
+          </p>
         </section>
 
         <section id="sharp-edges">

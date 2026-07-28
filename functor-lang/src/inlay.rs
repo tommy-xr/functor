@@ -139,4 +139,11 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1, ": List<float>");
     }
+
+    #[test]
+    fn infers_a_map_param() {
+        let got = hints("let f = (map) => map |> Map.get(\"origin\")");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, ": Map<string, 'a>");
+    }
 }

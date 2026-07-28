@@ -35,6 +35,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `/project` needs a v5 runtime (a v4 one answers 404).
 pub const DEBUG_PROTOCOL_VERSION: u32 = 5;
 
+/// The well-known localhost port `functor develop` serves this protocol on
+/// when no explicit `--debug-port` is given, so an agent can attach to a
+/// human's live session without being told a port number.
+pub const DEFAULT_DEVELOP_PORT: u16 = 8077;
+
 /// Maximum accepted body size for either reload operation.
 pub const MAX_RELOAD_BYTES: usize = 4 * 1024 * 1024;
 

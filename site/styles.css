@@ -322,8 +322,12 @@ a:hover {
    edit. The message lives in its tooltip (title) — calm, not a banner. */
 .hero-status {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  /* Bottom-left: the top edge belongs to the (top-docked) scrubber, and
+     bottom-right is the mouse-look chip's corner. Purely an indicator, so it
+     never intercepts clicks. */
+  bottom: 10px;
+  left: 10px;
+  pointer-events: none;
   width: 9px;
   height: 9px;
   border-radius: 999px;

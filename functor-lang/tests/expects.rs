@@ -246,6 +246,105 @@ fn append_doubling_cannot_amplify_past_the_budget() {
 }
 
 #[test]
+fn immutable_map_updates_charge_the_copied_output() {
+    // Four inserts materialize vectors of lengths 1+2+3+4. Together with
+    // their logarithmic searches this must exceed a budget that a
+    // per-builtin-call-only implementation would fit.
+    let src = "expect Map.member(4.0,\n\
+               Map.insert(4.0, 4.0,\n\
+               Map.insert(3.0, 3.0,\n\
+               Map.insert(2.0, 2.0,\n\
+               Map.insert(1.0, 1.0, Map.empty())))))\n";
+    let out = budgeted(src, 15);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+
+    // A realistic budget still completes the same operation.
+    let out = budgeted(src, 100);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+}
+
+#[test]
+fn map_bulk_construction_and_iteration_charge_their_entries() {
+    // The three top-level lists cost 19 container-construction steps and fit
+    // the 20-step load budget. The expect then gets a fresh budget: a
+    // per-call-only implementation would fit its three Map calls, but
+    // fromList's input/sort and values/toList's materialized entries cannot.
+    let src = "let pairs = [(8.0, 8.0), (7.0, 7.0), (6.0, 6.0), (5.0, 5.0), \
+                           (4.0, 4.0), (3.0, 3.0), (2.0, 2.0), (1.0, 1.0)]\n\
+               let expected = [(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), \
+                               (5.0, 5.0), (6.0, 6.0), (7.0, 7.0), (8.0, 8.0)]\n\
+               let values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]\n\
+               expect (\n\
+                 let map = Map.fromList(pairs) in\n\
+                 (Map.values(map), Map.toList(map)) == (values, expected)\n\
+               )\n";
+    let out = budgeted(src, 20);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+
+    let out = budgeted(src, 200);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+}
+
+#[test]
+fn map_searches_charge_key_comparisons() {
+    // Build without fromList so its sort preflight is not what this test
+    // measures. Repeated binary searches would fit under call-only
+    // accounting, but their key comparisons must exhaust the fresh expect
+    // budget.
+    let src = "let map = Map.empty()\n\
+                 |> Map.insert(1.0, true) |> Map.insert(2.0, true)\n\
+                 |> Map.insert(3.0, true) |> Map.insert(4.0, true)\n\
+                 |> Map.insert(5.0, true) |> Map.insert(6.0, true)\n\
+                 |> Map.insert(7.0, true) |> Map.insert(8.0, true)\n\
+               expect List.all((_) => Map.member(8.0, map), List.range(32.0))\n";
+    let out = budgeted(src, 100);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Error(_)));
+
+    let out = budgeted(src, 500);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+}
+
+#[test]
+fn map_string_searches_charge_compared_bytes() {
+    // The map is built during def loading without comparing keys. The
+    // expect's lookup compares two strings whose common prefix is long:
+    // charging merely one step per comparison would let this fit.
+    let prefix = "a".repeat(4096);
+    let src = format!(
+        "let map = Map.insert(\"{prefix}x\", true, Map.empty())\n\
+         expect Map.member(\"{prefix}y\", map) == false\n"
+    );
+    let out = budgeted(&src, 100);
+    let ExpectOutcome::Error(err) = &out[0].outcome else {
+        panic!("expected the long string-key comparison to exceed the budget");
+    };
+    assert!(err.message.contains("step budget"), "unexpected: {err:?}");
+
+    let out = budgeted(&src, 10_000);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+}
+
+#[test]
+fn map_from_list_preflights_string_comparison_bytes() {
+    // Sorting and duplicate folding both compare keys. Preflight their
+    // conservative byte-work bound before the first potentially long
+    // comparison, then charge the actual work only once on success.
+    let prefix = "a".repeat(4096);
+    let src = format!(
+        "expect Map.values(Map.fromList(\
+         [(\"{prefix}y\", 2.0), (\"{prefix}x\", 1.0)])) == [1.0, 2.0]\n"
+    );
+    let out = budgeted(&src, 100);
+    let ExpectOutcome::Error(err) = &out[0].outcome else {
+        panic!("expected Map.fromList preflight to exceed the budget");
+    };
+    assert!(err.message.contains("step budget"), "unexpected: {err:?}");
+
+    let out = budgeted(&src, 30_000);
+    assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
+}
+
+#[test]
 fn text_join_doubling_cannot_amplify_past_the_budget() {
     // The string flavor of the same amplifier: join("", [s, s]) doubles s.
     let src = "let d = (s) => Text.join(\"\", [s, s])\n\

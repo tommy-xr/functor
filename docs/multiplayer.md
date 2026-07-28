@@ -116,7 +116,9 @@ each side. The host converts the payload to the broker's serializable
 error), frames it as a control-prefixed JSON text on the existing transport,
 and the receiving end decodes it back and delivers `Net.Data(id, value)`
 through the connection's tagger — the game matches `value` directly against the
-shared ADT's constructors. Plain-text `Effect.send` traffic shares the
+shared ADT's constructors. Lists, immutable Maps, tuples, records, and variants
+all cross this seam structurally; Map entries retain their canonical key order.
+Plain-text `Effect.send` traffic shares the
 connection untouched (interop with non-Functor peers); a frame that fails to
 decode (version skew, corruption) arrives as `Net.Error`. Typed sends land in
 the structured effect log as data (`net.sendMsg` records), so they replay and

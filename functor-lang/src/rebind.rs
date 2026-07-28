@@ -122,6 +122,12 @@ fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut Rebind
         Value::List(items) => Value::List(Rc::new(
             items.iter().map(|v| walk(v, old, new, report)).collect(),
         )),
+        Value::Map(entries) => Value::Map(Rc::new(
+            entries
+                .iter()
+                .map(|(key, value)| (key.clone(), walk(value, old, new, report)))
+                .collect(),
+        )),
         Value::Tuple(items) => Value::Tuple(Rc::new(
             items.iter().map(|v| walk(v, old, new, report)).collect(),
         )),
