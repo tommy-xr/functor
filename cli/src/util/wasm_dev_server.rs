@@ -178,7 +178,7 @@ impl WasmDevServer {
 
 #[cfg(test)]
 mod tests {
-    use super::render_functor_lang_index;
+    use super::{render_functor_lang_index, SCRUBBER_JS};
     use functor_runtime_common::viewer::CameraControl;
 
     #[test]
@@ -217,7 +217,8 @@ mod tests {
         for expected in [
             r#"window.addEventListener("mousemove""#,
             "const rect = canvas.getBoundingClientRect();",
-            "e.clientX - rect.left, e.clientY - rect.top",
+            "Math.floor(e.clientX - rect.left)",
+            "Math.floor(e.clientY - rect.top)",
             r#"window.addEventListener("mousedown""#,
             "if (!visiblePointer || (code !== 2 && code !== 3)) return;",
             "if (visiblePointer && code !== 1) return;",
@@ -233,6 +234,16 @@ mod tests {
         assert!(
             !html.contains("functor_lang_mouse_move(e.offsetX, e.offsetY)"),
             "visible movement must not be delivered by both window and canvas"
+        );
+    }
+
+    #[test]
+    fn scrubber_only_captures_primary_pointer_drags() {
+        let scrubber = std::str::from_utf8(SCRUBBER_JS).expect("scrubber source is UTF-8");
+        assert_eq!(
+            scrubber.matches("if (event.button !== 0) return;").count(),
+            3,
+            "playhead, preview, and rail must preserve non-primary compatibility mouse events"
         );
     }
 

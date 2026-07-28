@@ -266,6 +266,7 @@ mod tests {
     fn to_world_rejects_degenerate_and_outside_surfaces() {
         let camera = Camera2D::new(16.0, 9.0);
         assert_eq!(camera.to_world(0.0, 0.0, 0.0, 900.0), None);
+        assert_eq!(camera.to_world(-0.25, 0.0, 1600.0, 900.0), None);
         assert_eq!(camera.to_world(-1.0, 0.0, 1600.0, 900.0), None);
         assert_eq!(camera.to_world(1600.0, 0.0, 1600.0, 900.0), None);
         assert_eq!(camera.to_world(f32::NAN, 0.0, 1600.0, 900.0), None);

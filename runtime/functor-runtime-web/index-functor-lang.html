@@ -237,7 +237,13 @@
         window.addEventListener("mousemove", (e) => {
           if (!visiblePointer) return;
           const rect = canvas.getBoundingClientRect();
-          functor_lang_mouse_move(e.clientX - rect.left, e.clientY - rect.top);
+          // The wasm export takes integers. Floor rather than relying on the
+          // JS→wasm truncation so a fractional point just above/left of the
+          // canvas stays negative instead of snapping inside at zero.
+          functor_lang_mouse_move(
+            Math.floor(e.clientX - rect.left),
+            Math.floor(e.clientY - rect.top)
+          );
         }, { capture: true });
 
         const deliverGameWheel = (e) => {
