@@ -231,7 +231,8 @@ pub trait GameProducer {
     /// render EACH frame at ITS paired time so render-time animation (the
     /// skinned-skeleton pose, sampled from the render pass's `tts`) advances
     /// through the strobe instead of freezing at the paused pose. Each frame
-    /// carries the *paused* camera so only world motion smears, not the view.
+    /// carries its authored camera; the shell pins the observer view separately
+    /// so frame introspection and camera-based culling remain truthful.
     ///
     /// `script_inputs` is the F2 forward-ghost-a-script mode (docs/time-travel.md
     /// F2): when `Some`, the ghost forward-steps from the current live model (the
@@ -271,8 +272,9 @@ pub trait GameProducer {
 
     /// Whether the game defines any hook whose live shell input is available
     /// only while the pointer is captured (`mouseMove`, `mouseWheel`, or
-    /// `mouseButton`). Shells use this capability to teach about a missing
-    /// camera-control opt-in instead of leaving a valid hook silently inert.
+    /// `mouseButton`). Shells use this capability to offer capture only when
+    /// meaningful, and to teach when an explicit `mouseCapture: false` leaves
+    /// a valid hook inert.
     fn uses_captured_mouse_input(&self) -> bool {
         false
     }
@@ -588,6 +590,7 @@ mod tests {
             )),
             clear_color: Some([0.2, 0.4, 0.6]),
             sprite_layers: vec![],
+            pure_2d: false,
         };
         assert_json_stable(&frame);
 

@@ -72,9 +72,8 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as the built-in
   `Key` module's variants (`Key.W`, `Key.Up`, `Key.Space`, `Key.Num0`..`Key.Num9`).
   `mouseMove`/`mouseWheel`/`mouseButton` are the analogous optional entry points. Captured
-  free-look opts in with `"viewer": { "camera": { "control": "game" } }`; absolute
-  pointer-led games use `"cursor": "visible"` instead. Without either setting, the runtime
-  warns once and keeps pointer hooks inert.
+  game mouse input defaults on; `"mouseCapture": false` opts out. Absolute pointer-led games
+  use `"cursor": "visible"` instead, which also disables capture.
 - `mouseButton = (model, button, isDown) => model'` — OPTIONAL; mouse-button edges, buttons as
   the built-in `Mouse` module's variants (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`).
   Captured delivery enables click-to-shoot under free-look; visible delivery supports absolute

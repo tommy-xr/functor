@@ -179,24 +179,42 @@ functor -d examples/primitives run wasm
 ```
 
 `native` is the default environment, so `... run` is equivalent to `... run native`.
-The pointer stays free by default. A game that implements captured mouse-look
-opts in explicitly:
+Games capture relative mouse input by default when they implement captured
+mouse hooks. Set `mouseCapture` to `false` only when such a game should keep
+the pointer free:
 
 ```json
 {
   "language": "functor-lang",
   "entry": "game.fun",
-  "viewer": { "camera": { "control": "game" } }
+  "mouseCapture": false
 }
 ```
 
-That enables click-to-capture camera input on native and the web player’s
-mouse-look button, routing captured motion/buttons to the game’s
-`mouseMove`/`mouseButton` hooks. On native, a non-UI click enters capture;
-Escape or focus loss releases it.
+With capture enabled (the default), native offers click-to-capture and the web
+player shows its mouse-capture button, routing captured motion/buttons to the
+game’s `mouseMove`/`mouseButton` hooks. On native, a non-UI click enters
+capture; Escape or focus loss releases it. Projects without captured mouse
+hooks show no game-capture control.
 Pointer-led 2D games use `"cursor": "visible"` instead to receive absolute
-motion/buttons without capture. Projects without either setting show no camera
-control and leave ordinary clicks with UI.
+motion/buttons without capture; this also overrides the implicit capture
+default.
+
+Every project also has a shell-owned **Debug camera** in the timeline controls,
+available while playing or paused. It snapshots the current authored view and
+never changes the model, input log, replay, `GET /scene`, or the camera used by
+game-driven culling and render-target/portal passes:
+
+- 3D and mixed frames use an FPS view: mouse look, WASD movement, Q/E down/up,
+  and wheel-adjusted FOV.
+- Pure 2D frames use mouse/WASD panning and wheel zoom.
+
+Activating it is an explicit capture click. Escape releases the pointer while
+preserving the debug view; click the viewport to recapture. **Exit debug view**
+returns to the latest game-authored camera. Resuming playback does not discard
+the view, so the same alternate viewpoint can inspect a live or paused game.
+This debug camera is runtime state, not a manifest setting, and is independent
+of `mouseCapture`.
 
 XR games can use the Quest-isomorphic desktop adapter with
 `... run native --emulate-xr`; see [the VR guide](docs/vr.md#desktop-xr-emulation)

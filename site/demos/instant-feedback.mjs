@@ -89,7 +89,7 @@ await page.goto(`${BASE}/demo-editor.html?game=${encodeURIComponent(GAME)}`, {
 await page.evaluate(() => window.__demoEditor.ready);
 const ov = await installOverlay(page);
 
-// The scene renders in a player iframe; the "mouse look" chip lives inside it,
+// The scene renders in a player iframe; the mouse-capture chip lives inside it,
 // so the hide style has to be injected into the frame, not the parent page.
 const playerFrame = () => page.frames().find((f) => f.url().includes("player.html"));
 await sleep(1500);

@@ -212,7 +212,7 @@ thread_local! {
     /// The page's UNLOCKED pointer over the canvas — `(pos in CSS px,
     /// primary button down, press latched since last sample)` — for the
     /// interactive game-UI overlay (docs/ui-interaction.md U3). Separate from
-    /// the pointer-lock mouse-look path above: while locked there is no
+    /// the captured relative-mouse path above: while locked there is no
     /// cursor to point at widgets with (`pos` is `None`). Level state plus a
     /// press LATCH: a mousedown+mouseup landing between two rAF frames would
     /// otherwise sample as never-pressed and the click would be lost — the
@@ -460,6 +460,13 @@ pub fn drain_input(
 /// A control from the DOM scrubber, applied by the frame loop.
 pub enum ScrubControl {
     TogglePause,
+    ToggleDetachedCamera,
+    MoveDetachedCamera {
+        forward: f32,
+        right: f32,
+        vertical: f32,
+        elapsed_seconds: f32,
+    },
     Step,
     SeekTo {
         frame: u64,
@@ -477,13 +484,28 @@ pub enum ScrubControl {
     },
 }
 
+#[derive(Default)]
+pub struct DebugCameraMotion {
+    pub look_dx: f32,
+    pub look_dy: f32,
+    pub zoom_steps: f32,
+}
+
 thread_local! {
     static SCRUB_CONTROLS: RefCell<Vec<ScrubControl>> = const { RefCell::new(Vec::new()) };
+    // Relative pointer motion is high-frequency and order-independent within a
+    // rendered frame. Coalesce it separately so a high-polling mouse cannot
+    // starve discrete pause/seek/detach controls in the bounded timeline queue.
+    static DEBUG_CAMERA_MOTION: RefCell<DebugCameraMotion> =
+        RefCell::new(DebugCameraMotion::default());
     /// Published each frame for the page's slider:
     /// `(frame, lo, hi, paused, history generation)`.
     /// `frame`/`lo`/`hi` are `-1.0` when nothing is recorded yet.
     static SCRUB_VIEW: RefCell<(f64, f64, f64, bool, u64)> =
         const { RefCell::new((-1.0, -1.0, -1.0, false, 0)) };
+    /// `(active, completed toggle generation)`. The generation acknowledges
+    /// both successful and refused requests so DOM pointer lock can reconcile.
+    static DETACHED_CAMERA_VIEW: RefCell<(bool, u32)> = const { RefCell::new((false, 0)) };
     /// Latest completed seek as `(request id, authoritative applied frame)`.
     /// The DOM uses this acknowledgement to retire optimistic handle state even
     /// when the runtime clamps or refuses a request.
@@ -764,19 +786,26 @@ pub fn take_webview_events() -> Vec<functor_runtime_common::ui::UiEvent> {
     WEBVIEW_EVENTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
-fn push_scrub(control: ScrubControl) {
+fn push_scrub(control: ScrubControl) -> bool {
     SCRUB_CONTROLS.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() < SCRUB_CONTROLS_CAP {
             c.push(control);
+            true
+        } else {
+            false
         }
-    });
+    })
 }
 
 /// Drain the queued scrubber controls; the frame loop applies them (it owns the
 /// clock pin and the game).
 pub fn take_scrub_controls() -> Vec<ScrubControl> {
     SCRUB_CONTROLS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+pub fn take_debug_camera_motion() -> DebugCameraMotion {
+    DEBUG_CAMERA_MOTION.with(|motion| std::mem::take(&mut *motion.borrow_mut()))
 }
 
 /// Publish this frame's scrubber state for the page to poll.
@@ -793,10 +822,88 @@ pub fn publish_scrub_view(
     SCRUB_VIEW.with(|v| *v.borrow_mut() = (f, lo, hi, paused, generation));
 }
 
+pub fn publish_detached_camera(active: bool) {
+    DETACHED_CAMERA_VIEW.with(|view| view.borrow_mut().0 = active);
+}
+
+pub fn acknowledge_detached_camera(active: bool) {
+    DETACHED_CAMERA_VIEW.with(|view| {
+        let mut view = view.borrow_mut();
+        view.0 = active;
+        view.1 = view.1.wrapping_add(1);
+    });
+}
+
 /// Page → runtime: toggle pause (pin/unpin the clock).
 #[wasm_bindgen]
 pub fn functor_lang_scrub_toggle_pause() {
     push_scrub(ScrubControl::TogglePause);
+}
+
+/// Page → runtime: snapshot or discard the shell-owned debug view.
+#[wasm_bindgen]
+pub fn functor_lang_viewer_toggle_detached() {
+    if !push_scrub(ScrubControl::ToggleDetachedCamera) {
+        // The DOM disables the control until this generation advances. Refuse
+        // a saturated request explicitly so pointer lock and the retry button
+        // reconcile instead of waiting forever for a command we dropped.
+        let active = DETACHED_CAMERA_VIEW.with(|view| view.borrow().0);
+        acknowledge_detached_camera(active);
+    }
+}
+
+/// Page → runtime: pointer-lock relative debug-camera look/pan motion.
+#[wasm_bindgen]
+pub fn functor_lang_viewer_look(dx: f32, dy: f32) {
+    if !dx.is_finite() || !dy.is_finite() {
+        return;
+    }
+    DEBUG_CAMERA_MOTION.with(|motion| {
+        let mut motion = motion.borrow_mut();
+        motion.look_dx = (motion.look_dx + dx).clamp(-1_000_000.0, 1_000_000.0);
+        motion.look_dy = (motion.look_dy + dy).clamp(-1_000_000.0, 1_000_000.0);
+    });
+}
+
+/// Page → runtime: debug-camera WASD + Q/E movement.
+#[wasm_bindgen]
+pub fn functor_lang_viewer_move(
+    forward: f32,
+    right: f32,
+    vertical: f32,
+    elapsed_seconds: f32,
+) {
+    push_scrub(ScrubControl::MoveDetachedCamera {
+        forward,
+        right,
+        vertical,
+        elapsed_seconds,
+    });
+}
+
+/// Page → runtime: wheel zoom; positive steps zoom in.
+#[wasm_bindgen]
+pub fn functor_lang_viewer_zoom(steps: f32) {
+    if !steps.is_finite() {
+        return;
+    }
+    DEBUG_CAMERA_MOTION.with(|motion| {
+        let mut motion = motion.borrow_mut();
+        motion.zoom_steps = (motion.zoom_steps + steps).clamp(-1_000.0, 1_000.0);
+    });
+}
+
+/// Runtime → page: whether the shell-owned debug view is active.
+#[wasm_bindgen]
+pub fn functor_lang_viewer_detached() -> bool {
+    DETACHED_CAMERA_VIEW.with(|view| view.borrow().0)
+}
+
+/// Runtime → page: increments after every detach/reattach request is applied
+/// or refused.
+#[wasm_bindgen]
+pub fn functor_lang_viewer_detached_generation() -> u32 {
+    DETACHED_CAMERA_VIEW.with(|view| view.borrow().1)
 }
 
 /// Page → runtime: advance exactly one frame, then hold.

@@ -1422,6 +1422,7 @@ pub fn android_main(app: AndroidApp) {
                 lod_projection_scale,
                 lod_viewport_height,
                 terrain_frame_id,
+                None,
                 frame_time.clone(),
                 Viewport::new(eye.width, eye.height),
                 functor_runtime_common::DebugRenderMode::Default,

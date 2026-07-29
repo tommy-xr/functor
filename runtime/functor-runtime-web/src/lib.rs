@@ -17,11 +17,12 @@ use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
+use functor_runtime_common::viewer::DebugCamera;
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, SceneContext,
 };
 use glow::*;
-use js_sys::{Function, Object, Reflect, WebAssembly};
+use js_sys::{Function, Object, WebAssembly};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 
@@ -247,7 +248,7 @@ pub fn functor_lang_is_running() -> bool {
 
 /// Does the live producer define any hook that shell input reaches only while
 /// the pointer is captured? Host pages use this at load and after source pushes
-/// to teach about a missing `viewer.camera.control = "game"` opt-in.
+/// to teach when an explicit `mouseCapture: false` disables captured hooks.
 #[wasm_bindgen]
 pub fn functor_lang_uses_captured_mouse_input() -> bool {
     GAME.with(|g| {
@@ -1231,6 +1232,8 @@ async fn run_async() -> Result<(), JsValue> {
         // branch. `?fixed-time` seeds an unconditional pin for deterministic
         // golden captures.
         let mut clock = GameClock::new(fixed_time);
+        let mut detached_camera = DebugCamera::default();
+        let mut pending_detach = false;
 
         // Future preview (docs/time-travel.md T6/T6d): trail dots, scene-space
         // strobe copies, or the screen-space ghost compositor — one mode, driven
@@ -1284,6 +1287,30 @@ async fn run_async() -> Result<(), JsValue> {
                         }
                         clock.toggle_pause();
                     }
+                    functor_lang_game::ScrubControl::ToggleDetachedCamera => {
+                        if detached_camera.is_detached() {
+                            detached_camera.reattach();
+                            functor_lang_game::acknowledge_detached_camera(false);
+                        } else {
+                            // Apply after this frame renders so a seek queued
+                            // in the same batch snapshots the selected frame,
+                            // never the previously displayed camera.
+                            pending_detach = true;
+                        }
+                    }
+                    functor_lang_game::ScrubControl::MoveDetachedCamera {
+                        forward,
+                        right,
+                        vertical,
+                        elapsed_seconds,
+                    } => {
+                        detached_camera.move_local(
+                            forward,
+                            right,
+                            vertical,
+                            elapsed_seconds,
+                        );
+                    }
                     functor_lang_game::ScrubControl::Step => clock.step(1.0 / 60.0),
                     functor_lang_game::ScrubControl::SetPreview(mode) => {
                         preview_mode = functor_runtime_common::PreviewMode::from_index(mode);
@@ -1327,6 +1354,9 @@ async fn run_async() -> Result<(), JsValue> {
                     }
                 }
             }
+            let camera_motion = functor_lang_game::take_debug_camera_motion();
+            detached_camera.look(camera_motion.look_dx, camera_motion.look_dy);
+            detached_camera.zoom(camera_motion.zoom_steps);
 
             // Fixed-timestep model loop (docs/time-travel.md), mirroring the
             // desktop shells: advance `tick` in whole 1/60 steps decoupled from
@@ -1432,10 +1462,23 @@ async fn run_async() -> Result<(), JsValue> {
             }
 
             let mut frame: Frame = game.render(frame_time.clone());
+            if pending_detach
+                && clock.pending_frames() == 0
+                && clock.pending_steps() == 0
+            {
+                pending_detach = false;
+                let active = detached_camera.detach(&frame);
+                functor_lang_game::acknowledge_detached_camera(active);
+            }
+            if detached_camera.is_detached() && !detached_camera.is_compatible(&frame) {
+                detached_camera.reattach();
+                functor_lang_game::acknowledge_detached_camera(false);
+            }
+            let view_camera = detached_camera.camera(&frame.camera).clone();
 
             // Soundscape: aim the listener from this frame's camera, then
             // reconcile the desired looping voices against the live ones.
-            update_soundscape(&**game, &frame.camera);
+            update_soundscape(&**game, &view_camera);
 
             // Scene-diff preview (docs/time-travel.md T6): the DOM preview
             // <select>'s trail/strobe overlays, from ONE shared forward-sim —
@@ -1561,7 +1604,7 @@ async fn run_async() -> Result<(), JsValue> {
             // pausing freezes it. `None` = the recorded-log/coast path (web has
             // no --input-script). Empty (→ this arm skipped) leaves live
             // rendering unchanged.
-            let ghosts = if selected.ghost {
+            let mut ghosts = if selected.ghost {
                 // The ⚙ popover's rate × window, clamped to the compositor's
                 // 8-target cap.
                 let divisions =
@@ -1612,6 +1655,11 @@ async fn run_async() -> Result<(), JsValue> {
                 next_live_ghost_refresh = 0.0;
                 Vec::new()
             };
+            let compatible_ghosts = DebugCamera::compatible_prefix_len(
+                &frame,
+                ghosts.iter().map(|(candidate, _)| candidate),
+            );
+            ghosts.truncate(compatible_ghosts);
 
             // Preview overlays go on the live frame. (The single-valued mode
             // selector means the scene-diff preview and the ghost compositor
@@ -1620,13 +1668,12 @@ async fn run_async() -> Result<(), JsValue> {
             if let Some(p) = &preview {
                 p.apply_all(&mut frame);
             }
-
             // Shadow + forward passes, shared with the desktop runtime. Each
             // ghost frame renders at ITS OWN division-boundary time, so
             // render-time animation (the skinned pose) advances through the
             // strobe instead of freezing at the paused pose.
             if !ghosts.is_empty() {
-                functor_runtime_common::render_composited_frames(
+                functor_runtime_common::render_composited_frames_with_view(
                     &gl,
                     shader_version,
                     asset_cache.clone(),
@@ -1634,18 +1681,21 @@ async fn run_async() -> Result<(), JsValue> {
                     &shadow_map,
                     &ghosts,
                     &vec![1.0f32; ghosts.len()],
+                    Some(&view_camera),
+                    detached_camera.sprite_cameras(),
                     viewport,
                     debug_render_mode,
                 );
             } else {
-                functor_runtime_common::render_frame(
+                functor_runtime_common::render_frame_with_view(
                     &gl,
                     shader_version,
                     asset_cache.clone(),
                     &scene_context,
                     &shadow_map,
                     &frame,
-                    &frame.camera,
+                    &view_camera,
+                    detached_camera.sprite_cameras(),
                     frame_time.clone(),
                     viewport,
                     debug_render_mode,
@@ -1707,6 +1757,7 @@ async fn run_async() -> Result<(), JsValue> {
                 clock.is_paused(),
                 game.scene_timeline_generation(),
             );
+            functor_lang_game::publish_detached_camera(detached_camera.is_detached());
 
             // Publish the paused-inspector trace for the page's poll loop
             // (visual-debugger PR2b). Cheap: while playing this is the byte-stable

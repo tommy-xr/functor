@@ -26,8 +26,8 @@ export interface Example {
   label: string;
   /** Path relative to the repo root; copied to `examples/<id>.fun`. */
   source: string;
-  /** Captured mouse input is game-owned (the flattened-site manifest seam). */
-  cameraControl?: "game";
+  /** Explicitly disable the default captured game mouse input. */
+  mouseCapture?: false;
   /** Sibling .fun modules the project needs (`file = module`). */
   siblings?: ExampleCopy[];
   /** Local binary assets the project's `Asset.*` locators resolve to. */
@@ -65,7 +65,6 @@ export const EXAMPLES: Example[] = [
     id: "terrain",
     label: "Terrain (stress test)",
     source: "site/examples/terrain.fun",
-    cameraControl: "game",
     assets: [
       { source: "examples/terrain/heightmap.png", output: "heightmap.png" },
     ],

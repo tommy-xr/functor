@@ -114,6 +114,9 @@ jobs:
       - name: Run scrubber model tests
         run: npm run test:scrubber
 
+      - name: Run detached-camera browser test
+        run: npm run test:detached-camera
+
       - name: Run site sandbox browser tests
         run: npm run test:site
 

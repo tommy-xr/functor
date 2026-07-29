@@ -74,14 +74,13 @@ const frame = document.getElementById("player") as HTMLIFrameElement;
 const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
 const pageParams = new URLSearchParams(window.location.search);
 const requested = pageParams.get("example");
-// Inline programs have no manifest, so `?camera=game` / `?cursor=visible` are
-// their explicit project-setting seams. Visible wins if a hand-edited URL
-// supplies both. Example metadata remains authoritative when present; source
-// hooks never imply ownership.
+// Inline programs have no manifest, so `?mouseCapture=false` /
+// `?cursor=visible` are their explicit project-setting seams. Captured game
+// input defaults on; visible-pointer mode disables it.
 const pageCursorPolicy =
   pageParams.get("cursor") === "visible" ? "visible" : null;
-const pageCameraControl =
-  !pageCursorPolicy && pageParams.get("camera") === "game" ? "game" : null;
+const pageMouseCapture =
+  !pageCursorPolicy && pageParams.get("mouseCapture") === "false" ? false : null;
 const initialExample = EXAMPLES.some((e) => e.id === requested) ? requested! : EXAMPLES[0].id;
 
 const picker = createStore<PickerState>({
@@ -361,7 +360,7 @@ const loadInline = (b64u: string) => {
   // scrubber=hidden: the page's chrono bar is the transport UI; the player
   // mounts the __scrub seam with no bar of its own.
   const params = new URLSearchParams({ src: b64u, scrubber: "hidden" });
-  if (pageCameraControl) params.set("camera", pageCameraControl);
+  if (pageMouseCapture === false) params.set("mouseCapture", "false");
   if (pageCursorPolicy) params.set("cursor", pageCursorPolicy);
   frame.src = `player.html?${params}`;
   mp?.setSrc(frame.src);
@@ -410,9 +409,9 @@ const loadExample = async (id: string) => {
   setDoc(source, siblings, assets);
   setStatus("busy", "◌ loading…");
   const params = new URLSearchParams({ game: url, scrubber: "hidden" });
-  const cameraControl = example?.cameraControl ?? pageCameraControl;
-  if (cameraControl) params.set("camera", cameraControl);
-  if (!cameraControl && pageCursorPolicy) {
+  const mouseCapture = example?.mouseCapture ?? pageMouseCapture;
+  if (mouseCapture === false) params.set("mouseCapture", "false");
+  if (pageCursorPolicy) {
     params.set("cursor", pageCursorPolicy);
   }
   for (const file of files) params.append("file", file);

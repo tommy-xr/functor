@@ -7,7 +7,7 @@ use crate::asset::AssetCache;
 use crate::material::BasicMaterial;
 use crate::shadow::{self, ShadowMap};
 use crate::{
-    Camera, DebugRenderMode, Frame, FrameTime, Light, RenderContext, RenderPass, Scene3D,
+    Camera, Camera2D, DebugRenderMode, Frame, FrameTime, Light, RenderContext, RenderPass, Scene3D,
     SceneContext, ShadowUniforms, Viewport,
 };
 
@@ -61,6 +61,44 @@ pub fn render_frame(
         None,
         None,
         None,
+        None,
+        frame_time,
+        viewport,
+        debug_render_mode,
+    );
+}
+
+/// Render a frame with shell-owned overrides for its main 3D camera and/or
+/// ordered 2D layer cameras. Render-target passes retain their authored
+/// cameras, terrain LOD/culling retains `frame.camera`, and the frame itself is
+/// never mutated. A debug observer can therefore inspect what the real camera
+/// selected without becoming the culling camera.
+#[allow(clippy::too_many_arguments)]
+pub fn render_frame_with_view(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    scene_context: &SceneContext,
+    shadow_map: &ShadowMap,
+    frame: &Frame,
+    camera: &Camera,
+    sprite_cameras: Option<&[Camera2D]>,
+    frame_time: FrameTime,
+    viewport: Viewport,
+    debug_render_mode: DebugRenderMode,
+) {
+    render_frame_inner(
+        gl,
+        shader_version,
+        asset_cache,
+        scene_context,
+        shadow_map,
+        frame,
+        camera,
+        sprite_cameras,
+        None,
+        None,
+        None,
         frame_time,
         viewport,
         debug_render_mode,
@@ -89,6 +127,7 @@ pub fn render_frame_with_projection(
     lod_projection_scale: f32,
     lod_viewport_height: f32,
     terrain_frame_id: u64,
+    sprite_cameras: Option<&[Camera2D]>,
     frame_time: FrameTime,
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
@@ -101,6 +140,7 @@ pub fn render_frame_with_projection(
         shadow_map,
         frame,
         camera,
+        sprite_cameras,
         Some(projection_matrix),
         Some((
             lod_camera,
@@ -124,6 +164,7 @@ fn render_frame_inner(
     shadow_map: &ShadowMap,
     frame: &Frame,
     camera: &Camera,
+    sprite_cameras: Option<&[Camera2D]>,
     projection_matrix: Option<&Matrix4<f32>>,
     lod_view: Option<(&Camera, &[Matrix4<f32>], f32, f32)>,
     terrain_frame_id: Option<u64>,
@@ -226,6 +267,7 @@ target frame are ignored (depth 1 only)",
             &pass.frame,
             frame_time.clone(),
             Viewport::new(width, height),
+            None,
         );
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -298,6 +340,7 @@ target frame are ignored (depth 1 only)",
         frame,
         frame_time,
         viewport,
+        sprite_cameras,
     );
 }
 
@@ -313,6 +356,7 @@ fn render_sprite_layers(
     frame: &Frame,
     frame_time: FrameTime,
     viewport: Viewport,
+    camera_overrides: Option<&[Camera2D]>,
 ) {
     if frame.sprite_layers.is_empty() {
         return;
@@ -332,8 +376,11 @@ fn render_sprite_layers(
         );
     }
 
-    for layer in &frame.sprite_layers {
-        let fitted = layer.camera.fitted_viewport(viewport);
+    for (index, layer) in frame.sprite_layers.iter().enumerate() {
+        let camera_2d = camera_overrides
+            .and_then(|cameras| cameras.get(index))
+            .unwrap_or(&layer.camera);
+        let fitted = camera_2d.fitted_viewport(viewport);
         unsafe {
             gl.viewport(
                 fitted.x as i32,
@@ -348,8 +395,8 @@ fn render_sprite_layers(
                 fitted.height as i32,
             );
         }
-        let camera = layer.camera.render_camera();
-        let projection = layer.camera.projection_matrix();
+        let camera = camera_2d.render_camera();
+        let projection = camera_2d.projection_matrix();
         forward_pass(
             gl,
             shader_version,
@@ -422,6 +469,39 @@ pub fn render_composited_frames(
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
 ) {
+    render_composited_frames_with_view(
+        gl,
+        shader_version,
+        asset_cache,
+        scene_context,
+        shadow_map,
+        frames,
+        weights,
+        None,
+        None,
+        viewport,
+        debug_render_mode,
+    );
+}
+
+/// Composite frames through one shell-owned observer view while keeping every
+/// frame's authored camera as its terrain/culling camera. This is the debug
+/// camera seam: moving the observer exposes what the real camera culled,
+/// without changing render-target/portal passes or recorded frames.
+#[allow(clippy::too_many_arguments)]
+pub fn render_composited_frames_with_view(
+    gl: &glow::Context,
+    shader_version: &str,
+    asset_cache: Arc<AssetCache>,
+    scene_context: &SceneContext,
+    shadow_map: &ShadowMap,
+    frames: &[(Frame, FrameTime)],
+    weights: &[f32],
+    camera: Option<&Camera>,
+    sprite_cameras: Option<&[Camera2D]>,
+    viewport: Viewport,
+    debug_render_mode: DebugRenderMode,
+) {
     use crate::composite::{normalize_weights, MAX_COMPOSITE};
     use crate::render_target::RenderTargetDescriptor;
 
@@ -474,7 +554,7 @@ pub fn render_composited_frames(
             scene_context,
             &frame.scene,
             &frame.lights,
-            &frame.camera,
+            camera.unwrap_or(&frame.camera),
             frame_time.clone(),
             debug_render_mode,
             shadow,
@@ -496,6 +576,7 @@ pub fn render_composited_frames(
             frame,
             frame_time.clone(),
             Viewport::new(width, height),
+            sprite_cameras.filter(|cameras| cameras.len() == frame.sprite_layers.len()),
         );
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);

@@ -350,7 +350,10 @@ Two implementation points decide whether it looks right:
 - **Replay recorded inputs, freeze the camera.** Forward-stepping replays the
   frame-indexed input log (see "The event log") for frames it has, then coasts;
   all divisions render with the *paused* camera so only world motion smears, not
-  the view. After a safe hot reload, an input-only model game with complete
+  the view. If the future switches between pure 2D and 3D/mixed rendering, or
+  changes a pure-2D layer count, the preview stops at that boundary rather than
+  applying an incompatible pinned view to later frames. After a safe hot reload,
+  an input-only model game with complete
   retained history first replays from the edited program's `init` to rebuild the
   complete retained timeline and adopt the selected frame; otherwise that
   snapshot can carry old derived state into every future sample even though the
@@ -439,7 +442,7 @@ the project's "design for agent verifiability" rule.
 | --- | --- | --- |
 | **T1. Coupled model+world recorder** | `History<T>` snapshot ring + `SceneRecorder`; per-frame model + physics-fixed-frame recording; `rewind_scene_to`/`seek_scene_to` exact-or-refused; live `POST /rewind`. Landed as a snapshot-ring + shared rendered-frame clock rather than a single frame `Simulatable` (see the design note). Headless integration tests. | **Shipped** (#218/#219/#222/#225) |
 | **T2. Pointer/click input plumbing** | Feed real pointer `RawInput` to egui (desktop); DOM mouse for the web scrubber. `.interactable(false)` dropped for the scrubber panel. | **Shipped** (#226) |
-| **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** custom DOM/SVG timeline with two accessible handles, a frozen paused viewport, input/reload markers, and an opt-in "🖱 mouse look" button for projects with `viewer.camera.control = "game"`. | **Shipped** (#226 + follow-up) |
+| **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** custom DOM/SVG timeline with two accessible handles, a frozen paused viewport, and input/reload markers. Game-owned mouse capture defaults on when captured hooks exist (`"mouseCapture": false` opts out). Independently, every project has a runtime-owned debug view while playing or paused: FPS for 3D/mixed frames, pan/zoom for pure 2D. Debug navigation never mutates game state/history or replaces the authored culling/portal camera. | **Shipped** (#226 + follow-ups) |
 | **T4. Interactive Functor Lang `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable Functor Lang closure); egui hit-tests and dispatches back into `update`. Independent of the scrubber (which is shell-owned) — a general game-UI capability. | Not started |
 | **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; a **screen-space compositor** (new fullscreen average pass at the tail of `render_frame`, reusing the double-buffered `RenderTargetBuffers`) renders each scene to its own target and averages them (K=2, weights 0.5/0.5). Shares its whole implementation with T6. | Not started |
 | **T6. Forward-ghosting (trajectory preview)** | A frame-indexed **input log** in the recorder (plain data, survives reload) + a headless deterministic forward-step (replay inputs, suppress effects) + the T5 compositor at K=N, `1/N` weights; wire to hot-reload for the tweak-a-constant loop; slider once T4 lands. The *Inventing on Principle* demo — no trail primitive needed. | Not started |

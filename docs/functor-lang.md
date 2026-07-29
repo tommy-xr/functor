@@ -314,10 +314,9 @@ snapshots — no GPU, fully agent-verifiable.
       `mouseButton(model, button, isDown)` entry point whose `button` is the
       built-in `Mouse` module's variant (`<builtin>/Mouse.fun`, injected beside
       `Key`): `Mouse.Left`/`Right`/`Middle`. Captured buttons reach game logic
-      only after the explicit project opt-in
-      `viewer.camera.control = "game"` in `functor.json`. Without it, native
-      keeps the cursor free, web hides the mouse-look button, and the runtime
-      warns once about otherwise-inert pointer hooks. A
+      by default when a project implements captured mouse hooks;
+      `"mouseCapture": false` in `functor.json` opts out. Native and web hide
+      capture controls entirely when the running program has no such hooks. A
       `"cursor":"visible"` project instead receives absolute pointer motion
       and clicks not owned by a primary overlay interaction, while keeping the
       system cursor free; right/middle buttons and wheel input remain
@@ -325,6 +324,14 @@ snapshots — no GPU, fully agent-verifiable.
       Native capture starts on a non-UI click and Escape releases it. This is
       the rule `mouseMove`/`mouseWheel` already followed and keeps clicks from
       being eaten by free-look capture.
+      The timeline also exposes a universal, shell-owned **Debug camera** while
+      playing or paused—FPS mouse look + WASD + Q/E + wheel FOV for 3D/mixed
+      frames, pan + wheel zoom for pure 2D. It snapshots the authored view but
+      never changes the model, recorded input, replay, `GET /scene`, or the
+      authored camera used by culling and render-target/portal passes. Escape
+      releases pointer capture without discarding it; **Exit debug view**
+      reattaches. It needs no manifest setting and is independent of
+      `mouseCapture`.
       A held button is swept released on focus loss, Escape, and the console
       toggle so it cannot fire forever. The held level state rides on the
       sampled snapshot as `mouse.buttons.{left,right,middle}`, making

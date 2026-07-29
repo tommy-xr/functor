@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
-use functor_runtime_common::viewer::CameraControl;
 
 use crate::output::{emit, Event, Severity};
 // `util` (the shell-command runner + wasm dev server) is only used by the
@@ -34,31 +33,16 @@ use crate::Environment;
 pub struct FunctorLangProject {
     /// The game source, relative to the project dir (default `game.fun`).
     pub entry: String,
-    /// Main-viewport input ownership selected by `viewer.camera.control`.
-    pub camera_control: CameraControl,
-    /// Whether the shell exposes an absolute pointer or uses the captured
-    /// camera-control path.
+    /// Whether physical relative mouse input is captured and routed to the game.
+    pub mouse_capture: bool,
+    /// Whether the shell exposes an absolute pointer to the game.
     pub cursor: CursorPolicy,
-}
-
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ViewerSettings {
-    #[serde(default)]
-    camera: ViewerCameraSettings,
-}
-
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ViewerCameraSettings {
-    #[serde(default)]
-    control: CameraControl,
 }
 
 /// Shell pointer behavior declared by `functor.json`'s `cursor` field.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CursorPolicy {
-    /// Use the captured camera-control path when the project opts into it.
+    /// Keep the system cursor in its ordinary shell/UI mode.
     #[default]
     Captured,
     /// Keep the system cursor visible and deliver absolute pointer input.
@@ -91,17 +75,24 @@ enum FunctorLangEntries {
 /// What `detect` reads from `functor.json`, before an entry is selected.
 pub struct FunctorLangConfig {
     entries: FunctorLangEntries,
-    camera_control: Result<CameraControl, String>,
+    mouse_capture: Result<Option<bool>, String>,
     cursor: Option<serde_json::Value>,
 }
 
-fn manifest_camera_control(json: &serde_json::Value) -> Result<CameraControl, String> {
-    let Some(viewer) = json.get("viewer") else {
-        return Ok(CameraControl::None);
-    };
-    serde_json::from_value::<ViewerSettings>(viewer.clone())
-        .map(|settings| settings.camera.control)
-        .map_err(|error| format!("invalid functor.json `viewer` settings: {error}"))
+fn manifest_mouse_capture(json: &serde_json::Value) -> Result<Option<bool>, String> {
+    if json.get("viewer").is_some() {
+        return Err(
+            "functor.json `viewer.camera.control` was removed; remove `viewer` \
+for the default captured game input, or use top-level `\"mouseCapture\": false` \
+to keep the pointer free"
+                .to_string(),
+        );
+    }
+    match json.get("mouseCapture") {
+        None => Ok(None),
+        Some(serde_json::Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err("functor.json `mouseCapture` must be true or false".to_string()),
+    }
 }
 
 /// Read `functor.json` and return the Functor Lang project settings when
@@ -131,7 +122,7 @@ pub fn detect(working_directory: &str) -> Option<FunctorLangConfig> {
     };
     Some(FunctorLangConfig {
         entries,
-        camera_control: manifest_camera_control(&json),
+        mouse_capture: manifest_mouse_capture(&json),
         cursor: json.get("cursor").cloned(),
     })
 }
@@ -140,10 +131,13 @@ impl FunctorLangConfig {
     fn cursor_policy(&self) -> Result<CursorPolicy, Error> {
         match self.cursor.as_ref() {
             None => Ok(CursorPolicy::Captured),
-            Some(value) if value.as_str() == Some("captured") => Ok(CursorPolicy::Captured),
             Some(value) if value.as_str() == Some("visible") => Ok(CursorPolicy::Visible),
+            Some(value) if value.as_str() == Some("captured") => Err(Error::other(
+                "functor.json `cursor: \"captured\"` was removed; remove `cursor` \
+because capture is now the default",
+            )),
             Some(_) => Err(Error::other(
-                "functor.json `cursor` must be \"captured\" or \"visible\"",
+                "functor.json `cursor` only supports \"visible\"",
             )),
         }
     }
@@ -152,27 +146,25 @@ impl FunctorLangConfig {
     /// `--entry <name>`; a `Named` project with no request defaults to
     /// `client`, or the sole entry.
     pub fn select(&self, requested: Option<&str>) -> Result<FunctorLangProject, Error> {
-        let mut camera_control = *self
-            .camera_control
+        let requested_mouse_capture = *self
+            .mouse_capture
             .as_ref()
             .map_err(|message| Error::other(message.clone()))?;
         let cursor = self.cursor_policy()?;
-        // `viewer.camera.control` is the canonical captured-input setting on
-        // current main. Keep the branch's explicit `"cursor":"captured"`
-        // spelling as a compatibility alias, while an absent `cursor` retains
-        // main's safe free-pointer default.
-        if self.cursor.is_some() && cursor == CursorPolicy::Captured {
-            camera_control = CameraControl::Game;
-        }
-        if camera_control == CameraControl::Game && cursor == CursorPolicy::Visible {
+        if requested_mouse_capture == Some(true) && cursor == CursorPolicy::Visible {
             return Err(Error::other(
-                "functor.json cannot combine `cursor: \"visible\"` with \
-`viewer.camera.control: \"game\"` — choose absolute pointer input or captured mouse look",
+                "functor.json cannot combine `\"mouseCapture\": true` with \
+`\"cursor\": \"visible\"` — choose captured or absolute mouse input",
             ));
         }
+        // Games capture relative mouse input by default. An absolute-pointer
+        // project opts into `cursor: "visible"`, which naturally disables
+        // capture unless the manifest explicitly asks for the contradictory
+        // combination above.
+        let mouse_capture = requested_mouse_capture.unwrap_or(cursor != CursorPolicy::Visible);
         let project = |entry: String| FunctorLangProject {
             entry,
-            camera_control,
+            mouse_capture,
             cursor,
         };
         match &self.entries {
@@ -496,11 +488,12 @@ impl FunctorLangProject {
             "--functor-lang".to_string(),
             "--game-path".to_string(),
             self.entry.clone(),
-            "--camera-control".to_string(),
-            self.camera_control.to_string(),
             "--cursor".to_string(),
             self.cursor.as_str().to_string(),
         ];
+        if self.mouse_capture {
+            argv.push("--mouse-capture".to_string());
+        }
         let (runner_args, debug_warning) = resolve_debug_args(develop, runner_args);
         if let Some(message) = debug_warning {
             emit(Event::Warning { message });
@@ -784,7 +777,7 @@ relative path inside it (got {})",
             let export = util::export_functor_lang_wasm(
                 working_directory,
                 &self.entry,
-                self.camera_control,
+                self.mouse_capture,
                 self.cursor.as_str(),
             )?;
             for name in &export.shadowed {
@@ -881,7 +874,7 @@ relative path inside it (got {})",
             let wasm_server_start = WasmDevServer::start_functor_lang(
                 working_directory,
                 &self.entry,
-                self.camera_control,
+                self.mouse_capture,
                 self.cursor.as_str(),
             );
             if no_open {
@@ -1395,8 +1388,8 @@ mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
     use super::{
-        manifest_camera_control, nth_line, project_asset_files, resolve_debug_args, CameraControl,
-        CursorPolicy, FunctorLangConfig, FunctorLangEntries,
+        manifest_mouse_capture, nth_line, project_asset_files, resolve_debug_args, CursorPolicy,
+        FunctorLangConfig, FunctorLangEntries,
     };
 
     fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
@@ -1483,7 +1476,7 @@ mod tests {
     fn single(entry: &str) -> FunctorLangConfig {
         FunctorLangConfig {
             entries: FunctorLangEntries::Single(entry.to_string()),
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: None,
         }
     }
@@ -1496,49 +1489,55 @@ mod tests {
                     .map(|(k, v)| (k.to_string(), serde_json::Value::from(*v)))
                     .collect(),
             ),
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: None,
         }
     }
 
     #[test]
-    fn camera_control_is_opt_in_and_nested_under_viewer() {
-        assert_eq!(
-            manifest_camera_control(&serde_json::json!({
-                "language": "functor-lang",
-                "entry": "game.fun"
-            }))
-            .unwrap(),
-            CameraControl::None
-        );
-        assert_eq!(
-            manifest_camera_control(&serde_json::json!({
-                "viewer": { "camera": { "control": "game" } }
-            }))
-            .unwrap(),
-            CameraControl::Game
-        );
-        assert_eq!(
-            manifest_camera_control(&serde_json::json!({
-                "viewer": { "camera": { "control": "none" } }
-            }))
-            .unwrap(),
-            CameraControl::None
-        );
+    fn mouse_capture_is_a_top_level_boolean_that_defaults_on_for_games() {
+        let defaults = manifest_mouse_capture(&serde_json::json!({
+            "language": "functor-lang",
+            "entry": "game.fun"
+        }))
+        .unwrap();
+        assert_eq!(defaults, None);
+
+        let enabled = manifest_mouse_capture(&serde_json::json!({
+            "mouseCapture": true
+        }))
+        .unwrap();
+        assert_eq!(enabled, Some(true));
+
+        let disabled = manifest_mouse_capture(&serde_json::json!({
+            "mouseCapture": false
+        }))
+        .unwrap();
+        assert_eq!(disabled, Some(false));
+
+        assert!(manifest_mouse_capture(&serde_json::json!({
+            "mouseCapture": "yes"
+        }))
+        .unwrap_err()
+        .contains("true or false"));
     }
 
     #[test]
-    fn unimplemented_or_malformed_camera_controls_are_refused() {
+    fn removed_viewer_camera_settings_point_to_mouse_capture() {
         for json in [
+            serde_json::json!({ "viewer": { "camera": { "control": "game" } } }),
             serde_json::json!({ "viewer": { "camera": { "control": "orbit" } } }),
+            serde_json::json!({ "viewer": { "camera": { "detached": "fps" } } }),
+            serde_json::json!({ "viewer": { "debugCamera": "fps" } }),
             serde_json::json!({ "viewer": { "camera": { "controls": "game" } } }),
             serde_json::json!({ "viewer": { "camrea": { "control": "game" } } }),
             serde_json::json!({ "viewer": { "control": "game" } }),
             serde_json::json!({ "viewer": { "camera": "game" } }),
             serde_json::json!({ "viewer": "game" }),
         ] {
-            let error = manifest_camera_control(&json).unwrap_err();
-            assert!(error.contains("invalid functor.json `viewer`"), "{error}");
+            let error = manifest_mouse_capture(&json).unwrap_err();
+            assert!(error.contains("was removed"), "{error}");
+            assert!(error.contains("mouseCapture"), "{error}");
         }
     }
 
@@ -1546,7 +1545,7 @@ mod tests {
     fn single_entry_selects_by_default_and_rejects_the_flag() {
         let project = single("game.fun").select(None).unwrap();
         assert_eq!(project.entry, "game.fun");
-        assert_eq!(project.camera_control, CameraControl::None);
+        assert!(project.mouse_capture);
         assert_eq!(project.cursor, CursorPolicy::Captured);
         let err = single("game.fun").select(Some("server")).unwrap_err();
         assert!(err.to_string().contains("single `entry`"), "{err}");
@@ -1556,23 +1555,24 @@ mod tests {
     fn cursor_policy_is_explicit_and_validated() {
         let visible = FunctorLangConfig {
             entries: FunctorLangEntries::Single("game.fun".to_string()),
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: Some(serde_json::Value::from("visible")),
         };
-        assert_eq!(visible.select(None).unwrap().cursor, CursorPolicy::Visible);
+        let visible = visible.select(None).unwrap();
+        assert_eq!(visible.cursor, CursorPolicy::Visible);
+        assert!(!visible.mouse_capture);
 
         let invalid = FunctorLangConfig {
             entries: FunctorLangEntries::Single("game.fun".to_string()),
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: Some(serde_json::Value::from("free")),
         };
         let err = invalid.select(None).unwrap_err();
-        assert!(err.to_string().contains("captured"), "{err}");
         assert!(err.to_string().contains("visible"), "{err}");
 
         let non_string = FunctorLangConfig {
             entries: FunctorLangEntries::Single("game.fun".to_string()),
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: Some(serde_json::Value::Bool(true)),
         };
         assert!(non_string
@@ -1583,13 +1583,12 @@ mod tests {
 
         let captured = FunctorLangConfig {
             entries: FunctorLangEntries::Single("game.fun".to_string()),
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: Some(serde_json::Value::from("captured")),
         };
-        assert_eq!(
-            captured.select(None).unwrap().camera_control,
-            CameraControl::Game
-        );
+        let err = captured.select(None).unwrap_err();
+        assert!(err.to_string().contains("was removed"), "{err}");
+        assert!(err.to_string().contains("capture is now the default"), "{err}");
     }
 
     #[test]
@@ -1600,14 +1599,26 @@ mod tests {
     }
 
     #[test]
-    fn visible_pointer_and_captured_camera_control_are_mutually_exclusive() {
+    fn visible_pointer_and_explicit_mouse_capture_are_mutually_exclusive() {
         let config = FunctorLangConfig {
             entries: FunctorLangEntries::Single("game.fun".to_string()),
-            camera_control: Ok(CameraControl::Game),
+            mouse_capture: Ok(Some(true)),
             cursor: Some(serde_json::Value::from("visible")),
         };
         let err = config.select(None).unwrap_err();
         assert!(err.to_string().contains("cannot combine"), "{err}");
+    }
+
+    #[test]
+    fn mouse_capture_false_is_the_free_pointer_exception() {
+        let config = FunctorLangConfig {
+            entries: FunctorLangEntries::Single("game.fun".to_string()),
+            mouse_capture: Ok(Some(false)),
+            cursor: None,
+        };
+        let project = config.select(None).unwrap();
+        assert!(!project.mouse_capture);
+        assert_eq!(project.cursor, CursorPolicy::Captured);
     }
 
     #[test]
@@ -1645,7 +1656,7 @@ mod tests {
     fn conflicting_entry_and_entries_are_refused() {
         let config = FunctorLangConfig {
             entries: FunctorLangEntries::Conflicting,
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: None,
         };
         let err = config.select(None).unwrap_err();
@@ -1664,7 +1675,7 @@ mod tests {
                 "client".to_string(),
                 serde_json::Value::from(3),
             )]),
-            camera_control: Ok(CameraControl::None),
+            mouse_capture: Ok(None),
             cursor: None,
         };
         let err = config.select(None).unwrap_err();
