@@ -7,6 +7,7 @@ import type {
   ProjectSources,
   RuntimeState,
   Scene,
+  StepUntilOptions,
   WaitForOptions,
   XrInputSample,
   XrInputSnapshot,
@@ -16,8 +17,10 @@ import type {
 export const DEFAULT_STEP_DT = 1 / 60;
 
 /** Canonicalize a key name to the runtime's form (e.g. "up" -> "Up", "w" -> "W").
- * Every canonical Key name is a single word with only its first letter capitalized. */
+ * Digit input uses bare `"0"`…`"9"`, while runtime state serializes those
+ * enum variants as `"Num0"`…`"Num9"`. */
 function canonicalKeyName(key: string): string {
+  if (/^[0-9]$/.test(key)) return `Num${key}`;
   return key.length === 0
     ? key
     : key[0].toUpperCase() + key.slice(1).toLowerCase();
@@ -141,6 +144,29 @@ export class FunctorClient {
     return this.key(key, false);
   }
 
+  /** Press a key for one deterministic fixed step, then release it even when
+   * the step fails. */
+  async pressKey(key: string, dts: number = DEFAULT_STEP_DT): Promise<void> {
+    let actionError: unknown;
+    try {
+      await this.keyDown(key);
+      await this.step(dts);
+    } catch (error) {
+      actionError = error;
+    }
+    try {
+      await this.keyUp(key);
+    } catch (releaseError) {
+      if (actionError !== undefined) {
+        throw new Error(
+          `${String(actionError)}; best-effort key release also failed: ${String(releaseError)}`,
+        );
+      }
+      throw releaseError;
+    }
+    if (actionError !== undefined) throw actionError;
+  }
+
   /** Move the mouse cursor to an absolute position. */
   mouseMove(x: number, y: number): Promise<void> {
     return this.input({ type: "mouse_move", x, y });
@@ -183,6 +209,11 @@ export class FunctorClient {
    * {@link xr}'s held-key contract. */
   xrClear(): Promise<void> {
     return this.input({ type: "xr_clear" });
+  }
+
+  /** Click an interactive UI slot (`Clicked` in the runtime's UI protocol). */
+  uiClick(slot: number): Promise<void> {
+    return this.input({ type: "ui_event", slot, kind: "Clicked" });
   }
 
   // --- Drive: clock --------------------------------------------------------
@@ -239,6 +270,38 @@ export class FunctorClient {
     opts?: WaitForOptions,
   ): Promise<RuntimeState> {
     return waitFor(() => this.state(), predicate, opts);
+  }
+
+  /** Deterministically advance one fixed frame at a time until `predicate`
+   * holds. The current state is checked first, so this can resolve after zero
+   * steps. Unlike `waitForState`, the game may remain paused throughout.
+   *
+   * The predicate is ordinary trusted TypeScript and may be async. This helper
+   * is therefore intentionally code-level API, not a serialized plan node. */
+  async stepUntil(
+    predicate: (state: RuntimeState) => boolean | Promise<boolean>,
+    opts: StepUntilOptions = {},
+  ): Promise<RuntimeState> {
+    const maxFrames = opts.maxFrames ?? 600;
+    const dts = opts.dts ?? DEFAULT_STEP_DT;
+    if (!Number.isInteger(maxFrames) || maxFrames < 0 || maxFrames > 10_000) {
+      throw new Error(
+        `stepUntil maxFrames must be an integer between 0 and 10000, got ${maxFrames}`,
+      );
+    }
+    if (!Number.isFinite(dts) || dts <= 0) {
+      throw new Error(`stepUntil dts must be a finite positive number, got ${dts}`);
+    }
+
+    let state = await this.state();
+    if (await predicate(state)) return state;
+    for (let frame = 0; frame < maxFrames; frame++) {
+      await this.step(dts);
+      state = await this.state();
+      if (await predicate(state)) return state;
+    }
+    const what = opts.description ? ` waiting for ${opts.description}` : "";
+    throw new Error(`stepUntil exhausted ${maxFrames} frames${what}`);
   }
 }
 

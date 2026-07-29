@@ -5,48 +5,41 @@ A Playwright-style TypeScript SDK for driving the functor **debug runtime** — 
 [`docs/debug-runtime.md`](../../docs/debug-runtime.md)). It lets a script, test, or
 LLM **observe** and **drive** a running game headlessly.
 
-## Declarative automation plans (MCP architecture PoC)
+## MCP code runner
 
-The SDK also exports a small fluent plan builder:
+`functor mcp` can inject the same game-driving vocabulary into
+`run_game_code_unsafe`, so an agent can submit one Playwright-style JavaScript
+function instead of making a tool call for every input, step, and observation:
 
-```ts
-import { automation, runAutomation } from "@functor/sdk";
+```js
+async (game) => {
+  await game.pause();
+  await game.pressKey("r");
 
-const proof = automation("mouse-look proof")
-  .pause(2)
-  .mouseMove(400, 300)
-  .mouseMove(600, 200)
-  .step({ frames: 2, dts: 0.016 })
-  .expectModelClose("yawOffset", -0.6, 0.0001)
-  .inspect("settled")
-  .capture("proof");
+  const settled = await game.stepUntil(
+    (state) => state.model.phase === "playing",
+    { maxFrames: 120, description: "the game to start" },
+  );
 
-console.log(proof.toPlan()); // versioned, serializable plain data
-console.log(proof.toCode()); // restricted source accepted by functor mcp
-const result = await runAutomation(game, proof);
+  return { frame: settled.frame, phase: settled.model.phase };
+}
 ```
 
-This vocabulary is shared with MCP's `validate_automation_code` and
-`run_automation_code` tools. The distinction is important:
+The standalone TypeScript client and injected MCP object both provide
+`pressKey`, `uiClick`, and `stepUntil`. The first two package common edge
+actions. `stepUntil` accepts an ordinary sync or async predicate, checks current
+state, then advances one fixed frame at a time until it matches. That makes
+state-dependent waits serializable as part of the submitted program without a
+separate plan or predicate schema.
 
-- standalone SDK programs are trusted, full TypeScript and may use normal
-  variables, loops, and callbacks around plans;
-- source submitted through MCP is one literal `automation().…` chain, parsed by
-  a restricted Rust parser and **never evaluated as JavaScript**.
-
-`pressKey("r")` is the edge-action shortcut: down, one waited 16ms step, then
-best-effort release, including when the down request itself reports an error.
-`expectModel` reads static dotted paths or JSON Pointers from structured state;
-`expectModelClose` adds finite numeric absolute tolerance. Mouse coordinates and
-wheel deltas are signed 32-bit integer wire values; UI slots are unsigned
-32-bit integers. Key names are the engine vocabulary (case-insensitive A–Z,
-arrows, Space, Enter, Escape, and 0–9). A key release reaches sampled game state
-on the next step, so use `keyUp("d").step().expectModel("moveX", 0)` when
-proving release. `capture` needs a rendered (normally hidden) client, not
-headless mode.
-
-The PoC rationale, security boundary, and game-jam evaluation are documented in
-[`docs/mcp-automation-code-poc.md`](../../docs/mcp-automation-code-poc.md).
+The MCP function is ordinary JavaScript evaluated in a local Node child. It can
+use variables, loops, callbacks, assertions, and imports, but the
+`run_game_code_unsafe` name is intentional: this is arbitrary local code with
+the same operating-system authority as `functor mcp`, not a security sandbox.
+The parent kills the direct Node child on timeout, but a subprocess deliberately
+started by submitted code can outlive it. Use it only with a trusted MCP client.
+The architecture, bounds, cleanup, and hosted-service threat boundary are documented in
+[`docs/mcp-unsafe-sdk-code.md`](../../docs/mcp-unsafe-sdk-code.md).
 
 ## Install & build
 
@@ -73,6 +66,10 @@ await game.keyDown("up");        // inject input
 await game.mouseDown("left");    // ...including mouse buttons (held until mouseUp)
 await game.step();               // advance exactly one frame
 const state = await game.state();// observe the result
+const settled = await game.stepUntil(
+  (next) => next.model.phase === "playing",
+  { maxFrames: 120 },
+);
 const xr = await game.xrInput();  // rig-local head/controllers on XR targets
 const png = await game.capture();// PNG bytes of the frame
 // `await using` shuts the runtime down at scope exit.

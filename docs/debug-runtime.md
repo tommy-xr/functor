@@ -27,7 +27,7 @@ If 8077 is already taken — a second `functor develop`, or a stale process —
 `develop` logs one line and runs the game **without** a debug server rather than
 failing to start; pass `--debug-port <PORT>` for a second session, or `--no-debug`
 to skip the listener entirely. An explicit `--debug-port` that can't bind is still
-a fatal error (automation asked for *that* port and is waiting on it). Tooling that
+a fatal error (a driver asked for *that* port and is waiting on it). Tooling that
 hard-codes 8077 — the TS SDK's `launch()`, the VS Code inspector's default — should
 therefore be pointed at its own port while a `develop` session is up.
 
@@ -382,8 +382,8 @@ the game needs to see input or I/O between steps. (Batches are capped at
 
 `cancel` clears both queued debug steps and fixed-frame catch-up without
 rebasing `tts`; the model and clock remain aligned at the last step that
-actually landed. It is the safe error/deadline cleanup for a batch an automation
-driver no longer intends to finish.
+actually landed. It is the safe error/deadline cleanup for a batch an SDK or
+submitted-code driver no longer intends to finish.
 
 **`--fixed-time <T>` is not an initial `set`.** It is an *unconditional* capture
 pin: every frame is `{dts: 0, tts: T}`, and no clock control — pause, step,

@@ -15,35 +15,33 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io;
 use std::net::TcpListener;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use functor_docgen::{ApiItem, ApiReference};
-use functor_runtime_common::debug_protocol::DEBUG_PROTOCOL_SERVICE;
+use functor_runtime_common::{debug_protocol::DEBUG_PROTOCOL_SERVICE, Key};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::service::RequestContext;
 use rmcp::transport::stdio;
 use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
-
-use super::automation::{
-    canonical_code, limits as automation_limits, model_value_at, parse_automation,
-    usage as automation_usage, AutomationPlan, AutomationStep, AUTOMATION_DIALECT,
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
+use tokio::process::{Child, Command};
 
 /// How long `launch_game` waits for a spawned runtime to answer discovery.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `step` tolerates a queued batch making NO progress before giving
 /// up. A large batch legitimately takes far longer than this to drain in total.
 const STEP_STALL_TIMEOUT: Duration = Duration::from_secs(30);
-/// Wall-clock deadline for one acquired step or automation operation.
+/// Wall-clock deadline for one acquired step or submitted-code operation.
 /// Progress does not extend this deadline, so a cancelled request cannot
 /// monopolize the per-runtime gate indefinitely.
 const OPERATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -59,12 +57,29 @@ const LOG_TAIL_BYTES: usize = 8 * 1024;
 const MAX_RUNTIME_TEXT_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum raw bytes retained for one `POST /capture` response.
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
-/// Maximum serialized JSON text returned by one automation run.
-const MAX_AUTOMATION_TEXT_BYTES: usize = 4 * 1024 * 1024;
-/// Maximum raw PNG bytes retained across all captures in one automation run.
-const MAX_AUTOMATION_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
-/// Maximum base64 text placed in MCP image content across one automation run.
-const MAX_AUTOMATION_ENCODED_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
+/// Maximum submitted JavaScript function source.
+const MAX_NODE_CODE_BYTES: usize = 64 * 1024;
+/// Maximum one-line message accepted from or sent to the Node child. This is
+/// above an 8 MiB capture after base64 encoding.
+const MAX_NODE_PROTOCOL_LINE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum SDK calls accepted from one submitted program. This is deliberately
+/// above `stepUntil`'s worst-case 20,001 base calls (initial state plus one
+/// step/state pair for each of 10,000 frames).
+const MAX_NODE_CALLS: usize = 25_000;
+/// Maximum aggregate console text retained from one submitted program.
+const MAX_NODE_LOG_BYTES: usize = 64 * 1024;
+/// Maximum serialized JSON text returned by one submitted-code run.
+const MAX_CODE_TEXT_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum decoded bytes in one asset sent through the JSON child protocol.
+/// The standalone SDK can use the runtime's larger binary HTTP limit.
+const MAX_CODE_ASSET_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum raw PNG bytes retained across all captures in one code run.
+const MAX_CODE_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum base64 text placed in MCP image content across one code run.
+const MAX_CODE_ENCODED_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
+/// The JavaScript host is embedded in the Rust binary and evaluated by the
+/// user's Node executable. It is an RPC adapter, not a security sandbox.
+const NODE_RUNNER_SOURCE: &str = include_str!("mcp_node_runner.mjs");
 /// Maximum frame batch accepted by the lower-level `step` tool.
 const MAX_STEP_FRAMES: u32 = 10_000;
 /// How many API-reference items one `api_reference` call returns.
@@ -172,28 +187,33 @@ struct ConnectReservation {
 }
 
 #[derive(Default)]
-struct AutomationOutputBudget {
+struct CodeOutputBudget {
     retained_text_bytes: usize,
     capture_bytes: usize,
 }
 
 #[derive(Default)]
-struct AutomationInputRestore {
+struct CodeInputRestore {
     baseline_keys: BTreeSet<String>,
     baseline_mouse_buttons: BTreeSet<String>,
     touched_keys: BTreeSet<String>,
     touched_mouse_buttons: BTreeSet<String>,
 }
 
-impl AutomationInputRestore {
+impl CodeInputRestore {
     fn from_state(state: &Value) -> Self {
         let baseline_keys = state
             .pointer("/input/held_keys")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_ascii_lowercase)
+            .filter_map(|value| {
+                serde_json::from_value::<Key>(value.clone())
+                    .ok()
+                    .or_else(|| value.as_str().and_then(Key::from_name))
+            })
+            .filter(|key| *key != Key::Unknown)
+            .map(Key::name)
             .collect();
         let baseline_mouse_buttons = ["left", "right", "middle"]
             .into_iter()
@@ -213,7 +233,9 @@ impl AutomationInputRestore {
     }
 
     fn touch_key(&mut self, key: &str) {
-        self.touched_keys.insert(key.to_ascii_lowercase());
+        if let Some(key) = Key::from_name(key) {
+            self.touched_keys.insert(key.name());
+        }
     }
 
     fn touch_mouse_button(&mut self, button: &str) {
@@ -226,14 +248,14 @@ impl AutomationInputRestore {
     }
 }
 
-impl AutomationOutputBudget {
+impl CodeOutputBudget {
     fn retain_json(&mut self, value: &Value) -> Result<(), String> {
         let bytes = json_encoded_len(value)?;
         self.retained_text_bytes = checked_output_total(
             self.retained_text_bytes,
             bytes,
-            MAX_AUTOMATION_TEXT_BYTES,
-            "automation aggregate text output",
+            MAX_CODE_TEXT_BYTES,
+            "submitted-code aggregate text output",
         )?;
         Ok(())
     }
@@ -242,11 +264,64 @@ impl AutomationOutputBudget {
         self.capture_bytes = checked_output_total(
             self.capture_bytes,
             bytes,
-            MAX_AUTOMATION_CAPTURE_BYTES,
-            "automation aggregate raw capture output",
+            MAX_CODE_CAPTURE_BYTES,
+            "submitted-code aggregate raw capture output",
         )?;
         Ok(())
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum NodeMessage {
+    Ready {
+        node_version: String,
+    },
+    Call {
+        id: u64,
+        method: String,
+        #[serde(default)]
+        args: Vec<Value>,
+    },
+    Log {
+        level: String,
+        text: String,
+    },
+    Complete {
+        ok: bool,
+        #[serde(default)]
+        value: Value,
+        error: Option<NodeCodeError>,
+    },
+    Fatal {
+        error: String,
+    },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct NodeCodeError {
+    name: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stack: Option<String>,
+}
+
+struct NodeCodeOutput {
+    node_version: String,
+    return_value: Value,
+    code_error: Option<NodeCodeError>,
+    failure: Option<String>,
+    trace: Vec<Value>,
+    logs: Vec<Value>,
+    captures: Vec<Vec<u8>>,
+    calls_executed: usize,
+    final_state: Option<Value>,
+    output_budget: CodeOutputBudget,
+}
+
+struct SdkCallOutput {
+    value: Value,
+    trace_result: Value,
 }
 
 /// A project directory this server created and owns. Dropping it (when the
@@ -687,8 +762,8 @@ fn tool_error(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::error(vec![ContentBlock::text(text)]))
 }
 
-fn automation_tool_error(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
-    tool_error(truncate_automation_error(text.into()))
+fn code_tool_error(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
+    tool_error(truncate_code_error(text.into()))
 }
 
 /// Collapse an early `Err(String)` into a tool error, or run the body.
@@ -818,20 +893,18 @@ pub struct LanguageGuideArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct ValidateAutomationCodeArgs {
-    /// One restricted JavaScript-shaped builder expression, for example:
-    /// `automation("proof").pause().keyDown("w").step().expectModel("held.w", true)`.
-    /// It is parsed into data and is never evaluated as JavaScript.
-    pub code: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct RunAutomationCodeArgs {
+pub struct RunGameCodeUnsafeArgs {
     /// Session id from `launch_game` / `connect_game`.
     pub session: String,
-    /// A complete restricted automation builder expression. The entire plan is
-    /// parsed and validated before the first runtime request is made.
+    /// A JavaScript function invoked as `await program(game)`, for example:
+    /// `async (game) => { await game.pause(); await game.step(); return await game.state(); }`.
+    /// This is arbitrary local Node.js code and is RCE-equivalent by design.
     pub code: String,
+    /// Absolute wall-clock limit in milliseconds (default and maximum 120,000).
+    /// It covers setup, execution, and the final state snapshot. The direct
+    /// Node child is killed when it expires; processes deliberately started by
+    /// trusted submitted code are outside this lifecycle boundary.
+    pub timeout_ms: Option<u64>,
 }
 
 #[tool_router]
@@ -905,51 +978,6 @@ impl FunctorMcp {
                 ok_text(render_guide_section(&sections, index))
             }
             None => ok_text(render_guide_contents(intro, &sections)),
-        }
-    }
-
-    /// Parse restricted TypeScript/JavaScript-shaped Functor automation source
-    /// into a serializable plan, without a session and without side effects.
-    /// The source must be ONE `automation("name").method(...)` chain. Allowed
-    /// methods: pause, keyDown/keyUp/pressKey, mouseMove/mouseDown/mouseUp/
-    /// mouseWheel, uiClick, step, inspect, expectModel, expectModelClose, and
-    /// capture. Success returns the normalized plan, deterministic canonical
-    /// source that parses
-    /// back to that same plan, and used/maximum budgets. Arguments are literals;
-    /// imports, variables, callbacks/functions, loops, async/await, `new`,
-    /// eval/Function/require, globals, fetch/timers, dynamic properties, and
-    /// unknown calls are rejected. This parser never evaluates JavaScript.
-    #[tool]
-    async fn validate_automation_code(
-        &self,
-        Parameters(args): Parameters<ValidateAutomationCodeArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        match parse_automation(&args.code) {
-            Ok(plan) => ok_text(
-                serde_json::json!({
-                    "valid": true,
-                    "dialect": AUTOMATION_DIALECT,
-                    "canonical_code": canonical_code(&plan),
-                    "budget": {
-                        "used": automation_usage(&args.code, &plan),
-                        "limits": automation_limits(),
-                    },
-                    "plan": plan,
-                })
-                .to_string(),
-            ),
-            Err(diagnostic) => ok_text(
-                serde_json::json!({
-                    "valid": false,
-                    "dialect": AUTOMATION_DIALECT,
-                    "errors": [diagnostic],
-                    "budget": {
-                        "used": { "source_bytes": args.code.len() },
-                        "limits": automation_limits(),
-                    },
-                })
-                .to_string(),
-            ),
         }
     }
 
@@ -1298,67 +1326,70 @@ files writes the inline project to a scratch directory this server owns",
             .await
     }
 
-    /// Parse and run one restricted automation builder expression against a
-    /// session. The whole source is lowered to a bounded, serializable plan
-    /// BEFORE session lookup or any runtime request; it is never evaluated as
-    /// JavaScript. This collapses the deterministic jam loop into one call:
-    /// `automation("proof").pause().keyDown("w").step().expectModel("x", 1)`.
-    /// `inspect` snapshots state in the result; `capture` appends PNG image
-    /// blocks and needs a hidden (not headless) session. Execution is ordered
-    /// but not transactional: a runtime failure can leave earlier valid steps
-    /// applied. The per-session operation gate holds for the whole plan:
-    /// overlapping mutating calls wait and then run without interleaving
-    /// (relative waiter order is unspecified). Exact normalized URL aliases
-    /// share that gate; different URLs have independent gates. The serialized
-    /// summary and any error text are capped at 4 MiB; each raw capture at 8
-    /// MiB, all captures together at 16 MiB raw and 24 MiB base64 MCP image
-    /// content. Once acquired, a plan has a 120-second wall-clock deadline;
-    /// an owned stop also ends it at the next step-poll boundary. An abort
-    /// cancels queued steps and restores plan-touched key/button levels to
-    /// their pre-plan snapshot before the gate is released. If cleanup cannot
-    /// be confirmed, the exact URL is quarantined from further mutations. Call
-    /// `validate_automation_code` first for parse-only feedback.
+    /// Run one Playwright-style JavaScript function in a Node child process,
+    /// invoked as `await program(game)`. The injected `game` object mirrors the
+    /// TypeScript SDK method surface, within this runner's documented bounds:
+    /// state/scene/trace/capture, pause/step/stepFrames/resume, input helpers,
+    /// reload/rewind, `waitForState`, and deterministic `stepUntil`. Calls
+    /// route back through this MCP parent, so the existing exact-URL operation
+    /// gate, runtime checks, cancellation, output caps, and cleanup remain
+    /// authoritative. The result includes the JSON return value plus a bounded
+    /// observability trace of SDK RPC received from trusted code; captures are
+    /// returned as MCP image blocks.
+    ///
+    /// UNSAFE means exactly what it says: submitted code is arbitrary local
+    /// Node.js and is RCE-equivalent. The child-process boundary contains a
+    /// Node crash and lets the parent kill that direct child on timeout; it is
+    /// NOT a security sandbox or a process-tree sandbox. Use only with code you
+    /// trust as much as the MCP client itself. Node.js 20+ must be installed
+    /// (`FUNCTOR_NODE` may name a non-default executable).
     #[tool]
-    async fn run_automation_code(
+    async fn run_game_code_unsafe(
         &self,
-        Parameters(args): Parameters<RunAutomationCodeArgs>,
+        Parameters(args): Parameters<RunGameCodeUnsafeArgs>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        // This ordering is the security boundary: syntax, allowlists, literal
-        // shapes, and static plan budgets are settled before even resolving a
-        // session, let alone issuing an HTTP request. Runtime-output budgets
-        // are enforced as responses arrive and can fail after earlier steps.
-        let plan = match parse_automation(&args.code) {
-            Ok(plan) => plan,
-            Err(diagnostic) => {
-                return automation_tool_error(
-                    serde_json::json!({
-                        "valid": false,
-                        "dialect": AUTOMATION_DIALECT,
-                        "errors": [diagnostic],
-                    })
-                    .to_string(),
-                )
+        if args.code.len() > MAX_NODE_CODE_BYTES {
+            return code_tool_error(output_limit_error(
+                "submitted Node.js source",
+                args.code.len(),
+                MAX_NODE_CODE_BYTES,
+            ));
+        }
+        if args.code.trim().is_empty() {
+            return code_tool_error(
+                "code must be a JavaScript function, for example: async (game) => { return await game.state(); }",
+            );
+        }
+        let timeout_ms = args
+            .timeout_ms
+            .unwrap_or(OPERATION_TOTAL_TIMEOUT.as_millis() as u64);
+        let timeout = match timeout_ms {
+            1..=120_000 => Duration::from_millis(timeout_ms),
+            other => {
+                return code_tool_error(format!(
+                    "timeout_ms must be between 1 and 120000, got {other}"
+                ))
             }
         };
         let target = match self.target(&args.session) {
             Ok(target) => target,
-            Err(message) => return automation_tool_error(message),
+            Err(message) => return code_tool_error(message),
         };
         let _operation = match self.acquire_operation(&target, &context).await {
             Ok(operation) => operation,
-            Err(message) => return automation_tool_error(message),
+            Err(message) => return code_tool_error(message),
         };
-        let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
+
         match self
-            .execute_automation(&target, &plan, operation_deadline)
+            .execute_node_code(&target, &args.code, timeout, &context)
             .await
         {
-            Ok((summary, captures)) => match automation_call_result(summary, captures) {
+            Ok(output) => match node_code_call_result(output) {
                 Ok(result) => Ok(result),
-                Err(message) => automation_tool_error(message),
+                Err(message) => code_tool_error(message),
             },
-            Err(message) => automation_tool_error(message),
+            Err(message) => code_tool_error(message),
         }
     }
 
@@ -1681,6 +1712,18 @@ impl FunctorMcp {
         read_body(path, response).await
     }
 
+    async fn post_binary(&self, url: &str, path: &str, body: Vec<u8>) -> Result<String, String> {
+        let response = self
+            .http
+            .post(format!("{url}{path}"))
+            .header("content-type", "application/octet-stream")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| format!("POST {path} on {url} failed: {error}"))?;
+        read_body(path, response).await
+    }
+
     async fn state(&self, url: &str) -> Result<Value, String> {
         let body = self.get(url, "/state").await?;
         serde_json::from_str(&body)
@@ -1809,324 +1852,642 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         Ok(body)
     }
 
-    async fn execute_automation(
+    async fn execute_node_code(
         &self,
         target: &SessionTarget,
-        plan: &AutomationPlan,
-        operation_deadline: Instant,
-    ) -> Result<(String, Vec<(Option<String>, Vec<u8>)>), String> {
-        let url = &target.url;
-        let mut observations = Vec::new();
-        let mut assertions = Vec::new();
-        let mut captures = Vec::new();
-        let mut output_budget = AutomationOutputBudget::default();
-        let baseline_state = self.state(url).await.map_err(|error| {
-            format!("automation could not snapshot input before starting: {error}")
-        })?;
-        let mut input_restore = AutomationInputRestore::from_state(&baseline_state);
+        code: &str,
+        timeout: Duration,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<NodeCodeOutput, String> {
+        let timeout = timeout.min(OPERATION_TOTAL_TIMEOUT);
+        let operation_deadline = Instant::now() + timeout;
+        let mut child = spawn_node_child(node_executable())?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Node child did not expose stdin".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Node child did not expose stdout".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Node child did not expose stderr".to_string())?;
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+        let _stderr_task = drain_into(stderr, stderr_tail.clone());
+        let mut stdout = BufReader::new(stdout);
 
-        for (index, step) in plan.steps.iter().enumerate() {
-            let step_number = index + 1;
-            if let Err(error) = ensure_operation_active(target, operation_deadline) {
-                let error = format!(
-                    "automation stopped before step {step_number} ({}): {error}",
-                    automation_step_name(step)
-                );
-                return Err(self.automation_failure(target, error, &input_restore).await);
-            }
-            let result: Result<(), String> = match step {
-                AutomationStep::Pause { tts } => self.pin(url, *tts).await.map(|_| ()),
-                AutomationStep::Key { key, down } => {
-                    // Record before the request: a timeout is ambiguous and
-                    // the runtime may have applied the edge.
-                    input_restore.touch_key(key);
-                    let result = self
-                        .post(
-                            url,
-                            "/input",
-                            serde_json::json!({
-                                "type": "key",
-                                "key": key,
-                                "down": down,
-                            })
-                            .to_string(),
-                        )
-                        .await
-                        .map(|_| ());
-                    result
-                }
-                AutomationStep::PressKey { key } => {
-                    input_restore.touch_key(key);
-                    let pressed = self
-                        .post(
-                            url,
-                            "/input",
-                            serde_json::json!({
-                                "type": "key",
-                                "key": key,
-                                "down": true,
-                            })
-                            .to_string(),
-                        )
-                        .await
-                        .map(|_| ());
-                    let advanced = match &pressed {
-                        Ok(()) => self
-                            .advance(target, 0.016, 1, operation_deadline)
-                            .await
-                            .map(|_| ()),
-                        Err(_) => Ok(()),
-                    };
-                    // A timed-out/error response may still have applied the
-                    // key-down request. Always attempt release, even when the
-                    // down call itself did not report success.
-                    let released = self
-                        .post(
-                            url,
-                            "/input",
-                            serde_json::json!({
-                                "type": "key",
-                                "key": key,
-                                "down": false,
-                            })
-                            .to_string(),
-                        )
-                        .await
-                        .map(|_| ());
-                    match (pressed, advanced, released) {
-                        (Ok(()), Ok(()), Ok(())) => Ok(()),
-                        (Err(press_error), _, Ok(())) => Err(press_error),
-                        (Err(press_error), _, Err(release_error)) => Err(format!(
-                            "{press_error}; best-effort key release also failed: {release_error}"
-                        )),
-                        (Ok(()), Err(step_error), Ok(())) => Err(step_error),
-                        (Ok(()), Ok(()), Err(release_error)) => Err(release_error),
-                        (Ok(()), Err(step_error), Err(release_error)) => Err(format!(
-                            "{step_error}; best-effort key release also failed: {release_error}"
-                        )),
-                    }
-                }
-                AutomationStep::MouseMove { x, y } => self
-                    .post(
-                        url,
-                        "/input",
-                        serde_json::json!({
-                            "type": "mouse_move",
-                            "x": x,
-                            "y": y,
-                        })
-                        .to_string(),
-                    )
-                    .await
-                    .map(|_| ()),
-                AutomationStep::MouseButton { button, down } => {
-                    input_restore.touch_mouse_button(button);
-                    let result = self
-                        .post(
-                            url,
-                            "/input",
-                            serde_json::json!({
-                                "type": "mouse_button",
-                                "button": button,
-                                "down": down,
-                            })
-                            .to_string(),
-                        )
-                        .await
-                        .map(|_| ());
-                    result
-                }
-                AutomationStep::MouseWheel { delta } => self
-                    .post(
-                        url,
-                        "/input",
-                        serde_json::json!({
-                            "type": "mouse_wheel",
-                            "delta": delta,
-                        })
-                        .to_string(),
-                    )
-                    .await
-                    .map(|_| ()),
-                AutomationStep::UiClick { slot } => self
-                    .post(
-                        url,
-                        "/input",
-                        serde_json::json!({
-                            "type": "ui_event",
-                            "slot": slot,
-                            "kind": "Clicked",
-                        })
-                        .to_string(),
-                    )
-                    .await
-                    .map(|_| ()),
-                AutomationStep::Step { frames, dts } => self
-                    .advance(target, *dts, *frames, operation_deadline)
-                    .await
-                    .map(|_| ()),
-                AutomationStep::Inspect { label } => match self.state(url).await {
-                    Ok(state) => {
-                        let observation = serde_json::json!({
-                            "label": label,
-                            "state": state,
-                        });
-                        match output_budget.retain_json(&observation) {
-                            Ok(()) => {
-                                observations.push(observation);
-                                Ok(())
-                            }
-                            Err(error) => Err(error),
-                        }
-                    }
-                    Err(error) => Err(error),
-                },
-                AutomationStep::ExpectModel { path, equals } => match self.state(url).await {
-                    Ok(state) => {
-                        let model = &state["model"];
-                        match model_value_at(model, path) {
-                            Some(actual) if actual == equals => {
-                                let assertion = serde_json::json!({
-                                    "path": path,
-                                    "expected": equals,
-                                    "actual": actual,
-                                    "passed": true,
-                                });
-                                match output_budget.retain_json(&assertion) {
-                                    Ok(()) => {
-                                        assertions.push(assertion);
-                                        Ok(())
-                                    }
-                                    Err(error) => Err(error),
-                                }
-                            }
-                            Some(actual) => Err(format!(
-                                "model assertion failed at {path:?}: expected {}, got {}",
-                                equals, actual
-                            )),
-                            None => Err(format!(
-                                "model assertion path {path:?} does not exist in the current model"
-                            )),
-                        }
-                    }
-                    Err(error) => Err(error),
-                },
-                AutomationStep::ExpectModelClose {
-                    path,
-                    expected,
-                    abs_tolerance,
-                } => match self.state(url).await {
-                    Ok(state) => {
-                        let model = &state["model"];
-                        match model_value_at(model, path) {
-                            Some(actual) => match actual.as_f64() {
-                                Some(actual_number)
-                                    if (actual_number - expected).abs() <= *abs_tolerance =>
-                                {
-                                    let assertion = serde_json::json!({
-                                        "path": path,
-                                        "expected": expected,
-                                        "actual": actual,
-                                        "abs_tolerance": abs_tolerance,
-                                        "passed": true,
-                                    });
-                                    match output_budget.retain_json(&assertion) {
-                                        Ok(()) => {
-                                            assertions.push(assertion);
-                                            Ok(())
-                                        }
-                                        Err(error) => Err(error),
-                                    }
-                                }
-                                Some(actual_number) => Err(format!(
-                                    "numeric model assertion failed at {path:?}: expected {expected} ± {abs_tolerance}, got {actual_number}"
-                                )),
-                                None => Err(format!(
-                                    "numeric model assertion at {path:?} requires a numeric value, got {actual}"
-                                )),
-                            },
-                            None => Err(format!(
-                                "model assertion path {path:?} does not exist in the current model"
-                            )),
-                        }
-                    }
-                    Err(error) => Err(error),
-                },
-                AutomationStep::Capture { label } => match self.capture_png(url).await {
-                    Ok(png) => match output_budget.retain_capture(png.len()) {
-                        Ok(()) => {
-                            captures.push((label.clone(), png));
-                            Ok(())
-                        }
-                        Err(error) => Err(error),
-                    },
-                    Err(error) => Err(error),
-                },
-            };
-            if let Err(error) = result {
-                let error = format!(
-                    "automation step {step_number} ({}) failed: {error}",
-                    automation_step_name(step)
-                );
-                return Err(self.automation_failure(target, error, &input_restore).await);
-            }
-        }
-
-        if let Err(error) = ensure_operation_active(target, operation_deadline) {
-            let error = format!("automation stopped before final state: {error}");
-            return Err(self.automation_failure(target, error, &input_restore).await);
-        }
-        let final_state = match self.state(url).await {
+        let baseline_state = match await_code_phase(
+            target,
+            context,
+            operation_deadline,
+            timeout,
+            "the initial input snapshot",
+            self.state(&target.url),
+        )
+        .await
+        {
             Ok(state) => state,
             Err(error) => {
-                let error = format!("automation completed but final state failed: {error}");
-                return Err(self.automation_failure(target, error, &input_restore).await);
+                let reap_error = finish_node_child(&mut child, true).await.err();
+                return Err(append_optional_error(
+                    format!("submitted code could not snapshot input before starting: {error}"),
+                    reap_error,
+                ));
             }
         };
-        if let Err(error) = output_budget.retain_json(&final_state) {
-            let error = format!("automation completed but final-state output failed: {error}");
-            return Err(self.automation_failure(target, error, &input_restore).await);
-        }
-        let capture_metadata: Vec<Value> = captures
-            .iter()
-            .enumerate()
-            .map(|(index, (label, png))| {
-                serde_json::json!({
-                    "label": label,
-                    "content_index": index + 1,
-                    "mime_type": "image/png",
-                    "bytes": png.len(),
-                })
+        let mut input_restore = CodeInputRestore::from_state(&baseline_state);
+        let mut issued_advance = false;
+        let mut output = NodeCodeOutput {
+            node_version: String::new(),
+            return_value: Value::Null,
+            code_error: None,
+            failure: None,
+            trace: Vec::new(),
+            logs: Vec::new(),
+            captures: Vec::new(),
+            calls_executed: 0,
+            final_state: None,
+            output_budget: CodeOutputBudget::default(),
+        };
+
+        let result = await_code_phase(
+            target,
+            context,
+            operation_deadline,
+            timeout,
+            "Node execution",
+            self.drive_node_protocol(
+                target,
+                code,
+                operation_deadline,
+                &mut stdin,
+                &mut stdout,
+                &mut input_restore,
+                &mut issued_advance,
+                &mut output,
+            ),
+        )
+        .await;
+
+        let terminate_child = result.is_err() || output.code_error.is_some();
+        let child_status = finish_node_child(&mut child, terminate_child).await;
+
+        let mut failure = result.err().or_else(|| {
+            output.code_error.as_ref().map(|error| {
+                format!(
+                    "submitted Node.js code threw {}: {}",
+                    error.name, error.message
+                )
             })
-            .collect();
-        let summary = serde_json::json!({
-            "ok": true,
-            "dialect": AUTOMATION_DIALECT,
-            "plan": plan,
-            "steps_executed": plan.steps.len(),
-            "assertions": assertions,
-            "observations": observations,
-            "captures": capture_metadata,
-            "final_state": final_state,
         });
-        let summary = match serialize_json_bounded(
-            &summary,
-            MAX_AUTOMATION_TEXT_BYTES,
-            "automation aggregate text output",
-        ) {
-            Ok(summary) => summary,
-            Err(error) => {
-                return Err(self.automation_failure(target, error, &input_restore).await);
+        match child_status {
+            Ok(status) if failure.is_none() && !status.success() => {
+                failure = Some(format!(
+                    "Node child exited with {status} after reporting success"
+                ));
             }
-        };
-        Ok((summary, captures))
+            Err(error) => {
+                failure = Some(append_optional_error(
+                    failure.unwrap_or_else(|| "submitted Node.js child could not be reaped".into()),
+                    Some(error),
+                ));
+            }
+            _ => {}
+        }
+        let mut cleanup_done = false;
+        if let Some(mut cause) = failure {
+            let stderr = tail(&stderr_tail);
+            if !stderr.trim().is_empty() {
+                cause.push_str("\nNode stderr tail:\n");
+                cause.push_str(&stderr);
+            }
+            cause = self
+                .cleanup_submitted_code(target, cause, &input_restore, issued_advance)
+                .await;
+            output.failure = Some(cause);
+            cleanup_done = true;
+        }
+
+        match await_code_phase(
+            target,
+            context,
+            operation_deadline,
+            timeout,
+            "the final state snapshot",
+            self.state(&target.url),
+        )
+        .await
+        {
+            Ok(state) => {
+                if let Err(error) = output.output_budget.retain_json(&state) {
+                    let cause = format!(
+                        "submitted code completed but its final state exceeded the output budget: \
+{error}"
+                    );
+                    append_code_failure(
+                        &mut output,
+                        if cleanup_done {
+                            cause
+                        } else {
+                            cleanup_done = true;
+                            self.cleanup_submitted_code(
+                                target,
+                                cause,
+                                &input_restore,
+                                issued_advance,
+                            )
+                            .await
+                        },
+                    );
+                } else {
+                    output.final_state = Some(state);
+                }
+            }
+            Err(error) => {
+                let cause = format!("final state snapshot failed: {error}");
+                append_code_failure(
+                    &mut output,
+                    if cleanup_done {
+                        cause
+                    } else {
+                        cleanup_done = true;
+                        self.cleanup_submitted_code(
+                            target,
+                            format!("submitted code completed but its {cause}"),
+                            &input_restore,
+                            issued_advance,
+                        )
+                        .await
+                    },
+                );
+            }
+        }
+
+        if let Err(error) = node_code_summary(&output) {
+            let cause =
+                format!("submitted code result could not be encoded within its bounds: {error}");
+            let cause = if cleanup_done {
+                append_optional_error(
+                    output.failure.take().unwrap_or_else(|| cause.clone()),
+                    Some(cause),
+                )
+            } else {
+                self.cleanup_submitted_code(target, cause, &input_restore, issued_advance)
+                    .await
+            };
+            return Err(cause);
+        }
+        Ok(output)
     }
 
-    async fn automation_failure(
+    #[allow(clippy::too_many_arguments)]
+    async fn drive_node_protocol<R, W>(
+        &self,
+        target: &SessionTarget,
+        code: &str,
+        operation_deadline: Instant,
+        stdin: &mut W,
+        stdout: &mut R,
+        input_restore: &mut CodeInputRestore,
+        issued_advance: &mut bool,
+        output: &mut NodeCodeOutput,
+    ) -> Result<(), String>
+    where
+        R: AsyncBufRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        match read_node_message(stdout).await? {
+            Some(NodeMessage::Ready { node_version }) => {
+                output.node_version = node_version;
+            }
+            Some(NodeMessage::Fatal { error }) => return Err(error),
+            Some(other) => {
+                return Err(format!(
+                    "Node child sent {:?} before its ready message",
+                    node_message_kind(&other)
+                ))
+            }
+            None => {
+                return Err(
+                    "Node child exited before becoming ready. Is Node.js 20+ installed?".into(),
+                )
+            }
+        }
+        write_node_message(stdin, &serde_json::json!({ "type": "run", "code": code })).await?;
+
+        let mut call_ids = BTreeSet::new();
+        let mut retained_log_bytes = 0usize;
+        loop {
+            let message = read_node_message(stdout).await?.ok_or_else(|| {
+                "Node child closed stdout before reporting completion".to_string()
+            })?;
+            match message {
+                NodeMessage::Ready { .. } => {
+                    return Err("Node child sent a duplicate ready message".into())
+                }
+                NodeMessage::Fatal { error } => return Err(error),
+                NodeMessage::Log { level, text } => {
+                    retained_log_bytes = checked_output_total(
+                        retained_log_bytes,
+                        text.len(),
+                        MAX_NODE_LOG_BYTES,
+                        "submitted-code console output",
+                    )?;
+                    let log = serde_json::json!({ "level": level, "text": text });
+                    output.output_budget.retain_json(&log)?;
+                    output.logs.push(log);
+                }
+                NodeMessage::Complete { ok, value, error } => {
+                    if ok {
+                        output.output_budget.retain_json(&value)?;
+                        output.return_value = value;
+                    } else {
+                        let error = error.unwrap_or(NodeCodeError {
+                            name: "Error".into(),
+                            message: "Node child reported failure without an error".into(),
+                            stack: None,
+                        });
+                        output.output_budget.retain_json(
+                            &serde_json::to_value(&error).map_err(|e| e.to_string())?,
+                        )?;
+                        output.code_error = Some(error);
+                    }
+                    return Ok(());
+                }
+                NodeMessage::Call { id, method, args } => {
+                    if id == 0 || !call_ids.insert(id) {
+                        return Err(format!("Node child reused invalid call id {id}"));
+                    }
+                    output.calls_executed += 1;
+                    if output.calls_executed > MAX_NODE_CALLS {
+                        return Err(format!(
+                            "submitted code exceeded the {MAX_NODE_CALLS} SDK-call limit"
+                        ));
+                    }
+                    ensure_operation_active(target, operation_deadline)?;
+                    let trace_args = summarize_sdk_args(&method, &args);
+                    let started = Instant::now();
+                    let result = self
+                        .execute_sdk_call(
+                            target,
+                            &method,
+                            &args,
+                            operation_deadline,
+                            input_restore,
+                            issued_advance,
+                            &mut output.captures,
+                            &mut output.output_budget,
+                        )
+                        .await;
+                    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                    let sequence = output.calls_executed;
+                    match result {
+                        Ok(call) => {
+                            let trace = serde_json::json!({
+                                "seq": sequence,
+                                "method": method,
+                                "args": trace_args,
+                                "ok": true,
+                                "elapsed_ms": elapsed_ms,
+                                "result": call.trace_result,
+                            });
+                            output.output_budget.retain_json(&trace)?;
+                            output.trace.push(trace);
+                            write_node_message(
+                                stdin,
+                                &serde_json::json!({
+                                    "type": "result",
+                                    "id": id,
+                                    "ok": true,
+                                    "value": call.value,
+                                }),
+                            )
+                            .await?;
+                        }
+                        Err(error) => {
+                            let error = truncate_chars(error, 16 * 1024);
+                            let trace = serde_json::json!({
+                                "seq": sequence,
+                                "method": method,
+                                "args": trace_args,
+                                "ok": false,
+                                "elapsed_ms": elapsed_ms,
+                                "error": error,
+                            });
+                            output.output_budget.retain_json(&trace)?;
+                            output.trace.push(trace);
+                            write_node_message(
+                                stdin,
+                                &serde_json::json!({
+                                    "type": "result",
+                                    "id": id,
+                                    "ok": false,
+                                    "error": {
+                                        "name": "FunctorSdkError",
+                                        "message": error,
+                                    },
+                                }),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_sdk_call(
+        &self,
+        target: &SessionTarget,
+        method: &str,
+        args: &[Value],
+        operation_deadline: Instant,
+        input_restore: &mut CodeInputRestore,
+        issued_advance: &mut bool,
+        captures: &mut Vec<Vec<u8>>,
+        output_budget: &mut CodeOutputBudget,
+    ) -> Result<SdkCallOutput, String> {
+        let url = &target.url;
+        let text = |value: String| SdkCallOutput {
+            trace_result: summarize_value(&Value::String(value.clone())),
+            value: Value::String(value),
+        };
+        let nothing = || SdkCallOutput {
+            value: Value::Null,
+            trace_result: Value::Null,
+        };
+        match method {
+            "state" => {
+                require_arity(method, args, 0)?;
+                let value = self.state(url).await?;
+                Ok(SdkCallOutput {
+                    trace_result: summarize_state(&value),
+                    value,
+                })
+            }
+            "scene" | "trace" => {
+                require_arity(method, args, 0)?;
+                let path = if method == "scene" {
+                    "/scene"
+                } else {
+                    "/trace"
+                };
+                let body = self.get(url, path).await?;
+                let value: Value = serde_json::from_str(&body)
+                    .map_err(|error| format!("GET {path} returned invalid JSON: {error}"))?;
+                Ok(SdkCallOutput {
+                    trace_result: summarize_value(&value),
+                    value,
+                })
+            }
+            "capture" => {
+                require_arity(method, args, 0)?;
+                let png = self.capture_png(url).await?;
+                output_budget.retain_capture(png.len())?;
+                let content_index = captures.len() + 1;
+                let bytes = png.len();
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+                captures.push(png);
+                let metadata = serde_json::json!({
+                    "content_index": content_index,
+                    "mime_type": "image/png",
+                    "bytes": bytes,
+                });
+                Ok(SdkCallOutput {
+                    value: serde_json::json!({ "$functor_buffer_base64": encoded }),
+                    trace_result: metadata,
+                })
+            }
+            "pause" => {
+                require_arity_range(method, args, 0, 1)?;
+                let tts = args
+                    .first()
+                    .map(|_| finite_f64_arg(method, args, 0))
+                    .transpose()?;
+                self.pin(url, tts).await?;
+                Ok(nothing())
+            }
+            "resume" => {
+                require_arity(method, args, 0)?;
+                self.post(
+                    url,
+                    "/time",
+                    serde_json::json!({ "type": "resume" }).to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "step" => {
+                require_arity_range(method, args, 0, 1)?;
+                let dts = args
+                    .first()
+                    .map(|_| positive_f64_arg(method, args, 0))
+                    .transpose()?
+                    .unwrap_or(1.0 / 60.0);
+                *issued_advance = true;
+                self.advance(target, dts, 1, operation_deadline).await?;
+                Ok(nothing())
+            }
+            "stepFrames" => {
+                require_arity_range(method, args, 1, 2)?;
+                let frames = u32_arg(method, args, 0)?;
+                if frames > MAX_STEP_FRAMES {
+                    return Err(format!(
+                        "{method} frames must be between 0 and {MAX_STEP_FRAMES}, got {frames}"
+                    ));
+                }
+                let dts = args
+                    .get(1)
+                    .map(|_| positive_f64_arg(method, args, 1))
+                    .transpose()?
+                    .unwrap_or(1.0 / 60.0);
+                if frames > 0 {
+                    *issued_advance = true;
+                    self.advance(target, dts, frames, operation_deadline)
+                        .await?;
+                }
+                Ok(nothing())
+            }
+            "input" => {
+                require_arity(method, args, 1)?;
+                track_input_command(&args[0], input_restore)?;
+                self.post(url, "/input", args[0].to_string()).await?;
+                Ok(nothing())
+            }
+            "key" | "keyDown" | "keyUp" => {
+                let expected = if method == "key" { 2 } else { 1 };
+                require_arity(method, args, expected)?;
+                let key = string_arg(method, args, 0)?;
+                validate_key(&key)?;
+                let down = match method {
+                    "key" => bool_arg(method, args, 1)?,
+                    "keyDown" => true,
+                    "keyUp" => false,
+                    _ => unreachable!(),
+                };
+                input_restore.touch_key(&key);
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({ "type": "key", "key": key, "down": down }).to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "mouseMove" => {
+                require_arity(method, args, 2)?;
+                let x = i32_arg(method, args, 0)?;
+                let y = i32_arg(method, args, 1)?;
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({ "type": "mouse_move", "x": x, "y": y }).to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "mouseWheel" => {
+                require_arity(method, args, 1)?;
+                let delta = i32_arg(method, args, 0)?;
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({ "type": "mouse_wheel", "delta": delta }).to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "mouseButton" | "mouseDown" | "mouseUp" => {
+                let expected = if method == "mouseButton" { 2 } else { 1 };
+                require_arity(method, args, expected)?;
+                let button = mouse_button_arg(method, args, 0)?;
+                let down = match method {
+                    "mouseButton" => bool_arg(method, args, 1)?,
+                    "mouseDown" => true,
+                    "mouseUp" => false,
+                    _ => unreachable!(),
+                };
+                input_restore.touch_mouse_button(&button);
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({
+                        "type": "mouse_button",
+                        "button": button,
+                        "down": down,
+                    })
+                    .to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "xr" => {
+                require_arity(method, args, 1)?;
+                let sample = args[0]
+                    .as_object()
+                    .ok_or_else(|| "xr sample must be an object".to_string())?;
+                let mut command = sample.clone();
+                command.insert("type".into(), Value::String("xr".into()));
+                self.post(url, "/input", Value::Object(command).to_string())
+                    .await?;
+                Ok(nothing())
+            }
+            "xrClear" => {
+                require_arity(method, args, 0)?;
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({ "type": "xr_clear" }).to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "uiClick" => {
+                require_arity(method, args, 1)?;
+                let slot = u32_arg(method, args, 0)?;
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({
+                        "type": "ui_event",
+                        "slot": slot,
+                        "kind": "Clicked",
+                    })
+                    .to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "rewind" => {
+                require_arity(method, args, 1)?;
+                let frame = u64_arg(method, args, 0)?;
+                Ok(text(
+                    self.post(
+                        url,
+                        "/rewind",
+                        serde_json::json!({ "frame": frame }).to_string(),
+                    )
+                    .await?,
+                ))
+            }
+            "reloadSource" => {
+                require_arity(method, args, 1)?;
+                Ok(text(
+                    self.post(url, "/reload-source", string_arg(method, args, 0)?)
+                        .await?,
+                ))
+            }
+            "reloadProject" | "loadProject" => {
+                require_arity(method, args, 1)?;
+                let path = if method == "reloadProject" {
+                    "/reload-project"
+                } else {
+                    "/load-project"
+                };
+                Ok(text(self.post(url, path, args[0].to_string()).await?))
+            }
+            "reloadAsset" => {
+                require_arity(method, args, 2)?;
+                let path = string_arg(method, args, 0)?;
+                let path_bytes = path.as_bytes();
+                let path_len = u32::try_from(path_bytes.len())
+                    .map_err(|_| "asset path is too long".to_string())?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(string_arg(method, args, 1)?)
+                    .map_err(|error| format!("reloadAsset bytes are not valid base64: {error}"))?;
+                if bytes.len() > MAX_CODE_ASSET_BYTES {
+                    return Err(output_limit_error(
+                        "submitted-code asset",
+                        bytes.len(),
+                        MAX_CODE_ASSET_BYTES,
+                    ));
+                }
+                let mut body = Vec::with_capacity(4 + path_bytes.len() + bytes.len());
+                body.extend_from_slice(&path_len.to_be_bytes());
+                body.extend_from_slice(path_bytes);
+                body.extend_from_slice(&bytes);
+                Ok(text(self.post_binary(url, "/reload-asset", body).await?))
+            }
+            "syncAssets" => {
+                require_arity(method, args, 1)?;
+                Ok(text(
+                    self.post(url, "/sync-assets", args[0].to_string()).await?,
+                ))
+            }
+            other => Err(format!(
+                "unknown game SDK method {other:?}; use the injected Functor SDK surface"
+            )),
+        }
+    }
+
+    async fn code_failure(
         &self,
         target: &SessionTarget,
         cause: String,
-        input_restore: &AutomationInputRestore,
+        input_restore: &CodeInputRestore,
     ) -> String {
         if input_restore.is_empty() {
             return cause;
@@ -2167,11 +2528,11 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             }
         }
         if failures.is_empty() {
-            format!("{cause}; plan-touched key and mouse-button levels were restored")
+            format!("{cause}; code-touched key and mouse-button levels were restored")
         } else {
             target.quarantined.store(true, Ordering::Release);
             format!(
-                "{cause}; failed to confirm plan-touched input restoration ({}). The exact runtime URL \
+                "{cause}; failed to confirm code-touched input restoration ({}). The exact runtime URL \
 is quarantined, so no alias can mutate it. Stop an owned session; for an attached runtime, restart \
 both the runtime and this MCP server before reconnecting.",
                 failures.join("; ")
@@ -2179,8 +2540,19 @@ both the runtime and this MCP server before reconnecting.",
         }
     }
 
-    /// Fetch and validate the discovery document, so an `http://…` that answers
-    /// something else is rejected here rather than at the first real call.
+    async fn cleanup_submitted_code(
+        &self,
+        target: &SessionTarget,
+        mut cause: String,
+        input_restore: &CodeInputRestore,
+        issued_advance: bool,
+    ) -> String {
+        if issued_advance {
+            cause = self.abort_advance(target, cause).await;
+        }
+        self.code_failure(target, cause, input_restore).await
+    }
+
     async fn discover(&self, url: &str) -> Result<Value, String> {
         let body = self.get(url, "/").await?;
         let discovery: Value = serde_json::from_str(&body)
@@ -2233,6 +2605,400 @@ Rebuild that runtime from this version of Functor."
     }
 }
 
+fn node_executable() -> String {
+    std::env::var("FUNCTOR_NODE").unwrap_or_else(|_| "node".into())
+}
+
+fn spawn_node_child(program: impl AsRef<Path>) -> Result<Child, String> {
+    let program = program.as_ref();
+    let mut command = Command::new(program);
+    command
+        .arg("--input-type=module")
+        .arg("--eval")
+        .arg(NODE_RUNNER_SOURCE)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    command.spawn().map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            format!(
+                "run_game_code_unsafe requires Node.js 20 or newer on PATH, but {:?} was not found. \
+Install Node.js, set FUNCTOR_NODE to its executable, and restart `functor mcp`.",
+                program
+            )
+        } else {
+            format!(
+                "could not start Node.js executable {:?} for run_game_code_unsafe: {error}",
+                program
+            )
+        }
+    })
+}
+
+async fn finish_node_child(
+    child: &mut Child,
+    terminate: bool,
+) -> Result<std::process::ExitStatus, String> {
+    if terminate {
+        let _ = child.start_kill();
+    }
+    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        Ok(Ok(status)) => Ok(status),
+        Ok(Err(error)) => Err(format!("waiting for the Node child failed: {error}")),
+        Err(_) => {
+            let _ = child.start_kill();
+            child
+                .wait()
+                .await
+                .map_err(|error| format!("reaping the timed-out Node child failed: {error}"))
+        }
+    }
+}
+
+async fn await_code_phase<T>(
+    target: &SessionTarget,
+    context: &RequestContext<RoleServer>,
+    operation_deadline: Instant,
+    timeout: Duration,
+    phase: &str,
+    future: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::pin!(future);
+    let closing = wait_until_target_inactive(target);
+    tokio::pin!(closing);
+    let deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(operation_deadline));
+    tokio::pin!(deadline);
+    tokio::select! {
+        result = &mut future => result,
+        _ = context.ct.cancelled() => Err(format!(
+            "submitted-code MCP request was cancelled during {phase}"
+        )),
+        reason = &mut closing => Err(format!("{reason} during {phase}")),
+        _ = &mut deadline => Err(format!(
+            "submitted code exceeded its {}ms wall-clock timeout during {phase}",
+            timeout.as_millis()
+        )),
+    }
+}
+
+async fn wait_until_target_inactive(target: &SessionTarget) -> String {
+    loop {
+        if target.quarantined.load(Ordering::Acquire) {
+            return format!(
+                "submitted-code operation against {} became quarantined",
+                target.url
+            );
+        }
+        if target.closing.load(Ordering::Acquire) {
+            return format!(
+                "submitted-code operation against {} was interrupted because the session is stopping",
+                target.url
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn append_optional_error(mut cause: String, error: Option<String>) -> String {
+    if let Some(error) = error {
+        cause.push_str("; ");
+        cause.push_str(&error);
+    }
+    cause
+}
+
+fn append_code_failure(output: &mut NodeCodeOutput, cause: String) {
+    match &mut output.failure {
+        Some(failure) => {
+            failure.push_str("; ");
+            failure.push_str(&cause);
+        }
+        None => output.failure = Some(cause),
+    }
+}
+
+async fn read_node_message<R>(reader: &mut R) -> Result<Option<NodeMessage>, String>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let line = match read_bounded_line(
+        reader,
+        MAX_NODE_PROTOCOL_LINE_BYTES,
+        "Node child protocol line",
+    )
+    .await?
+    {
+        Some(line) => line,
+        None => return Ok(None),
+    };
+    serde_json::from_slice(&line)
+        .map(Some)
+        .map_err(|error| format!("Node child sent invalid protocol JSON: {error}"))
+}
+
+async fn read_bounded_line<R>(
+    reader: &mut R,
+    limit: usize,
+    cap_name: &str,
+) -> Result<Option<Vec<u8>>, String>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = Vec::new();
+    loop {
+        let available = reader
+            .fill_buf()
+            .await
+            .map_err(|error| format!("reading {cap_name} failed: {error}"))?;
+        if available.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Err(format!("{cap_name} ended without a newline"))
+            };
+        }
+        match available.iter().position(|byte| *byte == b'\n') {
+            Some(index) => {
+                extend_bounded(&mut line, &available[..index], limit, cap_name)?;
+                reader.consume(index + 1);
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                return Ok(Some(line));
+            }
+            None => {
+                let consumed = available.len();
+                extend_bounded(&mut line, available, limit, cap_name)?;
+                reader.consume(consumed);
+            }
+        }
+    }
+}
+
+async fn write_node_message<W>(writer: &mut W, value: &Value) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    let line = serialize_json_bounded(value, MAX_NODE_PROTOCOL_LINE_BYTES, "Node parent message")?;
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .map_err(|error| format!("writing to Node child failed: {error}"))?;
+    writer
+        .write_all(b"\n")
+        .await
+        .map_err(|error| format!("writing to Node child failed: {error}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|error| format!("flushing Node child stdin failed: {error}"))
+}
+
+fn node_message_kind(message: &NodeMessage) -> &'static str {
+    match message {
+        NodeMessage::Ready { .. } => "ready",
+        NodeMessage::Call { .. } => "call",
+        NodeMessage::Log { .. } => "log",
+        NodeMessage::Complete { .. } => "complete",
+        NodeMessage::Fatal { .. } => "fatal",
+    }
+}
+
+fn require_arity(method: &str, args: &[Value], expected: usize) -> Result<(), String> {
+    require_arity_range(method, args, expected, expected)
+}
+
+fn require_arity_range(
+    method: &str,
+    args: &[Value],
+    minimum: usize,
+    maximum: usize,
+) -> Result<(), String> {
+    if (minimum..=maximum).contains(&args.len()) {
+        Ok(())
+    } else if minimum == maximum {
+        Err(format!(
+            "{method} expects {minimum} argument(s), got {}",
+            args.len()
+        ))
+    } else {
+        Err(format!(
+            "{method} expects between {minimum} and {maximum} arguments, got {}",
+            args.len()
+        ))
+    }
+}
+
+fn string_arg(method: &str, args: &[Value], index: usize) -> Result<String, String> {
+    args.get(index)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{method} argument {} must be a string", index + 1))
+}
+
+fn bool_arg(method: &str, args: &[Value], index: usize) -> Result<bool, String> {
+    args.get(index)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("{method} argument {} must be a boolean", index + 1))
+}
+
+fn finite_f64_arg(method: &str, args: &[Value], index: usize) -> Result<f64, String> {
+    args.get(index)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("{method} argument {} must be a finite number", index + 1))
+}
+
+fn positive_f64_arg(method: &str, args: &[Value], index: usize) -> Result<f64, String> {
+    let value = finite_f64_arg(method, args, index)?;
+    if value > 0.0 {
+        Ok(value)
+    } else {
+        Err(format!(
+            "{method} argument {} must be positive, got {value}",
+            index + 1
+        ))
+    }
+}
+
+fn u64_arg(method: &str, args: &[Value], index: usize) -> Result<u64, String> {
+    args.get(index).and_then(Value::as_u64).ok_or_else(|| {
+        format!(
+            "{method} argument {} must be a non-negative integer",
+            index + 1
+        )
+    })
+}
+
+fn u32_arg(method: &str, args: &[Value], index: usize) -> Result<u32, String> {
+    u32::try_from(u64_arg(method, args, index)?)
+        .map_err(|_| format!("{method} argument {} exceeds u32", index + 1))
+}
+
+fn i32_arg(method: &str, args: &[Value], index: usize) -> Result<i32, String> {
+    let value = args
+        .get(index)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("{method} argument {} must be an integer", index + 1))?;
+    i32::try_from(value).map_err(|_| format!("{method} argument {} exceeds i32", index + 1))
+}
+
+fn validate_key(key: &str) -> Result<(), String> {
+    Key::from_name(key).map(|_| ()).ok_or_else(|| {
+        format!(
+            "unknown key {key:?}; expected A-Z, Up/Down/Left/Right, Space, Enter, Escape, or 0-9"
+        )
+    })
+}
+
+fn mouse_button_arg(method: &str, args: &[Value], index: usize) -> Result<String, String> {
+    let button = string_arg(method, args, index)?;
+    match button.to_ascii_lowercase().as_str() {
+        "left" | "right" | "middle" => Ok(button.to_ascii_lowercase()),
+        _ => Err(format!(
+            "{method} argument {} must be left, right, or middle",
+            index + 1
+        )),
+    }
+}
+
+fn track_input_command(
+    command: &Value,
+    input_restore: &mut CodeInputRestore,
+) -> Result<(), String> {
+    let kind = command
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "input command must be an object with a string `type`".to_string())?;
+    match kind {
+        "key" => {
+            let key = command
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "key input requires a string `key`".to_string())?;
+            validate_key(key)?;
+            if !command.get("down").is_some_and(Value::is_boolean) {
+                return Err("key input requires a boolean `down`".into());
+            }
+            input_restore.touch_key(key);
+        }
+        "mouse_button" => {
+            let button = command
+                .get("button")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "mouse_button input requires a string `button`".to_string())?;
+            match button.to_ascii_lowercase().as_str() {
+                "left" | "right" | "middle" => {}
+                _ => {
+                    return Err("mouse_button input `button` must be left, right, or middle".into())
+                }
+            }
+            if !command.get("down").is_some_and(Value::is_boolean) {
+                return Err("mouse_button input requires a boolean `down`".into());
+            }
+            input_restore.touch_mouse_button(button);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn summarize_state(state: &Value) -> Value {
+    serde_json::json!({
+        "frame": state.get("frame").cloned().unwrap_or(Value::Null),
+        "tts": state.get("tts").cloned().unwrap_or(Value::Null),
+        "pending_steps": state.get("pending_steps").cloned().unwrap_or(Value::Null),
+        "held_keys": state.pointer("/input/held_keys").cloned().unwrap_or(Value::Null),
+        "model_bytes": json_encoded_len(state.get("model").unwrap_or(&Value::Null)).unwrap_or(0),
+    })
+}
+
+fn summarize_value(value: &Value) -> Value {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.clone(),
+        Value::Array(items) => serde_json::json!({
+            "type": "array",
+            "length": items.len(),
+            "json_bytes": json_encoded_len(value).unwrap_or(usize::MAX),
+        }),
+        Value::Object(fields) => serde_json::json!({
+            "type": "object",
+            "keys": fields.len(),
+            "json_bytes": json_encoded_len(value).unwrap_or(usize::MAX),
+        }),
+    }
+}
+
+fn summarize_sdk_args(method: &str, args: &[Value]) -> Value {
+    match method {
+        "reloadSource" => serde_json::json!({
+            "source_bytes": args.first().and_then(Value::as_str).map(str::len),
+        }),
+        "reloadProject" | "loadProject" => serde_json::json!({
+            "project_json_bytes": args.first().and_then(|value| json_encoded_len(value).ok()),
+        }),
+        "reloadAsset" => serde_json::json!({
+            "path": args.first().cloned().unwrap_or(Value::Null),
+            "base64_bytes": args.get(1).and_then(Value::as_str).map(str::len),
+        }),
+        _ => Value::Array(args.to_vec()),
+    }
+}
+
+fn truncate_chars(mut text: String, limit: usize) -> String {
+    if text.len() <= limit {
+        return text;
+    }
+    let mut boundary = limit;
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text.truncate(boundary);
+    text.push('…');
+    text
+}
+
 fn ensure_operation_active(
     target: &SessionTarget,
     operation_deadline: Instant,
@@ -2251,7 +3017,7 @@ fn ensure_operation_active(
     }
     if Instant::now() >= operation_deadline {
         return Err(format!(
-            "operation exceeded its {}s wall-clock deadline; split long step batches or plans",
+            "operation exceeded its {}s wall-clock deadline; split long step batches or code runs",
             OPERATION_TOTAL_TIMEOUT.as_secs()
         ));
     }
@@ -2309,9 +3075,10 @@ async fn acquire_target_operation(
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
 (launch_game / connect_game), then observe it (get_state — read model — get_scene, \
 get_trace, capture_frame) and drive it (pause, send_input, step, resume, rewind, \
-reload_source). `validate_automation_code` and `run_automation_code` collapse a whole \
-pause/input/step/assert/inspect/capture sequence into one restricted SDK builder expression \
-that is parsed into data and never evaluated as JavaScript. The lower-level deterministic \
+reload_source). `run_game_code_unsafe` runs a Playwright-style JavaScript function against \
+an injected `game` SDK in a Node.js child process, returning its value, SDK-call trace, logs, \
+and captures. It is explicitly RCE-equivalent local code, not a security sandbox. The \
+lower-level deterministic \
 loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \
 across steps. Mutating calls on one session share an async operation gate: overlaps WAIT \
@@ -2329,25 +3096,6 @@ impl ServerHandler for FunctorMcp {}
 impl Default for FunctorMcp {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-fn automation_step_name(step: &AutomationStep) -> &'static str {
-    match step {
-        AutomationStep::Pause { .. } => "pause",
-        AutomationStep::Key { down: true, .. } => "keyDown",
-        AutomationStep::Key { down: false, .. } => "keyUp",
-        AutomationStep::PressKey { .. } => "pressKey",
-        AutomationStep::MouseMove { .. } => "mouseMove",
-        AutomationStep::MouseButton { down: true, .. } => "mouseDown",
-        AutomationStep::MouseButton { down: false, .. } => "mouseUp",
-        AutomationStep::MouseWheel { .. } => "mouseWheel",
-        AutomationStep::UiClick { .. } => "uiClick",
-        AutomationStep::Step { .. } => "step",
-        AutomationStep::Inspect { .. } => "inspect",
-        AutomationStep::ExpectModel { .. } => "expectModel",
-        AutomationStep::ExpectModelClose { .. } => "expectModelClose",
-        AutomationStep::Capture { .. } => "capture",
     }
 }
 
@@ -2908,7 +3656,7 @@ impl io::Write for CountingWriter {
 fn json_encoded_len(value: &Value) -> Result<usize, String> {
     let mut writer = CountingWriter::default();
     serde_json::to_writer(&mut writer, value)
-        .map_err(|error| format!("could not account for automation JSON output: {error}"))?;
+        .map_err(|error| format!("could not account for submitted-code JSON output: {error}"))?;
     Ok(writer.bytes)
 }
 
@@ -2937,7 +3685,7 @@ fn serialize_json_bounded(value: &Value, limit: usize, cap_name: &str) -> Result
     };
     serde_json::to_writer(&mut writer, value).map_err(|error| error.to_string())?;
     String::from_utf8(writer.body)
-        .map_err(|error| format!("serialized automation JSON was not UTF-8: {error}"))
+        .map_err(|error| format!("serialized submitted-code JSON was not UTF-8: {error}"))
 }
 
 fn base64_encoded_len(raw_bytes: usize) -> Result<usize, String> {
@@ -2957,47 +3705,85 @@ fn encoded_capture_total(
             retained,
             base64_encoded_len(raw)?,
             limit,
-            "automation aggregate encoded MCP image content",
+            "submitted-code aggregate encoded MCP image content",
         )
     })
 }
 
-fn automation_call_result(
-    summary: String,
-    captures: Vec<(Option<String>, Vec<u8>)>,
-) -> Result<CallToolResult, String> {
-    // Account for every base64 string before constructing any of them. The
-    // raw aggregate has already been checked while executing the plan.
+fn node_code_summary(output: &NodeCodeOutput) -> Result<String, String> {
     encoded_capture_total(
-        captures.iter().map(|(_, png)| png.len()),
-        MAX_AUTOMATION_ENCODED_CAPTURE_BYTES,
+        output.captures.iter().map(Vec::len),
+        MAX_CODE_ENCODED_CAPTURE_BYTES,
     )?;
-
-    let mut content = Vec::with_capacity(captures.len() + 1);
-    content.push(ContentBlock::text(summary));
-    for (_, png) in captures {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
-        drop(png);
-        content.push(ContentBlock::image(encoded, "image/png"));
-    }
-    Ok(CallToolResult::success(content))
+    let captures: Vec<Value> = output
+        .captures
+        .iter()
+        .enumerate()
+        .map(|(index, png)| {
+            serde_json::json!({
+                "content_index": index + 1,
+                "mime_type": "image/png",
+                "bytes": png.len(),
+            })
+        })
+        .collect();
+    let ok = output.failure.is_none() && output.code_error.is_none();
+    let summary = serde_json::json!({
+        "ok": ok,
+        "unsafe": {
+            "rce_equivalent": true,
+            "security_sandbox": false,
+            "execution": "local_node_child_process",
+        },
+        "node_version": &output.node_version,
+        "calls_executed": output.calls_executed,
+        "return_value": &output.return_value,
+        "error": &output.failure,
+        "code_error": &output.code_error,
+        "trace": &output.trace,
+        "logs": &output.logs,
+        "captures": captures,
+        "final_state": &output.final_state,
+    });
+    serialize_json_bounded(
+        &summary,
+        MAX_CODE_TEXT_BYTES,
+        "submitted-code aggregate text output",
+    )
 }
 
-fn truncate_automation_error(mut text: String) -> String {
-    if text.len() <= MAX_AUTOMATION_TEXT_BYTES {
+fn node_code_call_result(output: NodeCodeOutput) -> Result<CallToolResult, String> {
+    let mut content = Vec::with_capacity(output.captures.len() + 1);
+    content.push(ContentBlock::text(node_code_summary(&output)?));
+    let ok = output.failure.is_none() && output.code_error.is_none();
+    for png in output.captures {
+        content.push(ContentBlock::image(
+            base64::engine::general_purpose::STANDARD.encode(png),
+            "image/png",
+        ));
+    }
+    if ok {
+        Ok(CallToolResult::success(content))
+    } else {
+        Ok(CallToolResult::error(content))
+    }
+}
+
+fn truncate_code_error(mut text: String) -> String {
+    if text.len() <= MAX_CODE_TEXT_BYTES {
         return text;
     }
     let used = text.len();
     let suffix = format!(
-        "\n… automation error truncated: used {used} bytes, limit {MAX_AUTOMATION_TEXT_BYTES} bytes"
+        "\n… submitted-code error truncated: used {used} bytes, limit {MAX_CODE_TEXT_BYTES} bytes"
     );
-    let keep = MAX_AUTOMATION_TEXT_BYTES.saturating_sub(suffix.len());
+    let keep = MAX_CODE_TEXT_BYTES.saturating_sub(suffix.len());
     let mut boundary = keep.min(text.len());
     while !text.is_char_boundary(boundary) {
         boundary -= 1;
     }
     text.truncate(boundary);
-    text.push_str(&suffix[..suffix.len().min(MAX_AUTOMATION_TEXT_BYTES - text.len())]);
+    text.push_str(&suffix[..suffix.len().min(MAX_CODE_TEXT_BYTES - text.len())]);
     text
 }
 
@@ -3078,13 +3864,13 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_target_operation, automation_call_result, base64_encoded_len, checked_output_total,
-        encoded_capture_total, ensure_operation_active, extend_bounded, find_guide_section,
-        guide_sections, json_encoded_len, read_body, read_bounded_response, render_api_hits,
+        acquire_target_operation, base64_encoded_len, checked_output_total, encoded_capture_total,
+        ensure_operation_active, extend_bounded, find_guide_section, guide_sections,
+        json_encoded_len, node_code_call_result, read_body, read_bounded_response, render_api_hits,
         render_guide_contents, render_guide_section, search_api, serialize_json_bounded,
-        strip_front_matter, truncate_automation_error, AutomationInputRestore,
-        AutomationOutputBudget, FunctorMcp, Registry, SessionTarget, LANGUAGE_GUIDE,
-        MAX_AUTOMATION_CAPTURE_BYTES, MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
+        spawn_node_child, strip_front_matter, truncate_code_error, CodeInputRestore,
+        CodeOutputBudget, FunctorMcp, NodeCodeOutput, Registry, SessionTarget, LANGUAGE_GUIDE,
+        MAX_CODE_CAPTURE_BYTES, MAX_CODE_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
     use std::sync::{
@@ -3131,7 +3917,7 @@ mod tests {
     }
 
     #[test]
-    fn automation_json_and_capture_budgets_are_explicit_and_bounded() {
+    fn submitted_code_json_and_capture_budgets_are_explicit_and_bounded() {
         let value = serde_json::json!({"answer": 42, "ready": true});
         let encoded = serde_json::to_string(&value).unwrap();
         assert_eq!(json_encoded_len(&value).unwrap(), encoded.len());
@@ -3142,16 +3928,33 @@ mod tests {
         let error = serialize_json_bounded(&value, encoded.len() - 1, "test JSON").unwrap_err();
         assert!(error.contains("test JSON cap exceeded"), "{error}");
 
-        let mut budget = AutomationOutputBudget {
-            retained_text_bytes: MAX_AUTOMATION_TEXT_BYTES - 1,
-            capture_bytes: MAX_AUTOMATION_CAPTURE_BYTES - 1,
+        let mut budget = CodeOutputBudget {
+            retained_text_bytes: MAX_CODE_TEXT_BYTES - 1,
+            capture_bytes: MAX_CODE_CAPTURE_BYTES - 1,
         };
         budget.retain_json(&serde_json::json!(0)).unwrap();
         let text_error = budget.retain_json(&serde_json::json!(0)).unwrap_err();
-        assert!(text_error.contains("automation aggregate text output"));
+        assert!(text_error.contains("submitted-code aggregate text output"));
         budget.retain_capture(1).unwrap();
         let capture_error = budget.retain_capture(1).unwrap_err();
-        assert!(capture_error.contains("automation aggregate raw capture output"));
+        assert!(capture_error.contains("submitted-code aggregate raw capture output"));
+    }
+
+    #[test]
+    fn submitted_code_input_restoration_canonicalizes_serialized_digit_keys() {
+        let mut restore = CodeInputRestore::from_state(&serde_json::json!({
+            "input": {
+                "held_keys": ["W", "Num1"],
+                "mouse": { "buttons": {} },
+            }
+        }));
+        restore.touch_key("w");
+        restore.touch_key("1");
+
+        assert!(restore.baseline_keys.contains("W"));
+        assert!(restore.baseline_keys.contains("1"));
+        assert!(restore.touched_keys.contains("W"));
+        assert!(restore.touched_keys.contains("1"));
     }
 
     #[test]
@@ -3165,25 +3968,43 @@ mod tests {
         let error = encoded_capture_total([1, 2, 3], 11).unwrap_err();
         assert!(error.contains("encoded MCP image content"), "{error}");
 
-        let result = automation_call_result(
-            "{\"ok\":true}".into(),
-            vec![(Some("one".into()), vec![1, 2, 3]), (None, vec![4])],
-        )
+        let result = node_code_call_result(NodeCodeOutput {
+            node_version: "v22.0.0".into(),
+            return_value: serde_json::json!({"answer": 42}),
+            code_error: None,
+            failure: None,
+            trace: Vec::new(),
+            logs: Vec::new(),
+            captures: vec![vec![1, 2, 3], vec![4]],
+            calls_executed: 0,
+            final_state: None,
+            output_budget: CodeOutputBudget::default(),
+        })
         .unwrap();
         let value = serde_json::to_value(result).unwrap();
         assert_eq!(value["content"].as_array().unwrap().len(), 3);
-        assert_eq!(value["content"][0]["text"], "{\"ok\":true}");
         assert_eq!(value["content"][1]["data"], "AQID");
         assert_eq!(value["content"][2]["data"], "BA==");
     }
 
     #[test]
-    fn automation_error_text_is_centrally_utf8_truncated() {
-        let original = format!("{}é", "x".repeat(MAX_AUTOMATION_TEXT_BYTES));
-        let truncated = truncate_automation_error(original);
-        assert_eq!(truncated.len(), MAX_AUTOMATION_TEXT_BYTES);
-        assert!(truncated.contains("automation error truncated"));
+    fn submitted_code_error_text_is_centrally_utf8_truncated() {
+        let original = format!("{}é", "x".repeat(MAX_CODE_TEXT_BYTES));
+        let truncated = truncate_code_error(original);
+        assert_eq!(truncated.len(), MAX_CODE_TEXT_BYTES);
+        assert!(truncated.contains("submitted-code error truncated"));
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn missing_node_has_a_teaching_error() {
+        let missing = std::env::temp_dir().join(format!(
+            "functor-node-that-does-not-exist-{}",
+            std::process::id()
+        ));
+        let error = spawn_node_child(&missing).unwrap_err();
+        assert!(error.contains("requires Node.js 20 or newer"), "{error}");
+        assert!(error.contains("FUNCTOR_NODE"), "{error}");
     }
 
     #[tokio::test]
@@ -3275,7 +4096,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_plan_input_restoration_quarantines_the_url() {
+    async fn failed_code_input_restoration_quarantines_the_url() {
         let server = FunctorMcp::new();
         let url = fake_http_url(
             b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 6\r\nConnection: close\r\n\r\nfailed",
@@ -3287,13 +4108,13 @@ mod tests {
             quarantined: Arc::new(AtomicBool::new(false)),
             closing: Arc::new(AtomicBool::new(false)),
         };
-        let input_restore = AutomationInputRestore {
+        let input_restore = CodeInputRestore {
             touched_keys: ["space".into()].into_iter().collect(),
-            ..AutomationInputRestore::default()
+            ..CodeInputRestore::default()
         };
 
         let error = server
-            .automation_failure(&target, "assertion failed".into(), &input_restore)
+            .code_failure(&target, "assertion failed".into(), &input_restore)
             .await;
 
         assert!(error.contains("quarantined"), "{error}");

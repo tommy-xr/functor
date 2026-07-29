@@ -1,4 +1,3 @@
-mod automation;
 pub mod docs;
 pub mod functor_lang_project;
 pub mod import;

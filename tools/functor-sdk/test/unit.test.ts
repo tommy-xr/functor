@@ -56,6 +56,15 @@ test("stepAll advances every client by the same dt, concurrently", async () => {
   assert.deepEqual(calls, [0.25, 0.25, 0.25]);
 });
 
+test("isKeyDown maps bare digit input to serialized Num key names", async () => {
+  const client = new FunctorClient({
+    getJson: async () => ({ input: { held_keys: ["Num1"] } }),
+  } as unknown as HttpClient);
+
+  assert.equal(await client.isKeyDown("1"), true);
+  assert.equal(await client.isKeyDown("2"), false);
+});
+
 test("waitFor returns once the predicate holds", async () => {
   let n = 0;
   const value = await waitFor(
@@ -102,6 +111,95 @@ test("waitFor throws on timeout with the description", async () => {
     ),
     /timed out after 20ms waiting for the impossible/,
   );
+});
+
+test("stepUntil checks immediately, then advances deterministically", async () => {
+  let value = 0;
+  const calls: Array<{ path: string; body?: unknown }> = [];
+  const state = () => ({
+    frame: value,
+    tts: value / 60,
+    pending_steps: 0,
+    viewport: { width: 1, height: 1 },
+    views: [],
+    model: { value },
+    model_debug: String(value),
+    input: { held_keys: [], mouse: { x: 0, y: 0 } },
+  });
+  const http = {
+    getJson: async (path: string) => {
+      calls.push({ path });
+      return state();
+    },
+    postText: async (path: string, body: unknown) => {
+      calls.push({ path, body });
+      if (path === "/time") value++;
+      return "ok";
+    },
+  } as unknown as HttpClient;
+  const client = new FunctorClient(http);
+
+  const settled = await client.stepUntil(
+    (current) => (current.model as { value: number }).value >= 2,
+    { maxFrames: 3, dts: 0.25, description: "value >= 2" },
+  );
+
+  assert.deepEqual(settled.model, { value: 2 });
+  assert.deepEqual(
+    calls.filter(({ path }) => path === "/time").map(({ body }) => body),
+    [
+      { type: "advance", dts: 0.25 },
+      { type: "advance", dts: 0.25 },
+    ],
+  );
+});
+
+test("stepUntil is bounded and explains exhaustion", async () => {
+  const http = {
+    getJson: async () => ({
+      frame: 0,
+      tts: 0,
+      pending_steps: 0,
+      viewport: { width: 1, height: 1 },
+      views: [],
+      model: { ready: false },
+      model_debug: "",
+      input: { held_keys: [], mouse: { x: 0, y: 0 } },
+    }),
+    postText: async () => "ok",
+  } as unknown as HttpClient;
+  const client = new FunctorClient(http);
+
+  await assert.rejects(
+    client.stepUntil(() => false, {
+      maxFrames: 2,
+      description: "the game to become ready",
+    }),
+    /exhausted 2 frames waiting for the game to become ready/,
+  );
+  await assert.rejects(
+    client.stepUntil(() => true, { maxFrames: 10_001 }),
+    /between 0 and 10000/,
+  );
+});
+
+test("pressKey always releases the key after a failed step", async () => {
+  const calls: unknown[] = [];
+  const http = {
+    postText: async (path: string, body: unknown) => {
+      calls.push({ path, body });
+      if (path === "/time") throw new Error("step failed");
+      return "ok";
+    },
+  } as HttpClient;
+  const client = new FunctorClient(http);
+
+  await assert.rejects(client.pressKey("space"), /step failed/);
+  assert.deepEqual(calls, [
+    { path: "/input", body: { type: "key", key: "space", down: true } },
+    { path: "/time", body: { type: "advance", dts: 1 / 60 } },
+    { path: "/input", body: { type: "key", key: "space", down: false } },
+  ]);
 });
 
 test("xrInput returns the typed optional input domain", async () => {

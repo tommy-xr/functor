@@ -39,8 +39,8 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// This is additive; clients that support older runtimes can treat absent
 /// fields as empty.
 ///
-/// 7 added `POST /time {"type":"cancel"}` so an automation driver can abort
-/// a queued batch without leaving clock work behind.
+/// 7 added `POST /time {"type":"cancel"}` so an external driver can abort a
+/// queued batch without leaving clock work behind.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 7;
 
 /// The well-known localhost port `functor develop` serves this protocol on

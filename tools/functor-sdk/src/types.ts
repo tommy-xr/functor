@@ -4,6 +4,8 @@ export type KeyName =
   | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
   | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
   | "Up" | "Down" | "Left" | "Right" | "Space" | "Enter" | "Escape" | "Unknown"
+  | "Num0" | "Num1" | "Num2" | "Num3" | "Num4"
+  | "Num5" | "Num6" | "Num7" | "Num8" | "Num9"
   | (string & {});
 
 export type Vec3 = [number, number, number];
@@ -198,6 +200,16 @@ export interface WaitForOptions {
   /** Poll interval, ms (default 100). */
   intervalMs?: number;
   /** Phrase used in the timeout error message ("…waiting for <description>"). */
+  description?: string;
+}
+
+/** Options for deterministic {@link FunctorClient.stepUntil} polling. */
+export interface StepUntilOptions {
+  /** Maximum fixed steps before failing (default 600, maximum 10,000). */
+  maxFrames?: number;
+  /** Delta time for each fixed step (default 1/60 second). */
+  dts?: number;
+  /** Phrase used in the failure message ("…waiting for <description>"). */
   description?: string;
 }
 

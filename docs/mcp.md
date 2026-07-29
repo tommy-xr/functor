@@ -11,9 +11,9 @@ model back as structured JSON.
 
 It is a plain HTTP client of the runtimes and lives in the CLI. Its runtime-side
 additions are `GET /project` (the read half used by `save_project`) plus the
-protocol-v7 `cancel` command that makes bounded automation abort without leaving
-queued steps behind. The MCP executor snapshots input before a plan and restores
-only the key/button levels that failed plan touched.
+protocol-v7 `cancel` command that lets bounded stepping or submitted SDK code
+abort without leaving queued steps behind. The code runner snapshots input and
+restores only the key/button levels touched by an unsuccessful run.
 
 ## Registering it
 
@@ -49,13 +49,13 @@ active call to finish, then runs without interleaving. This is mutual exclusion,
 not a promised FIFO sequencer; relative waiter order is unspecified. Cancellation
 while queued stops waiting and prevents the mutation. Once a mutation acquires
 the gate, it runs to its operation boundary even if its MCP response is
-cancelled. Acquired `step` and automation calls have a 120-second deadline that
-progress does not extend; it is checked between operations and step polls, while
-an in-flight request retains its 30-second request timeout. An owned stop also
-ends an active step/automation at its next polling boundary before taking the
+cancelled. Acquired `step` and submitted-code calls have a 120-second deadline
+that progress does not extend; it is checked between operations and step polls,
+while an in-flight request retains its 30-second request timeout. An owned stop also
+ends an active step/code run at its next polling boundary before taking the
 gate. Before an aborted operation releases the gate, it cancels the accepted
-step queue; an automation failure also restores only the key and mouse-button
-levels that plan touched to their pre-plan snapshot. If either cleanup cannot
+step queue; a code failure also restores only the key and mouse-button levels
+the code touched to their pre-run snapshot. If either cleanup cannot
 be confirmed, the exact URL is quarantined: every alias rejects further
 mutations. Stopping an owned session kills the ambiguous runtime and clears its
 tombstone. Merely detaching an attached id cannot prove cleanup; restart both
@@ -103,8 +103,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
 | `reload_source` / `reload_project` | Hot-reload the entry, or every sibling module, with the live model preserved. |
-| `validate_automation_code` | Parse one restricted SDK builder expression without a session or side effects; return its normalized plan, canonical round-trip source, diagnostics, and budget use. |
-| `run_automation_code` | Fully validate, then execute a restricted SDK builder expression as one ordered pause/input/step/assert/inspect/capture plan. |
+| `run_game_code_unsafe` | Run a JavaScript function against an injected game SDK in a local Node child, returning its JSON value, SDK-call trace, logs, captures, and final state. This is deliberately RCE-equivalent; see below. |
 
 **Authoring.**
 
@@ -178,96 +177,83 @@ it from the same Functor version.
 Launched games are killed when the server stops, whether its client closes
 stdin or signals it (SIGTERM/Ctrl-C). Attached ones are always left running.
 
-## Restricted automation-code PoC
+## Unsafe SDK code in a Node child
 
-The two automation-code tools are a deliberately small experiment inspired by
-n8n's code-shaped workflow builder. They do **not** add a JavaScript runtime to
-`functor mcp`. Submitted source is parsed as one allowlisted fluent expression,
-lowered to plain JSON-like plan data, and fully validated before a session is
-looked up or any runtime HTTP request is made:
-
-```text
-restricted SDK source → lexer/parser → normalized AutomationPlan
-                      → budgets + semantic validation
-                      → existing typed debug-runtime operations
-```
+`run_game_code_unsafe` follows the same model as Playwright's code-running
+tools: submit one ordinary JavaScript function, and the server injects a
+session-bound `game` object:
 
 ```js
-automation("photo mouse-look proof")
-  .pause(2)
-  .mouseMove(400, 300)
-  .mouseMove(600, 200)
-  .step({ frames: 2, dts: 0.016 })
-  .expectModelClose("yawOffset", -0.6, 0.0001)
-  .inspect("settled")
-  .capture("proof");
+async (game) => {
+  await game.pause();
+  await game.pressKey("3");
+
+  const settled = await game.stepUntil(
+    (state) => state.model.enemies.length > 0,
+    {
+      maxFrames: 120,
+      dts: 0.016,
+      description: "the first enemy to spawn",
+    },
+  );
+
+  console.log("spawned", settled.model.enemies.length);
+  return {
+    frame: settled.frame,
+    enemies: settled.model.enemies.length,
+  };
+}
 ```
 
-Call `validate_automation_code` without a session first. On success it returns
-the normalized `plan`, deterministic `canonical_code`, and both used and maximum
-budgets. Submitting `canonical_code` to validation again produces the identical
-plan. Invalid validation also succeeds as a tool call but returns `valid: false`
-with a line/column diagnostic, so an agent can repair source without decoding a
-protocol error.
+The request puts that function in the `code` string and may set
+`timeout_ms` up to 120,000. The string is JavaScript evaluated by Node, not a
+TypeScript source file, so omit type annotations. Node.js 20 or newer must be
+installed; `FUNCTOR_NODE` can point to a non-default executable. If Node is
+missing or too old, the tool fails before running submitted code or mutating
+the game.
 
-Allowed methods are `pause`, `keyDown`, `keyUp`, `pressKey`, `mouseMove`,
-`mouseDown`, `mouseUp`, `mouseWheel`, `uiClick`, `step`, `inspect`,
-`expectModel`, `expectModelClose`, and `capture`. `pressKey("r")` lowers to key
-down → one waited 16ms step → key up, including a best-effort release if either
-the down request or step fails; it is the edge-action shortcut jam authors
-repeatedly needed. Key names are validated case-insensitively against the
-runtime vocabulary: A–Z, arrows, Space, Enter, Escape, and 0–9.
-`expectModelClose(path, expected, absTolerance)` is the
-bounded assertion for floating-point game state; both numeric arguments must be
-finite and tolerance must be non-negative. Model paths are static strings:
-convenient dotted paths (`camera.yawOffset`, `players.0.score`) or JSON Pointers
-(`/odd.key/value`).
+The injected object mirrors the standalone `@functor/sdk` method surface within
+the runner's documented bounds: observation, clock, input, project reload,
+asset reload, rewind, and capture methods are available. Its
+`stepUntil(predicate, options)` helper checks current state, then advances one
+fixed frame at a time until an ordinary sync or async callback returns true. It
+defaults to 600 frames, caps `maxFrames` at 10,000, and throws a teaching error
+on exhaustion. `waitForState` polls a running game without advancing it. The
+child JSON protocol caps one decoded asset at 8 MiB; standalone SDK binary
+uploads may be larger.
 
-Mouse coordinates and wheel deltas are signed 32-bit integer literals, matching
-the debug protocol; UI slots are unsigned 32-bit integers. Input release becomes
-sampled game state on the next step. For example, a proof that releases `d`
-should end with `.keyUp("d").step().expectModel("moveX", 0)`, not assert
-`moveX` immediately after `keyUp`.
+The child sends each SDK call to the Rust parent over reserved line-delimited
+stdout; ordinary stdout writes become captured logs. The parent performs the
+existing typed debug-runtime requests while holding the session's operation
+gate. The tool returns the function's
+JSON-serializable value, captured console logs, a structured trace of every SDK
+call that actually ran, capture metadata plus PNG image blocks, and fresh final
+state. For trusted automation, the trace is useful validation evidence: loops,
+branches, and dynamic polling appear as their concrete calls without inventing
+a second serialized plan language. It is not an attestation against hostile
+submitted code, which already has RCE-equivalent authority and can deliberately
+spoof child protocol output.
 
-Only literal strings, finite numbers, booleans, nulls, arrays, and objects are
-accepted as arguments. Duplicate object keys are rejected. The grammar cannot
-represent imports, declarations/variables, callbacks/functions, loops,
-classes/`new`, async/await, `eval`, `Function`, `require`, `process`,
-`globalThis`, browser globals, fetch/timers, dynamic properties, or unknown
-calls. There is no `eval`, `new Function`, Node `vm`, JavaScript engine, module
-resolution, filesystem access, or network access in the parser.
+The `unsafe` suffix is literal. Submitted code is arbitrary local Node code:
+it can import modules, access files and environment variables, use the network,
+and start processes with the same operating-system authority as
+`functor mcp`. The child-process boundary contains a Node crash and lets the
+parent kill that direct child on timeout, cancellation, or `stop_game`; **it is
+not a security or process-tree sandbox**. A subprocess deliberately started by
+submitted code can outlive the Node child. Use this only with MCP clients
+already trusted with equivalent developer-machine access. Never expose it to
+untrusted network clients. A hosted or multi-tenant service needs a real
+container/VM boundary and a narrow, credential-free game proxy.
 
-The budgets are 16 KiB of source, 64 logical steps, eight levels of literal
-nesting, 10,000 total requested frames, and four captures. `run_automation_code`
-returns the normalized plan, passed assertions, labeled state observations, and
-fresh final state in its first text block. Each `capture` adds a PNG image block
-and therefore requires a `hidden` session; headless sessions still support every
-data/input/clock operation. An acquired run has a 120-second deadline,
-independent of its step-drain progress and checked between bounded runtime
-requests. Runtime text responses and individual raw capture responses are each
-capped at 8 MiB. An automation run additionally caps its serialized text
-summary and error text at 4 MiB, all retained raw captures together at 16 MiB,
-and their base64 MCP image content at 24 MiB. The encoded
-aggregate is checked before base64 construction, then raw captures are consumed
-one at a time as image blocks are built. Declared `Content-Length` is checked
-before allocation and the same limit is enforced while chunks stream; an error
-reports the used and allowed byte counts.
+Execution is ordered but not transactional. Syntax failure happens before code
+starts, but a later throw cannot roll back model, physics, UI, or effects from
+steps that already landed. On throw, timeout, MCP cancellation, or stop, the
+parent kills the direct child, cancels accepted clock work, and restores only
+key/mouse-button levels touched through the injected SDK. Failed cleanup
+quarantines the exact runtime URL under the same rules as a failed `step`.
 
-Execution is ordered but not transactional. Complete parse and static
-plan-budget rejection is side-effect free, including when a valid mutating
-prefix has an invalid suffix. Once a valid plan begins, a later runtime,
-assertion, or runtime-output cap failure can leave earlier steps applied. The
-abort cleanup removes queued clock work and restores plan-touched key/button
-levels to their pre-plan snapshot, but does not roll back model, physics, UI, or
-other effects from steps that already landed.
-The session operation gate is held for the whole plan, so concurrent mutating
-calls wait and cannot splice input or clock operations into it; calls for other
-exact URLs remain independent. This PoC
-intentionally has no variables, branching, loops, retry conditions, arbitrary
-JavaScript expressions, or rollback.
-
-The complete architecture, jam-friction evaluation, and productionization
-questions are in [the PoC note](mcp-automation-code-poc.md).
+The complete architecture, limits, threat boundary, and game-jam evaluation are
+in [the code-runner note](mcp-unsafe-sdk-code.md).
 
 ## `hidden` vs `headless`
 

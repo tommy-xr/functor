@@ -12,18 +12,20 @@
 //      section by name, and an unknown section.
 //   3. launch_game on examples/counter in HEADLESS mode (no GL, so this runs
 //      anywhere CI does), and assert /state's structured `model` arrives.
-//   4. pause, then step twice — asserting the frame advances and that `step`
+//   4. run_game_code_unsafe executes ordinary JavaScript against its injected
+//      SDK, including callbacks/loops/stepUntil, and returns an SDK-call trace.
+//   5. pause, then step twice — asserting the frame advances and that `step`
 //      only returns once the queued steps have landed (pending_steps == 0).
-//   5. send_input: counter's model reacts to a UI click (its `update` handles
+//   6. send_input: counter's model reacts to a UI click (its `update` handles
 //      Inc), so a `ui_event` on slot 0 must increment `count` after a step.
 //      A `key` event is also injected to exercise that shape end to end.
-//   6. the filesystem-less authoring journey: launch_game with the whole
+//   7. the filesystem-less authoring journey: launch_game with the whole
 //      project INLINE (no directory anywhere), edit it live with
 //      reload_source (model preserved), then save_project — asserting the
 //      saved source is the EDITED source, i.e. the wire's truth rather than
 //      whatever the launch wrote.
-//   7. init_game scaffolds a starter project on disk and it boots.
-//   8. stop_game, then a clean shutdown of the server itself.
+//   8. init_game scaffolds a starter project on disk and it boots.
+//   9. stop_game, then a clean shutdown of the server itself.
 //
 // Run manually (needs the CLI built; the wasm bundle is not required):
 //
@@ -59,8 +61,7 @@ const EXPECTED_TOOLS = [
   "reload_project",
   "api_reference",
   "language_guide",
-  "validate_automation_code",
-  "run_automation_code",
+  "run_game_code_unsafe",
   "init_game",
   "save_project",
 ];
@@ -221,57 +222,6 @@ try {
   }
   check(badSection !== null && /syntax-subset/.test(badSection), "an unknown section names the sections that exist");
 
-  console.log("\n▸ restricted automation source validates without a session");
-  const automationSource = `automation("round trip")
-    .pause()
-    .pressKey("2")
-    .step({ frames: 3, dts: 0.02 })
-    .expectModel("count", 0)
-    .capture("proof")`;
-  const validated = await rpc.call("validate_automation_code", { code: automationSource });
-  check(validated.valid === true && validated.plan?.steps?.length === 5, "validation returns the normalized serializable plan");
-  check(typeof validated.canonical_code === "string" && /automation\("round trip"\)/.test(validated.canonical_code), "validation returns deterministic canonical SDK source");
-  check(validated.budget?.used?.total_frames === 4, "validation reports expanded frame-budget use (pressKey + step)");
-  const roundTripped = await rpc.call("validate_automation_code", { code: validated.canonical_code });
-  check(
-    JSON.stringify(roundTripped.plan) === JSON.stringify(validated.plan),
-    "canonical source parses back to the identical plan",
-  );
-
-  const rejectedAutomation = await rpc.call("validate_automation_code", {
-    code: `automation().pause().then(() => process.exit())`,
-  });
-  check(
-    rejectedAutomation.valid === false &&
-      rejectedAutomation.errors?.[0]?.line === 1 &&
-      /unknown automation method|restricted/.test(rejectedAutomation.errors?.[0]?.message ?? ""),
-    "callbacks, globals, and unknown calls are rejected with a source diagnostic",
-  );
-  const rejectedKey = await rpc.call("validate_automation_code", {
-    code: `automation().keyDown("Shift")`,
-  });
-  check(
-    rejectedKey.valid === false &&
-      /unknown key "Shift"/.test(rejectedKey.errors?.[0]?.message ?? ""),
-    "invalid key names are rejected before session lookup or cleanup",
-  );
-
-  let oversizedSessionError = null;
-  try {
-    await rpc.call("run_automation_code", {
-      session: "s".repeat(4 * 1024 * 1024 + 1024),
-      code: `automation("bounded lookup error").pause()`,
-    });
-  } catch (error) {
-    oversizedSessionError = error.message;
-  }
-  check(
-    oversizedSessionError !== null &&
-      /automation error truncated/.test(oversizedSessionError) &&
-      Buffer.byteLength(oversizedSessionError) <= 4 * 1024 * 1024 + 128,
-    "run_automation_code caps even an oversized session-lookup error",
-  );
-
   console.log("\n▸ launching a game headlessly");
   const launched = await rpc.call("launch_game", { dir: "examples/counter", mode: "headless" });
   session = launched.session;
@@ -290,124 +240,231 @@ try {
   );
   check(state.model?.count === 0, `the counter starts at 0 (model.count = ${state.model?.count})`);
 
-  console.log("\n▸ an automation plan is fully validated before its first action");
+  console.log("\n▸ submitted code is parsed before its first action");
   await rpc.call("pause", { session });
   const beforeRejectedRun = await rpc.call("get_state", { session });
   let rejectedRun = null;
   try {
-    // The prefix is a VALID mutating action. The invalid suffix must prevent
-    // the prefix from being sent, proving whole-plan validation comes first.
-    await rpc.call("run_automation_code", {
+    await rpc.call("run_game_code_unsafe", {
       session,
-      code: `automation("must stay pure").uiClick(0).unknown()`,
+      code: `async (game) => {
+        await game.uiClick(0);
+        const syntax error = true;
+      }`,
     });
   } catch (error) {
     rejectedRun = error.message;
   }
   const afterRejectedRun = await rpc.call("get_state", { session });
-  check(rejectedRun !== null && /unknown automation method/.test(rejectedRun), "run rejects an invalid suffix");
+  check(rejectedRun !== null && /SyntaxError/.test(rejectedRun), "a syntax error is reported");
   check(
     afterRejectedRun.model.count === beforeRejectedRun.model.count &&
       afterRejectedRun.tts === beforeRejectedRun.tts,
-    "the valid action prefix had no model or clock side effect",
+    "a syntactically invalid function had no model or clock side effect",
   );
 
-  console.log("\n▸ one automation call replaces raw pause/input/step/assert choreography");
-  const automated = await rpc.call("run_automation_code", {
+  console.log("\n▸ one unsafe SDK call replaces raw choreography");
+  const automated = await rpc.call("run_game_code_unsafe", {
     session,
-    code: `automation("counter proof")
-      .pause()
-      .uiClick(0)
-      .step()
-      .expectModel("count", 1)
-      .expectModelClose("count", 1.0001, 0.001)
-      .mouseMove(400, 300)
-      .mouseWheel(-1)
-      .keyDown("w")
-      .step()
-      .inspect("while held")
-      .keyUp("w")`,
+    code: `async (game) => {
+      await game.pause();
+      await game.uiClick(0);
+      const settled = await game.stepUntil(
+        (state) => state.model.count === 1,
+        { maxFrames: 3, dts: 0.016, description: "counter increment" },
+      );
+      await game.mouseMove(400, 300);
+      await game.mouseWheel(-1);
+      await game.keyDown("w");
+      await game.step();
+      const whileHeld = await game.state();
+      await game.keyUp("w");
+      await game.keyDown("1");
+      const digitHeld = await game.isKeyDown("1");
+      await game.keyUp("1");
+      console.log("counter proof", settled.model.count);
+      process.stdout.write("stdout proof");
+      return {
+        count: settled.model.count,
+        heldDuringStep: whileHeld.input.held_keys.includes("W"),
+        digitHeld,
+      };
+    }`,
   });
-  check(automated.ok === true && automated.steps_executed === 11, "the complete normalized plan executed");
-  check(automated.assertions?.[0]?.passed === true, "expectModel passed against structured model data");
+  check(automated.ok === true && automated.unsafe?.rce_equivalent === true, "the Node child completed and labels the RCE-equivalent trust model");
   check(
-    automated.assertions?.[1]?.passed === true &&
-      automated.assertions?.[1]?.abs_tolerance === 0.001,
-    "expectModelClose passed a bounded numeric assertion",
+    automated.return_value?.count === 1 &&
+      automated.return_value?.heldDuringStep === true &&
+      automated.return_value?.digitHeld === true,
+    "ordinary callbacks, digit-key observation, local values, and structured returns work",
   );
   check(
-    automated.observations?.[0]?.state?.input?.held_keys?.includes("W"),
-    "inspect observed typed held input between deterministic steps",
+    automated.trace.some((entry) => entry.method === "uiClick") &&
+      automated.trace.some((entry) => entry.method === "state") &&
+      automated.trace.every((entry) => typeof entry.elapsed_ms === "number"),
+    "the result carries a structured trace of the SDK calls that actually ran",
+  );
+  check(
+    automated.logs?.some((entry) => entry.text === "counter proof 1") &&
+      automated.logs?.some(
+        (entry) => entry.level === "stdout" && entry.text === "stdout proof",
+      ),
+    "console and ordinary stdout output are captured without corrupting the child RPC protocol",
   );
   check(
     automated.final_state?.input?.mouse?.x === 400 &&
       automated.final_state?.input?.mouse?.y === 300,
-    "mouseMove and mouseWheel used integer debug-protocol payloads successfully",
+    "the injected SDK used the integer mouse protocol successfully",
   );
-  check(automated.final_state?.model?.count === 1, "the automation returned fresh final state");
 
-  console.log("\n▸ failed-plan input cleanup is scoped to that plan");
+  console.log("\n▸ thrown code restores only input that code touched");
   await rpc.call("send_input", {
     session,
     command: { type: "key", key: "w", down: true },
   });
+  await rpc.call("send_input", {
+    session,
+    command: { type: "key", key: "1", down: true },
+  });
   let assertionOnlyFailure = null;
   try {
-    await rpc.call("run_automation_code", {
+    await rpc.call("run_game_code_unsafe", {
       session,
-      code: `automation("unrelated failure").expectModel("count", 999)`,
+      code: `async () => { throw new Error("unrelated failure"); }`,
     });
   } catch (error) {
     assertionOnlyFailure = error.message;
   }
   const afterAssertionOnly = await rpc.call("get_state", { session });
   check(
-    /model assertion failed/.test(assertionOnlyFailure ?? "") &&
-      !/plan-touched key/.test(assertionOnlyFailure ?? "") &&
+    /unrelated failure/.test(assertionOnlyFailure ?? "") &&
+      !/code-touched key/.test(assertionOnlyFailure ?? "") &&
       afterAssertionOnly.input?.held_keys?.includes("W"),
-    "a plan that injected no input did not release pre-existing held input",
+    "code that injected no input did not release pre-existing held input",
   );
 
   let baselineRestoreFailure = null;
   try {
-    await rpc.call("run_automation_code", {
+    await rpc.call("run_game_code_unsafe", {
       session,
-      code: `automation("restore baseline")
-        .keyUp("w")
-        .expectModel("count", 999)`,
+      code: `async (game) => {
+        await game.keyUp("w");
+        await game.keyUp("1");
+        throw new Error("restore baseline");
+      }`,
     });
   } catch (error) {
     baselineRestoreFailure = error.message;
   }
   const afterBaselineRestore = await rpc.call("get_state", { session });
   check(
-    /plan-touched key and mouse-button levels were restored/.test(baselineRestoreFailure ?? "") &&
-      afterBaselineRestore.input?.held_keys?.includes("W"),
-    "cleanup restored a pre-existing held key after the failed plan released it",
+    /code-touched key and mouse-button levels were restored/.test(baselineRestoreFailure ?? "") &&
+      afterBaselineRestore.input?.held_keys?.includes("W") &&
+      afterBaselineRestore.input?.held_keys?.includes("Num1"),
+    "cleanup restored pre-existing held letter and digit keys after failed code released them",
   );
 
   let ownedInputFailure = null;
   try {
-    await rpc.call("run_automation_code", {
+    await rpc.call("run_game_code_unsafe", {
       session,
-      code: `automation("owned cleanup")
-        .keyDown("space")
-        .expectModel("count", 999)`,
+      code: `async (game) => {
+        await game.keyDown("space");
+        throw new Error("owned cleanup");
+      }`,
     });
   } catch (error) {
     ownedInputFailure = error.message;
   }
   const afterOwnedInputFailure = await rpc.call("get_state", { session });
   check(
-    /plan-touched key and mouse-button levels were restored/.test(ownedInputFailure ?? "") &&
+    /code-touched key and mouse-button levels were restored/.test(ownedInputFailure ?? "") &&
       afterOwnedInputFailure.input?.held_keys?.includes("W") &&
       !afterOwnedInputFailure.input?.held_keys?.includes("Space"),
-    "cleanup released the failed plan's Space edge without releasing pre-existing W",
+    "cleanup released the failed code's Space edge without releasing pre-existing W",
+  );
+
+  const caughtInvalidKey = await rpc.call("run_game_code_unsafe", {
+    session,
+    code: `async (game) => {
+      try {
+        await game.keyDown("Shift");
+      } catch (error) {
+        return { caught: String(error).includes("unknown key") };
+      }
+      return { caught: false };
+    }`,
+  });
+  check(
+    caughtInvalidKey.return_value?.caught === true,
+    "ordinary code can catch a rejected SDK call without quarantining the session",
   );
   await rpc.call("send_input", {
     session,
     command: { type: "key", key: "w", down: false },
   });
+  await rpc.call("send_input", {
+    session,
+    command: { type: "key", key: "1", down: false },
+  });
+
+  console.log("\n▸ timeout and MCP cancellation terminate code and restore input");
+  let timeoutFailure = null;
+  try {
+    await rpc.call("run_game_code_unsafe", {
+      session,
+      timeout_ms: 250,
+      code: `async (game) => {
+        await game.keyDown("space");
+        await new Promise(() => {});
+      }`,
+    });
+  } catch (error) {
+    timeoutFailure = error.message;
+  }
+  const afterTimeout = await rpc.call("get_state", { session });
+  check(
+    /exceeded its 250ms wall-clock timeout/.test(timeoutFailure ?? "") &&
+      /code-touched key and mouse-button levels were restored/.test(timeoutFailure ?? ""),
+    "a hung function is killed at its requested wall-clock timeout and reports cleanup",
+  );
+  check(
+    !afterTimeout.input?.held_keys?.includes("Space"),
+    "timeout cleanup released the key held by submitted code",
+  );
+
+  const cancellableRun = rpc.beginRequest("tools/call", {
+    name: "run_game_code_unsafe",
+    arguments: {
+      session,
+      code: `async (game) => {
+        await game.keyDown("space");
+        await new Promise(() => {});
+      }`,
+    },
+  });
+  let cancellationHeld = false;
+  for (let attempt = 0; attempt < 200 && !cancellationHeld; attempt += 1) {
+    const during = await rpc.call("get_state", { session });
+    cancellationHeld = during.input?.held_keys?.includes("Space") === true;
+    if (!cancellationHeld) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check(cancellationHeld, "the cancellable function began and held Space");
+  rpc.cancelRequest(cancellableRun.id, "abort submitted SDK code");
+  await cancellableRun.result;
+
+  let cancellationReleased = false;
+  for (let attempt = 0; attempt < 200 && !cancellationReleased; attempt += 1) {
+    const afterCancel = await rpc.call("get_state", { session });
+    cancellationReleased =
+      afterCancel.pending_steps === 0 &&
+      !afterCancel.input?.held_keys?.includes("Space");
+    if (!cancellationReleased) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check(
+    cancellationReleased,
+    "an MCP cancellation killed the child and released code-touched input",
+  );
 
   const beforeOversizedStep = await rpc.call("get_state", { session });
   let oversizedStep = null;
@@ -451,14 +508,15 @@ let draw = (m: Model, tts) =>
   const gatedSession = gateGame.session;
   const gateAlias = (await rpc.call("connect_game", { url: gateGame.url })).session;
   let longFinished = false;
-  const longRun = rpc.call("run_automation_code", {
+  const longRun = rpc.call("run_game_code_unsafe", {
     session: gatedSession,
-    code: `automation("hold gate")
-      .pause()
-      .keyDown("space")
-      .step({ frames: 2000, dts: 0.016 })
-      .keyUp("space")
-      .inspect("released")`,
+    code: `async (game) => {
+      await game.pause();
+      await game.keyDown("space");
+      await game.stepFrames(2000, 0.016);
+      await game.keyUp("space");
+      return { released: !(await game.isKeyDown("space")) };
+    }`,
   });
   longRun.then(
     () => { longFinished = true; },
@@ -471,11 +529,14 @@ let draw = (m: Model, tts) =>
     observedHeld = during.input?.held_keys?.includes("Space") === true;
     if (!observedHeld) await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  check(observedHeld, "a read-only state call observed Space held inside the long automation");
+  check(observedHeld, "a read-only state call observed Space held inside the long code run");
 
-  const otherSession = await rpc.call("run_automation_code", {
+  const otherSession = await rpc.call("run_game_code_unsafe", {
     session,
-    code: `automation("independent session").step()`,
+    code: `async (game) => {
+      await game.step();
+      return "independent";
+    }`,
   });
   check(
     otherSession.ok === true && !longFinished,
@@ -550,13 +611,14 @@ let draw = (m: Model, tts) =>
 
   console.log("\n▸ stopping an active attached id clears its queue and held input");
   const abortAlias = (await rpc.call("connect_game", { url: gateGame.url })).session;
-  const attachedRun = rpc.call("run_automation_code", {
+  const attachedRun = rpc.call("run_game_code_unsafe", {
     session: abortAlias,
-    code: `automation("attached abort cleanup")
-      .pause()
-      .keyDown("space")
-      .step({ frames: 10000, dts: 0.016 })
-      .keyUp("space")`,
+    code: `async (game) => {
+      await game.pause();
+      await game.keyDown("space");
+      await game.stepFrames(10000, 0.016);
+      await game.keyUp("space");
+    }`,
   }).then(
     (value) => ({ value }),
     (error) => ({ error: error.message }),
@@ -567,14 +629,14 @@ let draw = (m: Model, tts) =>
     attachedHeld = during.input?.held_keys?.includes("Space") === true;
     if (!attachedHeld) await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  check(attachedHeld, "the attached-id plan held input while its batch was active");
+  check(attachedHeld, "the attached-id code held input while its batch was active");
   const attachedStop = await rpc.call("stop_game", { session: abortAlias });
   const attachedOutcome = await attachedRun;
   const afterAttachedStop = await rpc.call("get_state", { session: gatedSession });
   check(
     /queued steps were cancelled/.test(attachedOutcome.error ?? "") &&
-      /plan-touched key and mouse-button levels were restored/.test(attachedOutcome.error ?? ""),
-    "the interrupted plan reported both clock and input cleanup",
+      /code-touched key and mouse-button levels were restored/.test(attachedOutcome.error ?? ""),
+    "the interrupted code reported both clock and input cleanup",
   );
   check(/detached/.test(attachedStop), "the attached id detached after cleanup");
   check(
@@ -584,13 +646,14 @@ let draw = (m: Model, tts) =>
   );
 
   console.log("\n▸ a connect queued during owned stop cannot survive as a dead session");
-  const stopRaceRun = rpc.call("run_automation_code", {
+  const stopRaceRun = rpc.call("run_game_code_unsafe", {
     session: gatedSession,
-    code: `automation("owned stop boundary")
-      .pause()
-      .keyDown("space")
-      .step({ frames: 10000, dts: 0.016 })
-      .keyUp("space")`,
+    code: `async (game) => {
+      await game.pause();
+      await game.keyDown("space");
+      await game.stepFrames(10000, 0.016);
+      await game.keyUp("space");
+    }`,
   }).then(
     (value) => ({ value }),
     (error) => ({ error: error.message }),
