@@ -4,14 +4,17 @@
 [debug runtime](debug-runtime.md) — launch a game, read its model, pause it,
 inject input, step the clock, capture a frame — as standard tools, over stdio.
 
-The capability is not new; the *interface* is. Any MCP-speaking agent can now
-drive a Functor game with no bespoke script, no HTTP plumbing, and no screen:
-`launch_game` → `pause` → `send_input` → `step` → `get_state`, reading the
-model back as structured JSON.
+The capability is not new; the *interface* is. A trusted local MCP agent can
+launch or attach to a game, then use `run_game_code_unsafe` to observe, drive,
+wait, assert, and return evidence in one ordinary JavaScript function. The
+individual tools expose the same lower-level operations for one-off use and
+clients without Node.js.
 
-It is a plain HTTP client of the runtimes and lives entirely in the CLI. The
-one runtime-side addition it needs is `GET /project` (debug protocol v5), the
-read half of the project-push routes, which `save_project` is built on.
+It is a plain HTTP client of the runtimes and lives in the CLI. Its runtime-side
+additions are `GET /project` (the read half used by `save_project`) plus the
+protocol-v8 `cancel` command that lets bounded stepping or submitted SDK code
+abort without leaving queued steps behind. The code runner snapshots input and
+restores only the key/button levels touched by an unsuccessful run.
 
 ## Registering it
 
@@ -40,15 +43,60 @@ a launched runtime's own output is captured rather than inherited.
 
 ## The tools
 
+For trusted local coding-agent automation, use `launch_game` or `connect_game`
+once and make `run_game_code_unsafe` the default composition surface. One code
+call can observe, drive, wait, assert, and return evidence without a long
+sequence of MCP round trips. The individual observation and driving tools
+remain useful for one-off operations, clients without Node.js, and debugging the
+lower-level protocol. Do not expose the unsafe code runner to untrusted callers.
+
 **Sessions.** The server manages N concurrent games at once. A session is a base
-URL plus, when the server launched it, the child process.
+URL plus, when the server launched it, the child process. State-changing calls
+on one session share an async operation gate: an overlapping call waits for the
+active call to finish, then runs without interleaving. This is mutual exclusion,
+not a promised FIFO sequencer; relative waiter order is unspecified. Cancellation
+while queued stops waiting and prevents the mutation. Once a mutation acquires
+the gate, it runs to its operation boundary even if its MCP response is
+cancelled. Acquired `step` and submitted-code calls have a 120-second active
+deadline that progress does not extend; it is checked between operations and
+step polls, while an in-flight request retains its 30-second request timeout.
+Direct Node-child shutdown has a separate 2-second bound, and failed-code safety
+cleanup has one aggregate 30-second bound, so confirmation may extend the tool
+response beyond the active deadline but cannot hold the gate indefinitely. An
+owned stop also ends an active step/code run at its next polling boundary before
+taking the gate. Before an aborted operation releases the gate, it cancels the
+accepted step queue; a code failure snapshots current input and transitions only
+SDK-touched key and mouse-button levels that differ from their pre-run baseline.
+If either cleanup cannot be confirmed before its bound, the exact URL is
+quarantined: every alias rejects further mutations. Stopping an owned session
+waits at most 5 seconds to confirm process termination and clears its tombstone
+only on success. An unconfirmed termination removes the unusable closing
+session records but preserves the URL tombstone. Merely detaching an attached
+id cannot prove cleanup; restart both that runtime and this MCP server before
+reconnecting. `list_sessions` exposes
+session flags plus quarantined URL tombstones with no remaining id; read-only
+state/scene/trace calls remain available for diagnosis.
+Exact normalized base-URL aliases created by this MCP server share the same
+gate, while different exact URLs continue concurrently. `connect_game` reserves
+that gate before discovery, so it cannot race stop and insert a dead alias
+afterward. Normalization currently removes trailing `/` only, so hostname aliases
+such as `localhost` versus `127.0.0.1` are not recognized, and direct HTTP
+clients outside this MCP process are not coordinated. Read-only
+`get_state`/`get_scene`/`get_trace` calls do not take the gate.
+
+`stop_game` marks closing before it waits for the gate and completes cleanup
+after that mark even if its MCP response is cancelled. Stopping an attached
+session closes/removes only that id and leaves other aliases valid. Stopping an
+owned session closes the owner, every exact-URL alias, and any pending connect;
+keeps those closing records through child kill/wait; then removes the group.
+New and already-queued mutations on a closing id reject without runtime I/O.
 
 | Tool | What it does |
 | --- | --- |
 | `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `mode` is `hidden` (default) or `headless`. |
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
-| `stop_game` | Kill a launched game; merely forget an attached one. |
+| `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |
 
 **Observing.**
 
@@ -64,11 +112,12 @@ URL plus, when the server launched it, the child process.
 | Tool | What it does |
 | --- | --- |
 | `pause` | Pin the clock (defaults to the current `tts`), so nothing advances on its own. |
-| `step` | Run `frames` steps of `dts` each, **wait for them to land**, and return the fresh state. |
+| `step` | Run 1–10,000 `frames` of finite positive `dts` each, **wait for them to land**, and return the fresh state. |
 | `resume` | Follow wall-clock time again. |
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
 | `reload_source` / `reload_project` | Hot-reload the entry, or every sibling module, with the live model preserved. |
+| `run_game_code_unsafe` | Run a JavaScript function against an injected game SDK in a local Node child, returning its JSON value, SDK-call trace, logs, captures, and final state. This is deliberately RCE-equivalent; see below. |
 
 **Authoring.**
 
@@ -132,18 +181,95 @@ Runtime errors come back as tool errors carrying the runtime's own message — a
 `/input` 400 explaining a misspelled field, a `/reload-source` 400 with the
 rendered load error, a `/time` 409 naming a `--fixed-time` pin.
 
-`launch_game` and `connect_game` both require **debug protocol v4 or newer**
-(`docs/debug-runtime.md`), and say so if the runtime is older. Below that, the
-guarantees above quietly stop holding: a pre-v3 runtime ignores a batched
-`frames` and reports no `pending_steps` (so `step` would call a ten-frame batch
-landed after one), and a pre-v4 one sends Debug text under `model` instead of
-structured JSON. This matters most
-for a device APK, which versions independently of the CLI — rebuild it from the
-same Functor version. `save_project` additionally needs **v5** (`GET /project`)
-and says so on an older runtime.
+`launch_game` and `connect_game` both require **debug protocol v8 or newer**
+(`docs/debug-runtime.md`), and say so if the runtime is older. Earlier runtimes
+lack at least one guarantee the tools rely on: waited batched steps, structured
+model state, running-project reads, or safe queued-step cleanup. This
+matters most for a device APK, which versions independently of the CLI — rebuild
+it from the same Functor version.
 
 Launched games are killed when the server stops, whether its client closes
 stdin or signals it (SIGTERM/Ctrl-C). Attached ones are always left running.
+
+## Unsafe SDK code in a Node child
+
+`run_game_code_unsafe` follows the same model as Playwright's code-running
+tools: submit one ordinary JavaScript function, and the server injects a
+session-bound `game` object:
+
+```js
+async (game) => {
+  await game.pause();
+  await game.pressKey("3");
+
+  const settled = await game.stepUntil(
+    (state) => state.model.enemies.length > 0,
+    {
+      maxFrames: 120,
+      dts: 0.016,
+      description: "the first enemy to spawn",
+    },
+  );
+
+  console.log("spawned", settled.model.enemies.length);
+  return {
+    frame: settled.frame,
+    enemies: settled.model.enemies.length,
+  };
+}
+```
+
+The request puts that function in the `code` string and may set
+`timeout_ms` up to 120,000. The string is JavaScript evaluated by Node, not a
+TypeScript source file, so omit type annotations. Node.js 20 or newer must be
+installed; `FUNCTOR_NODE` can point to a non-default executable. If Node is
+missing or too old, the tool fails before running submitted code or mutating
+the game.
+
+The injected object mirrors the standalone `@functor/sdk` method surface within
+the runner's documented bounds: observation, clock, input, project reload,
+asset reload, rewind, and capture methods are available. Its
+`stepUntil(predicate, options)` helper checks current state, then advances one
+fixed frame at a time until an ordinary sync or async callback returns true. It
+defaults to 600 frames, caps `maxFrames` at 10,000, and throws a teaching error
+on exhaustion. `waitForState` polls a running game without advancing it. The
+child JSON protocol caps one decoded asset at 8 MiB; standalone SDK binary
+uploads may be larger.
+
+The child sends each SDK call to the Rust parent over reserved line-delimited
+stdout; ordinary stdout writes become captured logs. The parent performs the
+existing typed debug-runtime requests while holding the session's operation
+gate. The tool returns the function's
+JSON-serializable value, captured console logs, a structured trace of every SDK
+call that actually ran, capture metadata plus PNG image blocks, and fresh final
+state. For trusted automation, the trace is useful validation evidence: loops,
+branches, and dynamic polling appear as their concrete calls without inventing
+a second serialized plan language. It is not an attestation against hostile
+submitted code, which already has RCE-equivalent authority and can deliberately
+spoof child protocol output.
+
+The `unsafe` suffix is literal. Submitted code is arbitrary local Node code:
+it can import modules, access files and environment variables, use the network,
+and start processes with the same operating-system authority as
+`functor mcp`. The child-process boundary contains a Node crash and lets the
+parent kill that direct child on timeout, cancellation, or `stop_game`; **it is
+not a security or process-tree sandbox**. A subprocess deliberately started by
+submitted code can outlive the Node child. Use this only with MCP clients
+already trusted with equivalent developer-machine access. Never expose it to
+untrusted network clients. A hosted or multi-tenant service needs a real
+container/VM boundary and a narrow, credential-free game proxy.
+
+Execution is ordered but not transactional. Syntax failure happens before code
+starts, but a later throw cannot roll back model, physics, UI, or effects from
+steps that already landed. On throw, timeout, MCP cancellation, or stop, the
+parent kills the direct child, cancels accepted clock work, and restores only
+key/mouse-button levels touched through the injected SDK that differ from their
+baseline. Direct-child shutdown is bounded to 2 seconds and the whole safety
+cleanup to 30 seconds; failed or expired cleanup quarantines the exact runtime
+URL under the same rules as a failed `step`.
+
+The complete architecture, limits, threat boundary, and game-jam evaluation are
+in [the code-runner note](mcp-unsafe-sdk-code.md).
 
 ## `hidden` vs `headless`
 

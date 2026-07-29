@@ -27,7 +27,7 @@ If 8077 is already taken — a second `functor develop`, or a stale process —
 `develop` logs one line and runs the game **without** a debug server rather than
 failing to start; pass `--debug-port <PORT>` for a second session, or `--no-debug`
 to skip the listener entirely. An explicit `--debug-port` that can't bind is still
-a fatal error (automation asked for *that* port and is waiting on it). Tooling that
+a fatal error (a driver asked for *that* port and is waiting on it). Tooling that
 hard-codes 8077 — the TS SDK's `launch()`, the VS Code inspector's default — should
 therefore be pointed at its own port while a `develop` session is up.
 
@@ -356,8 +356,17 @@ target-specific endpoints or string-keyed capability bags.
 {"type":"set","tts":2.0}                    // PAUSE: pin game time to a constant (dts=0)
 {"type":"advance","dts":0.016}              // STEP: run exactly one frame with this dt, then hold
 {"type":"advance","dts":0.016,"frames":120} // BATCH: queue 120 such steps in one request
+{"type":"cancel"}                           // ABORT: drop queued steps, keep current tts, stay paused
 {"type":"resume"}                           // RESUME: follow wall-clock again
 ```
+
+`cancel` was added in debug protocol v8. A client that depends on confirmed
+queued-step cleanup must reject older runtimes rather than treating a 404 or an
+unknown command as a successful abort.
+
+`advance.dts` must be finite and positive; invalid values are rejected before
+anything is queued, so direct debug clients cannot move simulation time
+backwards.
 
 **Advances accumulate.** Each queued step runs exactly once, in order: `n`
 advances always run `n` model steps, whenever they arrive relative to a frame.
@@ -378,6 +387,11 @@ would give it — network delivery, effect results, injected input, and renderin
 all happen once per rendered frame, not once per tick. Step one at a time when
 the game needs to see input or I/O between steps. (Batches are capped at
 1,000,000 queued steps; past that the request is a 409.)
+
+`cancel` clears both queued debug steps and fixed-frame catch-up without
+rebasing `tts`; the model and clock remain aligned at the last step that
+actually landed. It is the safe error/deadline cleanup for a batch an SDK or
+submitted-code driver no longer intends to finish.
 
 **`--fixed-time <T>` is not an initial `set`.** It is an *unconditional* capture
 pin: every frame is `{dts: 0, tts: T}`, and no clock control — pause, step,
