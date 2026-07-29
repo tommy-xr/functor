@@ -68,11 +68,18 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
           <pre class="shell"># functor.json
 { "language": "functor-lang", "entry": "game.fun" }</pre>
           <p>
-            The pointer stays free by default. A game-owned mouse-look controller opts in with
-            <code>"viewer": { "camera": { "control": "game" } }</code>; this enables native
-            cursor capture and the web player's mouse-look button. An absolute-pointer game uses
-            <code>"cursor":"visible"</code> instead. Leave both absent for UI and fixed-camera
-            projects.
+            Games capture relative mouse input by default when they implement captured mouse
+            hooks. Set <code>"mouseCapture":false</code> to opt out. An absolute-pointer game
+            uses <code>"cursor":"visible"</code> instead, which also disables capture. Programs
+            without captured mouse hooks show no capture control.
+          </p>
+          <p>
+            Every project has a shell-owned <strong>Debug camera</strong> in the timeline,
+            available while playing or paused with no manifest setting. In 3D, use mouse look,
+            WASD, Q/E for down/up, and the wheel for FOV; in 2D, pan with the mouse or WASD and
+            zoom with the wheel. It never changes game state, replay, or the authored camera used
+            for culling and portal views. Escape releases the pointer, clicking the viewport
+            recaptures it, and <strong>Exit debug view</strong> returns to the authored camera.
           </p>
           <p>And the game itself — here is the smallest interesting one:</p>
           <pre class="functor-lang runnable">let init = {}
@@ -204,12 +211,11 @@ let draw = (m, tts) =>
             </tbody>
           </table>
           <p>
-            The three mouse hooks receive live shell input only when the project claims a pointer
-            mode. Use <code>"viewer": { "camera": { "control": "game" } }</code> for captured
-            free-look or <code>"cursor":"visible"</code> for absolute pointer input; without
-            either setting the runtime warns once and leaves them inert. Native capture starts on
+            The three mouse hooks receive captured shell input by default. Set
+            <code>"mouseCapture":false</code> to disable that path, or
+            <code>"cursor":"visible"</code> for absolute pointer input. Native capture starts on
             a non-UI click and <code>Escape</code> releases it. Manifest-less site IDE and
-            inline-sandbox sessions use <code>?camera=game</code> or
+            inline-sandbox sessions use <code>?mouseCapture=false</code> or
             <code>?cursor=visible</code> on the page URL.
           </p>
           <p>
@@ -897,7 +903,7 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             <li><code>x |> f(a)</code> is <code>f(a, x)</code> — pipelines <em>append</em> (thread-last).</li>
             <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
             <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
-            <li>Pointer ownership is explicit: <code>viewer.camera.control = "game"</code> enables captured free-look; <code>"cursor":"visible"</code> keeps an absolute pointer live. Without either opt-in, the pointer stays with UI. Held buttons are force-released on focus loss.</li>
+            <li>Captured game mouse input defaults on when captured hooks exist. <code>"mouseCapture":false</code> opts out; <code>"cursor":"visible"</code> selects absolute pointer input instead. Held buttons are force-released on focus loss.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>

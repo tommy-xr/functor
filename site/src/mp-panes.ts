@@ -41,6 +41,12 @@ interface ScrubSeam {
   frame(): number;
   seek(frame: number): void;
   togglePause(): void;
+  canDetach(): boolean;
+  detached(): boolean;
+  detachedGeneration(): number;
+  ownsDetachedInput(): boolean;
+  setDetachedPointerLockPending(pending: boolean): void;
+  toggleDetached(): void;
   step(): void;
   model(): { preview: { enabled: boolean; seconds: number; rate: number } };
   selectEvent(id: number | null): void;
@@ -149,6 +155,30 @@ const seamOf = (iframe: HTMLIFrameElement): ScrubSeam | null => {
   }
 };
 
+const exitPanePointerLock = (iframe: HTMLIFrameElement) => {
+  try {
+    iframe.contentDocument?.exitPointerLock();
+  } catch {
+    // A navigated or removed iframe has already lost pointer lock.
+  }
+};
+
+// The chrono bar lives in the HOST document. Clicking its camera button leaves
+// keyboard focus there even after pointer lock moves relative mouse events to
+// a pane's canvas, so WASD/QE would keep going to the editor/host instead of
+// the player's window. Explicitly focus the accepted pane and a programmatic
+// canvas focus target; direct player/IDE activation already gets this naturally
+// because its camera button lives inside the player document.
+const focusPaneCameraInput = (iframe: HTMLIFrameElement, canvas: HTMLCanvasElement) => {
+  try {
+    iframe.contentWindow?.focus();
+    if (!canvas.hasAttribute("tabindex")) canvas.tabIndex = -1;
+    canvas.focus({ preventScroll: true });
+  } catch {
+    // A pane can navigate between pointer-lock acceptance and focus transfer.
+  }
+};
+
 export function initMultiplayerPanes({
   frame,
   count,
@@ -164,6 +194,7 @@ export function initMultiplayerPanes({
   chrono.className = "mp-chrono";
   chrono.innerHTML = `
     <button class="mp-sbtn" id="mp-pause" title="Pause / resume every client">⏸</button>
+    <button class="mp-sbtn" id="mp-camera" title="Open the focused debug camera" hidden>📷</button>
     <button class="mp-sbtn" id="mp-step" title="Step every client one frame">⏭</button>
     <span class="mp-rail" id="mp-rail" title="Drag to seek every client">
       <span class="mp-track"></span>
@@ -334,6 +365,12 @@ export function initMultiplayerPanes({
   // ------------------------------------------------------------ focus model
   let focused = 0;
   function focusPane(index: number) {
+    if (index !== focused) {
+      const previous = panes[focused];
+      if (previous && seamOf(previous.iframe)?.detached()) {
+        exitPanePointerLock(previous.iframe);
+      }
+    }
     focused = index;
     for (const pane of panes) {
       const on = pane.index === index;
@@ -533,6 +570,52 @@ export function initMultiplayerPanes({
   // ------------------------------------------------------ chrono bar wiring
   const seams = () => panes.map((pane) => seamOf(pane.iframe)).filter((s): s is ScrubSeam => !!s);
   const primarySeam = () => seamOf(panes[focused].iframe) ?? seams()[0] ?? null;
+  let pendingDetached:
+    | { seam: ScrubSeam; generation: number; iframe: HTMLIFrameElement }
+    | null = null;
+  let pendingPointerLock: { seam: ScrubSeam; iframe: HTMLIFrameElement } | null = null;
+  const reconcilePendingCamera = () => {
+    if (
+      pendingPointerLock !== null &&
+      (!pendingPointerLock.iframe.isConnected ||
+        seamOf(pendingPointerLock.iframe) !== pendingPointerLock.seam ||
+        panes[focused]?.iframe !== pendingPointerLock.iframe)
+    ) {
+      try {
+        pendingPointerLock.seam.setDetachedPointerLockPending(false);
+      } catch {
+        // A navigated iframe has already destroyed the old seam.
+      }
+      exitPanePointerLock(pendingPointerLock.iframe);
+      pendingPointerLock = null;
+    }
+    if (pendingDetached === null) return;
+
+    const request = pendingDetached;
+    const liveSeam = request.iframe.isConnected ? seamOf(request.iframe) : null;
+    let acknowledged = liveSeam !== request.seam;
+    if (!acknowledged) {
+      try {
+        acknowledged = request.seam.detachedGeneration() !== request.generation;
+      } catch {
+        acknowledged = true;
+      }
+    }
+    if (!acknowledged) return;
+
+    pendingDetached = null;
+    let detached = false;
+    if (liveSeam === request.seam) {
+      try {
+        detached = request.seam.detached();
+      } catch {
+        // Treat a destroyed realm as a refused request.
+      }
+    }
+    if (!detached || panes[focused]?.iframe !== request.iframe) {
+      exitPanePointerLock(request.iframe);
+    }
+  };
 
   $btn("mp-pause").addEventListener("click", () => {
     const primary = primarySeam();
@@ -542,6 +625,75 @@ export function initMultiplayerPanes({
   });
   $btn("mp-step").addEventListener("click", () => {
     for (const seam of seams()) seam.step();
+  });
+  $btn("mp-camera").addEventListener("click", () => {
+    const iframe = panes[focused].iframe;
+    const seam = seamOf(iframe);
+    if (!seam?.canDetach()) return;
+    const setPointerClaim = (pending: boolean) => {
+      try {
+        seam.setDetachedPointerLockPending(pending);
+      } catch {
+        // A navigation can destroy the iframe realm while capture is pending.
+      }
+    };
+    const iframeDocument = iframe.contentDocument;
+    const wasDetached = seam.detached();
+    const queueToggle = () => {
+      pendingDetached = {
+        seam,
+        generation: seam.detachedGeneration(),
+        iframe,
+      };
+      $btn("mp-camera").disabled = true;
+      seam.toggleDetached();
+    };
+    if (wasDetached) {
+      queueToggle();
+      exitPanePointerLock(iframe);
+      return;
+    }
+    const canvas = iframeDocument?.getElementById("canvas") as HTMLCanvasElement | null;
+    if (!canvas) return;
+    setPointerClaim(true);
+    pendingPointerLock = { seam, iframe };
+    $btn("mp-camera").disabled = true;
+    const accepted = () => {
+      if (
+        pendingPointerLock?.seam !== seam ||
+        pendingPointerLock.iframe !== iframe ||
+        !iframe.isConnected ||
+        seamOf(iframe) !== seam ||
+        panes[focused]?.iframe !== iframe
+      ) {
+        if (pendingPointerLock?.seam === seam && pendingPointerLock.iframe === iframe) {
+          pendingPointerLock = null;
+        }
+        setPointerClaim(false);
+        exitPanePointerLock(iframe);
+        return;
+      }
+      pendingPointerLock = null;
+      focusPaneCameraInput(iframe, canvas);
+      queueToggle();
+      setPointerClaim(false);
+    };
+    const refused = () => {
+      if (pendingPointerLock?.seam === seam && pendingPointerLock.iframe === iframe) {
+        pendingPointerLock = null;
+      }
+      setPointerClaim(false);
+    };
+    try {
+      const request = canvas.requestPointerLock();
+      if (request && typeof request.then === "function") {
+        request.then(accepted, refused);
+      } else {
+        accepted();
+      }
+    } catch {
+      refused();
+    }
   });
   // The speculative preview (🔮): the pane simulates forward from its parked
   // frame under the current code, replaying recorded input. Broadcast like
@@ -688,6 +840,10 @@ export function initMultiplayerPanes({
   // values the inputs display — push them whenever the primary seam changes.
   let lastPrimaryWindow: Window | null = null;
   const paint = () => {
+    // Reconcile against the pane that initiated the request even while the
+    // focused pane is loading. Navigation/removal makes that old seam unable
+    // to acknowledge, so treat it as a refusal instead of stalling the bar.
+    reconcilePendingCamera();
     const primary = primarySeam();
     const primaryWindow = panes[focused]?.iframe.contentWindow ?? null;
     if (primary && primaryWindow !== lastPrimaryWindow) {
@@ -797,6 +953,21 @@ export function initMultiplayerPanes({
       const pauseBtn = $btn("mp-pause");
       pauseBtn.textContent = current.paused ? "▶" : "⏸";
       pauseBtn.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
+      const cameraBtn = $btn("mp-camera");
+      const cameraSeam = seamOf(panes[focused].iframe);
+      const canDetach = cameraSeam?.canDetach() ?? false;
+      const detached = cameraSeam?.detached() ?? false;
+      cameraBtn.hidden = !canDetach;
+      cameraBtn.disabled =
+        pendingPointerLock !== null ||
+        pendingDetached !== null;
+      cameraBtn.textContent = detached ? "🔗" : "📷";
+      cameraBtn.title = detached
+        ? "Exit the focused debug camera"
+        : "Debug camera — FPS in 3D, pan/zoom in 2D";
+      cameraBtn.setAttribute("aria-label", cameraBtn.title);
+      cameraBtn.setAttribute("aria-pressed", String(detached));
+      cameraBtn.classList.toggle("on", detached);
       // A pane that boots while the session is parked must not run off on its
       // own: keep every seam's pause state converged on the focused pane's.
       // Idempotent, so this costs one boolean read per pane per frame.

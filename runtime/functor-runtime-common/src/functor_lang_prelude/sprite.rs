@@ -759,10 +759,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 camera: camera.0,
                 scene: lower_sprite(&sprite.0, [1.0, 1.0, 1.0, 1.0], SpriteSampling::Linear)?,
             };
-            Ok(FunctorLangFrame(Frame::with_2d(
-                Frame::new(Camera::default(), group(vec![], Matrix4::from_scale(1.0))),
-                layer,
-            )))
+            Ok(FunctorLangFrame(Frame::new_2d(layer)))
         },
     );
     reg.fn3(

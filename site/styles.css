@@ -281,7 +281,7 @@ a:hover {
 }
 
 /* The demo card frames the live player iframe; its built-in scrubber and
-   mouse-look chrome overlay inside, clipped by the rounded card. */
+   mouse-capture chrome overlay inside, clipped by the rounded card. */
 .hero-card {
   position: relative;
   border: 1px solid var(--line);
@@ -323,7 +323,7 @@ a:hover {
 .hero-status {
   position: absolute;
   /* Bottom-left: the top edge belongs to the (top-docked) scrubber, and
-     bottom-right is the mouse-look chip's corner. Purely an indicator, so it
+     bottom-right is the mouse-capture chip's corner. Purely an indicator, so it
      never intercepts clicks. */
   bottom: 10px;
   left: 10px;
@@ -2523,6 +2523,11 @@ a:hover {
 .mp-sbtn:hover {
   border-color: var(--cyan);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+}
+
+#mp-camera.on {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 1px var(--cyan), 0 2px 10px rgba(65, 216, 230, 0.35);
 }
 
 .mp-rail {

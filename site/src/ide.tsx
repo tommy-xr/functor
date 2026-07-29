@@ -88,17 +88,15 @@ interface LangSeam {
 const STORAGE_KEY = "functor-ide-project-v1";
 const ENTRY = "game.fun"; // the program root; every other .fun is a sibling module
 // The in-memory IDE has no functor.json to parse, so its URL is the explicit
-// project-setting seam: `?camera=game` selects captured mouse input and
-// `?cursor=visible` selects absolute pointer input for both the preview and the
-// downloaded manifest. Visible wins if a hand-edited URL supplies both; never
-// infer ownership from a source hook.
+// Captured game input defaults on. `?mouseCapture=false` opts the preview and
+// downloaded manifest out; `?cursor=visible` selects absolute pointer input.
 const pageParams = new URLSearchParams(window.location.search);
 const cursorPolicy = pageParams.get("cursor") === "visible" ? "visible" : null;
-const cameraControl =
-  !cursorPolicy && pageParams.get("camera") === "game" ? "game" : null;
+const mouseCapture =
+  !cursorPolicy && pageParams.get("mouseCapture") === "false" ? false : null;
 const playerUrl = () => {
   const params = new URLSearchParams({ project: "inline" });
-  if (cameraControl) params.set("camera", cameraControl);
+  if (mouseCapture === false) params.set("mouseCapture", "false");
   if (cursorPolicy) params.set("cursor", cursorPolicy);
   return `player.html?${params}`;
 };
@@ -432,9 +430,7 @@ const download = () => {
   const config = {
     language: "functor-lang",
     entry: ENTRY,
-    ...(cameraControl
-      ? { viewer: { camera: { control: cameraControl } } }
-      : {}),
+    ...(mouseCapture === false ? { mouseCapture: false } : {}),
     ...(cursorPolicy ? { cursor: cursorPolicy } : {}),
   };
   const manifest = {
