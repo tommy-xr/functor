@@ -1984,6 +1984,9 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             Ok(state) => state,
             Err(error) => {
                 let reap_error = terminate_node_child(&mut child).await.err();
+                if reap_error.is_some() {
+                    target.quarantined.store(true, Ordering::Release);
+                }
                 return Err(append_optional_error(
                     format!("submitted code could not snapshot input before starting: {error}"),
                     reap_error,
