@@ -32,6 +32,11 @@ async (game) => {
 }
 ```
 
+This is the recommended composition surface for trusted local coding agents.
+The individual MCP tools and debug-runtime HTTP endpoints remain the underlying
+primitives and escape hatches, not the workflow an agent should normally have
+to orchestrate request by request.
+
 The MCP request is still JSON. The program is simply its `code` string:
 
 ```json

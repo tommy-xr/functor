@@ -42,6 +42,13 @@ a launched runtime's own output is captured rather than inherited.
 
 ## The tools
 
+For trusted local coding-agent automation, use `launch_game` or `connect_game`
+once and make `run_game_code_unsafe` the default composition surface. One code
+call can observe, drive, wait, assert, and return evidence without a long
+sequence of MCP round trips. The individual observation and driving tools
+remain useful for one-off operations, clients without Node.js, and debugging the
+lower-level protocol. Do not expose the unsafe code runner to untrusted callers.
+
 **Sessions.** The server manages N concurrent games at once. A session is a base
 URL plus, when the server launched it, the child process. State-changing calls
 on one session share an async operation gate: an overlapping call waits for the
