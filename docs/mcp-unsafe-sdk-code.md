@@ -43,9 +43,17 @@ The MCP request is still JSON. The program is simply its `code` string:
 {
   "session": "s1",
   "code": "async (game) => { ... }",
-  "timeout_ms": 120000
+  "timeout_ms": 120000,
+  "include_final_state": false
 }
 ```
+
+`include_final_state` defaults to `true` for compatibility. Set it to `false`
+when the program already selects its evidence into `return_value`. The parent
+still takes the final `/state` snapshot after the Node child exits, but discards
+the structured model and `model_debug` after producing a small
+`final_state_summary`. This keeps large models from dominating an otherwise
+compact automation result.
 
 ## Architecture
 
@@ -115,7 +123,15 @@ actually happened:
     }
   ],
   "captures": [],
-  "final_state": {}
+  "final_state": null,
+  "final_state_summary": {
+    "frame": 42,
+    "tts": 0.7,
+    "pending_steps": 0,
+    "held_keys": [],
+    "held_mouse_buttons": [],
+    "model_json_bytes": 12345
+  }
 }
 ```
 
@@ -127,6 +143,14 @@ submitted program can select the important fields into `return_value`. Every
 block. Because submitted code is RCE-equivalent, it can deliberately bypass
 the stdout guard and spoof protocol messages. The trace is useful observability
 for trusted automation, not a security attestation of hostile code.
+
+With the default `include_final_state: true`, `final_state` remains the complete
+fresh `/state` object and `final_state_summary` is absent. With `false`,
+`final_state` is `null`; the summary reports frame, game time, pending clock
+steps, held keyboard/mouse-button levels, and the encoded byte size of
+`model`. It includes `paused` only when an attached runtime actually supplies
+that field; it never guesses clock state from `pending_steps`. Neither `model`
+nor `model_debug` is retained in compact mode.
 
 ## Injected SDK
 

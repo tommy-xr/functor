@@ -25,6 +25,13 @@ async (game) => {
 }
 ```
 
+For a submitted program that already returns its important proof, pass
+`"include_final_state": false` in the `run_game_code_unsafe` MCP arguments.
+The parent still takes its final integrity snapshot, but the text response
+contains a compact `final_state_summary` (frame/time, pending steps, held input,
+and model JSON byte size) instead of repeating the full `model` and
+`model_debug`. The option defaults to `true`, preserving existing callers.
+
 The standalone TypeScript client and injected MCP object both provide
 `pressKey`, `uiClick`, and `stepUntil`. The first two package common edge
 actions. `stepUntil` accepts an ordinary sync or async predicate, checks current

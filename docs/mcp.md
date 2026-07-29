@@ -219,12 +219,16 @@ async (game) => {
 }
 ```
 
-The request puts that function in the `code` string and may set
-`timeout_ms` up to 120,000. The string is JavaScript evaluated by Node, not a
-TypeScript source file, so omit type annotations. Node.js 20 or newer must be
-installed; `FUNCTOR_NODE` can point to a non-default executable. If Node is
-missing or too old, the tool fails before running submitted code or mutating
-the game.
+The request puts that function in the `code` string and may set `timeout_ms` up
+to 120,000. `include_final_state` defaults to `true`; set it to `false` when
+the function already selects its evidence into `return_value`. The parent still
+takes the final `/state` snapshot, but returns only a
+`final_state_summary`—frame/time, pending steps, held input, and model JSON byte
+size—instead of retaining the structured model and `model_debug`. The string is
+JavaScript evaluated by Node, not a TypeScript source file, so omit type
+annotations. Node.js 20 or newer must be installed; `FUNCTOR_NODE` can point to
+a non-default executable. If Node is missing or too old, the tool fails before
+running submitted code or mutating the game.
 
 The injected object mirrors the standalone `@functor/sdk` method surface within
 the runner's documented bounds: observation, clock, input, project reload,
@@ -241,12 +245,12 @@ stdout; ordinary stdout writes become captured logs. The parent performs the
 existing typed debug-runtime requests while holding the session's operation
 gate. The tool returns the function's
 JSON-serializable value, captured console logs, a structured trace of every SDK
-call that actually ran, capture metadata plus PNG image blocks, and fresh final
-state. For trusted automation, the trace is useful validation evidence: loops,
-branches, and dynamic polling appear as their concrete calls without inventing
-a second serialized plan language. It is not an attestation against hostile
-submitted code, which already has RCE-equivalent authority and can deliberately
-spoof child protocol output.
+call that actually ran, capture metadata plus PNG image blocks, and either the
+fresh final state or its compact summary. For trusted automation, the trace is
+useful validation evidence: loops, branches, and dynamic polling appear as
+their concrete calls without inventing a second serialized plan language. It is
+not an attestation against hostile submitted code, which already has
+RCE-equivalent authority and can deliberately spoof child protocol output.
 
 The `unsafe` suffix is literal. Submitted code is arbitrary local Node code:
 it can import modules, access files and environment variables, use the network,
