@@ -29,14 +29,35 @@ function finish(message, exitCode) {
   write(message, () => process.exit(exitCode));
 }
 
+function safeString(value, fallback) {
+  try {
+    return String(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function safeProperty(value, key) {
+  try {
+    return value?.[key];
+  } catch {
+    return undefined;
+  }
+}
+
 function errorRecord(error) {
-  const value = error instanceof Error ? error : new Error(String(error));
+  const rawName = safeProperty(error, "name");
+  const rawMessage = safeProperty(error, "message");
+  const rawStack = safeProperty(error, "stack");
   return {
-    name: String(value.name || "Error").slice(0, 256),
-    message: String(value.message || value).slice(0, 16 * 1024),
+    name: safeString(rawName ?? "Error", "Error").slice(0, 256),
+    message: safeString(
+      rawMessage ?? error,
+      "<unprintable thrown value>",
+    ).slice(0, 16 * 1024),
     stack:
-      typeof value.stack === "string"
-        ? value.stack.slice(0, 32 * 1024)
+      typeof rawStack === "string"
+        ? rawStack.slice(0, 32 * 1024)
         : undefined,
   };
 }
@@ -47,9 +68,11 @@ function logText(values) {
       if (typeof value === "string") return value;
       try {
         const encoded = JSON.stringify(value);
-        return encoded === undefined ? String(value) : encoded;
+        return encoded === undefined
+          ? safeString(value, "<unprintable value>")
+          : encoded;
       } catch {
-        return String(value);
+        return safeString(value, "<unprintable value>");
       }
     })
     .join(" ")
@@ -76,7 +99,7 @@ process.stdout.write = (chunk, encoding, callback) => {
           )
         : String(chunk);
   } catch {
-    text = String(chunk);
+    text = safeString(chunk, "<unprintable stdout chunk>");
   }
   write(
     { type: "log", level: "stdout", text: logText([text]) },

@@ -48,6 +48,9 @@ const OPERATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Maximum time spent confirming termination of the direct Node child after
 /// code completes, throws, times out, or is cancelled.
 const NODE_CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Maximum time spent confirming termination of a runtime process owned by
+/// this MCP server. Failure preserves the exact-URL quarantine tombstone.
+const RUNTIME_CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Aggregate safety-cleanup budget after submitted code fails. This includes
 /// queued-step cancellation, one current-input snapshot, and every required
 /// input-level transition. Expiry quarantines the exact runtime URL.
@@ -329,6 +332,15 @@ struct NodeCodeOutput {
 struct SdkCallOutput {
     value: Value,
     trace_result: Value,
+}
+
+enum AdvanceRequestError {
+    /// A 4xx response proves the runtime rejected the command before queuing
+    /// clock work, so cancelling here could delete somebody else's queue.
+    Rejected(String),
+    /// Transport, response-body, and 5xx failures cannot prove whether the
+    /// runtime accepted the command. They require queued-step cleanup.
+    Ambiguous(String),
 }
 
 /// A project directory this server created and owns. Dropping it (when the
@@ -1226,9 +1238,20 @@ files writes the inline project to a scratch directory this server owns",
             .lock()
             .expect("mcp registry poisoned")
             .take_child(&args.session));
-        if let Some(child) = child.as_mut() {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+        let child_shutdown = match child.as_mut() {
+            Some(child) => {
+                terminate_child(child, "owned runtime child", RUNTIME_CHILD_SHUTDOWN_TIMEOUT).await
+            }
+            None if owned => {
+                Err("owned runtime child was absent, so termination could not be confirmed".into())
+            }
+            None => Ok(()),
+        };
+        drop(child);
+        if child_shutdown.is_err() {
+            // Killing the owned process was not proven. Preserve the URL
+            // tombstone after removing its unusable closing session records.
+            target.quarantined.store(true, Ordering::Release);
         }
         if owned {
             // The owner and every exact-URL alias remain closing tombstones
@@ -1236,9 +1259,11 @@ files writes the inline project to a scratch directory this server owns",
             let removed = {
                 let mut registry = self.sessions.lock().expect("mcp registry poisoned");
                 let removed = registry.remove_url(&target.url);
-                // Killing the owned process proves no ambiguous state survives
-                // at this lifecycle; a later process may safely reuse the URL.
-                registry.clear_owned_url_tombstone(&target.url);
+                if child_shutdown.is_ok() {
+                    // Confirmed termination proves no ambiguous state survives
+                    // at this lifecycle; a later process may safely reuse the URL.
+                    registry.clear_owned_url_tombstone(&target.url);
+                }
                 removed
             };
             drop(removed);
@@ -1249,6 +1274,14 @@ files writes the inline project to a scratch directory this server owns",
                 .expect("mcp registry poisoned")
                 .remove(&args.session));
             drop(session);
+        }
+        if let Err(error) = child_shutdown {
+            return tool_error(format!(
+                "stopped session {} but could not confirm owned runtime termination: {error}. \
+The closing session records were removed, but the exact URL {} remains quarantined. Restart this \
+MCP server before reconnecting or reusing that runtime URL.",
+                args.session, target.url
+            ));
         }
         ok_text(format!(
             "stopped session {} ({})",
@@ -1436,18 +1469,16 @@ files writes the inline project to a scratch directory this server owns",
                 "step frames must be between 1 and {MAX_STEP_FRAMES}; got {frames}"
             ));
         }
+        let dts = args.dts.unwrap_or(0.016);
+        if !dts.is_finite() || dts <= 0.0 {
+            return tool_error(format!(
+                "step dts must be a finite positive number; got {dts}"
+            ));
+        }
         let target = resolve!(self.target(&args.session));
         let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
-        let state = resolve!(
-            self.advance(
-                &target,
-                args.dts.unwrap_or(0.016),
-                frames,
-                operation_deadline
-            )
-            .await
-        );
+        let state = resolve!(self.advance(&target, dts, frames, operation_deadline).await);
         ok_text(state.to_string())
     }
 
@@ -1732,6 +1763,53 @@ impl FunctorMcp {
         read_body(path, response).await
     }
 
+    async fn post_advance(&self, url: &str, body: String) -> Result<String, AdvanceRequestError> {
+        let response = self
+            .http
+            .post(format!("{url}/time"))
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| {
+                AdvanceRequestError::Ambiguous(format!("POST /time on {url} failed: {error}"))
+            })?;
+        let status = response.status();
+        let (status, body) = read_bounded_response(
+            response,
+            MAX_RUNTIME_TEXT_BYTES,
+            "generic runtime text response",
+            "/time response",
+        )
+        .await
+        .map_err(|error| {
+            if status.is_client_error() {
+                AdvanceRequestError::Rejected(format!(
+                    "POST /time → {status}; reading the rejection failed: {error}"
+                ))
+            } else {
+                AdvanceRequestError::Ambiguous(error)
+            }
+        })?;
+        let body = String::from_utf8(body).map_err(|error| {
+            let message = format!("reading the /time response failed: body is not UTF-8: {error}");
+            if status.is_client_error() {
+                AdvanceRequestError::Rejected(format!("POST /time → {status}: {message}"))
+            } else {
+                AdvanceRequestError::Ambiguous(message)
+            }
+        })?;
+        if status.is_success() {
+            Ok(body)
+        } else {
+            let message = format!("/time → {status}: {body}");
+            if status.is_client_error() {
+                Err(AdvanceRequestError::Rejected(message))
+            } else {
+                Err(AdvanceRequestError::Ambiguous(message))
+            }
+        }
+    }
+
     async fn state(&self, url: &str) -> Result<Value, String> {
         let body = self.get(url, "/state").await?;
         serde_json::from_str(&body)
@@ -1768,9 +1846,16 @@ impl FunctorMcp {
             "dts": dts,
             "frames": frames,
         });
-        if let Err(error) = self.post(&target.url, "/time", body.to_string()).await {
-            // A request timeout can still mean the runtime accepted the queue.
-            return Err(self.abort_advance(target, error).await);
+        match self.post_advance(&target.url, body.to_string()).await {
+            Ok(_) => {}
+            // A 4xx response proves the runtime rejected the command before
+            // queuing it. Cancelling could discard direct-client work.
+            Err(AdvanceRequestError::Rejected(error)) => return Err(error),
+            // A request timeout, malformed success response, or 5xx can still
+            // mean the runtime accepted the queue.
+            Err(AdvanceRequestError::Ambiguous(error)) => {
+                return Err(self.abort_advance(target, error).await)
+            }
         }
         // The stall deadline detects a queue that stops moving. The separate
         // operation deadline is absolute: progress never extends it, and an
@@ -1943,7 +2028,11 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         // stopped waiting). Nothing useful remains in this one-shot child, so
         // terminate it unconditionally instead of trusting submitted code not
         // to replace `process.exit`.
+        let child_shutdown_started = Instant::now();
         let child_shutdown = terminate_node_child(&mut child).await;
+        let final_state_deadline = operation_deadline
+            .checked_add(child_shutdown_started.elapsed())
+            .unwrap_or(operation_deadline);
         drop(child);
 
         let mut failure = result.err().or_else(|| {
@@ -1955,11 +2044,17 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             })
         });
         if let Err(error) = child_shutdown {
+            // An unconfirmed arbitrary-code process must never race a later
+            // mutating operation after this gate is released.
+            target.quarantined.store(true, Ordering::Release);
             failure = Some(append_optional_error(
                 failure.unwrap_or_else(|| {
                     "submitted Node.js child termination could not be confirmed".into()
                 }),
-                Some(error),
+                Some(format!(
+                    "{error}. The exact runtime URL is quarantined because submitted code may \
+still be alive; stop an owned session, or restart both an attached runtime and this MCP server."
+                )),
             ));
         }
         let mut cleanup_done = false;
@@ -1979,7 +2074,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         match await_code_phase(
             target,
             context,
-            operation_deadline,
+            final_state_deadline,
             timeout,
             "the final state snapshot",
             self.state(&target.url),
@@ -2294,7 +2389,13 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     .transpose()?
                     .unwrap_or(1.0 / 60.0);
                 *issued_advance = true;
-                self.advance(target, dts, 1, operation_deadline).await?;
+                let result = self.advance(target, dts, 1, operation_deadline).await;
+                // `advance` performs its own cleanup on a returned error. If
+                // this future is cancelled mid-await, this assignment never
+                // runs and the outer submitted-code cleanup still cancels the
+                // possibly accepted queue.
+                *issued_advance = false;
+                result?;
                 Ok(nothing())
             }
             "stepFrames" => {
@@ -2312,8 +2413,10 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     .unwrap_or(1.0 / 60.0);
                 if frames > 0 {
                     *issued_advance = true;
-                    self.advance(target, dts, frames, operation_deadline)
-                        .await?;
+                    let result = self.advance(target, dts, frames, operation_deadline).await;
+                    // See `step`: only a dropped in-flight call leaves this set.
+                    *issued_advance = false;
+                    result?;
                 }
                 Ok(nothing())
             }
@@ -2697,14 +2800,27 @@ Install Node.js, set FUNCTOR_NODE to its executable, and restart `functor mcp`."
 }
 
 async fn terminate_node_child(child: &mut Child) -> Result<(), String> {
-    let _ = child.start_kill();
-    match tokio::time::timeout(NODE_CHILD_SHUTDOWN_TIMEOUT, child.wait()).await {
+    terminate_child(child, "Node child", NODE_CHILD_SHUTDOWN_TIMEOUT).await
+}
+
+async fn terminate_child(child: &mut Child, label: &str, timeout: Duration) -> Result<(), String> {
+    let kill_error = child.start_kill().err();
+    match tokio::time::timeout(timeout, child.wait()).await {
         Ok(Ok(_)) => Ok(()),
-        Ok(Err(error)) => Err(format!("waiting for the Node child failed: {error}")),
-        Err(_) => Err(format!(
-            "Node child did not exit within {}ms after termination; kill-on-drop remains armed",
-            NODE_CHILD_SHUTDOWN_TIMEOUT.as_millis()
+        Ok(Err(error)) => Err(append_optional_error(
+            format!("waiting for the {label} failed: {error}"),
+            kill_error.map(|error| format!("requesting termination also failed: {error}")),
         )),
+        Err(_) => {
+            let message = format!(
+                "{label} did not exit within {}ms after termination; kill-on-drop remains armed",
+                timeout.as_millis()
+            );
+            Err(append_optional_error(
+                message,
+                kill_error.map(|error| format!("requesting termination failed: {error}")),
+            ))
+        }
     }
 }
 
@@ -4248,6 +4364,34 @@ mod tests {
         assert!(result.contains("aggregate deadline"), "{result}");
         assert!(result.contains("quarantined"), "{result}");
         assert!(target.quarantined.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn a_definitive_advance_rejection_does_not_cancel_or_quarantine() {
+        let server = FunctorMcp::new();
+        let body = "the clock is pinned by --fixed-time";
+        let response = format!(
+            "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let target = SessionTarget {
+            url: fake_http_url(response).await,
+            operation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            quarantined: Arc::new(AtomicBool::new(false)),
+            closing: Arc::new(AtomicBool::new(false)),
+        };
+
+        let error = server
+            .advance(&target, 0.016, 1, Instant::now() + Duration::from_secs(1))
+            .await
+            .expect_err("the runtime rejected the advance");
+
+        assert!(error.contains("409"), "{error}");
+        assert!(error.contains("--fixed-time"), "{error}");
+        assert!(
+            !target.quarantined.load(Ordering::Acquire),
+            "a rejected command never owned queued work to clean up"
+        );
     }
 
     #[test]

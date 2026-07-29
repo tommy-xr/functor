@@ -393,6 +393,11 @@ time, then advance from there."
         match command {
             TimeCommand::Set { tts } => self.set(tts),
             TimeCommand::Advance { dts, frames } => {
+                if !dts.is_finite() || dts <= 0.0 {
+                    return Err(format!(
+                        "advance dts must be a finite positive number, got {dts}"
+                    ));
+                }
                 // Bounded so one request cannot park the clock for weeks: the
                 // queue drains at MAX_SUBSTEPS per rendered frame, so the cap
                 // is ~3.5 hours of stepping at 60fps. Refuse loudly rather
@@ -829,6 +834,20 @@ mod tests {
             })
             .is_err());
         assert_eq!(clock.pending_steps(), MAX_QUEUED_STEPS);
+    }
+
+    #[test]
+    fn apply_refuses_non_positive_or_non_finite_advance_time() {
+        use crate::debug_protocol::TimeCommand;
+        let mut clock = GameClock::new(None);
+        for dts in [0.0, -FIXED_DT, f32::INFINITY, f32::NAN] {
+            let error = clock
+                .apply(TimeCommand::Advance { dts, frames: 1 })
+                .expect_err("invalid dts must not reach the queue");
+            assert!(error.contains("finite positive"), "{error}");
+            assert_eq!(clock.pending_steps(), 0);
+            assert_eq!(clock.current_tts(), 0.0);
+        }
     }
 
     #[test]

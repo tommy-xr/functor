@@ -364,6 +364,10 @@ target-specific endpoints or string-keyed capability bags.
 queued-step cleanup must reject older runtimes rather than treating a 404 or an
 unknown command as a successful abort.
 
+`advance.dts` must be finite and positive; invalid values are rejected before
+anything is queued, so direct debug clients cannot move simulation time
+backwards.
+
 **Advances accumulate.** Each queued step runs exactly once, in order: `n`
 advances always run `n` model steps, whenever they arrive relative to a frame.
 A single advance is therefore one observable stepped frame — step, read

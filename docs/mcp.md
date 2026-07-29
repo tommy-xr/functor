@@ -61,9 +61,11 @@ accepted step queue; a code failure snapshots current input and transitions only
 SDK-touched key and mouse-button levels that differ from their pre-run baseline.
 If either cleanup cannot be confirmed before its bound, the exact URL is
 quarantined: every alias rejects further mutations. Stopping an owned session
-kills the ambiguous runtime and clears its tombstone. Merely detaching an
-attached id cannot prove cleanup; restart both that runtime and this MCP server
-before reconnecting. `list_sessions` exposes
+waits at most 5 seconds to confirm process termination and clears its tombstone
+only on success. An unconfirmed termination removes the unusable closing
+session records but preserves the URL tombstone. Merely detaching an attached
+id cannot prove cleanup; restart both that runtime and this MCP server before
+reconnecting. `list_sessions` exposes
 session flags plus quarantined URL tombstones with no remaining id; read-only
 state/scene/trace calls remain available for diagnosis.
 Exact normalized base-URL aliases created by this MCP server share the same
@@ -102,7 +104,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | Tool | What it does |
 | --- | --- |
 | `pause` | Pin the clock (defaults to the current `tts`), so nothing advances on its own. |
-| `step` | Run 1–10,000 `frames` of `dts` each, **wait for them to land**, and return the fresh state. |
+| `step` | Run 1–10,000 `frames` of finite positive `dts` each, **wait for them to land**, and return the fresh state. |
 | `resume` | Follow wall-clock time again. |
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |

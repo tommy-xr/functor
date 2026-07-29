@@ -204,10 +204,11 @@ may add at most 2 seconds and the whole safety cleanup at most 30 seconds beyond
 the active deadline. Processes deliberately spawned by submitted code are not
 tracked or killed.
 
-If queued-step cancellation or input restoration cannot be confirmed, the
-shared exact URL is quarantined. Every alias rejects further mutations.
-Stopping an owned session kills the ambiguous runtime and clears the tombstone;
-an attached runtime requires restarting both the runtime and MCP server.
+If direct-child termination, queued-step cancellation, or input restoration
+cannot be confirmed, the shared exact URL is quarantined. Every alias rejects
+further mutations. Stopping an owned session clears the tombstone only after
+confirming runtime termination; an attached runtime requires restarting both
+the runtime and MCP server.
 
 ## Game-jam fit
 

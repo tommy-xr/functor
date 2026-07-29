@@ -262,6 +262,23 @@ try {
       afterRejectedRun.tts === beforeRejectedRun.tts,
     "a syntactically invalid function had no model or clock side effect",
   );
+  const pathologicalThrowStarted = Date.now();
+  let pathologicalThrow = null;
+  try {
+    await rpc.call("run_game_code_unsafe", {
+      session,
+      code: `async () => { throw Object.create(null); }`,
+      timeout_ms: 5000,
+    });
+  } catch (error) {
+    pathologicalThrow = error.message;
+  }
+  check(
+    pathologicalThrow !== null &&
+      /unprintable thrown value/.test(pathologicalThrow) &&
+      Date.now() - pathologicalThrowStarted < 4000,
+    "an uncoercible thrown value is reported without waiting for the run timeout",
+  );
 
   console.log("\n▸ one unsafe SDK call replaces raw choreography");
   const automated = await rpc.call("run_game_code_unsafe", {
@@ -480,6 +497,59 @@ try {
       afterOversizedStep.frame === beforeOversizedStep.frame,
     "the lower-level step cap rejects 10,001 frames before changing the session",
   );
+
+  console.log("\n▸ a landed code step does not own later direct-client clock work");
+  const postStepFailure = rpc.call("run_game_code_unsafe", {
+    session,
+    code: `async (game) => {
+      await game.step();
+      await game.keyDown("q");
+      await game.waitForState(
+        (state) => state.input.held_keys.includes("Num9"),
+        { timeoutMs: 5000, intervalMs: 5, description: "the direct-client trigger" },
+      );
+      throw new Error("after-landed-step");
+    }`,
+  }).then(
+    () => null,
+    (error) => error.message,
+  );
+  let landedStepSignalled = false;
+  for (let attempt = 0; attempt < 400 && !landedStepSignalled; attempt += 1) {
+    const during = await rpc.call("get_state", { session });
+    landedStepSignalled = during.input?.held_keys?.includes("Q") === true;
+    if (!landedStepSignalled) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check(landedStepSignalled, "submitted code signalled after its own step had landed");
+  const directAdvance = await fetch(`${launched.url}/time`, {
+    method: "POST",
+    body: JSON.stringify({ type: "advance", dts: 0.016, frames: 10000 }),
+  });
+  check(directAdvance.ok, "a direct debug client queued later clock work");
+  const directTrigger = await fetch(`${launched.url}/input`, {
+    method: "POST",
+    body: JSON.stringify({ type: "key", key: "9", down: true }),
+  });
+  check(directTrigger.ok, "the direct client released submitted code's wait");
+  const postStepError = await postStepFailure;
+  const afterPostStepFailure = await rpc.call("get_state", { session });
+  check(
+    /after-landed-step/.test(postStepError ?? "") &&
+      afterPostStepFailure.pending_steps > 0 &&
+      !afterPostStepFailure.input?.held_keys?.includes("Q") &&
+      afterPostStepFailure.input?.held_keys?.includes("Num9"),
+    "later code failure restored its input without cancelling the direct client's queue",
+  );
+  const directCancel = await fetch(`${launched.url}/time`, {
+    method: "POST",
+    body: JSON.stringify({ type: "cancel" }),
+  });
+  check(directCancel.ok, "the direct-client test queue was explicitly cleaned up");
+  const directTriggerRelease = await fetch(`${launched.url}/input`, {
+    method: "POST",
+    body: JSON.stringify({ type: "key", key: "9", down: false }),
+  });
+  check(directTriggerRelease.ok, "the direct-client trigger input was explicitly released");
 
   console.log("\n▸ mutating calls serialize per session, while other sessions stay independent");
   const EDGE_COUNTER = `type Model = { count: float, held: bool }
@@ -708,6 +778,18 @@ let draw = (m: Model, tts) =>
   check(
     Math.abs(second.tts - first.tts - 0.016) < 1e-4,
     `each step advanced time by its dts (tts ${first.tts.toFixed(3)} → ${second.tts.toFixed(3)})`,
+  );
+  let invalidDts = null;
+  try {
+    await rpc.call("step", { session, dts: -0.016 });
+  } catch (error) {
+    invalidDts = error.message;
+  }
+  const afterInvalidDts = await rpc.call("get_state", { session });
+  check(
+    /finite positive/.test(invalidDts ?? "") &&
+      afterInvalidDts.tts === second.tts,
+    "step rejects a negative dts before simulation time can move backwards",
   );
 
   console.log("\n▸ injected input reaches the game");
