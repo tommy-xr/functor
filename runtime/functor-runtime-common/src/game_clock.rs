@@ -364,6 +364,14 @@ impl GameClock {
         self.game_time = tts;
     }
 
+    /// Abort queued debug/fixed steps without rebasing time. The model and
+    /// clock therefore remain aligned at the last step that actually landed.
+    pub fn cancel_pending(&mut self) {
+        self.paused = true;
+        self.pending_steps.clear();
+        self.pending_frames = 0;
+    }
+
     /// Apply one debug `POST /time` command, shared by every shell that hosts
     /// the debug server so the contract cannot drift between them.
     ///
@@ -399,6 +407,7 @@ past the {MAX_QUEUED_STEPS} step cap. Advance in smaller batches, or POST \
                 }
                 self.step_n(dts, frames)
             }
+            TimeCommand::Cancel => self.cancel_pending(),
             TimeCommand::Resume => self.resume(),
         }
         Ok(())
@@ -751,6 +760,7 @@ mod tests {
                 frames: 1,
             },
             TimeCommand::Set { tts: 9.0 },
+            TimeCommand::Cancel,
             TimeCommand::Resume,
         ] {
             let error = pinned.apply(command).expect_err("must be a conflict");
@@ -773,6 +783,22 @@ mod tests {
         assert_eq!(clock.current_tts(), 4.0);
         assert!(clock.apply(TimeCommand::Resume).is_ok());
         assert!(!clock.is_paused());
+    }
+
+    #[test]
+    fn cancel_drops_queued_steps_without_rebasing_landed_time() {
+        use crate::debug_protocol::TimeCommand;
+        let mut clock = GameClock::new(None);
+        clock.step_n(FIXED_DT, 20);
+        let landed = clock.fixed_frames(0.0);
+        assert_eq!(landed.len(), MAX_SUBSTEPS);
+        let landed_tts = clock.current_tts();
+        assert!(clock.pending_steps() > 0);
+
+        clock.apply(TimeCommand::Cancel).unwrap();
+        assert_eq!(clock.pending_steps(), 0);
+        assert_eq!(clock.current_tts(), landed_tts);
+        assert!(clock.is_paused());
     }
 
     #[test]

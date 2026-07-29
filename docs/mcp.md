@@ -9,9 +9,10 @@ drive a Functor game with no bespoke script, no HTTP plumbing, and no screen:
 `launch_game` → `pause` → `send_input` → `step` → `get_state`, reading the
 model back as structured JSON.
 
-It is a plain HTTP client of the runtimes and lives entirely in the CLI. The
-one runtime-side addition it needs is `GET /project` (debug protocol v5), the
-read half of the project-push routes, which `save_project` is built on.
+It is a plain HTTP client of the runtimes and lives in the CLI. Its runtime-side
+additions are `GET /project` (the read half used by `save_project`) plus the
+protocol-v7 `cancel`/`release_all` cleanup commands that make bounded automation
+abort without leaving queued steps or held input behind.
 
 ## Registering it
 
@@ -51,12 +52,14 @@ cancelled. Acquired `step` and automation calls have a 120-second deadline that
 progress does not extend; it is checked between operations and step polls, while
 an in-flight request retains its 30-second request timeout. An owned stop also
 ends an active step/automation at its next polling boundary before taking the
-gate. Exact normalized base-URL aliases created by this MCP server share the
-same gate, while different exact URLs continue concurrently. `connect_game`
-reserves that gate before discovery, so it cannot race stop and insert a dead
-alias afterward. Normalization currently removes trailing `/` only, so hostname
-aliases such as `localhost` versus `127.0.0.1` are not recognized, and direct
-HTTP clients outside this MCP process are not coordinated. Read-only
+gate. Before an aborted operation releases the gate, it cancels the accepted
+step queue; an automation failure also releases held keys and mouse buttons.
+Exact normalized base-URL aliases created by this MCP server share the same
+gate, while different exact URLs continue concurrently. `connect_game` reserves
+that gate before discovery, so it cannot race stop and insert a dead alias
+afterward. Normalization currently removes trailing `/` only, so hostname aliases
+such as `localhost` versus `127.0.0.1` are not recognized, and direct HTTP
+clients outside this MCP process are not coordinated. Read-only
 `get_state`/`get_scene`/`get_trace` calls do not take the gate.
 
 `stop_game` marks closing before it waits for the gate and completes cleanup
@@ -157,15 +160,12 @@ Runtime errors come back as tool errors carrying the runtime's own message — a
 `/input` 400 explaining a misspelled field, a `/reload-source` 400 with the
 rendered load error, a `/time` 409 naming a `--fixed-time` pin.
 
-`launch_game` and `connect_game` both require **debug protocol v4 or newer**
-(`docs/debug-runtime.md`), and say so if the runtime is older. Below that, the
-guarantees above quietly stop holding: a pre-v3 runtime ignores a batched
-`frames` and reports no `pending_steps` (so `step` would call a ten-frame batch
-landed after one), and a pre-v4 one sends Debug text under `model` instead of
-structured JSON. This matters most
-for a device APK, which versions independently of the CLI — rebuild it from the
-same Functor version. `save_project` additionally needs **v5** (`GET /project`)
-and says so on an older runtime.
+`launch_game` and `connect_game` both require **debug protocol v7 or newer**
+(`docs/debug-runtime.md`), and say so if the runtime is older. Earlier runtimes
+lack at least one guarantee the tools rely on: waited batched steps, structured
+model state, running-project reads, or safe queued-step/input cleanup. This
+matters most for a device APK, which versions independently of the CLI — rebuild
+it from the same Functor version.
 
 Launched games are killed when the server stops, whether its client closes
 stdin or signals it (SIGTERM/Ctrl-C). Attached ones are always left running.
@@ -247,9 +247,11 @@ Execution is ordered but not transactional. Complete parse and static
 plan-budget rejection is side-effect free, including when a valid mutating
 prefix has an invalid suffix. Once a valid plan begins, a later runtime,
 assertion, or runtime-output cap failure can leave earlier steps applied. The
-session operation gate is held for the whole plan, so concurrent mutating calls
-wait and cannot splice input or clock operations into it; calls for other exact
-URLs remain independent. This PoC
+abort cleanup removes queued clock work and held key/button levels, but does not
+roll back model, physics, UI, or other effects from steps that already landed.
+The session operation gate is held for the whole plan, so concurrent mutating
+calls wait and cannot splice input or clock operations into it; calls for other
+exact URLs remain independent. This PoC
 intentionally has no variables, branching, loops, retry conditions, arbitrary
 JavaScript expressions, or rollback.
 

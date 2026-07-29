@@ -477,6 +477,41 @@ let draw = (m: Model, tts) =>
     "stopping the attached alias left the original session valid and independently mutable",
   );
 
+  console.log("\n▸ stopping an active attached id clears its queue and held input");
+  const abortAlias = (await rpc.call("connect_game", { url: gateGame.url })).session;
+  const attachedRun = rpc.call("run_automation_code", {
+    session: abortAlias,
+    code: `automation("attached abort cleanup")
+      .pause()
+      .keyDown("space")
+      .step({ frames: 10000, dts: 0.016 })
+      .keyUp("space")`,
+  }).then(
+    (value) => ({ value }),
+    (error) => ({ error: error.message }),
+  );
+  let attachedHeld = false;
+  for (let attempt = 0; attempt < 200 && !attachedHeld; attempt += 1) {
+    const during = await rpc.call("get_state", { session: gatedSession });
+    attachedHeld = during.input?.held_keys?.includes("Space") === true;
+    if (!attachedHeld) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  check(attachedHeld, "the attached-id plan held input while its batch was active");
+  const attachedStop = await rpc.call("stop_game", { session: abortAlias });
+  const attachedOutcome = await attachedRun;
+  const afterAttachedStop = await rpc.call("get_state", { session: gatedSession });
+  check(
+    /queued steps were cancelled/.test(attachedOutcome.error ?? "") &&
+      /held keys and mouse buttons were released/.test(attachedOutcome.error ?? ""),
+    "the interrupted plan reported both clock and input cleanup",
+  );
+  check(/detached/.test(attachedStop), "the attached id detached after cleanup");
+  check(
+    afterAttachedStop.pending_steps === 0 &&
+      afterAttachedStop.input?.held_keys?.length === 0,
+    "the still-live runtime has no residual queue or held input after detach",
+  );
+
   console.log("\n▸ a connect queued during owned stop cannot survive as a dead session");
   const stopRaceRun = rpc.call("run_automation_code", {
     session: gatedSession,

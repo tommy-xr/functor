@@ -38,7 +38,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `pressed_keys`, `released_keys`, `mouse.pressed`, and `mouse.released`.
 /// This is additive; clients that support older runtimes can treat absent
 /// fields as empty.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 6;
+///
+/// 7 added `POST /time {"type":"cancel"}` and
+/// `POST /input {"type":"release_all"}`. Together they let an automation
+/// driver abort a queued batch without leaving clock work or held input behind.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 7;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -107,12 +111,12 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/input",
-        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device)",
+        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device) | {\"type\":\"release_all\"} (release held keys/buttons)",
     },
     DebugRoute {
         method: "POST",
         path: "/time",
-        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016,\"frames\":1} (queue that many steps; advances accumulate) | {\"type\":\"resume\"} — 409 while --fixed-time pins the clock",
+        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016,\"frames\":1} (queue that many steps; advances accumulate) | {\"type\":\"cancel\"} (drop queued steps, stay paused) | {\"type\":\"resume\"} — 409 while --fixed-time pins the clock",
     },
     DebugRoute {
         method: "POST",
@@ -268,6 +272,10 @@ pub enum InputCommand {
     /// one-way door: the first `xr` command would disable the emulator and make
     /// a game's "no XR device" branch unreachable for the rest of the process.
     XrClear,
+    /// Release every held key and mouse button. Automation uses this only on
+    /// an error/abort boundary so a partial keyDown → step → keyUp plan cannot
+    /// strand level input in an attached runtime.
+    ReleaseAll,
 }
 
 /// A clock command sent through `POST /time`.
@@ -283,6 +291,9 @@ pub enum TimeCommand {
         #[serde(default = "one_frame")]
         frames: u32,
     },
+    /// Drop queued debug/fixed steps without changing the current game time,
+    /// and remain paused. This is the safe abort twin of `Advance`.
+    Cancel,
     Resume,
 }
 
@@ -548,6 +559,14 @@ mod tests {
             }
         );
         assert_eq!(
+            serde_json::from_str::<TimeCommand>(r#"{"type":"cancel"}"#).unwrap(),
+            TimeCommand::Cancel
+        );
+        assert_eq!(
+            serde_json::from_str::<InputCommand>(r#"{"type":"release_all"}"#).unwrap(),
+            InputCommand::ReleaseAll
+        );
+        assert_eq!(
             serde_json::from_str::<RewindCommand>(r#"{"frame":42}"#).unwrap(),
             RewindCommand { frame: 42 }
         );
@@ -665,6 +684,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 6);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 7);
     }
 }

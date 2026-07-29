@@ -935,6 +935,7 @@ fn service_debug_request(
                     | debug_server::InputCommand::MouseButton { .. }
                     | debug_server::InputCommand::Xr(_)
                     | debug_server::InputCommand::XrClear
+                    | debug_server::InputCommand::ReleaseAll
             );
             let result = match cmd {
                 debug_server::InputCommand::Key { key, down } => {
@@ -1020,6 +1021,14 @@ fn service_debug_request(
                 }
                 debug_server::InputCommand::XrClear => {
                     *xr_override = None;
+                    Ok(())
+                }
+                debug_server::InputCommand::ReleaseAll => {
+                    for key in std::mem::take(held_keys) {
+                        edges.key_transition(key, true, false);
+                        game.key_event(key as i32, false);
+                    }
+                    release_held_mouse_buttons(game, held_buttons, edges, true);
                     Ok(())
                 }
             };

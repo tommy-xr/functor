@@ -83,7 +83,9 @@ the final base64 MCP image content has its own 24 MiB aggregate cap checked
 before encoding begins. Once acquired, `step` and automation operations have a
 120-second wall-clock deadline that progress cannot extend, checked between
 bounded runtime requests; an owned stop also ends an active operation at its
-next step-poll boundary.
+next step-poll boundary. Debug protocol v7 supplies the abort cleanup:
+`/time cancel` drops accepted but unlanded steps without rebasing time, and
+`/input release_all` clears held keys/buttons before the gate is released.
 
 The run tool completes this entire parse and validation before looking up the
 session. The MCP E2E submits a valid mutating prefix followed by an invalid
@@ -172,7 +174,9 @@ context.
   both from one versioned schema and add cross-language fixtures.
 - Execution is not transactional. Static parse/plan-budget rejection has no
   side effects; after execution starts, a runtime, assertion, or runtime-output
-  cap failure can leave earlier steps applied.
+  cap failure can leave earlier steps applied. Abort cleanup removes pending
+  clock work and held input, but does not roll back model/physics/effects that
+  already landed.
 - `expectModel` provides exact JSON equality and `expectModelClose` provides
   finite numeric absolute tolerance at static literal paths. There are no
   other comparisons, predicates, polling-until, branching, variables, loops,

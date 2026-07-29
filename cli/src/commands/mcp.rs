@@ -51,7 +51,7 @@ const OPERATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Lowest debug-protocol version whose contract these tools actually keep
 /// (`pending_steps` on `/state`, `frames` on `/time advance`, `model`).
-const REQUIRED_PROTOCOL_VERSION: u64 = 4;
+const REQUIRED_PROTOCOL_VERSION: u64 = 7;
 /// Bytes of a launched child's stdout/stderr kept for failure reporting.
 const LOG_TAIL_BYTES: usize = 8 * 1024;
 /// Maximum body retained from any ordinary debug-runtime text response.
@@ -1136,8 +1136,9 @@ files writes the inline project to a scratch directory this server owns",
     /// summary and any error text are capped at 4 MiB; each raw capture at 8
     /// MiB, all captures together at 16 MiB raw and 24 MiB base64 MCP image
     /// content. Once acquired, a plan has a 120-second wall-clock deadline;
-    /// an owned stop also ends it at the next step-poll boundary. Call
-    /// `validate_automation_code` first for parse-only feedback.
+    /// an owned stop also ends it at the next step-poll boundary. An abort
+    /// cancels queued steps and releases held keys/buttons before the gate is
+    /// released. Call `validate_automation_code` first for parse-only feedback.
     #[tool]
     async fn run_automation_code(
         &self,
@@ -1203,7 +1204,8 @@ files writes the inline project to a scratch directory this server owns",
     /// between steps — a batch runs up to 8 ticks per rendered frame, so it has
     /// proportionally fewer input/network/render points. `frames` must be
     /// between 1 and 10,000 and the acquired operation has a 120-second
-    /// wall-clock deadline.
+    /// wall-clock deadline. Timeout/stop abort cancels any unlanded queue before
+    /// releasing the session gate.
     #[tool]
     async fn step(
         &self,
@@ -1525,13 +1527,18 @@ impl FunctorMcp {
         frames: u32,
         operation_deadline: Instant,
     ) -> Result<Value, String> {
-        ensure_operation_active(target, operation_deadline)?;
+        if let Err(error) = ensure_operation_active(target, operation_deadline) {
+            return Err(self.abort_advance(target, error).await);
+        }
         let body = serde_json::json!({
             "type": "advance",
             "dts": dts,
             "frames": frames,
         });
-        self.post(&target.url, "/time", body.to_string()).await?;
+        if let Err(error) = self.post(&target.url, "/time", body.to_string()).await {
+            // A request timeout can still mean the runtime accepted the queue.
+            return Err(self.abort_advance(target, error).await);
+        }
         // The stall deadline detects a queue that stops moving. The separate
         // operation deadline is absolute: progress never extends it, and an
         // owned stop marks the target closing so polling exits at this safe
@@ -1539,8 +1546,13 @@ impl FunctorMcp {
         let mut deadline = Instant::now() + STEP_STALL_TIMEOUT;
         let mut remaining = u64::MAX;
         loop {
-            ensure_operation_active(target, operation_deadline)?;
-            let state = self.state(&target.url).await?;
+            if let Err(error) = ensure_operation_active(target, operation_deadline) {
+                return Err(self.abort_advance(target, error).await);
+            }
+            let state = match self.state(&target.url).await {
+                Ok(state) => state,
+                Err(error) => return Err(self.abort_advance(target, error).await),
+            };
             let pending = state["pending_steps"].as_u64().unwrap_or(0);
             if pending == 0 {
                 return Ok(state);
@@ -1549,13 +1561,32 @@ impl FunctorMcp {
                 remaining = pending;
                 deadline = Instant::now() + STEP_STALL_TIMEOUT;
             } else if Instant::now() >= deadline {
-                return Err(format!(
+                let error = format!(
                     "the queued steps stopped draining ({pending} still pending, no progress for \
 {}s) — the game loop may be stuck or the runtime paused from elsewhere",
                     STEP_STALL_TIMEOUT.as_secs()
-                ));
+                );
+                return Err(self.abort_advance(target, error).await);
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn abort_advance(&self, target: &SessionTarget, cause: String) -> String {
+        match self
+            .post(
+                &target.url,
+                "/time",
+                serde_json::json!({ "type": "cancel" }).to_string(),
+            )
+            .await
+        {
+            Ok(_) => format!("{cause}; queued steps were cancelled before releasing the gate"),
+            Err(cleanup) => {
+                format!(
+                    "{cause}; failed to cancel queued steps before releasing the gate: {cleanup}"
+                )
+            }
         }
     }
 
@@ -1607,12 +1638,13 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
 
         for (index, step) in plan.steps.iter().enumerate() {
             let step_number = index + 1;
-            ensure_operation_active(target, operation_deadline).map_err(|error| {
-                format!(
+            if let Err(error) = ensure_operation_active(target, operation_deadline) {
+                let error = format!(
                     "automation stopped before step {step_number} ({}): {error}",
                     automation_step_name(step)
-                )
-            })?;
+                );
+                return Err(self.automation_failure(url, error).await);
+            }
             let result: Result<(), String> = match step {
                 AutomationStep::Pause { tts } => self.pin(url, *tts).await.map(|_| ()),
                 AutomationStep::Key { key, down } => self
@@ -1832,22 +1864,29 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                 },
             };
             if let Err(error) = result {
-                return Err(format!(
+                let error = format!(
                     "automation step {step_number} ({}) failed: {error}",
                     automation_step_name(step)
-                ));
+                );
+                return Err(self.automation_failure(url, error).await);
             }
         }
 
-        ensure_operation_active(target, operation_deadline)
-            .map_err(|error| format!("automation stopped before final state: {error}"))?;
-        let final_state = self
-            .state(url)
-            .await
-            .map_err(|error| format!("automation completed but final state failed: {error}"))?;
-        output_budget.retain_json(&final_state).map_err(|error| {
-            format!("automation completed but final-state output failed: {error}")
-        })?;
+        if let Err(error) = ensure_operation_active(target, operation_deadline) {
+            let error = format!("automation stopped before final state: {error}");
+            return Err(self.automation_failure(url, error).await);
+        }
+        let final_state = match self.state(url).await {
+            Ok(state) => state,
+            Err(error) => {
+                let error = format!("automation completed but final state failed: {error}");
+                return Err(self.automation_failure(url, error).await);
+            }
+        };
+        if let Err(error) = output_budget.retain_json(&final_state) {
+            let error = format!("automation completed but final-state output failed: {error}");
+            return Err(self.automation_failure(url, error).await);
+        }
         let capture_metadata: Vec<Value> = captures
             .iter()
             .enumerate()
@@ -1870,12 +1909,31 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             "captures": capture_metadata,
             "final_state": final_state,
         });
-        let summary = serialize_json_bounded(
+        let summary = match serialize_json_bounded(
             &summary,
             MAX_AUTOMATION_TEXT_BYTES,
             "automation aggregate text output",
-        )?;
+        ) {
+            Ok(summary) => summary,
+            Err(error) => return Err(self.automation_failure(url, error).await),
+        };
         Ok((summary, captures))
+    }
+
+    async fn automation_failure(&self, url: &str, cause: String) -> String {
+        match self
+            .post(
+                url,
+                "/input",
+                serde_json::json!({ "type": "release_all" }).to_string(),
+            )
+            .await
+        {
+            Ok(_) => format!("{cause}; held keys and mouse buttons were released"),
+            Err(cleanup) => {
+                format!("{cause}; failed to release held input after the error: {cleanup}")
+            }
+        }
     }
 
     /// Fetch and validate the discovery document, so an `http://…` that answers
@@ -1890,19 +1948,20 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                 discovery["service"]
             ));
         }
-        // Below v4 the guarantees these tools advertise silently stop holding:
+        // Below v7 the guarantees these tools advertise silently stop holding:
         // a pre-v3 runtime ignores a batched `frames` and reports no
         // `pending_steps` (so `step` would claim a 10-frame batch landed after
         // running one), and a pre-v4 one sends Debug text under `model`
-        // instead of structured JSON. Refuse
+        // instead of structured JSON. A pre-v7 runtime cannot cancel accepted
+        // step queues or release held automation input on an abort. Refuse
         // rather than mislead — this matters for a device APK, which versions
         // independently of the CLI.
         let version = discovery["protocol_version"].as_u64().unwrap_or(0);
         if version < REQUIRED_PROTOCOL_VERSION {
             return Err(format!(
                 "{url} speaks debug protocol v{version}, but these tools need \
-v{REQUIRED_PROTOCOL_VERSION} (batched steps report pending_steps, and /state's model \
-is structured JSON). Rebuild that runtime from this version of Functor."
+v{REQUIRED_PROTOCOL_VERSION} (structured model state plus safe queued-step/input cleanup). \
+Rebuild that runtime from this version of Functor."
             ));
         }
         Ok(discovery)

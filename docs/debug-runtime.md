@@ -166,6 +166,7 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"ui_event","slot":2,"kind":{"TextChanged":"hi"}}       // edit text input slot 2
 {"type":"xr","left":{...},"right":{...},"head":{...}}          // set the XR device sample
 {"type":"xr_clear"}                                            // drop it again
+{"type":"release_all"}                                         // release held keys + mouse buttons
 ```
 
 `mouse_button` is both an edge and level state, exactly like `key`: it calls the
@@ -181,6 +182,11 @@ held preserves the legacy event-hook call but does not create another sampled
 press. A down/up burst before one step can appear in both sampled edge sets;
 the held level reports the final state. After that step the edge fields clear,
 including under `--fixed-time`, recording/replay, and forward projection.
+
+`release_all` is the abort cleanup command: it delivers release edges for every
+held key and mouse button and clears their level state. Automation drivers use
+it after a partial plan fails so an attached runtime cannot be left with stuck
+input.
 
 `ui_event` drives the game's interactive UI widgets without pixels or
 hit-testing (docs/ui-interaction.md): `slot` is the widget's index in the
@@ -356,6 +362,7 @@ target-specific endpoints or string-keyed capability bags.
 {"type":"set","tts":2.0}                    // PAUSE: pin game time to a constant (dts=0)
 {"type":"advance","dts":0.016}              // STEP: run exactly one frame with this dt, then hold
 {"type":"advance","dts":0.016,"frames":120} // BATCH: queue 120 such steps in one request
+{"type":"cancel"}                           // ABORT: drop queued steps, keep current tts, stay paused
 {"type":"resume"}                           // RESUME: follow wall-clock again
 ```
 
@@ -378,6 +385,11 @@ would give it — network delivery, effect results, injected input, and renderin
 all happen once per rendered frame, not once per tick. Step one at a time when
 the game needs to see input or I/O between steps. (Batches are capped at
 1,000,000 queued steps; past that the request is a 409.)
+
+`cancel` clears both queued debug steps and fixed-frame catch-up without
+rebasing `tts`; the model and clock remain aligned at the last step that
+actually landed. It is the safe error/deadline cleanup for a batch an automation
+driver no longer intends to finish.
 
 **`--fixed-time <T>` is not an initial `set`.** It is an *unconditional* capture
 pin: every frame is `{dts: 0, tts: T}`, and no clock control — pause, step,
