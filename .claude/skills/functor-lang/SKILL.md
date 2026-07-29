@@ -801,6 +801,15 @@ Asset.sound("boom.ogg")                                    //   per KIND (types 
                                                            //   WRONG-kind asset (a sound
                                                            //   into Scene.model) teaches
                                                            //   the right constructor
+Assets.xbotClips.walk.name                                 // functor import also inspects model
+Assets.xbotJoints.mixamorig_Head                           //   names: typed clip records carry
+                                                           //   name/duration; typed joint records
+                                                           //   carry exact strings for Anim.rotate
+                                                           //   / Anim.mask. Arbitrary glTF names
+                                                           //   sanitize deterministically
+                                                           //   (`mixamorig:Head` →
+                                                           //   `mixamorig_Head`), with `_2`, `_3`,
+                                                           //   … suffixes for collisions
 asset |> Asset.whilePending(placeholder)                   // placeholder rendered WHILE the
                                                            //   asset streams in (instead of
                                                            //   the empty/checkerboard

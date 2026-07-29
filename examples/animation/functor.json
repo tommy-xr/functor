@@ -1,4 +1,5 @@
 {
   "language": "functor-lang",
-  "entry": "game.fun"
+  "entry": "game.fun",
+  "cursor": "visible"
 }

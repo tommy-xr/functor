@@ -426,6 +426,19 @@
           ay += e.movementY;
           functor_lang_mouse_move(ax, ay);
         });
+        // Visible-pointer games consume absolute canvas coordinates instead of
+        // pointer-lock deltas. Listen at window scope so movement over overlays
+        // still reaches the game, matching the canonical web host.
+        window.addEventListener("mousemove", (e) => {
+          if (!visiblePointer || debugCameraOwnsInput()) return;
+          const rect = canvas.getBoundingClientRect();
+          // The wasm export takes integers. Floor explicitly so a fractional
+          // point just outside the top/left remains negative.
+          functor_lang_mouse_move(
+            Math.floor(e.clientX - rect.left),
+            Math.floor(e.clientY - rect.top)
+          );
+        }, { capture: true });
 
         canvas.addEventListener("wheel", (e) => {
           if (document.pointerLockElement !== canvas) return;

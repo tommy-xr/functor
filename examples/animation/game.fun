@@ -17,6 +17,7 @@ let init = {
   target: 0.0,
   auto: true,
   head: { yaw: 0.0, pitch: 0.0 },
+  surface: { width: 800.0, height: 600.0 },
   pointerDrivesHead: false,
 }
 
@@ -31,13 +32,20 @@ let input = (model, key, isDown) =>
     | Key.Num0 => { model with auto: true, pointerDrivesHead: false }
     | _ => model
 
-// Pointer position (window pixels) -> head aim: the pointer's offset from
-// the window center becomes yaw/pitch targets, clamped to a natural range.
-// (Assumes the default 800x600 window — there is no window-size query yet;
-// at other sizes the mapping just saturates earlier.)
+// Sample the logical surface size alongside the pointer. Mouse position and
+// extent share one coordinate space on native + web, so this stays correct
+// across resizing and Retina/device-pixel-ratio changes.
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  { model with surface: {
+      width: Math.max(1.0, snapshot.mouse.surfaceWidth),
+      height: Math.max(1.0, snapshot.mouse.surfaceHeight),
+    } }
+
+// Pointer position -> head aim: the pointer's offset from the window center
+// becomes yaw/pitch targets, clamped to a natural range.
 let mouseMove = (model, x, y) =>
-  let yaw = (Math.clamp01(x / 800.0) - 0.5) * 1.6 in
-  let pitch = (Math.clamp01(y / 600.0) - 0.5) * 0.9 in
+  let yaw = (Math.clamp01(x / model.surface.width) - 0.5) * 1.6 in
+  let pitch = (Math.clamp01(y / model.surface.height) - 0.5) * 0.9 in
   { model with head: { yaw: yaw, pitch: pitch }, pointerDrivesHead: true }
 
 let tick = (model, dt, tts) =>
@@ -81,7 +89,7 @@ let locomotion = (s: float, tts: float): Anim.t =>
 // additive local rotation on the head joint (survives the blend beneath it).
 let pose = (model, tts) =>
   locomotion(model.speed, tts)
-    |> Anim.rotate("mixamorig:Head",
+    |> Anim.rotate(Assets.xbotJoints.mixamorig_Head,
          Angle.radians(model.head.pitch),
          Angle.radians(model.head.yaw),
          Angle.radians(0.0))

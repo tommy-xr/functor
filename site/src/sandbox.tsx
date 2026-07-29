@@ -409,10 +409,13 @@ const loadExample = async (id: string) => {
   setDoc(source, siblings, assets);
   setStatus("busy", "◌ loading…");
   const params = new URLSearchParams({ game: url, scrubber: "hidden" });
-  const mouseCapture = example?.mouseCapture ?? pageMouseCapture;
+  const cursorPolicy = example?.cursor ?? pageCursorPolicy;
+  const mouseCapture = cursorPolicy
+    ? null
+    : example?.mouseCapture ?? pageMouseCapture;
   if (mouseCapture === false) params.set("mouseCapture", "false");
-  if (pageCursorPolicy) {
-    params.set("cursor", pageCursorPolicy);
+  if (cursorPolicy) {
+    params.set("cursor", cursorPolicy);
   }
   for (const file of files) params.append("file", file);
   frame.src = `player.html?${params}`;

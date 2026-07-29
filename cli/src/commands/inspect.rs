@@ -110,6 +110,9 @@ fn print_report(path: &str, report: &ModelReport) {
 
     if report.has_skeleton {
         println!("Skeleton: present ({} joints)", report.joint_count);
+        for joint in &report.joints {
+            println!("  - {}", joint);
+        }
     } else {
         println!("Skeleton: none");
     }
