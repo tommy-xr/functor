@@ -50,7 +50,8 @@ const OPERATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request timeout for the (loopback or adb-forwarded) debug server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Lowest debug-protocol version whose contract these tools actually keep
-/// (`pending_steps` on `/state`, `frames` on `/time advance`, `model`).
+/// (`pending_steps` on `/state`, `frames` on `/time advance`, structured
+/// `model`, and `/time cancel`).
 const REQUIRED_PROTOCOL_VERSION: u64 = 7;
 /// Bytes of a launched child's stdout/stderr kept for failure reporting.
 const LOG_TAIL_BYTES: usize = 8 * 1024;
@@ -123,6 +124,10 @@ struct Session {
     /// of the registry before awaiting, so the synchronous registry mutex is
     /// never held across runtime I/O.
     operation_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Exact-URL safety marker shared by aliases. A failed abort cleanup makes
+    /// the runtime state ambiguous, so no alias may mutate it again. Killing an
+    /// owned runtime clears it; attached runtimes require a runtime + MCP restart.
+    quarantined: Arc<AtomicBool>,
     /// Per-session lifecycle marker. Exact-URL aliases share the operation
     /// gate but remain independently stoppable registry entries.
     closing: Arc<AtomicBool>,
@@ -146,11 +151,13 @@ struct Session {
 struct SessionTarget {
     url: String,
     operation_gate: Arc<tokio::sync::Mutex<()>>,
+    quarantined: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
 }
 
 struct PendingConnect {
     operation_gate: Arc<tokio::sync::Mutex<()>>,
+    quarantined: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     reservations: usize,
 }
@@ -159,6 +166,7 @@ struct ConnectReservation {
     registry: Weak<Mutex<Registry>>,
     url: String,
     operation_gate: Arc<tokio::sync::Mutex<()>>,
+    quarantined: Arc<AtomicBool>,
     closing: Arc<AtomicBool>,
     active: bool,
 }
@@ -167,6 +175,55 @@ struct ConnectReservation {
 struct AutomationOutputBudget {
     retained_text_bytes: usize,
     capture_bytes: usize,
+}
+
+#[derive(Default)]
+struct AutomationInputRestore {
+    baseline_keys: BTreeSet<String>,
+    baseline_mouse_buttons: BTreeSet<String>,
+    touched_keys: BTreeSet<String>,
+    touched_mouse_buttons: BTreeSet<String>,
+}
+
+impl AutomationInputRestore {
+    fn from_state(state: &Value) -> Self {
+        let baseline_keys = state
+            .pointer("/input/held_keys")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let baseline_mouse_buttons = ["left", "right", "middle"]
+            .into_iter()
+            .filter(|button| {
+                state
+                    .pointer(&format!("/input/mouse/buttons/{button}"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .map(str::to_string)
+            .collect();
+        Self {
+            baseline_keys,
+            baseline_mouse_buttons,
+            ..Self::default()
+        }
+    }
+
+    fn touch_key(&mut self, key: &str) {
+        self.touched_keys.insert(key.to_ascii_lowercase());
+    }
+
+    fn touch_mouse_button(&mut self, button: &str) {
+        self.touched_mouse_buttons
+            .insert(button.to_ascii_lowercase());
+    }
+
+    fn is_empty(&self) -> bool {
+        self.touched_keys.is_empty() && self.touched_mouse_buttons.is_empty()
+    }
 }
 
 impl AutomationOutputBudget {
@@ -236,6 +293,10 @@ fn scratch_dir() -> Result<ScratchDir, String> {
 struct Registry {
     next_id: u32,
     sessions: BTreeMap<String, Session>,
+    /// Exact-URL safety tombstones. A quarantined marker deliberately outlives
+    /// attached session ids, so detach/reconnect cannot bless ambiguous state
+    /// in the same MCP process.
+    url_quarantines: BTreeMap<String, Arc<AtomicBool>>,
     /// Transient exact-URL lifecycles created before connect discovery. Each
     /// entry is removed when its RAII reservations complete or are cancelled.
     pending_connects: BTreeMap<String, PendingConnect>,
@@ -254,18 +315,39 @@ impl Registry {
         child: Option<Child>,
         scratch: Option<ScratchDir>,
     ) -> String {
-        let operation_gate = self
-            .pending_connects
-            .get(&url)
-            .map(|pending| pending.operation_gate.clone())
-            .or_else(|| {
-                self.sessions
-                    .values()
-                    .find(|session| session.url == url)
-                    .map(|session| session.operation_gate.clone())
+        // A launched child is a process this server just created, so it starts
+        // a fresh exact-URL lifecycle even if an old attached runtime used the
+        // same port. Attached insertions must retain any tombstone.
+        let existing = child
+            .is_none()
+            .then(|| {
+                self.pending_connects
+                    .get(&url)
+                    .map(|pending| (pending.operation_gate.clone(), pending.quarantined.clone()))
+                    .or_else(|| {
+                        self.sessions
+                            .values()
+                            .find(|session| session.url == url)
+                            .map(|session| {
+                                (session.operation_gate.clone(), session.quarantined.clone())
+                            })
+                    })
             })
-            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
-        self.insert_with_gate(url, port, child, scratch, operation_gate)
+            .flatten();
+        let (operation_gate, quarantined) = existing.unwrap_or_else(|| {
+            (
+                Arc::new(tokio::sync::Mutex::new(())),
+                if child.is_some() {
+                    Arc::new(AtomicBool::new(false))
+                } else {
+                    self.url_quarantines
+                        .get(&url)
+                        .cloned()
+                        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+                },
+            )
+        });
+        self.insert_with_gate(url, port, child, scratch, operation_gate, quarantined)
     }
 
     fn insert_with_gate(
@@ -275,15 +357,19 @@ impl Registry {
         child: Option<Child>,
         scratch: Option<ScratchDir>,
         operation_gate: Arc<tokio::sync::Mutex<()>>,
+        quarantined: Arc<AtomicBool>,
     ) -> String {
         self.next_id += 1;
         let id = format!("s{}", self.next_id);
         let owned = child.is_some();
+        self.url_quarantines
+            .insert(url.clone(), quarantined.clone());
         self.sessions.insert(
             id.clone(),
             Session {
                 url,
                 operation_gate,
+                quarantined,
                 closing: Arc::new(AtomicBool::new(false)),
                 owned,
                 port,
@@ -294,17 +380,38 @@ impl Registry {
         id
     }
 
-    fn reserve_connect(&mut self, url: &str) -> (Arc<tokio::sync::Mutex<()>>, Arc<AtomicBool>) {
+    fn reserve_connect(
+        &mut self,
+        url: &str,
+    ) -> (
+        Arc<tokio::sync::Mutex<()>>,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+    ) {
         if let Some(pending) = self.pending_connects.get_mut(url) {
             pending.reservations += 1;
-            return (pending.operation_gate.clone(), pending.closing.clone());
+            return (
+                pending.operation_gate.clone(),
+                pending.quarantined.clone(),
+                pending.closing.clone(),
+            );
         }
-        let operation_gate = self
+        let existing = self
             .sessions
             .values()
             .find(|session| session.url == url)
-            .map(|session| session.operation_gate.clone())
-            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+            .map(|session| (session.operation_gate.clone(), session.quarantined.clone()));
+        let (operation_gate, quarantined) = existing.unwrap_or_else(|| {
+            (
+                Arc::new(tokio::sync::Mutex::new(())),
+                self.url_quarantines
+                    .get(url)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+            )
+        });
+        self.url_quarantines
+            .insert(url.to_string(), quarantined.clone());
         let owned_stop_in_progress = self.sessions.values().any(|session| {
             session.url == url && session.owned && session.closing.load(Ordering::Acquire)
         });
@@ -313,11 +420,12 @@ impl Registry {
             url.to_string(),
             PendingConnect {
                 operation_gate: operation_gate.clone(),
+                quarantined: quarantined.clone(),
                 closing: closing.clone(),
                 reservations: 1,
             },
         );
-        (operation_gate, closing)
+        (operation_gate, quarantined, closing)
     }
 
     fn release_connect(&mut self, url: &str, lifecycle: &Arc<AtomicBool>) {
@@ -354,16 +462,43 @@ impl Registry {
         self.target(id).map(|target| target.url)
     }
 
+    /// Resolve a diagnostic read without treating an exact-URL quarantine as
+    /// a mutation. Reads are how a caller inspects the ambiguous state before
+    /// deciding which owned session to stop or attached runtime to restart.
+    fn read_url(&self, id: &str) -> Result<String, String> {
+        match self.sessions.get(id) {
+            Some(session) if session.closing.load(Ordering::Acquire) => {
+                Err(format!("session {id:?} is stopping; no new operation can start"))
+            }
+            Some(session) => Ok(session.url.clone()),
+            None if self.sessions.is_empty() => Err(format!(
+                "unknown session {id:?}: no sessions yet — start one with launch_game or connect_game"
+            )),
+            None => Err(format!(
+                "unknown session {id:?}: known sessions are {}",
+                self.ids().join(", ")
+            )),
+        }
+    }
+
     /// Clone the runtime address and async operation gate while holding the
     /// registry briefly. Callers may then drop the registry guard and await.
     fn target(&self, id: &str) -> Result<SessionTarget, String> {
         match self.sessions.get(id) {
+            Some(session) if session.quarantined.load(Ordering::Acquire) => {
+                Err(format!(
+                    "session {id:?} is quarantined because abort cleanup could not be confirmed; \
+stop an owned session, or restart both an attached runtime and this MCP server, before mutating {}",
+                    session.url
+                ))
+            }
             Some(session) if session.closing.load(Ordering::Acquire) => {
                 Err(format!("session {id:?} is stopping; no new operation can start"))
             }
             Some(session) => Ok(SessionTarget {
                 url: session.url.clone(),
                 operation_gate: session.operation_gate.clone(),
+                quarantined: session.quarantined.clone(),
                 closing: session.closing.clone(),
             }),
             None if self.sessions.is_empty() => Err(format!(
@@ -420,6 +555,7 @@ impl Registry {
             SessionTarget {
                 url,
                 operation_gate,
+                quarantined: session.quarantined.clone(),
                 closing,
             },
             owned,
@@ -445,6 +581,12 @@ impl Registry {
             .collect()
     }
 
+    /// Clear a tombstone only after this server has killed the runtime it
+    /// owned. Detaching an attached id is intentionally insufficient.
+    fn clear_owned_url_tombstone(&mut self, url: &str) {
+        self.url_quarantines.remove(url);
+    }
+
     /// Kill every owned child. Attached sessions are only forgotten.
     fn shutdown(registry: &Arc<Mutex<Registry>>) {
         let mut guard = registry.lock().expect("mcp registry poisoned");
@@ -461,6 +603,7 @@ impl ConnectReservation {
         SessionTarget {
             url: self.url.clone(),
             operation_gate: self.operation_gate.clone(),
+            quarantined: self.quarantined.clone(),
             closing: self.closing.clone(),
         }
     }
@@ -476,9 +619,16 @@ impl ConnectReservation {
             .get(&self.url)
             .is_some_and(|pending| {
                 Arc::ptr_eq(&pending.operation_gate, &self.operation_gate)
+                    && Arc::ptr_eq(&pending.quarantined, &self.quarantined)
                     && Arc::ptr_eq(&pending.closing, &self.closing)
             });
-        let result = if self.closing.load(Ordering::Acquire) {
+        let result = if self.quarantined.load(Ordering::Acquire) {
+            Err(format!(
+                "runtime at {} is quarantined because abort cleanup could not be confirmed; \
+stop it if owned, or restart both the attached runtime and this MCP server",
+                self.url
+            ))
+        } else if self.closing.load(Ordering::Acquire) {
             Err(format!(
                 "runtime at {} is stopping; connect did not create a session",
                 self.url
@@ -495,6 +645,7 @@ impl ConnectReservation {
                 None,
                 None,
                 self.operation_gate.clone(),
+                self.quarantined.clone(),
             ))
         };
         guard.release_connect(&self.url, &self.closing);
@@ -959,19 +1110,35 @@ files writes the inline project to a scratch directory this server owns",
     }
 
     /// List the known sessions: id, url, whether this server owns the process,
-    /// and whether the runtime currently answers `GET /state`.
+    /// whether it currently answers `GET /state`, and whether an ambiguous
+    /// abort cleanup quarantined its exact URL from further mutations. The
+    /// result also lists quarantined URL tombstones with no remaining id.
     #[tool]
     async fn list_sessions(&self) -> Result<CallToolResult, ErrorData> {
-        let known: Vec<(String, String, bool)> = {
+        let (known, quarantined_urls): (Vec<(String, String, bool, bool)>, Vec<String>) = {
             let guard = self.sessions.lock().expect("mcp registry poisoned");
-            guard
+            let known = guard
                 .sessions
                 .iter()
-                .map(|(id, session)| (id.clone(), session.url.clone(), session.owned))
-                .collect()
+                .map(|(id, session)| {
+                    (
+                        id.clone(),
+                        session.url.clone(),
+                        session.owned,
+                        session.quarantined.load(Ordering::Acquire),
+                    )
+                })
+                .collect();
+            let quarantined_urls = guard
+                .url_quarantines
+                .iter()
+                .filter(|(_, quarantined)| quarantined.load(Ordering::Acquire))
+                .map(|(url, _)| url.clone())
+                .collect();
+            (known, quarantined_urls)
         };
         let mut sessions = Vec::with_capacity(known.len());
-        for (id, url, owned) in known {
+        for (id, url, owned, quarantined) in known {
             let alive = self
                 .http
                 .get(format!("{url}/state"))
@@ -982,9 +1149,16 @@ files writes the inline project to a scratch directory this server owns",
                 .unwrap_or(false);
             sessions.push(serde_json::json!({
                 "session": id, "url": url, "owned": owned, "alive": alive,
+                "quarantined": quarantined,
             }));
         }
-        ok_text(serde_json::json!({ "sessions": sessions }).to_string())
+        ok_text(
+            serde_json::json!({
+                "sessions": sessions,
+                "quarantined_urls": quarantined_urls,
+            })
+            .to_string(),
+        )
     }
 
     /// Stop a session. An attached id is detached independently. Stopping a
@@ -1023,11 +1197,14 @@ files writes the inline project to a scratch directory this server owns",
         if owned {
             // The owner and every exact-URL alias remain closing tombstones
             // until child cleanup finishes. Only now can the group disappear.
-            let removed = self
-                .sessions
-                .lock()
-                .expect("mcp registry poisoned")
-                .remove_url(&target.url);
+            let removed = {
+                let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+                let removed = registry.remove_url(&target.url);
+                // Killing the owned process proves no ambiguous state survives
+                // at this lifecycle; a later process may safely reuse the URL.
+                registry.clear_owned_url_tombstone(&target.url);
+                removed
+            };
             drop(removed);
         } else {
             let session = resolve!(self
@@ -1137,8 +1314,10 @@ files writes the inline project to a scratch directory this server owns",
     /// MiB, all captures together at 16 MiB raw and 24 MiB base64 MCP image
     /// content. Once acquired, a plan has a 120-second wall-clock deadline;
     /// an owned stop also ends it at the next step-poll boundary. An abort
-    /// cancels queued steps and releases held keys/buttons before the gate is
-    /// released. Call `validate_automation_code` first for parse-only feedback.
+    /// cancels queued steps and restores plan-touched key/button levels to
+    /// their pre-plan snapshot before the gate is released. If cleanup cannot
+    /// be confirmed, the exact URL is quarantined from further mutations. Call
+    /// `validate_automation_code` first for parse-only feedback.
     #[tool]
     async fn run_automation_code(
         &self,
@@ -1427,7 +1606,7 @@ impl FunctorMcp {
     }
 
     fn reserve_connect(&self, url: &str) -> ConnectReservation {
-        let (operation_gate, closing) = self
+        let (operation_gate, quarantined, closing) = self
             .sessions
             .lock()
             .expect("mcp registry poisoned")
@@ -1436,16 +1615,17 @@ impl FunctorMcp {
             registry: Arc::downgrade(&self.sessions),
             url: url.to_string(),
             operation_gate,
+            quarantined,
             closing,
             active: true,
         }
     }
 
-    fn url(&self, session: &str) -> Result<String, String> {
+    fn read_url(&self, session: &str) -> Result<String, String> {
         self.sessions
             .lock()
             .expect("mcp registry poisoned")
-            .url(session)
+            .read_url(session)
     }
 
     fn target(&self, session: &str) -> Result<SessionTarget, String> {
@@ -1464,7 +1644,7 @@ impl FunctorMcp {
     }
 
     async fn proxy_get(&self, session: &str, path: &str) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.url(session));
+        let url = resolve!(self.read_url(session));
         ok_text(resolve!(self.get(&url, path).await))
     }
 
@@ -1528,7 +1708,9 @@ impl FunctorMcp {
         operation_deadline: Instant,
     ) -> Result<Value, String> {
         if let Err(error) = ensure_operation_active(target, operation_deadline) {
-            return Err(self.abort_advance(target, error).await);
+            // No advance request was issued, so cancelling here could discard
+            // work queued by an external client.
+            return Err(error);
         }
         let body = serde_json::json!({
             "type": "advance",
@@ -1583,8 +1765,11 @@ impl FunctorMcp {
         {
             Ok(_) => format!("{cause}; queued steps were cancelled before releasing the gate"),
             Err(cleanup) => {
+                target.quarantined.store(true, Ordering::Release);
                 format!(
-                    "{cause}; failed to cancel queued steps before releasing the gate: {cleanup}"
+                    "{cause}; failed to confirm queued-step cancellation: {cleanup}. The exact \
+runtime URL is quarantined, so no alias can mutate it. Stop an owned session; for an attached \
+runtime, restart both the runtime and this MCP server before reconnecting."
                 )
             }
         }
@@ -1635,6 +1820,10 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         let mut assertions = Vec::new();
         let mut captures = Vec::new();
         let mut output_budget = AutomationOutputBudget::default();
+        let baseline_state = self.state(url).await.map_err(|error| {
+            format!("automation could not snapshot input before starting: {error}")
+        })?;
+        let mut input_restore = AutomationInputRestore::from_state(&baseline_state);
 
         for (index, step) in plan.steps.iter().enumerate() {
             let step_number = index + 1;
@@ -1643,24 +1832,31 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     "automation stopped before step {step_number} ({}): {error}",
                     automation_step_name(step)
                 );
-                return Err(self.automation_failure(url, error).await);
+                return Err(self.automation_failure(target, error, &input_restore).await);
             }
             let result: Result<(), String> = match step {
                 AutomationStep::Pause { tts } => self.pin(url, *tts).await.map(|_| ()),
-                AutomationStep::Key { key, down } => self
-                    .post(
-                        url,
-                        "/input",
-                        serde_json::json!({
-                            "type": "key",
-                            "key": key,
-                            "down": down,
-                        })
-                        .to_string(),
-                    )
-                    .await
-                    .map(|_| ()),
+                AutomationStep::Key { key, down } => {
+                    // Record before the request: a timeout is ambiguous and
+                    // the runtime may have applied the edge.
+                    input_restore.touch_key(key);
+                    let result = self
+                        .post(
+                            url,
+                            "/input",
+                            serde_json::json!({
+                                "type": "key",
+                                "key": key,
+                                "down": down,
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .map(|_| ());
+                    result
+                }
                 AutomationStep::PressKey { key } => {
+                    input_restore.touch_key(key);
                     let pressed = self
                         .post(
                             url,
@@ -1723,19 +1919,23 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     )
                     .await
                     .map(|_| ()),
-                AutomationStep::MouseButton { button, down } => self
-                    .post(
-                        url,
-                        "/input",
-                        serde_json::json!({
-                            "type": "mouse_button",
-                            "button": button,
-                            "down": down,
-                        })
-                        .to_string(),
-                    )
-                    .await
-                    .map(|_| ()),
+                AutomationStep::MouseButton { button, down } => {
+                    input_restore.touch_mouse_button(button);
+                    let result = self
+                        .post(
+                            url,
+                            "/input",
+                            serde_json::json!({
+                                "type": "mouse_button",
+                                "button": button,
+                                "down": down,
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .map(|_| ());
+                    result
+                }
                 AutomationStep::MouseWheel { delta } => self
                     .post(
                         url,
@@ -1868,24 +2068,24 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     "automation step {step_number} ({}) failed: {error}",
                     automation_step_name(step)
                 );
-                return Err(self.automation_failure(url, error).await);
+                return Err(self.automation_failure(target, error, &input_restore).await);
             }
         }
 
         if let Err(error) = ensure_operation_active(target, operation_deadline) {
             let error = format!("automation stopped before final state: {error}");
-            return Err(self.automation_failure(url, error).await);
+            return Err(self.automation_failure(target, error, &input_restore).await);
         }
         let final_state = match self.state(url).await {
             Ok(state) => state,
             Err(error) => {
                 let error = format!("automation completed but final state failed: {error}");
-                return Err(self.automation_failure(url, error).await);
+                return Err(self.automation_failure(target, error, &input_restore).await);
             }
         };
         if let Err(error) = output_budget.retain_json(&final_state) {
             let error = format!("automation completed but final-state output failed: {error}");
-            return Err(self.automation_failure(url, error).await);
+            return Err(self.automation_failure(target, error, &input_restore).await);
         }
         let capture_metadata: Vec<Value> = captures
             .iter()
@@ -1915,24 +2115,67 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             "automation aggregate text output",
         ) {
             Ok(summary) => summary,
-            Err(error) => return Err(self.automation_failure(url, error).await),
+            Err(error) => {
+                return Err(self.automation_failure(target, error, &input_restore).await);
+            }
         };
         Ok((summary, captures))
     }
 
-    async fn automation_failure(&self, url: &str, cause: String) -> String {
-        match self
-            .post(
-                url,
-                "/input",
-                serde_json::json!({ "type": "release_all" }).to_string(),
-            )
-            .await
-        {
-            Ok(_) => format!("{cause}; held keys and mouse buttons were released"),
-            Err(cleanup) => {
-                format!("{cause}; failed to release held input after the error: {cleanup}")
+    async fn automation_failure(
+        &self,
+        target: &SessionTarget,
+        cause: String,
+        input_restore: &AutomationInputRestore,
+    ) -> String {
+        if input_restore.is_empty() {
+            return cause;
+        }
+        let mut failures = Vec::new();
+        for key in &input_restore.touched_keys {
+            if let Err(error) = self
+                .post(
+                    &target.url,
+                    "/input",
+                    serde_json::json!({
+                        "type": "key",
+                        "key": key,
+                        "down": input_restore.baseline_keys.contains(key),
+                    })
+                    .to_string(),
+                )
+                .await
+            {
+                failures.push(format!("key {key:?}: {error}"));
             }
+        }
+        for button in &input_restore.touched_mouse_buttons {
+            if let Err(error) = self
+                .post(
+                    &target.url,
+                    "/input",
+                    serde_json::json!({
+                        "type": "mouse_button",
+                        "button": button,
+                        "down": input_restore.baseline_mouse_buttons.contains(button),
+                    })
+                    .to_string(),
+                )
+                .await
+            {
+                failures.push(format!("mouse button {button:?}: {error}"));
+            }
+        }
+        if failures.is_empty() {
+            format!("{cause}; plan-touched key and mouse-button levels were restored")
+        } else {
+            target.quarantined.store(true, Ordering::Release);
+            format!(
+                "{cause}; failed to confirm plan-touched input restoration ({}). The exact runtime URL \
+is quarantined, so no alias can mutate it. Stop an owned session; for an attached runtime, restart \
+both the runtime and this MCP server before reconnecting.",
+                failures.join("; ")
+            )
         }
     }
 
@@ -1952,15 +2195,14 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         // a pre-v3 runtime ignores a batched `frames` and reports no
         // `pending_steps` (so `step` would claim a 10-frame batch landed after
         // running one), and a pre-v4 one sends Debug text under `model`
-        // instead of structured JSON. A pre-v7 runtime cannot cancel accepted
-        // step queues or release held automation input on an abort. Refuse
-        // rather than mislead — this matters for a device APK, which versions
-        // independently of the CLI.
+        // instead of structured JSON. A pre-v7 runtime cannot cancel an
+        // accepted step queue on an abort. Refuse rather than mislead — this
+        // matters for a device APK, which versions independently of the CLI.
         let version = discovery["protocol_version"].as_u64().unwrap_or(0);
         if version < REQUIRED_PROTOCOL_VERSION {
             return Err(format!(
                 "{url} speaks debug protocol v{version}, but these tools need \
-v{REQUIRED_PROTOCOL_VERSION} (structured model state plus safe queued-step/input cleanup). \
+v{REQUIRED_PROTOCOL_VERSION} (structured model state plus safe queued-step cleanup). \
 Rebuild that runtime from this version of Functor."
             ));
         }
@@ -1995,6 +2237,12 @@ fn ensure_operation_active(
     target: &SessionTarget,
     operation_deadline: Instant,
 ) -> Result<(), String> {
+    if target.quarantined.load(Ordering::Acquire) {
+        return Err(format!(
+            "runtime at {} is quarantined because abort cleanup could not be confirmed",
+            target.url
+        ));
+    }
     if target.closing.load(Ordering::Acquire) {
         return Err(format!(
             "session at {} is stopping; operation ended at a safe boundary",
@@ -2014,6 +2262,12 @@ async fn acquire_target_operation(
     target: &SessionTarget,
     cancelled: impl Future<Output = ()>,
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    if target.quarantined.load(Ordering::Acquire) {
+        return Err(format!(
+            "runtime at {} is quarantined because abort cleanup could not be confirmed",
+            target.url
+        ));
+    }
     if target.closing.load(Ordering::Acquire) {
         return Err(format!(
             "session at {} is stopping; no new operation can start",
@@ -2035,6 +2289,12 @@ async fn acquire_target_operation(
     // Stop can mark this cloned target while it waits. Holding the gate here
     // proves no runtime operation is active, but it must still reject rather
     // than issue I/O behind the stop boundary.
+    if target.quarantined.load(Ordering::Acquire) {
+        return Err(format!(
+            "runtime at {} became quarantined while the operation waited; queued operation did not run",
+            target.url
+        ));
+    }
     if target.closing.load(Ordering::Acquire) {
         return Err(format!(
             "session at {} is stopping; queued operation did not run",
@@ -2822,9 +3082,9 @@ mod tests {
         encoded_capture_total, ensure_operation_active, extend_bounded, find_guide_section,
         guide_sections, json_encoded_len, read_body, read_bounded_response, render_api_hits,
         render_guide_contents, render_guide_section, search_api, serialize_json_bounded,
-        strip_front_matter, truncate_automation_error, AutomationOutputBudget, FunctorMcp,
-        Registry, SessionTarget, LANGUAGE_GUIDE, MAX_AUTOMATION_CAPTURE_BYTES,
-        MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
+        strip_front_matter, truncate_automation_error, AutomationInputRestore,
+        AutomationOutputBudget, FunctorMcp, Registry, SessionTarget, LANGUAGE_GUIDE,
+        MAX_AUTOMATION_CAPTURE_BYTES, MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
     use std::sync::{
@@ -2837,7 +3097,7 @@ mod tests {
         functor_docgen::generate().expect("the embedded prelude documents itself")
     }
 
-    async fn fake_http_response(raw: &'static [u8]) -> reqwest::Response {
+    async fn fake_http_url(raw: &'static [u8]) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -2847,7 +3107,13 @@ mod tests {
             socket.write_all(raw).await.unwrap();
             socket.shutdown().await.unwrap();
         });
-        reqwest::get(format!("http://{address}/")).await.unwrap()
+        format!("http://{address}")
+    }
+
+    async fn fake_http_response(raw: &'static [u8]) -> reqwest::Response {
+        reqwest::get(format!("{}/", fake_http_url(raw).await))
+            .await
+            .unwrap()
     }
 
     #[test]
@@ -2960,6 +3226,78 @@ mod tests {
             teaching_error.contains("400 Bad Request: unknown key Frobble"),
             "{teaching_error}"
         );
+    }
+
+    #[tokio::test]
+    async fn uncertain_abort_cleanup_quarantines_every_exact_url_alias() {
+        let server = FunctorMcp::new();
+        let url = fake_http_url(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 6\r\nConnection: close\r\n\r\nfailed",
+        )
+        .await;
+        {
+            let mut registry = server.sessions.lock().unwrap();
+            registry.insert(url.clone(), None, None, None);
+            registry.insert(url.clone(), None, None, None);
+        }
+        let target = server.target("s1").unwrap();
+
+        let error = server.abort_advance(&target, "advance failed".into()).await;
+
+        assert!(error.contains("quarantined"), "{error}");
+        let registry = server.sessions.lock().unwrap();
+        let Err(owner_error) = registry.target("s1") else {
+            panic!("the quarantined owner must reject mutations");
+        };
+        let Err(alias_error) = registry.target("s2") else {
+            panic!("the quarantined alias must reject mutations");
+        };
+        assert!(owner_error.contains("quarantined"), "{owner_error}");
+        assert!(alias_error.contains("quarantined"), "{alias_error}");
+        drop(registry);
+
+        {
+            let mut registry = server.sessions.lock().unwrap();
+            registry.remove("s1").unwrap();
+            registry.remove("s2").unwrap();
+            assert!(registry.sessions.is_empty());
+        }
+        let reconnect = server.reserve_connect(&url);
+        let reconnect_target = reconnect.target();
+        assert!(
+            reconnect_target.quarantined.load(Ordering::Acquire),
+            "an attached detach/reconnect must retain the URL tombstone"
+        );
+        let reconnect_error = acquire_target_operation(&reconnect_target, std::future::pending())
+            .await
+            .unwrap_err();
+        assert!(reconnect_error.contains("quarantined"), "{reconnect_error}");
+    }
+
+    #[tokio::test]
+    async fn failed_plan_input_restoration_quarantines_the_url() {
+        let server = FunctorMcp::new();
+        let url = fake_http_url(
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 6\r\nConnection: close\r\n\r\nfailed",
+        )
+        .await;
+        let target = SessionTarget {
+            url,
+            operation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            quarantined: Arc::new(AtomicBool::new(false)),
+            closing: Arc::new(AtomicBool::new(false)),
+        };
+        let input_restore = AutomationInputRestore {
+            touched_keys: ["space".into()].into_iter().collect(),
+            ..AutomationInputRestore::default()
+        };
+
+        let error = server
+            .automation_failure(&target, "assertion failed".into(), &input_restore)
+            .await;
+
+        assert!(error.contains("quarantined"), "{error}");
+        assert!(target.quarantined.load(Ordering::Acquire));
     }
 
     #[test]
@@ -3351,8 +3689,31 @@ mod tests {
             "aliases remain independently stoppable session ids"
         );
         assert!(
+            Arc::ptr_eq(&first_target.quarantined, &alias_target.quarantined),
+            "exact-URL aliases share an abort-safety quarantine"
+        );
+        assert!(
+            !Arc::ptr_eq(&first_target.quarantined, &second_target.quarantined),
+            "different exact URLs have independent quarantine state"
+        );
+        assert!(
             !Arc::ptr_eq(&first_target.operation_gate, &second_target.operation_gate),
             "different exact URLs must never block each other"
+        );
+
+        first_target.quarantined.store(true, Ordering::Release);
+        let Err(first_error) = registry.target("s1") else {
+            panic!("the quarantined owner must reject new operations");
+        };
+        let Err(alias_error) = registry.target("s2") else {
+            panic!("the quarantined alias must reject new operations");
+        };
+        assert!(first_error.contains("quarantined"), "{first_error}");
+        assert!(alias_error.contains("quarantined"), "{alias_error}");
+        assert!(registry.target("s3").is_ok());
+        assert!(
+            registry.begin_stop("s1").is_ok(),
+            "quarantine must block mutations without preventing explicit cleanup"
         );
     }
 
@@ -3382,6 +3743,7 @@ mod tests {
         let target = SessionTarget {
             url: "http://127.0.0.1:1".into(),
             operation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            quarantined: Arc::new(AtomicBool::new(false)),
             closing: Arc::new(AtomicBool::new(false)),
         };
         let deadline_error =

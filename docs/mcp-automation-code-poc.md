@@ -74,7 +74,9 @@ including:
 Limits are 16 KiB of source, 64 logical steps, eight levels of literal nesting,
 10,000 total requested frames, and four captures. Strings used as names, labels,
 keys, and model paths have narrower byte limits. Mouse and UI values are also
-bounded to their runtime wire domains. Ordinary runtime text and individual raw
+bounded to their runtime wire domains; key names must resolve through the
+engine's shared case-insensitive A–Z/arrows/Space/Enter/Escape/0–9 vocabulary.
+Ordinary runtime text and individual raw
 capture responses are capped at 8 MiB; an automation result has a 4 MiB
 serialized text cap and a 16 MiB aggregate raw-capture cap. Response readers
 reject an oversized `Content-Length` before allocation and enforce the same cap
@@ -83,9 +85,16 @@ the final base64 MCP image content has its own 24 MiB aggregate cap checked
 before encoding begins. Once acquired, `step` and automation operations have a
 120-second wall-clock deadline that progress cannot extend, checked between
 bounded runtime requests; an owned stop also ends an active operation at its
-next step-poll boundary. Debug protocol v7 supplies the abort cleanup:
-`/time cancel` drops accepted but unlanded steps without rebasing time, and
-`/input release_all` clears held keys/buttons before the gate is released.
+next step-poll boundary. Debug protocol v7's `/time cancel` drops accepted but
+unlanded steps without rebasing time. The executor snapshots input before the
+plan and restores only the key/button levels that plan touched before the gate
+is released.
+
+If either cleanup request cannot be confirmed, the shared exact-URL lifecycle
+is quarantined so no alias can mutate ambiguous runtime state. Stopping an
+owned session kills the runtime and clears the tombstone. An attached runtime
+must be restarted together with the MCP server; detaching and reconnecting the
+same still-running process is deliberately insufficient.
 
 The run tool completes this entire parse and validation before looking up the
 session. The MCP E2E submits a valid mutating prefix followed by an invalid
@@ -175,8 +184,9 @@ context.
 - Execution is not transactional. Static parse/plan-budget rejection has no
   side effects; after execution starts, a runtime, assertion, or runtime-output
   cap failure can leave earlier steps applied. Abort cleanup removes pending
-  clock work and held input, but does not roll back model/physics/effects that
-  already landed.
+  clock work and plan-touched held input, but does not roll back
+  model/physics/effects that already landed. A cleanup failure quarantines the
+  exact URL instead of releasing its gate back to aliases with ambiguous state.
 - `expectModel` provides exact JSON equality and `expectModelClose` provides
   finite numeric absolute tolerance at static literal paths. There are no
   other comparisons, predicates, polling-until, branching, variables, loops,

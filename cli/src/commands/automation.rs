@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use functor_runtime_common::Key;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -731,6 +732,16 @@ impl<'a> Parser<'a> {
                         token.column,
                     ));
                 }
+                if Key::from_name(&key).is_none() {
+                    return Err(Diagnostic::at(
+                        format!(
+                            "unknown key {key:?}; expected A-Z, Up, Down, Left, Right, Space, \
+Enter, Escape, or 0-9"
+                        ),
+                        token.line,
+                        token.column,
+                    ));
+                }
                 if method == "pressKey" {
                     self.total_frames += 1;
                     if self.total_frames > MAX_TOTAL_FRAMES {
@@ -1274,6 +1285,17 @@ automation("photo mouse-look proof")
         .unwrap();
         assert_eq!(plan.steps.len(), 9);
         assert_eq!(usage("ignored", &plan).total_frames, 1);
+    }
+
+    #[test]
+    fn key_names_match_the_shared_debug_protocol_vocabulary() {
+        for key in ["w", "W", "Up", "SPACE", "0", "9", "Enter", "Escape"] {
+            parse_automation(&format!("automation().keyDown({key:?})"))
+                .unwrap_or_else(|error| panic!("{key:?} should be valid: {error:?}"));
+        }
+        let error = parse_automation(r#"automation().keyDown("Shift")"#).unwrap_err();
+        assert!(error.message.contains("unknown key"), "{error:?}");
+        assert!(error.message.contains("A-Z"), "{error:?}");
     }
 
     #[test]

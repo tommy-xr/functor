@@ -247,6 +247,14 @@ try {
       /unknown automation method|restricted/.test(rejectedAutomation.errors?.[0]?.message ?? ""),
     "callbacks, globals, and unknown calls are rejected with a source diagnostic",
   );
+  const rejectedKey = await rpc.call("validate_automation_code", {
+    code: `automation().keyDown("Shift")`,
+  });
+  check(
+    rejectedKey.valid === false &&
+      /unknown key "Shift"/.test(rejectedKey.errors?.[0]?.message ?? ""),
+    "invalid key names are rejected before session lookup or cleanup",
+  );
 
   let oversizedSessionError = null;
   try {
@@ -337,6 +345,69 @@ try {
     "mouseMove and mouseWheel used integer debug-protocol payloads successfully",
   );
   check(automated.final_state?.model?.count === 1, "the automation returned fresh final state");
+
+  console.log("\n▸ failed-plan input cleanup is scoped to that plan");
+  await rpc.call("send_input", {
+    session,
+    command: { type: "key", key: "w", down: true },
+  });
+  let assertionOnlyFailure = null;
+  try {
+    await rpc.call("run_automation_code", {
+      session,
+      code: `automation("unrelated failure").expectModel("count", 999)`,
+    });
+  } catch (error) {
+    assertionOnlyFailure = error.message;
+  }
+  const afterAssertionOnly = await rpc.call("get_state", { session });
+  check(
+    /model assertion failed/.test(assertionOnlyFailure ?? "") &&
+      !/plan-touched key/.test(assertionOnlyFailure ?? "") &&
+      afterAssertionOnly.input?.held_keys?.includes("W"),
+    "a plan that injected no input did not release pre-existing held input",
+  );
+
+  let baselineRestoreFailure = null;
+  try {
+    await rpc.call("run_automation_code", {
+      session,
+      code: `automation("restore baseline")
+        .keyUp("w")
+        .expectModel("count", 999)`,
+    });
+  } catch (error) {
+    baselineRestoreFailure = error.message;
+  }
+  const afterBaselineRestore = await rpc.call("get_state", { session });
+  check(
+    /plan-touched key and mouse-button levels were restored/.test(baselineRestoreFailure ?? "") &&
+      afterBaselineRestore.input?.held_keys?.includes("W"),
+    "cleanup restored a pre-existing held key after the failed plan released it",
+  );
+
+  let ownedInputFailure = null;
+  try {
+    await rpc.call("run_automation_code", {
+      session,
+      code: `automation("owned cleanup")
+        .keyDown("space")
+        .expectModel("count", 999)`,
+    });
+  } catch (error) {
+    ownedInputFailure = error.message;
+  }
+  const afterOwnedInputFailure = await rpc.call("get_state", { session });
+  check(
+    /plan-touched key and mouse-button levels were restored/.test(ownedInputFailure ?? "") &&
+      afterOwnedInputFailure.input?.held_keys?.includes("W") &&
+      !afterOwnedInputFailure.input?.held_keys?.includes("Space"),
+    "cleanup released the failed plan's Space edge without releasing pre-existing W",
+  );
+  await rpc.call("send_input", {
+    session,
+    command: { type: "key", key: "w", down: false },
+  });
 
   const beforeOversizedStep = await rpc.call("get_state", { session });
   let oversizedStep = null;
@@ -502,7 +573,7 @@ let draw = (m: Model, tts) =>
   const afterAttachedStop = await rpc.call("get_state", { session: gatedSession });
   check(
     /queued steps were cancelled/.test(attachedOutcome.error ?? "") &&
-      /held keys and mouse buttons were released/.test(attachedOutcome.error ?? ""),
+      /plan-touched key and mouse-button levels were restored/.test(attachedOutcome.error ?? ""),
     "the interrupted plan reported both clock and input cleanup",
   );
   check(/detached/.test(attachedStop), "the attached id detached after cleanup");

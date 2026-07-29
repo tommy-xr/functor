@@ -39,9 +39,11 @@ best-effort release, including when the down request itself reports an error.
 `expectModel` reads static dotted paths or JSON Pointers from structured state;
 `expectModelClose` adds finite numeric absolute tolerance. Mouse coordinates and
 wheel deltas are signed 32-bit integer wire values; UI slots are unsigned
-32-bit integers. A key release reaches sampled game state on the next step, so
-use `keyUp("d").step().expectModel("moveX", 0)` when proving release. `capture`
-needs a rendered (normally hidden) client, not headless mode.
+32-bit integers. Key names are the engine vocabulary (case-insensitive A–Z,
+arrows, Space, Enter, Escape, and 0–9). A key release reaches sampled game state
+on the next step, so use `keyUp("d").step().expectModel("moveX", 0)` when
+proving release. `capture` needs a rendered (normally hidden) client, not
+headless mode.
 
 The PoC rationale, security boundary, and game-jam evaluation are documented in
 [`docs/mcp-automation-code-poc.md`](../../docs/mcp-automation-code-poc.md).

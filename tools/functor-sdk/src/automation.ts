@@ -484,6 +484,11 @@ function validateStep(step: AutomationStep): void {
       if (!step.key || utf8Length(step.key) > 32) {
         throw new Error("key must contain 1–32 UTF-8 bytes");
       }
+      if (!validKeyName(step.key)) {
+        throw new Error(
+          `unknown key ${JSON.stringify(step.key)}; expected A-Z, Up, Down, Left, Right, Space, Enter, Escape, or 0-9`,
+        );
+      }
       break;
     case "mouse_move":
       signedI32("mouse x", step.x);
@@ -550,6 +555,16 @@ function validateStep(step: AutomationStep): void {
         `unknown automation step ${String((step as { type?: unknown }).type)}`,
       );
   }
+}
+
+function validKeyName(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return (
+    /^[a-z0-9]$/.test(normalized) ||
+    ["up", "down", "left", "right", "space", "enter", "escape"].includes(
+      normalized,
+    )
+  );
 }
 
 function signedI32(name: string, value: number): void {

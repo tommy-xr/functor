@@ -166,7 +166,6 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"ui_event","slot":2,"kind":{"TextChanged":"hi"}}       // edit text input slot 2
 {"type":"xr","left":{...},"right":{...},"head":{...}}          // set the XR device sample
 {"type":"xr_clear"}                                            // drop it again
-{"type":"release_all"}                                         // release held keys + mouse buttons
 ```
 
 `mouse_button` is both an edge and level state, exactly like `key`: it calls the
@@ -182,11 +181,6 @@ held preserves the legacy event-hook call but does not create another sampled
 press. A down/up burst before one step can appear in both sampled edge sets;
 the held level reports the final state. After that step the edge fields clear,
 including under `--fixed-time`, recording/replay, and forward projection.
-
-`release_all` is the abort cleanup command: it delivers release edges for every
-held key and mouse button and clears their level state. Automation drivers use
-it after a partial plan fails so an attached runtime cannot be left with stuck
-input.
 
 `ui_event` drives the game's interactive UI widgets without pixels or
 hit-testing (docs/ui-interaction.md): `slot` is the widget's index in the

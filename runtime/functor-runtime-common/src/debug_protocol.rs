@@ -39,9 +39,8 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// This is additive; clients that support older runtimes can treat absent
 /// fields as empty.
 ///
-/// 7 added `POST /time {"type":"cancel"}` and
-/// `POST /input {"type":"release_all"}`. Together they let an automation
-/// driver abort a queued batch without leaving clock work or held input behind.
+/// 7 added `POST /time {"type":"cancel"}` so an automation driver can abort
+/// a queued batch without leaving clock work behind.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 7;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -111,7 +110,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/input",
-        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device) | {\"type\":\"release_all\"} (release held keys/buttons)",
+        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device)",
     },
     DebugRoute {
         method: "POST",
@@ -272,10 +271,6 @@ pub enum InputCommand {
     /// one-way door: the first `xr` command would disable the emulator and make
     /// a game's "no XR device" branch unreachable for the rest of the process.
     XrClear,
-    /// Release every held key and mouse button. Automation uses this only on
-    /// an error/abort boundary so a partial keyDown → step → keyUp plan cannot
-    /// strand level input in an attached runtime.
-    ReleaseAll,
 }
 
 /// A clock command sent through `POST /time`.
@@ -561,10 +556,6 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<TimeCommand>(r#"{"type":"cancel"}"#).unwrap(),
             TimeCommand::Cancel
-        );
-        assert_eq!(
-            serde_json::from_str::<InputCommand>(r#"{"type":"release_all"}"#).unwrap(),
-            InputCommand::ReleaseAll
         );
         assert_eq!(
             serde_json::from_str::<RewindCommand>(r#"{"frame":42}"#).unwrap(),

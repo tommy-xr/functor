@@ -11,8 +11,9 @@ model back as structured JSON.
 
 It is a plain HTTP client of the runtimes and lives in the CLI. Its runtime-side
 additions are `GET /project` (the read half used by `save_project`) plus the
-protocol-v7 `cancel`/`release_all` cleanup commands that make bounded automation
-abort without leaving queued steps or held input behind.
+protocol-v7 `cancel` command that makes bounded automation abort without leaving
+queued steps behind. The MCP executor snapshots input before a plan and restores
+only the key/button levels that failed plan touched.
 
 ## Registering it
 
@@ -53,7 +54,14 @@ progress does not extend; it is checked between operations and step polls, while
 an in-flight request retains its 30-second request timeout. An owned stop also
 ends an active step/automation at its next polling boundary before taking the
 gate. Before an aborted operation releases the gate, it cancels the accepted
-step queue; an automation failure also releases held keys and mouse buttons.
+step queue; an automation failure also restores only the key and mouse-button
+levels that plan touched to their pre-plan snapshot. If either cleanup cannot
+be confirmed, the exact URL is quarantined: every alias rejects further
+mutations. Stopping an owned session kills the ambiguous runtime and clears its
+tombstone. Merely detaching an attached id cannot prove cleanup; restart both
+that runtime and this MCP server before reconnecting. `list_sessions` exposes
+session flags plus quarantined URL tombstones with no remaining id; read-only
+state/scene/trace calls remain available for diagnosis.
 Exact normalized base-URL aliases created by this MCP server share the same
 gate, while different exact URLs continue concurrently. `connect_game` reserves
 that gate before discovery, so it cannot race stop and insert a dead alias
@@ -163,7 +171,7 @@ rendered load error, a `/time` 409 naming a `--fixed-time` pin.
 `launch_game` and `connect_game` both require **debug protocol v7 or newer**
 (`docs/debug-runtime.md`), and say so if the runtime is older. Earlier runtimes
 lack at least one guarantee the tools rely on: waited batched steps, structured
-model state, running-project reads, or safe queued-step/input cleanup. This
+model state, running-project reads, or safe queued-step cleanup. This
 matters most for a device APK, which versions independently of the CLI — rebuild
 it from the same Functor version.
 
@@ -207,7 +215,9 @@ Allowed methods are `pause`, `keyDown`, `keyUp`, `pressKey`, `mouseMove`,
 `expectModel`, `expectModelClose`, and `capture`. `pressKey("r")` lowers to key
 down → one waited 16ms step → key up, including a best-effort release if either
 the down request or step fails; it is the edge-action shortcut jam authors
-repeatedly needed. `expectModelClose(path, expected, absTolerance)` is the
+repeatedly needed. Key names are validated case-insensitively against the
+runtime vocabulary: A–Z, arrows, Space, Enter, Escape, and 0–9.
+`expectModelClose(path, expected, absTolerance)` is the
 bounded assertion for floating-point game state; both numeric arguments must be
 finite and tolerance must be non-negative. Model paths are static strings:
 convenient dotted paths (`camera.yawOffset`, `players.0.score`) or JSON Pointers
@@ -247,8 +257,9 @@ Execution is ordered but not transactional. Complete parse and static
 plan-budget rejection is side-effect free, including when a valid mutating
 prefix has an invalid suffix. Once a valid plan begins, a later runtime,
 assertion, or runtime-output cap failure can leave earlier steps applied. The
-abort cleanup removes queued clock work and held key/button levels, but does not
-roll back model, physics, UI, or other effects from steps that already landed.
+abort cleanup removes queued clock work and restores plan-touched key/button
+levels to their pre-plan snapshot, but does not roll back model, physics, UI, or
+other effects from steps that already landed.
 The session operation gate is held for the whole plan, so concurrent mutating
 calls wait and cannot splice input or clock operations into it; calls for other
 exact URLs remain independent. This PoC

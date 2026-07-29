@@ -203,6 +203,10 @@ test("standalone plan validation matches MCP's literal and wire bounds", async (
     /unsigned 32-bit/,
   );
   await assert.rejects(
+    runAutomation(neverUsed, automation().keyDown("Shift")),
+    /unknown key "Shift"/,
+  );
+  await assert.rejects(
     runAutomation(neverUsed, automation().expectModel("a..b", true)),
     /dotted model paths/,
   );

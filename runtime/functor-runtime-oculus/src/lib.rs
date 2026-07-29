@@ -734,35 +734,6 @@ fn service_debug_request(
                     game.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
-                InputCommand::ReleaseAll => {
-                    for key in debug.input.held_keys.clone() {
-                        if functor_runtime_common::apply_key_transition_to_snapshot(
-                            &mut debug.input,
-                            &mut debug.input_edges,
-                            key,
-                            false,
-                            true,
-                        ) {
-                            game.key_event(key as i32, false);
-                        }
-                    }
-                    for button in functor_runtime_common::MouseButton::ALL
-                        .iter()
-                        .copied()
-                        .filter(|button| *button != functor_runtime_common::MouseButton::Unknown)
-                    {
-                        if functor_runtime_common::apply_mouse_transition_to_snapshot(
-                            &mut debug.input,
-                            &mut debug.input_edges,
-                            button,
-                            false,
-                            true,
-                        ) {
-                            game.mouse_button(button as i32, false);
-                        }
-                    }
-                    Ok(())
-                }
                 // Rejected rather than honored: this runtime resamples the XR
                 // domain from live OpenXR tracking every frame, so an injected
                 // sample would be silently overwritten before any `sampledInput`
