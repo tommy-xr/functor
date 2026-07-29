@@ -297,9 +297,9 @@ further down it.
    its absence is what made a jam entry delete its `ui` hook. The insight is
    that a 2D frame has *two* coordinate systems, and no camera feature
    substitutes for admitting it.
-2. **`Camera2D.toWorld` / `Camera2D.viewport`** — mouse picking in a
-   letterboxed, zoomed scene currently requires the game to reverse-engineer
-   letterbox bars whose size it cannot query.
+2. **`Camera2D.viewport`** — `Camera2D.toWorld` now maps pointer input through
+   letterbox bars, pan, and zoom; exposing the fitted viewport remains useful
+   for game-authored layout and diagnostics.
 3. **Atlas regions in the typed asset manifest** — `functor import` should emit
    named regions and animation clips for a sprite sheet the way it emits glTF
    clips, so games write `Assets.heroAtlas.walk1` instead of

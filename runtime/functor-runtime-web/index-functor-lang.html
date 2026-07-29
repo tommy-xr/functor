@@ -55,6 +55,7 @@
         functor_lang_ui_pointer_leave,
         functor_lang_ui_key,
         functor_lang_ui_wants_keyboard,
+        functor_lang_ui_wants_pointer,
         functor_lang_is_running,
         functor_lang_set_source,
         functor_lang_set_project,
@@ -98,7 +99,7 @@
       // functor.json's viewer.camera.control.
       const gameCameraControl = "__FUNCTOR_CAMERA_CONTROL__" === "game";
       const warnMissingCameraControl = () => {
-        if (gameCameraControl) return;
+        if (gameCameraControl || window.__functorCursorPolicy === "visible") return;
         const poll = () => {
           if (functor_lang_is_running() && functor_lang_uses_captured_mouse_input()) {
             console.warn(
@@ -114,6 +115,10 @@
         };
         poll();
       };
+
+      // Absolute pointer input is an independent project opt-in. Captured
+      // mouse look remains gated by viewer.camera.control = "game".
+      window.__functorCursorPolicy = "__FUNCTOR_CURSOR_POLICY__";
 
       // Map a browser KeyboardEvent.code to the canonical key code expected by
       // the game (functor_runtime_common::Key as i32 — the same mapping as
@@ -144,6 +149,9 @@
       };
 
       const setupInput = () => {
+        const visiblePointer = window.__functorCursorPolicy === "visible";
+        const mouseLook = document.getElementById("mouselook");
+        mouseLook.hidden = !gameCameraControl || visiblePointer;
         const canvas = document.getElementById("canvas");
 
         // Keyboard. Ignore auto-repeat (the game tracks held state itself), and
@@ -210,10 +218,8 @@
         // Esc releases the lock (browser default). We accumulate movement into a
         // running position so the game's "delta = current - lastMouse" works the
         // same as on native.
-        const mouseLookButton = document.getElementById("mouselook");
-        if (gameCameraControl) {
-          mouseLookButton.hidden = false;
-          mouseLookButton.addEventListener("click", () => canvas.requestPointerLock());
+        if (gameCameraControl && !visiblePointer) {
+          mouseLook.addEventListener("click", () => canvas.requestPointerLock());
         }
         let ax = 0;
         let ay = 0;
@@ -225,26 +231,68 @@
           ay += e.movementY;
           functor_lang_mouse_move(ax, ay);
         });
+        // Native visible-pointer games keep receiving absolute movement over
+        // overlays. Capture at window scope so shadow-DOM webviews do too, then
+        // translate the page point back into the canvas's CSS-pixel space.
+        window.addEventListener("mousemove", (e) => {
+          if (!visiblePointer) return;
+          const rect = canvas.getBoundingClientRect();
+          // The wasm export takes integers. Floor rather than relying on the
+          // JS→wasm truncation so a fractional point just above/left of the
+          // canvas stays negative instead of snapping inside at zero.
+          functor_lang_mouse_move(
+            Math.floor(e.clientX - rect.left),
+            Math.floor(e.clientY - rect.top)
+          );
+        }, { capture: true });
 
-        canvas.addEventListener("wheel", (e) => {
-          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
+        const deliverGameWheel = (e) => {
           e.preventDefault();
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
+        };
+        canvas.addEventListener("wheel", (e) => {
+          if (visiblePointer) return;
+          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
+          deliverGameWheel(e);
         });
+        // Native visible-pointer games own wheel input everywhere in the
+        // window, including over an interactive webview rectangle. Shadow-DOM
+        // targets never bubble through the canvas, so capture at window scope.
+        window.addEventListener("wheel", (e) => {
+          if (visiblePointer) deliverGameWheel(e);
+        }, { capture: true, passive: false });
 
-        // Mouse buttons reach the game only while pointer-locked — the same
-        // rule mousemove follows above, and the browser twin of the desktop's
-        // "only while the cursor is captured". While the cursor is FREE it
-        // belongs to the scrubber and the `Ui.*` widget path below.
+        // Captured projects deliver mouse buttons only while pointer-locked.
+        // Visible projects deliver absolute canvas buttons without locking,
+        // with primary-widget arbitration matching native.
         // MouseEvent.button (0 left, 1 middle, 2 right) → the runtime's
         // canonical MouseButton discriminants (1 left, 2 right, 3 middle).
         const buttonCode = (button) =>
           button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 3 : 0;
         const gameButtons = new Set();
+        // Match native visible-pointer ownership: only primary is arbitrated
+        // with overlays. Right/middle remain game buttons even when a real DOM
+        // webview descendant is the event target (and therefore bypasses the
+        // canvas listener below).
+        window.addEventListener("mousedown", (e) => {
+          const code = buttonCode(e.button);
+          if (!visiblePointer || (code !== 2 && code !== 3)) return;
+          e.preventDefault();
+          functor_lang_mouse_button(code, true);
+          gameButtons.add(code);
+        }, { capture: true });
         canvas.addEventListener("mousedown", (e) => {
-          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
+          if (
+            !visiblePointer &&
+            (!gameCameraControl || document.pointerLockElement !== canvas)
+          ) return;
           const code = buttonCode(e.button);
           if (code === 0) return;
+          // The window capture listener above owns these in visible mode.
+          if (visiblePointer && code !== 1) return;
+          // Same previous-frame arbitration as native: a primary click on a
+          // declarative UI widget belongs to that widget alone.
+          if (visiblePointer && code === 1 && functor_lang_ui_wants_pointer()) return;
           e.preventDefault();
           functor_lang_mouse_button(code, true);
           gameButtons.add(code);
@@ -257,8 +305,15 @@
         });
         // Right-click while aiming must fire, not open the context menu.
         canvas.addEventListener("contextmenu", (e) => {
-          if (gameCameraControl && document.pointerLockElement === canvas) e.preventDefault();
+          if (
+            visiblePointer ||
+            (gameCameraControl && document.pointerLockElement === canvas)
+          ) e.preventDefault();
         });
+        // A shadow-DOM webview target also bypasses the canvas listener.
+        window.addEventListener("contextmenu", (e) => {
+          if (visiblePointer) e.preventDefault();
+        }, { capture: true });
         // A button released outside the window (or after the lock drops) may
         // never emit a mouseup here — synthesize releases so the edge hook and
         // the next sampled snapshot both recover, mirroring `blur` for keys.
@@ -279,12 +334,14 @@
         };
         canvas.addEventListener("mousemove", uiPointer);
         canvas.addEventListener("mousedown", (e) => {
-          if (e.button !== 0) return;
+          // The earlier game-button listener owns a visible primary press when
+          // no widget wanted it. Keep that same press out of the UI bridge.
+          if (e.button !== 0 || gameButtons.has(1)) return;
           uiButtonDown = true;
           uiPointer(e);
         });
         canvas.addEventListener("mouseup", (e) => {
-          if (e.button !== 0) return;
+          if (e.button !== 0 || gameButtons.has(1)) return;
           uiButtonDown = false;
           uiPointer(e);
         });

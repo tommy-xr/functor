@@ -26,6 +26,42 @@ struct FunctorLangSpriteRegion([f32; 4]);
 /// set. One shared point type is the only workable choice.
 struct FunctorLangPoint2([f32; 2]);
 
+/// A sampled mouse position plus the logical surface extent sharing its
+/// top-left-origin coordinate space.
+struct FunctorLangMouse {
+    x: f32,
+    y: f32,
+    surface_width: f32,
+    surface_height: f32,
+}
+
+fn finite_record_number(
+    fields: &[(String, Value)],
+    field: &str,
+    record_name: &str,
+    path: &str,
+    span: Span,
+) -> Result<f32, RunError> {
+    match fields.iter().find(|(name, _)| name == field) {
+        Some((_, Value::Number(n))) if (*n as f32).is_finite() => Ok(*n as f32),
+        Some((_, Value::Number(n))) => Err(RunError {
+            message: format!("{path}: {record_name} `{field}` must be finite, got {n}"),
+            span,
+        }),
+        Some((_, other)) => Err(RunError {
+            message: format!(
+                "{path}: {record_name} `{field}` must be a number, got {}",
+                other.kind_name()
+            ),
+            span,
+        }),
+        None => Err(RunError {
+            message: format!("{path}: expected a {record_name} record, missing `{field}`"),
+            span,
+        }),
+    }
+}
+
 impl crate::host_registry::FromArg for FunctorLangPoint2 {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         let Value::Record(fields) = value else {
@@ -37,27 +73,30 @@ impl crate::host_registry::FromArg for FunctorLangPoint2 {
                 span,
             });
         };
-        let get = |name: &str| -> Result<f32, RunError> {
-            match fields.iter().find(|(field, _)| field == name) {
-                Some((_, Value::Number(n))) if (*n as f32).is_finite() => Ok(*n as f32),
-                Some((_, Value::Number(n))) => Err(RunError {
-                    message: format!("{path}: point `{name}` must be finite, got {n}"),
-                    span,
-                }),
-                Some((_, other)) => Err(RunError {
-                    message: format!(
-                        "{path}: point `{name}` must be a number, got {}",
-                        other.kind_name()
-                    ),
-                    span,
-                }),
-                None => Err(RunError {
-                    message: format!("{path}: expected a point record {{ x, y }}, missing `{name}`"),
-                    span,
-                }),
-            }
+        Ok(FunctorLangPoint2([
+            finite_record_number(fields, "x", "point", path, span)?,
+            finite_record_number(fields, "y", "point", path, span)?,
+        ]))
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangMouse {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::Record(fields) = value else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected an Input.mouse record, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
         };
-        Ok(FunctorLangPoint2([get("x")?, get("y")?]))
+        Ok(FunctorLangMouse {
+            x: finite_record_number(fields, "x", "mouse", path, span)?,
+            y: finite_record_number(fields, "y", "mouse", path, span)?,
+            surface_width: finite_record_number(fields, "surfaceWidth", "mouse", path, span)?,
+            surface_height: finite_record_number(fields, "surfaceHeight", "mouse", path, span)?,
+        })
     }
 }
 
@@ -692,6 +731,23 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 return Err(format!("Camera2D.zoom scale must be positive, got {zoom}"));
             }
             Ok(FunctorLangCamera2D(camera.0.with_zoom(zoom as f32)))
+        },
+    );
+    reg.fn2(
+        "Camera2D.toWorld",
+        "Camera2D.toWorld(mouse, camera)",
+        |mouse: FunctorLangMouse, camera: FunctorLangCamera2D| {
+            crate::input::option_value(
+                camera
+                    .0
+                    .to_world(mouse.x, mouse.y, mouse.surface_width, mouse.surface_height)
+                    .map(|[x, y]| {
+                        crate::input::record([
+                            ("x", Value::Number(x as f64)),
+                            ("y", Value::Number(y as f64)),
+                        ])
+                    }),
+            )
         },
     );
 

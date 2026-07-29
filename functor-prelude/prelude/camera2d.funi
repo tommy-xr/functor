@@ -13,3 +13,10 @@ let create : (float, float) => t
 let at : (float, float, t) => t
 /// Set a positive camera zoom; the camera is last for piping.
 let zoom : (float, t) => t
+
+/// Map a sampled mouse position through the camera's fitted viewport.
+///
+/// Returns `Option.None` while the pointer is in a letterbox/pillarbox bar.
+/// The mouse carries its logical surface extent, so this remains correct
+/// across window resizes and Retina/device-pixel-ratio changes.
+let toWorld : (Input.mouse, t) => Option.t<Input.point2>
