@@ -813,9 +813,18 @@ impl World {
             }
             let live = self.tags.get(&next.tag).and_then(|(rb, _)| {
                 let rb = self.bodies.get(*rb)?;
+                let live_pose = *rb.position();
+                // Rapier documents next_position() as unspecified for
+                // non-kinematic bodies. Only a kinematic predecessor can
+                // contribute a meaningful queued target across this rebuild.
+                let pending_pose = if prev.kind == BodyKind::Kinematic {
+                    *rb.next_position()
+                } else {
+                    live_pose
+                };
                 Some((
-                    *rb.position(),
-                    *rb.next_position(),
+                    live_pose,
+                    pending_pose,
                     rb.linvel(),
                     rb.angvel(),
                 ))
@@ -1588,6 +1597,45 @@ mod tests {
         assert_eq!(after_step, identity);
         let (rb_handle, _) = retargeted.tags["spinner"];
         assert!(retargeted.bodies[rb_handle].angvel().length() < 1e-6);
+    }
+
+    #[test]
+    fn kind_change_to_kinematic_seeds_target_from_live_pose() {
+        let quarter_turn = std::f32::consts::FRAC_1_SQRT_2;
+        let shape = Shape::Cuboid {
+            extents: [1.0, 1.0, 1.0],
+        };
+        let live_pose = pose_of(
+            &Body::kinematic("pose".to_string(), shape.clone())
+                .at([2.0, 3.0, 4.0])
+                .facing([0.0, quarter_turn, 0.0, quarter_turn]),
+        );
+
+        for old_kind in [BodyKind::Dynamic, BodyKind::Fixed] {
+            let original = match old_kind {
+                BodyKind::Dynamic => Body::dynamic("mover".to_string(), shape.clone()),
+                BodyKind::Fixed => Body::fixed("mover".to_string(), shape.clone()),
+                BodyKind::Kinematic => unreachable!(),
+            };
+            let mut w = World::new([0.0, 0.0, 0.0]);
+            w.reconcile(&scene(vec![original]));
+            let (rb_handle, _) = w.tags["mover"];
+            w.bodies[rb_handle].set_position(live_pose, true);
+
+            // The kind changes, but neither declared pose field does. The new
+            // kinematic body's current and next poses must both inherit the
+            // old body's live pose; a non-kinematic next_position is not a
+            // defined source for the target.
+            w.reconcile(&scene(vec![Body::kinematic(
+                "mover".to_string(),
+                shape.clone(),
+            )]));
+            let (kinematic_handle, _) = w.tags["mover"];
+            assert_eq!(*w.bodies[kinematic_handle].position(), live_pose);
+            assert_eq!(*w.bodies[kinematic_handle].next_position(), live_pose);
+            w.step_fixed();
+            assert_eq!(*w.bodies[kinematic_handle].position(), live_pose);
+        }
     }
 
     #[test]
