@@ -289,7 +289,7 @@ return them beside the model as `(model, effect)`"
     if has_sampled_input {
         require_function(&path, &session, "sampledInput", 2)?;
     }
-    // Same deal for the mouse: `mouseMove(model, x, y)` in window pixels,
+    // Same deal for the mouse: `mouseMove(model, x, y)` in logical shell coordinates,
     // `mouseWheel(model, delta)`.
     let has_mouse_move = session.global("mouseMove").is_some();
     if has_mouse_move {

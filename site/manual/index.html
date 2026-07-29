@@ -70,7 +70,8 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
           <p>
             The pointer stays free by default. A game-owned mouse-look controller opts in with
             <code>"viewer": { "camera": { "control": "game" } }</code>; this enables native
-            cursor capture and the web player's mouse-look button. Leave it absent for 2D and UI
+            cursor capture and the web player's mouse-look button. An absolute-pointer game uses
+            <code>"cursor":"visible"</code> instead. Leave both absent for UI and fixed-camera
             projects.
           </p>
           <p>And the game itself — here is the smallest interesting one:</p>
@@ -194,7 +195,7 @@ let draw = (m, tts) =>
               <tr><td><code>sampledInput</code></td><td><code>(model, snapshot) => model'</code></td><td>optional; held levels plus deterministic pressed/released edges — one <code>Input.snapshot</code> immediately before every fixed step</td></tr>
               <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
               <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
-              <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Delivered while the cursor is captured, so click-to-shoot works under free-look</td></tr>
+              <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Captured delivery supports free-look shooting; visible delivery supports absolute 2D picking</td></tr>
               <tr><td><code>update</code></td><td><code>(model, msg) => model'</code></td><td>optional; messages are your variant values</td></tr>
               <tr><td><code>subscriptions</code></td><td><code>(model) => Sub</code></td><td>optional (requires <code>update</code>); declarative timers</td></tr>
               <tr><td><code>physics</code></td><td><code>(model) => Physics.scene(…)</code></td><td>optional; declarative bodies, reconciled each frame</td></tr>
@@ -203,12 +204,13 @@ let draw = (m, tts) =>
             </tbody>
           </table>
           <p>
-            The three mouse hooks receive live shell input only while the cursor is captured.
-            Opt in with <code>"viewer": { "camera": { "control": "game" } }</code> in
-            <code>functor.json</code>; without it the runtime warns once and leaves them inert.
-            Native capture starts on a non-UI click and <code>Escape</code> releases it.
-            Manifest-less site IDE and inline-sandbox sessions use <code>?camera=game</code>
-            on the page URL.
+            The three mouse hooks receive live shell input only when the project claims a pointer
+            mode. Use <code>"viewer": { "camera": { "control": "game" } }</code> for captured
+            free-look or <code>"cursor":"visible"</code> for absolute pointer input; without
+            either setting the runtime warns once and leaves them inert. Native capture starts on
+            a non-UI click and <code>Escape</code> releases it. Manifest-less site IDE and
+            inline-sandbox sessions use <code>?camera=game</code> or
+            <code>?cursor=visible</code> on the page URL.
           </p>
           <p>
             The model-returning entry points (<code>tick</code>, <code>input</code>,
@@ -895,7 +897,7 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             <li><code>x |> f(a)</code> is <code>f(a, x)</code> — pipelines <em>append</em> (thread-last).</li>
             <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
             <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
-            <li>Mouse buttons only reach <code>mouseButton</code> while the cursor is <em>captured</em> — the same rule <code>mouseMove</code> follows. Opt in with <code>viewer.camera.control = "game"</code> in <code>functor.json</code>; without it the pointer remains free and web hides the mouse-look button. A held button is force-released on focus loss.</li>
+            <li>Pointer ownership is explicit: <code>viewer.camera.control = "game"</code> enables captured free-look; <code>"cursor":"visible"</code> keeps an absolute pointer live. Without either opt-in, the pointer stays with UI. Held buttons are force-released on focus loss.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>

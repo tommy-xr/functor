@@ -115,6 +115,7 @@ fn map_mouse_button(button: glfw::MouseButton) -> functor_runtime_common::MouseB
 fn sampled_input_snapshot(
     held_keys: &BTreeSet<InputKey>,
     mouse_pos: (i32, i32),
+    surface: (i32, i32),
     held_buttons: MouseButtons,
     edges: &InputEdges,
     xr: Option<XrInputSnapshot>,
@@ -124,6 +125,8 @@ fn sampled_input_snapshot(
         mouse: MouseSnapshot {
             x: mouse_pos.0,
             y: mouse_pos.1,
+            surface_width: surface.0.max(0) as u32,
+            surface_height: surface.1.max(0) as u32,
             buttons: held_buttons,
             ..MouseSnapshot::default()
         },
@@ -132,6 +135,12 @@ fn sampled_input_snapshot(
     };
     edges.apply_to(&mut snapshot);
     snapshot
+}
+
+/// Convert GLFW's fractional visible-cursor coordinates without snapping a
+/// point just above/left of the window inside at zero.
+fn visible_cursor_position(x: f64, y: f64) -> (i32, i32) {
+    (x.floor() as i32, y.floor() as i32)
 }
 
 /// Build this step's sampled input.
@@ -157,7 +166,7 @@ fn desktop_input_snapshot(
             crate::desktop_xr_emulator::sample(held_keys, mouse_pos, xr_primary_down, xr_surface)
         }),
     };
-    sampled_input_snapshot(held_keys, mouse_pos, held_buttons, edges, xr)
+    sampled_input_snapshot(held_keys, mouse_pos, xr_surface, held_buttons, edges, xr)
 }
 
 /// Release every mouse button the game currently holds — the button twin of
@@ -234,6 +243,35 @@ fn apply_mouse_button_edge(
         held_buttons.set(button, false);
         edges.mouse_transition(button, true, false);
         game.mouse_button(button as i32, false);
+    }
+}
+
+/// Apply a physical window-button edge while preserving pinned/replay
+/// determinism. A suppressed press never enters the held set; a release always
+/// clears shell state. Only delivered transitions enter the fixed-step edge
+/// accumulator.
+fn apply_window_mouse_button_edge(
+    game: &mut dyn Game,
+    held_buttons: &mut MouseButtons,
+    edges: &mut InputEdges,
+    button: functor_runtime_common::MouseButton,
+    is_down: bool,
+    deliver: bool,
+) {
+    if is_down {
+        if deliver {
+            let was_down = held_buttons.is_down(button);
+            held_buttons.set(button, true);
+            edges.mouse_transition(button, was_down, true);
+            game.mouse_button(button as i32, true);
+        }
+    } else {
+        let was_held = held_buttons.is_down(button);
+        held_buttons.set(button, false);
+        if was_held && deliver {
+            edges.mouse_transition(button, true, false);
+            game.mouse_button(button as i32, false);
+        }
     }
 }
 
@@ -469,6 +507,16 @@ enum CompositeDemoArg {
     Fork,
 }
 
+/// How a project wants the desktop shell to expose the mouse.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CursorPolicyArg {
+    /// Hide/capture the cursor and deliver relative free-look motion.
+    #[default]
+    Captured,
+    /// Keep the system cursor visible and deliver absolute window positions.
+    Visible,
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -522,6 +570,10 @@ pub struct Args {
     /// Implied by --capture-frame. (With --headless there is no window at all.)
     #[arg(long, conflicts_with = "headless")]
     hidden: bool,
+
+    /// Pointer policy selected by the project's `functor.json`.
+    #[arg(long, value_enum, default_value_t = CursorPolicyArg::Captured)]
+    cursor: CursorPolicyArg,
 
     /// Write a PNG of the rendered frame to this path, then exit. The capture
     /// happens on the first frame after --capture-time seconds of wall-clock
@@ -1368,7 +1420,11 @@ then restart the runner"
             // editor while the game runs); a later click recaptures, and
             // Escape while released quits. Losing focus also releases, so
             // cmd-tabbing away hands the pointer back.
-            if !hidden && !args.emulate_xr && args.camera_control == CameraControl::Game {
+            if !hidden
+                && !args.emulate_xr
+                && args.camera_control == CameraControl::Game
+                && args.cursor == CursorPolicyArg::Captured
+            {
                 window.set_cursor_mode(glfw::CursorMode::Normal);
                 eprintln!(
                     "[runner] game mouse control available — click the window to capture; \
@@ -1520,7 +1576,8 @@ Escape releases while captured"
         // entered by a non-overlay click; see the Escape / MouseButton / Focus
         // arms in the event loop. A hidden window never captures (and never
         // receives the events that would toggle this).
-        let game_camera_control = args.camera_control == CameraControl::Game;
+        let visible_pointer = args.cursor == CursorPolicyArg::Visible;
+        let game_camera_control = args.camera_control == CameraControl::Game && !visible_pointer;
         let mut cursor_captured = false;
         let mut escape_armed = false;
 
@@ -1863,6 +1920,15 @@ Escape again to quit"
                                     if webview_wants_keyboard {
                                         webview_keys.push(WebviewKey::Escape);
                                     }
+                                } else if visible_pointer {
+                                    apply_window_mouse_button_edge(
+                                        &mut *game,
+                                        &mut held_buttons,
+                                        &mut input_edges,
+                                        functor_runtime_common::MouseButton::Left,
+                                        true,
+                                        !ignore_user_input,
+                                    );
                                 } else {
                                     // With no camera-control opt-in the pointer
                                     // belongs to the overlays for the whole
@@ -1876,14 +1942,28 @@ Escape again to quit"
                             Action::Release => {
                                 mouse_primary_down = false;
                                 xr_primary_down = false;
+                                if args.cursor == CursorPolicyArg::Visible {
+                                    apply_window_mouse_button_edge(
+                                        &mut *game,
+                                        &mut held_buttons,
+                                        &mut input_edges,
+                                        functor_runtime_common::MouseButton::Left,
+                                        false,
+                                        !ignore_user_input,
+                                    );
+                                }
                             }
                             Action::Repeat => {}
                         }
                     }
-                    // Track the cursor for the scrubber while released (but never
-                    // drive the camera — you're pointing at the overlay).
+                    // Track the cursor for overlays while released. A visible
+                    // project also receives this absolute logical position;
+                    // captured projects reserve released motion for chrome.
                     glfw::WindowEvent::CursorPos(x, y) if !cursor_captured => {
-                        mouse_pos = (x as i32, y as i32);
+                        mouse_pos = visible_cursor_position(x, y);
+                        if args.cursor == CursorPolicyArg::Visible && !ignore_user_input {
+                            game.mouse_move(mouse_pos.0, mouse_pos.1);
+                        }
                     }
                     // F1 recenters head tracking (runner-level, never reaches
                     // the game): current head pose becomes "straight ahead".
@@ -1935,11 +2015,9 @@ Escape again to quit"
                             );
                         }
                     }
-                    // Mouse buttons reach the game only while the cursor is
-                    // CAPTURED — the same rule `CursorPos`/`Scroll` follow
-                    // below. While the cursor is released the pointer belongs
-                    // to the overlays (and the left button recaptures — the
-                    // arm above), so a click there is not a game click.
+                    // Captured-policy mouse buttons reach the game only while
+                    // the cursor is captured. While released, that policy
+                    // reserves the pointer for overlays and click-to-recapture.
                     // Bookkeeping/delivery discipline mirrors keys exactly:
                     // this sits before the `ignore_user_input` catch-all so a
                     // button held at a pin transition can't stick, while the
@@ -1952,25 +2030,61 @@ Escape again to quit"
                         let mapped = map_mouse_button(button);
                         if mapped != functor_runtime_common::MouseButton::Unknown {
                             match action {
-                                Action::Press => {
-                                    // A press the game never saw must not enter
-                                    // the held set, or its release would leak a
-                                    // phantom edge.
-                                    if !ignore_user_input {
-                                        let was_down = held_buttons.is_down(mapped);
-                                        held_buttons.set(mapped, true);
-                                        input_edges.mouse_transition(mapped, was_down, true);
-                                        game.mouse_button(mapped as i32, true);
-                                    }
-                                }
-                                Action::Release => {
-                                    let was_held = held_buttons.is_down(mapped);
-                                    held_buttons.set(mapped, false);
-                                    if was_held && !ignore_user_input {
-                                        input_edges.mouse_transition(mapped, true, false);
-                                        game.mouse_button(mapped as i32, false);
-                                    }
-                                }
+                                Action::Press => apply_window_mouse_button_edge(
+                                    &mut *game,
+                                    &mut held_buttons,
+                                    &mut input_edges,
+                                    mapped,
+                                    true,
+                                    !ignore_user_input,
+                                ),
+                                Action::Release => apply_window_mouse_button_edge(
+                                    &mut *game,
+                                    &mut held_buttons,
+                                    &mut input_edges,
+                                    mapped,
+                                    false,
+                                    !ignore_user_input,
+                                ),
+                                Action::Repeat => {}
+                            }
+                            if clock.is_fixed_time() {
+                                refresh_fixed_input_levels(
+                                    &mut fixed_input_snapshot,
+                                    &held_keys,
+                                    held_buttons,
+                                    xr_primary_down || xr_primary_clicked,
+                                    xr_override.as_ref(),
+                                );
+                            }
+                        }
+                    }
+                    // Visible-pointer games receive right/middle buttons
+                    // directly. Left is handled by the released-pointer arm
+                    // above so interactive overlays can consume it first.
+                    glfw::WindowEvent::MouseButton(button, action, _)
+                        if args.cursor == CursorPolicyArg::Visible
+                            && button != glfw::MouseButtonLeft =>
+                    {
+                        let mapped = map_mouse_button(button);
+                        if mapped != functor_runtime_common::MouseButton::Unknown {
+                            match action {
+                                Action::Press => apply_window_mouse_button_edge(
+                                    &mut *game,
+                                    &mut held_buttons,
+                                    &mut input_edges,
+                                    mapped,
+                                    true,
+                                    !ignore_user_input,
+                                ),
+                                Action::Release => apply_window_mouse_button_edge(
+                                    &mut *game,
+                                    &mut held_buttons,
+                                    &mut input_edges,
+                                    mapped,
+                                    false,
+                                    !ignore_user_input,
+                                ),
                                 Action::Repeat => {}
                             }
                             if clock.is_fixed_time() {
@@ -1992,7 +2106,8 @@ Escape again to quit"
                             }
                         }
                         // Hand the pointer back when the window loses focus
-                        // (cmd-tab to the editor); a click recaptures.
+                        // (cmd-tab to the editor). Captured projects recapture
+                        // on a later click; visible projects remain free.
                         window.set_cursor_mode(glfw::CursorMode::Normal);
                         cursor_captured = false;
                         escape_armed = false;
@@ -2088,7 +2203,9 @@ Escape again to quit"
                         mouse_pos = (x as i32, y as i32);
                         game.mouse_move(x as i32, y as i32)
                     }
-                    glfw::WindowEvent::Scroll(_, y) if cursor_captured => {
+                    glfw::WindowEvent::Scroll(_, y)
+                        if cursor_captured || args.cursor == CursorPolicyArg::Visible =>
+                    {
                         game.mouse_wheel(y as i32)
                     }
                     _ => {}
@@ -3243,6 +3360,8 @@ mod tests {
             MouseSnapshot {
                 x: 100,
                 y: 200,
+                surface_width: 800,
+                surface_height: 600,
                 buttons,
                 ..MouseSnapshot::default()
             }
@@ -3279,6 +3398,45 @@ mod tests {
         assert!(snapshot.mouse.pressed.left);
         assert!(snapshot.mouse.released.left);
         assert!(!snapshot.mouse.buttons.left);
+    }
+
+    #[test]
+    fn desktop_mouse_sample_tracks_logical_resize_and_injected_position() {
+        let before = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (320, 240),
+            MouseButtons::default(),
+            &InputEdges::default(),
+            false,
+            false,
+            (800, 600),
+            None,
+        );
+        assert_eq!(before.mouse.surface_width, 800);
+        assert_eq!(before.mouse.surface_height, 600);
+
+        // This is the snapshot rebuilt after POST /input mouse_move: the
+        // injected x/y changes while the shell-owned logical window extent
+        // follows the current resize.
+        let after = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (777, 123),
+            MouseButtons::default(),
+            &InputEdges::default(),
+            false,
+            false,
+            (1440, 900),
+            None,
+        );
+        assert_eq!(after.mouse.x, 777);
+        assert_eq!(after.mouse.y, 123);
+        assert_eq!(after.mouse.surface_width, 1440);
+        assert_eq!(after.mouse.surface_height, 900);
+    }
+
+    #[test]
+    fn visible_cursor_floors_fractional_negative_coordinates() {
+        assert_eq!(visible_cursor_position(-0.25, 10.75), (-1, 10));
     }
 
     /// A pose an emulated desktop rig CANNOT produce: the emulator pins both
@@ -3329,6 +3487,8 @@ mod tests {
             MouseSnapshot {
                 x: 700,
                 y: 100,
+                surface_width: 800,
+                surface_height: 600,
                 ..Default::default()
             }
         );

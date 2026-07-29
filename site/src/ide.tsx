@@ -88,16 +88,18 @@ interface LangSeam {
 const STORAGE_KEY = "functor-ide-project-v1";
 const ENTRY = "game.fun"; // the program root; every other .fun is a sibling module
 // The in-memory IDE has no functor.json to parse, so its URL is the explicit
-// project-setting seam: `/ide.html?camera=game` opts the preview and downloaded
-// manifest into game-owned captured mouse input. Absent keeps the 2D-safe
-// default; never infer ownership from a source hook.
+// project-setting seam: `?camera=game` selects captured mouse input and
+// `?cursor=visible` selects absolute pointer input for both the preview and the
+// downloaded manifest. Visible wins if a hand-edited URL supplies both; never
+// infer ownership from a source hook.
+const pageParams = new URLSearchParams(window.location.search);
+const cursorPolicy = pageParams.get("cursor") === "visible" ? "visible" : null;
 const cameraControl =
-  new URLSearchParams(window.location.search).get("camera") === "game"
-    ? "game"
-    : null;
+  !cursorPolicy && pageParams.get("camera") === "game" ? "game" : null;
 const playerUrl = () => {
   const params = new URLSearchParams({ project: "inline" });
   if (cameraControl) params.set("camera", cameraControl);
+  if (cursorPolicy) params.set("cursor", cursorPolicy);
   return `player.html?${params}`;
 };
 // A valid project file: a bare module name + `.fun` (the project is a flat
@@ -427,13 +429,14 @@ const deleteFile = (path: string) => {
 const download = () => {
   // Include the functor.json the CLI needs to recognise the project, so the
   // zip drops straight into `functor -d <dir> build wasm` (per the README).
-  const config = cameraControl
-    ? {
-        language: "functor-lang",
-        entry: ENTRY,
-        viewer: { camera: { control: cameraControl } },
-      }
-    : { language: "functor-lang", entry: ENTRY };
+  const config = {
+    language: "functor-lang",
+    entry: ENTRY,
+    ...(cameraControl
+      ? { viewer: { camera: { control: cameraControl } } }
+      : {}),
+    ...(cursorPolicy ? { cursor: cursorPolicy } : {}),
+  };
   const manifest = {
     path: "functor.json",
     source: JSON.stringify(config, null, 2) + "\n",

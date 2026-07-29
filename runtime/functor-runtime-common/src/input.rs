@@ -22,7 +22,8 @@ pub struct InputSnapshot {
     /// step, in canonical discriminant order.
     #[serde(default)]
     pub released_keys: Vec<Key>,
-    /// Last known mouse position in output pixels.
+    /// Last known mouse position and the logical surface extent sharing its
+    /// coordinate space.
     pub mouse: MouseSnapshot,
     /// Live XR tracking/controller state when the target supplies it.
     ///
@@ -32,11 +33,22 @@ pub struct InputSnapshot {
     pub xr: Option<XrInputSnapshot>,
 }
 
-/// Last known mouse position, held buttons, and this step's button transitions.
+/// Last known mouse position in logical shell coordinates, the matching
+/// surface extent, held buttons, and this step's button transitions.
+///
+/// Desktop supplies GLFW window points and web supplies CSS pixels. Keeping
+/// the extent beside the position makes pointer mapping independent of
+/// framebuffer/Retina scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseSnapshot {
     pub x: i32,
     pub y: i32,
+    /// Logical width in the same coordinate space as [`Self::x`].
+    #[serde(default)]
+    pub surface_width: u32,
+    /// Logical height in the same coordinate space as [`Self::y`].
+    #[serde(default)]
+    pub surface_height: u32,
     /// Buttons held right now — the level complement of the `mouseButton`
     /// edges. Defaulted on the wire so an older `/state` capture (and a
     /// hand-written debug injection) still deserializes.
@@ -563,7 +575,7 @@ pub fn mouse_button_input_value(code: i32) -> Option<functor_lang::Value> {
     })
 }
 
-fn record(
+pub(crate) fn record(
     fields: impl IntoIterator<Item = (&'static str, functor_lang::Value)>,
 ) -> functor_lang::Value {
     functor_lang::Value::Record(std::rc::Rc::new(
@@ -574,7 +586,7 @@ fn record(
     ))
 }
 
-fn option_value(value: Option<functor_lang::Value>) -> functor_lang::Value {
+pub(crate) fn option_value(value: Option<functor_lang::Value>) -> functor_lang::Value {
     match value {
         Some(value) => functor_lang::Value::Variant {
             ctor: std::rc::Rc::from("Option.Some"),
@@ -737,6 +749,14 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
             record([
                 ("x", functor_lang::Value::Number(snapshot.mouse.x as f64)),
                 ("y", functor_lang::Value::Number(snapshot.mouse.y as f64)),
+                (
+                    "surfaceWidth",
+                    functor_lang::Value::Number(snapshot.mouse.surface_width as f64),
+                ),
+                (
+                    "surfaceHeight",
+                    functor_lang::Value::Number(snapshot.mouse.surface_height as f64),
+                ),
                 ("buttons", mouse_buttons_value(snapshot.mouse.buttons)),
                 ("pressed", mouse_buttons_value(snapshot.mouse.pressed)),
                 ("released", mouse_buttons_value(snapshot.mouse.released)),
@@ -924,6 +944,8 @@ mod tests {
             mouse: MouseSnapshot {
                 x: 10,
                 y: 20,
+                surface_width: 800,
+                surface_height: 600,
                 ..Default::default()
             },
             xr: None,
@@ -939,19 +961,24 @@ mod tests {
                 "mouse": {
                     "x": 10,
                     "y": 20,
+                    "surface_width": 800,
+                    "surface_height": 600,
                     "buttons": { "left": false, "right": false, "middle": false },
                     "pressed": { "left": false, "right": false, "middle": false },
                     "released": { "left": false, "right": false, "middle": false }
                 }
             })
         );
-        // Mouse buttons are defaulted on the wire, so a capture taken before
-        // they existed (and a hand-written injection) still decodes.
+        // Newer mouse fields and edge sets are defaulted on the wire, so a
+        // capture taken before they existed (and a hand-written injection)
+        // still decodes.
         let legacy: InputSnapshot = serde_json::from_value(
             serde_json::json!({ "held_keys": [], "mouse": { "x": 1, "y": 2 } }),
         )
         .unwrap();
         assert_eq!(legacy.mouse.buttons, MouseButtons::default());
+        assert_eq!(legacy.mouse.surface_width, 0);
+        assert_eq!(legacy.mouse.surface_height, 0);
         assert!(legacy.pressed_keys.is_empty());
         assert!(legacy.released_keys.is_empty());
         assert_eq!(legacy.mouse.pressed, MouseButtons::default());
@@ -984,6 +1011,8 @@ mod tests {
             mouse: MouseSnapshot {
                 x: 12,
                 y: -4,
+                surface_width: 1440,
+                surface_height: 900,
                 buttons: MouseButtons {
                     left: true,
                     right: false,
@@ -1017,6 +1046,10 @@ mod tests {
         );
         assert!(rendered.contains("pressedKeys: [Key.Space]"), "{rendered}");
         assert!(rendered.contains("releasedKeys: [Key.Enter]"), "{rendered}");
+        assert!(
+            rendered.contains("surfaceWidth: 1440") && rendered.contains("surfaceHeight: 900"),
+            "{rendered}"
+        );
         assert!(
             rendered.contains(
                 "buttons: { left: true, right: false, middle: false }, pressed: { left: true, right: false, middle: false }, released: { left: false, right: true, middle: false }"

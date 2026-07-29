@@ -39,9 +39,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// This is additive; clients that support older runtimes can treat absent
 /// fields as empty.
 ///
-/// 7 added `POST /time {"type":"cancel"}` so an external driver can abort a
+/// 7 adds `surface_width` / `surface_height` to `GET /state`'s mouse sample.
+/// They are logical window/CSS dimensions in the same coordinate space as
+/// `x` / `y`; clients using resize-correct pointer mapping need v7.
+///
+/// 8 added `POST /time {"type":"cancel"}` so an external driver can abort a
 /// queued batch without leaving clock work behind.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 7;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 8;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -95,7 +99,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse + optional xr), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
+        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -439,6 +443,8 @@ mod tests {
                 mouse: crate::MouseSnapshot {
                     x: 10,
                     y: 20,
+                    surface_width: 960,
+                    surface_height: 540,
                     ..Default::default()
                 },
                 xr: None,
@@ -467,6 +473,8 @@ mod tests {
                     "mouse": {
                         "x": 10,
                         "y": 20,
+                        "surface_width": 960,
+                        "surface_height": 540,
                         "buttons": { "left": false, "right": false, "middle": false },
                         "pressed": { "left": false, "right": false, "middle": false },
                         "released": { "left": false, "right": false, "middle": false }
@@ -675,6 +683,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 7);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 8);
     }
 }

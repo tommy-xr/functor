@@ -71,14 +71,14 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `init` — the initial model, a plain Functor Lang value
 - `input = (model, key, isDown) => model'` — OPTIONAL; keyboard events, keys as the built-in
   `Key` module's variants (`Key.W`, `Key.Up`, `Key.Space`, `Key.Num0`..`Key.Num9`).
-  `mouseMove`/`mouseWheel`/`mouseButton` are the analogous optional entry points. They receive
-  live shell input only while the cursor is captured, so projects defining them opt in with
-  `"viewer": { "camera": { "control": "game" } }` in `functor.json`; otherwise the runtime
-  warns once and keeps the hooks inert.
+  `mouseMove`/`mouseWheel`/`mouseButton` are the analogous optional entry points. Captured
+  free-look opts in with `"viewer": { "camera": { "control": "game" } }`; absolute
+  pointer-led games use `"cursor": "visible"` instead. Without either setting, the runtime
+  warns once and keeps pointer hooks inert.
 - `mouseButton = (model, button, isDown) => model'` — OPTIONAL; mouse-button edges, buttons as
   the built-in `Mouse` module's variants (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`).
-  Delivered **while the cursor is captured** (the rule `mouseMove`/`mouseWheel` already follow),
-  so click-to-shoot works under free-look; a held button is swept released on focus loss
+  Captured delivery enables click-to-shoot under free-look; visible delivery supports absolute
+  2D picking. A held button is swept released on focus loss
 - `sampledInput = (model, snapshot: Input.snapshot) => model'` — OPTIONAL; per-fixed-step
   held/device state plus deterministic keyboard/mouse transitions.
   `pressedKeys`/`releasedKeys` and `mouse.pressed`/`.released` are de-duplicated edges consumed

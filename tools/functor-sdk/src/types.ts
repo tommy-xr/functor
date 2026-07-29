@@ -65,13 +65,17 @@ export interface InputSnapshot {
    * A quick tap can place the same key in both edge arrays. Absent on older
    * runtimes. */
   released_keys?: KeyName[];
-  /** Last known cursor position in window pixels, plus held and edge sets.
+  /** Last known cursor position and logical surface extent in the same
+   * top-left-origin coordinate space, plus held and edge sets.
    *
-   * `buttons`, `pressed`, and `released` are absent from older runtimes'
-   * `/state`; treat a missing field as no buttons in that set. */
+   * Desktop reports window points and web reports CSS pixels, independent of
+   * Retina/device-pixel ratio. Surface and button/edge fields are absent from
+   * older runtimes' `/state`; treat a missing button field as an empty set. */
   mouse: {
     x: number;
     y: number;
+    surface_width?: number;
+    surface_height?: number;
     buttons?: MouseButtons;
     pressed?: MouseButtons;
     released?: MouseButtons;

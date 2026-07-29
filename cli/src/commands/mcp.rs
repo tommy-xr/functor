@@ -50,7 +50,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Lowest debug-protocol version whose contract these tools actually keep
 /// (`pending_steps` on `/state`, `frames` on `/time advance`, structured
 /// `model`, and `/time cancel`).
-const REQUIRED_PROTOCOL_VERSION: u64 = 7;
+const REQUIRED_PROTOCOL_VERSION: u64 = 8;
 /// Bytes of a launched child's stdout/stderr kept for failure reporting.
 const LOG_TAIL_BYTES: usize = 8 * 1024;
 /// Maximum body retained from any ordinary debug-runtime text response.
@@ -2563,11 +2563,11 @@ both the runtime and this MCP server before reconnecting.",
                 discovery["service"]
             ));
         }
-        // Below v7 the guarantees these tools advertise silently stop holding:
+        // Below v8 the guarantees these tools advertise silently stop holding:
         // a pre-v3 runtime ignores a batched `frames` and reports no
         // `pending_steps` (so `step` would claim a 10-frame batch landed after
         // running one), and a pre-v4 one sends Debug text under `model`
-        // instead of structured JSON. A pre-v7 runtime cannot cancel an
+        // instead of structured JSON. A pre-v8 runtime cannot cancel an
         // accepted step queue on an abort. Refuse rather than mislead — this
         // matters for a device APK, which versions independently of the CLI.
         let version = discovery["protocol_version"].as_u64().unwrap_or(0);

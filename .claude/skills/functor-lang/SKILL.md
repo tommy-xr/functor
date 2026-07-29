@@ -306,8 +306,14 @@ let grab = (s) =>
 - **`Input` is the engine's continuously sampled input module.**
   `Input.snapshot` contains keyboard levels and fixed-step transitions:
   `heldKeys`, `pressedKeys`, and `releasedKeys` (all `List<Key.t>`). Its
-  pixel-space `mouse` record has `x`, `y`, and three `{left,right,middle}`
-  sets: `buttons` for held levels plus `pressed` / `released` for transitions.
+  top-left-origin logical `mouse` record has `x`, `y`, `surfaceWidth`,
+  `surfaceHeight`, and three `{left,right,middle}` sets: `buttons` for held
+  levels plus `pressed` / `released` for transitions. Position and surface
+  extent share one coordinate space — GLFW window points natively, CSS pixels
+  on web — so they are stable across Retina/device-pixel-ratio changes.
+  `Camera2D.toWorld` treats the ideal half-open fit in that logical space as
+  authoritative; only the renderer rounds its corresponding viewport to
+  physical framebuffer pixels.
   A quick tap can appear in both edge sets while the held set carries the final
   level. The snapshot also contains
   `xr: Option.t<Input.xr>`. XR head/grip/aim poses are rig-local
@@ -944,6 +950,13 @@ Camera2D.create(width, height)                             // center-origin, +X 
                                                            //   aspect-fits without stretching
 camera2d |> Camera2D.at(x, y)                              // pan the world-space view
 camera2d |> Camera2D.zoom(k)                               // positive zoom; larger = closer
+Camera2D.toWorld(mouse, camera2d)                          // Option.t<Input.point2>; maps the
+                                                           //   sampled logical mouse through
+                                                           //   aspect fit + pan/zoom; None in
+                                                           //   letterbox/pillarbox bars. The
+                                                           //   ideal half-open logical fit is
+                                                           //   DPR-invariant; raster rounding
+                                                           //   is renderer-only
 Sprite.blank()
 Sprite.rectangle(color, width, height) / Sprite.square(color, size)
 Sprite.circle(color, radius)                               // FILLED circle, centered like
@@ -1567,14 +1580,15 @@ let input = (model, key, isDown) => model'  // OPTIONAL; key: Key.t — match
 let sampledInput = (model, snapshot: Input.snapshot) => model'
                                             // OPTIONAL; called once immediately
                                             // before every simulation tick
-let mouseMove = (model, x, y) => model'     // OPTIONAL; window pixels
+let mouseMove = (model, x, y) => model'     // OPTIONAL; logical window/CSS coordinates
 let mouseWheel = (model, delta) => model'   // OPTIONAL
 let mouseButton = (model, button, isDown) => model'
                                             // OPTIONAL; button: Mouse.t — match
                                             // | Mouse.Left / Mouse.Right /
-                                            // Mouse.Middle. Delivered while the
-                                            // cursor is captured, so click-to-
-                                            // shoot works under free-look
+                                            // Mouse.Middle. Captured projects
+                                            // receive it under free-look;
+                                            // visible projects receive absolute
+                                            // pointer clicks
 let update = (model, msg) => model'         // OPTIONAL; msgs are ADT variants
                                             // ANY entry point may instead return
                                             // (model', effect) — a 2-tuple whose
@@ -1594,12 +1608,13 @@ let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; conti
                                             // frame (needs no `update`)
 ```
 
-The three mouse hooks receive live shell input only while the cursor is
-captured. Opt the project in with
-`"viewer": { "camera": { "control": "game" } }` in `functor.json`; without it
-the runtime warns once and leaves the hooks inert. Native capture starts on a
-non-UI click and Escape releases it. Manifest-less site IDE/inline sessions use
-`?camera=game` on the page URL.
+The three mouse hooks receive live shell input only when the project claims a
+pointer mode. Captured free-look opts in with
+`"viewer": { "camera": { "control": "game" } }`; absolute pointer-led games use
+`"cursor":"visible"` instead. Without either setting the runtime warns once and
+leaves the hooks inert. Native capture starts on a non-UI click and Escape
+releases it. Manifest-less site IDE/inline sessions use `?camera=game` or
+`?cursor=visible` on the page URL.
 
 Subscription timers are **stateless**: `Sub.every` fires when an integer
 multiple of its period lies in `(prevTts, tts]` — the global time grid, so
@@ -1694,8 +1709,11 @@ click-to-capture and the web mouse-look button, routing captured
 `mouseMove`/`mouseWheel`/`mouseButton` input into the ordinary game hooks.
 On native, a non-UI click captures; Escape or focus loss releases. Absent (or
 explicit `"none"`) keeps the pointer free and hides the button, which is the
-default for 2D, UI, and fixed-camera projects. `orbit`/`fps` detached
-shell-owned modes are not implemented spellings yet.
+default for UI and fixed-camera projects. Absolute pointer-led games instead add
+`"cursor":"visible"`; native keeps the system cursor free and web routes its
+absolute CSS-pixel movement/buttons without Pointer Lock. Visible pointer input
+and `viewer.camera.control = "game"` are mutually exclusive. `orbit`/`fps`
+detached shell-owned modes are not implemented spellings yet.
 
 `examples/hello/game.fun` is the reference
 (`examples/physics/game.fun` for the physics hook, including the

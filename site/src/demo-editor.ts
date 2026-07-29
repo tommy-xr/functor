@@ -31,7 +31,9 @@ interface DemoEditorSeam {
 const frame = document.getElementById("player") as HTMLIFrameElement;
 const params = new URLSearchParams(location.search);
 const game = params.get("game") || "examples/hero.fun";
-const cameraControl = params.get("camera") === "game" ? "game" : null;
+const cursorPolicy = params.get("cursor") === "visible" ? "visible" : null;
+const cameraControl =
+  !cursorPolicy && params.get("camera") === "game" ? "game" : null;
 
 // wireLiveTrace drives an executions picker through a status bar; the demo has
 // none, so a no-op stub satisfies the contract (the inline live-value overlay
@@ -82,6 +84,7 @@ wireLiveTrace(view, noopStatusBar, frame, langReady);
   programmaticEdit = false;
   const playerParams = new URLSearchParams({ game });
   if (cameraControl) playerParams.set("camera", cameraControl);
+  if (cursorPolicy) playerParams.set("cursor", cursorPolicy);
   frame.src = `player.html?${playerParams}`;
 })();
 

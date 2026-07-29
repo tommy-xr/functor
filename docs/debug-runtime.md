@@ -360,6 +360,10 @@ target-specific endpoints or string-keyed capability bags.
 {"type":"resume"}                           // RESUME: follow wall-clock again
 ```
 
+`cancel` was added in debug protocol v8. A client that depends on confirmed
+queued-step cleanup must reject older runtimes rather than treating a 404 or an
+unknown command as a successful abort.
+
 **Advances accumulate.** Each queued step runs exactly once, in order: `n`
 advances always run `n` model steps, whenever they arrive relative to a frame.
 A single advance is therefore one observable stepped frame — step, read
