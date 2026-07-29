@@ -569,9 +569,11 @@ let pos = model.pos |> Vec3.add(step)</pre>
           </p>
           <p>
             The tag is cross-frame identity: same tag = same body; drop a body by not declaring
-            it. Re-declaring an unchanged body leaves the simulation alone; changing its declared
-            position teleports it. Reading a tag your <code>physics</code> hook doesn't declare
-            is a runtime error. The physics world survives hot reload, like the model.
+            it. Re-declaring an unchanged body leaves the simulation alone. Changing its declared
+            position or rotation teleports those fields on a dynamic/fixed body; a kinematic body
+            instead receives the changed pose as its next-step target, carrying velocity into
+            contacts. Reading a tag your <code>physics</code> hook doesn't declare is a runtime
+            error. The physics world survives hot reload, like the model.
           </p>
 
           <h3 id="prelude-ui">UI</h3>

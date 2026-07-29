@@ -818,12 +818,19 @@ impl World {
             self.despawn(&next.tag);
             let spawned = self.spawn(next);
             debug_assert!(spawned);
-            if let (Some((pose, linvel, angvel)), Some((rb_handle, _))) =
+            if let (Some((live_pose, linvel, angvel)), Some((rb_handle, _))) =
                 (live, self.tags.get(&next.tag).copied())
             {
                 let rb = &mut self.bodies[rb_handle];
-                if prev.position == next.position && prev.rotation == next.rotation {
-                    rb.set_position(pose, true);
+                let mut rebuilt_pose = *rb.position();
+                if prev.position == next.position {
+                    rebuilt_pose.translation = live_pose.translation;
+                }
+                if prev.rotation == next.rotation {
+                    rebuilt_pose.rotation = live_pose.rotation;
+                }
+                if *rb.position() != rebuilt_pose {
+                    rb.set_position(rebuilt_pose, true);
                 }
                 if prev.velocity == next.velocity {
                     rb.set_linvel(linvel, true);
@@ -848,8 +855,24 @@ impl World {
         let (rb_handle, col_handle) = self.tags[&next.tag];
 
         if prev.position != next.position || prev.rotation != next.rotation {
-            let mut pose = pose_of(next);
             let rb = &mut self.bodies[rb_handle];
+            let live_pose = *rb.position();
+            // Kinematic declarations may be reconciled more than once before
+            // a step. Build on the queued target so a change to one field
+            // preserves the other pending field; dynamic/fixed bodies instead
+            // preserve their live simulated pose.
+            let mut pose = if next.kind == BodyKind::Kinematic {
+                *rb.next_position()
+            } else {
+                live_pose
+            };
+            let declared_pose = pose_of(next);
+            if prev.position != next.position {
+                pose.translation = declared_pose.translation;
+            }
+            if prev.rotation != next.rotation {
+                pose.rotation = declared_pose.rotation;
+            }
             if next.kind == BodyKind::Kinematic && rb.rotation().dot(pose.rotation) < 0.0 {
                 // q and -q describe the same orientation, but Rapier derives a
                 // position-based kinematic body's angular velocity from the
@@ -858,19 +881,15 @@ impl World {
                 // generating an almost-full-turn contact velocity.
                 pose.rotation = -pose.rotation;
             }
-            // Skip the write when the declaration merely caught up with the
-            // simulation (the `Physics.synced` steady state: the model
-            // re-declares last frame's physics output). The values would be a
-            // no-op, but `wake_up = true` isn't — writing would keep every
-            // synced body permanently awake.
-            if *rb.position() != pose {
-                match next.kind {
-                    // Kinematic bodies are *driven*: the next pose is a target
-                    // the solver moves them to over the step (so they carry
-                    // velocity into contacts) rather than an instant teleport.
-                    BodyKind::Kinematic => rb.set_next_kinematic_position(pose),
-                    _ => rb.set_position(pose, true),
-                }
+            match next.kind {
+                // Always refresh a changed kinematic declaration, even when it
+                // returns to the live pose: an earlier reconcile may have
+                // queued a target that this declaration is canceling.
+                BodyKind::Kinematic => rb.set_next_kinematic_position(pose),
+                // Skip a no-op teleport so a declaration that catches up with
+                // the simulation does not wake a settled dynamic body.
+                _ if live_pose != pose => rb.set_position(pose, true),
+                _ => {}
             }
         }
         if prev.velocity != next.velocity {
@@ -1394,6 +1413,44 @@ mod tests {
     }
 
     #[test]
+    fn rotation_only_divergence_preserves_live_translation() {
+        let quarter_turn = std::f32::consts::FRAC_1_SQRT_2;
+        let rotated = [0.0, quarter_turn, 0.0, quarter_turn];
+
+        for structural in [false, true] {
+            let mut w = World::new([0.0, -9.81, 0.0]);
+            let original = crate_at("a", [0.0, 5.0, 0.0]);
+            w.reconcile(&scene(vec![original.clone()]));
+            for _ in 0..30 {
+                w.step_fixed();
+            }
+            let (fallen, _) = w.body_transform("a").unwrap();
+            assert!(fallen[1] < 5.0);
+
+            let changed = if structural {
+                Body::dynamic(
+                    "a".to_string(),
+                    Shape::Sphere { radius: 0.5 },
+                )
+                .at([0.0, 5.0, 0.0])
+                .facing(rotated)
+            } else {
+                original.facing(rotated)
+            };
+            w.reconcile(&scene(vec![changed]));
+
+            let (position, rotation) = w.body_transform("a").unwrap();
+            assert_eq!(
+                position, fallen,
+                "rotation-only divergence reset translation (structural={structural})"
+            );
+            for (actual, expected) in rotation.into_iter().zip(rotated) {
+                assert!((actual - expected).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
     fn kinematic_rotation_crosses_180_degrees_on_the_short_arc() {
         let half_179_degrees = 179.0_f32.to_radians() / 2.0;
         let (sin, cos) = half_179_degrees.sin_cos();
@@ -1425,6 +1482,35 @@ mod tests {
             "expected a +2° short-arc step ({expected:.3} rad/s), got \
              {angular_velocity:.3} rad/s"
         );
+    }
+
+    #[test]
+    fn kinematic_rotation_target_can_be_canceled_before_a_step() {
+        let quarter_turn = std::f32::consts::FRAC_1_SQRT_2;
+        let identity = [0.0, 0.0, 0.0, 1.0];
+        let turned = [0.0, quarter_turn, 0.0, quarter_turn];
+        let body = |rotation| {
+            Body::kinematic(
+                "spinner".to_string(),
+                Shape::Cuboid {
+                    extents: [1.0, 1.0, 1.0],
+                },
+            )
+            .facing(rotation)
+        };
+
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![body(identity)]));
+        w.reconcile(&scene(vec![body(turned)]));
+        w.reconcile(&scene(vec![body(identity)]));
+        w.step_fixed();
+
+        let (_, rotation) = w.body_transform("spinner").unwrap();
+        for (actual, expected) in rotation.into_iter().zip(identity) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        let (rb_handle, _) = w.tags["spinner"];
+        assert!(w.bodies[rb_handle].angvel().length() < 1e-6);
     }
 
     #[test]

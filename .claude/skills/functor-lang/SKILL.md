@@ -1361,7 +1361,10 @@ a **spanned runtime error** (there is no Option-shaped return to match on),
 so only read tags your `physics` hook declares. The tag is cross-frame
 identity: same tag = same body; drop a body by not declaring it.
 Re-declaring an *unchanged* body leaves the simulation alone; *changing*
-its declared position teleports it (the divergence rule, docs/physics.md).
+its declared position or rotation drives that field (the divergence rule,
+docs/physics.md): dynamic/fixed bodies teleport the changed fields immediately,
+while a kinematic body receives the changed pose as its next-step target so it
+carries velocity into contacts.
 
 Physics **command effects** are returned beside the model like any effect
 — `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))` — but carry no
