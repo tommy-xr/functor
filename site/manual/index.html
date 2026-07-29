@@ -195,7 +195,7 @@ let draw = (m, tts) =>
               <tr><td><code>sampledInput</code></td><td><code>(model, snapshot) => model'</code></td><td>optional; held levels plus deterministic pressed/released edges — one <code>Input.snapshot</code> immediately before every fixed step</td></tr>
               <tr><td><code>mouseMove</code></td><td><code>(model, x, y) => model'</code></td><td>optional; window pixels</td></tr>
               <tr><td><code>mouseWheel</code></td><td><code>(model, delta) => model'</code></td><td>optional</td></tr>
-              <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Delivered while the cursor is captured, so click-to-shoot works under free-look</td></tr>
+              <tr><td><code>mouseButton</code></td><td><code>(model, button, isDown) => model'</code></td><td>optional; <code>button</code> is a <code>Mouse.t</code> variant — <code>Mouse.Left</code>, <code>Mouse.Right</code>, or <code>Mouse.Middle</code>. Captured delivery supports free-look shooting; visible delivery supports absolute 2D picking</td></tr>
               <tr><td><code>update</code></td><td><code>(model, msg) => model'</code></td><td>optional; messages are your variant values</td></tr>
               <tr><td><code>subscriptions</code></td><td><code>(model) => Sub</code></td><td>optional (requires <code>update</code>); declarative timers</td></tr>
               <tr><td><code>physics</code></td><td><code>(model) => Physics.scene(…)</code></td><td>optional; declarative bodies, reconciled each frame</td></tr>
@@ -204,12 +204,13 @@ let draw = (m, tts) =>
             </tbody>
           </table>
           <p>
-            The three mouse hooks receive live shell input only while the cursor is captured.
-            Opt in with <code>"viewer": { "camera": { "control": "game" } }</code> in
-            <code>functor.json</code>; without it the runtime warns once and leaves them inert.
-            Native capture starts on a non-UI click and <code>Escape</code> releases it.
-            Manifest-less site IDE and inline-sandbox sessions use <code>?camera=game</code>
-            on the page URL.
+            The three mouse hooks receive live shell input only when the project claims a pointer
+            mode. Use <code>"viewer": { "camera": { "control": "game" } }</code> for captured
+            free-look or <code>"cursor":"visible"</code> for absolute pointer input; without
+            either setting the runtime warns once and leaves them inert. Native capture starts on
+            a non-UI click and <code>Escape</code> releases it. Manifest-less site IDE and
+            inline-sandbox sessions use <code>?camera=game</code> or
+            <code>?cursor=visible</code> on the page URL.
           </p>
           <p>
             The model-returning entry points (<code>tick</code>, <code>input</code>,

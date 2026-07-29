@@ -152,11 +152,18 @@ impl FunctorLangConfig {
     /// `--entry <name>`; a `Named` project with no request defaults to
     /// `client`, or the sole entry.
     pub fn select(&self, requested: Option<&str>) -> Result<FunctorLangProject, Error> {
-        let camera_control = *self
+        let mut camera_control = *self
             .camera_control
             .as_ref()
             .map_err(|message| Error::other(message.clone()))?;
         let cursor = self.cursor_policy()?;
+        // `viewer.camera.control` is the canonical captured-input setting on
+        // current main. Keep the branch's explicit `"cursor":"captured"`
+        // spelling as a compatibility alias, while an absent `cursor` retains
+        // main's safe free-pointer default.
+        if self.cursor.is_some() && cursor == CursorPolicy::Captured {
+            camera_control = CameraControl::Game;
+        }
         if camera_control == CameraControl::Game && cursor == CursorPolicy::Visible {
             return Err(Error::other(
                 "functor.json cannot combine `cursor: \"visible\"` with \
@@ -1573,6 +1580,16 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("visible"));
+
+        let captured = FunctorLangConfig {
+            entries: FunctorLangEntries::Single("game.fun".to_string()),
+            camera_control: Ok(CameraControl::None),
+            cursor: Some(serde_json::Value::from("captured")),
+        };
+        assert_eq!(
+            captured.select(None).unwrap().camera_control,
+            CameraControl::Game
+        );
     }
 
     #[test]

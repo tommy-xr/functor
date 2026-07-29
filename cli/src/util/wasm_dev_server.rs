@@ -213,7 +213,12 @@ mod tests {
 
     #[test]
     fn visible_pointer_keeps_non_primary_webview_input_game_owned() {
-        let html = render_functor_lang_index("game.fun", &["game.fun".to_string()], "visible");
+        let html = render_functor_lang_index(
+            "game.fun",
+            &["game.fun".to_string()],
+            CameraControl::None,
+            "visible",
+        );
         for expected in [
             r#"window.addEventListener("mousemove""#,
             "const rect = canvas.getBoundingClientRect();",

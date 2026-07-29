@@ -194,8 +194,9 @@ That enables click-to-capture camera input on native and the web player’s
 mouse-look button, routing captured motion/buttons to the game’s
 `mouseMove`/`mouseButton` hooks. On native, a non-UI click enters capture;
 Escape or focus loss releases it.
-Projects without the setting—including 2D games—show no camera control and
-never capture an ordinary click.
+Pointer-led 2D games use `"cursor": "visible"` instead to receive absolute
+motion/buttons without capture. Projects without either setting show no camera
+control and leave ordinary clicks with UI.
 
 XR games can use the Quest-isomorphic desktop adapter with
 `... run native --emulate-xr`; see [the VR guide](docs/vr.md#desktop-xr-emulation)

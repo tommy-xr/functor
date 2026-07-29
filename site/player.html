@@ -305,10 +305,9 @@
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
         });
 
-        // Mouse buttons reach the game only while pointer-locked — the same
-        // rule mousemove follows above, and the browser twin of the desktop's
-        // "only while the cursor is captured". While the cursor is FREE it
-        // belongs to the scrubber and the `Ui.*` widget path below.
+        // Captured projects deliver buttons only while pointer-locked. Visible
+        // projects keep absolute buttons live, with primary-widget arbitration
+        // matching native.
         // MouseEvent.button (0 left, 1 middle, 2 right) → the runtime's
         // canonical MouseButton discriminants (1 left, 2 right, 3 middle).
         // Kept in sync with index-functor-lang.html.

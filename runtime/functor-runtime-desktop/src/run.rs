@@ -1577,8 +1577,7 @@ Escape releases while captured"
         // arms in the event loop. A hidden window never captures (and never
         // receives the events that would toggle this).
         let visible_pointer = args.cursor == CursorPolicyArg::Visible;
-        let game_camera_control =
-            args.camera_control == CameraControl::Game && !visible_pointer;
+        let game_camera_control = args.camera_control == CameraControl::Game && !visible_pointer;
         let mut cursor_captured = false;
         let mut escape_armed = false;
 
