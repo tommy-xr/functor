@@ -104,8 +104,10 @@ game's perspective this is fully Elm-controlled.
   while playing or paused. Activating it captures the pointer without
   delivering camera navigation to the game or egui. A 3D/mixed frame gets FPS
   mouse look + WASD + Q/E movement and wheel FOV; a pure 2D frame gets
-  mouse/WASD pan and wheel zoom. Escape releases capture but preserves the
-  debug view so the scrubber remains reachable; a viewport click recaptures it.
+  mouse/WASD pan and wheel zoom. While detached, a contextual drawer switches
+  FPS/orbit navigation and controls shell-only material, physics, authored
+  frustum, FOV, and game-UI diagnostics. Escape releases capture but preserves
+  the debug view so the scrubber remains reachable; a viewport click recaptures it.
   **Exit debug view** returns ownership to the authored camera. The snapshot is
   runtime-only: game state, replay, culling, and render-target/portal cameras
   remain authored.

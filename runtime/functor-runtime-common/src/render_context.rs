@@ -42,9 +42,8 @@ pub enum DebugRenderMode {
     /// Normal shading plus a physics wireframe overlay: the live world's
     /// colliders/contacts as colored lines (rapier's debug renderer via
     /// `physics::World::debug_lines`), making declared-vs-simulated divergence
-    /// visible at a glance. The overlay pass is wired natively only (the web
-    /// renderer doesn't call `render_debug_lines` yet), so on wasm this
-    /// shades like `Default`.
+    /// visible at a glance. Both native and web shells draw the shared
+    /// `render_debug_lines` pass.
     Physics,
 }
 

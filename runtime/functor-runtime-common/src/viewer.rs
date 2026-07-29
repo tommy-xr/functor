@@ -1,19 +1,176 @@
 use cgmath::{InnerSpace, Quaternion, Rad, Rotation, Rotation3, Vector3};
 
-use crate::{Camera, Camera2D, Frame};
+use crate::{physics::DebugLine, Camera, Camera2D, DebugRenderMode, Frame};
 
 /// The navigation behavior selected from the current frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DebugCameraMode {
     /// A free-flying 3D camera with mouse look and WASD + Q/E translation.
     Fps,
+    /// A 3D camera that rotates around its current target.
+    Orbit,
     /// A pure 2D frame whose sprite cameras pan and zoom together.
     Pan2d,
+}
+
+impl DebugCameraMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            DebugCameraMode::Fps => "FPS",
+            DebugCameraMode::Orbit => "Orbit",
+            DebugCameraMode::Pan2d => "Pan 2D",
+        }
+    }
+
+    pub fn from_index(index: u32) -> Option<Self> {
+        match index {
+            0 => Some(DebugCameraMode::Fps),
+            1 => Some(DebugCameraMode::Orbit),
+            2 => Some(DebugCameraMode::Pan2d),
+            _ => None,
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        match self {
+            DebugCameraMode::Fps => 0,
+            DebugCameraMode::Orbit => 1,
+            DebugCameraMode::Pan2d => 2,
+        }
+    }
+}
+
+/// The global material override used by a detached debug view.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DebugMaterialMode {
+    #[default]
+    Shaded,
+    Normals,
+    Tangents,
+}
+
+impl DebugMaterialMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            DebugMaterialMode::Shaded => "Shaded",
+            DebugMaterialMode::Normals => "Normals",
+            DebugMaterialMode::Tangents => "Tangents",
+        }
+    }
+
+    pub fn from_index(index: u32) -> Option<Self> {
+        match index {
+            0 => Some(DebugMaterialMode::Shaded),
+            1 => Some(DebugMaterialMode::Normals),
+            2 => Some(DebugMaterialMode::Tangents),
+            _ => None,
+        }
+    }
+
+    pub fn index(self) -> u32 {
+        match self {
+            DebugMaterialMode::Shaded => 0,
+            DebugMaterialMode::Normals => 1,
+            DebugMaterialMode::Tangents => 2,
+        }
+    }
+
+    pub fn render_mode(self) -> DebugRenderMode {
+        match self {
+            DebugMaterialMode::Shaded => DebugRenderMode::Default,
+            DebugMaterialMode::Normals => DebugRenderMode::Normals,
+            DebugMaterialMode::Tangents => DebugRenderMode::Tangents,
+        }
+    }
+}
+
+/// Shell-owned diagnostic presentation applied only while the debug camera is
+/// detached. These settings never enter the game model, input log, or replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DebugPresentation {
+    pub material: DebugMaterialMode,
+    pub physics: bool,
+    pub authored_camera_frustum: bool,
+    pub show_game_ui: bool,
+}
+
+/// The diagnostic render policy after combining the shell's launch flags with
+/// the current debug-camera state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DebugDiagnostics {
+    pub render_mode: DebugRenderMode,
+    pub physics: bool,
+    pub authored_camera_frustum: bool,
+}
+
+impl Default for DebugPresentation {
+    fn default() -> Self {
+        Self {
+            material: DebugMaterialMode::Shaded,
+            physics: false,
+            authored_camera_frustum: false,
+            show_game_ui: true,
+        }
+    }
+}
+
+impl DebugPresentation {
+    /// Preserve the existing launch-time debug mode when a session first
+    /// detaches, while splitting material replacement from line overlays.
+    pub fn from_render_mode(mode: DebugRenderMode) -> Self {
+        match mode {
+            DebugRenderMode::Default => Self::default(),
+            DebugRenderMode::Normals => Self {
+                material: DebugMaterialMode::Normals,
+                ..Self::default()
+            },
+            DebugRenderMode::Tangents => Self {
+                material: DebugMaterialMode::Tangents,
+                ..Self::default()
+            },
+            DebugRenderMode::Physics => Self {
+                physics: true,
+                ..Self::default()
+            },
+        }
+    }
+
+    /// Resolve shell-owned diagnostics without letting them leak into a pure
+    /// 2D detached view. While attached, preserve the existing launch-time
+    /// `--debug-render` behavior.
+    pub fn diagnostics(
+        self,
+        detached: bool,
+        pure_2d: bool,
+        launch_mode: DebugRenderMode,
+    ) -> DebugDiagnostics {
+        if detached {
+            if pure_2d {
+                return DebugDiagnostics {
+                    render_mode: DebugRenderMode::Default,
+                    physics: false,
+                    authored_camera_frustum: false,
+                };
+            }
+            return DebugDiagnostics {
+                render_mode: self.material.render_mode(),
+                physics: self.physics,
+                authored_camera_frustum: self.authored_camera_frustum,
+            };
+        }
+
+        DebugDiagnostics {
+            render_mode: launch_mode,
+            physics: matches!(launch_mode, DebugRenderMode::Physics),
+            authored_camera_frustum: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 enum DebugView {
     Fps(Camera),
+    Orbit(Camera),
     Pan2d(Vec<Camera2D>),
 }
 
@@ -101,16 +258,36 @@ impl DebugCamera {
     pub fn mode(&self) -> Option<DebugCameraMode> {
         match self.view {
             Some(DebugView::Fps(_)) => Some(DebugCameraMode::Fps),
+            Some(DebugView::Orbit(_)) => Some(DebugCameraMode::Orbit),
             Some(DebugView::Pan2d(_)) => Some(DebugCameraMode::Pan2d),
             None => None,
         }
+    }
+
+    /// Change navigation behavior without changing the effective camera.
+    /// Dimensionality is fixed by the frame that was detached.
+    pub fn set_mode(&mut self, mode: DebugCameraMode) -> bool {
+        self.view = match (self.view.take(), mode) {
+            (Some(DebugView::Fps(camera)), DebugCameraMode::Orbit) => {
+                Some(DebugView::Orbit(camera))
+            }
+            (Some(DebugView::Orbit(camera)), DebugCameraMode::Fps) => Some(DebugView::Fps(camera)),
+            (Some(view @ DebugView::Fps(_)), DebugCameraMode::Fps)
+            | (Some(view @ DebugView::Orbit(_)), DebugCameraMode::Orbit)
+            | (Some(view @ DebugView::Pan2d(_)), DebugCameraMode::Pan2d) => Some(view),
+            (view, _) => {
+                self.view = view;
+                return false;
+            }
+        };
+        true
     }
 
     /// A debug view cannot silently change dimensions underneath its snapshot.
     /// Shells reattach when a live game switches between pure 2D and 3D/mixed.
     pub fn is_compatible(&self, frame: &Frame) -> bool {
         match &self.view {
-            Some(DebugView::Fps(_)) => !frame.is_pure_2d(),
+            Some(DebugView::Fps(_)) | Some(DebugView::Orbit(_)) => !frame.is_pure_2d(),
             Some(DebugView::Pan2d(cameras)) => {
                 frame.is_pure_2d() && cameras.len() == frame.sprite_layers.len()
             }
@@ -144,7 +321,7 @@ impl DebugCamera {
     /// dummy/main 3D camera alone.
     pub fn camera<'a>(&'a self, authored: &'a Camera) -> &'a Camera {
         match &self.view {
-            Some(DebugView::Fps(camera)) => camera,
+            Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera)) => camera,
             Some(DebugView::Pan2d(_)) | None => authored,
         }
     }
@@ -154,7 +331,7 @@ impl DebugCamera {
     pub fn sprite_cameras(&self) -> Option<&[Camera2D]> {
         match &self.view {
             Some(DebugView::Pan2d(cameras)) => Some(cameras),
-            Some(DebugView::Fps(_)) | None => None,
+            Some(DebugView::Fps(_)) | Some(DebugView::Orbit(_)) | None => None,
         }
     }
 
@@ -165,6 +342,7 @@ impl DebugCamera {
         }
         match &mut self.view {
             Some(DebugView::Fps(camera)) => Self::fps_look(camera, dx, dy),
+            Some(DebugView::Orbit(camera)) => Self::orbit_look(camera, dx, dy),
             Some(DebugView::Pan2d(cameras)) => {
                 for camera in cameras {
                     let world_units_per_pixel =
@@ -179,13 +357,7 @@ impl DebugCamera {
 
     /// Move with WASD and Q/E. FPS motion uses local forward/right and world
     /// up; 2D maps WASD to vertical/horizontal pan and ignores Q/E.
-    pub fn move_local(
-        &mut self,
-        forward: f32,
-        right: f32,
-        vertical: f32,
-        elapsed_seconds: f32,
-    ) {
+    pub fn move_local(&mut self, forward: f32, right: f32, vertical: f32, elapsed_seconds: f32) {
         if !forward.is_finite()
             || !right.is_finite()
             || !vertical.is_finite()
@@ -196,12 +368,10 @@ impl DebugCamera {
         }
         let elapsed_seconds = elapsed_seconds.min(0.05);
         match &mut self.view {
-            Some(DebugView::Fps(camera)) => {
+            Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera)) => {
                 let forward_axis = Vector3::from(camera.target) - Vector3::from(camera.eye);
                 let up = Vector3::from(camera.up);
-                if forward_axis.magnitude2() <= f32::EPSILON
-                    || up.magnitude2() <= f32::EPSILON
-                {
+                if forward_axis.magnitude2() <= f32::EPSILON || up.magnitude2() <= f32::EPSILON {
                     return;
                 }
                 let forward_axis = forward_axis.normalize();
@@ -257,6 +427,17 @@ impl DebugCamera {
                     Self::MAX_FOV,
                 );
             }
+            Some(DebugView::Orbit(camera)) => {
+                let target = Vector3::from(camera.target);
+                let offset = Vector3::from(camera.eye) - target;
+                let distance = offset.magnitude();
+                if distance > Self::MIN_DISTANCE {
+                    let proposed = distance * (-steps * 0.12).exp();
+                    let next = proposed.max(Self::MIN_DISTANCE);
+                    camera.eye = (target + offset / distance * next).into();
+                    self.focal_distance = next;
+                }
+            }
             Some(DebugView::Pan2d(cameras)) => {
                 for camera in cameras {
                     let proposed = camera.zoom * (steps * 0.12).exp();
@@ -272,19 +453,64 @@ impl DebugCamera {
         }
     }
 
+    pub fn fov_degrees(&self) -> Option<f32> {
+        match &self.view {
+            Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera)) => {
+                Some(camera.fov_radians.to_degrees())
+            }
+            Some(DebugView::Pan2d(_)) | None => None,
+        }
+    }
+
+    pub fn zoom_2d(&self) -> Option<f32> {
+        match &self.view {
+            Some(DebugView::Pan2d(cameras)) => cameras.first().map(|camera| camera.zoom),
+            Some(DebugView::Fps(_)) | Some(DebugView::Orbit(_)) | None => None,
+        }
+    }
+
+    pub fn set_fov_degrees(&mut self, degrees: f32) {
+        if !degrees.is_finite() {
+            return;
+        }
+        let radians = degrees.to_radians().clamp(Self::MIN_FOV, Self::MAX_FOV);
+        match &mut self.view {
+            Some(DebugView::Fps(camera)) | Some(DebugView::Orbit(camera)) => {
+                camera.fov_radians = radians;
+            }
+            Some(DebugView::Pan2d(_)) | None => {}
+        }
+    }
+
     fn fps_look(camera: &mut Camera, dx: f32, dy: f32) {
+        let eye = Vector3::from(camera.eye);
+        let Some((direction, up)) = Self::look_orientation(camera, dx, dy) else {
+            return;
+        };
+        camera.target = (eye + direction).into();
+        camera.up = up.into();
+    }
+
+    fn orbit_look(camera: &mut Camera, dx: f32, dy: f32) {
+        let target = Vector3::from(camera.target);
+        let Some((direction, up)) = Self::look_orientation(camera, dx, dy) else {
+            return;
+        };
+        camera.eye = (target - direction).into();
+        camera.up = up.into();
+    }
+
+    fn look_orientation(camera: &Camera, dx: f32, dy: f32) -> Option<(Vector3<f32>, Vector3<f32>)> {
         let eye = Vector3::from(camera.eye);
         let mut direction = Vector3::from(camera.target) - eye;
         let mut up = Vector3::from(camera.up);
         let distance = direction.magnitude();
         if distance <= f32::EPSILON {
-            return;
+            return None;
         }
 
-        let yaw = Quaternion::from_axis_angle(
-            Vector3::unit_y(),
-            Rad(-dx * Self::LOOK_RADIANS_PER_PIXEL),
-        );
+        let yaw =
+            Quaternion::from_axis_angle(Vector3::unit_y(), Rad(-dx * Self::LOOK_RADIANS_PER_PIXEL));
         direction = yaw.rotate_vector(direction);
         up = yaw.rotate_vector(up);
 
@@ -306,8 +532,7 @@ impl DebugCamera {
             up = pitch.rotate_vector(up);
         }
 
-        camera.target = (eye + direction).into();
-        camera.up = up.into();
+        Some((direction, up))
     }
 
     fn valid_2d_camera(camera: &Camera2D) -> bool {
@@ -331,10 +556,78 @@ impl DebugCamera {
     }
 }
 
+/// The authored camera's actual near/far view volume as world-space lines.
+///
+/// The shell draws these through the detached camera, so the game continues
+/// culling through `authored` while the observer can inspect its exact volume.
+pub fn camera_frustum_lines(authored: &Camera, aspect: f32) -> Vec<DebugLine> {
+    if !aspect.is_finite()
+        || aspect <= 0.0
+        || !authored.fov_radians.is_finite()
+        || authored.fov_radians <= 0.0
+        || authored.fov_radians >= std::f32::consts::PI
+        || !authored.near.is_finite()
+        || !authored.far.is_finite()
+        || authored.near <= 0.0
+        || authored.near >= authored.far
+    {
+        return Vec::new();
+    }
+
+    let eye = Vector3::from(authored.eye);
+    let gaze = Vector3::from(authored.target) - eye;
+    let authored_up = Vector3::from(authored.up);
+    let right = gaze.cross(authored_up);
+    if !eye.x.is_finite()
+        || !eye.y.is_finite()
+        || !eye.z.is_finite()
+        || !gaze.magnitude().is_normal()
+        || !right.magnitude().is_normal()
+    {
+        return Vec::new();
+    }
+
+    let forward = gaze.normalize();
+    let right = right.normalize();
+    let up = right.cross(forward).normalize();
+    let half_tan = (authored.fov_radians * 0.5).tan();
+    let corners = |distance: f32| {
+        let center = eye + forward * distance;
+        let half_height = half_tan * distance;
+        let half_width = half_height * aspect;
+        [
+            center - right * half_width - up * half_height,
+            center + right * half_width - up * half_height,
+            center + right * half_width + up * half_height,
+            center - right * half_width + up * half_height,
+        ]
+    };
+    let near = corners(authored.near);
+    let far = corners(authored.far);
+    let color = [0.91, 0.35, 0.72, 1.0];
+    let line = |a: Vector3<f32>, b: Vector3<f32>| DebugLine {
+        a: a.into(),
+        b: b.into(),
+        color,
+    };
+
+    let mut lines = Vec::with_capacity(12);
+    for index in 0..4 {
+        let next = (index + 1) % 4;
+        lines.push(line(near[index], near[next]));
+        lines.push(line(far[index], far[next]));
+        lines.push(line(near[index], far[index]));
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DebugCamera, DebugCameraMode};
+    use super::{
+        camera_frustum_lines, DebugCamera, DebugCameraMode, DebugMaterialMode, DebugPresentation,
+    };
     use crate::{math::Angle, Camera, Camera2D, Frame, Scene3D, SpriteLayer};
+    use cgmath::{InnerSpace, Vector3};
 
     fn camera() -> Camera {
         Camera::look_at(
@@ -463,6 +756,110 @@ mod tests {
         assert_eq!(effective.eye, before_eye);
         assert!(effective.fov_radians < before_fov);
         assert_eq!(frame.camera.fov_radians, camera().fov_radians);
+    }
+
+    #[test]
+    fn fps_and_orbit_switch_without_moving_the_camera() {
+        let frame = frame_3d();
+        let mut debug = DebugCamera::default();
+        assert!(debug.detach(&frame));
+        let before = debug.camera(&frame.camera).clone();
+
+        assert!(debug.set_mode(DebugCameraMode::Orbit));
+        assert_eq!(debug.mode(), Some(DebugCameraMode::Orbit));
+        assert_eq!(debug.camera(&frame.camera).eye, before.eye);
+        assert_eq!(debug.camera(&frame.camera).target, before.target);
+
+        debug.look(100.0, -20.0);
+        let orbit = debug.camera(&frame.camera);
+        assert_ne!(orbit.eye, before.eye);
+        assert_eq!(orbit.target, before.target);
+        assert!((distance(orbit) - distance(&before)).abs() < 0.001);
+
+        assert!(debug.set_mode(DebugCameraMode::Fps));
+        assert_eq!(debug.mode(), Some(DebugCameraMode::Fps));
+        assert!(!debug.set_mode(DebugCameraMode::Pan2d));
+        assert_eq!(debug.mode(), Some(DebugCameraMode::Fps));
+    }
+
+    #[test]
+    fn orbit_wheel_dollies_without_changing_fov() {
+        let frame = frame_3d();
+        let mut debug = DebugCamera::default();
+        assert!(debug.detach(&frame));
+        assert!(debug.set_mode(DebugCameraMode::Orbit));
+        let before = debug.camera(&frame.camera).clone();
+
+        debug.zoom(1.0);
+        let effective = debug.camera(&frame.camera);
+        assert!(distance(effective) < distance(&before));
+        assert_eq!(effective.target, before.target);
+        assert_eq!(effective.fov_radians, before.fov_radians);
+    }
+
+    #[test]
+    fn fov_control_and_presentation_stay_shell_owned() {
+        let frame = frame_3d();
+        let mut debug = DebugCamera::default();
+        assert!(debug.detach(&frame));
+        debug.set_fov_degrees(75.0);
+        assert!((debug.fov_degrees().unwrap() - 75.0).abs() < 0.001);
+        assert_ne!(
+            debug.camera(&frame.camera).fov_radians,
+            frame.camera.fov_radians
+        );
+
+        let presentation = DebugPresentation {
+            material: DebugMaterialMode::Normals,
+            physics: true,
+            authored_camera_frustum: true,
+            show_game_ui: false,
+        };
+        assert_eq!(
+            presentation.material.render_mode(),
+            crate::DebugRenderMode::Normals
+        );
+        assert_eq!(
+            presentation.diagnostics(true, false, crate::DebugRenderMode::Default),
+            super::DebugDiagnostics {
+                render_mode: crate::DebugRenderMode::Normals,
+                physics: true,
+                authored_camera_frustum: true,
+            }
+        );
+        assert_eq!(
+            presentation.diagnostics(true, true, crate::DebugRenderMode::Tangents),
+            super::DebugDiagnostics {
+                render_mode: crate::DebugRenderMode::Default,
+                physics: false,
+                authored_camera_frustum: false,
+            }
+        );
+        assert_eq!(
+            presentation.diagnostics(false, false, crate::DebugRenderMode::Physics),
+            super::DebugDiagnostics {
+                render_mode: crate::DebugRenderMode::Physics,
+                physics: true,
+                authored_camera_frustum: false,
+            }
+        );
+    }
+
+    #[test]
+    fn authored_frustum_uses_actual_clip_planes() {
+        let camera = camera();
+        let lines = camera_frustum_lines(&camera, 16.0 / 9.0);
+        assert_eq!(lines.len(), 12);
+        assert!(lines.iter().all(|line| {
+            line.a.into_iter().all(f32::is_finite) && line.b.into_iter().all(f32::is_finite)
+        }));
+
+        let eye = Vector3::from(camera.eye);
+        let forward = (Vector3::from(camera.target) - eye).normalize();
+        let near_distance = (Vector3::from(lines[0].a) - eye).dot(forward);
+        let far_distance = (Vector3::from(lines[1].a) - eye).dot(forward);
+        assert!((near_distance - camera.near).abs() < 0.001);
+        assert!((far_distance - camera.far).abs() < 0.001);
     }
 
     #[test]

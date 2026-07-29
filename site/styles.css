@@ -2503,6 +2503,69 @@ a:hover {
   z-index: 12;
 }
 
+.mp-debug {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 9px 12px;
+  color: var(--text);
+  background: rgba(24, 18, 42, 0.96);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+  font: 12px/1 var(--font-mono);
+  position: relative;
+  z-index: 11;
+}
+
+.mp-debug[hidden] {
+  display: none;
+}
+
+.mp-debug strong {
+  color: var(--cyan);
+  letter-spacing: 0.04em;
+}
+
+.mp-debug label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.mp-debug select,
+.mp-debug button {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 6px;
+  color: var(--text);
+  background: rgba(65, 216, 230, 0.1);
+  font: 12px/1 var(--font-mono);
+}
+
+.mp-debug button {
+  cursor: pointer;
+}
+
+.mp-debug button:hover,
+.mp-debug select:hover {
+  border-color: var(--cyan);
+}
+
+.mp-debug input {
+  accent-color: var(--cyan);
+}
+
+.mp-debug input[type="range"] {
+  width: 100px;
+}
+
+.mp-debug output {
+  min-width: 42px;
+  color: var(--text);
+}
+
 .mp-chrono.dormant .mp-rail,
 .mp-chrono.dormant .mp-rail-label {
   opacity: 0.35;
