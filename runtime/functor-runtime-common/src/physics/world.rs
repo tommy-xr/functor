@@ -848,8 +848,16 @@ impl World {
         let (rb_handle, col_handle) = self.tags[&next.tag];
 
         if prev.position != next.position || prev.rotation != next.rotation {
-            let pose = pose_of(next);
+            let mut pose = pose_of(next);
             let rb = &mut self.bodies[rb_handle];
+            if next.kind == BodyKind::Kinematic && rb.rotation().dot(pose.rotation) < 0.0 {
+                // q and -q describe the same orientation, but Rapier derives a
+                // position-based kinematic body's angular velocity from the
+                // raw quaternion delta. Keep the target on the live pose's
+                // hemisphere so crossing 180° takes the short arc instead of
+                // generating an almost-full-turn contact velocity.
+                pose.rotation = -pose.rotation;
+            }
             // Skip the write when the declaration merely caught up with the
             // simulation (the `Physics.synced` steady state: the model
             // re-declares last frame's physics output). The values would be a
@@ -1383,6 +1391,40 @@ mod tests {
         let snap = w.snapshot();
         let mut r = World::new([0.0, 0.0, 0.0]);
         r.restore(&snap).unwrap();
+    }
+
+    #[test]
+    fn kinematic_rotation_crosses_180_degrees_on_the_short_arc() {
+        let half_179_degrees = 179.0_f32.to_radians() / 2.0;
+        let (sin, cos) = half_179_degrees.sin_cos();
+        let before = [0.0, sin, 0.0, cos];
+        // The canonical rotation builder wraps 181° to -179° so `w` stays
+        // positive. This is the same orientation as +181°, but lies on the
+        // opposite quaternion hemisphere from `before`.
+        let after = [0.0, -sin, 0.0, cos];
+        let body = |rotation| {
+            Body::kinematic(
+                "spinner".to_string(),
+                Shape::Cuboid {
+                    extents: [1.0, 1.0, 1.0],
+                },
+            )
+            .facing(rotation)
+        };
+
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![body(before)]));
+        w.reconcile(&scene(vec![body(after)]));
+        w.step_fixed();
+
+        let (rb_handle, _) = w.tags["spinner"];
+        let angular_velocity = w.bodies[rb_handle].angvel().y;
+        let expected = 2.0_f32.to_radians() / FIXED_DT;
+        assert!(
+            (angular_velocity - expected).abs() < 0.001,
+            "expected a +2° short-arc step ({expected:.3} rad/s), got \
+             {angular_velocity:.3} rad/s"
+        );
     }
 
     #[test]
