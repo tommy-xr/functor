@@ -92,14 +92,23 @@ game's perspective this is fully Elm-controlled.
   reports dragging; the model wins otherwise.
 
 - **Routing policy.** Pointer: when the cursor is free, events feed egui.
-  A click recaptures for free-look only when `functor.json` opts into
-  `viewer.camera.control = "game"`; otherwise it remains available to UI for
-  the whole session. A `"cursor":"visible"` project instead
-  keeps absolute motion/buttons live for pointer-led gameplay; a primary click
-  the previous UI pass wanted remains owned by the widget, while right/middle
-  clicks and wheel input remain game-owned over overlays on both native and
-  web. Keyboard: when egui wants keyboard (a text field is focused), key events
-  are suppressed from the game's `input` hook.
+  A game that implements captured mouse hooks recaptures for free-look by
+  default; `"mouseCapture": false` keeps the pointer available to UI for the
+  whole session. A `"cursor":"visible"` project instead keeps absolute
+  motion/buttons live for pointer-led gameplay; a primary click the previous UI
+  pass wanted remains owned by the widget, while right/middle clicks and wheel
+  input remain game-owned over overlays on both native and web. Keyboard: when
+  egui wants keyboard (a text field is focused), key events are suppressed from
+  the game's `input` hook.
+  The timeline's universal **Debug camera** adds one more shell-owned state
+  while playing or paused. Activating it captures the pointer without
+  delivering camera navigation to the game or egui. A 3D/mixed frame gets FPS
+  mouse look + WASD + Q/E movement and wheel FOV; a pure 2D frame gets
+  mouse/WASD pan and wheel zoom. Escape releases capture but preserves the
+  debug view so the scrubber remains reachable; a viewport click recaptures it.
+  **Exit debug view** returns ownership to the authored camera. The snapshot is
+  runtime-only: game state, replay, culling, and render-target/portal cameras
+  remain authored.
 
 - **Headless testability (LLM-native).** Because `UiEvent` is serializable
   and routed through one producer method, the debug server gains

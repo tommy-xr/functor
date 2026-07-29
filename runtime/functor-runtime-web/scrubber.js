@@ -15,6 +15,12 @@ import {
   functor_lang_scrub_set_preview_config,
   functor_lang_timeline_events,
   functor_lang_timeline_events_gen,
+  functor_lang_viewer_detached,
+  functor_lang_viewer_detached_generation,
+  functor_lang_viewer_look,
+  functor_lang_viewer_move,
+  functor_lang_viewer_toggle_detached,
+  functor_lang_viewer_zoom,
 } from "./pkg/functor_runtime_web.js";
 import {
   PREVIEW_SECONDS_MAX,
@@ -119,6 +125,10 @@ const STYLE = `
   border-color: var(--sb-future);
   box-shadow: 0 0 0 1px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.4);
 }
+#scrub-camera.on {
+  border-color: var(--sb-accent);
+  box-shadow: 0 0 0 1px var(--sb-accent), 0 2px 10px rgba(65, 216, 230, 0.35);
+}
 #scrub-adv { position: relative; }
 #scrub-adv > summary { list-style: none; user-select: none; }
 #scrub-adv > summary::-webkit-details-marker { display: none; }
@@ -147,6 +157,7 @@ const STYLE = `
 
 const HTML = `
   <button id="scrub-pause" title="Pause / resume">⏸</button>
+  <button id="scrub-camera" title="Open the debug camera" hidden>📷</button>
   <button id="scrub-step" title="Step one frame forward">⏭</button>
   <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
     <svg id="scrub-timeline" viewBox="0 0 1000 30" preserveAspectRatio="none"
@@ -222,6 +233,7 @@ export function mountScrubber({ hidden = false } = {}) {
   const $ = (id) => el.querySelector(`#${id}`);
   const rail = $("scrub-rail");
   const pause = $("scrub-pause");
+  const camera = $("scrub-camera");
   const step = $("scrub-step");
   const label = $("scrub-count");
   const unavailable = $("scrub-unavailable");
@@ -245,6 +257,9 @@ export function mountScrubber({ hidden = false } = {}) {
   let lastSeekResultId = null;
   let lastEventsGeneration = null;
   let lastRuntimeSnapshotKey = "";
+  let detachedActive = false;
+  let pendingDetachedGeneration = null;
+  let pendingPointerLock = false;
   let raf = 0;
   const markerNodes = new Map();
 
@@ -274,6 +289,11 @@ export function mountScrubber({ hidden = false } = {}) {
     if (state.requestedSeekId === id) {
       pendingSeek = { id, frame: state.requestedFrame };
     }
+  };
+  const flushPendingSeek = () => {
+    if (pendingSeek === null) return;
+    functor_lang_seek_scene(pendingSeek.frame, pendingSeek.id);
+    pendingSeek = null;
   };
 
   const frameAtPointer = (event) => {
@@ -513,6 +533,15 @@ export function mountScrubber({ hidden = false } = {}) {
       ` / ${Math.round(current.viewport.hi)}`;
     pause.textContent = current.paused ? "▶" : "⏸";
     pause.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
+    camera.hidden = false;
+    camera.disabled = pendingPointerLock || pendingDetachedGeneration !== null;
+    camera.textContent = detachedActive ? "🔗" : "📷";
+    camera.title = detachedActive
+      ? "Exit the debug camera"
+      : "Debug camera — FPS in 3D, pan/zoom in 2D";
+    camera.setAttribute("aria-label", camera.title);
+    camera.setAttribute("aria-pressed", String(detachedActive));
+    camera.classList.toggle("on", detachedActive);
     extrapolate.classList.toggle("on", state.preview.enabled);
     extrapolate.setAttribute("aria-pressed", String(state.preview.enabled));
     renderTicks(current);
@@ -618,6 +647,46 @@ export function mountScrubber({ hidden = false } = {}) {
   });
 
   pause.addEventListener("click", () => functor_lang_scrub_toggle_pause());
+  const queueDetachedToggle = () => {
+    flushPendingSeek();
+    pendingDetachedGeneration = functor_lang_viewer_detached_generation();
+    camera.disabled = true;
+    functor_lang_viewer_toggle_detached();
+  };
+  const ownsDetachedInput = () =>
+    pendingPointerLock ||
+    pendingDetachedGeneration !== null ||
+    functor_lang_viewer_detached();
+  camera.addEventListener("click", () => {
+    const wasDetached = functor_lang_viewer_detached();
+    if (wasDetached) {
+      queueDetachedToggle();
+      if (document.pointerLockElement) document.exitPointerLock();
+      return;
+    }
+    const canvas = document.getElementById("canvas");
+    if (!canvas) return;
+    pendingPointerLock = true;
+    camera.disabled = true;
+    const accepted = () => {
+      pendingPointerLock = false;
+      queueDetachedToggle();
+    };
+    const refused = () => {
+      pendingPointerLock = false;
+      if (!hidden) render();
+    };
+    try {
+      const request = canvas.requestPointerLock();
+      if (request && typeof request.then === "function") {
+        request.then(accepted, refused);
+      } else {
+        accepted();
+      }
+    } catch {
+      refused();
+    }
+  });
   step.addEventListener("click", () => functor_lang_scrub_step());
   extrapolate.addEventListener("click", () => {
     dispatch({ type: "preview-changed", preview: { enabled: !state.preview.enabled } });
@@ -647,6 +716,18 @@ export function mountScrubber({ hidden = false } = {}) {
     range: () => functor_lang_scene_range(),
     seek: requestSeek,
     togglePause: () => functor_lang_scrub_toggle_pause(),
+    canDetach: () => true,
+    detached: () => functor_lang_viewer_detached(),
+    detachedGeneration: () => functor_lang_viewer_detached_generation(),
+    ownsDetachedInput,
+    setDetachedPointerLockPending: (pending) => {
+      pendingPointerLock = pending;
+    },
+    toggleDetached: queueDetachedToggle,
+    lookDetached: (dx, dy) => functor_lang_viewer_look(dx, dy),
+    moveDetached: (forward, right, vertical, elapsedSeconds) =>
+      functor_lang_viewer_move(forward, right, vertical, elapsedSeconds),
+    zoomDetached: (steps) => functor_lang_viewer_zoom(steps),
     step: () => functor_lang_scrub_step(),
     model: () => state,
     view,
@@ -671,6 +752,23 @@ export function mountScrubber({ hidden = false } = {}) {
   window.__scrub = seam;
 
   const update = () => {
+    const nextDetached = functor_lang_viewer_detached();
+    const detachedGeneration = functor_lang_viewer_detached_generation();
+    if (
+      pendingDetachedGeneration !== null &&
+      detachedGeneration !== pendingDetachedGeneration
+    ) {
+      pendingDetachedGeneration = null;
+      if (!nextDetached && document.pointerLockElement) document.exitPointerLock();
+      // A refused detach keeps `nextDetached` false, so there is no state
+      // transition below to trigger a render. Re-enable the retry button now.
+      if (!hidden) render();
+    }
+    if (nextDetached !== detachedActive) {
+      detachedActive = nextDetached;
+      if (!detachedActive && document.pointerLockElement) document.exitPointerLock();
+      if (!hidden) render();
+    }
     if (pendingSeek !== null) {
       functor_lang_seek_scene(pendingSeek.frame, pendingSeek.id);
       pendingSeek = null;

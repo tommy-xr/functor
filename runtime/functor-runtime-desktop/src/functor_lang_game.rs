@@ -1024,10 +1024,10 @@ impl Game for FunctorLangGame {
     /// the strobe still has `divisions` frames but each is accurate integration.
     /// Division `div` draws at `tts = start_tts + (div+1)*steps_per_division*sub_dt`,
     /// matching the time `forward_step_scene` stepped the model to (the same f32
-    /// arithmetic). Each frame's camera is overridden to the paused view
-    /// (`last_frame.camera`) so only world motion smears. A draw that errors or
-    /// doesn't return a Frame is skipped, so the result may be shorter than
-    /// `divisions`.
+    /// arithmetic). Each frame retains its authored camera; the shell applies
+    /// the timeline's pin/follow view policy at composition time. A draw that
+    /// errors or doesn't return a Frame is skipped, so the result may be shorter
+    /// than `divisions`.
     ///
     /// `script_inputs` selects the input source (docs/time-travel.md F2). When
     /// `Some`, the ghost forward-steps from `self.model` (the live anchor — K is
@@ -1050,7 +1050,6 @@ impl Game for FunctorLangGame {
             self.has_physics,
             self.has_subscriptions,
             self.prev_tts,
-            &self.last_frame,
             divisions,
             dt,
             start_tts,
@@ -3076,14 +3075,14 @@ mod tests {
              \x20 Physics.fixed(\"ground\", Physics.box(10.0, 0.4, 10.0)) |> Physics.at(Vec3.make(0.0, -0.2, 0.0)),\n\
              \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 4.0, 0.0))])\n\
              let draw = (m, tts) => Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(tts, 0.0, 0.0)),\n\
                Scene.sphere() |> Physics.transformed(\"ball\"))\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
         // Drive to a fork point mid-fall (ticks record history; render seeds
-        // `last_frame`, whose camera the ghost freezes to).
+        // `last_frame`, which remains the live anchor).
         const SUB_DT: f32 = 1.0 / 60.0;
         const K: usize = 10;
         let mut tts = 0.0f32;
@@ -3115,6 +3114,16 @@ mod tests {
                 ft.tts
             );
             assert_eq!(ft.dts, 0.0, "a ghost frame is a still of the future");
+        }
+        assert!(
+            ghosts[0].0.camera.eye[0] > game.last_frame.camera.eye[0],
+            "the producer must retain the future frame's authored camera"
+        );
+        for pair in ghosts.windows(2) {
+            assert!(
+                pair[1].0.camera.eye[0] > pair[0].0.camera.eye[0],
+                "future authored cameras remain truthful for shell policy/culling"
+            );
         }
         let ys: Vec<f32> = ghosts.iter().map(|(f, _)| f.scene.xform.w.y).collect();
         assert!(

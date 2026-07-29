@@ -1517,10 +1517,11 @@ pub fn materialize_counterfactual_history(
 /// only at the boundary, so the strobe still has `divisions` frames but each is
 /// accurate integration. Division `div` draws at
 /// `tts = start_tts + (div+1)*steps_per_division*sub_dt`, matching the time
-/// `forward_step_scene` stepped the model to (the same f32 arithmetic). Each
-/// frame's camera is overridden to the paused view (`last_frame.camera`) so only
-/// world motion smears. A draw that errors or doesn't return a Frame is skipped,
-/// so the result may be shorter than `divisions`.
+/// `forward_step_scene` stepped the model to (the same f32 arithmetic). The
+/// projected frame retains its authored camera; pin/follow policy belongs to
+/// the shell's compositor so frame introspection and camera-based culling stay
+/// truthful. A draw that errors or doesn't return a Frame is skipped, so the
+/// result may be shorter than `divisions`.
 ///
 /// `script_inputs` selects the input source (docs/time-travel.md F2). When
 /// `Some`, the ghost forward-steps from `model` (the live anchor — K is NOT
@@ -1535,7 +1536,6 @@ pub fn ghost_frames(
     has_physics: bool,
     has_subscriptions: bool,
     prev_tts: Option<f64>,
-    last_frame: &Frame,
     divisions: usize,
     dt: f32,
     start_tts: f64,
@@ -1615,10 +1615,7 @@ pub fn ghost_frames(
         // A draw error or non-Frame return for a division is skipped, not fatal.
         if let Ok(value) = session.call("draw", args, &mut FunctorHost) {
             if let Some(frame) = frame_value(&value) {
-                let mut frame = frame.clone();
-                // Freeze the view: composite only world motion, not the camera.
-                frame.camera = last_frame.camera.clone();
-                frames.push((frame, FrameTime { dts: 0.0, tts }));
+                frames.push((frame.clone(), FrameTime { dts: 0.0, tts }));
             }
         }
     }

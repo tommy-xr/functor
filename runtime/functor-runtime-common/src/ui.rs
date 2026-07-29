@@ -690,6 +690,12 @@ pub struct ScrubberState {
     /// until something is recorded (the slider is then hidden).
     pub range: Option<(u64, u64)>,
     pub paused: bool,
+    /// Whether this shell can offer its runtime-owned debug camera.
+    pub camera_detachable: bool,
+    /// Whether future-frame catch-up temporarily prevents a new snapshot.
+    pub camera_catching_up: bool,
+    /// Whether the main viewport currently uses that detached camera.
+    pub camera_detached: bool,
     /// The bar's single future-preview switch (docs/time-travel.md T6/T6d):
     /// "extrapolate" on/off. What it SHOWS when on is `preview_mode`,
     /// configured in the ⚙ popover. Interactive companion to the
@@ -712,6 +718,8 @@ pub struct ScrubberState {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ScrubberAction {
     TogglePause,
+    /// Snapshot or discard the shell-owned debug view.
+    ToggleDetachedCamera,
     /// Non-destructive scrub to a rendered frame (dragging the timeline).
     SeekTo(u64),
     Step,
@@ -814,6 +822,22 @@ impl Scrubber {
                                     .clicked()
                                 {
                                     action = Some(ScrubberAction::TogglePause);
+                                }
+                                if state.camera_detachable {
+                                    let enabled =
+                                        state.camera_detached || !state.camera_catching_up;
+                                    let label = if state.camera_detached {
+                                        "Exit debug view"
+                                    } else {
+                                        "Debug camera"
+                                    };
+                                    let height = ui.spacing().interact_size.y;
+                                    let button = ui.add_enabled_ui(enabled, |ui| {
+                                        ui.add_sized([104.0, height], egui::Button::new(label))
+                                    });
+                                    if button.inner.clicked() {
+                                        action = Some(ScrubberAction::ToggleDetachedCamera);
+                                    }
                                 }
                                 // The draggable timeline. When a preview is
                                 // on, the rail's DOMAIN includes the preview

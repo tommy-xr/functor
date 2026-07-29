@@ -2248,6 +2248,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 skybox: None,
                 clear_color: None,
                 sprite_layers: vec![],
+                pure_2d: false,
             })
         },
     );

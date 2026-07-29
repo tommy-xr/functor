@@ -809,7 +809,6 @@ impl GameProducer for FunctorLangEmbeddedGame {
             self.has_physics,
             self.has_subscriptions,
             self.prev_tts,
-            &self.last_frame,
             divisions,
             dt,
             start_tts,

@@ -11,7 +11,7 @@
       /* Fill the window; the runtime sizes the drawable buffer (and GL
          viewport) to match this displayed size each frame, scaled for HiDPI. */
       #canvas { display: block; width: 100%; height: calc(100% - var(--functor-scrubber-h, 0px)); margin-top: var(--functor-scrubber-h, 0px); }
-      /* Explicit mouse-look toggle. The cursor stays FREE by default so the
+      /* Explicit mouse-capture toggle. The cursor stays FREE by default so the
          time-travel scrubber is usable without the pointer being grabbed on
          every click; press this (or Esc to release) to control the camera. */
       #mouselook {
@@ -28,6 +28,27 @@
         background: rgba(40,40,48,0.85);
         box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5); transform: translateY(-1px);
       }
+      /* Brief pointer-lock affordance: discoverable on capture, then out of
+         the way while the player is looking or moving. */
+      #capture-hint {
+        position: fixed; bottom: 12px; left: 50%; z-index: 11;
+        transform: translate(-50%, 4px);
+        font: 11px/1 monospace; white-space: nowrap;
+        color: #aaa; background: rgba(20,20,24,0.82);
+        border: 1px solid rgba(255,255,255,0.15); border-radius: 999px;
+        padding: 6px 9px; box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+        opacity: 0; pointer-events: none;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+      }
+      #capture-hint.visible { opacity: 1; transform: translate(-50%, 0); }
+      #capture-hint kbd {
+        color: #ddd; font: inherit;
+        border: 1px solid rgba(255,255,255,0.15); border-radius: 3px;
+        padding: 1px 4px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #capture-hint { transition: none; }
+      }
       /* The time-travel scrubber is the shared component (scrubber.js); it
          injects its own styles (the calm site theme). */
       /* The game's HTML/CSS webview overlay (`webview model`): a REAL DOM
@@ -42,7 +63,8 @@
   <body>
     <canvas id="canvas"></canvas>
     <div id="webview"></div>
-    <button id="mouselook" title="Control the camera with the mouse; Esc to release" hidden>🖱 mouse look</button>
+    <button id="mouselook" title="Capture mouse; Esc to release" hidden>🖱 mouse</button>
+    <div id="capture-hint" role="status" aria-hidden="true">Press <kbd>Esc</kbd> to release mouse</div>
     <script type="module">
 
       import init, {
@@ -65,6 +87,10 @@
         functor_lang_webview_gen,
         functor_lang_webview_click,
         functor_lang_webview_input,
+        functor_lang_viewer_detached,
+        functor_lang_viewer_look,
+        functor_lang_viewer_move,
+        functor_lang_viewer_zoom,
         functorLangStartSim,
         functorLangSimStep,
         functorLangSimState,
@@ -93,19 +119,18 @@
       window.__functorLangProjectFiles = ("__FUNCTOR_LANG_PROJECT_FILES__")
         .map((p) => p.split("/").map(encodeURIComponent).join("/"));
 
-      // Camera input is opt-in project metadata. `game` means captured mouse
-      // motion belongs to the Functor Lang hooks; absent/`none` keeps the
-      // pointer free and hides camera chrome. The CLI substitutes this from
-      // functor.json's viewer.camera.control.
-      const gameCameraControl = "__FUNCTOR_CAMERA_CONTROL__" === "game";
-      const warnMissingCameraControl = () => {
-        if (gameCameraControl || window.__functorCursorPolicy === "visible") return;
+      // Captured game mouse input defaults on. A project can opt out with
+      // mouseCapture: false; programs without captured mouse hooks never show
+      // capture chrome. The debug camera owns its input independently.
+      const gameMouseCapture = "__FUNCTOR_MOUSE_CAPTURE__";
+      const warnMissingMouseCapture = () => {
+        if (gameMouseCapture || window.__functorCursorPolicy === "visible") return;
         const poll = () => {
           if (functor_lang_is_running() && functor_lang_uses_captured_mouse_input()) {
             console.warn(
-              '[functor-lang] captured mouse hooks are inert without ' +
-              'viewer.camera.control = "game" in functor.json; ' +
-              'update the manifest, then restart the runner'
+              '[functor-lang] captured mouse hooks are inert because ' +
+              '"mouseCapture": false; remove it or set it to true, then ' +
+              'restart the runner'
             );
             return;
           }
@@ -117,7 +142,7 @@
       };
 
       // Absolute pointer input is an independent project opt-in. Captured
-      // mouse look remains gated by viewer.camera.control = "game".
+      // game-owned captured input remains gated by mouseCapture.
       window.__functorCursorPolicy = "__FUNCTOR_CURSOR_POLICY__";
 
       // Map a browser KeyboardEvent.code to the canonical key code expected by
@@ -151,9 +176,36 @@
       const setupInput = () => {
         const visiblePointer = window.__functorCursorPolicy === "visible";
         const mouseLook = document.getElementById("mouselook");
-        mouseLook.hidden = !gameCameraControl || visiblePointer;
         const canvas = document.getElementById("canvas");
-
+        const captureHint = document.getElementById("capture-hint");
+        let captureHintTimer = 0;
+        const showCaptureHint = (visible) => {
+          window.clearTimeout(captureHintTimer);
+          captureHint.classList.toggle("visible", visible);
+          captureHint.setAttribute("aria-hidden", String(!visible));
+          if (visible) {
+            captureHintTimer = window.setTimeout(() => {
+              captureHint.classList.remove("visible");
+              captureHint.setAttribute("aria-hidden", "true");
+            }, 2500);
+          }
+        };
+        const gameOwnsCapturedMouse = () =>
+          gameMouseCapture &&
+          !visiblePointer &&
+          functor_lang_is_running() &&
+          functor_lang_uses_captured_mouse_input();
+        const syncGameMouseCaptureUi = () => {
+          mouseLook.hidden = !gameOwnsCapturedMouse();
+          if (
+            mouseLook.hidden &&
+            document.pointerLockElement === canvas &&
+            !debugCameraOwnsInput()
+          ) {
+            document.exitPointerLock();
+          }
+          setTimeout(syncGameMouseCaptureUi, 250);
+        };
         // Keyboard. Ignore auto-repeat (the game tracks held state itself), and
         // swallow keys we handle so Space/arrows don't scroll the page.
         // While a Ui.textInput is focused (the runtime reports it after each
@@ -165,6 +217,19 @@
         // release whose press was swallowed by a focused field never leaks
         // a phantom release edge.
         const gameHeld = new Set();
+        const debugHeld = new Set();
+        const debugKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE"]);
+        // Pointer lock can begin before the runtime applies the queued detach.
+        // The scrubber claims shell ownership for that entire handshake so the
+        // first captured event can never leak into the game/replay.
+        const debugCameraOwnsInput = () =>
+          functor_lang_viewer_detached() ||
+          window.__scrub?.ownsDetachedInput?.() === true;
+        const debugCameraCapturesKeys = () =>
+          debugCameraOwnsInput() &&
+          (document.pointerLockElement === canvas ||
+            !functor_lang_viewer_detached());
+        syncGameMouseCaptureUi();
         // The webview keyboard gate (native parity): while an Html.input in
         // the webview's shadow root is focused, keys are the BROWSER's —
         // they type into the real DOM field — and the game's input hook
@@ -177,6 +242,22 @@
           return active && active.hasAttribute("data-fn-input") ? active : null;
         };
         window.addEventListener("keydown", (e) => {
+          const code = keyCode(e.code);
+          // Pointer-locked debug navigation is shell-owned even if an in-game
+          // text field retained focus from before detaching. Other keys keep
+          // their ordinary focused-field behavior.
+          if (
+            code !== 0 &&
+            debugCameraCapturesKeys() &&
+            debugKeys.has(e.code) &&
+            !gameHeld.has(code)
+          ) {
+            e.preventDefault();
+            if (!e.repeat) {
+              debugHeld.add(e.code);
+            }
+            return;
+          }
           const webviewInput = webviewActiveInput();
           if (webviewInput) {
             if (e.key === "Escape") {
@@ -190,7 +271,6 @@
             if (functor_lang_ui_key(e.key)) e.preventDefault();
             return;
           }
-          const code = keyCode(e.code);
           if (code === 0) return;
           e.preventDefault();
           if (!e.repeat) {
@@ -201,6 +281,10 @@
         window.addEventListener("keyup", (e) => {
           const code = keyCode(e.code);
           if (code === 0) return;
+          if (debugHeld.delete(e.code)) {
+            e.preventDefault();
+            return;
+          }
           if (gameHeld.delete(code)) functor_lang_key_event(code, false);
         });
         // A key released while the tab/window lacks focus may never emit a
@@ -209,24 +293,65 @@
         window.addEventListener("blur", () => {
           for (const code of gameHeld) functor_lang_key_event(code, false);
           gameHeld.clear();
+          debugHeld.clear();
         });
+
+        // Sample shell-owned debug movement independently of game time. These
+        // keys never enter the model or replay; pointer unlock pauses movement
+        // until the viewport is clicked to recapture.
+        let debugWasActive = false;
+        let lastDebugTick = performance.now();
+        const debugTick = (now) => {
+          const active = functor_lang_viewer_detached();
+          if (!active && debugWasActive) {
+            debugHeld.clear();
+          }
+          const axis = (positive, negative) =>
+            (debugHeld.has(positive) ? 1 : 0) - (debugHeld.has(negative) ? 1 : 0);
+          if (active && document.pointerLockElement === canvas) {
+            const forward = axis("KeyW", "KeyS");
+            const right = axis("KeyD", "KeyA");
+            const vertical = axis("KeyE", "KeyQ");
+            if (forward || right || vertical) {
+              functor_lang_viewer_move(
+                forward,
+                right,
+                vertical,
+                Math.min((now - lastDebugTick) / 1000, 0.05),
+              );
+            }
+          }
+          debugWasActive = active;
+          lastDebugTick = now;
+          requestAnimationFrame(debugTick);
+        };
+        requestAnimationFrame(debugTick);
 
         // Mouse free-look. Pointer Lock is the browser equivalent of the
         // desktop runtime's GLFW cursor capture, giving movementX/Y relative
-        // motion. Entered EXPLICITLY via the "mouse look" button (not on every
+        // motion. Entered EXPLICITLY via the mouse-capture button (not on every
         // canvas click) so the cursor stays free for the time-travel scrubber;
         // Esc releases the lock (browser default). We accumulate movement into a
         // running position so the game's "delta = current - lastMouse" works the
         // same as on native.
-        if (gameCameraControl && !visiblePointer) {
-          mouseLook.addEventListener("click", () => canvas.requestPointerLock());
+        if (gameMouseCapture && !visiblePointer) {
+          mouseLook.addEventListener("click", () => {
+            if (gameOwnsCapturedMouse()) canvas.requestPointerLock();
+          });
         }
         let ax = 0;
         let ay = 0;
         document.addEventListener("mousemove", (e) => {
           // Only drive the camera while in look mode (pointer locked); otherwise
           // moving the cursor to the scrubber must not rotate the view.
-          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
+          if (document.pointerLockElement !== canvas) return;
+          if (debugCameraOwnsInput()) {
+            if (functor_lang_viewer_detached()) {
+              functor_lang_viewer_look(e.movementX, e.movementY);
+            }
+            return;
+          }
+          if (!gameOwnsCapturedMouse()) return;
           ax += e.movementX;
           ay += e.movementY;
           functor_lang_mouse_move(ax, ay);
@@ -235,7 +360,7 @@
         // overlays. Capture at window scope so shadow-DOM webviews do too, then
         // translate the page point back into the canvas's CSS-pixel space.
         window.addEventListener("mousemove", (e) => {
-          if (!visiblePointer) return;
+          if (!visiblePointer || debugCameraOwnsInput()) return;
           const rect = canvas.getBoundingClientRect();
           // The wasm export takes integers. Floor rather than relying on the
           // JS→wasm truncation so a fractional point just above/left of the
@@ -251,16 +376,41 @@
           functor_lang_mouse_wheel(Math.sign(e.deltaY));
         };
         canvas.addEventListener("wheel", (e) => {
+          if (
+            document.pointerLockElement === canvas &&
+            debugCameraOwnsInput()
+          ) {
+            e.preventDefault();
+            if (functor_lang_viewer_detached()) {
+              functor_lang_viewer_zoom(-Math.sign(e.deltaY));
+            }
+            return;
+          }
           if (visiblePointer) return;
-          if (!gameCameraControl || document.pointerLockElement !== canvas) return;
+          if (!gameOwnsCapturedMouse() || document.pointerLockElement !== canvas) return;
           deliverGameWheel(e);
         });
         // Native visible-pointer games own wheel input everywhere in the
         // window, including over an interactive webview rectangle. Shadow-DOM
         // targets never bubble through the canvas, so capture at window scope.
         window.addEventListener("wheel", (e) => {
-          if (visiblePointer) deliverGameWheel(e);
+          if (visiblePointer && !debugCameraOwnsInput()) deliverGameWheel(e);
         }, { capture: true, passive: false });
+
+        // Escape, focus loss, or a denied initial request can leave a detached
+        // view intentionally preserved but unlocked. A left click on the
+        // viewport recaptures it, mirroring native, and is consumed by the
+        // shell rather than leaking into game/UI input.
+        canvas.addEventListener("mousedown", (e) => {
+          if (
+            e.button !== 0 ||
+            !functor_lang_viewer_detached() ||
+            document.pointerLockElement === canvas
+          ) return;
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          canvas.requestPointerLock();
+        });
 
         // Captured projects deliver mouse buttons only while pointer-locked.
         // Visible projects deliver absolute canvas buttons without locking,
@@ -276,15 +426,20 @@
         // canvas listener below).
         window.addEventListener("mousedown", (e) => {
           const code = buttonCode(e.button);
-          if (!visiblePointer || (code !== 2 && code !== 3)) return;
+          if (
+            !visiblePointer ||
+            debugCameraOwnsInput() ||
+            (code !== 2 && code !== 3)
+          ) return;
           e.preventDefault();
           functor_lang_mouse_button(code, true);
           gameButtons.add(code);
         }, { capture: true });
         canvas.addEventListener("mousedown", (e) => {
           if (
-            !visiblePointer &&
-            (!gameCameraControl || document.pointerLockElement !== canvas)
+            debugCameraOwnsInput() ||
+            (!visiblePointer &&
+              (!gameOwnsCapturedMouse() || document.pointerLockElement !== canvas))
           ) return;
           const code = buttonCode(e.button);
           if (code === 0) return;
@@ -307,7 +462,8 @@
         canvas.addEventListener("contextmenu", (e) => {
           if (
             visiblePointer ||
-            (gameCameraControl && document.pointerLockElement === canvas)
+            ((gameOwnsCapturedMouse() || debugCameraOwnsInput()) &&
+              document.pointerLockElement === canvas)
           ) e.preventDefault();
         });
         // A shadow-DOM webview target also bypasses the canvas listener.
@@ -350,8 +506,13 @@
           functor_lang_ui_pointer_leave();
         });
         document.addEventListener("pointerlockchange", () => {
-          if (document.pointerLockElement === canvas) functor_lang_ui_pointer_leave();
-          else releaseGameButtons();
+          const captured = document.pointerLockElement === canvas;
+          showCaptureHint(captured);
+          if (captured) functor_lang_ui_pointer_leave();
+          else {
+            releaseGameButtons();
+            debugHeld.clear();
+          }
         });
       };
 
@@ -525,7 +686,7 @@
         // then (paused clocks drop interactions runtime-side anyway).
         setupWebview();
         setupSetSource();
-        warnMissingCameraControl();
+        warnMissingMouseCapture();
       });
     </script>
   </body>

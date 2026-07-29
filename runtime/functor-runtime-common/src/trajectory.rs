@@ -802,10 +802,10 @@ impl FramePreview {
     /// uses this so trails remain solid across every averaged future frame.
     /// Sprite trails get their own layer with the anchor camera, preventing a
     /// panning future camera from smearing the marker path.
-    pub fn apply_trails(&self, frame: &mut Frame) {
+    pub fn apply_trails(&self, frame: &mut Frame) -> bool {
         self.scene.apply(&mut frame.scene, false);
         if frame.sprite_layers.len() != self.sprite_layers.len() {
-            return;
+            return false;
         }
         for index in (0..self.sprite_layers.len()).rev() {
             if let Some(trail) = &self.sprite_layers[index].trail {
@@ -818,6 +818,31 @@ impl FramePreview {
                 );
             }
         }
+        true
+    }
+
+    /// Expand one debug-camera override per authored sprite layer to match the
+    /// trail layers inserted by [`Self::apply_trails`]. Each trail shares its
+    /// source layer's observer camera; later authored layers keep their index.
+    pub fn trail_camera_overrides(&self, cameras: &[Camera2D]) -> Vec<Camera2D> {
+        if cameras.len() != self.sprite_layers.len() {
+            return cameras.to_vec();
+        }
+        let mut expanded = Vec::with_capacity(
+            cameras.len()
+                + self
+                    .sprite_layers
+                    .iter()
+                    .filter(|overlays| overlays.trail.is_some())
+                    .count(),
+        );
+        for (camera, overlays) in cameras.iter().zip(&self.sprite_layers) {
+            expanded.push(camera.clone());
+            if overlays.trail.is_some() {
+                expanded.push(camera.clone());
+            }
+        }
+        expanded
     }
 
     /// Add every requested scene-space overlay to a normal display frame.
@@ -1111,7 +1136,7 @@ mod tests {
         let preview = preview_from_frames(&anchor, &[&future], &preview_options(true, false));
         let mut ghost = future.clone();
 
-        preview.apply_trails(&mut ghost);
+        assert!(preview.apply_trails(&mut ghost));
 
         assert_eq!(ghost.sprite_layers.len(), 3);
         assert_eq!(
@@ -1121,6 +1146,31 @@ mod tests {
         assert_eq!(
             ghost.sprite_layers[2].camera, future.sprite_layers[1].camera,
             "the trail stays below the later HUD/foreground layer"
+        );
+        let debug_cameras = [
+            anchor.sprite_layers[0]
+                .camera
+                .clone()
+                .with_center(-4.0, 3.0),
+            anchor.sprite_layers[1]
+                .camera
+                .clone()
+                .with_center(16.0, 3.0),
+        ];
+        let expanded = preview.trail_camera_overrides(&debug_cameras);
+        assert_eq!(expanded.len(), 3);
+        assert_eq!(expanded[0], debug_cameras[0]);
+        assert_eq!(expanded[1], debug_cameras[0]);
+        assert_eq!(expanded[2], debug_cameras[1]);
+
+        let mut mismatched = ghost.clone();
+        mismatched.sprite_layers.push(SpriteLayer {
+            camera: Camera2D::new(8.0, 4.5),
+            scene: frame(0.0, 0.0),
+        });
+        assert!(
+            !preview.apply_trails(&mut mismatched),
+            "a heterogeneous ghost reports that its debug-camera indices cannot be expanded"
         );
     }
 

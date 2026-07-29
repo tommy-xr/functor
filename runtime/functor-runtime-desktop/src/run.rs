@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::viewer::CameraControl;
+use functor_runtime_common::viewer::DebugCamera;
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, MouseButtons, MouseSnapshot,
     RecordedInput, SceneContext, XrInputSnapshot,
@@ -213,6 +213,33 @@ fn escape_action(cursor_captured: bool, quit_armed: bool) -> EscapeAction {
         EscapeAction::Quit
     } else {
         EscapeAction::ArmQuit
+    }
+}
+
+fn visible_pointer_game_input_enabled(
+    visible_pointer: bool,
+    debug_camera_detached: bool,
+    ignore_user_input: bool,
+) -> bool {
+    visible_pointer && !debug_camera_detached && !ignore_user_input
+}
+
+fn route_visible_pointer_position(
+    game_mouse_pos: &mut (i32, i32),
+    pointer_pos: (i32, i32),
+    visible_pointer: bool,
+    debug_camera_detached: bool,
+    ignore_user_input: bool,
+) -> bool {
+    if visible_pointer_game_input_enabled(
+        visible_pointer,
+        debug_camera_detached,
+        ignore_user_input,
+    ) {
+        *game_mouse_pos = pointer_pos;
+        true
+    } else {
+        false
     }
 }
 
@@ -531,12 +558,10 @@ pub struct Args {
     #[arg(long)]
     functor_lang: bool,
 
-    /// Main-viewport camera input ownership. `none` keeps the pointer free;
-    /// `game` enables cursor capture and routes relative mouse input to the
-    /// Functor Lang hooks. The Functor CLI derives this from
-    /// `functor.json`'s `viewer.camera.control`.
-    #[arg(long, default_value_t = CameraControl::None)]
-    camera_control: CameraControl,
+    /// Capture relative mouse input and route it to the Functor Lang hooks.
+    /// The Functor CLI derives this from functor.json's `mouseCapture`.
+    #[arg(long)]
+    mouse_capture: bool,
 
     /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
     /// or a JSON array of them — the exact format `GET /scene` emits) and replay
@@ -1280,22 +1305,18 @@ pub fn run(args: Args) {
     };
 
     // Hidden/headless/emulated-XR sessions do not have a live captured-pointer
-    // path; their debug/script injection remains available without this viewer
-    // setting, so a capture warning would prescribe the wrong fix.
+    // path; their debug/script injection remains available without physical
+    // mouse capture, so a warning would prescribe the wrong fix.
     let interactive_camera_warning =
         !args.headless && !args.hidden && args.capture_frame.is_none() && !args.emulate_xr;
-    let mut warned_missing_camera_control = false;
-    if interactive_camera_warning
-        && args.camera_control == CameraControl::None
-        && game.uses_captured_mouse_input()
-    {
+    let mut warned_missing_mouse_capture = false;
+    if interactive_camera_warning && !args.mouse_capture && game.uses_captured_mouse_input() {
         eprintln!(
             "[runner] warning: this game defines captured mouse hooks, but \
-`viewer.camera.control` is absent or `none`; add \
-`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json, \
+`\"mouseCapture\": false` disables them; remove that setting (or set it to true), \
 then restart the runner"
         );
-        warned_missing_camera_control = true;
+        warned_missing_mouse_capture = true;
     }
 
     // Scripted deterministic input (docs/time-travel.md T6b). Parsed up front so
@@ -1412,8 +1433,8 @@ then restart the runner"
             window.set_mouse_button_polling(true);
             window.set_focus_polling(true);
             window.set_framebuffer_size_polling(true);
-            // Captured game input is available only by manifest opt-in, and
-            // capture itself is still a user gesture: start with the cursor
+            // Captured game input is manifest-enabled by default, and capture
+            // itself is still a user gesture: start with the cursor
             // free, then a non-overlay click disables it so GLFW reports
             // unbounded relative-like virtual motion. Escape RELEASES the
             // cursor (essential for the hot-reload loop: tweak code in the
@@ -1422,13 +1443,19 @@ then restart the runner"
             // cmd-tabbing away hands the pointer back.
             if !hidden
                 && !args.emulate_xr
-                && args.camera_control == CameraControl::Game
+                && args.mouse_capture
                 && args.cursor == CursorPolicyArg::Captured
+                && game.uses_captured_mouse_input()
             {
                 window.set_cursor_mode(glfw::CursorMode::Normal);
                 eprintln!(
                     "[runner] game mouse control available — click the window to capture; \
 Escape releases while captured"
+                );
+            }
+            if !hidden && !args.emulate_xr {
+                eprintln!(
+                    "[runner] debug camera available — press ~ to open the timeline"
                 );
             }
 
@@ -1554,6 +1581,11 @@ Escape releases while captured"
         } else {
             (0, 0)
         };
+        // The shell pointer keeps moving while a detached view is unlocked so
+        // overlays remain usable. The game-owned position advances only when
+        // input routing permits it, keeping both mouseMove and sampledInput out
+        // of model state/replay during debug exploration.
+        let mut game_mouse_pos = mouse_pos;
         let mut xr_primary_down = false;
         let mut xr_primary_clicked = false;
         let mut xr_override: Option<XrInputSnapshot> = None;
@@ -1564,7 +1596,7 @@ Escape releases while captured"
         // An input script uses the live runtime-owned snapshot below.
         let mut fixed_input_snapshot = desktop_input_snapshot(
             &held_keys,
-            mouse_pos,
+            game_mouse_pos,
             held_buttons,
             &input_edges,
             args.emulate_xr,
@@ -1577,7 +1609,11 @@ Escape releases while captured"
         // arms in the event loop. A hidden window never captures (and never
         // receives the events that would toggle this).
         let visible_pointer = args.cursor == CursorPolicyArg::Visible;
-        let game_camera_control = args.camera_control == CameraControl::Game && !visible_pointer;
+        let game_mouse_capture = args.mouse_capture && !visible_pointer;
+        let camera_detachable = !args.emulate_xr && !args.hidden;
+        let mut detached_camera = DebugCamera::default();
+        let mut last_detached_cursor: Option<(f64, f64)> = None;
+        let mut debug_held_keys = HashSet::new();
         let mut cursor_captured = false;
         let mut escape_armed = false;
 
@@ -1712,17 +1748,45 @@ Escape releases while captured"
                 // Re-check at the existing 4 Hz shell poll, but teach only
                 // once per session.
                 if interactive_camera_warning
-                    && !warned_missing_camera_control
-                    && args.camera_control == CameraControl::None
+                    && !warned_missing_mouse_capture
+                    && !args.mouse_capture
                     && game.uses_captured_mouse_input()
                 {
                     eprintln!(
                         "[runner] warning: this game defines captured mouse hooks, but \
-`viewer.camera.control` is absent or `none`; add \
-`\"viewer\": {{ \"camera\": {{ \"control\": \"game\" }} }}` to functor.json, \
+`\"mouseCapture\": false` disables them; remove that setting (or set it to true), \
 then restart the runner"
                     );
-                    warned_missing_camera_control = true;
+                    warned_missing_mouse_capture = true;
+                }
+                // Keep capture capability in sync with a hot-reloaded program.
+                // If its last captured hook disappears, return the attached
+                // cursor to the shell; a detached debug camera remains
+                // runtime-owned and therefore keeps its capture.
+                if cursor_captured
+                    && !detached_camera.is_detached()
+                    && !game.uses_captured_mouse_input()
+                {
+                    release_held_mouse_buttons(
+                        &mut *game,
+                        &mut held_buttons,
+                        &mut input_edges,
+                        !clock.is_pinned(),
+                    );
+                    if clock.is_fixed_time() {
+                        refresh_fixed_input_levels(
+                            &mut fixed_input_snapshot,
+                            &held_keys,
+                            held_buttons,
+                            false,
+                            xr_override.as_ref(),
+                        );
+                    }
+                    window.set_cursor_mode(glfw::CursorMode::Normal);
+                    cursor_captured = false;
+                    last_detached_cursor = None;
+                    escape_armed = false;
+                    eprintln!("[runner] captured mouse hooks were removed — cursor released");
                 }
                 for path in asset_watcher.changed(asset_cache.loaded_paths()) {
                     log::info!("asset '{}' changed on disk; reloading", path);
@@ -1752,19 +1816,33 @@ then restart the runner"
             // it draws above the game UI, so when both latches are somehow up
             // the webview field wins (the scrubber-over-ui rule, keyboard
             // flavor).
+            let mut suppress_next_debug_char = false;
             for (_, event) in glfw::flush_messages(&events) {
                 use crate::webview_keys::WebviewKey;
+                // GLFW reports a physical Key event before its separate,
+                // layout-dependent Char event. Associate suppression with
+                // that physical event, clearing it if another key intervenes.
+                if matches!(&event, glfw::WindowEvent::Key(..)) {
+                    suppress_next_debug_char = false;
+                }
                 match event {
                     glfw::WindowEvent::Close => window.set_should_close(true),
+                    glfw::WindowEvent::Char(_) if suppress_next_debug_char => {
+                        suppress_next_debug_char = false;
+                    }
                     // Printable text for a focused webview field (the egui
                     // Char rule below, webview flavor).
-                    glfw::WindowEvent::Char(c) if webview_wants_keyboard && !ignore_user_input => {
+                    glfw::WindowEvent::Char(c)
+                        if webview_wants_keyboard && !ignore_user_input =>
+                    {
                         webview_keys.push(WebviewKey::Char(c));
                     }
                     // Printable text for a focused field. Only meaningful
                     // while the overlay wants the keyboard; otherwise Char
                     // events are dropped (the game hears keys, not text).
-                    glfw::WindowEvent::Char(c) if ui_wants_keyboard && !ignore_user_input => {
+                    glfw::WindowEvent::Char(c)
+                        if ui_wants_keyboard && !ignore_user_input =>
+                    {
                         ui_keyboard.push(functor_runtime_common::ui::UiKeyboardEvent::Char(c));
                     }
                     // While a webview field is focused, Escape DEFOCUSES it
@@ -1816,10 +1894,17 @@ then restart the runner"
                             window.set_cursor_mode(glfw::CursorMode::Normal);
                             cursor_captured = false;
                             escape_armed = true;
-                            eprintln!(
-                                "[runner] cursor released — click the window to recapture, \
+                            if detached_camera.is_detached() {
+                                eprintln!(
+                                    "[runner] detached cursor released — use the timeline to \
+reattach, click the window to keep exploring, or press Escape again to quit"
+                                );
+                            } else {
+                                eprintln!(
+                                    "[runner] cursor released — click the window to recapture, \
 Escape again to quit"
-                            );
+                                );
+                            }
                         } else if action == EscapeAction::ArmQuit {
                             escape_armed = true;
                             eprintln!("[runner] cursor is free — Escape again to quit");
@@ -1863,9 +1948,12 @@ Escape again to quit"
                             } else if args.emulate_xr {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
                                 cursor_captured = false;
-                            } else if game_camera_control {
+                            } else if (game_mouse_capture && game.uses_captured_mouse_input())
+                                || detached_camera.is_detached()
+                            {
                                 window.set_cursor_mode(glfw::CursorMode::Disabled);
                                 cursor_captured = true;
+                                last_detached_cursor = None;
                             } else {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
                                 cursor_captured = false;
@@ -1874,11 +1962,11 @@ Escape again to quit"
                         escape_armed = false;
                     }
                     // Left click while released: overlay hits drive the
-                    // overlay; otherwise game-owned camera control recaptures
-                    // for free-look. With no camera opt-in every click remains
-                    // an overlay click. Press/release edges feed egui's click
-                    // detection. Never on a hidden window — it must not grab
-                    // the pointer. These arms sit BEFORE the
+                    // overlay; otherwise a game with captured mouse hooks
+                    // recaptures for free-look. Games without those hooks keep
+                    // every click available to overlays. Press/release edges
+                    // feed egui's click detection. Never on a hidden window —
+                    // it must not grab the pointer. These arms sit BEFORE the
                     // `ignore_user_input` catch-all so the scrubber stays
                     // usable while the clock is pinned (paused).
                     glfw::WindowEvent::MouseButton(glfw::MouseButtonLeft, action, _)
@@ -1908,9 +1996,12 @@ Escape again to quit"
                                 } else if args.emulate_xr {
                                     xr_primary_down = !ignore_user_input;
                                     xr_primary_clicked = xr_primary_down;
-                                } else if game_camera_control {
+                                } else if (game_mouse_capture && game.uses_captured_mouse_input())
+                                    || detached_camera.is_detached()
+                                {
                                     window.set_cursor_mode(glfw::CursorMode::Disabled);
                                     cursor_captured = true;
+                                    last_detached_cursor = None;
                                     // Entering free-look: blur any focused
                                     // webview field. The recapturing click
                                     // never reaches the blitz document (the
@@ -1930,7 +2021,7 @@ Escape again to quit"
                                         !ignore_user_input,
                                     );
                                 } else {
-                                    // With no camera-control opt-in the pointer
+                                    // With no captured game mouse input the pointer
                                     // belongs to the overlays for the whole
                                     // session. Feed the click through instead
                                     // of turning an ordinary 2D/UI click into
@@ -1961,8 +2052,14 @@ Escape again to quit"
                     // captured projects reserve released motion for chrome.
                     glfw::WindowEvent::CursorPos(x, y) if !cursor_captured => {
                         mouse_pos = visible_cursor_position(x, y);
-                        if args.cursor == CursorPolicyArg::Visible && !ignore_user_input {
-                            game.mouse_move(mouse_pos.0, mouse_pos.1);
+                        if route_visible_pointer_position(
+                            &mut game_mouse_pos,
+                            mouse_pos,
+                            visible_pointer,
+                            detached_camera.is_detached(),
+                            ignore_user_input,
+                        ) {
+                            game.mouse_move(game_mouse_pos.0, game_mouse_pos.1);
                         }
                     }
                     // F1 recenters head tracking (runner-level, never reaches
@@ -1975,6 +2072,33 @@ Escape again to quit"
                             println!("[xreal] recentered");
                         }
                     }
+                    // A press that began under the debug camera remains
+                    // debug-owned through reattach until its physical release.
+                    // Swallow repeats too, so they cannot create a game-owned
+                    // press whose release the debug set would later consume.
+                    glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _)
+                        if debug_held_keys.contains(&key) =>
+                    {
+                        if cursor_captured && detached_camera.is_detached() {
+                            suppress_next_debug_char = true;
+                        }
+                    }
+                    // A detached debug camera owns NEW navigation presses. A
+                    // press the game already owns remains game-owned until its
+                    // physical release; activating the observer must never
+                    // synthesize model/replay input.
+                    glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _)
+                        if detached_camera.is_detached()
+                            && cursor_captured
+                            && matches!(key, Key::W | Key::A | Key::S | Key::D | Key::Q | Key::E)
+                            && !held_keys.contains(&map_key(key)) =>
+                    {
+                        debug_held_keys.insert(key);
+                        suppress_next_debug_char = true;
+                    }
+                    glfw::WindowEvent::Key(key, _, Action::Release, _)
+                        if debug_held_keys.remove(&key) =>
+                    {}
                     // Always honor the SHELL bookkeeping for key releases and
                     // focus-loss, even while other input is ignored (pinned clock)
                     // — otherwise a key held at the pin transition, or released
@@ -2026,7 +2150,9 @@ Escape again to quit"
                     // click drives the emulated XR primary instead), so window
                     // buttons do not reach `mouseButton` under it — inject them
                     // through `POST /input` when scripting that rig.
-                    glfw::WindowEvent::MouseButton(button, action, _) if cursor_captured => {
+                    glfw::WindowEvent::MouseButton(button, action, _)
+                        if cursor_captured && !detached_camera.is_detached() =>
+                    {
                         let mapped = map_mouse_button(button);
                         if mapped != functor_runtime_common::MouseButton::Unknown {
                             match action {
@@ -2075,7 +2201,11 @@ Escape again to quit"
                                     &mut input_edges,
                                     mapped,
                                     true,
-                                    !ignore_user_input,
+                                    visible_pointer_game_input_enabled(
+                                        visible_pointer,
+                                        detached_camera.is_detached(),
+                                        ignore_user_input,
+                                    ),
                                 ),
                                 Action::Release => apply_window_mouse_button_edge(
                                     &mut *game,
@@ -2110,6 +2240,8 @@ Escape again to quit"
                         // on a later click; visible projects remain free.
                         window.set_cursor_mode(glfw::CursorMode::Normal);
                         cursor_captured = false;
+                        last_detached_cursor = None;
+                        debug_held_keys.clear();
                         escape_armed = false;
                         // A button held at focus-loss may never get its release
                         // (alt-tab), which would leave egui holding a stuck
@@ -2136,6 +2268,21 @@ Escape again to quit"
                                 xr_override.as_ref(),
                             );
                         }
+                    }
+                    // Debug-camera navigation is shell input while playing or
+                    // paused, and never reaches the game's hooks or replay log.
+                    glfw::WindowEvent::CursorPos(x, y)
+                        if cursor_captured && detached_camera.is_detached() =>
+                    {
+                        if let Some((last_x, last_y)) = last_detached_cursor {
+                            detached_camera.look((x - last_x) as f32, (y - last_y) as f32);
+                        }
+                        last_detached_cursor = Some((x, y));
+                    }
+                    glfw::WindowEvent::Scroll(_, y)
+                        if cursor_captured && detached_camera.is_detached() =>
+                    {
+                        detached_camera.zoom(y as f32);
                     }
                     _ if ignore_user_input => {}
                     // While a webview field is focused, key presses drive the
@@ -2201,15 +2348,37 @@ Escape again to quit"
                     // not the game).
                     glfw::WindowEvent::CursorPos(x, y) if cursor_captured => {
                         mouse_pos = (x as i32, y as i32);
-                        game.mouse_move(x as i32, y as i32)
+                        game_mouse_pos = mouse_pos;
+                        game.mouse_move(game_mouse_pos.0, game_mouse_pos.1)
                     }
                     glfw::WindowEvent::Scroll(_, y)
-                        if cursor_captured || args.cursor == CursorPolicyArg::Visible =>
+                        if (cursor_captured || visible_pointer)
+                            && !detached_camera.is_detached() =>
                     {
                         game.mouse_wheel(y as i32)
                     }
                     _ => {}
                 }
+            }
+
+            if cursor_captured && detached_camera.is_detached() {
+                let axis = |positive: Key, negative: Key| {
+                    (if debug_held_keys.contains(&positive) {
+                        1.0
+                    } else {
+                        0.0
+                    }) - if debug_held_keys.contains(&negative) {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                };
+                detached_camera.move_local(
+                    axis(Key::W, Key::S),
+                    axis(Key::D, Key::A),
+                    axis(Key::E, Key::Q),
+                    real_delta,
+                );
             }
 
             // Deliver async HTTP + WebSocket results into the game's inbox before
@@ -2251,7 +2420,7 @@ Escape again to quit"
                     } else {
                         let snapshot = desktop_input_snapshot(
                             &held_keys,
-                            mouse_pos,
+                            game_mouse_pos,
                             held_buttons,
                             &input_edges,
                             args.emulate_xr,
@@ -2562,19 +2731,48 @@ Escape again to quit"
             // The scene-space strobe is deliberately NOT folded in — layering
             // geometry copies under the compositor's strobe would double-ghost.
             let mut ghost_frames = ghost_frames;
+            let compatible_ghosts = DebugCamera::compatible_prefix_len(
+                &frame,
+                ghost_frames.iter().map(|(candidate, _)| candidate),
+            );
+            ghost_frames.truncate(compatible_ghosts);
+            let mut ghost_sprite_layers_compatible = true;
             if let Some(preview) = &preview {
                 for (f, _) in ghost_frames.iter_mut() {
-                    preview.apply_trails(f);
+                    ghost_sprite_layers_compatible &= preview.apply_trails(f);
                 }
             }
 
-            // The camera actually viewed/heard: the game's camera, rotated by
-            // the head orientation when Xreal tracking is on.
-            let view_camera = match &xreal_tracker {
-                Some(tracker) => xreal::apply_head_rotation(&frame.camera, tracker.orientation()),
+            // A live game may switch between a pure 2D and a 3D/mixed frame.
+            // Never retain a debug snapshot whose navigation semantics no
+            // longer match what is being rendered.
+            if detached_camera.is_detached() && !detached_camera.is_compatible(&frame) {
+                detached_camera.reattach();
+                last_detached_cursor = None;
+                window.set_cursor_mode(glfw::CursorMode::Normal);
+                cursor_captured = false;
+            }
+
+            // The camera actually viewed/heard: a shell-owned debug snapshot
+            // when detached, otherwise the game's authored camera. Tracking
+            // composes last so a debug view never freezes the user's head.
+            let authored_view_camera = match &xreal_tracker {
+                Some(tracker) => {
+                    xreal::apply_head_rotation(&frame.camera, tracker.orientation())
+                }
                 None => frame.camera.clone(),
             };
-
+            let view_camera = if detached_camera.is_detached() {
+                match &xreal_tracker {
+                    Some(tracker) => xreal::apply_head_rotation(
+                        detached_camera.camera(&frame.camera),
+                        tracker.orientation(),
+                    ),
+                    None => detached_camera.camera(&frame.camera).clone(),
+                }
+            } else {
+                authored_view_camera.clone()
+            };
             // Audio: set the listener from the viewed camera, then play any
             // one-shots the tick queued (positioned ones pan relative to it).
             if let Some(player) = &mut audio_player {
@@ -2645,6 +2843,8 @@ Escape again to quit"
             let render_started = Instant::now();
             if args.stereo_sbs {
                 let (left_cam, right_cam) = view_camera.stereo_eyes(args.stereo_ipd);
+                let (lod_left_cam, lod_right_cam) =
+                    authored_view_camera.stereo_eyes(args.stereo_ipd);
                 // Odd widths: the right eye absorbs the extra column, so the
                 // two viewports tile the framebuffer exactly (no stale strip).
                 let half_w = (fb_width as u32) / 2;
@@ -2673,15 +2873,19 @@ Escape again to quit"
                     eyes[0].0.projection_matrix(eyes[0].1.aspect()),
                     eyes[1].0.projection_matrix(eyes[1].1.aspect()),
                 ];
-                let lod_view_projections = [
-                    eye_projections[0] * eyes[0].0.view_matrix(),
-                    eye_projections[1] * eyes[1].0.view_matrix(),
+                let lod_eye_projections = [
+                    lod_left_cam.projection_matrix(eyes[0].1.aspect()),
+                    lod_right_cam.projection_matrix(eyes[1].1.aspect()),
                 ];
-                let lod_projection_scale = eye_projections[0]
+                let lod_view_projections = [
+                    lod_eye_projections[0] * lod_left_cam.view_matrix(),
+                    lod_eye_projections[1] * lod_right_cam.view_matrix(),
+                ];
+                let lod_projection_scale = lod_eye_projections[0]
                     .y
                     .y
                     .abs()
-                    .max(eye_projections[1].y.y.abs());
+                    .max(lod_eye_projections[1].y.y.abs());
                 terrain_frame_id = terrain_frame_id.wrapping_add(1);
                 for ((camera, eye_viewport), projection) in
                     eyes.iter().zip(eye_projections.iter())
@@ -2696,11 +2900,12 @@ Escape again to quit"
                         drawn_frame,
                         camera,
                         projection,
-                        &view_camera,
+                        &authored_view_camera,
                         &lod_view_projections,
                         lod_projection_scale,
                         fb_height as f32,
                         terrain_frame_id,
+                        detached_camera.sprite_cameras(),
                         time.clone(),
                         *eye_viewport,
                         args.debug_render.into(),
@@ -2720,6 +2925,7 @@ Escape again to quit"
                 // `clone` overlays the frame with itself (lossless check);
                 // `fork` overlays it with a world-space-offset copy of its scene
                 // (the fork+overlay demo — two visibly-different inputs).
+                let frame_a = frame.clone();
                 let mut frame_b = frame.clone();
                 if args.composite_demo == CompositeDemoArg::Fork {
                     frame_b.scene = functor_runtime_common::Scene3D {
@@ -2727,8 +2933,8 @@ Escape again to quit"
                         xform: cgmath::Matrix4::from_translation(cgmath::vec3(6.0, 0.0, 0.0)),
                     };
                 }
-                let frames = [(frame.clone(), time.clone()), (frame_b, time.clone())];
-                functor_runtime_common::render_composited_frames(
+                let frames = [(frame_a, time.clone()), (frame_b, time.clone())];
+                functor_runtime_common::render_composited_frames_with_view(
                     &gl,
                     shader_version,
                     asset_cache.clone(),
@@ -2736,6 +2942,8 @@ Escape again to quit"
                     &shadow_map,
                     &frames,
                     &[0.5, 0.5],
+                    Some(&view_camera),
+                    detached_camera.sprite_cameras(),
                     viewport,
                     args.debug_render.into(),
                 );
@@ -2748,7 +2956,14 @@ Escape again to quit"
                 // strobe. Empty (→ this arm skipped) when --ghost is off or the
                 // producer yields no frames, so live rendering is unchanged.
                 let weights = vec![1.0f32; ghost_frames.len()];
-                functor_runtime_common::render_composited_frames(
+                let ghost_sprite_cameras = ghost_sprite_layers_compatible
+                    .then(|| detached_camera.sprite_cameras())
+                    .flatten()
+                    .map(|cameras| match &preview {
+                        Some(preview) => preview.trail_camera_overrides(cameras),
+                        None => cameras.to_vec(),
+                    });
+                functor_runtime_common::render_composited_frames_with_view(
                     &gl,
                     shader_version,
                     asset_cache.clone(),
@@ -2756,11 +2971,13 @@ Escape again to quit"
                     &shadow_map,
                     &ghost_frames,
                     &weights,
+                    Some(&view_camera),
+                    ghost_sprite_cameras.as_deref(),
                     viewport,
                     args.debug_render.into(),
                 );
             } else {
-                functor_runtime_common::render_frame(
+                functor_runtime_common::render_frame_with_view(
                     &gl,
                     shader_version,
                     asset_cache.clone(),
@@ -2768,6 +2985,7 @@ Escape again to quit"
                     &shadow_map,
                     drawn_frame,
                     &view_camera,
+                    detached_camera.sprite_cameras(),
                     time.clone(),
                     viewport,
                     args.debug_render.into(),
@@ -2905,6 +3123,10 @@ Escape again to quit"
                         frame: game.current_scene_frame().unwrap_or(0),
                         range: game.scene_frame_range(),
                         paused: clock.is_paused(),
+                        camera_detachable,
+                        camera_catching_up: clock.pending_frames() > 0
+                            || clock.pending_steps() > 0,
+                        camera_detached: detached_camera.is_detached(),
                         extrapolate: extrapolate_on,
                         preview_mode,
                         preview_window,
@@ -2944,6 +3166,27 @@ Escape again to quit"
                         eprintln!("[clock] pause");
                     }
                     clock.toggle_pause();
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::ToggleDetachedCamera) => {
+                    if detached_camera.is_detached() {
+                        detached_camera.reattach();
+                        last_detached_cursor = None;
+                        window.set_cursor_mode(glfw::CursorMode::Normal);
+                        cursor_captured = false;
+                    } else if camera_detachable
+                        && clock.pending_frames() == 0
+                        && clock.pending_steps() == 0
+                    {
+                        if detached_camera.detach(&frame) {
+                            last_detached_cursor = None;
+                            window.set_cursor_mode(glfw::CursorMode::Disabled);
+                            cursor_captured = true;
+                        } else {
+                            eprintln!(
+                                "[runner] debug camera unavailable: the authored camera is invalid"
+                            );
+                        }
+                    }
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SeekTo(f)) => {
                     let newest = game.scene_frame_range().map(|(_, h)| h);
@@ -3044,7 +3287,7 @@ Escape again to quit"
                     } else {
                         desktop_input_snapshot(
                             &held_keys,
-                            mouse_pos,
+                            game_mouse_pos,
                             held_buttons,
                             &input_edges,
                             args.emulate_xr,
@@ -3062,7 +3305,7 @@ Escape again to quit"
                         fb_width as u32,
                         fb_height as u32,
                         &mut held_keys,
-                        &mut mouse_pos,
+                        &mut game_mouse_pos,
                         &mut held_buttons,
                         &mut input_edges,
                         &mut xr_override,
@@ -3093,7 +3336,7 @@ Escape again to quit"
                     if fixed_sample && sampled_input_changed {
                         fixed_input_snapshot = desktop_input_snapshot(
                             &held_keys,
-                            mouse_pos,
+                            game_mouse_pos,
                             held_buttons,
                             &input_edges,
                             args.emulate_xr,
@@ -3146,28 +3389,43 @@ mod tests {
     }
 
     #[test]
-    fn camera_control_arg_defaults_to_none_and_accepts_game() {
+    fn detached_debug_camera_blocks_new_visible_pointer_game_input() {
+        assert!(visible_pointer_game_input_enabled(true, false, false));
+        assert!(!visible_pointer_game_input_enabled(false, false, false));
+        assert!(!visible_pointer_game_input_enabled(true, true, false));
+        assert!(!visible_pointer_game_input_enabled(true, false, true));
+
+        let mut game_mouse_pos = (10, 20);
+        assert!(!route_visible_pointer_position(
+            &mut game_mouse_pos,
+            (90, 80),
+            true,
+            true,
+            false,
+        ));
+        assert_eq!(
+            game_mouse_pos,
+            (10, 20),
+            "sampledInput must retain the last game-owned pointer position"
+        );
+        assert!(route_visible_pointer_position(
+            &mut game_mouse_pos,
+            (30, 40),
+            true,
+            false,
+            false,
+        ));
+        assert_eq!(game_mouse_pos, (30, 40));
+    }
+
+    #[test]
+    fn mouse_capture_arg_is_an_opt_in_flag() {
         let default = Args::try_parse_from(["functor", "--game-path", "game.fun"]).unwrap();
-        assert_eq!(default.camera_control, CameraControl::None);
+        assert!(!default.mouse_capture);
 
-        let game = Args::try_parse_from([
-            "functor",
-            "--game-path",
-            "game.fun",
-            "--camera-control",
-            "game",
-        ])
-        .unwrap();
-        assert_eq!(game.camera_control, CameraControl::Game);
-
-        assert!(Args::try_parse_from([
-            "functor",
-            "--game-path",
-            "game.fun",
-            "--camera-control",
-            "orbit",
-        ])
-        .is_err());
+        let game = Args::try_parse_from(["functor", "--game-path", "game.fun", "--mouse-capture"])
+            .unwrap();
+        assert!(game.mouse_capture);
     }
 
     fn write_tmp(name: &str, contents: &str) -> std::path::PathBuf {

@@ -1608,13 +1608,12 @@ let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; conti
                                             // frame (needs no `update`)
 ```
 
-The three mouse hooks receive live shell input only when the project claims a
-pointer mode. Captured free-look opts in with
-`"viewer": { "camera": { "control": "game" } }`; absolute pointer-led games use
-`"cursor":"visible"` instead. Without either setting the runtime warns once and
-leaves the hooks inert. Native capture starts on a non-UI click and Escape
-releases it. Manifest-less site IDE/inline sessions use `?camera=game` or
-`?cursor=visible` on the page URL.
+The three mouse hooks receive captured shell input by default. Set
+`"mouseCapture":false` to disable that path, or use `"cursor":"visible"` for
+absolute pointer input (which also disables capture). Programs without
+captured mouse hooks show no capture control. Native capture starts on a non-UI
+click and Escape releases it. Manifest-less site IDE/inline sessions use
+`?mouseCapture=false` or `?cursor=visible` on the page URL.
 
 Subscription timers are **stateless**: `Sub.every` fires when an integer
 multiple of its period lies in `(prevTts, tts]` — the global time grid, so
@@ -1703,17 +1702,27 @@ reload is native-only — reload the page to pick up saved edits, or push
 source with a `{ type: "functor-lang-set-source", source }` postMessage to the page
 for a model-preserving in-place reload; the VSCode **"Functor: Open Live
 Preview"** command does exactly that from the live buffer as you type).
-Captured mouse camera input is an explicit shell opt-in:
-`"viewer": { "camera": { "control": "game" } }`. `game` enables native
-click-to-capture and the web mouse-look button, routing captured
-`mouseMove`/`mouseWheel`/`mouseButton` input into the ordinary game hooks.
-On native, a non-UI click captures; Escape or focus loss releases. Absent (or
-explicit `"none"`) keeps the pointer free and hides the button, which is the
-default for UI and fixed-camera projects. Absolute pointer-led games instead add
-`"cursor":"visible"`; native keeps the system cursor free and web routes its
-absolute CSS-pixel movement/buttons without Pointer Lock. Visible pointer input
-and `viewer.camera.control = "game"` are mutually exclusive. `orbit`/`fps`
-detached shell-owned modes are not implemented spellings yet.
+Captured game mouse input defaults on. When the running program implements
+captured mouse hooks, native offers click-to-capture and web shows the
+mouse-capture button, routing `mouseMove`/`mouseWheel`/`mouseButton` into the
+ordinary game hooks. On native, a non-UI click captures; Escape or focus loss
+releases. `"mouseCapture":false` is the explicit free-pointer exception.
+Absolute pointer-led games instead add `"cursor":"visible"`; native keeps the
+system cursor free and web routes its absolute CSS-pixel movement/buttons
+without Pointer Lock. Visible pointer mode overrides the implicit capture
+default; explicitly combining it with `"mouseCapture":true` is refused.
+
+The timeline separately exposes a universal, runtime-owned **Debug camera**
+while playing or paused; this is NOT a manifest setting. Activating it snapshots
+the current authored view. A 3D or mixed frame gets FPS mouse look, WASD
+movement, Q/E down/up, and wheel-adjusted FOV. A pure `Frame.create2D` frame gets
+mouse/WASD panning and wheel zoom. Camera navigation is shell input: it never
+enters the model, recorded input, replay, or `GET /scene`, and the renderer keeps
+the frame's authored camera for terrain/culling and render-target/portal passes.
+Escape releases capture without discarding the snapshot; click the viewport to
+recapture. **Exit debug view** reattaches. Pause/resume preserves the debug view
+so it can inspect both live and pinned games. This is independent of
+`mouseCapture`.
 
 `examples/hello/game.fun` is the reference
 (`examples/physics/game.fun` for the physics hook, including the

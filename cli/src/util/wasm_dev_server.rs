@@ -1,6 +1,5 @@
 use std::io;
 
-use functor_runtime_common::viewer::CameraControl;
 use warp::{http::Response, Filter};
 
 pub struct WasmDevServer;
@@ -27,8 +26,8 @@ fn script_safe(json: String) -> String {
     json.replace("</", "<\\/")
 }
 
-/// Substitute the project's Functor Lang entry, file list, camera control, and
-/// pointer policy
+/// Substitute the project's Functor Lang entry, file list, mouse-capture opt-out,
+/// and pointer policy
 /// into the Functor Lang index page:
 ///
 /// - `"__FUNCTOR_LANG_ENTRY__"` becomes a JSON string literal → `window.__functorLangGamePath`,
@@ -36,28 +35,28 @@ fn script_safe(json: String) -> String {
 /// - `"__FUNCTOR_LANG_PROJECT_FILES__"` becomes a JSON array literal (entry first, then
 ///   siblings) → `window.__functorLangProjectFiles`, so multi-file games (`file =
 ///   module`) load EVERY module, not just the entry (docs/functor-lang.md Track C5).
-/// - `"__FUNCTOR_CAMERA_CONTROL__"` becomes the manifest's main-viewport input
-///   ownership mode.
+/// - `"__FUNCTOR_MOUSE_CAPTURE__"` becomes the manifest's captured-game-input
+///   boolean.
 ///
 /// All substitutions are valid JS for any path (quotes/backslashes included).
 pub(crate) fn render_functor_lang_index(
     entry: &str,
     files: &[String],
-    camera_control: CameraControl,
+    mouse_capture: bool,
     cursor: &str,
 ) -> String {
     let entry_literal =
         script_safe(serde_json::to_string(entry).expect("a string always serializes"));
     let files_literal =
         script_safe(serde_json::to_string(files).expect("a string slice always serializes"));
-    let camera_control_literal =
-        serde_json::to_string(camera_control.as_str()).expect("a static string always serializes");
+    let mouse_capture_literal =
+        serde_json::to_string(&mouse_capture).expect("a boolean always serializes");
     let cursor_literal =
         script_safe(serde_json::to_string(cursor).expect("a string always serializes"));
     INDEX_FUNCTOR_LANG_HTML
         .replace("\"__FUNCTOR_LANG_ENTRY__\"", &entry_literal)
         .replace("\"__FUNCTOR_LANG_PROJECT_FILES__\"", &files_literal)
-        .replace("\"__FUNCTOR_CAMERA_CONTROL__\"", &camera_control_literal)
+        .replace("\"__FUNCTOR_MOUSE_CAPTURE__\"", &mouse_capture_literal)
         .replace("\"__FUNCTOR_CURSOR_POLICY__\"", &cursor_literal)
 }
 
@@ -92,13 +91,13 @@ impl WasmDevServer {
     pub async fn start_functor_lang(
         working_directory: &str,
         entry: &str,
-        camera_control: CameraControl,
+        mouse_capture: bool,
         cursor: &str,
     ) -> Result<(), io::Error> {
         let files = project_file_urls(working_directory, entry);
         Self::serve(
             working_directory,
-            render_functor_lang_index(entry, &files, camera_control, cursor).into_bytes(),
+            render_functor_lang_index(entry, &files, mouse_capture, cursor).into_bytes(),
         )
         .await
     }
@@ -179,21 +178,18 @@ impl WasmDevServer {
 #[cfg(test)]
 mod tests {
     use super::{render_functor_lang_index, SCRUBBER_JS};
-    use functor_runtime_common::viewer::CameraControl;
 
     #[test]
     fn substitutes_the_entry_as_a_js_string() {
-        let html = render_functor_lang_index(
-            "game.fun",
-            &["game.fun".to_string()],
-            CameraControl::None,
-            "captured",
-        );
+        let html =
+            render_functor_lang_index("game.fun", &["game.fun".to_string()], true, "captured");
         assert!(html.contains("window.__functorLangGamePath = \"game.fun\""));
-        assert!(html.contains("const gameCameraControl = \"none\" === \"game\""));
+        assert!(html.contains("const gameMouseCapture = true"));
+        assert!(html.contains("Press <kbd>Esc</kbd> to release mouse"));
+        assert!(html.contains(">🖱 mouse</button>"));
         assert!(html.contains("window.__functorCursorPolicy = \"captured\""));
         assert!(!html.contains("__FUNCTOR_LANG_ENTRY__"));
-        assert!(!html.contains("__FUNCTOR_CAMERA_CONTROL__"));
+        assert!(!html.contains("__FUNCTOR_MOUSE_CAPTURE__"));
         assert!(!html.contains("__FUNCTOR_CURSOR_POLICY__"));
     }
 
@@ -202,7 +198,7 @@ mod tests {
         let html = render_functor_lang_index(
             "game.fun",
             &["game.fun".to_string(), "pieces.fun".to_string()],
-            CameraControl::None,
+            false,
             "visible",
         );
         assert!(html.contains("(["));
@@ -213,21 +209,20 @@ mod tests {
 
     #[test]
     fn visible_pointer_keeps_non_primary_webview_input_game_owned() {
-        let html = render_functor_lang_index(
-            "game.fun",
-            &["game.fun".to_string()],
-            CameraControl::None,
-            "visible",
-        );
+        let html =
+            render_functor_lang_index("game.fun", &["game.fun".to_string()], false, "visible");
         for expected in [
             r#"window.addEventListener("mousemove""#,
+            "if (!visiblePointer || debugCameraOwnsInput()) return;",
             "const rect = canvas.getBoundingClientRect();",
             "Math.floor(e.clientX - rect.left)",
             "Math.floor(e.clientY - rect.top)",
             r#"window.addEventListener("mousedown""#,
-            "if (!visiblePointer || (code !== 2 && code !== 3)) return;",
+            "debugCameraOwnsInput() ||",
+            "(code !== 2 && code !== 3)",
             "if (visiblePointer && code !== 1) return;",
             r#"window.addEventListener("wheel""#,
+            "if (visiblePointer && !debugCameraOwnsInput()) deliverGameWheel(e);",
             "{ capture: true, passive: false }",
             r#"window.addEventListener("contextmenu""#,
         ] {
@@ -257,7 +252,7 @@ mod tests {
         let html = render_functor_lang_index(
             "we\"ird\\name.fun",
             &["we\"ird\\name.fun".to_string()],
-            CameraControl::None,
+            true,
             "captured",
         );
         assert!(html.contains("we\\\"ird\\\\name.fun"));
@@ -268,21 +263,17 @@ mod tests {
         let html = render_functor_lang_index(
             "bad</script>.fun",
             &["bad</script>.fun".to_string()],
-            CameraControl::None,
+            true,
             "captured",
         );
         assert!(html.contains("bad<\\/script>.fun"));
     }
 
     #[test]
-    fn substitutes_the_camera_control_mode() {
-        let html = render_functor_lang_index(
-            "game.fun",
-            &["game.fun".to_string()],
-            CameraControl::Game,
-            "captured",
-        );
-        assert!(html.contains("const gameCameraControl = \"game\" === \"game\""));
-        assert!(!html.contains("__FUNCTOR_CAMERA_CONTROL__"));
+    fn substitutes_the_mouse_capture_boolean() {
+        let html =
+            render_functor_lang_index("game.fun", &["game.fun".to_string()], false, "captured");
+        assert!(html.contains("const gameMouseCapture = false"));
+        assert!(!html.contains("__FUNCTOR_MOUSE_CAPTURE__"));
     }
 }

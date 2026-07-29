@@ -32,8 +32,8 @@ const frame = document.getElementById("player") as HTMLIFrameElement;
 const params = new URLSearchParams(location.search);
 const game = params.get("game") || "examples/hero.fun";
 const cursorPolicy = params.get("cursor") === "visible" ? "visible" : null;
-const cameraControl =
-  !cursorPolicy && params.get("camera") === "game" ? "game" : null;
+const mouseCapture =
+  !cursorPolicy && params.get("mouseCapture") === "false" ? false : null;
 
 // wireLiveTrace drives an executions picker through a status bar; the demo has
 // none, so a no-op stub satisfies the contract (the inline live-value overlay
@@ -83,7 +83,7 @@ wireLiveTrace(view, noopStatusBar, frame, langReady);
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
   const playerParams = new URLSearchParams({ game });
-  if (cameraControl) playerParams.set("camera", cameraControl);
+  if (mouseCapture === false) playerParams.set("mouseCapture", "false");
   if (cursorPolicy) playerParams.set("cursor", cursorPolicy);
   frame.src = `player.html?${playerParams}`;
 })();

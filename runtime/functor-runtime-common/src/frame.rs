@@ -1,9 +1,14 @@
+use cgmath::{Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     fog::Fog, render_target::RenderTargetDescriptor, skybox::SkyboxDescription, Camera, Light,
-    Scene3D, SpriteLayer,
+    Scene3D, SceneObject, SpriteLayer,
 };
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// A named offscreen pass: `frame` (its own camera/scene/lights) is rendered
 /// into `target`'s texture before the owning frame's main pass, and sampled via
@@ -43,6 +48,10 @@ pub struct Frame {
     /// later layers appear above earlier ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sprite_layers: Vec<SpriteLayer>,
+    /// Explicitly marks `Frame.create2D` output. Structural inspection cannot
+    /// distinguish a 2D frame from an empty 3D world with a HUD/skybox.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pure_2d: bool,
 }
 
 impl Frame {
@@ -58,7 +67,20 @@ impl Frame {
             skybox: None,
             clear_color: None,
             sprite_layers: vec![],
+            pure_2d: false,
         }
+    }
+
+    /// A pure sprite frame produced by `Frame.create2D`.
+    pub fn new_2d(layer: SpriteLayer) -> Frame {
+        let empty = Scene3D {
+            obj: SceneObject::Group(vec![]),
+            xform: Matrix4::identity(),
+        };
+        let mut frame = Frame::new(Camera::default(), empty);
+        frame.pure_2d = true;
+        frame.sprite_layers.push(layer);
+        frame
     }
 
     /// The background clear color for this frame's pass: the explicit
@@ -67,6 +89,13 @@ impl Frame {
     pub fn resolved_clear_color(&self) -> [f32; 3] {
         self.clear_color
             .unwrap_or_else(|| crate::fog::clear_color(self.fog.as_ref()))
+    }
+
+    /// Whether the main view is the pure sprite frame produced by
+    /// `Frame.create2D`. Mixed frames retain their real 3D pass and therefore
+    /// use the runtime's 3D debug camera.
+    pub fn is_pure_2d(&self) -> bool {
+        self.pure_2d
     }
 
     /// Render `target_frame` into `target` each frame, before this frame's main
@@ -126,6 +155,25 @@ mod tests {
     #[test]
     fn resolved_clear_color_defaults_to_engine_default() {
         assert_eq!(bare().resolved_clear_color(), [0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn pure_2d_is_distinct_from_3d_and_mixed_frames() {
+        let layer = SpriteLayer {
+            camera: crate::Camera2D::new(16.0, 9.0),
+            scene: Scene3D::quad(),
+        };
+        assert!(Frame::new_2d(layer.clone()).is_pure_2d());
+        assert!(!Frame::new(Camera::default(), Scene3D::cube()).is_pure_2d());
+        let empty_3d = Scene3D {
+            obj: SceneObject::Group(vec![]),
+            xform: Matrix4::identity(),
+        };
+        assert!(!Frame::with_2d(
+            Frame::new(Camera::default(), empty_3d),
+            layer
+        )
+        .is_pure_2d());
     }
 
     #[test]

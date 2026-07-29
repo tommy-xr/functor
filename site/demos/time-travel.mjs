@@ -75,7 +75,7 @@ try {
 }
 const page = await browser.newPage({ viewport: { width: WIDTH, height: HEIGHT } });
 await page.goto(`${BASE}/player.html?game=examples%2F${GAME}.fun`, { waitUntil: "load" });
-// hide the "mouse look" chip for a cleaner frame
+// hide the mouse-capture chip for a cleaner frame
 await page.addStyleTag({ content: '[title*="mouse"]{display:none!important}' }).catch(() => {});
 
 // wait for the seam + a recorded range, then let history accumulate
