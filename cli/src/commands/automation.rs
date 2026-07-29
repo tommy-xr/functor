@@ -282,13 +282,26 @@ pub fn model_value_at<'a>(model: &'a Value, path: &str) -> Option<&'a Value> {
     }
     path.split('.')
         .try_fold(model, |value, segment| match value {
-            Value::Array(items) => segment
-                .parse::<usize>()
-                .ok()
-                .and_then(|index| items.get(index)),
+            Value::Array(items) => {
+                canonical_array_index(segment).and_then(|index| items.get(index))
+            }
             Value::Object(fields) => fields.get(segment),
             _ => None,
         })
+}
+
+fn canonical_array_index(segment: &str) -> Option<usize> {
+    let bytes = segment.as_bytes();
+    let canonical_digits = segment == "0"
+        || (bytes
+            .first()
+            .is_some_and(|first| matches!(first, b'1'..=b'9'))
+            && bytes.iter().all(|byte| byte.is_ascii_digit()));
+    if canonical_digits {
+        segment.parse().ok()
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1454,6 +1467,8 @@ automation("photo mouse-look proof")
         });
         assert_eq!(model_value_at(&model, "camera.yaw"), Some(&json!(-0.6)));
         assert_eq!(model_value_at(&model, "players.0.score"), Some(&json!(3)));
+        assert_eq!(model_value_at(&model, "players.00.score"), None);
+        assert_eq!(model_value_at(&model, "players.+0.score"), None);
         assert_eq!(model_value_at(&model, "/odd.key/value"), Some(&json!(true)));
         assert_eq!(model_value_at(&model, "missing"), None);
     }

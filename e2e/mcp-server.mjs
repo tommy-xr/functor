@@ -483,9 +483,12 @@ let draw = (m: Model, tts) =>
     code: `automation("owned stop boundary")
       .pause()
       .keyDown("space")
-      .step({ frames: 2000, dts: 0.016 })
+      .step({ frames: 10000, dts: 0.016 })
       .keyUp("space")`,
-  });
+  }).then(
+    (value) => ({ value }),
+    (error) => ({ error: error.message }),
+  );
   let stopRaceHeld = false;
   for (let attempt = 0; attempt < 200 && !stopRaceHeld; attempt += 1) {
     const during = await rpc.call("get_state", { session: gatedSession });
@@ -502,12 +505,18 @@ let draw = (m: Model, tts) =>
     new Promise((resolve) => setTimeout(() => resolve(true), 30)),
   ]);
   check(connectWaited, "connect reserves and waits on the existing exact-URL gate before discovery");
+  const stopStartedAt = Date.now();
   const ownerStop = rpc.call("stop_game", { session: gatedSession });
-  const [, connectOutcome, ownerStopped] = await Promise.all([
+  const [runOutcome, connectOutcome, ownerStopped] = await Promise.all([
     stopRaceRun,
     racingConnect,
     ownerStop,
   ]);
+  check(
+    /safe boundary|stopping/.test(runOutcome.error ?? "") &&
+      Date.now() - stopStartedAt < 10000,
+    "owned stop interrupts a progressing 10,000-frame operation at a safe polling boundary",
+  );
   check(
     /stopping/.test(connectOutcome.error ?? ""),
     "owned stop closes the queued connect lifecycle before it can insert",

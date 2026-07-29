@@ -122,6 +122,21 @@ test("standalone execution drives typed operations, asserts, inspects, and captu
   });
 });
 
+test("standalone array paths reject non-canonical indices like MCP", async () => {
+  const client = {
+    state: async () => state({ players: [{ score: 3 }] }),
+  } as AutomationClient;
+
+  await assert.rejects(
+    runAutomation(client, automation().expectModel("players.00.score", 3)),
+    /does not exist/,
+  );
+  await assert.rejects(
+    runAutomation(client, automation().expectModel("players.+0.score", 3)),
+    /does not exist/,
+  );
+});
+
 test("pressKey releases the key when its deterministic step fails", async () => {
   const calls: string[] = [];
   const client = {

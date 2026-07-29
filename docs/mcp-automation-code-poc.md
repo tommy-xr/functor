@@ -80,7 +80,10 @@ serialized text cap and a 16 MiB aggregate raw-capture cap. Response readers
 reject an oversized `Content-Length` before allocation and enforce the same cap
 as chunks arrive. Automation error text is centrally truncated to 4 MiB, and
 the final base64 MCP image content has its own 24 MiB aggregate cap checked
-before encoding begins.
+before encoding begins. Once acquired, `step` and automation operations have a
+120-second wall-clock deadline that progress cannot extend, checked between
+bounded runtime requests; an owned stop also ends an active operation at its
+next step-poll boundary.
 
 The run tool completes this entire parse and validation before looking up the
 session. The MCP E2E submits a valid mutating prefix followed by an invalid
@@ -184,12 +187,13 @@ context.
   for the active operation to finish, but waiter order is unspecified; use an
   explicit sequencer when relative ordering itself matters. Queued cancellation
   prevents a mutation; after gate acquisition the operation runs to its
-  boundary. Connect reserves the same lifecycle before discovery, and owned
-  stop closes pending connects and completes cleanup even when its response is
-  cancelled. Normalization only strips trailing `/`, so `localhost` and
-  `127.0.0.1` aliases are not unified. This is process-local coordination, not
-  a distributed lock against a separate HTTP client driving the same attached
-  runtime directly.
+  boundary, subject to the 120-second total deadline. Connect reserves the same
+  lifecycle before discovery, and owned stop closes pending connects, ends an
+  active step/automation at a polling boundary, and completes cleanup even when
+  its response is cancelled. Normalization only strips trailing `/`, so
+  `localhost` and `127.0.0.1` aliases are not unified. This is process-local
+  coordination, not a distributed lock against a separate HTTP client driving
+  the same attached runtime directly.
 - Rust and TypeScript do not yet pin the canonical spelling of negative zero
   across languages; cross-language fixtures should cover that edge case.
 - There is no per-session capability policy beyond the existing MCP session:
@@ -197,14 +201,17 @@ context.
 
 ## Recommendation
 
-**Go for a second, bounded iteration; no-go for production exposure yet.**
+**Keep the implementation as a reviewable draft; no-go for production exposure
+yet.**
 
 The PoC proves the core shape: the useful jam loop becomes significantly
 shorter, the source round-trips to inspectable data, the same builder works
-standalone, no JavaScript evaluator is needed, and the two representative jam
-trials above work as static plans. The next slice should measure this against
-fresh agent transcripts rather than reconstructed workflows, then decide
-whether static plans are enough.
+standalone, and no JavaScript evaluator is needed. Four real-entry trials now
+cover the fixed photo vignette, Swarm Survival, Marble Golf, and Tower Defense;
+the two fresh-agent trials confirmed that static plans are enough for common
+deterministic gameplay proofs. A next bounded vocabulary slice should target
+the observed relational/collection assertions and polling gap rather than
+adding arbitrary language features.
 
 Before production, make the plan schema single-source/versioned, fuzz the
 parser, add a capability policy, and choose whether conditionals should be

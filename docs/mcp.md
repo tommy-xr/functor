@@ -47,8 +47,12 @@ active call to finish, then runs without interleaving. This is mutual exclusion,
 not a promised FIFO sequencer; relative waiter order is unspecified. Cancellation
 while queued stops waiting and prevents the mutation. Once a mutation acquires
 the gate, it runs to its operation boundary even if its MCP response is
-cancelled. Exact normalized base-URL aliases created by this MCP server share
-the same gate, while different exact URLs continue concurrently. `connect_game`
+cancelled. Acquired `step` and automation calls have a 120-second deadline that
+progress does not extend; it is checked between operations and step polls, while
+an in-flight request retains its 30-second request timeout. An owned stop also
+ends an active step/automation at its next polling boundary before taking the
+gate. Exact normalized base-URL aliases created by this MCP server share the
+same gate, while different exact URLs continue concurrently. `connect_game`
 reserves that gate before discovery, so it cannot race stop and insert a dead
 alias afterward. Normalization currently removes trailing `/` only, so hostname
 aliases such as `localhost` versus `127.0.0.1` are not recognized, and direct
@@ -228,10 +232,12 @@ nesting, 10,000 total requested frames, and four captures. `run_automation_code`
 returns the normalized plan, passed assertions, labeled state observations, and
 fresh final state in its first text block. Each `capture` adds a PNG image block
 and therefore requires a `hidden` session; headless sessions still support every
-data/input/clock operation. Runtime text responses and individual raw capture
-responses are each capped at 8 MiB. An automation run additionally caps its
-serialized text summary and error text at 4 MiB, all retained raw captures
-together at 16 MiB, and their base64 MCP image content at 24 MiB. The encoded
+data/input/clock operation. An acquired run has a 120-second deadline,
+independent of its step-drain progress and checked between bounded runtime
+requests. Runtime text responses and individual raw capture responses are each
+capped at 8 MiB. An automation run additionally caps its serialized text
+summary and error text at 4 MiB, all retained raw captures together at 16 MiB,
+and their base64 MCP image content at 24 MiB. The encoded
 aggregate is checked before base64 construction, then raw captures are consumed
 one at a time as image blocks are built. Declared `Content-Length` is checked
 before allocation and the same limit is enforced while chunks stream; an error

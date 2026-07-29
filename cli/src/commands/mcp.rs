@@ -43,6 +43,10 @@ const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `step` tolerates a queued batch making NO progress before giving
 /// up. A large batch legitimately takes far longer than this to drain in total.
 const STEP_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Wall-clock deadline for one acquired step or automation operation.
+/// Progress does not extend this deadline, so a cancelled request cannot
+/// monopolize the per-runtime gate indefinitely.
+const OPERATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Per-request timeout for the (loopback or adb-forwarded) debug server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Lowest debug-protocol version whose contract these tools actually keep
@@ -1131,7 +1135,9 @@ files writes the inline project to a scratch directory this server owns",
     /// share that gate; different URLs have independent gates. The serialized
     /// summary and any error text are capped at 4 MiB; each raw capture at 8
     /// MiB, all captures together at 16 MiB raw and 24 MiB base64 MCP image
-    /// content. Call `validate_automation_code` first for parse-only feedback.
+    /// content. Once acquired, a plan has a 120-second wall-clock deadline;
+    /// an owned stop also ends it at the next step-poll boundary. Call
+    /// `validate_automation_code` first for parse-only feedback.
     #[tool]
     async fn run_automation_code(
         &self,
@@ -1163,7 +1169,11 @@ files writes the inline project to a scratch directory this server owns",
             Ok(operation) => operation,
             Err(message) => return automation_tool_error(message),
         };
-        match self.execute_automation(&target.url, &plan).await {
+        let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
+        match self
+            .execute_automation(&target, &plan, operation_deadline)
+            .await
+        {
             Ok((summary, captures)) => match automation_call_result(summary, captures) {
                 Ok(result) => Ok(result),
                 Err(message) => automation_tool_error(message),
@@ -1192,7 +1202,8 @@ files writes the inline project to a scratch directory this server owns",
     /// `/state`. Step one frame at a time when the game must see input or I/O
     /// between steps — a batch runs up to 8 ticks per rendered frame, so it has
     /// proportionally fewer input/network/render points. `frames` must be
-    /// between 1 and 10,000.
+    /// between 1 and 10,000 and the acquired operation has a 120-second
+    /// wall-clock deadline.
     #[tool]
     async fn step(
         &self,
@@ -1207,9 +1218,15 @@ files writes the inline project to a scratch directory this server owns",
         }
         let target = resolve!(self.target(&args.session));
         let _operation = resolve!(self.acquire_operation(&target, &context).await);
+        let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
         let state = resolve!(
-            self.advance(&target.url, args.dts.unwrap_or(0.016), frames)
-                .await
+            self.advance(
+                &target,
+                args.dts.unwrap_or(0.016),
+                frames,
+                operation_deadline
+            )
+            .await
         );
         ok_text(state.to_string())
     }
@@ -1501,21 +1518,29 @@ impl FunctorMcp {
         .await
     }
 
-    async fn advance(&self, url: &str, dts: f64, frames: u32) -> Result<Value, String> {
+    async fn advance(
+        &self,
+        target: &SessionTarget,
+        dts: f64,
+        frames: u32,
+        operation_deadline: Instant,
+    ) -> Result<Value, String> {
+        ensure_operation_active(target, operation_deadline)?;
         let body = serde_json::json!({
             "type": "advance",
             "dts": dts,
             "frames": frames,
         });
-        self.post(url, "/time", body.to_string()).await?;
-        // The timeout is a STALL timeout, not a total one: a large batch drains
-        // at up to 8 steps per rendered frame, so a legitimate 100k-step skip
-        // takes minutes. Every observed step resets the clock; only a queue that
-        // stops moving is a failure.
+        self.post(&target.url, "/time", body.to_string()).await?;
+        // The stall deadline detects a queue that stops moving. The separate
+        // operation deadline is absolute: progress never extends it, and an
+        // owned stop marks the target closing so polling exits at this safe
+        // boundary before stop waits on the same gate.
         let mut deadline = Instant::now() + STEP_STALL_TIMEOUT;
         let mut remaining = u64::MAX;
         loop {
-            let state = self.state(url).await?;
+            ensure_operation_active(target, operation_deadline)?;
+            let state = self.state(&target.url).await?;
             let pending = state["pending_steps"].as_u64().unwrap_or(0);
             if pending == 0 {
                 return Ok(state);
@@ -1570,9 +1595,11 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
 
     async fn execute_automation(
         &self,
-        url: &str,
+        target: &SessionTarget,
         plan: &AutomationPlan,
+        operation_deadline: Instant,
     ) -> Result<(String, Vec<(Option<String>, Vec<u8>)>), String> {
+        let url = &target.url;
         let mut observations = Vec::new();
         let mut assertions = Vec::new();
         let mut captures = Vec::new();
@@ -1580,6 +1607,12 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
 
         for (index, step) in plan.steps.iter().enumerate() {
             let step_number = index + 1;
+            ensure_operation_active(target, operation_deadline).map_err(|error| {
+                format!(
+                    "automation stopped before step {step_number} ({}): {error}",
+                    automation_step_name(step)
+                )
+            })?;
             let result: Result<(), String> = match step {
                 AutomationStep::Pause { tts } => self.pin(url, *tts).await.map(|_| ()),
                 AutomationStep::Key { key, down } => self
@@ -1610,7 +1643,10 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                         .await
                         .map(|_| ());
                     let advanced = match &pressed {
-                        Ok(()) => self.advance(url, 0.016, 1).await.map(|_| ()),
+                        Ok(()) => self
+                            .advance(target, 0.016, 1, operation_deadline)
+                            .await
+                            .map(|_| ()),
                         Err(_) => Ok(()),
                     };
                     // A timed-out/error response may still have applied the
@@ -1693,9 +1729,10 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     )
                     .await
                     .map(|_| ()),
-                AutomationStep::Step { frames, dts } => {
-                    self.advance(url, *dts, *frames).await.map(|_| ())
-                }
+                AutomationStep::Step { frames, dts } => self
+                    .advance(target, *dts, *frames, operation_deadline)
+                    .await
+                    .map(|_| ()),
                 AutomationStep::Inspect { label } => match self.state(url).await {
                     Ok(state) => {
                         let observation = serde_json::json!({
@@ -1802,6 +1839,8 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             }
         }
 
+        ensure_operation_active(target, operation_deadline)
+            .map_err(|error| format!("automation stopped before final state: {error}"))?;
         let final_state = self
             .state(url)
             .await
@@ -1891,6 +1930,25 @@ is structured JSON). Rebuild that runtime from this version of Functor."
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+fn ensure_operation_active(
+    target: &SessionTarget,
+    operation_deadline: Instant,
+) -> Result<(), String> {
+    if target.closing.load(Ordering::Acquire) {
+        return Err(format!(
+            "session at {} is stopping; operation ended at a safe boundary",
+            target.url
+        ));
+    }
+    if Instant::now() >= operation_deadline {
+        return Err(format!(
+            "operation exceeded its {}s wall-clock deadline; split long step batches or plans",
+            OPERATION_TOTAL_TIMEOUT.as_secs()
+        ));
+    }
+    Ok(())
 }
 
 async fn acquire_target_operation(
@@ -2702,14 +2760,18 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 mod tests {
     use super::{
         acquire_target_operation, automation_call_result, base64_encoded_len, checked_output_total,
-        encoded_capture_total, extend_bounded, find_guide_section, guide_sections,
-        json_encoded_len, read_body, read_bounded_response, render_api_hits, render_guide_contents,
-        render_guide_section, search_api, serialize_json_bounded, strip_front_matter,
-        truncate_automation_error, AutomationOutputBudget, FunctorMcp, Registry, LANGUAGE_GUIDE,
-        MAX_AUTOMATION_CAPTURE_BYTES, MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
+        encoded_capture_total, ensure_operation_active, extend_bounded, find_guide_section,
+        guide_sections, json_encoded_len, read_body, read_bounded_response, render_api_hits,
+        render_guide_contents, render_guide_section, search_api, serialize_json_bounded,
+        strip_front_matter, truncate_automation_error, AutomationOutputBudget, FunctorMcp,
+        Registry, SessionTarget, LANGUAGE_GUIDE, MAX_AUTOMATION_CAPTURE_BYTES,
+        MAX_AUTOMATION_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
-    use std::sync::{atomic::Ordering, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     fn reference() -> ApiReference {
@@ -3254,6 +3316,29 @@ mod tests {
         let error = waiter.await.unwrap().unwrap_err();
         assert!(error.contains("cancelled before"), "{error}");
         drop(held);
+    }
+
+    #[test]
+    fn operation_boundary_is_absolute_and_observes_stop() {
+        let target = SessionTarget {
+            url: "http://127.0.0.1:1".into(),
+            operation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            closing: Arc::new(AtomicBool::new(false)),
+        };
+        let deadline_error =
+            ensure_operation_active(&target, std::time::Instant::now()).unwrap_err();
+        assert!(
+            deadline_error.contains("wall-clock deadline"),
+            "{deadline_error}"
+        );
+
+        target.closing.store(true, Ordering::Release);
+        let stop_error = ensure_operation_active(
+            &target,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .unwrap_err();
+        assert!(stop_error.contains("safe boundary"), "{stop_error}");
     }
 
     #[tokio::test]
