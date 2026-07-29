@@ -3244,11 +3244,12 @@ async fn acquire_target_operation(
 #[tool_handler(
     name = "functor",
     instructions = "Drive Functor games over their debug runtime. Launch or attach to a game \
-(launch_game / connect_game), then observe it (get_state — read model — get_scene, \
-get_trace, capture_frame) and drive it (pause, send_input, step, resume, rewind, \
-reload_source). `run_game_code_unsafe` runs a Playwright-style JavaScript function against \
-an injected `game` SDK in a Node.js child process, returning its value, SDK-call trace, logs, \
-and captures. It is explicitly RCE-equivalent local code, not a security sandbox. The \
+(launch_game / connect_game). For trusted local multi-step automation, prefer \
+`run_game_code_unsafe`: it runs a Playwright-style JavaScript function against an injected \
+`game` SDK in a Node.js child process, returning its value, SDK-call trace, logs, and captures. \
+It is explicitly RCE-equivalent local code, not a security sandbox. For one-off operations or \
+clients without Node.js, observe with get_state (read model), get_scene, get_trace, or \
+capture_frame, and drive with pause, send_input, step, resume, rewind, or reload_source. The \
 lower-level deterministic \
 loop is pause → send_input → step → get_state: while the \
 clock is pinned nothing advances on its own, and injected input is level state that holds \

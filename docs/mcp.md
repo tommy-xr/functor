@@ -4,10 +4,11 @@
 [debug runtime](debug-runtime.md) — launch a game, read its model, pause it,
 inject input, step the clock, capture a frame — as standard tools, over stdio.
 
-The capability is not new; the *interface* is. Any MCP-speaking agent can now
-drive a Functor game with no bespoke script, no HTTP plumbing, and no screen:
-`launch_game` → `pause` → `send_input` → `step` → `get_state`, reading the
-model back as structured JSON.
+The capability is not new; the *interface* is. A trusted local MCP agent can
+launch or attach to a game, then use `run_game_code_unsafe` to observe, drive,
+wait, assert, and return evidence in one ordinary JavaScript function. The
+individual tools expose the same lower-level operations for one-off use and
+clients without Node.js.
 
 It is a plain HTTP client of the runtimes and lives in the CLI. Its runtime-side
 additions are `GET /project` (the read half used by `save_project`) plus the
