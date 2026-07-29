@@ -300,7 +300,7 @@ visible where they were.
 **Everything else stays off stdout.** A few flag-gated runtime notices have no natural event —
 `--headless` mode, the `--debug-port` "listening on…" line, `--replay` "loaded N frames" — so they
 go to **stderr**, not the event stream. That keeps stdout pure ndjson under `--json` even for the
-`--debug-port` / `--headless` combos an SDK/automation consumer uses. Free-form runtime status that
+`--debug-port` / `--headless` combos an SDK/code-runner consumer uses. Free-form runtime status that
 *doesn't* map to a structured event (e.g. Xreal connect/calibration status, or an asset-load debug
 line) now goes through the **`log` facade** (PR-4a) instead of a raw `println!`, so it too renders
 region-aware and never corrupts `--json`. (The two genuinely-interactive TTY notices — the

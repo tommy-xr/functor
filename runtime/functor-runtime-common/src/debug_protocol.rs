@@ -42,7 +42,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 7 adds `surface_width` / `surface_height` to `GET /state`'s mouse sample.
 /// They are logical window/CSS dimensions in the same coordinate space as
 /// `x` / `y`; clients using resize-correct pointer mapping need v7.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 7;
+///
+/// 8 added `POST /time {"type":"cancel"}` so an external driver can abort a
+/// queued batch without leaving clock work behind.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 8;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -116,7 +119,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/time",
-        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016,\"frames\":1} (queue that many steps; advances accumulate) | {\"type\":\"resume\"} — 409 while --fixed-time pins the clock",
+        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016,\"frames\":1} (queue that many steps; advances accumulate) | {\"type\":\"cancel\"} (drop queued steps, stay paused) | {\"type\":\"resume\"} — 409 while --fixed-time pins the clock",
     },
     DebugRoute {
         method: "POST",
@@ -287,6 +290,9 @@ pub enum TimeCommand {
         #[serde(default = "one_frame")]
         frames: u32,
     },
+    /// Drop queued debug/fixed steps without changing the current game time,
+    /// and remain paused. This is the safe abort twin of `Advance`.
+    Cancel,
     Resume,
 }
 
@@ -556,6 +562,10 @@ mod tests {
             }
         );
         assert_eq!(
+            serde_json::from_str::<TimeCommand>(r#"{"type":"cancel"}"#).unwrap(),
+            TimeCommand::Cancel
+        );
+        assert_eq!(
             serde_json::from_str::<RewindCommand>(r#"{"frame":42}"#).unwrap(),
             RewindCommand { frame: 42 }
         );
@@ -673,6 +683,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 7);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 8);
     }
 }
