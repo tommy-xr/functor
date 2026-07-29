@@ -44,6 +44,7 @@
 //! Frame.create(camera, scene)                               -> Frame
 //! Camera2D.create(width, height)                             -> Camera2D
 //! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
+//! Camera2D.toWorld(mouse, camera)                            -> Option<Input.point2>
 //!   (center-origin, Y-up world units, aspect-fitted without stretching)
 //! Sprite.blank() / rectangle(color, w, h) / square(color, n) -> Sprite
 //! Sprite.image(w, h, texture) / imageRegion(w, h, region, texture) -> Sprite
@@ -5449,6 +5450,44 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         assert!(json.contains(r#""sampling":"Linear""#), "json: {json}");
         let back: Frame = serde_json::from_str(&json).expect("sprite frame deserializes");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn camera2d_to_world_maps_input_mouse_and_rejects_bars() {
+        let center = eval(
+            "let main = () =>\n\
+             Camera2D.toWorld(\n\
+               { x: 500.0, y: 500.0, surfaceWidth: 1000.0, surfaceHeight: 1000.0,\n\
+                 buttons: { left: false, right: false, middle: false } },\n\
+               Camera2D.create(16.0, 9.0) |> Camera2D.at(4.0, -3.0) |> Camera2D.zoom(2.0))",
+        );
+        assert!(matches!(
+            center,
+            Value::Variant { ref ctor, ref args }
+                if ctor.as_ref() == "Option.Some"
+                    && matches!(
+                        args.first(),
+                        Some(Value::Record(fields))
+                            if matches!(
+                                fields.as_slice(),
+                                [(x_name, Value::Number(x)), (y_name, Value::Number(y))]
+                                    if x_name == "x" && y_name == "y" && *x == 4.0 && *y == -3.0
+                            )
+                    )
+        ));
+
+        let bar = eval(
+            "let main = () =>\n\
+             Camera2D.toWorld(\n\
+               { x: 500.0, y: 100.0, surfaceWidth: 1000.0, surfaceHeight: 1000.0,\n\
+                 buttons: { left: false, right: false, middle: false } },\n\
+               Camera2D.create(16.0, 9.0))",
+        );
+        assert!(matches!(
+            bar,
+            Value::Variant { ref ctor, ref args }
+                if ctor.as_ref() == "Option.None" && args.is_empty()
+        ));
     }
 
     #[test]

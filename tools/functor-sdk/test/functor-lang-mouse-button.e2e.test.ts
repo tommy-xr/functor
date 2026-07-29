@@ -120,6 +120,16 @@ test(
     assert.equal(dragged.input.mouse.x, 42, "the move applied");
     assert.equal(dragged.input.mouse.y, 7, "the move applied");
     assert.equal(
+      dragged.input.mouse.surface_width,
+      800,
+      "debug injection retains the runtime-owned logical surface width",
+    );
+    assert.equal(
+      dragged.input.mouse.surface_height,
+      600,
+      "debug injection retains the runtime-owned logical surface height",
+    );
+    assert.equal(
       dragged.input.mouse.buttons?.left,
       true,
       "moving the cursor must NOT release a held button",

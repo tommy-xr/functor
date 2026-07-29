@@ -313,11 +313,15 @@ snapshots — no GPU, fully agent-verifiable.
       `Key.t` design applied to the pointer: an optional
       `mouseButton(model, button, isDown)` entry point whose `button` is the
       built-in `Mouse` module's variant (`<builtin>/Mouse.fun`, injected beside
-      `Key`): `Mouse.Left`/`Right`/`Middle`. Buttons reach game logic **while
-      the cursor is captured**, and capture is now an explicit project opt-in:
+      `Key`): `Mouse.Left`/`Right`/`Middle`. Captured buttons reach game logic
+      only after the explicit project opt-in
       `viewer.camera.control = "game"` in `functor.json`. Without it, native
       keeps the cursor free, web hides the mouse-look button, and the runtime
-      warns once about the inert hooks—especially important for 2D/UI projects.
+      warns once about otherwise-inert pointer hooks. A
+      `"cursor":"visible"` project instead receives absolute pointer motion
+      and clicks not owned by a primary overlay interaction, while keeping the
+      system cursor free; right/middle buttons and wheel input remain
+      game-owned over overlays. The two ownership modes are mutually exclusive.
       Native capture starts on a non-UI click and Escape releases it. This is
       the rule `mouseMove`/`mouseWheel` already followed and keeps clicks from
       being eaten by free-look capture.

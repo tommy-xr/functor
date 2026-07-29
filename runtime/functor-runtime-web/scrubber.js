@@ -521,6 +521,7 @@ export function mountScrubber({ hidden = false } = {}) {
 
   const beginAbsoluteDrag = (handle, move) => {
     handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
       handle.setPointerCapture(event.pointerId);
@@ -535,6 +536,7 @@ export function mountScrubber({ hidden = false } = {}) {
 
   let previewDrag = null;
   previewHandle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     previewHandle.setPointerCapture(event.pointerId);
@@ -560,6 +562,7 @@ export function mountScrubber({ hidden = false } = {}) {
   previewHandle.addEventListener("lostpointercapture", endPreviewDrag);
 
   rail.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
     if (event.target.closest(".scrub-handle")) return;
     event.preventDefault();
     rail.setPointerCapture(event.pointerId);
