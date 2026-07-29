@@ -115,11 +115,13 @@ test("waitFor throws on timeout with the description", async () => {
 
 test("stepUntil checks immediately, then advances deterministically", async () => {
   let value = 0;
+  let pendingSteps = 0;
+  let pollsBeforeLanding = 0;
   const calls: Array<{ path: string; body?: unknown }> = [];
   const state = () => ({
     frame: value,
     tts: value / 60,
-    pending_steps: 0,
+    pending_steps: pendingSteps,
     viewport: { width: 1, height: 1 },
     views: [],
     model: { value },
@@ -129,11 +131,23 @@ test("stepUntil checks immediately, then advances deterministically", async () =
   const http = {
     getJson: async (path: string) => {
       calls.push({ path });
+      if (pendingSteps > 0) {
+        if (pollsBeforeLanding === 0) {
+          pendingSteps = 0;
+          value++;
+        } else {
+          pollsBeforeLanding--;
+        }
+      }
       return state();
     },
     postText: async (path: string, body: unknown) => {
       calls.push({ path, body });
-      if (path === "/time") value++;
+      if (path === "/time") {
+        const advance = body as { frames?: number };
+        pendingSteps = advance.frames ?? 1;
+        pollsBeforeLanding = 1;
+      }
       return "ok";
     },
   } as unknown as HttpClient;
@@ -148,8 +162,8 @@ test("stepUntil checks immediately, then advances deterministically", async () =
   assert.deepEqual(
     calls.filter(({ path }) => path === "/time").map(({ body }) => body),
     [
-      { type: "advance", dts: 0.25 },
-      { type: "advance", dts: 0.25 },
+      { type: "advance", dts: 0.25, frames: 1 },
+      { type: "advance", dts: 0.25, frames: 1 },
     ],
   );
 });
@@ -197,9 +211,49 @@ test("pressKey always releases the key after a failed step", async () => {
   await assert.rejects(client.pressKey("space"), /step failed/);
   assert.deepEqual(calls, [
     { path: "/input", body: { type: "key", key: "space", down: true } },
-    { path: "/time", body: { type: "advance", dts: 1 / 60 } },
+    { path: "/time", body: { type: "advance", dts: 1 / 60, frames: 1 } },
     { path: "/input", body: { type: "key", key: "space", down: false } },
   ]);
+});
+
+test("pressKey waits for its queued step before releasing the key", async () => {
+  let pendingSteps = 0;
+  let stateReads = 0;
+  let landed = false;
+  const http = {
+    postText: async (path: string, body: unknown) => {
+      if (path === "/time") {
+        pendingSteps = 1;
+      }
+      if (
+        path === "/input" &&
+        (body as { down?: boolean }).down === false
+      ) {
+        assert.equal(landed, true, "release must follow the landed frame");
+      }
+      return "ok";
+    },
+    getJson: async () => {
+      stateReads++;
+      if (stateReads >= 2) {
+        pendingSteps = 0;
+        landed = true;
+      }
+      return {
+        frame: landed ? 1 : 0,
+        tts: 0,
+        pending_steps: pendingSteps,
+        viewport: { width: 1, height: 1 },
+        views: [],
+        model: {},
+        model_debug: "",
+        input: { held_keys: [], mouse: { x: 0, y: 0 } },
+      };
+    },
+  } as unknown as HttpClient;
+
+  await new FunctorClient(http).pressKey("space");
+  assert.equal(stateReads, 2);
 });
 
 test("xrInput returns the typed optional input domain", async () => {

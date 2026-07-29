@@ -150,7 +150,7 @@ export class FunctorClient {
     let actionError: unknown;
     try {
       await this.keyDown(key);
-      await this.step(dts);
+      await this.stepFrames(1, dts);
     } catch (error) {
       actionError = error;
     }
@@ -296,7 +296,7 @@ export class FunctorClient {
     let state = await this.state();
     if (await predicate(state)) return state;
     for (let frame = 0; frame < maxFrames; frame++) {
-      await this.step(dts);
+      await this.stepFrames(1, dts);
       state = await this.state();
       if (await predicate(state)) return state;
     }

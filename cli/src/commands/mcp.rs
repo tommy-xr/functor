@@ -45,6 +45,13 @@ const STEP_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Progress does not extend this deadline, so a cancelled request cannot
 /// monopolize the per-runtime gate indefinitely.
 const OPERATION_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Maximum time spent confirming termination of the direct Node child after
+/// code completes, throws, times out, or is cancelled.
+const NODE_CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// Aggregate safety-cleanup budget after submitted code fails. This includes
+/// queued-step cancellation, one current-input snapshot, and every required
+/// input-level transition. Expiry quarantines the exact runtime URL.
+const CODE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request timeout for the (loopback or adb-forwarded) debug server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Lowest debug-protocol version whose contract these tools actually keep
@@ -900,9 +907,10 @@ pub struct RunGameCodeUnsafeArgs {
     /// `async (game) => { await game.pause(); await game.step(); return await game.state(); }`.
     /// This is arbitrary local Node.js code and is RCE-equivalent by design.
     pub code: String,
-    /// Absolute wall-clock limit in milliseconds (default and maximum 120,000).
-    /// It covers setup, execution, and the final state snapshot. The direct
-    /// Node child is killed when it expires; processes deliberately started by
+    /// Execution wall-clock limit in milliseconds (default and maximum
+    /// 120,000). It covers setup, code, and the final state snapshot. Direct
+    /// child shutdown (2 seconds) and safety cleanup (30 seconds) are separately
+    /// bounded and may extend the response. Processes deliberately started by
     /// trusted submitted code are outside this lifecycle boundary.
     pub timeout_ms: Option<u64>,
 }
@@ -1890,7 +1898,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         {
             Ok(state) => state,
             Err(error) => {
-                let reap_error = finish_node_child(&mut child, true).await.err();
+                let reap_error = terminate_node_child(&mut child).await.err();
                 return Err(append_optional_error(
                     format!("submitted code could not snapshot input before starting: {error}"),
                     reap_error,
@@ -1931,8 +1939,12 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         )
         .await;
 
-        let terminate_child = result.is_err() || output.code_error.is_some();
-        let child_status = finish_node_child(&mut child, terminate_child).await;
+        // The submitted function has reported completion (or the driver
+        // stopped waiting). Nothing useful remains in this one-shot child, so
+        // terminate it unconditionally instead of trusting submitted code not
+        // to replace `process.exit`.
+        let child_shutdown = terminate_node_child(&mut child).await;
+        drop(child);
 
         let mut failure = result.err().or_else(|| {
             output.code_error.as_ref().map(|error| {
@@ -1942,19 +1954,13 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                 )
             })
         });
-        match child_status {
-            Ok(status) if failure.is_none() && !status.success() => {
-                failure = Some(format!(
-                    "Node child exited with {status} after reporting success"
-                ));
-            }
-            Err(error) => {
-                failure = Some(append_optional_error(
-                    failure.unwrap_or_else(|| "submitted Node.js child could not be reaped".into()),
-                    Some(error),
-                ));
-            }
-            _ => {}
+        if let Err(error) = child_shutdown {
+            failure = Some(append_optional_error(
+                failure.unwrap_or_else(|| {
+                    "submitted Node.js child termination could not be confirmed".into()
+                }),
+                Some(error),
+            ));
         }
         let mut cleanup_done = false;
         if let Some(mut cause) = failure {
@@ -2492,8 +2498,23 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         if input_restore.is_empty() {
             return cause;
         }
+        let current = match self.state(&target.url).await {
+            Ok(state) => CodeInputRestore::from_state(&state),
+            Err(error) => {
+                target.quarantined.store(true, Ordering::Release);
+                return format!(
+                    "{cause}; failed to snapshot current input before restoration: {error}. The \
+exact runtime URL is quarantined, so no alias can mutate it. Stop an owned session; for an attached \
+runtime, restart both the runtime and this MCP server before reconnecting."
+                );
+            }
+        };
         let mut failures = Vec::new();
         for key in &input_restore.touched_keys {
+            let baseline_down = input_restore.baseline_keys.contains(key);
+            if current.baseline_keys.contains(key) == baseline_down {
+                continue;
+            }
             if let Err(error) = self
                 .post(
                     &target.url,
@@ -2501,7 +2522,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     serde_json::json!({
                         "type": "key",
                         "key": key,
-                        "down": input_restore.baseline_keys.contains(key),
+                        "down": baseline_down,
                     })
                     .to_string(),
                 )
@@ -2511,6 +2532,10 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             }
         }
         for button in &input_restore.touched_mouse_buttons {
+            let baseline_down = input_restore.baseline_mouse_buttons.contains(button);
+            if current.baseline_mouse_buttons.contains(button) == baseline_down {
+                continue;
+            }
             if let Err(error) = self
                 .post(
                     &target.url,
@@ -2518,7 +2543,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
                     serde_json::json!({
                         "type": "mouse_button",
                         "button": button,
-                        "down": input_restore.baseline_mouse_buttons.contains(button),
+                        "down": baseline_down,
                     })
                     .to_string(),
                 )
@@ -2543,14 +2568,49 @@ both the runtime and this MCP server before reconnecting.",
     async fn cleanup_submitted_code(
         &self,
         target: &SessionTarget,
-        mut cause: String,
+        cause: String,
         input_restore: &CodeInputRestore,
         issued_advance: bool,
     ) -> String {
-        if issued_advance {
-            cause = self.abort_advance(target, cause).await;
+        self.cleanup_submitted_code_with_timeout(
+            target,
+            cause,
+            input_restore,
+            issued_advance,
+            CODE_CLEANUP_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn cleanup_submitted_code_with_timeout(
+        &self,
+        target: &SessionTarget,
+        cause: String,
+        input_restore: &CodeInputRestore,
+        issued_advance: bool,
+        cleanup_timeout: Duration,
+    ) -> String {
+        let timeout_cause = cause.clone();
+        let cleanup = async {
+            let mut cause = cause;
+            if issued_advance {
+                cause = self.abort_advance(target, cause).await;
+            }
+            self.code_failure(target, cause, input_restore).await
+        };
+        match tokio::time::timeout(cleanup_timeout, cleanup).await {
+            Ok(cause) => cause,
+            Err(_) => {
+                target.quarantined.store(true, Ordering::Release);
+                format!(
+                    "{timeout_cause}; submitted-code safety cleanup exceeded its {}ms aggregate \
+deadline. Queued clock work or touched input may be ambiguous. The exact runtime URL is \
+quarantined, so no alias can mutate it. Stop an owned session; for an attached runtime, restart \
+both the runtime and this MCP server before reconnecting.",
+                    cleanup_timeout.as_millis()
+                )
+            }
         }
-        self.code_failure(target, cause, input_restore).await
     }
 
     async fn discover(&self, url: &str) -> Result<Value, String> {
@@ -2636,23 +2696,15 @@ Install Node.js, set FUNCTOR_NODE to its executable, and restart `functor mcp`."
     })
 }
 
-async fn finish_node_child(
-    child: &mut Child,
-    terminate: bool,
-) -> Result<std::process::ExitStatus, String> {
-    if terminate {
-        let _ = child.start_kill();
-    }
-    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-        Ok(Ok(status)) => Ok(status),
+async fn terminate_node_child(child: &mut Child) -> Result<(), String> {
+    let _ = child.start_kill();
+    match tokio::time::timeout(NODE_CHILD_SHUTDOWN_TIMEOUT, child.wait()).await {
+        Ok(Ok(_)) => Ok(()),
         Ok(Err(error)) => Err(format!("waiting for the Node child failed: {error}")),
-        Err(_) => {
-            let _ = child.start_kill();
-            child
-                .wait()
-                .await
-                .map_err(|error| format!("reaping the timed-out Node child failed: {error}"))
-        }
+        Err(_) => Err(format!(
+            "Node child did not exit within {}ms after termination; kill-on-drop remains armed",
+            NODE_CHILD_SHUTDOWN_TIMEOUT.as_millis()
+        )),
     }
 }
 
@@ -3877,21 +3929,36 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
+    use std::time::{Duration, Instant};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     fn reference() -> ApiReference {
         functor_docgen::generate().expect("the embedded prelude documents itself")
     }
 
-    async fn fake_http_url(raw: &'static [u8]) -> String {
+    async fn fake_http_url(raw: impl AsRef<[u8]>) -> String {
+        let raw = raw.as_ref().to_vec();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0u8; 1024];
             let _ = socket.read(&mut request).await.unwrap();
-            socket.write_all(raw).await.unwrap();
+            socket.write_all(&raw).await.unwrap();
             socket.shutdown().await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
+    async fn hanging_http_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            let _socket = socket;
+            std::future::pending::<()>().await;
         });
         format!("http://{address}")
     }
@@ -4118,6 +4185,68 @@ mod tests {
             .await;
 
         assert!(error.contains("quarantined"), "{error}");
+        assert!(target.quarantined.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn code_cleanup_does_not_replay_an_already_correct_input_level() {
+        let server = FunctorMcp::new();
+        let body = r#"{"input":{"held_keys":["W"],"mouse":{"buttons":{}}}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let target = SessionTarget {
+            url: fake_http_url(response).await,
+            operation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            quarantined: Arc::new(AtomicBool::new(false)),
+            closing: Arc::new(AtomicBool::new(false)),
+        };
+        let input_restore = CodeInputRestore {
+            baseline_keys: ["W".into()].into_iter().collect(),
+            touched_keys: ["W".into()].into_iter().collect(),
+            ..CodeInputRestore::default()
+        };
+
+        let result = server
+            .code_failure(&target, "submitted code failed".into(), &input_restore)
+            .await;
+
+        assert!(result.contains("levels were restored"), "{result}");
+        assert!(
+            !target.quarantined.load(Ordering::Acquire),
+            "an already-correct level must not trigger a duplicate POST"
+        );
+    }
+
+    #[tokio::test]
+    async fn submitted_code_cleanup_has_one_aggregate_deadline() {
+        let server = FunctorMcp::new();
+        let target = SessionTarget {
+            url: hanging_http_url().await,
+            operation_gate: Arc::new(tokio::sync::Mutex::new(())),
+            quarantined: Arc::new(AtomicBool::new(false)),
+            closing: Arc::new(AtomicBool::new(false)),
+        };
+        let input_restore = CodeInputRestore {
+            touched_keys: ["Space".into()].into_iter().collect(),
+            ..CodeInputRestore::default()
+        };
+        let started = Instant::now();
+
+        let result = server
+            .cleanup_submitted_code_with_timeout(
+                &target,
+                "submitted code timed out".into(),
+                &input_restore,
+                false,
+                Duration::from_millis(20),
+            )
+            .await;
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(result.contains("aggregate deadline"), "{result}");
+        assert!(result.contains("quarantined"), "{result}");
         assert!(target.quarantined.load(Ordering::Acquire));
     }
 

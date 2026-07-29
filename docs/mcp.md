@@ -49,17 +49,21 @@ active call to finish, then runs without interleaving. This is mutual exclusion,
 not a promised FIFO sequencer; relative waiter order is unspecified. Cancellation
 while queued stops waiting and prevents the mutation. Once a mutation acquires
 the gate, it runs to its operation boundary even if its MCP response is
-cancelled. Acquired `step` and submitted-code calls have a 120-second deadline
-that progress does not extend; it is checked between operations and step polls,
-while an in-flight request retains its 30-second request timeout. An owned stop also
-ends an active step/code run at its next polling boundary before taking the
-gate. Before an aborted operation releases the gate, it cancels the accepted
-step queue; a code failure also restores only the key and mouse-button levels
-the code touched to their pre-run snapshot. If either cleanup cannot
-be confirmed, the exact URL is quarantined: every alias rejects further
-mutations. Stopping an owned session kills the ambiguous runtime and clears its
-tombstone. Merely detaching an attached id cannot prove cleanup; restart both
-that runtime and this MCP server before reconnecting. `list_sessions` exposes
+cancelled. Acquired `step` and submitted-code calls have a 120-second active
+deadline that progress does not extend; it is checked between operations and
+step polls, while an in-flight request retains its 30-second request timeout.
+Direct Node-child shutdown has a separate 2-second bound, and failed-code safety
+cleanup has one aggregate 30-second bound, so confirmation may extend the tool
+response beyond the active deadline but cannot hold the gate indefinitely. An
+owned stop also ends an active step/code run at its next polling boundary before
+taking the gate. Before an aborted operation releases the gate, it cancels the
+accepted step queue; a code failure snapshots current input and transitions only
+SDK-touched key and mouse-button levels that differ from their pre-run baseline.
+If either cleanup cannot be confirmed before its bound, the exact URL is
+quarantined: every alias rejects further mutations. Stopping an owned session
+kills the ambiguous runtime and clears its tombstone. Merely detaching an
+attached id cannot prove cleanup; restart both that runtime and this MCP server
+before reconnecting. `list_sessions` exposes
 session flags plus quarantined URL tombstones with no remaining id; read-only
 state/scene/trace calls remain available for diagnosis.
 Exact normalized base-URL aliases created by this MCP server share the same
@@ -249,8 +253,10 @@ Execution is ordered but not transactional. Syntax failure happens before code
 starts, but a later throw cannot roll back model, physics, UI, or effects from
 steps that already landed. On throw, timeout, MCP cancellation, or stop, the
 parent kills the direct child, cancels accepted clock work, and restores only
-key/mouse-button levels touched through the injected SDK. Failed cleanup
-quarantines the exact runtime URL under the same rules as a failed `step`.
+key/mouse-button levels touched through the injected SDK that differ from their
+baseline. Direct-child shutdown is bounded to 2 seconds and the whole safety
+cleanup to 30 seconds; failed or expired cleanup quarantines the exact runtime
+URL under the same rules as a failed `step`.
 
 The complete architecture, limits, threat boundary, and game-jam evaluation are
 in [the code-runner note](mcp-unsafe-sdk-code.md).

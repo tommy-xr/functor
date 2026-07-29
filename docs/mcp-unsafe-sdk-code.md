@@ -178,8 +178,10 @@ child-process boundary are not substitutes.
 
 - source: 64 KiB;
 - SDK calls: 25,000;
-- whole submitted-code operation wall time, including initial/final snapshots:
+- active submitted-code deadline, including initial/final snapshots:
   120 seconds maximum;
+- direct Node-child shutdown confirmation: 2 seconds;
+- aggregate failed-run safety cleanup: 30 seconds, then quarantine;
 - one child protocol message: 16 MiB;
 - retained console text: 64 KiB;
 - returned JSON text: 4 MiB;
@@ -196,9 +198,11 @@ On syntax failure, the function never starts. Once it starts, execution is not
 transactional: model, physics, UI, and effects from landed steps are not rolled
 back. If code throws, times out, is cancelled, or is interrupted by
 `stop_game`, the parent kills the direct Node child, cancels any accepted
-unlanded clock work, and restores only key/mouse-button levels touched through
-the injected SDK to their pre-run snapshot. Processes deliberately spawned by
-submitted code are not tracked or killed.
+unlanded clock work, snapshots current input, and transitions only SDK-touched
+key/mouse-button levels that differ from their pre-run snapshot. Child shutdown
+may add at most 2 seconds and the whole safety cleanup at most 30 seconds beyond
+the active deadline. Processes deliberately spawned by submitted code are not
+tracked or killed.
 
 If queued-step cancellation or input restoration cannot be confirmed, the
 shared exact URL is quarantined. Every alias rejects further mutations.
