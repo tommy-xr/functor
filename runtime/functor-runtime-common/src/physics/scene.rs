@@ -19,7 +19,8 @@ pub const DEFAULT_GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
 /// `scene3d` shapes: physics extents are gameplay data, not visuals.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Shape {
-    /// Axis-aligned box, given as *full* extents (width, height, depth).
+    /// Box in the body's local axes, given as *full* extents
+    /// (width, height, depth).
     Cuboid { extents: [f32; 3] },
     Sphere { radius: f32 },
     /// Capsule along the local Y axis: a segment of `2 * half_height` with
