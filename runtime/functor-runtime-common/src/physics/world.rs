@@ -813,24 +813,53 @@ impl World {
             }
             let live = self.tags.get(&next.tag).and_then(|(rb, _)| {
                 let rb = self.bodies.get(*rb)?;
-                Some((*rb.position(), rb.linvel(), rb.angvel()))
+                Some((
+                    *rb.position(),
+                    *rb.next_position(),
+                    rb.linvel(),
+                    rb.angvel(),
+                ))
             });
             self.despawn(&next.tag);
             let spawned = self.spawn(next);
             debug_assert!(spawned);
-            if let (Some((live_pose, linvel, angvel)), Some((rb_handle, _))) =
+            if let (
+                Some((live_pose, pending_pose, linvel, angvel)),
+                Some((rb_handle, _)),
+            ) =
                 (live, self.tags.get(&next.tag).copied())
             {
                 let rb = &mut self.bodies[rb_handle];
-                let mut rebuilt_pose = *rb.position();
-                if prev.position == next.position {
-                    rebuilt_pose.translation = live_pose.translation;
-                }
-                if prev.rotation == next.rotation {
-                    rebuilt_pose.rotation = live_pose.rotation;
-                }
-                if *rb.position() != rebuilt_pose {
-                    rb.set_position(rebuilt_pose, true);
+                if next.kind == BodyKind::Kinematic {
+                    // A structural rebuild must preserve both halves of a
+                    // position-based kinematic body's state. Its current pose
+                    // remains live, while unchanged declaration fields retain
+                    // any already-queued target and changed fields target the
+                    // new declaration for the next step.
+                    let declared_pose = pose_of(next);
+                    let mut target_pose = pending_pose;
+                    if prev.position != next.position {
+                        target_pose.translation = declared_pose.translation;
+                    }
+                    if prev.rotation != next.rotation {
+                        target_pose.rotation = declared_pose.rotation;
+                    }
+                    if live_pose.rotation.dot(target_pose.rotation) < 0.0 {
+                        target_pose.rotation = -target_pose.rotation;
+                    }
+                    rb.set_position(live_pose, true);
+                    rb.set_next_kinematic_position(target_pose);
+                } else {
+                    let mut rebuilt_pose = *rb.position();
+                    if prev.position == next.position {
+                        rebuilt_pose.translation = live_pose.translation;
+                    }
+                    if prev.rotation == next.rotation {
+                        rebuilt_pose.rotation = live_pose.rotation;
+                    }
+                    if *rb.position() != rebuilt_pose {
+                        rb.set_position(rebuilt_pose, true);
+                    }
                 }
                 if prev.velocity == next.velocity {
                     rb.set_linvel(linvel, true);
@@ -1511,6 +1540,54 @@ mod tests {
         }
         let (rb_handle, _) = w.tags["spinner"];
         assert!(w.bodies[rb_handle].angvel().length() < 1e-6);
+    }
+
+    #[test]
+    fn structural_rebuild_preserves_and_retargets_kinematic_pose() {
+        let quarter_turn = std::f32::consts::FRAC_1_SQRT_2;
+        let identity = [0.0, 0.0, 0.0, 1.0];
+        let turned = [0.0, quarter_turn, 0.0, quarter_turn];
+        let cuboid = |rotation| {
+            Body::kinematic(
+                "spinner".to_string(),
+                Shape::Cuboid {
+                    extents: [1.0, 1.0, 1.0],
+                },
+            )
+            .facing(rotation)
+        };
+        let sphere = |rotation| {
+            Body::kinematic("spinner".to_string(), Shape::Sphere { radius: 1.0 })
+                .facing(rotation)
+        };
+
+        // An unchanged declaration field retains its pending target when a
+        // shape change rebuilds the body.
+        let mut preserved = World::new([0.0, 0.0, 0.0]);
+        preserved.reconcile(&scene(vec![cuboid(identity)]));
+        preserved.reconcile(&scene(vec![cuboid(turned)]));
+        preserved.reconcile(&scene(vec![sphere(turned)]));
+        let (_, before_step) = preserved.body_transform("spinner").unwrap();
+        assert_eq!(before_step, identity);
+        preserved.step_fixed();
+        let (_, after_step) = preserved.body_transform("spinner").unwrap();
+        for (actual, expected) in after_step.into_iter().zip(turned) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+
+        // A changed field alongside the rebuild replaces the pending target;
+        // it does not teleport immediately or leave the old target queued.
+        let mut retargeted = World::new([0.0, 0.0, 0.0]);
+        retargeted.reconcile(&scene(vec![cuboid(identity)]));
+        retargeted.reconcile(&scene(vec![cuboid(turned)]));
+        retargeted.reconcile(&scene(vec![sphere(identity)]));
+        let (_, before_step) = retargeted.body_transform("spinner").unwrap();
+        assert_eq!(before_step, identity);
+        retargeted.step_fixed();
+        let (_, after_step) = retargeted.body_transform("spinner").unwrap();
+        assert_eq!(after_step, identity);
+        let (rb_handle, _) = retargeted.tags["spinner"];
+        assert!(retargeted.bodies[rb_handle].angvel().length() < 1e-6);
     }
 
     #[test]
