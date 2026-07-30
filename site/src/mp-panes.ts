@@ -47,6 +47,24 @@ interface ScrubSeam {
   ownsDetachedInput(): boolean;
   setDetachedPointerLockPending(pending: boolean): void;
   toggleDetached(): void;
+  debugCamera(): {
+    mode: number;
+    material: number;
+    physics: boolean;
+    authoredFrustum: boolean;
+    gameUi: boolean;
+    fov: number;
+    zoom2d: number;
+  };
+  setDebugCamera(settings: {
+    mode?: number;
+    fov?: number;
+    material?: number;
+    physics?: boolean;
+    authoredFrustum?: boolean;
+    gameUi?: boolean;
+    reset?: boolean;
+  }): void;
   step(): void;
   model(): { preview: { enabled: boolean; seconds: number; rate: number } };
   selectEvent(id: number | null): void;
@@ -233,6 +251,35 @@ export function initMultiplayerPanes({
       <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one client full-size (f)">▤ tabs</button>
     </span>`;
 
+  const debugDrawer = document.createElement("section");
+  debugDrawer.className = "mp-debug";
+  debugDrawer.hidden = true;
+  debugDrawer.setAttribute("aria-label", "Debug Camera controls");
+  debugDrawer.innerHTML = `
+    <strong>Debug Camera</strong>
+    <label>View
+      <select id="mp-debug-mode">
+        <option value="0">FPS</option>
+        <option value="1">Orbit</option>
+        <option value="2">Pan 2D</option>
+      </select>
+    </label>
+    <label><span id="mp-debug-lens-name">FOV</span>
+      <input id="mp-debug-fov" type="range" min="15" max="120" step="1" value="60">
+      <output id="mp-debug-lens">60°</output>
+    </label>
+    <label>Material
+      <select id="mp-debug-material">
+        <option value="0">Shaded</option>
+        <option value="1">Normals</option>
+        <option value="2">Tangents</option>
+      </select>
+    </label>
+    <label><input id="mp-debug-physics" type="checkbox"> Physics</label>
+    <label><input id="mp-debug-frustum" type="checkbox"> Authored frustum</label>
+    <label><input id="mp-debug-game-ui" type="checkbox" checked> Game UI</label>
+    <button id="mp-debug-reset" type="button">Reset</button>`;
+
   // -------------------------------------------------------------- pane grid
   const tabsStrip = document.createElement("div");
   tabsStrip.className = "mp-tabs";
@@ -242,11 +289,20 @@ export function initMultiplayerPanes({
   grid.className = "mp-grid";
   grid.dataset.view = "tiled";
 
-  previewPane.prepend(chrono, tabsStrip);
+  previewPane.prepend(chrono, debugDrawer, tabsStrip);
   previewPane.appendChild(grid);
 
   const $ = (id: string) => chrono.querySelector(`#${id}`) as HTMLElement;
   const $btn = (id: string) => chrono.querySelector(`#${id}`) as HTMLButtonElement;
+  const debugMode = debugDrawer.querySelector("#mp-debug-mode") as HTMLSelectElement;
+  const debugFov = debugDrawer.querySelector("#mp-debug-fov") as HTMLInputElement;
+  const debugLensName = debugDrawer.querySelector("#mp-debug-lens-name") as HTMLElement;
+  const debugLens = debugDrawer.querySelector("#mp-debug-lens") as HTMLOutputElement;
+  const debugMaterial = debugDrawer.querySelector("#mp-debug-material") as HTMLSelectElement;
+  const debugPhysics = debugDrawer.querySelector("#mp-debug-physics") as HTMLInputElement;
+  const debugFrustum = debugDrawer.querySelector("#mp-debug-frustum") as HTMLInputElement;
+  const debugGameUi = debugDrawer.querySelector("#mp-debug-game-ui") as HTMLInputElement;
+  const debugReset = debugDrawer.querySelector("#mp-debug-reset") as HTMLButtonElement;
 
   const panes: Pane[] = [];
   const makePane = (index: number, iframe: HTMLIFrameElement): Pane => {
@@ -695,6 +751,28 @@ export function initMultiplayerPanes({
       refused();
     }
   });
+  debugMode.addEventListener("change", () => {
+    primarySeam()?.setDebugCamera({ mode: Number(debugMode.value) });
+  });
+  debugFov.addEventListener("input", () => {
+    debugLens.value = `${Math.round(debugFov.valueAsNumber)}°`;
+    primarySeam()?.setDebugCamera({ fov: debugFov.valueAsNumber });
+  });
+  debugMaterial.addEventListener("change", () => {
+    primarySeam()?.setDebugCamera({ material: Number(debugMaterial.value) });
+  });
+  debugPhysics.addEventListener("change", () => {
+    primarySeam()?.setDebugCamera({ physics: debugPhysics.checked });
+  });
+  debugFrustum.addEventListener("change", () => {
+    primarySeam()?.setDebugCamera({ authoredFrustum: debugFrustum.checked });
+  });
+  debugGameUi.addEventListener("change", () => {
+    primarySeam()?.setDebugCamera({ gameUi: debugGameUi.checked });
+  });
+  debugReset.addEventListener("click", () => {
+    primarySeam()?.setDebugCamera({ reset: true });
+  });
   // The speculative preview (🔮): the pane simulates forward from its parked
   // frame under the current code, replaying recorded input. Broadcast like
   // pause (single-client-only in the UI; the CSS hides it at N > 1).
@@ -857,6 +935,7 @@ export function initMultiplayerPanes({
       }
     }
     const current = primary?.view();
+    if (!primary?.detached()) debugDrawer.hidden = true;
     chrono.classList.toggle("dormant", !current);
     if (primary && current) {
       const span = Math.max(current.viewport.hi - current.viewport.lo, 1);
@@ -968,6 +1047,29 @@ export function initMultiplayerPanes({
       cameraBtn.setAttribute("aria-label", cameraBtn.title);
       cameraBtn.setAttribute("aria-pressed", String(detached));
       cameraBtn.classList.toggle("on", detached);
+      debugDrawer.hidden = !detached;
+      if (detached && cameraSeam) {
+        const debug = cameraSeam.debugCamera();
+        const pan2d = debug.mode === 2;
+        debugMode.value = String(debug.mode);
+        debugMode.disabled = pan2d;
+        debugFov.hidden = pan2d;
+        debugLensName.textContent = pan2d ? "Zoom" : "FOV";
+        if (pan2d) {
+          debugLens.value = debug.zoom2d > 0 ? `${debug.zoom2d.toFixed(2)}×` : "—";
+        } else {
+          const fov = debug.fov > 0 ? debug.fov : 60;
+          if (document.activeElement !== debugFov) debugFov.value = String(fov);
+          debugLens.value = `${Math.round(fov)}°`;
+        }
+        debugMaterial.value = String(debug.material);
+        debugMaterial.disabled = pan2d;
+        debugPhysics.checked = debug.physics;
+        debugPhysics.disabled = pan2d;
+        debugFrustum.checked = debug.authoredFrustum;
+        debugFrustum.disabled = pan2d;
+        debugGameUi.checked = debug.gameUi;
+      }
       // A pane that boots while the session is parked must not run off on its
       // own: keep every seam's pause state converged on the focused pane's.
       // Idempotent, so this costs one boolean read per pane per frame.

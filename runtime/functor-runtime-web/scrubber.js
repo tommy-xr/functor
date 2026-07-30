@@ -17,9 +17,23 @@ import {
   functor_lang_timeline_events_gen,
   functor_lang_viewer_detached,
   functor_lang_viewer_detached_generation,
+  functor_lang_viewer_authored_frustum,
+  functor_lang_viewer_fov,
+  functor_lang_viewer_game_ui,
   functor_lang_viewer_look,
+  functor_lang_viewer_material,
+  functor_lang_viewer_mode,
   functor_lang_viewer_move,
+  functor_lang_viewer_physics,
+  functor_lang_viewer_reset,
+  functor_lang_viewer_set_authored_frustum,
+  functor_lang_viewer_set_fov,
+  functor_lang_viewer_set_game_ui,
+  functor_lang_viewer_set_material,
+  functor_lang_viewer_set_mode,
+  functor_lang_viewer_set_physics,
   functor_lang_viewer_toggle_detached,
+  functor_lang_viewer_zoom_2d,
   functor_lang_viewer_zoom,
 } from "./pkg/functor_runtime_web.js";
 import {
@@ -45,11 +59,14 @@ const STYLE = `
   /* Docked TOP: the transport instrument sits above the scene it governs,
      matching the sandbox's chrono bar — one product-wide rule. */
   position: fixed; left: 0; right: 0; top: 0; z-index: 10;
-  display: none; align-items: center; gap: 8px; flex-wrap: nowrap;
+  display: none; flex-direction: column; align-items: stretch; gap: 0;
   padding: 8px 12px 18px; color: var(--sb-text); background: var(--sb-bg);
   border-bottom: 1px solid var(--sb-line);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5), 0 14px 36px rgba(0, 0, 0, 0.38);
   font: 12px/1 var(--sb-font);
+}
+#scrub-main {
+  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
 }
 #scrubber button, #scrub-adv > summary {
   font: 14px/1 var(--sb-font); color: var(--sb-text); cursor: pointer;
@@ -129,6 +146,27 @@ const STYLE = `
   border-color: var(--sb-accent);
   box-shadow: 0 0 0 1px var(--sb-accent), 0 2px 10px rgba(65, 216, 230, 0.35);
 }
+#scrub-debug {
+  display: none; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--sb-line);
+}
+#scrubber.debug-active #scrub-debug { display: flex; }
+#scrub-debug-title {
+  color: var(--sb-accent); font-weight: 700; letter-spacing: 0.04em;
+}
+#scrub-debug label {
+  display: inline-flex; align-items: center; gap: 6px; color: var(--sb-dim);
+}
+#scrub-debug select, #scrub-debug input[type="range"] {
+  font: 12px/1 var(--sb-font); color: var(--sb-text);
+  accent-color: var(--sb-accent); background: rgba(65, 216, 230, 0.10);
+}
+#scrub-debug select {
+  border: 1px solid var(--sb-line); border-radius: 5px; padding: 4px 5px;
+}
+#scrub-debug input[type="checkbox"] { accent-color: var(--sb-accent); }
+#scrub-debug-fov { width: 110px; }
+#scrub-debug-lens { color: var(--sb-text); min-width: 42px; }
 #scrub-adv { position: relative; }
 #scrub-adv > summary { list-style: none; user-select: none; }
 #scrub-adv > summary::-webkit-details-marker { display: none; }
@@ -146,20 +184,23 @@ const STYLE = `
 }
 #scrub-adv-pop input[type="number"] { width: 46px; }
 @media (max-width: 520px) {
-  #scrubber { gap: 6px; padding: 7px 8px 17px; }
+  #scrubber { padding: 7px 8px 17px; }
+  #scrub-main { gap: 6px; }
+  #scrub-debug { gap: 8px; }
   #scrubber button, #scrub-adv > summary { padding: 6px 7px; }
   #scrub-rail { min-width: 48px; }
 }
 @media (max-width: 380px) {
-  #scrubber { gap: 4px; }
+  #scrub-main { gap: 4px; }
   #scrubber button, #scrub-adv > summary { padding: 6px 5px; font-size: 13px; }
 }`;
 
 const HTML = `
-  <button id="scrub-pause" title="Pause / resume">⏸</button>
-  <button id="scrub-camera" title="Open the debug camera" hidden>📷</button>
-  <button id="scrub-step" title="Step one frame forward">⏭</button>
-  <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
+  <div id="scrub-main">
+    <button id="scrub-pause" title="Pause / resume">⏸</button>
+    <button id="scrub-camera" title="Open the debug camera" hidden>📷</button>
+    <button id="scrub-step" title="Step one frame forward">⏭</button>
+    <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
     <svg id="scrub-timeline" viewBox="0 0 1000 30" preserveAspectRatio="none"
       role="group" aria-label="Timeline event markers">
       <defs>
@@ -185,21 +226,47 @@ const HTML = `
     <span id="scrub-overflow"></span>
     <span id="scrub-event-detail" role="status"></span>
     <span id="scrub-label"><span id="scrub-count"></span></span>
-  </span>
-  <button id="scrub-extrapolate" title="Extrapolate the game into the future">🔮</button>
-  <details id="scrub-adv">
-    <summary title="Extrapolation settings">⚙</summary>
-    <div id="scrub-adv-pop">
-      <label>show
-        <select id="scrub-mode">
-          <option value="1">trail</option><option value="2">strobe</option>
-          <option value="3" selected>both</option><option value="4">ghost</option>
-        </select>
-      </label>
-      <label>window <input id="scrub-win" type="number" step="0.5" min="0.5" max="5" value="2" />s</label>
-      <label>rate <input id="scrub-rate" type="number" min="1" max="30" value="5" />/s</label>
-    </div>
-  </details>`;
+    </span>
+    <button id="scrub-extrapolate" title="Extrapolate the game into the future">🔮</button>
+    <details id="scrub-adv">
+      <summary title="Extrapolation settings">⚙</summary>
+      <div id="scrub-adv-pop">
+        <label>show
+          <select id="scrub-mode">
+            <option value="1">trail</option><option value="2">strobe</option>
+            <option value="3" selected>both</option><option value="4">ghost</option>
+          </select>
+        </label>
+        <label>window <input id="scrub-win" type="number" step="0.5" min="0.5" max="5" value="2" />s</label>
+        <label>rate <input id="scrub-rate" type="number" min="1" max="30" value="5" />/s</label>
+      </div>
+    </details>
+  </div>
+  <section id="scrub-debug" aria-label="Debug Camera controls">
+    <span id="scrub-debug-title">Debug Camera</span>
+    <label>View
+      <select id="scrub-debug-mode">
+        <option value="0">FPS</option>
+        <option value="1">Orbit</option>
+        <option value="2">Pan 2D</option>
+      </select>
+    </label>
+    <label id="scrub-debug-lens-label"><span id="scrub-debug-lens-name">FOV</span>
+      <input id="scrub-debug-fov" type="range" min="15" max="120" step="1" value="60" />
+      <output id="scrub-debug-lens">60°</output>
+    </label>
+    <label>Material
+      <select id="scrub-debug-material">
+        <option value="0">Shaded</option>
+        <option value="1">Normals</option>
+        <option value="2">Tangents</option>
+      </select>
+    </label>
+    <label><input id="scrub-debug-physics" type="checkbox" /> Physics</label>
+    <label><input id="scrub-debug-frustum" type="checkbox" /> Authored frustum</label>
+    <label><input id="scrub-debug-game-ui" type="checkbox" checked /> Game UI</label>
+    <button id="scrub-debug-reset" type="button">Reset</button>
+  </section>`;
 
 // `hidden: true` mounts the SEAM without the chrome: the timeline model, the
 // runtime poll loop, and `window.__scrub` all run exactly as usual, but the
@@ -250,6 +317,15 @@ export function mountScrubber({ hidden = false } = {}) {
   const mode = $("scrub-mode");
   const win = $("scrub-win");
   const rate = $("scrub-rate");
+  const debugMode = $("scrub-debug-mode");
+  const debugFov = $("scrub-debug-fov");
+  const debugLensName = $("scrub-debug-lens-name");
+  const debugLens = $("scrub-debug-lens");
+  const debugMaterial = $("scrub-debug-material");
+  const debugPhysics = $("scrub-debug-physics");
+  const debugFrustum = $("scrub-debug-frustum");
+  const debugGameUi = $("scrub-debug-game-ui");
+  const debugReset = $("scrub-debug-reset");
 
   let state = createTimelineState();
   let pendingSeek = null;
@@ -257,6 +333,7 @@ export function mountScrubber({ hidden = false } = {}) {
   let lastSeekResultId = null;
   let lastEventsGeneration = null;
   let lastRuntimeSnapshotKey = "";
+  let lastDebugSnapshotKey = "";
   let detachedActive = false;
   let pendingDetachedGeneration = null;
   let pendingPointerLock = false;
@@ -272,6 +349,15 @@ export function mountScrubber({ hidden = false } = {}) {
 
   const view = () => deriveTimelineView(state);
   const canonicalConfig = () => state.preview;
+  const debugCamera = () => ({
+    mode: functor_lang_viewer_mode(),
+    material: functor_lang_viewer_material(),
+    physics: functor_lang_viewer_physics(),
+    authoredFrustum: functor_lang_viewer_authored_frustum(),
+    gameUi: functor_lang_viewer_game_ui(),
+    fov: functor_lang_viewer_fov(),
+    zoom2d: functor_lang_viewer_zoom_2d(),
+  });
   const pushPreview = () =>
     functor_lang_scrub_set_preview(state.preview.enabled ? Number(mode.value) : 0);
   const pushConfig = () => {
@@ -542,10 +628,36 @@ export function mountScrubber({ hidden = false } = {}) {
     camera.setAttribute("aria-label", camera.title);
     camera.setAttribute("aria-pressed", String(detachedActive));
     camera.classList.toggle("on", detachedActive);
+    el.classList.toggle("debug-active", detachedActive);
+    if (detachedActive) {
+      const debug = debugCamera();
+      debugMode.value = String(debug.mode);
+      const pan2d = debug.mode === 2;
+      debugMode.disabled = pan2d;
+      debugFov.hidden = pan2d;
+      debugLensName.textContent = pan2d ? "Zoom" : "FOV";
+      if (pan2d) {
+        debugLens.value = debug.zoom2d > 0 ? `${debug.zoom2d.toFixed(2)}×` : "—";
+      } else {
+        const fov = debug.fov > 0 ? debug.fov : 60;
+        if (document.activeElement !== debugFov) debugFov.value = String(fov);
+        debugLens.value = `${Math.round(fov)}°`;
+      }
+      debugMaterial.value = String(debug.material);
+      debugMaterial.disabled = pan2d;
+      debugPhysics.checked = debug.physics;
+      debugPhysics.disabled = pan2d;
+      debugFrustum.checked = debug.authoredFrustum;
+      debugFrustum.disabled = pan2d;
+      debugGameUi.checked = debug.gameUi;
+    }
     extrapolate.classList.toggle("on", state.preview.enabled);
     extrapolate.setAttribute("aria-pressed", String(state.preview.enabled));
     renderTicks(current);
     renderMarkers(current);
+    if (!hidden) {
+      document.documentElement.style.setProperty("--functor-scrubber-h", `${el.offsetHeight}px`);
+    }
   };
 
   const beginAbsoluteDrag = (handle, move) => {
@@ -705,6 +817,26 @@ export function mountScrubber({ hidden = false } = {}) {
   rate.addEventListener("input", updateConfigFromInputs);
   win.addEventListener("change", syncInputs);
   rate.addEventListener("change", syncInputs);
+  debugMode.addEventListener("change", () =>
+    functor_lang_viewer_set_mode(Number(debugMode.value))
+  );
+  debugFov.addEventListener("input", () => {
+    debugLens.value = `${Math.round(debugFov.valueAsNumber)}°`;
+    functor_lang_viewer_set_fov(debugFov.valueAsNumber);
+  });
+  debugMaterial.addEventListener("change", () =>
+    functor_lang_viewer_set_material(Number(debugMaterial.value))
+  );
+  debugPhysics.addEventListener("change", () =>
+    functor_lang_viewer_set_physics(debugPhysics.checked)
+  );
+  debugFrustum.addEventListener("change", () =>
+    functor_lang_viewer_set_authored_frustum(debugFrustum.checked)
+  );
+  debugGameUi.addEventListener("change", () =>
+    functor_lang_viewer_set_game_ui(debugGameUi.checked)
+  );
+  debugReset.addEventListener("click", () => functor_lang_viewer_reset());
 
   syncInputs();
   pushPreview();
@@ -728,6 +860,26 @@ export function mountScrubber({ hidden = false } = {}) {
     moveDetached: (forward, right, vertical, elapsedSeconds) =>
       functor_lang_viewer_move(forward, right, vertical, elapsedSeconds),
     zoomDetached: (steps) => functor_lang_viewer_zoom(steps),
+    debugCamera,
+    setDebugCamera: ({
+      mode: debugModeValue,
+      fov,
+      material,
+      physics,
+      authoredFrustum,
+      gameUi,
+      reset,
+    } = {}) => {
+      if (debugModeValue !== undefined) functor_lang_viewer_set_mode(debugModeValue);
+      if (fov !== undefined) functor_lang_viewer_set_fov(fov);
+      if (material !== undefined) functor_lang_viewer_set_material(material);
+      if (physics !== undefined) functor_lang_viewer_set_physics(physics);
+      if (authoredFrustum !== undefined) {
+        functor_lang_viewer_set_authored_frustum(authoredFrustum);
+      }
+      if (gameUi !== undefined) functor_lang_viewer_set_game_ui(gameUi);
+      if (reset) functor_lang_viewer_reset();
+    },
     step: () => functor_lang_scrub_step(),
     model: () => state,
     view,
@@ -768,6 +920,14 @@ export function mountScrubber({ hidden = false } = {}) {
       detachedActive = nextDetached;
       if (!detachedActive && document.pointerLockElement) document.exitPointerLock();
       if (!hidden) render();
+    }
+    const debug = debugCamera();
+    const debugSnapshotKey =
+      `${debug.mode}:${debug.material}:${debug.physics}:${debug.authoredFrustum}:` +
+      `${debug.gameUi}:${debug.fov.toFixed(3)}:${debug.zoom2d.toFixed(3)}`;
+    if (debugSnapshotKey !== lastDebugSnapshotKey) {
+      lastDebugSnapshotKey = debugSnapshotKey;
+      if (!hidden && detachedActive) render();
     }
     if (pendingSeek !== null) {
       functor_lang_seek_scene(pendingSeek.frame, pendingSeek.id);

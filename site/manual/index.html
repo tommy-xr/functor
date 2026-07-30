@@ -77,9 +77,12 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
             Every project has a shell-owned <strong>Debug camera</strong> in the timeline,
             available while playing or paused with no manifest setting. In 3D, use mouse look,
             WASD, Q/E for down/up, and the wheel for FOV; in 2D, pan with the mouse or WASD and
-            zoom with the wheel. It never changes game state, replay, or the authored camera used
-            for culling and portal views. Escape releases the pointer, clicking the viewport
-            recaptures it, and <strong>Exit debug view</strong> returns to the authored camera.
+            zoom with the wheel. Its contextual drawer switches between FPS and orbit views,
+            visualizes normals or tangents, overlays live physics and the authored camera
+            frustum, and can hide game UI. It never changes game state, replay, or the authored
+            camera used for culling and portal views. Escape releases the pointer, clicking the
+            viewport recaptures it, and <strong>Exit debug view</strong> returns to the authored
+            camera.
           </p>
           <p>And the game itself — here is the smallest interesting one:</p>
           <pre class="functor-lang runnable">let init = {}

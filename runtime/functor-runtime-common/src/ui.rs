@@ -696,6 +696,11 @@ pub struct ScrubberState {
     pub camera_catching_up: bool,
     /// Whether the main viewport currently uses that detached camera.
     pub camera_detached: bool,
+    /// Navigation/readout state for the contextual debug-camera drawer.
+    pub camera_mode: Option<crate::viewer::DebugCameraMode>,
+    pub camera_fov_degrees: Option<f32>,
+    pub camera_zoom_2d: Option<f32>,
+    pub debug_presentation: crate::viewer::DebugPresentation,
     /// The bar's single future-preview switch (docs/time-travel.md T6/T6d):
     /// "extrapolate" on/off. What it SHOWS when on is `preview_mode`,
     /// configured in the ⚙ popover. Interactive companion to the
@@ -720,6 +725,13 @@ pub enum ScrubberAction {
     TogglePause,
     /// Snapshot or discard the shell-owned debug view.
     ToggleDetachedCamera,
+    SetDebugCameraMode(crate::viewer::DebugCameraMode),
+    SetDebugCameraFov(f32),
+    SetDebugMaterial(crate::viewer::DebugMaterialMode),
+    SetDebugPhysics(bool),
+    SetAuthoredCameraFrustum(bool),
+    SetGameUiVisible(bool),
+    ResetDebugCamera,
     /// Non-destructive scrub to a rendered frame (dragging the timeline).
     SeekTo(u64),
     Step,
@@ -1041,6 +1053,104 @@ impl Scrubber {
                                 ui.painter()
                                     .galley(egui::pos2(x, strip.top() - 3.0), galley, weak);
                                 x += w;
+                            }
+                            if state.camera_detached {
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    ui.strong("Debug Camera");
+                                    ui.separator();
+                                    ui.label("View");
+                                    match state.camera_mode {
+                                        Some(crate::viewer::DebugCameraMode::Pan2d) => {
+                                            ui.label("Pan 2D");
+                                        }
+                                        Some(current) => {
+                                            for mode in [
+                                                crate::viewer::DebugCameraMode::Fps,
+                                                crate::viewer::DebugCameraMode::Orbit,
+                                            ] {
+                                                if ui
+                                                    .selectable_label(
+                                                        current == mode,
+                                                        mode.label(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    action = Some(
+                                                        ScrubberAction::SetDebugCameraMode(mode),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        None => {}
+                                    }
+                                    if let Some(fov) = state.camera_fov_degrees {
+                                        ui.separator();
+                                        let mut value = fov;
+                                        if ui
+                                            .add(
+                                                egui::Slider::new(&mut value, 15.0..=120.0)
+                                                    .text("FOV")
+                                                    .suffix("°"),
+                                            )
+                                            .changed()
+                                        {
+                                            action =
+                                                Some(ScrubberAction::SetDebugCameraFov(value));
+                                        }
+                                    } else if let Some(zoom) = state.camera_zoom_2d {
+                                        ui.separator();
+                                        ui.label(format!("Zoom {zoom:.2}×"));
+                                    }
+                                    if ui.button("Reset").clicked() {
+                                        action = Some(ScrubberAction::ResetDebugCamera);
+                                    }
+                                });
+                                ui.horizontal(|ui| {
+                                    let diagnostics_3d = !matches!(
+                                        state.camera_mode,
+                                        Some(crate::viewer::DebugCameraMode::Pan2d)
+                                    );
+                                    ui.add_enabled_ui(diagnostics_3d, |ui| {
+                                        ui.label("Material");
+                                        for material in [
+                                            crate::viewer::DebugMaterialMode::Shaded,
+                                            crate::viewer::DebugMaterialMode::Normals,
+                                            crate::viewer::DebugMaterialMode::Tangents,
+                                        ] {
+                                            if ui
+                                                .selectable_label(
+                                                    state.debug_presentation.material == material,
+                                                    material.label(),
+                                                )
+                                                .clicked()
+                                            {
+                                                action = Some(
+                                                    ScrubberAction::SetDebugMaterial(material),
+                                                );
+                                            }
+                                        }
+                                        ui.separator();
+                                        let mut physics = state.debug_presentation.physics;
+                                        if ui.checkbox(&mut physics, "Physics").changed() {
+                                            action =
+                                                Some(ScrubberAction::SetDebugPhysics(physics));
+                                        }
+                                        let mut frustum =
+                                            state.debug_presentation.authored_camera_frustum;
+                                        if ui.checkbox(&mut frustum, "Authored frustum").changed() {
+                                            action = Some(
+                                                ScrubberAction::SetAuthoredCameraFrustum(frustum),
+                                            );
+                                        }
+                                    });
+                                    ui.separator();
+                                    let mut game_ui = state.debug_presentation.show_game_ui;
+                                    if ui.checkbox(&mut game_ui, "Game UI").changed() {
+                                        action =
+                                            Some(ScrubberAction::SetGameUiVisible(game_ui));
+                                    }
+                                });
                             }
                         });
                     });
