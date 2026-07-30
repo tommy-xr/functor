@@ -433,10 +433,14 @@ expect (
 expect (
   let (ball, remaining, hitCount) =
     stepBricks(
-      { x: 11.245, y: 2.98, vx: 2.0, vy: 10.0 },
+      { x: 10.22, y: 2.24, vx: 7.2, vy: 10.8 },
       makeBricks()) in
+  let (_, afterNextCheck, nextHitCount) =
+    stepBricks(ball, remaining) in
   hitCount == 1.0
     && List.length(remaining) == 39.0
-    && ball.vx == -2.0
-    && ball.vy == 10.0
+    && ball.vx == 7.2
+    && ball.vy == -10.8
+    && nextHitCount == 0.0
+    && List.length(afterNextCheck) == 39.0
 )
