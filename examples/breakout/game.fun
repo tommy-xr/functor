@@ -34,7 +34,6 @@ type Model = {
 
 let worldWidth = 32.0
 let worldHeight = 24.0
-let halfWidth = worldWidth / 2.0
 let halfHeight = worldHeight / 2.0
 let paddleY = -9.25
 let paddleWidth = 5.2
@@ -42,6 +41,10 @@ let paddleHeight = 0.65
 let paddleSpeed = 18.0
 let ballRadius = 0.42
 let courtEdge = 14.85
+let playfieldTop = 9.9
+let playfieldBottom = -10.2
+let sideWallHeight = playfieldTop - playfieldBottom
+let sideWallY = (playfieldTop + playfieldBottom) / 2.0
 let paddleLimit = courtEdge - (paddleWidth + 0.35) / 2.0
 let brickWidth = 3.35
 let brickHeight = 1.05
@@ -89,8 +92,8 @@ let launchOrRestart = (model: Model): Model =>
   match model.phase with
   | Ready => { model with phase: Playing }
   | Playing => model
-  | Won => freshGame()
-  | GameOver => freshGame()
+  | Won => { freshGame() with phase: Playing }
+  | GameOver => { freshGame() with phase: Playing }
 
 let input = (model: Model, key: Key.t, isDown: bool): Model =>
   if isDown && key == Key.Space then launchOrRestart(model) else model
@@ -149,10 +152,10 @@ let stepWalls = (ball: Ball, dt: float): Ball =>
     else if hitRight then
       { moved with x: courtEdge - ballRadius, vx: 0.0 - Math.abs(moved.vx) }
     else moved in
-  if wallBall.y + ballRadius > halfHeight - 0.8 then
+  if wallBall.y + ballRadius > playfieldTop then
     {
       wallBall with
-        y: halfHeight - 0.8 - ballRadius,
+        y: playfieldTop - ballRadius,
         vy: 0.0 - Math.abs(wallBall.vy)
     }
   else wallBall
@@ -348,8 +351,15 @@ let draw = (model: Model, tts: float): Frame.t =>
       Sprite.rectangle(panel, 30.5, 21.0),
       Sprite.rectangle(navy, 29.8, 20.3),
       Sprite.group(stars),
-      Sprite.rectangle(cyan, 0.09, 20.4) |> Sprite.fade(0.55) |> Sprite.moveX(-14.85),
-      Sprite.rectangle(pink, 0.09, 20.4) |> Sprite.fade(0.55) |> Sprite.moveX(14.85),
+      Sprite.rectangle(cyan, 0.09, sideWallHeight)
+        |> Sprite.fade(0.55)
+        |> Sprite.move(-14.85, sideWallY),
+      Sprite.rectangle(pink, 0.09, sideWallHeight)
+        |> Sprite.fade(0.55)
+        |> Sprite.move(14.85, sideWallY),
+      Sprite.rectangle(cyan, 29.8, 0.09)
+        |> Sprite.fade(0.38)
+        |> Sprite.moveY(playfieldTop),
       Sprite.group(bricks),
       paddle,
       ball,
@@ -360,7 +370,66 @@ let draw = (model: Model, tts: float): Frame.t =>
 
 expect List.length(makeBricks()) == 40.0
 expect (launchOrRestart(init)).phase == Playing
+expect (
+  let won = { freshGame() with phase: Won, score: 900.0 } in
+  let restarted = launchOrRestart(won) in
+  restarted.phase == Playing
+    && restarted.score == 0.0
+    && restarted.lives == 3.0
+    && List.length(restarted.bricks) == 40.0
+    && launchOrRestart(restarted) == restarted
+)
 expect overlaps({ x: 0.0, y: 0.0, vx: 0.0, vy: 1.0 }, 0.0, 0.0, 2.0, 1.0)
+expect (
+  let bounced =
+    stepPaddle(
+      0.0,
+      { x: 0.0, y: paddleY, vx: 0.0, vy: -4.0 }) in
+  bounced.vy == 4.0
+)
+expect (
+  let bounced =
+    stepWalls(
+      { x: courtEdge, y: 0.0, vx: 3.0, vy: 0.0 },
+      0.0) in
+  bounced.vx == -3.0
+)
+expect (
+  let missed =
+    {
+      freshGame() with
+        phase: Playing,
+        ball: { x: 0.0, y: -13.0, vx: 0.0, vy: -1.0 },
+        lives: 2.0
+    } in
+  let next = tick(missed, 0.0, 0.0) in
+  next.phase == Ready && next.lives == 1.0
+)
+expect (
+  let missed =
+    {
+      freshGame() with
+        phase: Playing,
+        ball: { x: 0.0, y: -13.0, vx: 0.0, vy: -1.0 },
+        lives: 1.0
+    } in
+  let next = tick(missed, 0.0, 0.0) in
+  next.phase == GameOver && next.lives == 0.0
+)
+expect (
+  let lastBrick = { id: 0.0, x: 0.0, y: 0.0, row: 0.0 } in
+  let almostWon =
+    {
+      freshGame() with
+        phase: Playing,
+        ball: { x: 0.0, y: 0.0, vx: 0.0, vy: 1.0 },
+        bricks: [lastBrick]
+    } in
+  let won = tick(almostWon, 0.0, 0.0) in
+  won.phase == Won
+    && won.score == 100.0
+    && List.isEmpty(won.bricks)
+)
 expect (
   let (ball, remaining, hitCount) =
     stepBricks(
