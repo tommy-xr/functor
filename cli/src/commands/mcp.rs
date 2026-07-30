@@ -326,6 +326,7 @@ struct NodeCodeOutput {
     captures: Vec<Vec<u8>>,
     calls_executed: usize,
     final_state: Option<Value>,
+    final_state_summary: Option<Value>,
     output_budget: CodeOutputBudget,
 }
 
@@ -925,6 +926,11 @@ pub struct RunGameCodeUnsafeArgs {
     /// bounded and may extend the response. Processes deliberately started by
     /// trusted submitted code are outside this lifecycle boundary.
     pub timeout_ms: Option<u64>,
+    /// Include the complete final `/state` response (default true). Set false
+    /// when submitted code already selects its proof into `return_value`: the
+    /// parent still takes the final snapshot for cleanup/integrity, but returns
+    /// only `final_state_summary` with runtime/input facts and model byte size.
+    pub include_final_state: Option<bool>,
 }
 
 #[tool_router]
@@ -1423,7 +1429,13 @@ MCP server before reconnecting or reusing that runtime URL.",
         };
 
         match self
-            .execute_node_code(&target, &args.code, timeout, &context)
+            .execute_node_code(
+                &target,
+                &args.code,
+                timeout,
+                args.include_final_state.unwrap_or(true),
+                &context,
+            )
             .await
         {
             Ok(output) => match node_code_call_result(output) {
@@ -1950,6 +1962,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
         target: &SessionTarget,
         code: &str,
         timeout: Duration,
+        include_final_state: bool,
         context: &RequestContext<RoleServer>,
     ) -> Result<NodeCodeOutput, String> {
         let timeout = timeout.min(OPERATION_TOTAL_TIMEOUT);
@@ -2005,6 +2018,7 @@ context at all — relaunch it with mode \"hidden\" to capture frames.",
             captures: Vec::new(),
             calls_executed: 0,
             final_state: None,
+            final_state_summary: None,
             output_budget: CodeOutputBudget::default(),
         };
 
@@ -2085,7 +2099,7 @@ still be alive; stop an owned session, or restart both an attached runtime and t
         .await
         {
             Ok(state) => {
-                if let Err(error) = output.output_budget.retain_json(&state) {
+                if let Err(error) = retain_final_snapshot(&mut output, state, include_final_state) {
                     let cause = format!(
                         "submitted code completed but its final state exceeded the output budget: \
 {error}"
@@ -2105,8 +2119,6 @@ still be alive; stop an owned session, or restart both an attached runtime and t
                             .await
                         },
                     );
-                } else {
-                    output.final_state = Some(state);
                 }
             }
             Err(error) => {
@@ -3125,6 +3137,56 @@ fn summarize_state(state: &Value) -> Value {
     })
 }
 
+fn compact_final_state_summary(state: &Value) -> Result<Value, String> {
+    let model_json_bytes = json_encoded_len(state.get("model").unwrap_or(&Value::Null))?;
+    let mut held_mouse_buttons: Vec<&str> = state
+        .pointer("/input/mouse/buttons")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|buttons| buttons.iter())
+        .filter_map(|(button, held)| {
+            held.as_bool()
+                .is_some_and(|held| held)
+                .then_some(button.as_str())
+        })
+        .collect();
+    held_mouse_buttons.sort_unstable();
+
+    let mut summary = serde_json::json!({
+        "frame": state.get("frame").cloned().unwrap_or(Value::Null),
+        "tts": state.get("tts").cloned().unwrap_or(Value::Null),
+        "pending_steps": state.get("pending_steps").cloned().unwrap_or(Value::Null),
+        "held_keys": state.pointer("/input/held_keys").cloned().unwrap_or(Value::Null),
+        "held_mouse_buttons": held_mouse_buttons,
+        "model_json_bytes": model_json_bytes,
+    });
+    // Some future/attached runtimes may expose this clock fact directly.
+    // Current protocol versions do not, so never infer it from pending work.
+    if let Some(paused) = state.get("paused").filter(|value| value.is_boolean()) {
+        summary
+            .as_object_mut()
+            .expect("compact state summary is an object")
+            .insert("paused".into(), paused.clone());
+    }
+    Ok(summary)
+}
+
+fn retain_final_snapshot(
+    output: &mut NodeCodeOutput,
+    state: Value,
+    include_final_state: bool,
+) -> Result<(), String> {
+    if include_final_state {
+        output.output_budget.retain_json(&state)?;
+        output.final_state = Some(state);
+    } else {
+        let summary = compact_final_state_summary(&state)?;
+        output.output_budget.retain_json(&summary)?;
+        output.final_state_summary = Some(summary);
+    }
+    Ok(())
+}
+
 fn summarize_value(value: &Value) -> Value {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.clone(),
@@ -3900,7 +3962,7 @@ fn node_code_summary(output: &NodeCodeOutput) -> Result<String, String> {
         })
         .collect();
     let ok = output.failure.is_none() && output.code_error.is_none();
-    let summary = serde_json::json!({
+    let mut summary = serde_json::json!({
         "ok": ok,
         "unsafe": {
             "rce_equivalent": true,
@@ -3917,6 +3979,14 @@ fn node_code_summary(output: &NodeCodeOutput) -> Result<String, String> {
         "captures": captures,
         "final_state": &output.final_state,
     });
+    // Preserve the default result shape exactly. Compact callers get one
+    // additional, explicitly named field while `final_state` remains null.
+    if let Some(final_state_summary) = &output.final_state_summary {
+        summary
+            .as_object_mut()
+            .expect("submitted-code summary is an object")
+            .insert("final_state_summary".into(), final_state_summary.clone());
+    }
     serialize_json_bounded(
         &summary,
         MAX_CODE_TEXT_BYTES,
@@ -4038,10 +4108,11 @@ mod tests {
     use super::{
         acquire_target_operation, base64_encoded_len, checked_output_total, encoded_capture_total,
         ensure_operation_active, extend_bounded, find_guide_section, guide_sections,
-        json_encoded_len, node_code_call_result, read_body, read_bounded_response, render_api_hits,
-        render_guide_contents, render_guide_section, search_api, serialize_json_bounded,
-        spawn_node_child, strip_front_matter, truncate_code_error, CodeInputRestore,
-        CodeOutputBudget, FunctorMcp, NodeCodeOutput, Registry, SessionTarget, LANGUAGE_GUIDE,
+        json_encoded_len, node_code_call_result, node_code_summary, read_body,
+        read_bounded_response, render_api_hits, render_guide_contents, render_guide_section,
+        retain_final_snapshot, search_api, serialize_json_bounded, spawn_node_child,
+        strip_front_matter, truncate_code_error, CodeInputRestore, CodeOutputBudget, FunctorMcp,
+        NodeCodeOutput, Registry, RunGameCodeUnsafeArgs, SessionTarget, LANGUAGE_GUIDE,
         MAX_CODE_CAPTURE_BYTES, MAX_CODE_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
@@ -4054,6 +4125,22 @@ mod tests {
 
     fn reference() -> ApiReference {
         functor_docgen::generate().expect("the embedded prelude documents itself")
+    }
+
+    fn empty_node_code_output() -> NodeCodeOutput {
+        NodeCodeOutput {
+            node_version: "v22.0.0".into(),
+            return_value: serde_json::Value::Null,
+            code_error: None,
+            failure: None,
+            trace: Vec::new(),
+            logs: Vec::new(),
+            captures: Vec::new(),
+            calls_executed: 0,
+            final_state: None,
+            final_state_summary: None,
+            output_budget: CodeOutputBudget::default(),
+        }
     }
 
     async fn fake_http_url(raw: impl AsRef<[u8]>) -> String {
@@ -4128,6 +4215,132 @@ mod tests {
     }
 
     #[test]
+    fn submitted_code_final_state_defaults_to_the_compatible_full_response() {
+        let args: RunGameCodeUnsafeArgs = serde_json::from_value(serde_json::json!({
+            "session": "game",
+            "code": "async () => null"
+        }))
+        .unwrap();
+        assert_eq!(args.include_final_state, None);
+
+        let state = serde_json::json!({
+            "frame": 42,
+            "tts": 1.5,
+            "pending_steps": 0,
+            "model": {"answer": 42},
+            "model_debug": "answer = 42",
+            "input": {
+                "held_keys": [],
+                "mouse": {"buttons": {"left": false, "right": false, "middle": false}}
+            }
+        });
+        let mut output = empty_node_code_output();
+        retain_final_snapshot(
+            &mut output,
+            state.clone(),
+            args.include_final_state.unwrap_or(true),
+        )
+        .unwrap();
+
+        let result: serde_json::Value =
+            serde_json::from_str(&node_code_summary(&output).unwrap()).unwrap();
+        assert_eq!(result["final_state"], state);
+        assert!(
+            result.get("final_state_summary").is_none(),
+            "the default result shape stays unchanged"
+        );
+    }
+
+    #[test]
+    fn compact_submitted_code_final_state_has_only_runtime_and_input_facts() {
+        let state = serde_json::json!({
+            "frame": 81,
+            "tts": 2.25,
+            "paused": true,
+            "pending_steps": 0,
+            "model": {
+                "boids": [
+                    {"marker": "BOID_MODEL_MUST_NOT_ESCAPE"},
+                    {"marker": "BOID_MODEL_MUST_NOT_ESCAPE"}
+                ]
+            },
+            "model_debug": "MODEL_DEBUG_MUST_NOT_ESCAPE",
+            "input": {
+                "held_keys": ["W"],
+                "mouse": {
+                    "buttons": {"left": true, "right": false, "middle": true}
+                }
+            }
+        });
+        let expected_model_bytes = json_encoded_len(&state["model"]).unwrap();
+        let mut output = empty_node_code_output();
+        retain_final_snapshot(&mut output, state, false).unwrap();
+
+        assert!(output.final_state.is_none());
+        assert_eq!(
+            output.final_state_summary,
+            Some(serde_json::json!({
+                "frame": 81,
+                "tts": 2.25,
+                "paused": true,
+                "pending_steps": 0,
+                "held_keys": ["W"],
+                "held_mouse_buttons": ["left", "middle"],
+                "model_json_bytes": expected_model_bytes,
+            }))
+        );
+        let encoded = node_code_summary(&output).unwrap();
+        assert!(!encoded.contains("BOID_MODEL_MUST_NOT_ESCAPE"));
+        assert!(!encoded.contains("MODEL_DEBUG_MUST_NOT_ESCAPE"));
+        let result: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert!(result["final_state"].is_null());
+        assert!(result["final_state_summary"].get("model").is_none());
+        assert!(result["final_state_summary"].get("model_debug").is_none());
+    }
+
+    #[test]
+    fn compact_final_state_is_still_charged_but_not_charged_as_the_full_model() {
+        let state = serde_json::json!({
+            "frame": 1,
+            "tts": 0.0,
+            "pending_steps": 0,
+            "model": "x".repeat(MAX_CODE_TEXT_BYTES),
+            "model_debug": "also deliberately large",
+            "input": {
+                "held_keys": [],
+                "mouse": {"buttons": {}}
+            }
+        });
+
+        let mut full = empty_node_code_output();
+        let full_error = retain_final_snapshot(&mut full, state.clone(), true).unwrap_err();
+        assert!(
+            full_error.contains("submitted-code aggregate text output"),
+            "{full_error}"
+        );
+        assert!(full.final_state.is_none());
+
+        let mut compact = empty_node_code_output();
+        retain_final_snapshot(&mut compact, state.clone(), false).unwrap();
+        let summary = compact.final_state_summary.as_ref().unwrap();
+        assert_eq!(
+            summary["model_json_bytes"],
+            json_encoded_len(&state["model"]).unwrap()
+        );
+        assert!(compact.output_budget.retained_text_bytes < 256);
+
+        let summary_bytes = json_encoded_len(summary).unwrap();
+        let mut exhausted = empty_node_code_output();
+        exhausted.output_budget.retained_text_bytes = MAX_CODE_TEXT_BYTES - summary_bytes + 1;
+        let compact_error = retain_final_snapshot(&mut exhausted, state, false).unwrap_err();
+        assert!(
+            compact_error.contains("submitted-code aggregate text output"),
+            "{compact_error}"
+        );
+        assert!(exhausted.final_state_summary.is_none());
+    }
+
+    #[test]
     fn submitted_code_input_restoration_canonicalizes_serialized_digit_keys() {
         let mut restore = CodeInputRestore::from_state(&serde_json::json!({
             "input": {
@@ -4165,6 +4378,7 @@ mod tests {
             captures: vec![vec![1, 2, 3], vec![4]],
             calls_executed: 0,
             final_state: None,
+            final_state_summary: None,
             output_budget: CodeOutputBudget::default(),
         })
         .unwrap();
