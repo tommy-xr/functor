@@ -948,6 +948,17 @@ Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles f
                                                            //   orientation, near/far remain
                                                            //   game-owned; OpenXR owns IPD
                                                            //   and per-eye optical FOV
+Camera.toWorldRay(mouse, camera)                           // -> Option.t<{origin: Vec3.t,
+                                                           //     direction: Vec3.t}>; maps an
+                                                           //   Input.mouse's top-left logical
+                                                           //   position through the authored
+                                                           //   perspective. Direction is unit
+                                                           //   length; both fields feed
+                                                           //   Physics.cast/raycast directly.
+                                                           //   None outside the surface or for
+                                                           //   a degenerate camera. Position +
+                                                           //   extent share one coordinate
+                                                           //   space, so resize/DPR stay correct
 Camera.mapTrackedPose(camera, pose)                        // map rig-local Input.pose through
                                                            //   the authored camera; returns
                                                            //   world-space {position,forward,up}

@@ -59,6 +59,24 @@ fn host_calls_have_real_types() {
     assert!(diags.iter().any(|m| m.contains("Frame.t")), "{diags:?}");
 }
 
+/// A camera ray is optional at the surface boundary, and its branded origin
+/// and direction feed the existing Physics.cast Vec3 parameters directly.
+#[test]
+fn camera_world_ray_checks_as_physics_cast_input() {
+    let diags = check(
+        "let camera = Camera.lookAt(\n\
+           Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0))\n\
+         let pick = (mouse: Input.mouse): Option.t<Physics.rayHit> =>\n\
+           match Camera.toWorldRay(mouse, camera) with\n\
+           | Option.Some(ray) => Option.Some(Physics.cast(ray.origin, ray.direction, 100.0))\n\
+           | Option.None => Option.None",
+    );
+    assert!(
+        diags.is_empty(),
+        "Camera.toWorldRay should feed Physics.cast directly: {diags:?}"
+    );
+}
+
 /// Engine-owned `.fun` modules participate in the same typecheck as the host
 /// interfaces they build upon.
 #[test]
