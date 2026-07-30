@@ -461,6 +461,13 @@ pub fn drain_input(
 pub enum ScrubControl {
     TogglePause,
     ToggleDetachedCamera,
+    SetDebugCameraMode(u32),
+    SetDebugCameraFov(f32),
+    SetDebugMaterial(u32),
+    SetDebugPhysics(bool),
+    SetAuthoredCameraFrustum(bool),
+    SetGameUiVisible(bool),
+    ResetDebugCamera,
     MoveDetachedCamera {
         forward: f32,
         right: f32,
@@ -506,6 +513,10 @@ thread_local! {
     /// `(active, completed toggle generation)`. The generation acknowledges
     /// both successful and refused requests so DOM pointer lock can reconcile.
     static DETACHED_CAMERA_VIEW: RefCell<(bool, u32)> = const { RefCell::new((false, 0)) };
+    /// `(mode, material, physics, frustum, game UI, FOV degrees, 2D zoom)`.
+    /// Missing/not-applicable numeric values use `-1`; mode uses `u32::MAX`.
+    static DEBUG_CAMERA_VIEW: RefCell<(u32, u32, bool, bool, bool, f32, f32)> =
+        const { RefCell::new((u32::MAX, 0, false, false, true, -1.0, -1.0)) };
     /// Latest completed seek as `(request id, authoritative applied frame)`.
     /// The DOM uses this acknowledgement to retire optimistic handle state even
     /// when the runtime clamps or refuses a request.
@@ -834,6 +845,25 @@ pub fn acknowledge_detached_camera(active: bool) {
     });
 }
 
+pub fn publish_debug_camera_view(
+    mode: Option<functor_runtime_common::viewer::DebugCameraMode>,
+    presentation: functor_runtime_common::viewer::DebugPresentation,
+    fov_degrees: Option<f32>,
+    zoom_2d: Option<f32>,
+) {
+    DEBUG_CAMERA_VIEW.with(|view| {
+        *view.borrow_mut() = (
+            mode.map(|mode| mode.index()).unwrap_or(u32::MAX),
+            presentation.material.index(),
+            presentation.physics,
+            presentation.authored_camera_frustum,
+            presentation.show_game_ui,
+            fov_degrees.unwrap_or(-1.0),
+            zoom_2d.unwrap_or(-1.0),
+        );
+    });
+}
+
 /// Page → runtime: toggle pause (pin/unpin the clock).
 #[wasm_bindgen]
 pub fn functor_lang_scrub_toggle_pause() {
@@ -850,6 +880,47 @@ pub fn functor_lang_viewer_toggle_detached() {
         let active = DETACHED_CAMERA_VIEW.with(|view| view.borrow().0);
         acknowledge_detached_camera(active);
     }
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_set_mode(mode: u32) {
+    if functor_runtime_common::viewer::DebugCameraMode::from_index(mode).is_some() {
+        push_scrub(ScrubControl::SetDebugCameraMode(mode));
+    }
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_set_fov(degrees: f32) {
+    if degrees.is_finite() {
+        push_scrub(ScrubControl::SetDebugCameraFov(degrees));
+    }
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_set_material(material: u32) {
+    if functor_runtime_common::viewer::DebugMaterialMode::from_index(material).is_some() {
+        push_scrub(ScrubControl::SetDebugMaterial(material));
+    }
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_set_physics(enabled: bool) {
+    push_scrub(ScrubControl::SetDebugPhysics(enabled));
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_set_authored_frustum(enabled: bool) {
+    push_scrub(ScrubControl::SetAuthoredCameraFrustum(enabled));
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_set_game_ui(visible: bool) {
+    push_scrub(ScrubControl::SetGameUiVisible(visible));
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_reset() {
+    push_scrub(ScrubControl::ResetDebugCamera);
 }
 
 /// Page → runtime: pointer-lock relative debug-camera look/pan motion.
@@ -904,6 +975,41 @@ pub fn functor_lang_viewer_detached() -> bool {
 #[wasm_bindgen]
 pub fn functor_lang_viewer_detached_generation() -> u32 {
     DETACHED_CAMERA_VIEW.with(|view| view.borrow().1)
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_mode() -> u32 {
+    DEBUG_CAMERA_VIEW.with(|view| view.borrow().0)
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_material() -> u32 {
+    DEBUG_CAMERA_VIEW.with(|view| view.borrow().1)
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_physics() -> bool {
+    DEBUG_CAMERA_VIEW.with(|view| view.borrow().2)
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_authored_frustum() -> bool {
+    DEBUG_CAMERA_VIEW.with(|view| view.borrow().3)
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_game_ui() -> bool {
+    DEBUG_CAMERA_VIEW.with(|view| view.borrow().4)
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_fov() -> f32 {
+    DEBUG_CAMERA_VIEW.with(|view| view.borrow().5)
+}
+
+#[wasm_bindgen]
+pub fn functor_lang_viewer_zoom_2d() -> f32 {
+    DEBUG_CAMERA_VIEW.with(|view| view.borrow().6)
 }
 
 /// Page → runtime: advance exactly one frame, then hold.

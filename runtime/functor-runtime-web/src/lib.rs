@@ -17,7 +17,9 @@ use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
 };
-use functor_runtime_common::viewer::DebugCamera;
+use functor_runtime_common::viewer::{
+    camera_frustum_lines, DebugCamera, DebugCameraMode, DebugMaterialMode, DebugPresentation,
+};
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, SceneContext,
 };
@@ -1207,7 +1209,8 @@ async fn run_async() -> Result<(), JsValue> {
 
         // Read once from the page URL; they don't change over the session. The
         // `move` closure below captures them (both are `Copy`).
-        let debug_render_mode = debug_render_mode_from_url();
+        let launch_debug_render_mode = debug_render_mode_from_url();
+        let mut debug_presentation = DebugPresentation::from_render_mode(launch_debug_render_mode);
         let fixed_time = fixed_time_from_url();
 
         // The directional shadow map, rendered from the casting light each frame
@@ -1234,6 +1237,7 @@ async fn run_async() -> Result<(), JsValue> {
         let mut clock = GameClock::new(fixed_time);
         let mut detached_camera = DebugCamera::default();
         let mut pending_detach = false;
+        let mut pending_debug_camera_reset = false;
 
         // Future preview (docs/time-travel.md T6/T6d): trail dots, scene-space
         // strobe copies, or the screen-space ghost compositor — one mode, driven
@@ -1297,6 +1301,31 @@ async fn run_async() -> Result<(), JsValue> {
                             // never the previously displayed camera.
                             pending_detach = true;
                         }
+                    }
+                    functor_lang_game::ScrubControl::SetDebugCameraMode(mode) => {
+                        if let Some(mode) = DebugCameraMode::from_index(mode) {
+                            detached_camera.set_mode(mode);
+                        }
+                    }
+                    functor_lang_game::ScrubControl::SetDebugCameraFov(fov) => {
+                        detached_camera.set_fov_degrees(fov);
+                    }
+                    functor_lang_game::ScrubControl::SetDebugMaterial(material) => {
+                        if let Some(material) = DebugMaterialMode::from_index(material) {
+                            debug_presentation.material = material;
+                        }
+                    }
+                    functor_lang_game::ScrubControl::SetDebugPhysics(enabled) => {
+                        debug_presentation.physics = enabled;
+                    }
+                    functor_lang_game::ScrubControl::SetAuthoredCameraFrustum(enabled) => {
+                        debug_presentation.authored_camera_frustum = enabled;
+                    }
+                    functor_lang_game::ScrubControl::SetGameUiVisible(visible) => {
+                        debug_presentation.show_game_ui = visible;
+                    }
+                    functor_lang_game::ScrubControl::ResetDebugCamera => {
+                        pending_debug_camera_reset = true;
                     }
                     functor_lang_game::ScrubControl::MoveDetachedCamera {
                         forward,
@@ -1470,6 +1499,17 @@ async fn run_async() -> Result<(), JsValue> {
                 let active = detached_camera.detach(&frame);
                 functor_lang_game::acknowledge_detached_camera(active);
             }
+            if pending_debug_camera_reset {
+                pending_debug_camera_reset = false;
+                if detached_camera.is_detached() {
+                    let mode = detached_camera.mode();
+                    if detached_camera.detach(&frame) {
+                        if let Some(mode) = mode {
+                            detached_camera.set_mode(mode);
+                        }
+                    }
+                }
+            }
             if detached_camera.is_detached() && !detached_camera.is_compatible(&frame) {
                 detached_camera.reattach();
                 functor_lang_game::acknowledge_detached_camera(false);
@@ -1595,6 +1635,24 @@ async fn run_async() -> Result<(), JsValue> {
                 }
             }
             let viewport = functor_runtime_common::Viewport::new(canvas.width(), canvas.height());
+            let diagnostics = debug_presentation.diagnostics(
+                detached_camera.is_detached(),
+                frame.is_pure_2d(),
+                launch_debug_render_mode,
+            );
+            let mut debug_lines = diagnostics
+                .physics
+                .then(|| {
+                    functor_runtime_common::physics::with_world(
+                        functor_runtime_common::physics::DEFAULT_WORLD,
+                        |world| world.debug_lines(),
+                    )
+                })
+                .flatten()
+                .unwrap_or_default();
+            if diagnostics.authored_camera_frustum {
+                debug_lines.extend(camera_frustum_lines(&frame.camera, viewport.aspect()));
+            }
 
             // Forward-ghosting (docs/time-travel.md T6d): when the preview
             // selector is on `ghost`, forward-step the scene over the ⚙
@@ -1684,7 +1742,7 @@ async fn run_async() -> Result<(), JsValue> {
                     Some(&view_camera),
                     detached_camera.sprite_cameras(),
                     viewport,
-                    debug_render_mode,
+                    diagnostics.render_mode,
                 );
             } else {
                 functor_runtime_common::render_frame_with_view(
@@ -1698,7 +1756,16 @@ async fn run_async() -> Result<(), JsValue> {
                     detached_camera.sprite_cameras(),
                     frame_time.clone(),
                     viewport,
-                    debug_render_mode,
+                    diagnostics.render_mode,
+                );
+            }
+            if !debug_lines.is_empty() {
+                functor_runtime_common::render_debug_lines(
+                    &gl,
+                    shader_version,
+                    &view_camera,
+                    viewport,
+                    &debug_lines,
                 );
             }
 
@@ -1709,7 +1776,12 @@ async fn run_async() -> Result<(), JsValue> {
             // interactions come back slot-stamped and fold through the game's
             // `update` — except while paused, matching `drain_input`'s gate
             // (no input may reach the model on a paused frame).
-            let view: functor_runtime_common::ui::View = game.ui();
+            let show_game_ui = !detached_camera.is_detached() || debug_presentation.show_game_ui;
+            let view: functor_runtime_common::ui::View = if show_game_ui {
+                game.ui()
+            } else {
+                functor_runtime_common::ui::View::Empty
+            };
             let dpr = web_sys::window().unwrap().device_pixel_ratio() as f32;
             let dpr = dpr.max(1.0);
             // While the clock is pinned, events would be dropped anyway (the
@@ -1746,7 +1818,11 @@ async fn run_async() -> Result<(), JsValue> {
             // Interactions drained pre-tick above. TODO(webview): cache the
             // serialized string in the producer instead of clone+reserialize
             // per frame (perf follow-up).
-            functor_lang_game::publish_webview_html(game.webview().map(|node| node.to_html()));
+            functor_lang_game::publish_webview_html(
+                show_game_ui
+                    .then(|| game.webview().map(|node| node.to_html()))
+                    .flatten(),
+            );
 
             // Publish the scrubber state for the DOM slider to poll (the UI
             // itself is native HTML in index-functor-lang.html, outside the canvas).
@@ -1758,6 +1834,12 @@ async fn run_async() -> Result<(), JsValue> {
                 game.scene_timeline_generation(),
             );
             functor_lang_game::publish_detached_camera(detached_camera.is_detached());
+            functor_lang_game::publish_debug_camera_view(
+                detached_camera.mode(),
+                debug_presentation,
+                detached_camera.fov_degrees(),
+                detached_camera.zoom_2d(),
+            );
 
             // Publish the paused-inspector trace for the page's poll loop
             // (visual-debugger PR2b). Cheap: while playing this is the byte-stable

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::viewer::DebugCamera;
+use functor_runtime_common::viewer::{camera_frustum_lines, DebugCamera, DebugPresentation};
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, MouseButtons, MouseSnapshot,
     RecordedInput, SceneContext, XrInputSnapshot,
@@ -1612,6 +1612,9 @@ Escape releases while captured"
         let game_mouse_capture = args.mouse_capture && !visible_pointer;
         let camera_detachable = !args.emulate_xr && !args.hidden;
         let mut detached_camera = DebugCamera::default();
+        let launch_debug_render_mode: functor_runtime_common::DebugRenderMode =
+            args.debug_render.into();
+        let mut debug_presentation = DebugPresentation::from_render_mode(launch_debug_render_mode);
         let mut last_detached_cursor: Option<(f64, f64)> = None;
         let mut debug_held_keys = HashSet::new();
         let mut cursor_captured = false;
@@ -2807,17 +2810,27 @@ Escape again to quit"
                 player.respatialize_voices();
             }
 
-            // Physics wireframe overlay (--debug-render physics): collect the
-            // live world's lines once per frame, drawn over each rendered view
-            // below. Read-only; an empty/no-physics world yields no lines.
-            let physics_debug_lines = matches!(args.debug_render, DebugRenderArg::Physics)
+            // Detached diagnostics are shell state: material replacement and
+            // line overlays never enter the game model or replay. Outside the
+            // debug view, preserve the launch-time `--debug-render` behavior.
+            let diagnostics = debug_presentation.diagnostics(
+                detached_camera.is_detached(),
+                frame.is_pure_2d(),
+                launch_debug_render_mode,
+            );
+            let mut debug_lines = diagnostics
+                .physics
                 .then(|| {
                     functor_runtime_common::physics::with_world(
                         functor_runtime_common::physics::DEFAULT_WORLD,
                         |w| w.debug_lines(),
                     )
                 })
-                .flatten();
+                .flatten()
+                .unwrap_or_default();
+            if diagnostics.authored_camera_frustum {
+                debug_lines.extend(camera_frustum_lines(&frame.camera, viewport.aspect()));
+            }
 
             // The frame the render ladder draws: the game frame plus the
             // preview overlays (`frame` itself stays pristine for GET /scene).
@@ -2908,15 +2921,15 @@ Escape again to quit"
                         detached_camera.sprite_cameras(),
                         time.clone(),
                         *eye_viewport,
-                        args.debug_render.into(),
+                        diagnostics.render_mode,
                     );
-                    if let Some(lines) = &physics_debug_lines {
+                    if !debug_lines.is_empty() {
                         functor_runtime_common::render_debug_lines(
                             &gl,
                             shader_version,
                             camera,
                             *eye_viewport,
-                            lines,
+                            &debug_lines,
                         );
                     }
                 }
@@ -2945,7 +2958,7 @@ Escape again to quit"
                     Some(&view_camera),
                     detached_camera.sprite_cameras(),
                     viewport,
-                    args.debug_render.into(),
+                    diagnostics.render_mode,
                 );
             } else if !ghost_frames.is_empty() {
                 // Forward-ghosting (docs/time-travel.md T6d): composite the ~2s
@@ -2974,7 +2987,7 @@ Escape again to quit"
                     Some(&view_camera),
                     ghost_sprite_cameras.as_deref(),
                     viewport,
-                    args.debug_render.into(),
+                    diagnostics.render_mode,
                 );
             } else {
                 functor_runtime_common::render_frame_with_view(
@@ -2988,17 +3001,17 @@ Escape again to quit"
                     detached_camera.sprite_cameras(),
                     time.clone(),
                     viewport,
-                    args.debug_render.into(),
+                    diagnostics.render_mode,
                 );
-                if let Some(lines) = &physics_debug_lines {
-                    functor_runtime_common::render_debug_lines(
-                        &gl,
-                        shader_version,
-                        &view_camera,
-                        viewport,
-                        lines,
-                    );
-                }
+            }
+            if !args.stereo_sbs && !debug_lines.is_empty() {
+                functor_runtime_common::render_debug_lines(
+                    &gl,
+                    shader_version,
+                    &view_camera,
+                    viewport,
+                    &debug_lines,
+                );
             }
             let render_ns = render_started.elapsed().as_nanos() as u64;
 
@@ -3065,7 +3078,12 @@ Escape again to quit"
             } else {
                 pointer
             };
-            let ui_view = game.ui();
+            let show_game_ui = !detached_camera.is_detached() || debug_presentation.show_game_ui;
+            let ui_view = if show_game_ui {
+                game.ui()
+            } else {
+                functor_runtime_common::ui::View::Empty
+            };
             let ui_out = text_overlay.draw_view(
                 fb_width as u32,
                 fb_height as u32,
@@ -3089,7 +3107,9 @@ Escape again to quit"
             // TODO(webview): `webview()` clones the tree and `to_html`
             // reserializes every frame — cache the serialized string in the
             // producer once the protocol shape settles (perf follow-up).
-            let webview_html = game.webview().map(|node| node.to_html());
+            let webview_html = show_game_ui
+                .then(|| game.webview().map(|node| node.to_html()))
+                .flatten();
             // `time.tts` as the CSS animation clock: `--fixed-time` pins it
             // (deterministic captures) and pausing freezes overlay animations
             // coherently with the game.
@@ -3124,9 +3144,12 @@ Escape again to quit"
                         range: game.scene_frame_range(),
                         paused: clock.is_paused(),
                         camera_detachable,
-                        camera_catching_up: clock.pending_frames() > 0
-                            || clock.pending_steps() > 0,
+                        camera_catching_up: clock.pending_frames() > 0 || clock.pending_steps() > 0,
                         camera_detached: detached_camera.is_detached(),
+                        camera_mode: detached_camera.mode(),
+                        camera_fov_degrees: detached_camera.fov_degrees(),
+                        camera_zoom_2d: detached_camera.zoom_2d(),
+                        debug_presentation,
                         extrapolate: extrapolate_on,
                         preview_mode,
                         preview_window,
@@ -3185,6 +3208,34 @@ Escape again to quit"
                             eprintln!(
                                 "[runner] debug camera unavailable: the authored camera is invalid"
                             );
+                        }
+                    }
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetDebugCameraMode(mode)) => {
+                    detached_camera.set_mode(mode);
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetDebugCameraFov(fov)) => {
+                    detached_camera.set_fov_degrees(fov);
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetDebugMaterial(material)) => {
+                    debug_presentation.material = material;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetDebugPhysics(enabled)) => {
+                    debug_presentation.physics = enabled;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetAuthoredCameraFrustum(
+                    enabled,
+                )) => {
+                    debug_presentation.authored_camera_frustum = enabled;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::SetGameUiVisible(visible)) => {
+                    debug_presentation.show_game_ui = visible;
+                }
+                Some(functor_runtime_common::ui::ScrubberAction::ResetDebugCamera) => {
+                    let mode = detached_camera.mode();
+                    if detached_camera.detach(&frame) {
+                        if let Some(mode) = mode {
+                            detached_camera.set_mode(mode);
                         }
                     }
                 }

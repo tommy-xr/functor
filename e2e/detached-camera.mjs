@@ -146,6 +146,48 @@ try {
       throw new Error("3D FPS look/movement/FOV input did not change rendered pixels");
     }
 
+    // The contextual drawer drives shell-only diagnostics. Material and
+    // overlays compose (normals + physics + authored frustum), and switching
+    // to orbit preserves the camera before rotating around its target.
+    await page.waitForFunction(
+      () => getComputedStyle(document.querySelector("#scrub-debug")).display !== "none"
+    );
+    await page.evaluate(() =>
+      window.__scrub.setDebugCamera({ mode: 1, authoredFrustum: true })
+    );
+    await page.waitForFunction(() => {
+      const debug = window.__scrub.debugCamera();
+      return debug.mode === 1 && debug.authoredFrustum;
+    });
+    const frustumOnly = await page.locator("#canvas").screenshot();
+    if (liveAfter.equals(frustumOnly)) {
+      throw new Error("authored-camera frustum overlay did not change rendered pixels");
+    }
+    await page.evaluate(() =>
+      window.__scrub.setDebugCamera({ material: 1, physics: true })
+    );
+    await page.waitForFunction(() => {
+      const debug = window.__scrub.debugCamera();
+      return (
+        debug.mode === 1 &&
+        debug.material === 1 &&
+        debug.physics &&
+        debug.authoredFrustum
+      );
+    });
+    const diagnostic = await page.locator("#canvas").screenshot();
+    if (frustumOnly.equals(diagnostic)) {
+      throw new Error("normals debug material did not change rendered pixels");
+    }
+    await page.evaluate(() => window.__scrub.lookDetached(90, -25));
+    await page.waitForTimeout(120);
+    const orbitAfter = await page.locator("#canvas").screenshot();
+    if (diagnostic.equals(orbitAfter)) {
+      throw new Error("orbit mode did not rotate the detached camera");
+    }
+    await page.evaluate(() => window.__scrub.setDebugCamera({ reset: true, material: 0 }));
+    await page.waitForFunction(() => window.__scrub.debugCamera().material === 0);
+
     // Pause and resume preserve the shell-owned view. Camera motion remains
     // available while pinned and the selected game frame itself does not move.
     // A high-polling mouse coalesces independently of the ordered timeline
@@ -321,6 +363,18 @@ try {
     });
     await page.locator("#scrub-camera").click();
     await page.waitForFunction(() => window.__scrub.detached());
+    await page.evaluate(() => window.__scrub.setDebugCamera({ gameUi: false }));
+    await page.waitForFunction(
+      () =>
+        !window.__scrub.debugCamera().gameUi &&
+        !document.querySelector("#webview")?.shadowRoot?.textContent?.includes("CLEAN")
+    );
+    await page.evaluate(() => window.__scrub.setDebugCamera({ gameUi: true }));
+    await page.waitForFunction(
+      () =>
+        window.__scrub.debugCamera().gameUi &&
+        document.querySelector("#webview")?.shadowRoot?.textContent?.includes("CLEAN")
+    );
     if (
       !(await page.evaluate(() =>
         document.querySelector("#webview")?.shadowRoot?.textContent?.includes("CLEAN")
@@ -485,6 +539,14 @@ try {
     const authored2d = await page.locator("#canvas").screenshot();
     await page.evaluate(() => window.__scrub.toggleDetached());
     await page.waitForFunction(() => window.__scrub.detached());
+    if (
+      !(await page.evaluate(() => {
+        const debug = window.__scrub.debugCamera();
+        return debug.mode === 2 && debug.fov < 0 && debug.zoom2d > 0;
+      }))
+    ) {
+      throw new Error("pure 2D debug view did not publish Pan 2D/zoom controls");
+    }
     await page.evaluate(() => {
       window.__scrub.lookDetached(120, -55);
       window.__scrub.moveDetached(1, 1, 0, 0.05);
@@ -501,6 +563,30 @@ try {
     const reattached2d = await page.locator("#canvas").screenshot();
     if (!authored2d.equals(reattached2d)) {
       throw new Error("reattaching did not restore the unchanged authored 2D frame");
+    }
+
+    // Physics wireframes use the same shared line pass on web as native.
+    await page.goto(`${BASE}/player.html?game=examples/bounce.fun`);
+    await page.waitForFunction(() => window.__scrub?.range().length === 2);
+    await page.evaluate(() => {
+      window.__scrub.togglePause();
+      window.__scrub.toggleDetached();
+    });
+    await page.waitForFunction(
+      () => window.__scrub.paused() && window.__scrub.detached()
+    );
+    await page.evaluate(() => {
+      window.__scrub.lookDetached(120, -35);
+      window.__scrub.moveDetached(-1, 1, 1, 0.05);
+    });
+    await page.waitForTimeout(120);
+    const physicsOff = await page.locator("#canvas").screenshot();
+    await page.evaluate(() => window.__scrub.setDebugCamera({ physics: true }));
+    await page.waitForFunction(() => window.__scrub.debugCamera().physics);
+    await page.waitForTimeout(120);
+    const physicsOn = await page.locator("#canvas").screenshot();
+    if (physicsOff.equals(physicsOn)) {
+      throw new Error("web physics debug overlay did not change rendered pixels");
     }
 
     // The sandbox's replacement control is also universal and live-capable.
@@ -549,6 +635,20 @@ try {
     await page.waitForFunction(
       () => document.querySelector("#player")?.contentWindow?.__scrub?.detached()
     );
+    await page.evaluate(() =>
+      document
+        .querySelector("#player")
+        ?.contentWindow?.__scrub?.setDebugCamera({ mode: 1, authoredFrustum: true })
+    );
+    await page.waitForFunction(() => {
+      const iframe = document.querySelector("#player");
+      const debug = iframe?.contentWindow?.__scrub?.debugCamera();
+      return (
+        !document.querySelector(".mp-debug")?.hidden &&
+        debug?.mode === 1 &&
+        debug?.authoredFrustum
+      );
+    });
     if (
       !(await page.evaluate(() => {
         const iframe = document.querySelector("#player");

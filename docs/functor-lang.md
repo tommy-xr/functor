@@ -325,8 +325,10 @@ snapshots — no GPU, fully agent-verifiable.
       the rule `mouseMove`/`mouseWheel` already followed and keeps clicks from
       being eaten by free-look capture.
       The timeline also exposes a universal, shell-owned **Debug camera** while
-      playing or paused—FPS mouse look + WASD + Q/E + wheel FOV for 3D/mixed
-      frames, pan + wheel zoom for pure 2D. It snapshots the authored view but
+      playing or paused—FPS/orbit navigation + WASD + Q/E for 3D/mixed frames,
+      pan + wheel zoom for pure 2D. Its contextual drawer also offers normals,
+      tangents, physics, authored-frustum, FOV, and game-UI diagnostics. It
+      snapshots the authored view but
       never changes the model, recorded input, replay, `GET /scene`, or the
       authored camera used by culling and render-target/portal passes. Escape
       releases pointer capture without discarding it; **Exit debug view**

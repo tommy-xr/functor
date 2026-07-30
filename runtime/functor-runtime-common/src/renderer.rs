@@ -738,18 +738,21 @@ fn forward_pass(
 
 /// Draw a batch of colored world-space line segments over the current
 /// framebuffer — the physics wireframe overlay (`--debug-render physics`,
-/// lines from `physics::World::debug_lines`). Depth-tested against the frame
-/// just rendered, so wireframes sit *on* their bodies instead of x-raying
-/// through the scene.
+/// lines from `physics::World::debug_lines`). Against an ordinary frame the
+/// lines use its depth buffer, so wireframes sit *on* their bodies instead of
+/// x-raying through the scene. A screen-space composite has no retained scene
+/// depth; there the same diagnostic lines are intentionally drawn unoccluded
+/// over the composite.
 ///
 /// Debug-only path: the shader and buffers are built and torn down per call,
 /// matching the crate's per-frame material style — simplicity over premature
 /// caching for a diagnostic overlay.
 ///
-/// Precondition: call immediately after `render_frame` with the same
-/// camera/viewport — the GL viewport and scissor are inherited from it (the
-/// `viewport` parameter is used for the aspect ratio only), which is what
-/// clips the overlay to the right pane in stereo/multi-pane layouts.
+/// Precondition: call immediately after `render_frame` or
+/// `render_composited_frames_with_view` with the same camera/viewport — the GL
+/// viewport and scissor are inherited from it (the `viewport` parameter is
+/// used for the aspect ratio only), which is what clips the overlay to the
+/// right pane in stereo/multi-pane layouts.
 pub fn render_debug_lines(
     gl: &glow::Context,
     shader_version: &str,
