@@ -20,6 +20,8 @@
 //!   the programmatic per-joint control (finger curl, authored offsets).
 //! - `LookAt` aims one joint's local +Z axis at a model-space target after
 //!   evaluating the expression below it.
+//! - `Reach` rotates a direct two-bone chain so its end joint approaches a
+//!   model-space target, preserving the evaluated pose's elbow bend side.
 //!
 //! Evaluation carries a per-joint influence weight so `Mask` composes
 //! through `Blend`/`Add`: a joint no input drives falls back to the bind
@@ -29,7 +31,7 @@ use std::collections::HashMap;
 
 use cgmath::{
     Euler, InnerSpace, Matrix3, Matrix4, One, Quaternion, Rad, Rotation, SquareMatrix, Vector3,
-    Zero,
+    Vector4, Zero,
 };
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +90,18 @@ pub enum AnimExpr {
         weight: f32,
         expr: Box<AnimExpr>,
     },
+    /// Rotate a direct `root -> middle -> end` chain so the end joint reaches
+    /// a model-space target after evaluating `expr`. Unreachable targets clamp
+    /// to the chain's nearest possible extension; the evaluated middle joint
+    /// supplies the bend side.
+    Reach {
+        root: String,
+        middle: String,
+        end: String,
+        target: [f32; 3],
+        weight: f32,
+        expr: Box<AnimExpr>,
+    },
 }
 
 /// A missing reference discovered during evaluation — the caller surfaces
@@ -97,6 +111,14 @@ pub enum AnimExpr {
 pub enum AnimWarning<'a> {
     MissingClip(&'a str),
     MissingJoint(&'a str),
+    InvalidChain {
+        root: &'a str,
+        middle: &'a str,
+        end: &'a str,
+    },
+    NonUniformRootScale {
+        root: &'a str,
+    },
 }
 
 /// A pose with a per-joint influence weight in `[0, 1]` — how `Mask`
@@ -260,6 +282,48 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
             }
             inner
         }
+        AnimExpr::Reach {
+            root,
+            middle,
+            end,
+            target,
+            weight,
+            expr,
+        } => {
+            let mut inner = eval(model, expr, on_warning);
+            let root_id = model.skeleton.joint_id_by_name(root);
+            let middle_id = model.skeleton.joint_id_by_name(middle);
+            let end_id = model.skeleton.joint_id_by_name(end);
+            for (name, id) in [
+                (root.as_str(), root_id),
+                (middle.as_str(), middle_id),
+                (end.as_str(), end_id),
+            ] {
+                if id.is_none() {
+                    on_warning(AnimWarning::MissingJoint(name));
+                }
+            }
+            if let (Some(root_id), Some(middle_id), Some(end_id)) = (root_id, middle_id, end_id) {
+                match apply_reach(
+                    &model.skeleton,
+                    &mut inner,
+                    root_id,
+                    middle_id,
+                    end_id,
+                    Vector3::from(*target),
+                    *weight,
+                ) {
+                    Ok(()) => {}
+                    Err(ReachFailure::InvalidChain) => {
+                        on_warning(AnimWarning::InvalidChain { root, middle, end });
+                    }
+                    Err(ReachFailure::NonUniformRootScale) => {
+                        on_warning(AnimWarning::NonUniformRootScale { root });
+                    }
+                }
+            }
+            inner
+        }
     }
 }
 
@@ -370,6 +434,253 @@ fn apply_look_at(
     );
     joint.rotation = (local_correction * joint.rotation).normalize();
     pose.joints.insert(joint_id, (joint, 1.0));
+}
+
+/// A deterministic direction perpendicular to `axis`, preferring `hint`
+/// when it already carries a useful bend side.
+fn perpendicular(axis: Vector3<f32>, hint: Vector3<f32>) -> Vector3<f32> {
+    let hint = normalized_f64(hint).unwrap_or_else(Vector3::zero);
+    let projected = hint - axis * hint.dot(axis);
+    if let Some(direction) = normalized_f64(projected) {
+        return direction;
+    }
+    let basis = if axis.x.abs() <= axis.y.abs() && axis.x.abs() <= axis.z.abs() {
+        Vector3::unit_x()
+    } else if axis.y.abs() <= axis.z.abs() {
+        Vector3::unit_y()
+    } else {
+        Vector3::unit_z()
+    };
+    normalized_f64(basis - axis * basis.dot(axis)).unwrap_or_else(Vector3::unit_x)
+}
+
+fn transform_point(transform: Matrix4<f32>, point: Vector3<f32>) -> Option<Vector3<f32>> {
+    let transformed = transform * Vector4::new(point.x, point.y, point.z, 1.0);
+    if transformed.w.abs() <= 1e-12 {
+        None
+    } else {
+        Some(transformed.truncate() / transformed.w)
+    }
+}
+
+fn length_f64(vector: Vector3<f32>) -> f64 {
+    let x = f64::from(vector.x);
+    let y = f64::from(vector.y);
+    let z = f64::from(vector.z);
+    (x * x + y * y + z * z).sqrt()
+}
+
+fn normalized_f64(vector: Vector3<f32>) -> Option<Vector3<f32>> {
+    let length = length_f64(vector);
+    if !length.is_finite() || length <= 1e-12 {
+        return None;
+    }
+    Some(Vector3::new(
+        (f64::from(vector.x) / length) as f32,
+        (f64::from(vector.y) / length) as f32,
+        (f64::from(vector.z) / length) as f32,
+    ))
+}
+
+/// Rotate one joint so the model-space segment below it turns from `current`
+/// toward `desired`. Converting both vectors through the settled parent
+/// transform keeps the local correction correct under animated ancestors.
+fn rotate_segment_toward(
+    skeleton: &Skeleton,
+    pose: &mut WeightedPose,
+    joint_id: i32,
+    current: Vector3<f32>,
+    desired: Vector3<f32>,
+    bend_normal: Vector3<f32>,
+    weight: f32,
+) -> bool {
+    let Some(mut joint) = resolved_joint_pose(skeleton, pose, joint_id) else {
+        return false;
+    };
+    let Some(absolute) = resolved_absolute(skeleton, pose, joint_id) else {
+        return false;
+    };
+    let parent_linear = Matrix3::from_cols(
+        absolute.parent_transform.x.truncate(),
+        absolute.parent_transform.y.truncate(),
+        absolute.parent_transform.z.truncate(),
+    );
+    let Some(parent_inverse) = parent_linear.invert() else {
+        return false;
+    };
+    let from = parent_inverse * current;
+    let to = parent_inverse * desired;
+    let Some(from) = normalized_f64(from) else {
+        return false;
+    };
+    let Some(to) = normalized_f64(to) else {
+        return false;
+    };
+    let pole = perpendicular(from, parent_inverse * bend_normal);
+    let correction = Quaternion::from_arc(from, to, Some(pole));
+    let correction = Quaternion::one().slerp(correction, weight.clamp(0.0, 1.0));
+    joint.rotation = (correction * joint.rotation).normalize();
+    pose.joints.insert(joint_id, (joint, 1.0));
+    true
+}
+
+/// Analytic two-bone reach over a direct `root -> middle -> end` chain.
+///
+/// The law of cosines chooses the desired middle position. The middle joint
+/// from the evaluated pose acts as the pole point, which preserves the
+/// authored/animated elbow side without adding hidden state or another API
+/// parameter. Each local correction is derived after its parent has settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReachFailure {
+    InvalidChain,
+    NonUniformRootScale,
+}
+
+fn apply_reach(
+    skeleton: &Skeleton,
+    pose: &mut WeightedPose,
+    root_id: i32,
+    middle_id: i32,
+    end_id: i32,
+    target: Vector3<f32>,
+    weight: f32,
+) -> Result<(), ReachFailure> {
+    if skeleton.get_joint_parent_id(middle_id) != Some(root_id)
+        || skeleton.get_joint_parent_id(end_id) != Some(middle_id)
+    {
+        return Err(ReachFailure::InvalidChain);
+    }
+    if weight <= 0.0 {
+        return Ok(());
+    }
+    let Some(root_joint) = resolved_joint_pose(skeleton, pose, root_id) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let scale = root_joint.scale.map(f32::abs);
+    let largest_scale = scale.x.max(scale.y).max(scale.z);
+    let smallest_scale = scale.x.min(scale.y).min(scale.z);
+    if largest_scale - smallest_scale > largest_scale * 1e-4 {
+        return Err(ReachFailure::NonUniformRootScale);
+    }
+
+    let Some(root_absolute) = resolved_absolute(skeleton, pose, root_id) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(middle_absolute) = resolved_absolute(skeleton, pose, middle_id) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(end_absolute) = resolved_absolute(skeleton, pose, end_id) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(model_to_solve) = root_absolute.parent_transform.invert() else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let solve_to_model = root_absolute.parent_transform;
+    let Some(root) = transform_point(model_to_solve, root_absolute.transform.w.truncate()) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(middle) = transform_point(model_to_solve, middle_absolute.transform.w.truncate())
+    else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(end) = transform_point(model_to_solve, end_absolute.transform.w.truncate()) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(target) = transform_point(model_to_solve, target) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let upper = middle - root;
+    let lower = end - middle;
+    let upper_length = length_f64(upper);
+    let lower_length = length_f64(lower);
+    if upper_length <= 1e-6 || lower_length <= 1e-6 {
+        return Err(ReachFailure::InvalidChain);
+    }
+
+    let target_offset = target - root;
+    let target_distance = length_f64(target_offset);
+    let current_offset = end - root;
+    let target_direction = if target_distance > 1e-6 {
+        normalized_f64(target_offset).ok_or(ReachFailure::InvalidChain)?
+    } else if let Some(direction) = normalized_f64(current_offset) {
+        direction
+    } else {
+        normalized_f64(upper).ok_or(ReachFailure::InvalidChain)?
+    };
+    let maximum = upper_length + lower_length;
+    let minimum = (upper_length - lower_length).abs().max(maximum * 1e-5);
+    let distance = target_distance.clamp(minimum, maximum);
+
+    // Use the evaluated middle joint as the pole point. Its projection onto
+    // the plane normal to the target direction says which side the elbow was
+    // already on; a straight pose gets a deterministic model-axis fallback.
+    let bend_direction = perpendicular(target_direction, upper);
+    let along = (upper_length * upper_length - lower_length * lower_length + distance * distance)
+        / (2.0 * distance);
+    let height = (upper_length * upper_length - along * along)
+        .max(0.0)
+        .sqrt();
+    let desired_middle =
+        root + target_direction * along as f32 + bend_direction * height as f32;
+    let desired_end = root + target_direction * distance as f32;
+    let Some(root_model) = transform_point(solve_to_model, root) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(desired_middle_model) = transform_point(solve_to_model, desired_middle) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(desired_end_model) = transform_point(solve_to_model, desired_end) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let desired_upper = desired_middle_model - root_model;
+    let desired_lower = desired_end_model - desired_middle_model;
+    let desired_upper_direction =
+        normalized_f64(desired_upper).ok_or(ReachFailure::InvalidChain)?;
+    let desired_lower_direction =
+        normalized_f64(desired_lower).ok_or(ReachFailure::InvalidChain)?;
+    let bend_normal = desired_upper_direction.cross(desired_lower_direction);
+    let bend_normal = if let Some(direction) = normalized_f64(bend_normal) {
+        direction
+    } else {
+        normalized_f64(target_direction.cross(bend_direction))
+            .ok_or(ReachFailure::InvalidChain)?
+    };
+
+    if !rotate_segment_toward(
+        skeleton,
+        pose,
+        root_id,
+        middle_absolute.transform.w.truncate() - root_absolute.transform.w.truncate(),
+        desired_upper,
+        bend_normal,
+        weight,
+    ) {
+        return Err(ReachFailure::InvalidChain);
+    }
+
+    // Root rotation moved both descendants. Resolve the settled second
+    // segment before computing the middle-joint correction.
+    let Some(middle_after) = resolved_absolute(skeleton, pose, middle_id) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let Some(end_after) = resolved_absolute(skeleton, pose, end_id) else {
+        return Err(ReachFailure::InvalidChain);
+    };
+    let middle_after = middle_after.transform.w.truncate();
+    let lower_after = end_after.transform.w.truncate() - middle_after;
+    if rotate_segment_toward(
+        skeleton,
+        pose,
+        middle_id,
+        lower_after,
+        desired_end_model - middle_after,
+        bend_normal,
+        weight,
+    ) {
+        Ok(())
+    } else {
+        Err(ReachFailure::InvalidChain)
+    }
 }
 
 fn full_weight(pose: Pose) -> WeightedPose {
@@ -578,6 +889,32 @@ mod tests {
                 duration: 2.0,
                 channels: vec![channel(0), channel(1), channel(2)],
             }],
+        }
+    }
+
+    /// A direct two-bone chain with unit segments along +X:
+    /// upper(root at origin) -> lower(at x=1) -> end(at x=2).
+    fn reach_model() -> Model {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 3]);
+        builder.add_joint(0, 0, "upper".to_string(), None, Matrix4::identity());
+        builder.add_joint(
+            1,
+            1,
+            "lower".to_string(),
+            Some(0),
+            Matrix4::from_translation(Vector3::unit_x()),
+        );
+        builder.add_joint(
+            2,
+            2,
+            "end".to_string(),
+            Some(1),
+            Matrix4::from_translation(Vector3::unit_x()),
+        );
+        Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
         }
     }
 
@@ -908,6 +1245,360 @@ mod tests {
         });
         assert_eq!(missing, vec!["tail".to_string()]);
         assert_eq!(transforms[0], Matrix4::identity());
+    }
+
+    #[test]
+    fn reach_places_the_end_joint_at_a_reachable_target() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [0.0, 2.0_f32.sqrt(), 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let root = joint_translation(&transforms, 0);
+        let middle = joint_translation(&transforms, 1);
+        let end = joint_translation(&transforms, 2);
+        let target = vec3(0.0, 2.0_f32.sqrt(), 0.0);
+        assert!((end - target).magnitude() < 1e-5, "end: {end:?}");
+        assert!(((middle - root).magnitude() - 1.0).abs() < 1e-5);
+        assert!(((end - middle).magnitude() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn reach_clamps_an_unreachable_target_to_full_extension() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [5.0, 0.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        assert!((joint_translation(&transforms, 2) - vec3(2.0, 0.0, 0.0)).magnitude() < 1e-5);
+    }
+
+    #[test]
+    fn reach_clamps_a_large_finite_target_without_overflow() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [0.0, 1e30, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let end = joint_translation(&transforms, 2);
+        assert!((end - vec3(0.0, 2.0, 0.0)).magnitude() < 1e-5, "end: {end:?}");
+    }
+
+    #[test]
+    fn reach_folds_safely_when_the_target_is_at_the_root() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [0.0, 0.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        assert!(transforms.iter().all(|transform| {
+            [
+                transform.x.x,
+                transform.x.y,
+                transform.x.z,
+                transform.x.w,
+                transform.y.x,
+                transform.y.y,
+                transform.y.z,
+                transform.y.w,
+                transform.z.x,
+                transform.z.y,
+                transform.z.z,
+                transform.z.w,
+                transform.w.x,
+                transform.w.y,
+                transform.w.z,
+                transform.w.w,
+            ]
+            .into_iter()
+            .all(f32::is_finite)
+        }));
+        assert!(joint_translation(&transforms, 2).magnitude() < 3e-5);
+    }
+
+    #[test]
+    fn reach_solves_through_non_uniform_parent_scale() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 4]);
+        builder.add_joint(
+            0,
+            0,
+            "scaled-parent".to_string(),
+            None,
+            Matrix4::from_nonuniform_scale(2.0, 1.0, 0.5),
+        );
+        builder.add_joint(1, 1, "upper".to_string(), Some(0), Matrix4::identity());
+        builder.add_joint(
+            2,
+            2,
+            "lower".to_string(),
+            Some(1),
+            Matrix4::from_translation(Vector3::unit_x()),
+        );
+        builder.add_joint(
+            3,
+            3,
+            "end".to_string(),
+            Some(2),
+            Matrix4::from_translation(Vector3::unit_x()),
+        );
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            // In the scaled parent's local solve space this is (1, 1, 0),
+            // a reachable target for two unit segments.
+            target: [2.0, 1.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let end = joint_translation(&transforms, 3);
+        assert!(
+            (end - vec3(2.0, 1.0, 0.0)).magnitude() < 1e-5,
+            "end: {end:?}"
+        );
+    }
+
+    #[test]
+    fn reach_warns_for_non_uniform_root_scale_and_is_ignored() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 3]);
+        builder.add_joint(
+            0,
+            0,
+            "upper".to_string(),
+            None,
+            Matrix4::from_nonuniform_scale(2.0, 1.0, 0.5),
+        );
+        builder.add_joint(
+            1,
+            1,
+            "lower".to_string(),
+            Some(0),
+            Matrix4::from_translation(Vector3::unit_x()),
+        );
+        builder.add_joint(
+            2,
+            2,
+            "end".to_string(),
+            Some(1),
+            Matrix4::from_translation(Vector3::unit_x()),
+        );
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [0.0, 2.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let rest = skinning_transforms(&model, &AnimExpr::Rest, &mut no_warning);
+        let mut warnings = Vec::new();
+        let reached = skinning_transforms(&model, &expr, &mut |warning| {
+            if let AnimWarning::NonUniformRootScale { root } = warning {
+                warnings.push(root.to_string());
+            }
+        });
+        assert_eq!(warnings, vec!["upper"]);
+        assert_eq!(reached, rest);
+    }
+
+    #[test]
+    fn reach_warns_for_small_non_uniform_root_scale_and_is_ignored() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 3]);
+        builder.add_joint(
+            0,
+            0,
+            "upper".to_string(),
+            None,
+            Matrix4::from_nonuniform_scale(0.00009, 0.00001, 0.00001),
+        );
+        builder.add_joint(
+            1,
+            1,
+            "lower".to_string(),
+            Some(0),
+            Matrix4::from_translation(vec3(10000.0, 0.0, 0.0)),
+        );
+        builder.add_joint(
+            2,
+            2,
+            "end".to_string(),
+            Some(1),
+            Matrix4::from_translation(vec3(10000.0, 0.0, 0.0)),
+        );
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [0.0, 1.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let rest = skinning_transforms(&model, &AnimExpr::Rest, &mut no_warning);
+        let mut warnings = Vec::new();
+        let reached = skinning_transforms(&model, &expr, &mut |warning| {
+            if let AnimWarning::NonUniformRootScale { root } = warning {
+                warnings.push(root.to_string());
+            }
+        });
+        assert_eq!(warnings, vec!["upper"]);
+        assert_eq!(reached, rest);
+    }
+
+    #[test]
+    fn reach_normalizes_large_finite_bone_vectors_without_overflow() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 3]);
+        builder.add_joint(0, 0, "upper".to_string(), None, Matrix4::identity());
+        builder.add_joint(
+            1,
+            1,
+            "lower".to_string(),
+            Some(0),
+            Matrix4::from_translation(vec3(1e30, 1e30, 0.0)),
+        );
+        builder.add_joint(
+            2,
+            2,
+            "end".to_string(),
+            Some(1),
+            Matrix4::from_translation(vec3(1e30, 0.0, 0.0)),
+        );
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let target = vec3(0.0, 1e30, 0.0);
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: target.into(),
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let end = joint_translation(&transforms, 2);
+        assert!(
+            length_f64(end - target) / 1e30 < 1e-5,
+            "target: {target:?}, end: {end:?}"
+        );
+    }
+
+    #[test]
+    fn reach_preserves_the_evaluated_bend_side() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [1.0, 1.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let middle = joint_translation(&transforms, 1);
+        let end = joint_translation(&transforms, 2);
+        // The rest pose's elbow starts on +X, so it remains on that side of
+        // the root->target line instead of choosing the mirrored solution.
+        assert!(middle.x > middle.y, "middle: {middle:?}");
+        assert!((end - vec3(1.0, 1.0, 0.0)).magnitude() < 1e-5);
+    }
+
+    #[test]
+    fn reach_zero_weight_leaves_the_pose_unchanged() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "end".to_string(),
+            target: [0.0, 2.0, 0.0],
+            weight: 0.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        assert_eq!(joint_translation(&transforms, 1), vec3(1.0, 0.0, 0.0));
+        assert_eq!(joint_translation(&transforms, 2), vec3(2.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn reach_warns_for_a_non_direct_chain_and_is_ignored() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "end".to_string(),
+            end: "lower".to_string(),
+            target: [0.0, 1.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let mut invalid = Vec::new();
+        let transforms = skinning_transforms(&model, &expr, &mut |warning| {
+            if let AnimWarning::InvalidChain { root, middle, end } = warning {
+                invalid.push((root.to_string(), middle.to_string(), end.to_string()));
+            }
+        });
+        assert_eq!(
+            invalid,
+            vec![("upper".to_string(), "end".to_string(), "lower".to_string())]
+        );
+        assert_eq!(joint_translation(&transforms, 2), vec3(2.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn reach_warns_for_each_missing_joint_and_is_ignored() {
+        let model = reach_model();
+        let expr = AnimExpr::Reach {
+            root: "shoulder".to_string(),
+            middle: "elbow".to_string(),
+            end: "hand".to_string(),
+            target: [0.0, 1.0, 0.0],
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let mut missing = Vec::new();
+        let transforms = skinning_transforms(&model, &expr, &mut |warning| {
+            if let AnimWarning::MissingJoint(name) = warning {
+                missing.push(name.to_string());
+            }
+        });
+        assert_eq!(missing, vec!["shoulder", "elbow", "hand"]);
+        assert_eq!(joint_translation(&transforms, 2), vec3(2.0, 0.0, 0.0));
     }
 
     #[test]

@@ -1235,27 +1235,45 @@ impl Scene3D {
                                     &hydrated_model,
                                     expr,
                                     &mut |warning| {
-                                        let (kind, name, hint) = match warning {
+                                        let (key, message) = match warning {
                                             crate::anim::AnimWarning::MissingClip(name) => (
-                                                "clip",
-                                                name,
-                                                "rendering the bind pose (functor inspect \
-lists a model's clips)",
+                                                format!("anim-clip:{str}:{name}"),
+                                                format!(
+                                                    "[anim] model \"{str}\" has no clip \
+named \"{name}\" — rendering the bind pose (functor inspect lists a model's clips)"
+                                                ),
                                             ),
                                             crate::anim::AnimWarning::MissingJoint(name) => (
-                                                "joint",
-                                                name,
-                                                "ignoring it (functor inspect lists a \
-model's joints)",
+                                                format!("anim-joint:{str}:{name}"),
+                                                format!(
+                                                    "[anim] model \"{str}\" has no joint \
+named \"{name}\" — ignoring it (functor inspect lists a model's joints)"
+                                                ),
+                                            ),
+                                            crate::anim::AnimWarning::InvalidChain {
+                                                root,
+                                                middle,
+                                                end,
+                                            } => (
+                                                format!("anim-chain:{str}:{root}:{middle}:{end}"),
+                                                format!(
+                                                    "[anim] model \"{str}\" joints \
+\"{root}\" -> \"{middle}\" -> \"{end}\" are not a direct, non-degenerate \
+two-bone chain — ignoring Anim.reach"
+                                            ),
+                                            ),
+                                            crate::anim::AnimWarning::NonUniformRootScale {
+                                                root,
+                                            } => (
+                                                format!("anim-reach-scale:{str}:{root}"),
+                                                format!(
+                                                    "[anim] model \"{str}\" root joint \
+\"{root}\" has non-uniform scale — Anim.reach requires uniform root scale, \
+so the reach is ignored"
+                                                ),
                                             ),
                                         };
-                                        scene_context.warn_once(
-                                            &format!("anim-{kind}:{str}:{name}"),
-                                            &format!(
-                                                "[anim] model \"{str}\" has no {kind} \
-named \"{name}\" — {hint}"
-                                            ),
-                                        );
+                                        scene_context.warn_once(&key, &message);
                                     },
                                 ),
                                 // Zero-config default: the first clip

@@ -55,3 +55,11 @@ let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t
 /// is fully driven by this node, exactly as with `Anim.rotate`; an enclosing
 /// mask can still exclude it.
 let lookAt : (string, Vec3.t, Angle.t, float, t) => t
+
+/// Reach a model-space target with a direct two-bone joint chain.
+///
+/// `root`, `middle`, and `end` must name direct parent/child joints, such as an
+/// upper arm, forearm, and hand. Unreachable targets clamp to the chain's
+/// nearest extension. The evaluated pose below supplies the elbow bend side,
+/// `root` must have uniform scale, and `weight` is clamped to `0..1`.
+let reach : (string, string, string, Vec3.t, float, t) => t

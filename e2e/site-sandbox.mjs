@@ -165,6 +165,41 @@ const centerPixel = (frame) =>
       })
   );
 
+// Locate the animation sample's emissive cyan reach target in framebuffer
+// coordinates. Reading pixels lets the drag test click what was actually
+// rendered instead of relying on a camera/layout-specific hardcoded point.
+const cyanCentroid = (frame) =>
+  frame.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => {
+          const gl = document.getElementById("canvas");
+          const c = document.createElement("canvas");
+          c.width = gl.width;
+          c.height = gl.height;
+          const ctx = c.getContext("2d");
+          ctx.drawImage(gl, 0, 0);
+          const { data } = ctx.getImageData(0, 0, c.width, c.height);
+          let count = 0;
+          let sumX = 0;
+          let sumY = 0;
+          for (let y = 0; y < c.height; y += 1) {
+            for (let x = 0; x < c.width; x += 1) {
+              const i = (y * c.width + x) * 4;
+              if (data[i] < 110 && data[i + 1] > 155 && data[i + 2] > 155) {
+                count += 1;
+                sumX += x;
+                sumY += y;
+              }
+            }
+          }
+          resolve(count > 12
+            ? { x: sumX / count, y: sumY / count, count, width: c.width, height: c.height }
+            : null);
+        });
+      })
+  );
+
 // Hash a 32×32 downscale of the whole player canvas (drawn in a rAF callback so
 // it reads the just-rendered buffer). Two equal hashes ~300ms apart = the frame
 // is frozen; a change = it's animating.
@@ -1004,29 +1039,92 @@ for (const example of examples) {
     check(`example '${example}' loads live and ticks cleanly`, errors.length === 0, errors.join("\n"));
     if (example === "animation") {
       const player = playerFrame(page);
+      const source = await page.evaluate(() => window.__sandbox.getSource());
       check(
-        "head-look example keeps an absolute visible pointer",
+        "sandbox promotes the stacked reach sample source",
+        source.includes("Anim.reach(") && source.includes("Camera3D.toWorldRay("),
+        source.slice(0, 240)
+      );
+      check(
+        "stacked IK example keeps an absolute visible pointer",
         player.url().includes("cursor=visible"),
         player.url()
       );
-      await player.evaluate(() => {
+      const before = await cyanCentroid(player);
+      check(
+        "stacked IK example renders its cyan draggable target",
+        before !== null,
+        JSON.stringify(before)
+      );
+      const dragBridge = before === null
+        ? {
+            beforeFrame: await player.evaluate(() => window.__scrub.frame()),
+            pressConsumed: false,
+            destinationX: 0,
+            destinationY: 0,
+          }
+        : await player.evaluate((marker) => {
         const rect = document.getElementById("canvas").getBoundingClientRect();
-        window.dispatchEvent(new MouseEvent("mousemove", {
-          clientX: rect.left + rect.width * 0.9,
-          clientY: rect.top + rect.height * 0.25,
+        const canvas = document.getElementById("canvas");
+        const clientX = rect.left + marker.x * rect.width / marker.width;
+        const clientY = rect.top + marker.y * rect.height / marker.height;
+        const destinationX = marker.x < marker.width / 2
+          ? Math.max(20, marker.x - 110)
+          : Math.min(marker.width - 20, marker.x + 110);
+        const destinationY = Math.max(20, marker.y - 70);
+        const destinationClientX =
+          rect.left + destinationX * rect.width / marker.width;
+        const destinationClientY =
+          rect.top + destinationY * rect.height / marker.height;
+        canvas.dispatchEvent(new MouseEvent("mousemove", {
+          clientX,
+          clientY,
+          bubbles: true,
         }));
-      });
+        const press = new MouseEvent("mousedown", {
+          button: 0,
+          clientX,
+          clientY,
+          bubbles: true,
+          cancelable: true,
+        });
+        canvas.dispatchEvent(press);
+        // Move before the next sampled step. The sample must pick at the
+        // event-time press point, not this final snapshot point.
+        canvas.dispatchEvent(new MouseEvent("mousemove", {
+          clientX: destinationClientX,
+          clientY: destinationClientY,
+          bubbles: true,
+        }));
+        return {
+          beforeFrame: window.__scrub.frame(),
+          pressConsumed: press.defaultPrevented,
+          destinationX,
+          destinationY,
+        };
+        }, before);
       await player.waitForFunction(
-        () => window.__scrub.events().some((event) => event.kind === "mouse-move"),
+        (beforeFrame) => window.__scrub.frame() >= beforeFrame + 2,
+        dragBridge.beforeFrame,
         { timeout: 3000 }
       );
-      const mouseMove = await player.evaluate(() =>
-        window.__scrub.events().findLast((event) => event.kind === "mouse-move")
-      );
+      const after = await cyanCentroid(player);
+      await player.evaluate(() => {
+        window.dispatchEvent(new MouseEvent("mouseup", {
+          button: 0,
+          bubbles: true,
+        }));
+      });
+      const afterDragFrame = await player.evaluate(() => window.__scrub.frame());
+      const markerTravel = before && after
+        ? Math.hypot(after.x - before.x, after.y - before.y)
+        : 0;
       check(
-        "visible pointer movement reaches the head-look runtime",
-        mouseMove?.label.startsWith("mouse move ("),
-        JSON.stringify(mouseMove)
+        "visible pointer drag moves the rendered reach target",
+        dragBridge.pressConsumed
+          && afterDragFrame >= dragBridge.beforeFrame + 2
+          && markerTravel > 25,
+        JSON.stringify({ before, after, markerTravel, ...dragBridge, afterDragFrame })
       );
     }
   } catch {
