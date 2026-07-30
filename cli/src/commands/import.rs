@@ -2,21 +2,24 @@
 //!
 //! Scans the project directory for assets — models (`*.glb` / `*.gltf`),
 //! textures (`*.png` / `*.jpg` / `*.jpeg` / `*.hdr`), sounds (`*.wav` /
-//! `*.ogg` / `*.mp3`) — inspects models headlessly for animation clips (see
-//! [`functor_runtime_common::inspect`] — no GL context), and writes one
-//! generated sibling module, `assets.fun`, of branded asset constants:
+//! `*.ogg` / `*.mp3`) — inspects models headlessly for animation clips and
+//! skeleton joints (see [`functor_runtime_common::inspect`] — no GL context),
+//! and writes one generated sibling module, `assets.fun`, of branded asset and
+//! typed-name constants:
 //!
 //! ```functor
 //! let xbot = Asset.model("Xbot.glb")
 //! let xbotClips = { walk: { name: "walk", duration: 0.9667 }, ... }
+//! let xbotJoints = { mixamorig_Head: "mixamorig:Head", ... }
 //! ```
 //!
 //! `file = module`, so games write `Scene.model(Assets.xbot)` and
-//! `Anim.clip(Assets.xbotClips.walk.name, tts)` — a typo is a check-time
-//! error instead of a silent fallback. The file is meant to be CHECKED IN (it
-//! typechecks without the binary assets, which are fetched, not committed);
-//! `run`/`build` call [`ensure_fresh`] to regenerate it automatically when
-//! the project's assets change.
+//! `Anim.clip(Assets.xbotClips.walk.name, tts)`, or pass
+//! `Assets.xbotJoints.mixamorig_Head` to `Anim.rotate` / `Anim.mask` — a typo
+//! is a check-time error instead of a silent fallback. The file is meant to be
+//! CHECKED IN (it typechecks without the binary assets, which are fetched, not
+//! committed); `run`/`build` call [`ensure_fresh`] to regenerate it
+//! automatically when the project's assets change.
 //!
 //! The pure generator (layout, identifier sanitization, determinism) lives in
 //! [`functor_runtime_common::manifest`] — shared so future tooling (the wasm
@@ -28,7 +31,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::output::{emit, Event};
-use functor_runtime_common::inspect::inspect_model;
+use functor_runtime_common::inspect::{inspect_model, ModelReport};
 use functor_runtime_common::manifest::{self, AssetEntry, ManifestInput, ModelEntry};
 
 /// The generated module's filename (also skipped when scanning).
@@ -38,6 +41,16 @@ const ASSETS_FILE: &str = "assets.fun";
 /// asset `<name>` — today the schema is `{ "kind"?, "url"? }`, the remote
 /// (CDN) locator seam. See the asset-handling design's §2g.
 const SIDECAR_SUFFIX: &str = ".asset.json";
+
+/// The manifest metadata carried by one successful headless inspection.
+fn model_names(report: ModelReport) -> (Vec<(String, f32)>, Vec<String>) {
+    let clips = report
+        .animations
+        .into_iter()
+        .map(|animation| (animation.name, animation.duration))
+        .collect();
+    (clips, report.joints)
+}
 
 /// The scanned asset files of a project directory, per kind, each sorted by
 /// name so scan order (and any identifier disambiguation) is deterministic
@@ -262,17 +275,17 @@ fn download_blocking(url: &str, timeout: std::time::Duration) -> Result<Vec<u8>,
 /// Scan `dir`, inspect its models (local and sidecar-declared remote), and
 /// write (or remove) `assets.fun`.
 pub fn execute(dir: &Path) -> io::Result<()> {
-    // Explicit import: a remote failure degrades that asset (warn, no clips)
-    // rather than blocking the whole command — the user sees the warning.
+    // Explicit import: a remote failure degrades that asset (warn, no inspected
+    // clip/joint names) rather than blocking the whole command.
     let _ = execute_inner(dir, false)?;
     Ok(())
 }
 
 /// The import body. With `strict_remote`, a FAILED remote fetch aborts the
 /// whole regeneration (returning `false`, nothing written) — the auto-reimport
-/// path must never strip a remote model's clip constants just because the
-/// machine is offline; the existing manifest stays. Inspect failures on
-/// successfully fetched bytes degrade to no-clips in both modes.
+/// path must never strip a remote model's clip/joint constants just because
+/// the machine is offline; the existing manifest stays. Inspect failures on
+/// successfully fetched bytes degrade to no inspected names in both modes.
 fn execute_inner(dir: &Path, strict_remote: bool) -> io::Result<bool> {
     let scanned = scan(dir)?;
     if scanned.is_empty() {
@@ -294,29 +307,29 @@ fn execute_inner(dir: &Path, strict_remote: bool) -> io::Result<bool> {
             continue;
         };
         let bytes = fs::read(path)?;
-        let clips = match inspect_model(bytes, None, None) {
-            Ok(report) => report
-                .animations
-                .iter()
-                .map(|a| (a.name.clone(), a.duration))
-                .collect(),
+        let (clips, joints) = match inspect_model(bytes, None, None) {
+            Ok(report) => model_names(report),
             // A model the inspector can't read (corrupt, or a .gltf with
             // external buffers) still gets its asset constant — the reference
-            // is real even when the clips are unknowable. Warn + no clips.
+            // is real even when its names are unknowable. Warn + no typed
+            // clip/joint constants.
             Err(e) => {
                 emit(Event::Warning {
                     message: format!(
-                        "{file}: cannot inspect for clips ({e}) — importing without clip constants"
+                        "{file}: cannot inspect for clips or joints ({e}) — importing \
+without clip/joint constants"
                     ),
                 });
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         };
         let clips = vetted_clips(&file, clips);
+        let joints = vetted_joints(&file, joints);
         input.models.push(ModelEntry {
             name: stem(&file).to_string(),
             locator: file,
             clips,
+            joints,
         });
     }
     input.textures = local_entries(&scanned.textures);
@@ -388,7 +401,7 @@ declares nothing"
                 // The validator guards the disk cache for extensionless
                 // urls (verify_magic can only reject HTML there): a body
                 // inspect_model can't read is an error, never cached.
-                let clips = match functor_runtime_common::io::fetch_cached_blocking(
+                let names = match functor_runtime_common::io::fetch_cached_blocking(
                     &url,
                     |u| download_blocking(u, timeout),
                     |bytes| {
@@ -398,19 +411,15 @@ declares nothing"
                     },
                 ) {
                     Ok(bytes) => match inspect_model(bytes, None, None) {
-                        Ok(report) => report
-                            .animations
-                            .iter()
-                            .map(|a| (a.name.clone(), a.duration))
-                            .collect(),
+                        Ok(report) => model_names(report),
                         Err(e) => {
                             emit(Event::Warning {
                                 message: format!(
-                                    "{file}: cannot inspect {url} for clips ({e}) — \
-importing without clip constants"
+                                    "{file}: cannot inspect {url} for clips or joints ({e}) — \
+importing without clip/joint constants"
                                 ),
                             });
-                            Vec::new()
+                            (Vec::new(), Vec::new())
                         }
                     },
                     Err(e) if strict_remote => {
@@ -426,17 +435,20 @@ assets.fun (rerun `functor import` to regenerate)"
                         emit(Event::Warning {
                             message: format!(
                                 "{file}: cannot fetch {url} ({e}) — importing without \
-clip constants"
+clip/joint constants"
                             ),
                         });
-                        Vec::new()
+                        (Vec::new(), Vec::new())
                     }
                 };
+                let (clips, joints) = names;
                 let clips = vetted_clips(&file, clips);
+                let joints = vetted_joints(&file, joints);
                 input.models.push(ModelEntry {
                     name,
                     locator: url,
                     clips,
+                    joints,
                 });
             }
             Kind::Texture => input.textures.push(AssetEntry { name, locator: url }),
@@ -455,7 +467,7 @@ clip constants"
             emit(Event::Info {
                 message: format!(
                     "wrote {} ({} asset(s)) — reference them as Assets.<name> \
-(clips: Assets.<name>Clips.<clip>)",
+(clips: Assets.<name>Clips.<clip>; joints: Assets.<name>Joints.<joint>)",
                     out.display(),
                     input.models.len() + input.textures.len() + input.sounds.len(),
                 ),
@@ -487,19 +499,9 @@ rerun `functor import`)"
     }
 }
 
-/// Warn about (and strip) clip sets the generator can't emit: duplicates keep
-/// only the first, and a `{name, duration}` field set shadows the `Clip` type
-/// itself. Shared by the local and sidecar model paths.
+/// Warn about duplicate clip names; the generator keeps only the first.
+/// Shared by the local and sidecar model paths.
 fn vetted_clips(file: &str, clips: Vec<(String, f32)>) -> Vec<(String, f32)> {
-    if manifest::shadows_clip_type(&clips) {
-        emit(Event::Warning {
-            message: format!(
-                "{file}: its clip names are exactly `name`/`duration`, which collide \
-with the generated Clip record's fields — importing without clip constants"
-            ),
-        });
-        return Vec::new();
-    }
     if !clips.is_empty() {
         let dups = manifest::duplicate_clip_names(&clips);
         if !dups.is_empty() {
@@ -516,6 +518,29 @@ match, so only the first of each is generated",
         });
     }
     clips
+}
+
+/// Warn about duplicate exact joint names. Rotation selects the smallest
+/// matching node id and masking selects every matching subtree, so one
+/// generated constant addresses the shared name rather than individual nodes.
+fn vetted_joints(file: &str, joints: Vec<String>) -> Vec<String> {
+    if !joints.is_empty() {
+        let dups = manifest::duplicate_joint_names(&joints);
+        if !dups.is_empty() {
+            emit(Event::Warning {
+                message: format!(
+                    "{file}: duplicate joint name(s) {} — Anim.rotate/Anim.mask resolve \
+by name (rotation: smallest id; mask: all matching subtrees), so one constant \
+per name is generated",
+                    dups.join(", ")
+                ),
+            });
+        }
+        emit(Event::Info {
+            message: format!("{file}: {} joint name(s)", joints.len()),
+        });
+    }
+    joints
 }
 
 /// Manifest entries for local (on-disk) texture/sound files.
@@ -570,7 +595,7 @@ pub fn ensure_fresh(dir: &Path) -> io::Result<()> {
             message: "assets changed — regenerating assets.fun (functor import)".to_string(),
         });
         // strict_remote: an offline machine must not strip a remote model's
-        // clip constants — a failed fetch keeps the existing manifest.
+        // clip/joint constants — a failed fetch keeps the existing manifest.
         let _ = execute_inner(dir, true)?;
     }
     Ok(())

@@ -63,32 +63,52 @@ let tick = (model, dt, tts) =>
         pinky: ease(model.curls.pinky, targets.pinky, rate),
       } }
 
-// Curl one finger: rotate its three joints (proximal, middle, distal) in
-// their local frames by the normalized curl amount. The SteamVR rig curls
-// about the local Z axis.
+// Curl one finger: rotate its three generated joint-name constants
+// (proximal, middle, distal) in their local frames by the normalized curl
+// amount. The SteamVR rig curls about the local Z axis.
 let curlJoint = (name: string, degrees: float, anim: Anim.t): Anim.t =>
   anim |> Anim.rotate(name, Angle.degrees(0.0), Angle.degrees(0.0), Angle.degrees(degrees))
 
-let finger = (name: string, curl: float, anim: Anim.t): Anim.t =>
+let finger = (proximal: string, middle: string, distal: string, curl: float, anim: Anim.t): Anim.t =>
   anim
-    |> curlJoint(Text.concat(Text.concat("finger_", name), "_0_r"), curl * 50.0)
-    |> curlJoint(Text.concat(Text.concat("finger_", name), "_1_r"), curl * 60.0)
-    |> curlJoint(Text.concat(Text.concat("finger_", name), "_2_r"), curl * 45.0)
+    |> curlJoint(proximal, curl * 50.0)
+    |> curlJoint(middle, curl * 60.0)
+    |> curlJoint(distal, curl * 45.0)
 
 // The thumb opposes rather than curls in-plane: smaller angles read better.
-let thumb = (curl: float, anim: Anim.t): Anim.t =>
+let thumb = (proximal: string, middle: string, distal: string, curl: float, anim: Anim.t): Anim.t =>
   anim
-    |> curlJoint("finger_thumb_0_r", curl * 30.0)
-    |> curlJoint("finger_thumb_1_r", curl * 40.0)
-    |> curlJoint("finger_thumb_2_r", curl * 35.0)
+    |> curlJoint(proximal, curl * 30.0)
+    |> curlJoint(middle, curl * 40.0)
+    |> curlJoint(distal, curl * 35.0)
 
 let handPose = (c) =>
   Anim.rest()
-    |> thumb(c.thumb)
-    |> finger("index", c.index)
-    |> finger("middle", c.middle)
-    |> finger("ring", c.ring)
-    |> finger("pinky", c.pinky)
+    |> thumb(
+         Assets.vr_glove_modelJoints.finger_thumb_0_r,
+         Assets.vr_glove_modelJoints.finger_thumb_1_r,
+         Assets.vr_glove_modelJoints.finger_thumb_2_r,
+         c.thumb)
+    |> finger(
+         Assets.vr_glove_modelJoints.finger_index_0_r,
+         Assets.vr_glove_modelJoints.finger_index_1_r,
+         Assets.vr_glove_modelJoints.finger_index_2_r,
+         c.index)
+    |> finger(
+         Assets.vr_glove_modelJoints.finger_middle_0_r,
+         Assets.vr_glove_modelJoints.finger_middle_1_r,
+         Assets.vr_glove_modelJoints.finger_middle_2_r,
+         c.middle)
+    |> finger(
+         Assets.vr_glove_modelJoints.finger_ring_0_r,
+         Assets.vr_glove_modelJoints.finger_ring_1_r,
+         Assets.vr_glove_modelJoints.finger_ring_2_r,
+         c.ring)
+    |> finger(
+         Assets.vr_glove_modelJoints.finger_pinky_0_r,
+         Assets.vr_glove_modelJoints.finger_pinky_1_r,
+         Assets.vr_glove_modelJoints.finger_pinky_2_r,
+         c.pinky)
 
 let draw = (model, tts) =>
   Frame.createLit(

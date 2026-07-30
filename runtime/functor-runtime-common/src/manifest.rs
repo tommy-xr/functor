@@ -3,11 +3,12 @@
 //!
 //! Turns a scanned project's assets into the generated `assets.fun` module:
 //! one branded constant per asset (`let xbot = Asset.model("Xbot.glb")`), plus
-//! declared clip-record constants per animated model
-//! (`Assets.xbotClips.walk.name` — a typo is a check-time error instead of a
-//! silently-bind-posed `Anim.clip("wlak")`). The generated file is meant to be
-//! CHECKED IN: it typechecks without the binary assets present (models are
-//! fetched, not committed), and `run`/`build` regenerate it when assets change.
+//! declared clip- and joint-record constants per model
+//! (`Assets.xbotClips.walk.name`, `Assets.xbotJoints.mixamorig_Head`). A typo is
+//! a check-time error instead of a silently-bind-posed clip or ignored joint.
+//! The generated file is meant to be CHECKED IN: it typechecks without the
+//! binary assets present (models are fetched, not committed), and `run`/`build`
+//! regenerate it when assets change.
 //!
 //! This module is deliberately IO-free (names in, source text out) and lives
 //! in the shared crate rather than the CLI so future tooling — the wasm build
@@ -16,9 +17,11 @@
 //!
 //! Caveat of the nominal design: record literals resolve by field-name set, so
 //! a game (or sibling module) declaring its own record type with the same
-//! field set as `Clip` or a generated `<Model>Clips` makes those literals
-//! ambiguous — a loud load error ("ambiguous record literal … annotate") fixed
-//! by renaming a field of the user type.
+//! field set as `Clip` or a generated model record can make unannotated user
+//! literals ambiguous — a loud load error ("ambiguous record literal …
+//! annotate") fixed by annotating the user literal or renaming one of its
+//! fields. Generated literals carry explicit annotations, so generated record
+//! shapes cannot make the manifest itself ambiguous.
 
 /// The marker prefix of every generated manifest's first line — how a rerun
 /// (and the staleness check) distinguishes generated output from a
@@ -35,11 +38,13 @@ pub struct AssetEntry {
     pub locator: String,
 }
 
-/// A model entry additionally carries its `(clip name, duration s)` pairs.
+/// A model entry additionally carries its `(clip name, duration s)` pairs and
+/// exact skeleton joint names.
 pub struct ModelEntry {
     pub name: String,
     pub locator: String,
     pub clips: Vec<(String, f32)>,
+    pub joints: Vec<String>,
 }
 
 /// Everything the generator needs: the scanned assets by kind. The generator
@@ -87,16 +92,15 @@ pub fn listed_files(source: &str) -> Option<Vec<String>> {
 /// // Models.
 /// let xbot = Asset.model("Xbot.glb")
 /// type XbotClips = { walk: Clip, … }     // per distinct clip-field set
-/// let xbotClips = { walk: { name: "walk", duration: 0.9667 }, … }
+/// let xbotClips: XbotClips = { walk: { name: "walk", duration: 0.9667 }, … }
+/// type XbotJoints = { mixamorig_Head: string, … }
+/// let xbotJoints: XbotJoints = { mixamorig_Head: "mixamorig:Head", … }
 /// // Textures.
 /// let dirt = Asset.texture("dirt.png")
 /// // Sounds.
 /// let gunshot = Asset.sound("gunshot.wav")
 /// ```
 ///
-/// Models whose clips are exactly `{name, duration}` would collide with the
-/// `Clip` type itself (nominal literal resolution) — their ASSET constant is
-/// still emitted, only the clips record is dropped (the caller warns).
 /// Duplicate clip names keep only the first (document-order) clip — the one
 /// `Anim.clip`'s first-match lookup actually plays.
 pub fn generate(input: &ManifestInput) -> Option<String> {
@@ -124,70 +128,114 @@ pub fn generate(input: &ManifestInput) -> Option<String> {
     ));
     out.push_str(
         "// Typed asset constants: pass Assets.<name> where an asset goes; \
-clips via Assets.<name>Clips.<clip>\n",
+clips via Assets.<name>Clips.<clip>; joints via Assets.<name>Joints.<joint>\n",
     );
 
-    let any_clips = models
-        .iter()
-        .any(|m| !m.clips.is_empty() && !shadows_clip_type(&m.clips));
+    let any_clips = models.iter().any(|m| !m.clips.is_empty());
     if any_clips {
         out.push_str("\ntype Clip = { name: string, duration: float }\n");
     }
 
-    // ONE identifier space across every generated `let` (model stems, clip
-    // records, textures, sounds): a `hero.glb` + `hero.png` pair collides on
-    // `hero` and the second claimant gets `hero_2`, deterministically.
+    // ONE identifier space across every generated `let`. Reserve the actual
+    // assets first (models, then textures, then sounds) so adding derived
+    // `<model>Clips` / `<model>Joints` records never renames an existing asset
+    // constant. A `hero.glb` + `hero.png` pair still makes the latter `hero_2`.
     let mut idents = UniqueIdents::new();
-    // One declared type per distinct clip-field set (two same-shaped
-    // declarations would make every matching literal ambiguous), named after
-    // the first (sorted) model that has it.
-    let mut declared_field_sets: std::collections::HashSet<Vec<String>> =
-        std::collections::HashSet::new();
+    let model_idents: Vec<String> = models
+        .iter()
+        .map(|model| idents.claim(&model.name))
+        .collect();
+    let texture_idents: Vec<String> = textures
+        .iter()
+        .map(|entry| idents.claim(&entry.name))
+        .collect();
+    let sound_idents: Vec<String> = sounds
+        .iter()
+        .map(|entry| idents.claim(&entry.name))
+        .collect();
+    // One declared type per distinct field set within each record family,
+    // named after the first (sorted) model that has it. Generated values are
+    // explicitly annotated: a clip and joint record may therefore have the
+    // same field set while keeping their different field value types.
+    let mut declared_clip_field_sets: std::collections::HashMap<Vec<String>, String> =
+        std::collections::HashMap::new();
+    let mut declared_joint_field_sets: std::collections::HashMap<Vec<String>, String> =
+        std::collections::HashMap::new();
 
     if !models.is_empty() {
         out.push_str("\n// Models.\n");
     }
-    for model in &models {
-        let ident = idents.claim(&model.name);
+    for (model, ident) in models.iter().zip(&model_idents) {
         out.push_str(&format!(
             "let {} = Asset.model(\"{}\")\n",
             ident,
             escape_string(&model.locator)
         ));
-        if model.clips.is_empty() || shadows_clip_type(&model.clips) {
-            continue;
-        }
-        let clips_ident = idents.claim(&format!("{ident}Clips"));
-        let fields = clip_fields(&model.clips);
+        if !model.clips.is_empty() {
+            let clips_ident = idents.claim(&format!("{ident}Clips"));
+            let fields = clip_fields(&model.clips);
 
-        // Key on the SORTED field set: nominal resolution matches by set, so
-        // two models whose fields order differently must still share one type.
-        let mut field_names: Vec<String> = fields.iter().map(|(f, _, _)| f.clone()).collect();
-        field_names.sort();
-        if declared_field_sets.insert(field_names) {
-            out.push_str(&format!("\ntype {} = {{\n", capitalize(&clips_ident)));
-            for (field, _, _) in &fields {
-                out.push_str(&format!("  {}: Clip,\n", field));
+            // Key on the SORTED field set: nominal resolution matches by set,
+            // so two models whose fields order differently share one type.
+            let mut field_names: Vec<String> = fields.iter().map(|(f, _, _)| f.clone()).collect();
+            field_names.sort();
+            let clips_type = match declared_clip_field_sets.get(&field_names) {
+                Some(existing) => existing.clone(),
+                None => {
+                    let declared = capitalize(&clips_ident);
+                    out.push_str(&format!("\ntype {} = {{\n", declared));
+                    for (field, _, _) in &fields {
+                        out.push_str(&format!("  {}: Clip,\n", field));
+                    }
+                    out.push_str("}\n");
+                    declared_clip_field_sets.insert(field_names, declared.clone());
+                    declared
+                }
+            };
+
+            out.push_str(&format!("\nlet {}: {} = {{\n", clips_ident, clips_type));
+            for (field, name, duration) in &fields {
+                out.push_str(&format!(
+                    "  {}: {{ name: \"{}\", duration: {} }},\n",
+                    field,
+                    escape_string(name),
+                    format_float(*duration),
+                ));
             }
             out.push_str("}\n");
         }
 
-        out.push_str(&format!("\nlet {} = {{\n", clips_ident));
-        for (field, name, duration) in &fields {
-            out.push_str(&format!(
-                "  {}: {{ name: \"{}\", duration: {} }},\n",
-                field,
-                escape_string(name),
-                format_float(*duration),
-            ));
+        if !model.joints.is_empty() {
+            let joints_ident = idents.claim(&format!("{ident}Joints"));
+            let fields = joint_fields(&model.joints);
+            let mut field_names: Vec<String> =
+                fields.iter().map(|(field, _)| field.clone()).collect();
+            field_names.sort();
+            let joints_type = match declared_joint_field_sets.get(&field_names) {
+                Some(existing) => existing.clone(),
+                None => {
+                    let declared = capitalize(&joints_ident);
+                    out.push_str(&format!("\ntype {} = {{\n", declared));
+                    for (field, _) in &fields {
+                        out.push_str(&format!("  {}: string,\n", field));
+                    }
+                    out.push_str("}\n");
+                    declared_joint_field_sets.insert(field_names, declared.clone());
+                    declared
+                }
+            };
+
+            out.push_str(&format!("\nlet {}: {} = {{\n", joints_ident, joints_type));
+            for (field, name) in &fields {
+                out.push_str(&format!("  {}: \"{}\",\n", field, escape_string(name),));
+            }
+            out.push_str("}\n");
         }
-        out.push_str("}\n");
     }
 
     if !textures.is_empty() {
         out.push_str("\n// Textures.\n");
-        for entry in &textures {
-            let ident = idents.claim(&entry.name);
+        for (entry, ident) in textures.iter().zip(&texture_idents) {
             out.push_str(&format!(
                 "let {} = Asset.texture(\"{}\")\n",
                 ident,
@@ -198,8 +246,7 @@ clips via Assets.<name>Clips.<clip>\n",
 
     if !sounds.is_empty() {
         out.push_str("\n// Sounds.\n");
-        for entry in &sounds {
-            let ident = idents.claim(&entry.name);
+        for (entry, ident) in sounds.iter().zip(&sound_idents) {
             out.push_str(&format!(
                 "let {} = Asset.sound(\"{}\")\n",
                 ident,
@@ -215,11 +262,25 @@ clips via Assets.<name>Clips.<clip>\n",
 /// name (first match), so later duplicates are unaddressable — the generator
 /// keeps only the first; the caller should warn with these.
 pub fn duplicate_clip_names(clips: &[(String, f32)]) -> Vec<String> {
+    duplicate_names(clips.iter().map(|(name, _)| name.as_str()))
+}
+
+/// Joint names appearing more than once in a model. `Anim.rotate` selects the
+/// smallest matching node id while `Anim.mask` selects all matching subtrees;
+/// duplicate nodes are not individually name-addressable, so the generator
+/// emits one field.
+pub fn duplicate_joint_names(joints: &[String]) -> Vec<String> {
+    duplicate_names(joints.iter().map(String::as_str))
+}
+
+/// Repeated exact names, once each and in the order each first repeats.
+fn duplicate_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
+    let mut emitted = std::collections::HashSet::new();
     let mut dups = Vec::new();
-    for (name, _) in clips {
-        if !seen.insert(name) && !dups.contains(name) {
-            dups.push(name.clone());
+    for name in names {
+        if !seen.insert(name) && emitted.insert(name) {
+            dups.push(name.to_string());
         }
     }
     dups
@@ -242,14 +303,19 @@ fn clip_fields(clips: &[(String, f32)]) -> Vec<(String, String, f32)> {
         .collect()
 }
 
-/// True when a model's sanitized clip fields are exactly `{name, duration}` —
-/// the same field set as the `Clip` record itself. Record literals resolve
-/// nominally by field NAMES, so such a model's record would collide with
-/// `Clip` and fail the typecheck; its clips are dropped (the caller warns).
-pub fn shadows_clip_type(clips: &[(String, f32)]) -> bool {
-    let mut fields: Vec<String> = clip_fields(clips).into_iter().map(|(f, _, _)| f).collect();
-    fields.sort();
-    fields == ["duration", "name"]
+/// The sanitized joint fields (`(field ident, exact joint name)`) of one
+/// model, sorted by original name with collisions disambiguated in that
+/// order. Duplicate exact names keep only the first because only one
+/// name-based constant can address them.
+fn joint_fields(joints: &[String]) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut joints: Vec<&String> = joints.iter().filter(|name| seen.insert(*name)).collect();
+    joints.sort();
+    let mut idents = UniqueIdents::new();
+    joints
+        .into_iter()
+        .map(|name| (idents.claim(name), name.clone()))
+        .collect()
 }
 
 /// Uppercase the first ASCII letter (idents start lowercase after
@@ -389,6 +455,7 @@ mod tests {
                     name: stem(file),
                     locator: file.to_string(),
                     clips: clips.iter().map(|(n, d)| (n.to_string(), *d)).collect(),
+                    joints: Vec::new(),
                 })
                 .collect(),
             textures: textures.iter().map(|f| local(f)).collect(),
@@ -427,7 +494,7 @@ mod tests {
         let expected = "\
 // GENERATED by functor import — do not edit; rerun after changing assets
 // files: [\"Xbot.glb\",\"barrel.glb\",\"boom.ogg\",\"dirt.png\",\"wood.png\"]
-// Typed asset constants: pass Assets.<name> where an asset goes; clips via Assets.<name>Clips.<clip>
+// Typed asset constants: pass Assets.<name> where an asset goes; clips via Assets.<name>Clips.<clip>; joints via Assets.<name>Joints.<joint>
 
 type Clip = { name: string, duration: float }
 
@@ -439,7 +506,7 @@ type XbotClips = {
   walk: Clip,
 }
 
-let xbotClips = {
+let xbotClips: XbotClips = {
   idle: { name: \"idle\", duration: 2.5 },
   walk: { name: \"walk\", duration: 0.9667 },
 }
@@ -486,6 +553,39 @@ let boom = Asset.sound(\"boom.ogg\")
     }
 
     #[test]
+    fn derived_records_never_steal_asset_identifiers() {
+        let input = ManifestInput {
+            models: vec![ModelEntry {
+                name: "hero".to_string(),
+                locator: "hero.glb".to_string(),
+                clips: vec![("idle".to_string(), 1.0)],
+                joints: vec!["head".to_string()],
+            }],
+            textures: vec![
+                AssetEntry {
+                    name: "heroClips".to_string(),
+                    locator: "heroClips.png".to_string(),
+                },
+                AssetEntry {
+                    name: "heroJoints".to_string(),
+                    locator: "heroJoints.png".to_string(),
+                },
+            ],
+            files: vec![
+                "hero.glb".to_string(),
+                "heroClips.png".to_string(),
+                "heroJoints.png".to_string(),
+            ],
+            ..Default::default()
+        };
+        let src = generate(&input).unwrap();
+        assert!(src.contains("let heroClips = Asset.texture(\"heroClips.png\")"));
+        assert!(src.contains("let heroJoints = Asset.texture(\"heroJoints.png\")"));
+        assert!(src.contains("let heroClips_2: HeroClips_2 = {"));
+        assert!(src.contains("let heroJoints_2: HeroJoints_2 = {"));
+    }
+
+    #[test]
     fn collisions_disambiguate_deterministically() {
         let input = models(&[(
             "bot.glb",
@@ -500,6 +600,77 @@ let boom = Asset.sound(\"boom.ogg\")
     }
 
     #[test]
+    fn joint_names_generate_typed_exact_string_constants() {
+        let input = ManifestInput {
+            models: vec![ModelEntry {
+                name: "Xbot".to_string(),
+                locator: "Xbot.glb".to_string(),
+                clips: Vec::new(),
+                joints: vec![
+                    "mixamorig:Head".to_string(),
+                    "finger_index_0_r".to_string(),
+                    "mixamorig Head".to_string(),
+                    "mixamorig:Head".to_string(),
+                ],
+            }],
+            files: vec!["Xbot.glb".to_string()],
+            ..Default::default()
+        };
+        let src = generate(&input).unwrap();
+        assert!(src.contains("type XbotJoints = {"));
+        assert!(src.contains("  finger_index_0_r: string,"));
+        assert!(src.contains("  mixamorig_Head: string,"));
+        assert!(src.contains("  mixamorig_Head_2: string,"));
+        assert!(src.contains("let xbotJoints: XbotJoints = {"));
+        assert!(src.contains("  mixamorig_Head: \"mixamorig Head\","));
+        assert!(src.contains("  mixamorig_Head_2: \"mixamorig:Head\","));
+        assert_eq!(src.matches("\"mixamorig:Head\"").count(), 1);
+        functor_lang::parse(&src).expect("joint constants must generate parseable code");
+    }
+
+    #[test]
+    fn duplicate_joint_names_report_once_and_generate_once() {
+        let joints = vec![
+            "head".to_string(),
+            "hand".to_string(),
+            "head".to_string(),
+            "head".to_string(),
+        ];
+        assert_eq!(duplicate_joint_names(&joints), vec!["head".to_string()]);
+        assert_eq!(
+            joint_fields(&joints),
+            vec![
+                ("hand".to_string(), "hand".to_string()),
+                ("head".to_string(), "head".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn clip_and_joint_records_with_the_same_shape_are_annotated() {
+        let input = ManifestInput {
+            models: vec![ModelEntry {
+                name: "bot".to_string(),
+                locator: "bot.glb".to_string(),
+                clips: vec![("head".to_string(), 1.0)],
+                joints: vec!["head".to_string()],
+            }],
+            files: vec!["bot.glb".to_string()],
+            ..Default::default()
+        };
+        let src = generate(&input).unwrap();
+        assert!(src.contains("let botClips: BotClips = {"));
+        assert!(src.contains("let botJoints: BotJoints = {"));
+        let parsed = functor_lang::parse(&src).expect("annotated same-shaped records must parse");
+        let module = functor_lang::lower(parsed).expect("generated names must lower");
+        let diagnostics = functor_lang::check(&module);
+        assert!(
+            diagnostics.is_empty(),
+            "annotated clip/joint records must typecheck: {diagnostics:#?}\n{src}"
+        );
+    }
+
+    #[test]
     fn zero_clip_models_still_get_asset_constants() {
         let input = models(&[
             ("vr_glove_model.glb", &[][..]),
@@ -509,7 +680,7 @@ let boom = Asset.sound(\"boom.ogg\")
         assert!(src.contains("let vr_glove_model = Asset.model(\"vr_glove_model.glb\")"));
         assert!(!src.contains("vr_glove_modelClips"));
         assert!(src.contains("let xbot = Asset.model(\"Xbot.glb\")"));
-        assert!(src.contains("let xbotClips = {"));
+        assert!(src.contains("let xbotClips: XbotClips = {"));
     }
 
     #[test]
@@ -524,7 +695,7 @@ let boom = Asset.sound(\"boom.ogg\")
         let src = generate(&input).unwrap();
         assert_eq!(src.matches("type XbotClips").count(), 1);
         assert!(!src.contains("type YbotClips"));
-        assert!(src.contains("let ybotClips = {"));
+        assert!(src.contains("let ybotClips: XbotClips = {"));
     }
 
     #[test]
@@ -565,19 +736,22 @@ let boom = Asset.sound(\"boom.ogg\")
     }
 
     #[test]
-    fn clip_shadowing_models_keep_the_asset_but_drop_the_clips() {
-        // A model whose clips are literally named "name" and "duration" has
-        // the same field set as `Clip` itself — nominal literal resolution
-        // would collide, so its clips are dropped (the caller warns) while
-        // the asset constant survives.
-        let shadowing = vec![("name".to_string(), 1.0), ("duration".to_string(), 2.0)];
-        assert!(shadows_clip_type(&shadowing));
-        assert!(!shadows_clip_type(&[("idle".to_string(), 1.0)]));
+    fn annotated_clip_records_can_share_the_clip_field_set() {
+        // The generated binding annotation disambiguates the outer model
+        // record from the inner `Clip` literals even when both record types
+        // have exactly `{name, duration}` fields.
         let input = models(&[("weird.glb", &[("name", 1.0), ("duration", 2.0)][..])]);
         let src = generate(&input).unwrap();
         assert!(src.contains("let weird = Asset.model(\"weird.glb\")"));
-        assert!(!src.contains("weirdClips"));
-        assert!(!src.contains("type Clip"), "no clips -> no Clip type:\n{src}");
+        assert!(src.contains("type WeirdClips = {"));
+        assert!(src.contains("let weirdClips: WeirdClips = {"));
+        let parsed = functor_lang::parse(&src).expect("shadowing fields must parse");
+        let module = functor_lang::lower(parsed).expect("shadowing fields must lower");
+        let diagnostics = functor_lang::check(&module);
+        assert!(
+            diagnostics.is_empty(),
+            "annotated outer record must disambiguate from Clip: {diagnostics:#?}\n{src}"
+        );
     }
 
     /// Hostile names — keyword stems (`if.png` — the lexer reserves
@@ -622,6 +796,7 @@ let boom = Asset.sound(\"boom.ogg\")
                 name: "barrel".to_string(),
                 locator: "https://cdn.example.com/meshes/ExplodingBarrel.glb".to_string(),
                 clips: vec![("explode".to_string(), 1.5)],
+                joints: Vec::new(),
             }],
             files: vec!["barrel.asset.json".to_string()],
             ..Default::default()
@@ -630,7 +805,7 @@ let boom = Asset.sound(\"boom.ogg\")
         assert!(src.contains(
             "let barrel = Asset.model(\"https://cdn.example.com/meshes/ExplodingBarrel.glb\")"
         ));
-        assert!(src.contains("let barrelClips = {"));
+        assert!(src.contains("let barrelClips: BarrelClips = {"));
         assert!(src.contains("  explode: { name: \"explode\", duration: 1.5 },"));
         assert_eq!(listed_files(&src).unwrap(), vec!["barrel.asset.json"]);
     }
