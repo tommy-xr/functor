@@ -14,7 +14,6 @@
 //
 //   npm run demo:time-travel                      # -> site/demos/time-travel.gif
 //   node site/demos/time-travel.mjs my/out.gif    # custom output path
-//   DEMO_GAME=toss npm run demo:time-travel       # a different bundled scene
 //   DEMO_SKIP_BUILD=1 npm run demo:time-travel    # reuse an existing site/dist
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
