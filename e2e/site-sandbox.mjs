@@ -469,7 +469,12 @@ for (const example of examples) {
   );
   await page.locator("#api-search").fill("Scene.rotateY");
   const visibleDeclarations = await page.locator(".api-item:visible").count();
-  check("API reference search narrows declarations", visibleDeclarations === 1, `${visibleDeclarations} visible`);
+  const targetVisible = await page.locator("#api-scene-rotatey:visible").count();
+  check(
+    "API reference search finds the target and narrows declarations",
+    targetVisible === 1 && visibleDeclarations > 0 && visibleDeclarations < declarations,
+    `${visibleDeclarations}/${declarations} visible; target=${targetVisible}`
+  );
 
   await page.goto(`${BASE}/docs.html#get-started`);
   await page.waitForURL(/\/manual\/#get-started$/);

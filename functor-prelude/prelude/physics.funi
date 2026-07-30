@@ -34,7 +34,7 @@ type collisionEvent = { started: bool, a: tag, b: tag, sensor: bool }
 /// The empty tag is reserved as the no-body sentinel in a raycast miss.
 let tag : (string) => tag
 
-/// Create a box shape from its width, height, and depth.
+/// Create a local-axis box shape from its full width, height, and depth.
 let box : (float, float, float) => shape
 /// Create a sphere shape from its radius.
 let sphere : (float) => shape
@@ -59,6 +59,24 @@ let fixed : (tag, shape) => body
 
 /// Set a body's initial world position; the body is last for piping.
 let at : (Vec3.t, body) => body
+/// Rotate a body about world X around its center; the body is last for piping.
+///
+/// An outer rotation applies last in world space, matching `Scene.rotateX`.
+/// Heightfield bodies reject rotation because terrain rendering is
+/// translation-only.
+let rotateX : (Angle.t, body) => body
+/// Rotate a body about world Y around its center; the body is last for piping.
+///
+/// An outer rotation applies last in world space, matching `Scene.rotateY`.
+/// Heightfield bodies reject rotation because terrain rendering is
+/// translation-only.
+let rotateY : (Angle.t, body) => body
+/// Rotate a body about world Z around its center; the body is last for piping.
+///
+/// An outer rotation applies last in world space, matching `Scene.rotateZ`.
+/// Heightfield bodies reject rotation because terrain rendering is
+/// translation-only.
+let rotateZ : (Angle.t, body) => body
 /// Set a body's initial linear velocity; the body is last for piping.
 let velocity : (Vec3.t, body) => body
 /// Set a body's mass; the body is last for piping.

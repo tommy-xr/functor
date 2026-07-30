@@ -115,6 +115,7 @@
 //! Physics.box(w, h, d) / sphere(r) / capsule(hh, r)         -> Shape
 //! Physics.dynamic/kinematic/fixed(tag, shape)               -> Body
 //! Physics.at/velocity(v, body)                        -> Body
+//! Physics.rotateX/rotateY/rotateZ(angle, body)              -> Body
 //! Physics.mass/friction/restitution(n, body)                -> Body
 //! Physics.sensor(body)                                      -> Body
 //! Physics.upright(body)                                     -> Body
@@ -2342,6 +2343,76 @@ paths (+X, -X, +Y, -Y, +Z, -Z)";
 /// `Physics.tag` (registered with the branded constructors) is the body
 /// identity — check-time only, so at runtime a tag IS its string: the tag
 /// parameters here take the string directly.
+///
+/// Body rotations use the protocol's existing quaternion field. The prelude
+/// composes and canonicalizes them here so the shells only see ordinary body
+/// declarations and need no rotation-specific path.
+fn rotate_physics_body(
+    path: &str,
+    axis: [f32; 3],
+    angle: FunctorLangAngle,
+    body: FunctorLangBody,
+) -> Result<FunctorLangBody, String> {
+    if matches!(&body.0.shape, physics::Shape::Heightfield { .. }) {
+        return Err(format!(
+            "{path}: heightfield bodies cannot be rotated — terrain rendering is \
+translation-only; use Physics.at with an unrotated Scene.terrain"
+        ));
+    }
+
+    let angle: cgmath::Rad<f32> = angle.0.into();
+    // One canonical turn keeps equivalent angles (90° and 450°) on the same
+    // side of the quaternion double cover before multiplication.
+    let radians =
+        (angle.0 + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    let (sin, cos) = (radians * 0.5).sin_cos();
+    let axis_rotation = [axis[0] * sin, axis[1] * sin, axis[2] * sin, cos];
+    // Match Scene's subject-last transform semantics: the outer pipe modifier
+    // applies last in world space, so compose q_axis * q_current.
+    let rotation = canonical_quaternion(quaternion_product(axis_rotation, body.0.rotation));
+    Ok(FunctorLangBody(body.0.facing(rotation)))
+}
+
+/// Hamilton product for `[x, y, z, w]` quaternions.
+fn quaternion_product(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+fn canonical_quaternion(mut q: [f32; 4]) -> [f32; 4] {
+    let length_squared = q.iter().map(|component| component * component).sum::<f32>();
+    if !length_squared.is_finite() || length_squared <= f32::EPSILON {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let inverse_length = length_squared.sqrt().recip();
+    for component in &mut q {
+        *component *= inverse_length;
+    }
+
+    // A quaternion and its negation encode the same rotation. Pick one stable
+    // hemisphere (then a lexicographic tie-breaker at exactly 180°) so hot
+    // reload and debug-state comparisons do not churn between q and -q.
+    let negate = q[3] < 0.0
+        || (q[3] == 0.0
+            && (q[0] < 0.0
+                || (q[0] == 0.0 && (q[1] < 0.0 || (q[1] == 0.0 && q[2] < 0.0)))));
+    if negate {
+        for component in &mut q {
+            *component = -*component;
+        }
+    }
+    for component in &mut q {
+        if *component == 0.0 {
+            *component = 0.0;
+        }
+    }
+    q
+}
+
 fn register_physics(reg: &mut crate::host_registry::Registry) {
     // Shapes: dimensions are strictly positive (Rapier accepts a negative
     // radius and silently builds a degenerate collider that misbehaves far
@@ -2420,6 +2491,27 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
         |v: FunctorLangVec3, body: FunctorLangBody| {
             let (x, y, z) = v.0;
             FunctorLangBody(body.0.at([x, y, z]))
+        },
+    );
+    reg.fn2(
+        "Physics.rotateX",
+        "Physics.rotateX(angle, body)",
+        |angle: FunctorLangAngle, body: FunctorLangBody| {
+            rotate_physics_body("Physics.rotateX", [1.0, 0.0, 0.0], angle, body)
+        },
+    );
+    reg.fn2(
+        "Physics.rotateY",
+        "Physics.rotateY(angle, body)",
+        |angle: FunctorLangAngle, body: FunctorLangBody| {
+            rotate_physics_body("Physics.rotateY", [0.0, 1.0, 0.0], angle, body)
+        },
+    );
+    reg.fn2(
+        "Physics.rotateZ",
+        "Physics.rotateZ(angle, body)",
+        |angle: FunctorLangAngle, body: FunctorLangBody| {
+            rotate_physics_body("Physics.rotateZ", [0.0, 0.0, 1.0], angle, body)
         },
     );
     reg.fn2(
@@ -7587,6 +7679,94 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         assert_eq!(scene.bodies[1].mass, Some(2.0));
         assert_eq!(scene.bodies[1].restitution, 0.5);
         assert!(scene.bodies[2].sensor);
+    }
+
+    #[test]
+    fn physics_body_axis_rotations_are_canonical_and_body_centered() {
+        let value = eval(
+            "let shape = Physics.box(4.0, 1.0, 2.0)\n\
+             let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), [\n\
+               Physics.fixed(Physics.tag(\"x\"), shape)\n\
+                 |> Physics.at(Vec3.make(3.0, 4.0, 5.0))\n\
+                 |> Physics.rotateX(Angle.degrees(90.0)),\n\
+               Physics.fixed(Physics.tag(\"y\"), shape)\n\
+                 |> Physics.rotateY(Angle.degrees(90.0)),\n\
+               Physics.fixed(Physics.tag(\"z\"), shape)\n\
+                 |> Physics.rotateZ(Angle.degrees(90.0)),\n\
+               Physics.fixed(Physics.tag(\"y-plus-turn\"), shape)\n\
+                 |> Physics.rotateY(Angle.degrees(450.0)),\n\
+             ])",
+        );
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        let half_sqrt = std::f32::consts::FRAC_1_SQRT_2;
+        let assert_close = |actual: [f32; 4], expected: [f32; 4]| {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() < 1e-6,
+                    "quaternion component: expected {expected}, got {actual}"
+                );
+            }
+        };
+
+        assert_close(scene.bodies[0].rotation, [half_sqrt, 0.0, 0.0, half_sqrt]);
+        assert_close(scene.bodies[1].rotation, [0.0, half_sqrt, 0.0, half_sqrt]);
+        assert_close(scene.bodies[2].rotation, [0.0, 0.0, half_sqrt, half_sqrt]);
+        assert_close(scene.bodies[3].rotation, scene.bodies[1].rotation);
+        assert_eq!(scene.bodies[0].position, [3.0, 4.0, 5.0]);
+        for body in &scene.bodies {
+            let norm = body.rotation.iter().map(|component| component * component).sum::<f32>();
+            assert!((norm - 1.0).abs() < 1e-6, "rotation was not normalized: {norm}");
+            assert!(body.rotation[3] >= 0.0, "rotation was not canonical: {:?}", body.rotation);
+        }
+    }
+
+    #[test]
+    fn physics_body_rotation_pipeline_applies_the_outer_modifier_last() {
+        let value = eval(
+            "let shape = Physics.box(1.0, 2.0, 3.0)\n\
+             let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), [\n\
+               Physics.fixed(Physics.tag(\"xy\"), shape)\n\
+                 |> Physics.rotateX(Angle.degrees(90.0))\n\
+                 |> Physics.rotateY(Angle.degrees(90.0)),\n\
+               Physics.fixed(Physics.tag(\"yx\"), shape)\n\
+                 |> Physics.rotateY(Angle.degrees(90.0))\n\
+                 |> Physics.rotateX(Angle.degrees(90.0)),\n\
+             ])",
+        );
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        let assert_close = |actual: [f32; 4], expected: [f32; 4]| {
+            for (actual, expected) in actual.into_iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() < 1e-6,
+                    "quaternion component: expected {expected}, got {actual}"
+                );
+            }
+        };
+
+        assert_close(scene.bodies[0].rotation, [0.5, 0.5, -0.5, 0.5]);
+        assert_close(scene.bodies[1].rotation, [0.5, 0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn physics_body_rotation_requires_angles_and_rejects_heightfields() {
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.fixed(Physics.tag(\"ramp\"), \
+Physics.box(4.0, 1.0, 2.0)) |> Physics.rotateY(1.57)"
+            ),
+            "Physics.rotateY: expected an Angle, got a bare number — say which unit: \
+Angle.degrees(…) or Angle.radians(…)"
+        );
+        assert_eq!(
+            fail_message(
+                "let terrain = Terrain.heightmap(Asset.texture(\"terrain.png\"), \
+20.0, 20.0, -1.0, 4.0)\n\
+                 let main = () => Physics.heightfield(Physics.tag(\"terrain\"), terrain) \
+|> Physics.rotateX(Angle.degrees(5.0))"
+            ),
+            "Physics.rotateX: heightfield bodies cannot be rotated — terrain rendering is \
+translation-only; use Physics.at with an unrotated Scene.terrain"
+        );
     }
 
     // `Physics.upright` locks a body's rotation — the character-capsule

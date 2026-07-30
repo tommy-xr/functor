@@ -541,9 +541,10 @@ let pos = model.pos |> Vec3.add(step)</pre>
           <h3>Physics</h3>
           <table>
             <tbody>
-              <tr><td><code>Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)</code></td><td>shapes; box takes <em>full</em> extents</td></tr>
+              <tr><td><code>Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)</code></td><td>shapes; box takes <em>full</em> extents in the body’s local axes</td></tr>
               <tr><td><code>Physics.dynamic(tag, shape)</code></td><td>simulated; also <code>kinematic</code> / <code>fixed</code>; tags are <code>Physics.tag("name")</code> values</td></tr>
-              <tr><td><code>body |> Physics.at(Vec3.make(x, y, z))</code></td><td>spawn pose; also <code>velocity</code>, <code>mass</code>, <code>friction</code>, <code>restitution</code>, <code>sensor</code></td></tr>
+              <tr><td><code>body |> Physics.at(Vec3.make(x, y, z))</code></td><td>spawn position; also <code>velocity</code>, <code>mass</code>, <code>friction</code>, <code>restitution</code>, <code>sensor</code></td></tr>
+              <tr><td><code>body |> Physics.rotateX/Y/Z(angle)</code></td><td>body-centered rotation; Angles are branded, and the outer pipe applies last in world space</td></tr>
               <tr><td><code>Physics.scene(Vec3.make(gx, gy, gz), [body, …])</code></td><td>what the <code>physics</code> hook returns</td></tr>
               <tr><td><code>Physics.position(tag)</code></td><td><code>{x, y, z}</code> of the live body</td></tr>
               <tr><td><code>scene |> Physics.transformed(tag)</code></td><td>draw a scene at the body's live pose</td></tr>
@@ -571,9 +572,11 @@ let pos = model.pos |> Vec3.add(step)</pre>
           </p>
           <p>
             The tag is cross-frame identity: same tag = same body; drop a body by not declaring
-            it. Re-declaring an unchanged body leaves the simulation alone; changing its declared
-            position teleports it. Reading a tag your <code>physics</code> hook doesn't declare
-            is a runtime error. The physics world survives hot reload, like the model.
+            it. Re-declaring an unchanged body leaves the simulation alone. Changing its declared
+            position or rotation teleports those fields on a dynamic/fixed body; a kinematic body
+            instead receives the changed pose as its next-step target, carrying velocity into
+            contacts. Reading a tag your <code>physics</code> hook doesn't declare is a runtime
+            error. The physics world survives hot reload, like the model.
           </p>
 
           <h3 id="prelude-ui">UI</h3>
