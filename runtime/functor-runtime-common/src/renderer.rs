@@ -11,6 +11,10 @@ use crate::{
     SceneContext, ShadowUniforms, Viewport,
 };
 
+/// Enough authored color to keep the scene readable while opaque diagnostic
+/// lines remain dominant through it.
+const TRANSPARENT_DEBUG_ALPHA: f32 = 0.2;
+
 /// Render one `Frame` to the currently-bound (default) framebuffer.
 ///
 /// This is the *shared* per-frame render path: the desktop, web, and XR shells
@@ -725,15 +729,55 @@ fn forward_pass(
     let mut root_material = BasicMaterial::create();
     root_material.initialize(&render_context);
 
-    Scene3D::render(
-        scene,
-        &render_context,
-        scene_context,
-        &world_matrix,
-        &projection_matrix,
-        &view_matrix,
-        &root_material,
-    );
+    let render_scene = || {
+        Scene3D::render(
+            scene,
+            &render_context,
+            scene_context,
+            &world_matrix,
+            &projection_matrix,
+            &view_matrix,
+            &root_material,
+        );
+    };
+
+    // The transparent debug material deliberately reuses authored shading.
+    // Populate depth first, then blend only the nearest surface: blending every
+    // backface and overlapping triangle would make dense meshes nearly opaque.
+    // Clearing depth afterward keeps collider/frustum lines visible through
+    // the scene without cloning every shader just to multiply its alpha.
+    let transparent_debug = debug_render_mode == DebugRenderMode::Transparent;
+    if transparent_debug {
+        unsafe {
+            gl.disable(glow::BLEND);
+            gl.color_mask(false, false, false, false);
+            gl.depth_mask(true);
+        }
+        render_scene();
+        unsafe {
+            gl.color_mask(true, true, true, true);
+            gl.depth_func(glow::EQUAL);
+            gl.enable(glow::BLEND);
+            gl.blend_equation(glow::FUNC_ADD);
+            gl.blend_color(0.0, 0.0, 0.0, TRANSPARENT_DEBUG_ALPHA);
+            gl.blend_func_separate(
+                glow::CONSTANT_ALPHA,
+                glow::ONE_MINUS_CONSTANT_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
+            gl.depth_mask(false);
+        }
+        render_scene();
+        unsafe {
+            gl.depth_mask(true);
+            gl.depth_func(glow::LESS);
+            gl.disable(glow::BLEND);
+            gl.clear(glow::DEPTH_BUFFER_BIT);
+        }
+    } else {
+        render_scene();
+    }
 }
 
 /// Draw a batch of colored world-space line segments over the current

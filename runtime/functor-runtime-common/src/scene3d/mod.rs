@@ -1201,9 +1201,12 @@ impl Scene3D {
             Some(m)
         } else {
             match render_context.debug_render_mode {
-                // Physics mode shades normally — its wireframes are a separate
-                // overlay pass (`render_debug_lines`), not a material override.
-                DebugRenderMode::Default | DebugRenderMode::Physics => None,
+                // Physics and Transparent preserve authored materials. Physics
+                // adds a separate line pass; Transparent changes blending and
+                // resets depth around the scene pass.
+                DebugRenderMode::Default
+                | DebugRenderMode::Transparent
+                | DebugRenderMode::Physics => None,
                 DebugRenderMode::Normals => {
                     let mut m = NormalDebugMaterial::create();
                     m.initialize(render_context);
@@ -1247,7 +1250,9 @@ impl Scene3D {
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
                         let debug_override = !matches!(
                             render_context.debug_render_mode,
-                            DebugRenderMode::Default | DebugRenderMode::Physics
+                            DebugRenderMode::Default
+                                | DebugRenderMode::Transparent
+                                | DebugRenderMode::Physics
                         );
                         // In the depth pass, draw the model with a depth material
                         // that still skins (so animated models cast a correctly
@@ -1258,12 +1263,16 @@ impl Scene3D {
                             (true, true) => SkinnedDepthMaterial::create(),
                             (true, false) => DepthMaterial::create(),
                             (false, _) => match render_context.debug_render_mode {
-                                DebugRenderMode::Default | DebugRenderMode::Physics
+                                DebugRenderMode::Default
+                                | DebugRenderMode::Transparent
+                                | DebugRenderMode::Physics
                                     if is_skinned =>
                                 {
                                     SkinnedMaterial::create()
                                 }
-                                DebugRenderMode::Default | DebugRenderMode::Physics => {
+                                DebugRenderMode::Default
+                                | DebugRenderMode::Transparent
+                                | DebugRenderMode::Physics => {
                                     BasicMaterial::create()
                                 }
                                 DebugRenderMode::Normals if is_skinned => {

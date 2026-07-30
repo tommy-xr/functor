@@ -261,22 +261,23 @@ export function initMultiplayerPanes({
       <select id="mp-debug-mode">
         <option value="0">FPS</option>
         <option value="1">Orbit</option>
-        <option value="2">Pan 2D</option>
       </select>
+      <span id="mp-debug-pan2d" hidden>Pan 2D</span>
     </label>
     <label><span id="mp-debug-lens-name">FOV</span>
       <input id="mp-debug-fov" type="range" min="15" max="120" step="1" value="60">
       <output id="mp-debug-lens">60°</output>
     </label>
-    <label>Material
+    <label id="mp-debug-material-label">Material
       <select id="mp-debug-material">
         <option value="0">Shaded</option>
+        <option value="3">Transparent</option>
         <option value="1">Normals</option>
         <option value="2">Tangents</option>
       </select>
     </label>
-    <label><input id="mp-debug-physics" type="checkbox"> Physics</label>
-    <label><input id="mp-debug-frustum" type="checkbox"> Authored frustum</label>
+    <label id="mp-debug-physics-label"><input id="mp-debug-physics" type="checkbox"> Physics</label>
+    <label id="mp-debug-frustum-label"><input id="mp-debug-frustum" type="checkbox"> Authored frustum</label>
     <label><input id="mp-debug-game-ui" type="checkbox" checked> Game UI</label>
     <button id="mp-debug-reset" type="button">Reset</button>`;
 
@@ -295,12 +296,16 @@ export function initMultiplayerPanes({
   const $ = (id: string) => chrono.querySelector(`#${id}`) as HTMLElement;
   const $btn = (id: string) => chrono.querySelector(`#${id}`) as HTMLButtonElement;
   const debugMode = debugDrawer.querySelector("#mp-debug-mode") as HTMLSelectElement;
+  const debugPan2d = debugDrawer.querySelector("#mp-debug-pan2d") as HTMLElement;
   const debugFov = debugDrawer.querySelector("#mp-debug-fov") as HTMLInputElement;
   const debugLensName = debugDrawer.querySelector("#mp-debug-lens-name") as HTMLElement;
   const debugLens = debugDrawer.querySelector("#mp-debug-lens") as HTMLOutputElement;
   const debugMaterial = debugDrawer.querySelector("#mp-debug-material") as HTMLSelectElement;
+  const debugMaterialLabel = debugDrawer.querySelector("#mp-debug-material-label") as HTMLElement;
   const debugPhysics = debugDrawer.querySelector("#mp-debug-physics") as HTMLInputElement;
+  const debugPhysicsLabel = debugDrawer.querySelector("#mp-debug-physics-label") as HTMLElement;
   const debugFrustum = debugDrawer.querySelector("#mp-debug-frustum") as HTMLInputElement;
+  const debugFrustumLabel = debugDrawer.querySelector("#mp-debug-frustum-label") as HTMLElement;
   const debugGameUi = debugDrawer.querySelector("#mp-debug-game-ui") as HTMLInputElement;
   const debugReset = debugDrawer.querySelector("#mp-debug-reset") as HTMLButtonElement;
 
@@ -1052,7 +1057,8 @@ export function initMultiplayerPanes({
         const debug = cameraSeam.debugCamera();
         const pan2d = debug.mode === 2;
         debugMode.value = String(debug.mode);
-        debugMode.disabled = pan2d;
+        debugMode.hidden = pan2d;
+        debugPan2d.hidden = !pan2d;
         debugFov.hidden = pan2d;
         debugLensName.textContent = pan2d ? "Zoom" : "FOV";
         if (pan2d) {
@@ -1063,11 +1069,11 @@ export function initMultiplayerPanes({
           debugLens.value = `${Math.round(fov)}°`;
         }
         debugMaterial.value = String(debug.material);
-        debugMaterial.disabled = pan2d;
+        debugMaterialLabel.hidden = pan2d;
         debugPhysics.checked = debug.physics;
-        debugPhysics.disabled = pan2d;
+        debugPhysicsLabel.hidden = pan2d;
         debugFrustum.checked = debug.authoredFrustum;
-        debugFrustum.disabled = pan2d;
+        debugFrustumLabel.hidden = pan2d;
         debugGameUi.checked = debug.gameUi;
       }
       // A pane that boots while the session is parked must not run off on its

@@ -47,6 +47,7 @@ pub enum DebugMaterialMode {
     Shaded,
     Normals,
     Tangents,
+    Transparent,
 }
 
 impl DebugMaterialMode {
@@ -55,6 +56,7 @@ impl DebugMaterialMode {
             DebugMaterialMode::Shaded => "Shaded",
             DebugMaterialMode::Normals => "Normals",
             DebugMaterialMode::Tangents => "Tangents",
+            DebugMaterialMode::Transparent => "Transparent",
         }
     }
 
@@ -63,6 +65,7 @@ impl DebugMaterialMode {
             0 => Some(DebugMaterialMode::Shaded),
             1 => Some(DebugMaterialMode::Normals),
             2 => Some(DebugMaterialMode::Tangents),
+            3 => Some(DebugMaterialMode::Transparent),
             _ => None,
         }
     }
@@ -72,6 +75,7 @@ impl DebugMaterialMode {
             DebugMaterialMode::Shaded => 0,
             DebugMaterialMode::Normals => 1,
             DebugMaterialMode::Tangents => 2,
+            DebugMaterialMode::Transparent => 3,
         }
     }
 
@@ -80,6 +84,7 @@ impl DebugMaterialMode {
             DebugMaterialMode::Shaded => DebugRenderMode::Default,
             DebugMaterialMode::Normals => DebugRenderMode::Normals,
             DebugMaterialMode::Tangents => DebugRenderMode::Tangents,
+            DebugMaterialMode::Transparent => DebugRenderMode::Transparent,
         }
     }
 }
@@ -126,6 +131,10 @@ impl DebugPresentation {
             },
             DebugRenderMode::Tangents => Self {
                 material: DebugMaterialMode::Tangents,
+                ..Self::default()
+            },
+            DebugRenderMode::Transparent => Self {
+                material: DebugMaterialMode::Transparent,
                 ..Self::default()
             },
             DebugRenderMode::Physics => Self {
@@ -818,6 +827,18 @@ mod tests {
         assert_eq!(
             presentation.material.render_mode(),
             crate::DebugRenderMode::Normals
+        );
+        assert_eq!(
+            DebugMaterialMode::from_index(3),
+            Some(DebugMaterialMode::Transparent)
+        );
+        assert_eq!(
+            DebugMaterialMode::Transparent.render_mode(),
+            crate::DebugRenderMode::Transparent
+        );
+        assert_eq!(
+            DebugPresentation::from_render_mode(crate::DebugRenderMode::Transparent).material,
+            DebugMaterialMode::Transparent
         );
         assert_eq!(
             presentation.diagnostics(true, false, crate::DebugRenderMode::Default),

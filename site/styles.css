@@ -2534,6 +2534,10 @@ a:hover {
   color: var(--muted);
 }
 
+.mp-debug label[hidden] {
+  display: none;
+}
+
 .mp-debug select,
 .mp-debug button {
   border: 1px solid var(--line);

@@ -207,10 +207,11 @@ game-driven culling and render-target/portal passes:
 
 - 3D and mixed frames start in an FPS view: mouse look, WASD movement, Q/E
   down/up, and wheel-adjusted FOV. The contextual **Debug Camera** drawer can
-  switch to orbit navigation, adjust FOV, replace materials with normal or
-  tangent visualization, overlay live physics and the authored camera frustum,
-  and hide game-authored UI.
-- Pure 2D frames use mouse/WASD panning and wheel zoom.
+  switch to orbit navigation, adjust FOV, make authored materials transparent,
+  replace them with normal or tangent visualization, overlay live physics and
+  the authored camera frustum, and hide game-authored UI.
+- Pure 2D frames use mouse/WASD panning and wheel zoom. Their drawer omits the
+  3D-only view, material, physics, and frustum controls.
 
 Activating it is an explicit capture click. Escape releases the pointer while
 preserving the debug view; click the viewport to recapture. **Exit debug view**
