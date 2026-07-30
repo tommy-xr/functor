@@ -15,7 +15,11 @@
 
 // --- Tunables (tweak these to change whether the jump clears the chasm) ---
 let runSpeed = 8.0        // horizontal speed while a direction is held
-let jumpVelocity = 13.0   // upward launch speed on jump
+// <editable>
+// Will the jump clear the chasm?
+// Click 🔮 to preview it, then try 12.0 and 13.0.
+let jumpVelocity = 13.0
+// </editable>
 let gravity = 30.0        // downward acceleration
 
 // A jump launched at the edge covers runSpeed * (2*jumpVelocity/gravity)

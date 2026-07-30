@@ -27,14 +27,15 @@
     <!--@header-->
     <!--/@header-->
 
-    <!-- The demo card IS a functor program: site/examples/hero.fun,
-         interpreted live by the wasm runtime in this iframe. -->
+    <!-- The demo card IS the platformer in examples/mario, interpreted live by
+         the wasm runtime. The landing island records its jump.script behind
+         the loader, then parks immediately before takeoff. -->
     <section class="hero">
       <div class="hero-copy">
         <h1 class="hero-title">FUNCTOR</h1>
         <p class="hero-tagline">Game development from an alternate timeline.</p>
         <p class="hero-sub">
-          A free, open-source 3D game engine.
+          A free, open-source game engine.
         </p>
         <div class="hero-actions">
           <a class="button-primary" href="sandbox.html">▶ Open the sandbox</a>
@@ -72,11 +73,11 @@
           </div>
           <iframe
             class="hero-scene"
-            src="player.html?game=examples%2Fhero.fun"
-            title="live synthwave scene rendered by functor"
+            src="player.html?game=examples%2Fmario.fun&amp;file=examples%2Fmario.fun&amp;file=examples%2Fassets.fun"
+            title="live platformer with time-travel extrapolation rendered by functor"
             allow="pointer-lock"
           ></iframe>
-          <!-- Reserved slot: commit 5 mounts a small editable code panel here. -->
+          <!-- The landing island mounts the jump-velocity editor here. -->
           <div id="hero-editor" class="hero-editor" hidden></div>
         </div>
       </div>

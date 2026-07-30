@@ -1,7 +1,8 @@
-// The landing hero's live code panel: a small editor mounted over ONE region
-// of examples/hero.fun (the `dot` def, between `// <editable>` sentinels).
-// Edit the region and the running grid hot-swaps with the model preserved —
-// the wave keeps rolling — then drag the timeline back through the change.
+// The landing hero's live code panel: a small editor mounted over the
+// jumpVelocity region of examples/mario.fun. Behind the boot loader, the page
+// queues the checked-in jump.script at the browser runtime's fixed-step input
+// boundary, waits for its authoritative timeline markers, then pauses and seeks
+// just before takeoff. The visitor's first click on 🔮 reveals the jump.
 //
 // This is the light sibling of sandbox.tsx: it reuses the same editor↔player
 // seam (player-bridge.ts) but a stripped editor (mini-editor.ts — no basicSetup
@@ -29,11 +30,86 @@ interface HeroSeam {
   setRegion(src: string): void;
   region: () => string;
   status: () => HeroStatus;
+  staged: () => boolean;
 }
 
-const HERO_URL = "examples/hero.fun";
+interface ScriptedInput {
+  frame: number;
+  code: number;
+  label: string;
+  isDown: boolean;
+}
+
+interface HeroScrubEvent {
+  frame: number;
+  label: string;
+}
+
+interface HeroScrubSeam {
+  paused(): boolean;
+  frame(): number;
+  seek(frame: number): void;
+  scheduleKeyInputs(inputs: Array<{ frame: number; code: number; isDown: boolean }>): boolean;
+  togglePause(): void;
+  events(): HeroScrubEvent[];
+  setPreview(preview: {
+    enabled?: boolean;
+    seconds?: number;
+    rate?: number;
+    mode?: number;
+  }): void;
+}
+
+type HeroPlayerWindow = Window & { __scrub?: HeroScrubSeam };
+
+const HERO_URL = "examples/mario.fun";
+const JUMP_SCRIPT_URL = "examples/mario.jump.script";
 const OPEN = "// <editable>";
 const CLOSE = "// </editable>";
+const COLD_START_SETTLE_MS = 300;
+const PREVIEW_SECONDS = 0.9;
+const PREVIEW_RATE = 8;
+const PREVIEW_MODE_BOTH = 3;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const nextPaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+// The script remains the source of truth for both the deterministic desktop
+// capture and this browser staging pass. The landing demo deliberately accepts
+// only the two controls it needs, so an edited script fails loud instead of
+// silently driving a different game.
+const parseJumpScript = (source: string): ScriptedInput[] => {
+  const keyCodes: Record<string, number> = {
+    Right: 30,
+    Up: 27,
+  };
+  const inputs: ScriptedInput[] = [];
+  for (const [index, raw] of source.split(/\r?\n/).entries()) {
+    const line = raw.split("#", 1)[0].trim();
+    if (!line) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length !== 3) {
+      throw new Error(`${JUMP_SCRIPT_URL}:${index + 1}: expected frame, key, and down|up`);
+    }
+    const [frameText, key, direction] = parts;
+    const scriptFrame = Number(frameText);
+    const code = keyCodes[key];
+    if (!Number.isInteger(scriptFrame) || scriptFrame < 0 || code === undefined) {
+      throw new Error(`${JUMP_SCRIPT_URL}:${index + 1}: unsupported input \`${line}\``);
+    }
+    if (direction !== "down" && direction !== "up") {
+      throw new Error(`${JUMP_SCRIPT_URL}:${index + 1}: expected down|up`);
+    }
+    inputs.push({
+      frame: scriptFrame,
+      code,
+      label: `${key} ${direction}`,
+      isDown: direction === "down",
+    });
+  }
+  if (inputs.length === 0) throw new Error(`${JUMP_SCRIPT_URL}: no scripted inputs`);
+  return inputs.sort((a, b) => a.frame - b.frame);
+};
 
 const frame = document.querySelector<HTMLIFrameElement>(".hero-scene")!;
 const mount = document.getElementById("hero-editor")!;
@@ -68,8 +144,12 @@ const setStatus = (state: HeroState, message = "") => {
 // panel, never leave the loader spinning over a scene that is already running.
 let playerReady = false;
 let editorSettled = false;
+let demoSettled = false;
+let demoSeeded = false;
+let staging = false;
+let scriptedInputs: ScriptedInput[] | null = null;
 const dismissBootLoader = () => {
-  if (!playerReady || !editorSettled) return;
+  if (!playerReady || !editorSettled || !demoSettled) return;
   document.querySelector("[data-fn-boot]")?.classList.add("is-done");
 };
 // Busy until the player's ready handshake: the bridge's onLive (or a
@@ -85,12 +165,100 @@ let region = "";
 
 const fullProgram = () => prefix + region + suffix;
 
+const seedJumpHistory = async (inputs: ScriptedInput[]) => {
+  const player = frame.contentWindow as HeroPlayerWindow | null;
+  const scrub = player?.__scrub;
+  if (!player || !scrub) throw new Error("the platformer timeline did not become ready");
+
+  // Let first-frame compilation and asset setup finish before starting the
+  // script's frame-relative schedule.
+  await delay(COLD_START_SETTLE_MS);
+
+  // Queue the desktop script at the runtime's fixed-step boundary. The runtime
+  // applies every edge immediately before its designated simulation frame, so
+  // low refresh rates and main-thread stalls cannot collapse the jump timing.
+  if (!scrub.scheduleKeyInputs(inputs)) {
+    throw new Error("the platformer rejected the checked-in input script");
+  }
+
+  // The event markers publish separately from the fixed steps. Count paints
+  // rather than wall time so a backgrounded tab simply resumes this wait.
+  let markerPaints = 0;
+  while (
+    markerPaints < 600 &&
+    !inputs.every((input) => scrub.events().some((event) => event.label === input.label))
+  ) {
+    markerPaints += 1;
+    await nextPaint();
+  }
+  const events = scrub.events();
+  if (!inputs.every((input) => events.some((event) => event.label === input.label))) {
+    throw new Error("the platformer did not record every scripted input");
+  }
+  const firstInput = inputs[0];
+  const firstEvent = events.find((event) => event.label === firstInput.label);
+  const preservesFrameOffsets =
+    firstEvent !== undefined &&
+    inputs.every((input) => {
+      const event = events.find((candidate) => candidate.label === input.label);
+      return (
+        event !== undefined &&
+        event.frame - firstEvent.frame === input.frame - firstInput.frame
+      );
+    });
+  if (!preservesFrameOffsets) {
+    throw new Error("the platformer input markers drifted from the checked-in script");
+  }
+
+  if (!scrub.paused()) scrub.togglePause();
+  const pauseDeadline = performance.now() + 3000;
+  while (performance.now() < pauseDeadline && !scrub.paused()) await delay(16);
+  if (!scrub.paused()) throw new Error("the platformer timeline did not pause");
+
+  const jump = events.find((event) => event.label === "Up down");
+  if (!jump) throw new Error("the platformer timeline has no jump marker");
+
+  // Configure, but do not enable, extrapolation. The visible 🔮 button remains
+  // the one click that reveals the complete recorded jump.
+  scrub.setPreview({
+    enabled: false,
+    seconds: PREVIEW_SECONDS,
+    rate: PREVIEW_RATE,
+    mode: PREVIEW_MODE_BOTH,
+  });
+  const anchor = Math.max(0, jump.frame - 2);
+  scrub.seek(anchor);
+  const seekDeadline = performance.now() + 3000;
+  while (performance.now() < seekDeadline && scrub.frame() !== anchor) await delay(16);
+  if (scrub.frame() !== anchor) throw new Error("the platformer timeline did not reach the jump");
+};
+
+const maybeStageDemo = () => {
+  if (staging || demoSettled || !playerReady || !editorSettled || !scriptedInputs) return;
+  staging = true;
+  setStatus("busy", "recording the jump…");
+  void seedJumpHistory(scriptedInputs)
+    .then(() => {
+      demoSeeded = true;
+      setStatus("live", "live — click 🔮 to preview the jump");
+    })
+    .catch((err: unknown) => {
+      setStatus("error", err instanceof Error ? err.message : String(err));
+    })
+    .finally(() => {
+      demoSettled = true;
+      dismissBootLoader();
+    });
+};
+
 const bridge = new PlayerBridge(frame, {
   onReloading: () => setStatus("busy"),
   onLive: () => {
     playerReady = true;
+    if (!demoSettled) setStatus("busy", "recording the jump…");
+    else if (demoSeeded) setStatus("live", "live — click 🔮 to preview the jump");
+    maybeStageDemo();
     dismissBootLoader();
-    setStatus("live", "live");
   },
   onResult: (ok, message) => {
     playerReady = true;
@@ -102,46 +270,53 @@ const bridge = new PlayerBridge(frame, {
 let editor: EditorView | null = null;
 
 const boot = async () => {
-  let source: string;
   try {
-    const response = await fetch(HERO_URL);
-    if (!response.ok) {
-      setStatus("error", `cannot fetch ${HERO_URL}: HTTP ${response.status}`);
-      return; // No editor panel; the scene may still run on its own.
+    const [sourceResponse, scriptResponse] = await Promise.all([
+      fetch(HERO_URL),
+      fetch(JUMP_SCRIPT_URL),
+    ]);
+    if (!sourceResponse.ok) {
+      throw new Error(`cannot fetch ${HERO_URL}: HTTP ${sourceResponse.status}`);
     }
-    source = await response.text();
+    if (!scriptResponse.ok) {
+      throw new Error(`cannot fetch ${JUMP_SCRIPT_URL}: HTTP ${scriptResponse.status}`);
+    }
+    const [source, jumpScript] = await Promise.all([
+      sourceResponse.text(),
+      scriptResponse.text(),
+    ]);
+    scriptedInputs = parseJumpScript(jumpScript);
+
+    const open = source.indexOf(OPEN);
+    const close = source.indexOf(CLOSE, open + OPEN.length);
+    if (open !== -1 && close !== -1) {
+      // Region = everything on the lines strictly between the sentinels; the
+      // sentinels themselves live in prefix/suffix so they never get edited away.
+      const regionStart = source.indexOf("\n", open) + 1;
+      prefix = source.slice(0, regionStart);
+      region = source.slice(regionStart, close);
+      suffix = source.slice(close);
+    } else {
+      // Sentinels missing: fail soft to editing the whole file.
+      prefix = "";
+      region = source;
+      suffix = "";
+    }
+
+    mount.hidden = false;
+    editor = createMiniEditor({
+      parent: mount,
+      doc: region,
+      onChange: (src) => {
+        region = src;
+        bridge.push(fullProgram());
+      },
+    });
   } catch (err) {
-    setStatus("error", `cannot fetch ${HERO_URL}: ${err}`);
+    setStatus("error", err instanceof Error ? err.message : String(err));
+    demoSettled = true;
     return;
   }
-
-  const open = source.indexOf(OPEN);
-  const close = source.indexOf(CLOSE, open + OPEN.length);
-  if (open !== -1 && close !== -1) {
-    // Region = everything on the lines strictly between the sentinels; the
-    // sentinels themselves live in prefix/suffix so they never get edited away.
-    const regionStart = source.indexOf("\n", open) + 1;
-    prefix = source.slice(0, regionStart);
-    region = source.slice(regionStart, close);
-    suffix = source.slice(close);
-  } else {
-    // Sentinels missing: fail soft to editing the whole file.
-    prefix = "";
-    region = source;
-    suffix = "";
-  }
-
-  mount.hidden = false;
-  editor = createMiniEditor({
-    parent: mount,
-    doc: region,
-    onChange: (src) => {
-      region = src;
-      bridge.push(fullProgram());
-    },
-  });
-  // No setStatus here: the dot stays busy until the player announces ready
-  // (bridge onLive) or the first push result comes back.
 };
 
 // Settled means "the card will not change shape again", which every exit path
@@ -150,6 +325,7 @@ const boot = async () => {
 // exhaustive.
 void boot().finally(() => {
   editorSettled = true;
+  maybeStageDemo();
   dismissBootLoader();
 });
 
@@ -167,4 +343,5 @@ void boot().finally(() => {
   },
   region: () => region,
   status: () => ({ ...statusState }),
+  staged: () => demoSeeded,
 };

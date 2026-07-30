@@ -187,30 +187,6 @@ const regionHash = (frame) =>
       })
   );
 
-// True if any pixel in the lower half of the player canvas is green-dominant
-// (g > 150, r < 100) — the hero's dot-grid lives below the horizon, so a green
-// recolor of the dots shows up here even though the sun/sky dominate the center.
-const lowerHalfGreen = (frame) =>
-  frame.evaluate(
-    () =>
-      new Promise((resolve) => {
-        requestAnimationFrame(() => {
-          const gl = document.getElementById("canvas");
-          const c = document.createElement("canvas");
-          c.width = gl.width;
-          c.height = gl.height;
-          const ctx = c.getContext("2d");
-          ctx.drawImage(gl, 0, 0);
-          const y0 = Math.floor(c.height * 0.5);
-          const d = ctx.getImageData(0, y0, c.width, c.height - y0).data;
-          for (let i = 0; i < d.length; i += 4) {
-            if (d[i] < 100 && d[i + 1] > 150) return resolve(true);
-          }
-          resolve(false);
-        });
-      })
-  );
-
 const playerFrame = (page) => {
   const frame = page.frames().find((f) => f.url().includes("player.html"));
   if (!frame) throw new Error("player iframe not found");
@@ -220,6 +196,18 @@ const playerFrame = (page) => {
 // --- 1. Landing page: the hero scene actually renders. ------------------------
 {
   const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  // Force recurring multi-step render frames while the hero stages. The baked
+  // input script must be scheduled inside the runtime's fixed-step loop; a
+  // parent-page rAF observer cannot reliably see frames 18/19 under this load.
+  await page.addInitScript(() => {
+    if (window !== window.top) return;
+    window.__heroFrameStall = window.setInterval(() => {
+      const until = performance.now() + 55;
+      while (performance.now() < until) {
+        // Deliberately occupy the page thread.
+      }
+    }, 80);
+  });
   const consoleLog = [];
   page.on("console", (m) => consoleLog.push(m.text()));
   await page.goto(BASE);
@@ -227,85 +215,186 @@ const playerFrame = (page) => {
     if (i > 100) throw new Error(`hero never loaded:\n${consoleLog.join("\n")}`);
     await sleep(200);
   }
-  await sleep(600);
-  const pixel = await centerPixel(playerFrame(page));
-  // Anything the hero draws at center (sun, sky, grid) differs from the GL
+  await page.waitForFunction(() => window.__hero?.staged(), null, { timeout: 15000 });
+  await page.evaluate(() => window.clearInterval(window.__heroFrameStall));
+  const heroPlayer = playerFrame(page);
+  const pixel = await centerPixel(heroPlayer);
+  // Anything the platformer draws at center (sky / hills) differs from the GL
   // clear color rgb(26, 51, 77); "not clear color" = the scene rendered.
   const rendered = Math.abs(pixel[0] - 26) + Math.abs(pixel[1] - 51) + Math.abs(pixel[2] - 77) > 30;
   check("landing hero scene renders", rendered, `center = rgb(${pixel})`);
+  const tagline = await page.locator(".hero-sub").textContent();
+  check(
+    "landing hero uses the engine-wide tagline",
+    tagline.trim() === "A free, open-source game engine.",
+    JSON.stringify(tagline.trim())
+  );
 
   // The shared player carries the scrubber into the hero iframe too (hidden
   // until history, but the element is present).
-  const heroHasScrubber = await playerFrame(page).evaluate(
+  const heroHasScrubber = await heroPlayer.evaluate(
     () => !!document.getElementById("scrubber")
   );
   check("landing hero player has the scrubber element", heroHasScrubber);
 
-  // The hero mini-sandbox: a live editor over just the `dot` def.
+  // The hero mini-sandbox: a live editor over just the jump tuning region.
   await page.waitForFunction(
-    () => window.__hero && window.__hero.region().includes("let dot"),
+    () => window.__hero && window.__hero.region().includes("let jumpVelocity"),
     { timeout: 10000 }
   );
   const region = await page.evaluate(() => window.__hero.region());
   check(
-    "hero editor shows only the dot region (not the whole file)",
-    region.includes("let dot") && !region.includes("let init"),
+    "hero editor shows only the jump region (not the whole file)",
+    region.includes("let jumpVelocity") && !region.includes("let init"),
     region.slice(0, 40)
   );
 
-  // A green edit: recolor the dots' emissive to pure green. The scene must
-  // hot-swap with the model preserved (the wave keeps rolling) — no reload.
-  const greenRegion = region.replace(
-    /Scene\.emissive\(Color\.rgb\([^)]*\)\)/,
-    "Scene.emissive(Color.rgb(0.1, 1.0, 0.2))"
+  // The loader has already driven the checked-in input script, paused, and
+  // parked immediately before Up-down. Extrapolation remains OFF so the real
+  // crystal button is the promised one-click reveal.
+  const staged = await heroPlayer.evaluate(() => {
+    const events = window.__scrub.events();
+    const jump = events.find((event) => event.label === "Up down");
+    return {
+      paused: window.__scrub.paused(),
+      frame: window.__scrub.frame(),
+      labels: events.map((event) => event.label),
+      jumpFrame: jump?.frame,
+      preview: window.__scrub.model().preview,
+    };
+  });
+  check(
+    "landing hero bakes the complete jump input into its timeline",
+    ["Right down", "Up down", "Up up", "Right up"].every((label) =>
+      staged.labels.includes(label)
+    ),
+    JSON.stringify(staged)
   );
-  await page.evaluate((s) => window.__hero.setRegion(s), greenRegion);
-  await page.waitForFunction(
-    () =>
-      window.__hero.status().state === "live" &&
-      window.__hero.status().message.includes("model preserved"),
+  check(
+    "landing hero parks two frames before takeoff with extrapolation off",
+    staged.paused &&
+      staged.jumpFrame !== undefined &&
+      staged.frame === staged.jumpFrame - 2 &&
+      staged.preview.enabled === false &&
+      staged.preview.seconds === 0.9 &&
+      staged.preview.rate === 8,
+    JSON.stringify(staged)
+  );
+
+  await heroPlayer.evaluate(() => document.getElementById("scrub-extrapolate").click());
+  await heroPlayer.waitForFunction(() => window.__scrub.model().preview.enabled, {
+    timeout: 3000,
+  });
+  await sleep(500);
+  const strongJumpHash = await regionHash(heroPlayer);
+  check(
+    "one click enables the platformer's extrapolation",
+    await heroPlayer.evaluate(
+      () =>
+        window.__scrub.model().preview.enabled &&
+        window.__scrub.view().previewFrames > 0
+    )
+  );
+
+  // Weakening the jump rebuilds the recorded future under the edited code.
+  // The anchor stays parked; only its extrapolated trajectory changes.
+  const weakRegion = region.replace("let jumpVelocity = 13.0", "let jumpVelocity = 10.0");
+  const reloadsBeforeWeak = await heroPlayer.evaluate(
+    () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
+  );
+  const rangeBeforeWeak = await heroPlayer.evaluate(() => Array.from(window.__scrub.range()));
+  await page.evaluate((s) => window.__hero.setRegion(s), weakRegion);
+  await heroPlayer.waitForFunction(
+    (before) =>
+      window.__scrub.events().filter((event) => event.kind === "reload-ok").length > before,
+    reloadsBeforeWeak,
     { timeout: 8000 }
   );
-  check("hero edit reaches an ok status mentioning model preserved", true);
-  await sleep(500);
-  const heroGreen = await lowerHalfGreen(playerFrame(page));
-  check("hero edit recolors the grid green", heroGreen);
+  await page.waitForFunction(() => window.__hero.status().state === "live", null, {
+    timeout: 8000,
+  });
+  await sleep(700);
+  const weakJumpHash = await regionHash(heroPlayer);
+  check(
+    "editing jumpVelocity redraws the projected trajectory",
+    weakJumpHash !== strongJumpHash,
+    `${strongJumpHash} -> ${weakJumpHash}`
+  );
 
-  // A broken edit (unbalanced paren): error surfaced, old frame keeps drawing.
-  await page.evaluate((s) => window.__hero.setRegion(s), `${greenRegion}\n(`);
+  // A broken edit (unbalanced paren): error surfaced, old preview keeps drawing.
+  await page.evaluate((s) => window.__hero.setRegion(s), `${weakRegion}\n(`);
   await page.waitForFunction(() => window.__hero.status().state === "error", {
     timeout: 8000,
   });
   await sleep(300);
-  const stillPixel = await centerPixel(playerFrame(page));
-  const stillRendered =
-    Math.abs(stillPixel[0] - 26) +
-      Math.abs(stillPixel[1] - 51) +
-      Math.abs(stillPixel[2] - 77) >
-    30;
+  const brokenJumpHash = await regionHash(heroPlayer);
   check(
-    "hero broken edit errors and the scene still renders",
-    stillRendered,
-    `center = rgb(${stillPixel})`
+    "hero broken edit keeps the last good projected trajectory",
+    brokenJumpHash === weakJumpHash,
+    `${weakJumpHash} -> ${brokenJumpHash}`
   );
 
-  // Recover with a good edit; the scrubber keeps recording as it runs.
-  await page.evaluate((s) => window.__hero.setRegion(s), greenRegion);
-  await page.waitForFunction(() => window.__hero.status().state === "live", {
+  // Recover with the original jump. The deliberately paused timeline remains
+  // parked and retains the whole recorded script across both safe reloads.
+  const reloadsBeforeRecovery = await heroPlayer.evaluate(
+    () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
+  );
+  await page.evaluate((s) => window.__hero.setRegion(s), region);
+  await heroPlayer.waitForFunction(
+    (before) =>
+      window.__scrub.events().filter((event) => event.kind === "reload-ok").length > before,
+    reloadsBeforeRecovery,
+    { timeout: 8000 }
+  );
+  await page.waitForFunction(() => window.__hero.status().state === "live", null, {
     timeout: 8000,
   });
-  const heroPlayer = playerFrame(page);
-  await heroPlayer.waitForFunction(
-    () => window.__scrub && window.__scrub.range().length === 2,
-    { timeout: 10000 }
-  );
-  const hr0 = await heroPlayer.evaluate(() => window.__scrub.range());
-  await sleep(500);
-  const hr1 = await heroPlayer.evaluate(() => window.__scrub.range());
+  const recovered = await heroPlayer.evaluate(() => ({
+    paused: window.__scrub.paused(),
+    frame: window.__scrub.frame(),
+    range: Array.from(window.__scrub.range()),
+    previewEnabled: window.__scrub.model().preview.enabled,
+  }));
   check(
-    "hero scrubber still records after edits",
-    hr1[1] > hr0[1],
-    `${hr0} -> ${hr1}`
+    "hero edits preserve the staged paused timeline",
+    recovered.paused &&
+      recovered.frame === staged.frame &&
+      recovered.range[0] === rangeBeforeWeak[0] &&
+      recovered.range[1] >= rangeBeforeWeak[1] &&
+      recovered.previewEnabled,
+    JSON.stringify({ staged, rangeBeforeWeak, recovered })
+  );
+
+  // A rejected scheduler batch is transactional: the valid first edge must
+  // not leak through when a later frame cannot be represented by the runtime.
+  await heroPlayer.evaluate((end) => window.__scrub.seek(end), recovered.range[1]);
+  await heroPlayer.waitForFunction(
+    (end) => window.__scrub.frame() === end,
+    recovered.range[1],
+    { timeout: 8000 }
+  );
+  const beforeRejectedBatch = await heroPlayer.evaluate(() => ({
+    frame: window.__scrub.frame(),
+    inputs: window.__scrub.events().filter((event) => event.kind === "input").length,
+    accepted: window.__scrub.scheduleKeyInputs([
+      { frame: 0, code: 30, isDown: true },
+      { frame: 1e30, code: 30, isDown: false },
+    ]),
+  }));
+  await heroPlayer.evaluate(() => window.__scrub.togglePause());
+  await heroPlayer.waitForFunction(
+    (frame) => window.__scrub.frame() >= frame + 4,
+    beforeRejectedBatch.frame,
+    { timeout: 8000 }
+  );
+  await heroPlayer.evaluate(() => window.__scrub.togglePause());
+  const afterRejectedBatch = await heroPlayer.evaluate(
+    () => window.__scrub.events().filter((event) => event.kind === "input").length
+  );
+  check(
+    "rejected hero input batches enqueue no partial key edges",
+    !beforeRejectedBatch.accepted && afterRejectedBatch === beforeRejectedBatch.inputs,
+    JSON.stringify({ beforeRejectedBatch, afterRejectedBatch })
   );
 
   await page.close();

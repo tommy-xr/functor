@@ -143,6 +143,9 @@ export const EXAMPLES: Example[] = [
     assets: [
       { source: "examples/mario/ground.png", output: "ground.png" },
       { source: "examples/mario/hero-atlas.png", output: "hero-atlas.png" },
+      // The landing hero replays this exact desktop verification drive behind
+      // its boot loader, then parks immediately before the jump.
+      { source: "examples/mario/jump.script", output: "examples/mario.jump.script" },
     ],
   },
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm

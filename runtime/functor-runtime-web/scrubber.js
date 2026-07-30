@@ -6,6 +6,7 @@ import {
   functor_lang_scene_frame,
   functor_lang_scene_generation,
   functor_lang_scene_range,
+  functor_lang_schedule_key_events,
   functor_lang_seek_scene,
   functor_lang_scrub_seek_result,
   functor_lang_scrub_toggle_pause,
@@ -942,6 +943,33 @@ export function mountScrubber({ hidden = false } = {}) {
     view,
     events: () => state.events,
     selectEvent: (id) => dispatch({ type: "event-selected", id }),
+    // Queue a compact input script against future fixed-step frames. The
+    // runtime applies these edges inside the sub-step loop, so a low-refresh
+    // browser cannot collapse or skip their intended spacing.
+    scheduleKeyInputs: (inputs) => {
+      const baseFrame = functor_lang_scene_frame();
+      if (
+        baseFrame < 0 ||
+        !Array.isArray(inputs) ||
+        inputs.length === 0 ||
+        !inputs.every(
+          ({ frame, code, isDown }) =>
+            Number.isInteger(frame) &&
+            frame >= 0 &&
+            Number.isInteger(code) &&
+            code >= -2147483648 &&
+            code <= 2147483647 &&
+            typeof isDown === "boolean"
+        )
+      ) {
+        return false;
+      }
+      return functor_lang_schedule_key_events(
+        new Float64Array(inputs.map(({ frame }) => baseFrame + 1 + frame)),
+        new Int32Array(inputs.map(({ code }) => code)),
+        new Uint8Array(inputs.map(({ isDown }) => (isDown ? 1 : 0)))
+      );
+    },
     // Accepts the timeline-model preview fields plus `mode` (1 trail /
     // 2 strobe / 3 both; any other index is Off, per `PreviewMode::from_index`).
     // The mode has no chrome — it is seam-only config — so it lives beside the

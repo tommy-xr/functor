@@ -1595,6 +1595,21 @@ async fn run_async() -> Result<(), JsValue> {
             }
 
             for sub in &sub_frames {
+                // Scripted browser demos queue edges against authoritative
+                // fixed-step frames. Admit each edge immediately before its
+                // designated step, even when one rAF drains several steps.
+                let next_scene_frame = game
+                    .current_scene_frame()
+                    .map_or(0, |frame| frame.saturating_add(1));
+                if functor_lang_game::queue_scheduled_input_at(next_scene_frame) {
+                    functor_lang_game::drain_input(
+                        &mut **game,
+                        &mut input_snapshot,
+                        &mut input_edges,
+                        !suspended,
+                        recover_suppressed_releases(&clock),
+                    );
+                }
                 if game.samples_input() {
                     input_edges.apply_to(&mut input_snapshot);
                     game.sampled_input(&input_snapshot);

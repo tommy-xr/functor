@@ -165,6 +165,8 @@ use functor_runtime_common::RecordedInput as InputEvent;
 
 thread_local! {
     static INPUT_QUEUE: RefCell<Vec<InputEvent>> = const { RefCell::new(Vec::new()) };
+    static SCHEDULED_INPUT_QUEUE: RefCell<Vec<(u64, InputEvent)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Far more events than one frame can produce; if the frame loop never starts
@@ -185,6 +187,72 @@ fn push_input(event: InputEvent) {
 #[wasm_bindgen]
 pub fn functor_lang_key_event(code: i32, is_down: bool) {
     push_input(InputEvent::Key { code, is_down });
+}
+
+/// Queue keyboard edges for exact future fixed-step frames. The whole batch is
+/// validated before the queue changes, so a rejected script cannot leave a key
+/// half-pressed. The landing demo uses this to replay its checked-in input
+/// script without depending on browser refresh cadence; ordinary interactive
+/// input keeps using [`functor_lang_key_event`].
+#[wasm_bindgen]
+pub fn functor_lang_schedule_key_events(
+    frames: &[f64],
+    codes: &[i32],
+    is_down: &[u8],
+) -> bool {
+    if frames.is_empty() || frames.len() != codes.len() || frames.len() != is_down.len() {
+        return false;
+    }
+    let mut parsed = Vec::with_capacity(frames.len());
+    for ((frame, code), is_down) in frames.iter().zip(codes).zip(is_down) {
+        if !frame.is_finite()
+            || *frame < 0.0
+            || frame.fract() != 0.0
+            || *frame >= u64::MAX as f64
+            || *is_down > 1
+        {
+            return false;
+        }
+        parsed.push((
+            *frame as u64,
+            InputEvent::Key {
+                code: *code,
+                is_down: *is_down == 1,
+            },
+        ));
+    }
+
+    SCHEDULED_INPUT_QUEUE.with(|queue| {
+        let mut queue = queue.borrow_mut();
+        if parsed.len() > INPUT_QUEUE_CAP.saturating_sub(queue.len()) {
+            return false;
+        }
+        queue.extend(parsed);
+        queue.sort_by_key(|(frame, _)| *frame);
+        true
+    })
+}
+
+/// Move the keyboard edges assigned to `frame` into the ordinary page-input
+/// queue immediately before that fixed step. Stale edges are discarded rather
+/// than bunched into a later frame.
+pub fn queue_scheduled_input_at(frame: u64) -> bool {
+    SCHEDULED_INPUT_QUEUE.with(|scheduled| {
+        let mut scheduled = scheduled.borrow_mut();
+        let first_future = scheduled.partition_point(|(target, _)| *target <= frame);
+        if first_future == 0 {
+            return false;
+        }
+        let due: Vec<InputEvent> = scheduled
+            .drain(..first_future)
+            .filter_map(|(target, event)| (target == frame).then_some(event))
+            .collect();
+        if due.is_empty() {
+            return false;
+        }
+        INPUT_QUEUE.with(|queue| queue.borrow_mut().extend(due));
+        true
+    })
 }
 
 /// Deliver a mouse position in logical CSS pixels for visible-pointer games.
