@@ -120,6 +120,26 @@ pub struct MappedTrackingPose {
     pub up: [f32; 3],
 }
 
+/// A world-space ray derived from a point on a camera's logical surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldRay {
+    pub origin: [f32; 3],
+    pub direction: [f32; 3],
+}
+
+/// The authored camera's normalized world-space axes.
+///
+/// Kept crate-private so tracking, picking, and debug visualization share the
+/// exact same handedness and degeneracy rules without exposing cgmath through
+/// the public protocol surface.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CameraBasis {
+    pub(crate) eye: Vector3<f32>,
+    pub(crate) forward: Vector3<f32>,
+    pub(crate) right: Vector3<f32>,
+    pub(crate) up: Vector3<f32>,
+}
+
 /// A camera description produced by the game's `draw3d`. Stores plain scalars
 /// (so it serializes cleanly across the wasm boundary); the runtime turns it
 /// into view/projection matrices at render time via `view_matrix` /
@@ -206,22 +226,12 @@ impl Camera {
         (shifted(-1.0), shifted(1.0))
     }
 
-    /// Map a live tracking pose into this authored camera's local rig.
-    ///
-    /// `reference` is the tracking-space center-eye pose captured when the rig
-    /// is established. At that pose, the mapped position and orientation equal
-    /// this camera exactly. Subsequent room-scale translation and rotation are
-    /// applied in the camera's local right/up/backward basis, so moving the
-    /// authored camera moves the whole rig without discarding live tracking.
-    pub fn map_tracking_pose(
-        &self,
-        reference: TrackingPose,
-        tracked: TrackingPose,
-    ) -> Option<MappedTrackingPose> {
+    /// Return the normalized authored axes, or `None` when they cannot define
+    /// a finite view basis.
+    pub(crate) fn world_basis(&self) -> Option<CameraBasis> {
         let eye = Vector3::from(self.eye);
-        let target = Vector3::from(self.target);
+        let gaze = Vector3::from(self.target) - eye;
         let authored_up = Vector3::from(self.up);
-        let gaze = target - eye;
         let gaze_distance = gaze.magnitude();
         let right = gaze.cross(authored_up);
         if !eye.x.is_finite()
@@ -236,6 +246,32 @@ impl Camera {
         let forward = gaze / gaze_distance;
         let right = right.normalize();
         let up = right.cross(forward).normalize();
+        Some(CameraBasis {
+            eye,
+            forward,
+            right,
+            up,
+        })
+    }
+
+    /// Map a live tracking pose into this authored camera's local rig.
+    ///
+    /// `reference` is the tracking-space center-eye pose captured when the rig
+    /// is established. At that pose, the mapped position and orientation equal
+    /// this camera exactly. Subsequent room-scale translation and rotation are
+    /// applied in the camera's local right/up/backward basis, so moving the
+    /// authored camera moves the whole rig without discarding live tracking.
+    pub fn map_tracking_pose(
+        &self,
+        reference: TrackingPose,
+        tracked: TrackingPose,
+    ) -> Option<MappedTrackingPose> {
+        let CameraBasis {
+            eye,
+            forward,
+            right,
+            up,
+        } = self.world_basis()?;
         let backward = -forward;
         let to_world = |v: Vector3<f32>| right * v.x + up * v.y + backward * v.z;
 
@@ -284,6 +320,64 @@ impl Camera {
 
     pub fn projection_matrix(&self, aspect: f32) -> Matrix4<f32> {
         perspective(Rad(self.fov_radians), aspect, self.near, self.far)
+    }
+
+    /// Map a top-left-origin logical surface point through this camera's
+    /// perspective projection.
+    ///
+    /// The ray begins at the camera eye and its direction is normalized.
+    /// Position and surface extent must share one coordinate space (window
+    /// points or CSS pixels), so scaling both by a device-pixel ratio leaves
+    /// the result unchanged. Returns `None` for an outside/degenerate surface
+    /// point or a degenerate camera.
+    pub fn to_world_ray(
+        &self,
+        x: f32,
+        y: f32,
+        surface_width: f32,
+        surface_height: f32,
+    ) -> Option<WorldRay> {
+        if !x.is_finite()
+            || !y.is_finite()
+            || !surface_width.is_finite()
+            || !surface_height.is_finite()
+            || !(self.fov_radians > 0.0 && self.fov_radians < std::f32::consts::PI)
+            || surface_width <= 0.0
+            || surface_height <= 0.0
+            || x < 0.0
+            || y < 0.0
+            || x >= surface_width
+            || y >= surface_height
+        {
+            return None;
+        }
+
+        let CameraBasis {
+            eye,
+            forward,
+            right,
+            up,
+        } = self.world_basis()?;
+        let aspect = surface_width / surface_height;
+        let half_fov_tan = (self.fov_radians * 0.5).tan();
+        if !aspect.is_normal()
+            || !half_fov_tan.is_normal()
+            || half_fov_tan <= 0.0
+        {
+            return None;
+        }
+
+        let ndc_x = 2.0 * x / surface_width - 1.0;
+        let ndc_y = 1.0 - 2.0 * y / surface_height;
+        let direction = (forward
+            + right * (ndc_x * half_fov_tan * aspect)
+            + up * (ndc_y * half_fov_tan))
+            .normalize();
+        (direction.x.is_finite() && direction.y.is_finite() && direction.z.is_finite())
+            .then_some(WorldRay {
+                origin: eye.into(),
+                direction: direction.into(),
+            })
     }
 
     /// Build an asymmetric perspective projection from four view-space field-
@@ -368,6 +462,137 @@ mod tests {
         // Horizontal scale shrinks by exactly the aspect ratio (so geometry
         // keeps its proportions; you just see more to the sides).
         assert!(approx(wide.x.x, square.x.x / 2.0));
+    }
+
+    #[test]
+    fn center_surface_point_rays_along_the_camera_gaze() {
+        let camera = Camera::look_at(
+            [4.0, 2.0, -3.0],
+            [7.0, 4.0, 5.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(55.0),
+        );
+        let ray = camera.to_world_ray(800.0, 450.0, 1600.0, 900.0).unwrap();
+        let expected = (Vector3::from(camera.target) - Vector3::from(camera.eye)).normalize();
+        let direction = Vector3::from(ray.direction);
+
+        assert_eq!(ray.origin, camera.eye);
+        assert!(direction.dot(expected) > 0.99999);
+        assert!(approx(direction.magnitude(), 1.0));
+    }
+
+    #[test]
+    fn surface_corners_follow_top_left_input_and_projection_aspect() {
+        let camera = Camera::first_person(
+            [0.0, 0.0, 0.0],
+            Angle::from_degrees(0.0),
+            Angle::from_degrees(0.0),
+            Angle::from_degrees(90.0),
+        );
+        let top_left = Vector3::from(
+            camera
+                .to_world_ray(0.0, 0.0, 200.0, 100.0)
+                .unwrap()
+                .direction,
+        );
+        let near_bottom_right = Vector3::from(
+            camera
+                .to_world_ray(199.999, 99.999, 200.0, 100.0)
+                .unwrap()
+                .direction,
+        );
+
+        // Looking down +Z means this camera's screen-right axis is -X.
+        assert!(top_left.x > 0.0);
+        assert!(top_left.y > 0.0);
+        assert!(top_left.z > 0.0);
+        assert!(near_bottom_right.x < 0.0);
+        assert!(near_bottom_right.y < 0.0);
+        assert!(near_bottom_right.z > 0.0);
+        // The 2:1 surface has twice the horizontal half-span at a 90° fov.
+        assert!(approx((top_left.x / top_left.z).abs(), 2.0));
+        assert!(approx((top_left.y / top_left.z).abs(), 1.0));
+    }
+
+    #[test]
+    fn world_ray_is_logical_scale_invariant_and_tracks_resize() {
+        let camera = Camera::default();
+        let one_x = camera.to_world_ray(300.0, 200.0, 900.0, 1000.0).unwrap();
+        let retina = camera
+            .to_world_ray(600.0, 400.0, 1800.0, 2000.0)
+            .unwrap();
+        for i in 0..3 {
+            assert!(approx(one_x.direction[i], retina.direction[i]));
+        }
+
+        let resized = camera.to_world_ray(800.0, 450.0, 1600.0, 900.0).unwrap();
+        let expected = (Vector3::from(camera.target) - Vector3::from(camera.eye)).normalize();
+        assert!(Vector3::from(resized.direction).dot(expected) > 0.99999);
+    }
+
+    #[test]
+    fn world_ray_projects_back_to_the_requested_surface_point() {
+        use cgmath::Vector4;
+
+        let camera = Camera::look_at(
+            [4.0, 2.0, -3.0],
+            [7.0, 4.0, 5.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(55.0),
+        );
+        let (x, y, width, height) = (123.0, 456.0, 1600.0, 900.0);
+        let ray = camera.to_world_ray(x, y, width, height).unwrap();
+        let point = Vector3::from(ray.origin) + Vector3::from(ray.direction) * 10.0;
+        let clip = camera.projection_matrix(width / height)
+            * camera.view_matrix()
+            * Vector4::new(point.x, point.y, point.z, 1.0);
+
+        assert!(approx(clip.x / clip.w, 2.0 * x / width - 1.0));
+        assert!(approx(clip.y / clip.w, 1.0 - 2.0 * y / height));
+    }
+
+    #[test]
+    fn world_ray_rejects_outside_surfaces_and_degenerate_cameras() {
+        let camera = Camera::default();
+        assert!(camera.to_world_ray(0.0, 0.0, 0.0, 900.0).is_none());
+        assert!(camera.to_world_ray(-0.1, 0.0, 1600.0, 900.0).is_none());
+        assert!(camera
+            .to_world_ray(1600.0, 450.0, 1600.0, 900.0)
+            .is_none());
+        assert!(camera
+            .to_world_ray(800.0, 900.0, 1600.0, 900.0)
+            .is_none());
+
+        let zero_gaze = Camera::look_at(
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(45.0),
+        );
+        let parallel_up = Camera::look_at(
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(45.0),
+        );
+        assert!(zero_gaze
+            .to_world_ray(10.0, 10.0, 100.0, 100.0)
+            .is_none());
+        assert!(parallel_up
+            .to_world_ray(10.0, 10.0, 100.0, 100.0)
+            .is_none());
+
+        for degrees in [0.0, 180.0, 360.0, 450.0] {
+            let invalid_fov = Camera::look_at(
+                [0.0, 0.0, -5.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                Angle::from_degrees(degrees),
+            );
+            assert!(invalid_fov
+                .to_world_ray(50.0, 50.0, 100.0, 100.0)
+                .is_none());
+        }
     }
 
     #[test]

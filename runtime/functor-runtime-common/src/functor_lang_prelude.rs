@@ -41,6 +41,9 @@
 //!   (a self-lit textured surface, fullbright — F#'s `Material.emissiveTexture`)
 //! Camera.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))                     -> Camera
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
+//! Camera.toWorldRay(mouse, camera)                         -> Option<{ origin, direction }>
+//!   (top-left logical mouse coordinates through the authored perspective;
+//!    both fields are Vec3 values and direction is normalized)
 //! Frame.create(camera, scene)                               -> Frame
 //! Camera2D.create(width, height)                             -> Camera2D
 //! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
@@ -181,6 +184,63 @@ pub struct FunctorLangTerrain(pub TerrainDescription);
 
 /// A [`Camera`] as an opaque Functor Lang value.
 pub struct FunctorLangCamera(pub Camera);
+
+/// A sampled mouse position plus the logical surface extent sharing its
+/// top-left-origin coordinate space. Camera2D and Camera deliberately share
+/// this decoder so their screen-to-world APIs accept the exact same input.
+struct FunctorLangMouse {
+    x: f32,
+    y: f32,
+    surface_width: f32,
+    surface_height: f32,
+}
+
+fn finite_record_number(
+    fields: &[(String, Value)],
+    field: &str,
+    record_name: &str,
+    path: &str,
+    span: Span,
+) -> Result<f32, RunError> {
+    match fields.iter().find(|(name, _)| name == field) {
+        Some((_, Value::Number(n))) if (*n as f32).is_finite() => Ok(*n as f32),
+        Some((_, Value::Number(n))) => Err(RunError {
+            message: format!("{path}: {record_name} `{field}` must be finite, got {n}"),
+            span,
+        }),
+        Some((_, other)) => Err(RunError {
+            message: format!(
+                "{path}: {record_name} `{field}` must be a number, got {}",
+                other.kind_name()
+            ),
+            span,
+        }),
+        None => Err(RunError {
+            message: format!("{path}: expected a {record_name} record, missing `{field}`"),
+            span,
+        }),
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangMouse {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::Record(fields) = value else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected an Input.mouse record, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        Ok(FunctorLangMouse {
+            x: finite_record_number(fields, "x", "mouse", path, span)?,
+            y: finite_record_number(fields, "y", "mouse", path, span)?,
+            surface_width: finite_record_number(fields, "surfaceWidth", "mouse", path, span)?,
+            surface_height: finite_record_number(fields, "surfaceHeight", "mouse", path, span)?,
+        })
+    }
+}
 
 /// A [`Frame`] as an opaque Functor Lang value — what a Functor Lang `draw` returns.
 pub struct FunctorLangFrame(pub Frame);
@@ -2132,6 +2192,31 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
                 ("forward".to_string(), point(mapped.forward)),
                 ("up".to_string(), point(mapped.up)),
             ])))
+        },
+    );
+    reg.fn2(
+        "Camera.toWorldRay",
+        "Camera.toWorldRay(mouse, camera)",
+        |mouse: FunctorLangMouse, camera: FunctorLangCamera| {
+            crate::input::option_value(
+                camera
+                    .0
+                    .to_world_ray(
+                        mouse.x,
+                        mouse.y,
+                        mouse.surface_width,
+                        mouse.surface_height,
+                    )
+                    .map(|ray| {
+                        let vec3 = |[x, y, z]: [f32; 3]| {
+                            Value::HostData(Rc::new(FunctorLangVec3((x, y, z))))
+                        };
+                        Value::Record(Rc::new(vec![
+                            ("origin".to_string(), vec3(ray.origin)),
+                            ("direction".to_string(), vec3(ray.direction)),
+                        ]))
+                    }),
+            )
         },
     );
     reg.fn3(
@@ -5464,6 +5549,53 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
             "{ position: { x: 4, y: 2, z: -3 }, \
 forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         );
+    }
+
+    #[test]
+    fn camera_world_ray_is_normalized_and_uses_vec3_fields() {
+        let value = eval(
+            "let main = () =>\n\
+             Camera.toWorldRay(\n\
+               { x: 400.0, y: 300.0, surfaceWidth: 800.0, surfaceHeight: 600.0 },\n\
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)))",
+        );
+        let Value::Variant { ctor, args } = value else {
+            panic!("world ray should return an Option");
+        };
+        assert_eq!(ctor.as_ref(), "Option.Some");
+        let [Value::Record(fields)] = args.as_slice() else {
+            panic!("Some should carry the ray record");
+        };
+        let field = |name: &str| {
+            &fields
+                .iter()
+                .find(|(field, _)| field == name)
+                .unwrap_or_else(|| panic!("ray should contain `{name}`"))
+                .1
+        };
+        let span = Span::new(0, 0);
+        assert_eq!(
+            vec3_of(field("origin"), "ray origin", span).unwrap(),
+            (0.0, 0.0, -5.0)
+        );
+        assert_eq!(
+            vec3_of(field("direction"), "ray direction", span).unwrap(),
+            (0.0, 0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn camera_world_ray_returns_none_for_an_invalid_surface() {
+        let value = eval(
+            "let main = () => Camera.toWorldRay(\n\
+               { x: 0.0, y: 0.0, surfaceWidth: 0.0, surfaceHeight: 600.0 },\n\
+               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)))",
+        );
+        assert!(matches!(
+            value,
+            Value::Variant { ref ctor, ref args }
+                if ctor.as_ref() == "Option.None" && args.is_empty()
+        ));
     }
 
     #[test]

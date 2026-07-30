@@ -9,6 +9,16 @@ let lookAt : (Vec3.t, Vec3.t) => t
 ///
 /// Zero yaw and pitch look down `+Z`.
 let firstPerson : (Vec3.t, Angle.t, Angle.t, Angle.t) => t
+/// A world-space ray from the camera eye through a logical surface point.
+type ray = { origin: Vec3.t, direction: Vec3.t }
+/// Map a sampled mouse position through the authored perspective camera.
+///
+/// Mouse position and extent share one top-left-origin logical coordinate
+/// space, so the result stays stable across resize and Retina/device-pixel
+/// ratio changes. The direction is normalized and both fields feed directly
+/// into `Physics.cast` / `Physics.raycast`. Returns `Option.None` while the
+/// pointer is outside the surface or the camera is degenerate.
+let toWorldRay : (Input.mouse, t) => Option.t<ray>
 /// A tracked pose mapped into world space through an authored camera.
 type mappedPose = { position: Input.point3, forward: Input.point3, up: Input.point3 }
 /// Map a rig-local tracked pose through the authored camera.

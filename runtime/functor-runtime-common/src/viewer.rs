@@ -583,32 +583,20 @@ pub fn camera_frustum_lines(authored: &Camera, aspect: f32) -> Vec<DebugLine> {
         return Vec::new();
     }
 
-    let eye = Vector3::from(authored.eye);
-    let gaze = Vector3::from(authored.target) - eye;
-    let authored_up = Vector3::from(authored.up);
-    let right = gaze.cross(authored_up);
-    if !eye.x.is_finite()
-        || !eye.y.is_finite()
-        || !eye.z.is_finite()
-        || !gaze.magnitude().is_normal()
-        || !right.magnitude().is_normal()
-    {
+    let Some(basis) = authored.world_basis() else {
         return Vec::new();
-    }
+    };
 
-    let forward = gaze.normalize();
-    let right = right.normalize();
-    let up = right.cross(forward).normalize();
     let half_tan = (authored.fov_radians * 0.5).tan();
     let corners = |distance: f32| {
-        let center = eye + forward * distance;
+        let center = basis.eye + basis.forward * distance;
         let half_height = half_tan * distance;
         let half_width = half_height * aspect;
         [
-            center - right * half_width - up * half_height,
-            center + right * half_width - up * half_height,
-            center + right * half_width + up * half_height,
-            center - right * half_width + up * half_height,
+            center - basis.right * half_width - basis.up * half_height,
+            center + basis.right * half_width - basis.up * half_height,
+            center + basis.right * half_width + basis.up * half_height,
+            center - basis.right * half_width + basis.up * half_height,
         ]
     };
     let near = corners(authored.near);
