@@ -826,14 +826,65 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
               <tr><td><strong>Sessions</strong><br /><code>launch_game</code> · <code>connect_game</code> · <code>list_sessions</code> · <code>stop_game</code></td><td>spawn a game as a child process on a free port, or attach to a runtime someone else is running (another <code>--debug-port</code>, or a Quest). <code>launch_game</code>'s <code>mode</code> is <code>hidden</code> (the default — it renders, so frames can be captured) or <code>headless</code> (no GL context at all — CI-friendly, but nothing to read back)</td></tr>
               <tr><td><strong>Observing</strong><br /><code>get_state</code> · <code>get_scene</code> · <code>get_trace</code> · <code>capture_frame</code></td><td>the model as structured JSON alongside <code>frame</code>/<code>tts</code>/sampled input; the camera, scene graph, and lights <code>draw</code> produced; the paused inspector trace; a PNG of the next frame</td></tr>
               <tr><td><strong>Driving</strong><br /><code>pause</code> · <code>step</code> · <code>resume</code> · <code>send_input</code> · <code>rewind</code> · <code>reload_source</code> / <code>reload_project</code></td><td>pin the clock, run <em>n</em> frames of a fixed <em>dt</em>, inject a key / mouse / UI / XR command, restore the model and physics to a recorded frame, or hot-reload the source with the live model preserved</td></tr>
+              <tr><td><strong>Trusted automation</strong><br /><code>run_game_code_unsafe</code></td><td>run one Playwright-style JavaScript function against an injected, session-bound game SDK; this is the preferred surface for trusted multi-step automation</td></tr>
               <tr><td><strong>Authoring</strong><br /><code>init_game</code> · <code>save_project</code></td><td>scaffold the same starter <code>functor init</code> writes, and write a session's <em>current</em> source out to a directory</td></tr>
               <tr><td><strong>Knowledge</strong><br /><code>language_guide</code> · <code>api_reference</code></td><td>the two halves of learning Functor, and neither needs a session: the language guide (syntax, semantics, the game contract) and a search over the same <code>.funi</code> prelude this site's <a href="../docs/">API reference</a> is generated from</td></tr>
             </tbody>
           </table>
 
-          <h3>A deterministic loop</h3>
+          <h3>One trusted automation function</h3>
           <p>
-            Pin the clock, act, step, read. Nothing advances on its own in between, and
+            After <code>launch_game</code> or <code>connect_game</code>, prefer one
+            <code>run_game_code_unsafe</code> call for a trusted multi-step workflow. Its
+            <code>code</code> must be a bare JavaScript function expression — Node invokes it as
+            <code>await program(game)</code>:
+          </p>
+          <pre class="shell">run_game_code_unsafe {
+  "session": "s1",
+  "code": "async (game) => { await game.pause(); await game.pressKey(\"3\"); return await game.stepUntil((state) => state.model.enemies.length > 0, { maxFrames: 120, dts: 1 / 60, description: \"the first enemy\" }); }"
+}</pre>
+          <p>
+            This is ordinary JavaScript, not TypeScript. It requires Node.js 20 or newer;
+            <code>FUNCTOR_NODE</code> can name a non-default executable. The
+            <code>unsafe</code> suffix is literal: submitted code can import modules, access files,
+            environment variables, and the network, and start processes with the same OS authority
+            as <code>functor mcp</code>. It is RCE-equivalent and the child process is
+            <strong>not</strong> a security or process-tree sandbox. Use only code and MCP clients
+            you trust with equivalent developer-machine access.
+          </p>
+          <p>
+            The injected methods cover observation
+            (<code>state</code> / <code>scene</code> / <code>trace</code> /
+            <code>capture</code>), the clock
+            (<code>pause</code> / <code>resume</code> / <code>step</code> /
+            <code>stepFrames</code>), input
+            (<code>input</code> / <code>pressKey</code>), waits
+            (<code>waitForState</code> / <code>stepUntil</code>), reload
+            (<code>reloadSource</code> / <code>reloadProject</code> /
+            <code>reloadAsset</code> / <code>reloadAssets</code>), and
+            <code>rewind</code>. Prefer <code>pressKey</code> for a press-and-step: it attempts the
+            release even if the action fails, and failed runs restore SDK-touched key and mouse
+            button levels to their pre-run state.
+          </p>
+          <p>
+            <code>stepUntil</code> is the deterministic wait: it checks current state, then advances
+            and observes one fixed frame at a time. Its <code>maxFrames</code> defaults to 600 and
+            is capped at 10,000; <code>dts</code> defaults to 1/60 second; exhaustion throws.
+            <code>waitForState</code> instead polls a running game without advancing it.
+          </p>
+          <p>
+            State and scene values keep Functor's JSON encoding in Node. Pattern-match ADT variants
+            such as <code>{"$ctor":"Playing","args":[7.0]}</code>, and maps such as
+            <code>{"$map":[["a",1.0],["b",2.0]]}</code>. The tool's first MCP content block
+            includes the function's JSON return value, concrete SDK-call trace, logs, capture
+            metadata, and fresh final state. Every <code>game.capture()</code> also arrives as a
+            following PNG MCP image block.
+          </p>
+
+          <h3>Lower-level one-offs</h3>
+          <p>
+            Use the individual tools for one-off operations, protocol debugging, or clients without
+            Node.js. Pin the clock, act, step, read. Nothing advances on its own in between, and
             <code>step</code> does not return until the steps have actually landed — so what comes
             back is the effect of the input, not a sample of a still-moving game:
           </p>
