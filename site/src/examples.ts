@@ -115,7 +115,6 @@ export const EXAMPLES: Example[] = [
   // Named `bounce` (not `physics`): the flat copy makes `file = module`, and a
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
-  { id: "toss", label: "Bouncing balls", source: "examples/toss/game.fun" },
   // The minimal multiplayer-mechanics sample in ONE module (banner sections:
   // PROTOCOL / SERVER / BOT / CLIENT), so the wire ADT and the authoritative
   // claim resolution are right there in the editable buffer.

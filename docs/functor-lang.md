@@ -397,8 +397,9 @@ snapshots — no GPU, fully agent-verifiable.
       vector module — four wrote one in parallel and the bow entry shipped a
       whole `v3.fun`, each re-deriving add/scale/normalize on a plain
       `{x, y, z}` record and converting back with `Vec3.make` at every
-      prelude boundary (~48 such conversions across the entries; the `toss`
-      example even shadows the prelude name with its own record type). The
+      prelude boundary (~48 such conversions across the entries; a former
+      trajectory-preview sample even shadowed the prelude name with its own
+      record type). The
       brand STAYS opaque — the fix is `Vec3.x`/`y`/`z` plus
       `add`/`sub`/`scale`/`dot`/`cross`/`length`/`normalize`/`distance`/
       `lerp`, so a game keeps vectors as `Vec3` end-to-end instead of
