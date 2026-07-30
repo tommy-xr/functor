@@ -13,7 +13,8 @@ Rigid-body physics is live in `runtime/functor-runtime-common/src/physics/`
 the vocabulary reference). Every phase below is annotated **Shipped** in the
 roadmap table; the highlights:
 
-- **Declarative bodies** (`Physics.scene`/`dynamic`/`kinematic`/`fixed` + the
+- **Declarative bodies** (`Physics.scene`/`dynamic`/`kinematic`/`fixed` +
+  body-centered `rotateX`/`rotateY`/`rotateZ` + the
   divergence rule), **live reads** (`Physics.position`/`transformed`),
   **commands** (impulse/force/velocity/teleport), **raycast queries**, and
   **collision events** (`Physics.events`) — all on the Functor Lang prelude,
@@ -134,13 +135,24 @@ let crateTag = Physics.tag("crate")            // branded identity: declared onc
 let physics = (model) =>                       // OPTIONAL game hook
   Physics.scene(Vec3.make(0.0, -9.81, 0.0), [
     Physics.fixed(Physics.tag("ground"), Physics.box(20.0, 0.2, 20.0)),
-    Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0)),
+    Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0))
+      |> Physics.rotateY(Angle.degrees(30.0))
+      |> Physics.at(Vec3.make(0.0, 5.0, 0.0)),
   ])
 
 let draw = (model, tts) =>
   Frame.create(camera,
     Scene.cube() |> Scene.lit(Color.rgb(0.8, 0.5, 0.2)) |> Physics.transformed(crateTag))
 ```
+
+Body transforms are subject-last. `body |> Physics.rotateX(x) |>
+Physics.rotateY(y)` stores `qY * qX`: the outer pipe applies last in world
+space, matching the `Scene.rotate*` rule. Rotation is around the body's center
+and boxes use their local axes, so fixed ramps and rotating kinematic obstacles
+need no special shape. Angles are branded values—bare numbers are rejected.
+`Physics.heightfield` remains translation-only because `Scene.terrain`
+rendering cannot rotate; applying any `Physics.rotate*` modifier to one is a
+teaching error.
 
 Functor Lang dissolves the read-back boundary problem outright: the interpreter runs in
 the **shell's own process**, sharing the crate statics that hold the physics
