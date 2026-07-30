@@ -387,6 +387,33 @@ for (const example of examples) {
     await sleep(700);
     const errors = consoleLog.filter((m) => m.includes("[functor-lang]") && m.includes("error"));
     check(`example '${example}' loads live and ticks cleanly`, errors.length === 0, errors.join("\n"));
+    if (example === "animation") {
+      const player = playerFrame(page);
+      check(
+        "head-look example keeps an absolute visible pointer",
+        player.url().includes("cursor=visible"),
+        player.url()
+      );
+      await player.evaluate(() => {
+        const rect = document.getElementById("canvas").getBoundingClientRect();
+        window.dispatchEvent(new MouseEvent("mousemove", {
+          clientX: rect.left + rect.width * 0.9,
+          clientY: rect.top + rect.height * 0.25,
+        }));
+      });
+      await player.waitForFunction(
+        () => window.__scrub.events().some((event) => event.kind === "mouse-move"),
+        { timeout: 3000 }
+      );
+      const mouseMove = await player.evaluate(() =>
+        window.__scrub.events().findLast((event) => event.kind === "mouse-move")
+      );
+      check(
+        "visible pointer movement reaches the head-look runtime",
+        mouseMove?.label.startsWith("mouse move ("),
+        JSON.stringify(mouseMove)
+      );
+    }
   } catch {
     check(`example '${example}' loads live and ticks cleanly`, false, consoleLog.slice(-5).join("\n"));
   }

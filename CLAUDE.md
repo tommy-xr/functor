@@ -255,9 +255,12 @@ wasm, reload the page).
 (`*.glb`/`*.gltf`), textures (`*.png`/`*.jpg`/`*.jpeg`/`*.hdr`), sounds (`*.wav`/`*.ogg`/`*.mp3`;
 non-recursive, so `golden/` subdirs are excluded) — inspecting models headlessly (no GPU), and
 writes a generated `assets.fun` module of branded constants: `let xbot = Asset.model("Xbot.glb")`
-plus per-model clip records (`Assets.xbotClips.walk.name` / `.duration`). Games write
-`Scene.model(Assets.xbot)` and `Anim.clip(Assets.xbotClips.walk.name, tts)` — a typo in either is
-a check-time error (a bare-string typo silently renders the fallback/bind pose). Check the
+plus per-model clip records (`Assets.xbotClips.walk.name` / `.duration`) and exact joint-name
+records (`Assets.xbotJoints.mixamorig_Head`). Games write `Scene.model(Assets.xbot)`,
+`Anim.clip(Assets.xbotClips.walk.name, tts)`, and
+`Anim.rotate(Assets.xbotJoints.mixamorig_Head, ...)` — a typo is a check-time error instead of a
+silent fallback/bind pose or ignored joint. Joint fields use the same deterministic sanitizer as
+assets/clips (`mixamorig:Head` → `mixamorig_Head`), with suffixes for collisions. Check the
 generated file in: it typechecks without the gitignored models. `run`/`build` **auto-regenerate**
 it when assets are added or change (mtime/set check against the header's `// files:` inventory) —
 but never when listed assets are merely missing from disk (unfetched clones/CI must not lose
@@ -281,12 +284,12 @@ path string is a check-time error and a runtime teaching error. (`Texture.file`,
 `{ "url": "https://…", "kind"?: "model"|"texture"|"sound" }` (`kind` only when the url's
 extension can't infer it; unknown keys warn). The manifest then carries the URL locator
 (`let shark = Asset.model("https://…/shark.glb")`), and `import` inspects remote models for
-clips by fetching ONCE through the same content-addressed disk cache the runtime uses
+clips and joints by fetching ONCE through the same content-addressed disk cache the runtime uses
 (`~/.functor/cache`, `FUNCTOR_ASSET_CACHE` override) — so import warms exactly the entry the
 game later loads, and reruns are offline-safe. A sidecar named after a local file is that
 asset's (future) per-asset config seat; if both declare (`url` + local file), the local file
 wins with a warning. Auto-reimport watches sidecar mtimes too, and a failed remote fetch
-during auto-reimport keeps the existing manifest (offline must not strip clip constants).
+during auto-reimport keeps the existing manifest (offline must not strip clip/joint constants).
 
 **Run a game's inline `expect` tests.** `test` typechecks the project (the `build` gate), then
 evaluates every `expect` in the entry and its siblings under the ENGINE prelude — headlessly, no

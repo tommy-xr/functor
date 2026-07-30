@@ -28,6 +28,8 @@ export interface Example {
   source: string;
   /** Explicitly disable the default captured game mouse input. */
   mouseCapture?: false;
+  /** Keep an absolute system pointer over the game surface. */
+  cursor?: "visible";
   /** Sibling .fun modules the project needs (`file = module`). */
   siblings?: ExampleCopy[];
   /** Local binary assets the project's `Asset.*` locators resolve to. */
@@ -56,7 +58,44 @@ export const EXAMPLES: Example[] = [
   { id: "orbit", label: "Orbit", source: "site/examples/orbit.fun" },
   // Single-file + a CORS-friendly CDN model (jsDelivr mirror of BabylonJS/Assets),
   // so the rigged character streams and animates in the single-buffer sandbox.
-  { id: "batteries", label: "Animation", source: "site/examples/batteries.fun" },
+  { id: "batteries", label: "Animation blend", source: "site/examples/batteries.fun" },
+  // The canonical head-look sample, paired with a site-only manifest whose
+  // model locator is the same Xbot asset on a CORS-friendly CDN.
+  {
+    id: "animation",
+    label: "Head look",
+    source: "examples/animation/game.fun",
+    cursor: "visible",
+    siblings: [
+      {
+        source: "site/examples/animation/assets.fun",
+        output: "examples/animation/assets.fun",
+      },
+    ],
+  },
+  // The canonical no-clips hand-posing sample and its checked-in SteamVR
+  // glove asset.
+  {
+    id: "glove",
+    label: "Hand posing",
+    source: "examples/glove/game.fun",
+    siblings: [
+      {
+        source: "examples/glove/assets.fun",
+        output: "examples/glove/assets.fun",
+      },
+    ],
+    assets: [
+      {
+        source: "examples/glove/vr_glove_model.glb",
+        output: "vr_glove_model.glb",
+      },
+      {
+        source: "examples/glove/LICENSE.steamvr",
+        output: "LICENSE.steamvr",
+      },
+    ],
+  },
   // The stress test: quadtree terrain, four tiled detail maps, instanced grass,
   // a physics heightfield and a walker. Detail maps are absolute Poly Haven
   // URLs because the desktop sample gitignores its fetched copies, so there is

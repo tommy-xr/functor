@@ -154,6 +154,11 @@ pub struct ModelReport {
     pub mesh_count: usize,
     /// Number of joints in the skeleton (0 if no skeleton).
     pub joint_count: i32,
+    /// Exact skeleton joint names in node-id order. Duplicate names are kept:
+    /// rotation selects the smallest matching id, masking selects every
+    /// matching subtree, and `functor import` warns and emits one constant
+    /// because the duplicates are not individually name-addressable.
+    pub joints: Vec<String>,
     pub has_skeleton: bool,
     pub animations: Vec<AnimationReport>,
     /// Model-space AABB of the static (bind-pose) mesh positions.
@@ -250,7 +255,13 @@ pub fn inspect_model(
 
     let has_skeleton = maybe_skeleton.is_some();
     let skeleton = maybe_skeleton.unwrap_or_else(Skeleton::empty);
-    let joint_count = skeleton.get_joint_count();
+    // `Skeleton::get_joint_count` is the sparse node-id upper bound used by
+    // transform arrays, not necessarily the number of populated joint nodes.
+    let joints = (0..skeleton.get_joint_count())
+        .filter_map(|joint_id| skeleton.get_joint_name(joint_id))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let joint_count = joints.len() as i32;
 
     let any_skinned = primitives.iter().any(|p| p.has_skinning);
 
@@ -330,6 +341,7 @@ pub fn inspect_model(
         nodes,
         mesh_count,
         joint_count,
+        joints,
         has_skeleton,
         animations: animation_reports,
         static_aabb,
@@ -713,6 +725,16 @@ mod tests {
         assert!(
             report.nodes.iter().any(|n| n.translation_nonzero),
             "expected at least one node with a non-zero translation"
+        );
+        assert!(
+            report.joints.iter().any(|name| name == "finger_index_0_r"),
+            "expected exact glove joint names in the report: {:?}",
+            report.joints
+        );
+        assert_eq!(
+            report.joint_count as usize,
+            report.joints.len(),
+            "reported count follows populated sparse joints"
         );
 
         // `translation_nonzero` is consistent with the reported translation, and
