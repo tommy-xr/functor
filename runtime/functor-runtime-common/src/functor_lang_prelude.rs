@@ -44,6 +44,8 @@
 //! Camera.toWorldRay(mouse, camera)                         -> Option<{ origin, direction }>
 //!   (top-left logical mouse coordinates through the authored perspective;
 //!    both fields are Vec3 values and direction is normalized)
+//! Anim.lookAt(joint, target, maxDeflection, weight, anim)  -> Anim
+//!   (post-pass aim of local +Z at a model-space Vec3 target)
 //! Frame.create(camera, scene)                               -> Frame
 //! Camera2D.create(width, height)                             -> Camera2D
 //! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
@@ -2940,8 +2942,9 @@ one with Asset.model/texture(…) first"
 }
 
 /// The Anim pose algebra — clip sampling, blending, the rest pose, additive
-/// layers, masks, and per-joint rotation. Playheads/weights are explicit in
-/// the values, so the pose stays a pure function of what the game derived.
+/// layers, masks, per-joint rotation, and model-space look-at. Playheads,
+/// targets, and weights are explicit in the values, so the pose stays a pure
+/// function of what the game derived.
 fn register_anim(reg: &mut crate::host_registry::Registry) {
     // A clip sample as a value: the named glTF clip at a playhead in seconds
     // (looping by the clip's duration). The playhead is explicit — derive it
@@ -3059,6 +3062,35 @@ additive local XYZ rotation";
             Ok(FunctorLangAnim(AnimExpr::Rotate {
                 joint,
                 euler: [x.0, y.0, z.0],
+                expr: Box::new(anim.0),
+            }))
+        },
+    );
+    // A pure post-pass over the expression beneath it: aim the joint's local
+    // +Z axis at a model-space target after clips/blends have settled. The
+    // explicit limit keeps arbitrary targets from producing unnatural full
+    // turns; the weight makes the correction blendable.
+    const LOOK_AT: &str = "Anim.lookAt(\"jointName\", target, maxDeflection, weight, anim) — \
+a non-empty joint name, model-space Vec3 target, Angle limit from 0 to 180 degrees, and weight";
+    reg.fn5(
+        "Anim.lookAt",
+        LOOK_AT,
+        |joint: String,
+         target: FunctorLangVec3,
+         max_deflection: FunctorLangAngle,
+         weight: f64,
+         anim: FunctorLangAnim| {
+            let max_deflection: cgmath::Rad<f32> = max_deflection.0.into();
+            if joint.is_empty()
+                || !(0.0..=std::f32::consts::PI).contains(&max_deflection.0)
+            {
+                return Err(format!("usage: {LOOK_AT}"));
+            }
+            Ok(FunctorLangAnim(AnimExpr::LookAt {
+                joint,
+                target: [target.0 .0, target.0 .1, target.0 .2],
+                max_angle: max_deflection.0,
+                weight: weight as f32,
                 expr: Box::new(anim.0),
             }))
         },
@@ -7387,8 +7419,8 @@ Anim.clip(\"walk\", tts)"
     }
 
     // The full pose algebra composes through pipes and lands on the Model
-    // node as nested AnimExpr data: rest |> rotate, masked blends, additive
-    // layers.
+    // node as nested AnimExpr data: rest |> rotate |> lookAt, masked blends,
+    // additive layers.
     #[test]
     fn anim_algebra_composes_and_serializes() {
         let value = eval(
@@ -7396,6 +7428,7 @@ Anim.clip(\"walk\", tts)"
              Scene.model(Asset.model(\"glove.glb\")) |> Scene.animate(\n\
                Anim.rest()\n\
                  |> Anim.rotate(\"finger_index_0_r\", Angle.degrees(45.0), Angle.degrees(0.0), Angle.degrees(0.0))\n\
+                 |> Anim.lookAt(\"finger_index_0_r\", Vec3.make(1.0, 2.0, 3.0), Angle.degrees(80.0), 0.75)\n\
                  |> Anim.mask([\"wrist_r\"])\n\
                  |> Anim.add(Anim.clip(\"wave\", 1.0), 0.5))",
         );
@@ -7420,8 +7453,22 @@ Anim.clip(\"walk\", tts)"
             panic!("expected a Mask base, got {base:?}");
         };
         assert_eq!(joints, &vec!["wrist_r".to_string()]);
+        let AnimExpr::LookAt {
+            joint,
+            target,
+            max_angle,
+            weight,
+            expr,
+        } = &**expr
+        else {
+            panic!("expected a LookAt inside the mask, got {expr:?}");
+        };
+        assert_eq!(joint, "finger_index_0_r");
+        assert_eq!(target, &[1.0, 2.0, 3.0]);
+        assert!((*max_angle - 80.0_f32.to_radians()).abs() < 1e-6);
+        assert!((*weight - 0.75).abs() < 1e-6);
         let AnimExpr::Rotate { joint, euler, expr } = &**expr else {
-            panic!("expected a Rotate inside the mask, got {expr:?}");
+            panic!("expected a Rotate inside LookAt, got {expr:?}");
         };
         assert_eq!(joint, "finger_index_0_r");
         assert!((euler[0] - 45.0_f32.to_radians()).abs() < 1e-6);
@@ -7449,6 +7496,37 @@ Anim.clip(\"walk\", tts)"
             failure.error.message.contains("Angle"),
             "message: {}",
             failure.error.message
+        );
+    }
+
+    #[test]
+    fn anim_look_at_enforces_spatial_and_angle_brands() {
+        for source in [
+            "let main = () => Anim.rest() |> Anim.lookAt(\"head\", { x: 0.0, y: 1.0, z: 2.0 }, Angle.degrees(80.0), 1.0)",
+            "let main = () => Anim.rest() |> Anim.lookAt(\"head\", Vec3.make(0.0, 1.0, 2.0), 1.4, 1.0)",
+        ] {
+            let module =
+                functor_lang::lower(functor_lang::parse(source).unwrap()).unwrap();
+            let failure =
+                functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                    .err()
+                    .expect("should fail");
+            assert!(
+                failure.error.message.contains("Vec3")
+                    || failure.error.message.contains("Angle"),
+                "message: {}",
+                failure.error.message
+            );
+        }
+    }
+
+    #[test]
+    fn anim_look_at_rejects_an_invalid_deflection_limit() {
+        assert_eq!(
+            fail_message(
+                "let main = () => Anim.rest() |> Anim.lookAt(\"head\", Vec3.make(0.0, 1.0, 2.0), Angle.degrees(181.0), 1.0)"
+            ),
+            "usage: Anim.lookAt(\"jointName\", target, maxDeflection, weight, anim) — a non-empty joint name, model-space Vec3 target, Angle limit from 0 to 180 degrees, and weight"
         );
     }
 

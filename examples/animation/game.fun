@@ -1,23 +1,25 @@
-// Locomotion blending + programmatic head-look — the `Scene.animate` /
-// `Anim.blend` / `Anim.rotate` demo.
+// Locomotion blending + model-space head look — the `Scene.animate` /
+// `Anim.blend` / `Anim.lookAt` demo.
 //
 // Xbot's idle/walk/run clips are mixed by a single speed parameter
 // (0 = idle, 0.5 = walk, 1 = run — a 1D blend space), and the head joint is
-// aimed with an additive `Anim.rotate` on top of the blend. The playheads,
-// weights, and head angles are derived here, in game code, from `tts` and
-// the model — the engine owns no animation clock, so scrubbing time-travel
-// replays the exact pose.
+// aimed at a model-space point after the blend has animated its whole parent
+// chain. The playheads, weights, and target are derived here, in game code,
+// from `tts` and the model — the engine owns no animation clock or hidden IK
+// state, so scrubbing time-travel replays the exact pose.
 //
 // Keys: 1 = idle, 2 = walk, 3 = run, 0 = auto-cycle (default). Speed eases
 // toward the target, so clip transitions crossfade smoothly. Move the mouse
 // to make the head follow the pointer (the auto mode sweeps it until then).
 
+let camera =
+  Camera.lookAt(Vec3.make(0.0, 1.4, -3.2), Vec3.make(0.0, 0.9, 0.0))
+
 let init = {
   speed: 0.0,
   target: 0.0,
   auto: true,
-  head: { yaw: 0.0, pitch: 0.0 },
-  surface: { width: 800.0, height: 600.0 },
+  headTarget: { x: 0.0, y: 1.55, z: 1.2 },
   pointerDrivesHead: false,
 }
 
@@ -32,21 +34,38 @@ let input = (model, key, isDown) =>
     | Key.Num0 => { model with auto: true, pointerDrivesHead: false }
     | _ => model
 
-// Sample the logical surface size alongside the pointer. Mouse position and
-// extent share one coordinate space on native + web, so this stays correct
-// across resizing and Retina/device-pixel-ratio changes.
-let sampledInput = (model, snapshot: Input.snapshot) =>
-  { model with surface: {
-      width: Math.max(1.0, snapshot.mouse.surfaceWidth),
-      height: Math.max(1.0, snapshot.mouse.surfaceHeight),
-    } }
+// Pick a point on a plane between the camera and Xbot, then undo the model's
+// 180-degree scene rotation: Anim.lookAt targets live in model space because
+// the animation evaluator intentionally knows nothing about Scene transforms.
+let pointerTarget = (mouse: Input.mouse) =>
+  match Camera.toWorldRay(mouse, camera) with
+  | Option.None => Option.None
+  | Option.Some(ray) =>
+    let dz = Vec3.z(ray.direction) in
+    match dz > 0.0001 with
+    | false => Option.None
+    | true =>
+      let distance = ((0.0 - 1.2) - Vec3.z(ray.origin)) / dz in
+      let worldTarget =
+        ray.origin |> Vec3.add(ray.direction |> Vec3.scale(distance)) in
+      Option.Some({
+        x: 0.0 - Vec3.x(worldTarget),
+        y: Vec3.y(worldTarget),
+        z: 0.0 - Vec3.z(worldTarget),
+      })
 
-// Pointer position -> head aim: the pointer's offset from the window center
-// becomes yaw/pitch targets, clamped to a natural range.
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  match model.pointerDrivesHead with
+  | false => model
+  | true =>
+    match pointerTarget(snapshot.mouse) with
+    | Option.None => model
+    | Option.Some(target) => { model with headTarget: target }
+
+// The edge handler only switches control modes. sampledInput owns the actual
+// ray conversion so the target is sampled deterministically at fixed steps.
 let mouseMove = (model, x, y) =>
-  let yaw = (Math.clamp01(x / model.surface.width) - 0.5) * 1.6 in
-  let pitch = (Math.clamp01(y / model.surface.height) - 0.5) * 0.9 in
-  { model with head: { yaw: yaw, pitch: pitch }, pointerDrivesHead: true }
+  { model with pointerDrivesHead: true }
 
 let tick = (model, dt, tts) =>
   // Auto mode sweeps the target through idle -> walk -> run and back.
@@ -55,12 +74,19 @@ let tick = (model, dt, tts) =>
      | true => (1.0 - Math.cos(tts * 0.6)) * 0.5
      | false => model.target) in
   let rate = Math.clamp01(dt * 4.0) in
-  // Until the pointer takes over, sweep the head so the look-at is visible.
-  let head =
+  // Until the pointer takes over, sweep a point in front of the character so
+  // the engine-side look-at remains obvious in a hands-off preview.
+  let headTarget =
     (match model.pointerDrivesHead with
-     | true => model.head
-     | false => { yaw: Math.sin(tts * 0.9) * 0.6, pitch: Math.sin(tts * 1.7) * 0.25 }) in
-  { model with speed: model.speed + (target - model.speed) * rate, head: head }
+     | true => model.headTarget
+     | false => {
+         x: Math.sin(tts * 0.9) * 0.9,
+         y: 1.55 + Math.sin(tts * 1.7) * 0.22,
+         z: 1.2,
+       }) in
+  { model with
+      speed: model.speed + (target - model.speed) * rate,
+      headTarget: headTarget }
 
 let absF = (x: float): float =>
   match x < 0.0 with
@@ -85,18 +111,20 @@ let locomotion = (s: float, tts: float): Anim.t =>
     (Anim.clip(Assets.xbotClips.run.name, tts), runWeight(s)),
   ])
 
-// The full pose: the locomotion blend with the head aimed on top — an
-// additive local rotation on the head joint (survives the blend beneath it).
+// The full pose: solve the head after locomotion has animated its spine.
+// local +Z is Xbot's authored facing axis; the explicit limit keeps targets
+// behind the character from producing a full turn.
 let pose = (model, tts) =>
   locomotion(model.speed, tts)
-    |> Anim.rotate(Assets.xbotJoints.mixamorig_Head,
-         Angle.radians(model.head.pitch),
-         Angle.radians(model.head.yaw),
-         Angle.radians(0.0))
+    |> Anim.lookAt(
+         Assets.xbotJoints.mixamorig_Head,
+         Vec3.make(model.headTarget.x, model.headTarget.y, model.headTarget.z),
+         Angle.degrees(75.0),
+         1.0)
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 1.4, -3.2), Vec3.make(0.0, 0.9, 0.0)),
+    camera,
     Scene.group([
       Scene.plane() |> Scene.scale(10.0) |> Scene.lit(Color.rgb(0.42, 0.47, 0.55)),
       // Xbot stands ~1.8 units tall, Y-up, at authored scale; glTF forward
@@ -104,6 +132,15 @@ let draw = (model, tts) =>
       Scene.model(Assets.xbot)
         |> Scene.animate(pose(model, tts))
         |> Scene.rotateY(Angle.degrees(180.0)),
+      // Show the target in world space. This applies the same 180-degree
+      // transform as the model so the marker and IK target stay coincident.
+      Scene.sphere()
+        |> Scene.scale(0.025)
+        |> Scene.emissive(Color.rgb(0.1, 0.95, 1.0))
+        |> Scene.translate(Vec3.make(
+             0.0 - model.headTarget.x,
+             model.headTarget.y,
+             0.0 - model.headTarget.z)),
     ]),
     [
       Light.ambient(Color.rgb(0.25, 0.25, 0.3)),
@@ -112,8 +149,8 @@ let draw = (model, tts) =>
 
 let ui = (model) =>
   Ui.column([
-    Ui.text("Anim.blend: idle / walk / run by speed + Anim.rotate head-look"),
+    Ui.text("Anim.blend: idle / walk / run + Anim.lookAt post-pass"),
     Ui.text(Text.concat("speed: ", Text.fixed(model.speed, 2.0))),
-    Ui.text(Text.concat("head yaw: ", Text.fixed(model.head.yaw, 2.0))),
+    Ui.text(Text.concat("target x: ", Text.fixed(model.headTarget.x, 2.0))),
     Ui.text("keys: 1 idle, 2 walk, 3 run, 0 auto — mouse aims the head"),
   ]) |> Ui.panel(Ui.topLeft())

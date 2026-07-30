@@ -12,6 +12,39 @@ pub struct JointPose {
     pub scale: Vector3<f32>,
 }
 
+impl JointPose {
+    pub(crate) fn from_transform(transform: Matrix4<f32>) -> Self {
+        let translation = transform.w.truncate();
+        let linear = Matrix3::from_cols(
+            transform.x.truncate(),
+            transform.y.truncate(),
+            transform.z.truncate(),
+        );
+        let scale = Vector3::new(
+            linear.x.magnitude(),
+            linear.y.magnitude(),
+            linear.z.magnitude(),
+        );
+        let rotation_matrix = Matrix3::from_cols(
+            linear.x / scale.x,
+            linear.y / scale.y,
+            linear.z / scale.z,
+        );
+
+        Self {
+            translation,
+            rotation: Quaternion::from(rotation_matrix),
+            scale,
+        }
+    }
+
+    pub(crate) fn transform(self) -> Matrix4<f32> {
+        Matrix4::from_translation(self.translation)
+            * Matrix4::from(self.rotation)
+            * Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z)
+    }
+}
+
 /// A skeleton-shaped set of local joint transforms in TRS form — what clip
 /// sampling produces and blending combines, before being applied back onto a
 /// [`Skeleton`] for skinning. Keyed by joint id (sparse, like `joint_info`).
@@ -60,34 +93,7 @@ impl Skeleton {
     pub fn base_pose(&self) -> Pose {
         let mut joints = HashMap::new();
         for (&joint_index, joint) in &self.joint_info {
-            // Extract translation (last column)
-            let translation = joint.transform.w.truncate();
-
-            // Extract the upper-left 3x3 matrix
-            let m = Matrix3::from_cols(
-                joint.transform.x.truncate(),
-                joint.transform.y.truncate(),
-                joint.transform.z.truncate(),
-            );
-
-            // Extract scale factors
-            let scale_x = m.x.magnitude();
-            let scale_y = m.y.magnitude();
-            let scale_z = m.z.magnitude();
-            let scale = Vector3::new(scale_x, scale_y, scale_z);
-
-            // Normalize the columns to get the rotation matrix, then a quaternion
-            let rotation_matrix = Matrix3::from_cols(m.x / scale_x, m.y / scale_y, m.z / scale_z);
-            let rotation = Quaternion::from(rotation_matrix);
-
-            joints.insert(
-                joint_index,
-                JointPose {
-                    translation,
-                    rotation,
-                    scale,
-                },
-            );
+            joints.insert(joint_index, JointPose::from_transform(joint.transform));
         }
         Pose { joints }
     }
@@ -125,9 +131,7 @@ impl Skeleton {
         let mut new_skeleton = self.clone();
         for (&joint_index, joint) in new_skeleton.joint_info.iter_mut() {
             if let Some(jp) = pose.joints.get(&joint_index) {
-                joint.transform = Matrix4::from_translation(jp.translation)
-                    * Matrix4::from(jp.rotation)
-                    * Matrix4::from_nonuniform_scale(jp.scale.x, jp.scale.y, jp.scale.z);
+                joint.transform = jp.transform();
             }
         }
         new_skeleton.joint_absolute_transform =
@@ -179,6 +183,16 @@ impl Skeleton {
             .get(&idx)
             .map(|m| m.transform)
             .unwrap_or(Matrix4::identity())
+    }
+
+    pub(crate) fn get_joint_parent_id(&self, idx: i32) -> Option<i32> {
+        self.joint_info.get(&idx).and_then(|joint| joint.parent)
+    }
+
+    pub(crate) fn get_joint_bind_pose(&self, idx: i32) -> Option<JointPose> {
+        self.joint_info
+            .get(&idx)
+            .map(|joint| JointPose::from_transform(joint.transform))
     }
 
     pub fn get_joint_absolute_transform(&self, idx: i32) -> Matrix4<f32> {

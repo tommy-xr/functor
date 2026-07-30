@@ -939,6 +939,18 @@ anim |> Anim.rotate("jointName", ax, ay, az)               // additive local XYZ
                                                            //   fully driven (masks BENEATH
                                                            //   this node can't drop it; an
                                                            //   enclosing mask still can)
+anim |> Anim.lookAt("jointName", target, maxAngle, weight)  // post-pass: aim the joint's local
+                                                           //   +Z axis at a MODEL-SPACE Vec3
+                                                           //   after the anim beneath it has
+                                                           //   settled (so blended/animated
+                                                           //   parents are included). maxAngle
+                                                           //   is an Angle in [0, 180°];
+                                                           //   weight clamps to [0,1]. The
+                                                           //   target is baked into the Anim
+                                                           //   value at draw time; Scene
+                                                           //   transforms are intentionally
+                                                           //   outside the solver, so invert
+                                                           //   them before constructing target
 Camera.lookAt(eye, target)                                 // two Vec3s; up=+Y, fov 45°
 Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles for the rest
                                                            //   On XR this is the authored

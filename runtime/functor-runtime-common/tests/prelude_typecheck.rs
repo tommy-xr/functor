@@ -77,6 +77,25 @@ fn camera_world_ray_checks_as_physics_cast_input() {
     );
 }
 
+/// Cursor rays can become model-space targets for the pure animation
+/// post-pass without unpacking the Vec3 at the animation boundary.
+#[test]
+fn camera_world_ray_checks_as_anim_look_at_input() {
+    let diags = check(
+        "let camera = Camera.lookAt(\n\
+           Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0))\n\
+         let aim = (mouse: Input.mouse): Anim.t =>\n\
+           match Camera.toWorldRay(mouse, camera) with\n\
+           | Option.Some(ray) => Anim.rest() |> Anim.lookAt(\n\
+               \"head\", ray.origin |> Vec3.add(ray.direction), Angle.degrees(80.0), 1.0)\n\
+           | Option.None => Anim.rest()",
+    );
+    assert!(
+        diags.is_empty(),
+        "Camera.toWorldRay should feed Anim.lookAt directly: {diags:?}"
+    );
+}
+
 /// Engine-owned `.fun` modules participate in the same typecheck as the host
 /// interfaces they build upon.
 #[test]

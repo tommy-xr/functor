@@ -17,7 +17,9 @@
 //! - `Mask` restricts an expression's influence to the subtrees rooted at
 //!   the named joints (per-finger poses, upper-body-only layers).
 //! - `Rotate` post-multiplies an additive local rotation onto one joint —
-//!   the programmatic per-joint control (head aim, finger curl).
+//!   the programmatic per-joint control (finger curl, authored offsets).
+//! - `LookAt` aims one joint's local +Z axis at a model-space target after
+//!   evaluating the expression below it.
 //!
 //! Evaluation carries a per-joint influence weight so `Mask` composes
 //! through `Blend`/`Add`: a joint no input drives falls back to the bind
@@ -25,7 +27,10 @@
 
 use std::collections::HashMap;
 
-use cgmath::{Euler, InnerSpace, Matrix4, Quaternion, Rad, Rotation, Vector3, Zero};
+use cgmath::{
+    Euler, InnerSpace, Matrix3, Matrix4, One, Quaternion, Rad, Rotation, SquareMatrix, Vector3,
+    Zero,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{JointPose, Model, Pose, Skeleton};
@@ -71,6 +76,16 @@ pub enum AnimExpr {
         joint: String,
         /// XYZ Euler angles in radians, applied in the joint's local frame.
         euler: [f32; 3],
+        expr: Box<AnimExpr>,
+    },
+    /// Aim one joint's local +Z axis at a model-space target after evaluating
+    /// `expr`. The shortest correction is clamped to `max_angle` radians and
+    /// blended by `weight`.
+    LookAt {
+        joint: String,
+        target: [f32; 3],
+        max_angle: f32,
+        weight: f32,
         expr: Box<AnimExpr>,
     },
 }
@@ -222,7 +237,139 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
             }
             inner
         }
+        AnimExpr::LookAt {
+            joint,
+            target,
+            max_angle,
+            weight,
+            expr,
+        } => {
+            let mut inner = eval(model, expr, on_warning);
+            match model.skeleton.joint_id_by_name(joint) {
+                Some(joint_id) => {
+                    apply_look_at(
+                        &model.skeleton,
+                        &mut inner,
+                        joint_id,
+                        Vector3::from(*target),
+                        *max_angle,
+                        *weight,
+                    );
+                }
+                None => on_warning(AnimWarning::MissingJoint(joint)),
+            }
+            inner
+        }
     }
+}
+
+/// Resolve one joint exactly as `finalize` would, without allocating a full
+/// pose. Look-at only needs the target joint and its ancestor chain, so this
+/// keeps the post-pass proportional to hierarchy depth.
+fn resolved_joint_pose(
+    skeleton: &Skeleton,
+    pose: &WeightedPose,
+    joint_id: i32,
+) -> Option<JointPose> {
+    match pose.joints.get(&joint_id) {
+        Some((joint, weight)) if *weight >= 1.0 => Some(*joint),
+        Some((joint, weight)) if *weight > 0.0 => {
+            let bind = skeleton.get_joint_bind_pose(joint_id)?;
+            Some(mix_joint(&bind, joint, *weight))
+        }
+        _ => skeleton.get_joint_bind_pose(joint_id),
+    }
+}
+
+struct ResolvedAbsolute {
+    transform: Matrix4<f32>,
+    parent_transform: Matrix4<f32>,
+}
+
+fn resolved_absolute(
+    skeleton: &Skeleton,
+    pose: &WeightedPose,
+    joint_id: i32,
+) -> Option<ResolvedAbsolute> {
+    let local = resolved_joint_pose(skeleton, pose, joint_id)?;
+    let parent_transform = match skeleton.get_joint_parent_id(joint_id) {
+        Some(parent_id) => {
+            let parent = resolved_absolute(skeleton, pose, parent_id)?;
+            parent.transform
+        }
+        None => Matrix4::one(),
+    };
+    Some(ResolvedAbsolute {
+        transform: parent_transform * local.transform(),
+        parent_transform,
+    })
+}
+
+fn scaled_shortest_arc(
+    from: Vector3<f32>,
+    to: Vector3<f32>,
+    rear_pole: Vector3<f32>,
+    max_angle: f32,
+    weight: f32,
+) -> Quaternion<f32> {
+    // At the exact antipode there are infinitely many shortest arcs. Supplying
+    // the joint's current up axis makes that otherwise singular choice stable:
+    // rearward targets turn around local up instead of whichever arbitrary
+    // world axis happens to survive the cross product.
+    let correction = Quaternion::from_arc(from, to, Some(rear_pole));
+    let angle = 2.0 * correction.s.clamp(-1.0, 1.0).acos();
+    if angle <= 1e-6 {
+        return Quaternion::one();
+    }
+    let fraction = (max_angle.max(0.0) / angle).min(1.0) * weight.clamp(0.0, 1.0);
+    Quaternion::one().slerp(correction, fraction)
+}
+
+fn apply_look_at(
+    skeleton: &Skeleton,
+    pose: &mut WeightedPose,
+    joint_id: i32,
+    target: Vector3<f32>,
+    max_angle: f32,
+    weight: f32,
+) {
+    if max_angle <= 0.0 || weight <= 0.0 {
+        return;
+    }
+    let Some(mut joint) = resolved_joint_pose(skeleton, pose, joint_id) else {
+        return;
+    };
+    let Some(absolute) = resolved_absolute(skeleton, pose, joint_id) else {
+        return;
+    };
+    let offset = target - absolute.transform.w.truncate();
+    if offset.magnitude2() <= 1e-12 {
+        return;
+    }
+
+    let parent_linear = Matrix3::from_cols(
+        absolute.parent_transform.x.truncate(),
+        absolute.parent_transform.y.truncate(),
+        absolute.parent_transform.z.truncate(),
+    );
+    let Some(parent_inverse) = parent_linear.invert() else {
+        return;
+    };
+    let desired_in_parent = parent_inverse * offset;
+    if desired_in_parent.magnitude2() <= 1e-12 {
+        return;
+    }
+    let current_in_parent = joint.rotation.rotate_vector(Vector3::unit_z());
+    let rear_pole = joint.rotation.rotate_vector(Vector3::unit_y());
+    let local_correction = scaled_shortest_arc(
+        current_in_parent,
+        desired_in_parent.normalize(),
+        rear_pole,
+        max_angle,
+        weight,
+    );
+    joint.rotation = (local_correction * joint.rotation).normalize();
+    pose.joints.insert(joint_id, (joint, 1.0));
 }
 
 fn full_weight(pose: Pose) -> WeightedPose {
@@ -625,6 +772,132 @@ mod tests {
         let expr = AnimExpr::Rotate {
             joint: "tail".to_string(),
             euler: [0.0, 0.0, 1.0],
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let mut missing = Vec::new();
+        let transforms = skinning_transforms(&model, &expr, &mut |warning| {
+            if let AnimWarning::MissingJoint(name) = warning {
+                missing.push(name.to_string());
+            }
+        });
+        assert_eq!(missing, vec!["tail".to_string()]);
+        assert_eq!(transforms[0], Matrix4::identity());
+    }
+
+    #[test]
+    fn look_at_aims_after_the_parent_pose_has_settled() {
+        let model = chain_model();
+        let expr = AnimExpr::LookAt {
+            joint: "hand".to_string(),
+            target: [0.0, 2.0, 0.0],
+            max_angle: std::f32::consts::PI,
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rotate {
+                joint: "arm".to_string(),
+                euler: [0.0, std::f32::consts::FRAC_PI_2, 0.0],
+                expr: Box::new(AnimExpr::Rest),
+            }),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let forward = transforms[2].z.truncate().normalize();
+        assert!(
+            (forward - Vector3::unit_y()).magnitude() < 1e-5,
+            "forward: {forward:?}"
+        );
+    }
+
+    #[test]
+    fn look_at_clamps_the_correction_and_blends_its_weight() {
+        let model = chain_model();
+        let expr = AnimExpr::LookAt {
+            joint: "hand".to_string(),
+            target: [1.0, 0.0, 0.0],
+            max_angle: 60.0_f32.to_radians(),
+            weight: 0.5,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let forward = transforms[2].z.truncate().normalize();
+        let angle = Vector3::unit_z().dot(forward).clamp(-1.0, 1.0).acos();
+        assert!(
+            (angle - 30.0_f32.to_radians()).abs() < 1e-5,
+            "angle: {} degrees",
+            angle.to_degrees()
+        );
+    }
+
+    #[test]
+    fn look_at_uses_joint_up_as_the_rear_singularity_pole() {
+        let max_angle = 60.0_f32.to_radians();
+        let expected = vec3(-max_angle.sin(), 0.0, max_angle.cos());
+
+        // Tiny floating-point jitter around the exact antipode must not choose
+        // opposite arbitrary axes and make a clamped head snap side-to-side.
+        for x in [-1e-8, 0.0, 1e-8] {
+            let target = vec3(x, 0.0, -1.0).normalize();
+            let correction = scaled_shortest_arc(
+                Vector3::unit_z(),
+                target,
+                Vector3::unit_y(),
+                max_angle,
+                1.0,
+            );
+            let forward = correction.rotate_vector(Vector3::unit_z());
+            assert!(
+                (forward - expected).magnitude() < 1e-5,
+                "target {target:?} produced {forward:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn look_at_aims_through_non_uniform_parent_scale() {
+        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 2]);
+        builder.add_joint(
+            0,
+            0,
+            "root".to_string(),
+            None,
+            Matrix4::from_nonuniform_scale(2.0, 1.0, 0.5),
+        );
+        builder.add_joint(
+            1,
+            1,
+            "head".to_string(),
+            Some(0),
+            Matrix4::from_translation(Vector3::unit_y()),
+        );
+        let model = Model {
+            meshes: vec![],
+            skeleton: builder.build(),
+            animations: vec![],
+        };
+        let expr = AnimExpr::LookAt {
+            joint: "head".to_string(),
+            // The joint is at (0,1,0), so the requested model-space
+            // direction is (1,1,0).
+            target: [1.0, 2.0, 0.0],
+            max_angle: std::f32::consts::PI,
+            weight: 1.0,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let transforms = skinning_transforms(&model, &expr, &mut no_warning);
+        let forward = transforms[1].z.truncate().normalize();
+        let expected = vec3(1.0, 1.0, 0.0).normalize();
+        assert!(
+            (forward - expected).magnitude() < 1e-5,
+            "forward: {forward:?}"
+        );
+    }
+
+    #[test]
+    fn look_at_on_unknown_joint_warns_and_is_ignored() {
+        let model = chain_model();
+        let expr = AnimExpr::LookAt {
+            joint: "tail".to_string(),
+            target: [0.0, 0.0, 1.0],
+            max_angle: std::f32::consts::FRAC_PI_2,
+            weight: 1.0,
             expr: Box::new(AnimExpr::Rest),
         };
         let mut missing = Vec::new();

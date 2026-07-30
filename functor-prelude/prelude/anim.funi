@@ -34,3 +34,11 @@ let mask : (List<string>, t) => t
 /// The joint is fully driven by this node; an enclosing mask can still exclude
 /// it.
 let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t
+
+/// Aim one joint's local +Z axis at a model-space target after evaluating the
+/// pose below it.
+///
+/// `maxDeflection` limits the shortest correction from the evaluated pose and
+/// must be between 0 and 180 degrees. `weight` is clamped to `0..1`. The joint
+/// is fully driven by this node; an enclosing mask can still exclude it.
+let lookAt : (string, Vec3.t, Angle.t, float, t) => t
