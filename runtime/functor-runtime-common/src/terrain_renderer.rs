@@ -698,7 +698,9 @@ impl TerrainRenderer {
             let debug_mode = match ctx.debug_render_mode {
                 DebugRenderMode::Normals => 1,
                 DebugRenderMode::Tangents => 2,
-                DebugRenderMode::Default | DebugRenderMode::Physics => 0,
+                DebugRenderMode::Default
+                | DebugRenderMode::Transparent
+                | DebugRenderMode::Physics => 0,
             };
             p.set_uniform_1i(gl, &u.debug_mode, debug_mode);
             gl.active_texture(glow::TEXTURE0 + MACRO_TEXTURE_UNIT as u32);
@@ -747,7 +749,9 @@ impl TerrainRenderer {
 
         if matches!(
             ctx.debug_render_mode,
-            DebugRenderMode::Default | DebugRenderMode::Physics
+            DebugRenderMode::Default
+                | DebugRenderMode::Transparent
+                | DebugRenderMode::Physics
         ) {
             if let Some(grass) = description.grass.as_ref() {
                 self.draw_grass(

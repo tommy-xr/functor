@@ -503,6 +503,8 @@ enum DebugRenderArg {
     Normals,
     /// Visualize world-space surface tangents as RGB.
     Tangents,
+    /// Draw the authored scene translucently so diagnostic lines remain visible.
+    Transparent,
     /// Normal shading plus the physics collider/contact wireframe overlay.
     Physics,
 }
@@ -513,6 +515,9 @@ impl From<DebugRenderArg> for functor_runtime_common::DebugRenderMode {
             DebugRenderArg::Default => functor_runtime_common::DebugRenderMode::Default,
             DebugRenderArg::Normals => functor_runtime_common::DebugRenderMode::Normals,
             DebugRenderArg::Tangents => functor_runtime_common::DebugRenderMode::Tangents,
+            DebugRenderArg::Transparent => {
+                functor_runtime_common::DebugRenderMode::Transparent
+            }
             DebugRenderArg::Physics => functor_runtime_common::DebugRenderMode::Physics,
         }
     }

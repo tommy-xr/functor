@@ -26,9 +26,10 @@ pub struct ShadowUniforms {
     pub light_index: i32,
 }
 
-/// Global override for how the scene is shaded — a debug aid, not a per-material
-/// choice. `Default` uses each node's own material; the others replace it with a
-/// diagnostic shader across the whole frame.
+/// Global override for how the scene is presented — a debug aid, not a
+/// per-material choice. `Default` uses each node's own material. Normal and
+/// tangent modes replace it with a diagnostic shader; transparent mode keeps
+/// authored shading but changes the scene pass's blending/depth policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DebugRenderMode {
     #[default]
@@ -39,6 +40,10 @@ pub enum DebugRenderMode {
     /// the guard for the tangent vertex attribute (glTF import + analytic
     /// generation), as `Normals` is for normals.
     Tangents,
+    /// Draw the nearest authored surface with constant-alpha blending, then
+    /// clear scene depth. Diagnostic lines rendered afterward remain opaque
+    /// and visible through the scene.
+    Transparent,
     /// Normal shading plus a physics wireframe overlay: the live world's
     /// colliders/contacts as colored lines (rapier's debug renderer via
     /// `physics::World::debug_lines`), making declared-vs-simulated divergence
@@ -56,6 +61,7 @@ impl DebugRenderMode {
             DebugRenderMode::Default => "default",
             DebugRenderMode::Normals => "normals",
             DebugRenderMode::Tangents => "tangents",
+            DebugRenderMode::Transparent => "transparent",
             DebugRenderMode::Physics => "physics",
         }
     }
@@ -67,6 +73,7 @@ impl DebugRenderMode {
             "default" => Some(DebugRenderMode::Default),
             "normals" => Some(DebugRenderMode::Normals),
             "tangents" => Some(DebugRenderMode::Tangents),
+            "transparent" => Some(DebugRenderMode::Transparent),
             "physics" => Some(DebugRenderMode::Physics),
             _ => None,
         }
@@ -83,6 +90,7 @@ mod tests {
             DebugRenderMode::Default,
             DebugRenderMode::Normals,
             DebugRenderMode::Tangents,
+            DebugRenderMode::Transparent,
             DebugRenderMode::Physics,
         ] {
             assert_eq!(DebugRenderMode::from_label(mode.label()), Some(mode));

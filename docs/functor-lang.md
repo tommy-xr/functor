@@ -327,8 +327,9 @@ snapshots — no GPU, fully agent-verifiable.
       The timeline also exposes a universal, shell-owned **Debug camera** while
       playing or paused—FPS/orbit navigation + WASD + Q/E for 3D/mixed frames,
       pan + wheel zoom for pure 2D. Its contextual drawer also offers normals,
-      tangents, physics, authored-frustum, FOV, and game-UI diagnostics. It
-      snapshots the authored view but
+      tangents, transparent authored materials, physics, authored-frustum, FOV,
+      and game-UI diagnostics, while omitting 3D-only controls for a pure 2D
+      frame. It snapshots the authored view but
       never changes the model, recorded input, replay, `GET /scene`, or the
       authored camera used by culling and render-target/portal passes. Escape
       releases pointer capture without discarding it; **Exit debug view**

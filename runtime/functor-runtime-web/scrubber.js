@@ -157,6 +157,7 @@ const STYLE = `
 #scrub-debug label {
   display: inline-flex; align-items: center; gap: 6px; color: var(--sb-dim);
 }
+#scrub-debug label[hidden] { display: none; }
 #scrub-debug select, #scrub-debug input[type="range"] {
   font: 12px/1 var(--sb-font); color: var(--sb-text);
   accent-color: var(--sb-accent); background: rgba(65, 216, 230, 0.10);
@@ -248,22 +249,23 @@ const HTML = `
       <select id="scrub-debug-mode">
         <option value="0">FPS</option>
         <option value="1">Orbit</option>
-        <option value="2">Pan 2D</option>
       </select>
+      <span id="scrub-debug-pan2d" hidden>Pan 2D</span>
     </label>
     <label id="scrub-debug-lens-label"><span id="scrub-debug-lens-name">FOV</span>
       <input id="scrub-debug-fov" type="range" min="15" max="120" step="1" value="60" />
       <output id="scrub-debug-lens">60°</output>
     </label>
-    <label>Material
+    <label id="scrub-debug-material-label">Material
       <select id="scrub-debug-material">
         <option value="0">Shaded</option>
+        <option value="3">Transparent</option>
         <option value="1">Normals</option>
         <option value="2">Tangents</option>
       </select>
     </label>
-    <label><input id="scrub-debug-physics" type="checkbox" /> Physics</label>
-    <label><input id="scrub-debug-frustum" type="checkbox" /> Authored frustum</label>
+    <label id="scrub-debug-physics-label"><input id="scrub-debug-physics" type="checkbox" /> Physics</label>
+    <label id="scrub-debug-frustum-label"><input id="scrub-debug-frustum" type="checkbox" /> Authored frustum</label>
     <label><input id="scrub-debug-game-ui" type="checkbox" checked /> Game UI</label>
     <button id="scrub-debug-reset" type="button">Reset</button>
   </section>`;
@@ -318,12 +320,16 @@ export function mountScrubber({ hidden = false } = {}) {
   const win = $("scrub-win");
   const rate = $("scrub-rate");
   const debugMode = $("scrub-debug-mode");
+  const debugPan2d = $("scrub-debug-pan2d");
   const debugFov = $("scrub-debug-fov");
   const debugLensName = $("scrub-debug-lens-name");
   const debugLens = $("scrub-debug-lens");
   const debugMaterial = $("scrub-debug-material");
+  const debugMaterialLabel = $("scrub-debug-material-label");
   const debugPhysics = $("scrub-debug-physics");
+  const debugPhysicsLabel = $("scrub-debug-physics-label");
   const debugFrustum = $("scrub-debug-frustum");
+  const debugFrustumLabel = $("scrub-debug-frustum-label");
   const debugGameUi = $("scrub-debug-game-ui");
   const debugReset = $("scrub-debug-reset");
 
@@ -633,7 +639,8 @@ export function mountScrubber({ hidden = false } = {}) {
       const debug = debugCamera();
       debugMode.value = String(debug.mode);
       const pan2d = debug.mode === 2;
-      debugMode.disabled = pan2d;
+      debugMode.hidden = pan2d;
+      debugPan2d.hidden = !pan2d;
       debugFov.hidden = pan2d;
       debugLensName.textContent = pan2d ? "Zoom" : "FOV";
       if (pan2d) {
@@ -644,11 +651,11 @@ export function mountScrubber({ hidden = false } = {}) {
         debugLens.value = `${Math.round(fov)}°`;
       }
       debugMaterial.value = String(debug.material);
-      debugMaterial.disabled = pan2d;
+      debugMaterialLabel.hidden = pan2d;
       debugPhysics.checked = debug.physics;
-      debugPhysics.disabled = pan2d;
+      debugPhysicsLabel.hidden = pan2d;
       debugFrustum.checked = debug.authoredFrustum;
-      debugFrustum.disabled = pan2d;
+      debugFrustumLabel.hidden = pan2d;
       debugGameUi.checked = debug.gameUi;
     }
     extrapolate.classList.toggle("on", state.preview.enabled);

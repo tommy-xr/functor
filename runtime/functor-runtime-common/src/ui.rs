@@ -1106,15 +1106,16 @@ impl Scrubber {
                                         action = Some(ScrubberAction::ResetDebugCamera);
                                     }
                                 });
-                                ui.horizontal(|ui| {
-                                    let diagnostics_3d = !matches!(
-                                        state.camera_mode,
-                                        Some(crate::viewer::DebugCameraMode::Pan2d)
-                                    );
-                                    ui.add_enabled_ui(diagnostics_3d, |ui| {
+                                let diagnostics_3d = !matches!(
+                                    state.camera_mode,
+                                    Some(crate::viewer::DebugCameraMode::Pan2d)
+                                );
+                                if diagnostics_3d {
+                                    ui.horizontal(|ui| {
                                         ui.label("Material");
                                         for material in [
                                             crate::viewer::DebugMaterialMode::Shaded,
+                                            crate::viewer::DebugMaterialMode::Transparent,
                                             crate::viewer::DebugMaterialMode::Normals,
                                             crate::viewer::DebugMaterialMode::Tangents,
                                         ] {
@@ -1144,6 +1145,8 @@ impl Scrubber {
                                             );
                                         }
                                     });
+                                }
+                                ui.horizontal(|ui| {
                                     ui.separator();
                                     let mut game_ui = state.debug_presentation.show_game_ui;
                                     if ui.checkbox(&mut game_ui, "Game UI").changed() {

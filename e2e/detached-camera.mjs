@@ -152,6 +152,28 @@ try {
     await page.waitForFunction(
       () => getComputedStyle(document.querySelector("#scrub-debug")).display !== "none"
     );
+    if (
+      !(await page.evaluate(() => {
+        const modes = [...document.querySelector("#scrub-debug-mode").options].map(
+          (option) => option.value
+        );
+        const materials = [...document.querySelector("#scrub-debug-material").options].map(
+          (option) => option.value
+        );
+        const visible = (selector) =>
+          document.querySelector(selector).getClientRects().length > 0;
+        return (
+          modes.join(",") === "0,1" &&
+          materials.includes("3") &&
+          !visible("#scrub-debug-pan2d") &&
+          visible("#scrub-debug-material-label") &&
+          visible("#scrub-debug-physics-label") &&
+          visible("#scrub-debug-frustum-label")
+        );
+      }))
+    ) {
+      throw new Error("3D drawer exposed Pan 2D or hid applicable diagnostics");
+    }
     await page.evaluate(() =>
       window.__scrub.setDebugCamera({ mode: 1, authoredFrustum: true })
     );
@@ -164,8 +186,17 @@ try {
       throw new Error("authored-camera frustum overlay did not change rendered pixels");
     }
     await page.evaluate(() =>
-      window.__scrub.setDebugCamera({ material: 1, physics: true })
+      window.__scrub.setDebugCamera({ material: 3, physics: true })
     );
+    await page.waitForFunction(() => {
+      const debug = window.__scrub.debugCamera();
+      return debug.material === 3 && debug.physics;
+    });
+    const transparent = await page.locator("#canvas").screenshot();
+    if (frustumOnly.equals(transparent)) {
+      throw new Error("transparent debug material did not change rendered pixels");
+    }
+    await page.evaluate(() => window.__scrub.setDebugCamera({ material: 1 }));
     await page.waitForFunction(() => {
       const debug = window.__scrub.debugCamera();
       return (
@@ -539,13 +570,28 @@ try {
     const authored2d = await page.locator("#canvas").screenshot();
     await page.evaluate(() => window.__scrub.toggleDetached());
     await page.waitForFunction(() => window.__scrub.detached());
+    await page.waitForFunction(() => {
+      const modes = [...document.querySelector("#scrub-debug-mode").options].map(
+        (option) => option.value
+      );
+      const visible = (selector) =>
+        document.querySelector(selector).getClientRects().length > 0;
+      return (
+        modes.join(",") === "0,1" &&
+        !visible("#scrub-debug-mode") &&
+        visible("#scrub-debug-pan2d") &&
+        !visible("#scrub-debug-material-label") &&
+        !visible("#scrub-debug-physics-label") &&
+        !visible("#scrub-debug-frustum-label")
+      );
+    });
     if (
       !(await page.evaluate(() => {
         const debug = window.__scrub.debugCamera();
         return debug.mode === 2 && debug.fov < 0 && debug.zoom2d > 0;
       }))
     ) {
-      throw new Error("pure 2D debug view did not publish Pan 2D/zoom controls");
+      throw new Error("pure 2D drawer did not isolate Pan 2D/zoom controls");
     }
     await page.evaluate(() => {
       window.__scrub.lookDetached(120, -55);
@@ -587,6 +633,13 @@ try {
     const physicsOn = await page.locator("#canvas").screenshot();
     if (physicsOff.equals(physicsOn)) {
       throw new Error("web physics debug overlay did not change rendered pixels");
+    }
+    await page.evaluate(() => window.__scrub.setDebugCamera({ material: 3 }));
+    await page.waitForFunction(() => window.__scrub.debugCamera().material === 3);
+    await page.waitForTimeout(120);
+    const transparentPhysics = await page.locator("#canvas").screenshot();
+    if (physicsOn.equals(transparentPhysics)) {
+      throw new Error("transparent material did not reveal a distinct physics debug view");
     }
 
     // The sandbox's replacement control is also universal and live-capable.
@@ -649,6 +702,25 @@ try {
         debug?.authoredFrustum
       );
     });
+    if (
+      !(await page.evaluate(() => {
+        const modes = [...document.querySelector("#mp-debug-mode").options].map(
+          (option) => option.value
+        );
+        const materials = [...document.querySelector("#mp-debug-material").options].map(
+          (option) => option.value
+        );
+        const visible = (selector) =>
+          document.querySelector(selector).getClientRects().length > 0;
+        return (
+          modes.join(",") === "0,1" &&
+          materials.includes("3") &&
+          !visible("#mp-debug-pan2d")
+        );
+      }))
+    ) {
+      throw new Error("sandbox drawer exposed Pan 2D in 3D or omitted transparency");
+    }
     if (
       !(await page.evaluate(() => {
         const iframe = document.querySelector("#player");
