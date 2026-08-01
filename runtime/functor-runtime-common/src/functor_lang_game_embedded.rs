@@ -729,6 +729,20 @@ impl GameProducer for FunctorLangEmbeddedGame {
         self.recorder.current_scene_frame_tts()
     }
 
+    /// Backward-trailing (docs/time-travel.md T6e) — delegated to the shared
+    /// producer body (`functor_lang_producer::history_frames`), identical to
+    /// the other producers.
+    fn history_frames(&self, divisions: usize, dt: f32) -> Vec<(Frame, FrameTime)> {
+        crate::functor_lang_producer::history_frames(
+            &self.session,
+            &self.recorder,
+            &self.physics_rt,
+            self.has_physics,
+            divisions,
+            dt,
+        )
+    }
+
     /// Forward-ghosting (docs/time-travel.md T6d) — delegated to the shared
     /// producer body (`functor_lang_producer::ghost_frames`), identical to the
     /// other producers.

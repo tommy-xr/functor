@@ -252,6 +252,26 @@ pub trait GameProducer {
         Vec::new()
     }
 
+    /// Reconstruct the RECORDED past over a window of `divisions` divisions,
+    /// each `dt` seconds wide, ending at the currently selected frame — the
+    /// backward trail (docs/time-travel.md T6e), and the mirror of
+    /// [`Self::ghost_frames`]. Nothing is simulated: each frame is a recorded
+    /// model redrawn at its recorded `tts` against its recorded physics world,
+    /// so the backward side is fact, not projection.
+    ///
+    /// Frames come back NEAREST-PAST-FIRST (`[t-1, t-2, …]`), each paired with
+    /// the [`crate::FrameTime`] it was drawn at, so a shell can diff them
+    /// against the live frame exactly as it does the forward ghosts. The window
+    /// CLIPS at the oldest recorded frame rather than extrapolating past it.
+    /// The default is empty (no history) for producers without a model history.
+    fn history_frames(
+        &self,
+        _divisions: usize,
+        _dt: f32,
+    ) -> Vec<(crate::Frame, crate::FrameTime)> {
+        Vec::new()
+    }
+
     /// Seek the whole scene to a rendered frame for DISPLAY, WITHOUT branching
     /// (docs/time-travel.md T3, the draggable scrubber): restore model + world
     /// so the user can scrub back and forth freely while paused. The future is

@@ -371,6 +371,52 @@ them with weights (K=2 at 0.5/0.5 from two branches). Forward-stepping and
 compositing remain independent — the forward-sim (`ghost_frames`) feeds the
 scene-space overlays directly.
 
+### Both directions at once — the backward trail (T6e)
+
+Extrapolation is **bidirectional**. With 🔮 on, the preview shows one
+**symmetric window**: the same number of seconds *behind* the playhead as ahead
+of it. The two halves are not the same kind of thing, and the UI says so:
+
+- **Forward is projection.** The future half is simulated by `ghost_frames`, and
+  it is a guess — right only as far as the replayed inputs and the current code
+  are.
+- **Backward is fact.** The past half is *reconstructed*, never simulated, by
+  `history_frames`: it seeks the recorder's rings, and re-`draw`s each recorded
+  model at its own recorded `tts` with that frame's recorded physics world
+  scoped active. Nothing is re-stepped, so the marks land exactly where the game
+  actually was — the same `DryWorld` discipline forward-ghosting uses for
+  projected worlds, restoring recorded snapshots instead of stepped ones.
+
+**Color carries the direction.** Past marks and strobe copies are **cyan**
+(the scrubber rail's accent), future ones **pink** (the rail's future segment) —
+so the scene and the timeline agree about which way is which. Trail arrowheads
+take the flat side color. Strobe copies are real geometry in the *mover's own*
+material, so the direction tint has to **dominate** — at a light tint, past and
+future copies of one object are indistinguishable and the two directions read as
+a single muddy cloud. The tint keeps only a small fraction of the source color
+(weight 0.8), enough to hint at what the copy is a copy of. Arrowheads on the
+past side point along the *direction of travel* (i.e. toward the playhead), so
+past and future read as one continuous flow through the present rather than two
+trails pointing away from each other.
+
+The backward window **clips, it does not extrapolate**: it stops at the oldest
+recorded frame, and at the striped region an unsafe reload left unavailable. A
+5-second window over 1 second of history simply shows 1 second, with the clipped
+frame count surfaced on the handle exactly as the forward side already does at
+the right edge.
+
+Both scrubbers grow a mirrored endpoint handle, and **either handle sets the one
+shared window** — drag one side and both resize. The seam is unchanged:
+`setPreview({ enabled, seconds, rate, mode })` still takes one `seconds`, now
+read as the per-side window.
+
+**Cost.** The past half is one `draw` per division with no simulation, so it is
+strictly cheaper than the forward half. It shares the forward side's cache, keyed
+on the selected frame, window, rate, program revision, and timeline generation —
+so a paused scrub (the hot case) recomputes only when something actually changes,
+and live play refreshes both directions together on the same ~10 Hz cadence, never
+per frame.
+
 ## Deferred follow-ups: keep and reconstruct the old future
 
 Today's stripe after Resume has a specific meaning: the selected frame became a

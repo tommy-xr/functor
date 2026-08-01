@@ -754,6 +754,22 @@ impl SceneRecorder {
         self.model_history.recorded_range()
     }
 
+    /// A recorded frame's model, `tts`, and end-of-frame physics fixed frame —
+    /// the three coupled rings, read WITHOUT seeking anything. `None` outside
+    /// the recorded range (the rings clamp on `seek`, which would silently
+    /// hand back the wrong frame). The backward preview
+    /// (docs/time-travel.md T6e) reconstructs past frames from exactly this.
+    pub fn recorded_frame(&self, frame: Frame) -> Option<(&Value, f64, u64)> {
+        let (lo, hi) = self.model_history.recorded_range()?;
+        (frame >= lo && frame <= hi).then(|| {
+            (
+                self.model_history.seek(frame),
+                *self.tts_history.seek(frame),
+                *self.world_frame_history.seek(frame),
+            )
+        })
+    }
+
     /// If play resumes (`dts > 0`) while parked on an earlier frame, branch the
     /// timeline from there BEFORE the frame advances. Call at the top of `tick`.
     /// Returns `true` if a branch was committed, so the producer can drop any

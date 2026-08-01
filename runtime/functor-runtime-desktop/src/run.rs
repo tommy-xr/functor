@@ -1539,7 +1539,7 @@ Escape releases while captured"
         const PAUSED_PREVIEW_REUSE_FRAMES: u32 = 30;
         const LIVE_PREVIEW_INTERVAL_SECONDS: f32 = 0.1;
         let mut trail_cache: Option<(
-            (Option<u64>, u32, bool, u64, bool, bool, usize, u32),
+            (Option<u64>, u32, bool, u64, bool, bool, usize, u32, u64),
             functor_runtime_common::FramePreview,
         )> = None;
         let mut trail_refresh: u32 = 0;
@@ -2498,6 +2498,10 @@ Escape again to quit"
                     strobe_wanted,
                     divisions,
                     window.to_bits(),
+                    // The BACKWARD side reads recorded history, so a branch or
+                    // a reload that rewrites the rings invalidates it even
+                    // when frame + program are unchanged.
+                    game.scene_timeline_generation(),
                 );
                 let interactive_live = scrubber_visible && !clock.is_paused();
                 let cache_hit = trail_cache.as_ref().is_some_and(|(k, _)| {
@@ -2510,6 +2514,7 @@ Escape again to quit"
                             && k.5 == key.5
                             && k.6 == key.6
                             && k.7 == key.7
+                            && k.8 == key.8
                     } else {
                         trail_refresh > 0 && *k == key
                     }
@@ -2557,6 +2562,13 @@ Escape again to quit"
                                 copies: strobe_copies,
                                 ..Default::default()
                             }),
+                            // One SYMMETRIC window: `window` seconds of recorded
+                            // past as well as projected future
+                            // (docs/time-travel.md T6e). The past side costs one
+                            // draw per division with no simulation, and shares
+                            // this cache — so live play redraws it on the same
+                            // ~10 Hz cadence as the forward sim, never per frame.
+                            backward: true,
                         },
                     );
                     if interactive_live {

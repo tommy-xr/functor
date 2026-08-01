@@ -994,6 +994,20 @@ impl Game for FunctorLangGame {
         )
     }
 
+    /// Backward-trailing (docs/time-travel.md T6e) — the recorded mirror of
+    /// `ghost_frames`, delegated to the same shared producer body so both
+    /// shells reconstruct the past through one impl.
+    fn history_frames(&self, divisions: usize, dt: f32) -> Vec<(Frame, FrameTime)> {
+        functor_runtime_common::functor_lang_producer::history_frames(
+            &self.session,
+            &self.recorder,
+            &self.physics_rt,
+            self.has_physics,
+            divisions,
+            dt,
+        )
+    }
+
     /// Non-destructive scrub — delegated to the shared [`SceneRecorder`]
     /// (docs/time-travel.md T3): restore model + world for display without
     /// truncating, so the draggable bar can seek back and forth.
@@ -3116,6 +3130,116 @@ mod tests {
         assert!(
             (game.last_frame.scene.xform.w.y - paused_y).abs() < 1e-6,
             "live frame untouched by ghosting"
+        );
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The BACKWARD trail on a PHYSICS game (docs/time-travel.md T6e), the
+    /// mirror of the ghost test above. Nothing is simulated: every returned
+    /// frame must reproduce a RECORDED frame byte-for-byte — the recorded
+    /// model, drawn at that frame's recorded `tts`, against that frame's
+    /// recorded physics world. So the ball's `Physics.transformed` y in each
+    /// past frame must equal EXACTLY the y that frame rendered when it was
+    /// live, and the window must clip at the ring's floor instead of inventing
+    /// history. The live world and model stay untouched.
+    #[test]
+    fn history_frames_replay_recorded_models_and_physics_poses() {
+        physics::remove_world(physics::DEFAULT_WORLD);
+
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-hist-phys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.fun"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => m\n\
+             let physics = (m) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
+             \x20 Physics.fixed(\"ground\", Physics.box(10.0, 0.4, 10.0)) |> Physics.at(Vec3.make(0.0, -0.2, 0.0)),\n\
+             \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 4.0, 0.0))])\n\
+             let draw = (m, tts) => Frame.create(\n\
+               Camera.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(tts, 0.0, 0.0)),\n\
+               Scene.sphere() |> Physics.transformed(\"ball\"))\n",
+        )
+        .expect("write game");
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
+
+        // Drive the fall, keeping the y each frame ACTUALLY rendered — the
+        // oracle the reconstruction has to match bit-for-bit.
+        const SUB_DT: f32 = 1.0 / 60.0;
+        const K: usize = 20;
+        let mut tts = 0.0f32;
+        let mut live_ys: Vec<(f32, f32)> = Vec::new();
+        for _ in 0..K {
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+            game.render(FrameTime { tts, dts: SUB_DT });
+            live_ys.push((tts, game.last_frame.scene.xform.w.y));
+        }
+        let paused_y = game.last_frame.scene.xform.w.y;
+        let live_world_before = physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot());
+
+        const DIVISIONS: usize = 4;
+        const DT: f32 = 2.0 / 60.0;
+        let past = game.history_frames(DIVISIONS, DT);
+        assert_eq!(past.len(), DIVISIONS, "one frame per division");
+
+        for (i, (frame, ft)) in past.iter().enumerate() {
+            assert_eq!(ft.dts, 0.0, "a past frame is a still of the past");
+            // Every frame must BE a recorded frame — same tts, and the exact
+            // same rendered pose. A live-world draw would put them all at
+            // `paused_y`; a re-simulated one would drift off the recorded
+            // float.
+            let (rec_tts, rec_y) = live_ys
+                .iter()
+                .find(|(t, _)| (t - ft.tts).abs() < 1e-9)
+                .copied()
+                .unwrap_or_else(|| panic!("frame {i} tts {} is not a recorded tts", ft.tts));
+            assert_eq!(
+                frame.scene.xform.w.y, rec_y,
+                "past frame {i} (tts {rec_tts}) must reproduce the recorded pose exactly"
+            );
+            // The authored camera is drawn from the RECORDED tts too.
+            assert!((frame.camera.eye[0] - ft.tts).abs() < 1e-6);
+        }
+
+        // Nearest-past-FIRST, walking away from the anchor: a falling ball was
+        // HIGHER the further back you look.
+        let ys: Vec<f32> = past.iter().map(|(f, _)| f.scene.xform.w.y).collect();
+        assert!(ys[0] > paused_y, "the nearest past is above the live pose");
+        for pair in ys.windows(2) {
+            assert!(pair[1] > pair[0], "further back = higher: {ys:?}");
+        }
+
+        // The window CLIPS at the ring's floor rather than inventing history:
+        // 60 divisions of 2 frames each reaches far past the 20 recorded
+        // frames, so the walk stops at `lo`.
+        let (lo, _hi) = game.scene_frame_range().expect("a recorded range");
+        let clipped = game.history_frames(60, DT);
+        assert!(
+            clipped.len() < 60 && clipped.len() <= K,
+            "a window longer than history clips: {} frames",
+            clipped.len()
+        );
+        let oldest = clipped.last().expect("at least one past frame").1.tts;
+        let lo_tts = live_ys[lo as usize].0;
+        assert!(
+            (oldest - lo_tts).abs() < 1e-6,
+            "the oldest reconstructed frame is the ring floor: {oldest} vs {lo_tts}"
+        );
+
+        // Reconstruction is READ-ONLY: the live world and live frame are
+        // exactly as they were.
+        assert_eq!(
+            physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()),
+            live_world_before,
+            "live world untouched by history reconstruction"
+        );
+        assert_eq!(
+            game.last_frame.scene.xform.w.y, paused_y,
+            "live frame untouched by history reconstruction"
         );
 
         physics::remove_world(physics::DEFAULT_WORLD);

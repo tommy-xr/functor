@@ -106,6 +106,30 @@ impl SteppedPhysics {
         with_world(self.world, |w| w.checkpoint())
     }
 
+    /// Restore recorded fixed `frame` into `dest` — a THROWAWAY world — and
+    /// return its byte-exact checkpoint, without touching the live world, the
+    /// live driver, or the timeline. The backward preview
+    /// (docs/time-travel.md T6e) reconstructs each past rendered frame's world
+    /// this way, so past `draw`s read RECORDED poses instead of the live ones.
+    /// `false` when the frame is outside the seekable range (pruned, or
+    /// nothing stepped yet) or `dest` does not exist — the caller then draws
+    /// without a scoped world rather than against a wrong one.
+    pub fn restore_recorded_into(&self, frame: u64, dest: WorldId) -> bool {
+        let Some((lo, hi)) = self.seekable_range() else {
+            return false;
+        };
+        if frame < lo || frame > hi {
+            return false;
+        }
+        with_world(dest, |w| {
+            self.timeline.restore_into(frame, w);
+            // The replayed steps re-emit events/warnings nobody should re-observe.
+            let _ = w.take_events();
+            let _ = w.take_command_warnings();
+        })
+        .is_some()
+    }
+
     /// One rendered frame's worth of recorded physics: simulate whole fixed
     /// substeps from `real_dt`, recording each through the Timeline. The
     /// declared `scene` reconciles on the frame's first recorded substep —
