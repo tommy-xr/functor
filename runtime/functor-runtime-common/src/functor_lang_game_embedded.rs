@@ -320,7 +320,7 @@ impl FunctorLangEmbeddedGame {
         journal_arm();
         let source_hashes = inspector_sources(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
-        Ok(FunctorLangEmbeddedGame {
+        let mut game = FunctorLangEmbeddedGame {
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_log),
             last_frame_journal: Vec::new(),
             journal_ring: std::collections::VecDeque::new(),
@@ -363,7 +363,11 @@ impl FunctorLangEmbeddedGame {
             webview_handlers: Vec::new(),
             last_frame: empty_frame(),
             platform,
-        })
+        };
+        // Cold start (docs/physics.md): declare the initial world before the
+        // first frame, so frame 1's physics reads answer instead of raising.
+        game.ctx().prime_physics();
+        Ok(game)
     }
 
     /// Swap in a freshly loaded program, KEEPING THE MODEL — the desktop
@@ -523,6 +527,10 @@ impl FunctorLangEmbeddedGame {
         self.input_buf.clear();
         self.last_frame = empty_frame();
         self.reporter.reset();
+        // A reset is a cold start: the model is `init` again and the world was
+        // removed, so re-prime it (a hot reload deliberately does NOT — there
+        // the world, like the model, survives).
+        self.ctx().prime_physics();
         self.platform.on_reload();
     }
 

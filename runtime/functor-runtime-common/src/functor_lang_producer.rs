@@ -36,7 +36,7 @@ use crate::functor_lang_prelude::{
     perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
     sub_messages_for_frame, take_audio_completion, take_http_tagger, take_preload_completion,
     take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree, FunctorHost,
-    NetEventKind, UiHandler,
+    NetEventKind, PrimingScope, UiHandler,
 };
 use crate::input::RecordedInput;
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
@@ -1290,14 +1290,22 @@ to receive their messages; dropping them",
     /// fixed substeps. Runs after `tick` so declarations come from the settled
     /// model, and before `render` so `Physics.position`/`Physics.transformed`
     /// in `draw` read the just-stepped world. Returns the number of fixed
-    /// substeps taken (0 when there is no `physics` hook, the hook errored, or
-    /// the accumulator hasn't reached a full step yet).
+    /// substeps taken (0 when there is no `physics` hook or the accumulator
+    /// hasn't reached a full step yet).
+    ///
+    /// A hook that ERRORS (or returns something that is not a `Physics.scene`)
+    /// DEGRADES rather than wedging the game: the world keeps the previous
+    /// frame's declaration and keeps stepping, and the teaching error is
+    /// surfaced once — the same discipline as hot-reload's broken edit, which
+    /// keeps the old program running. Wedging is the alternative this replaces:
+    /// zero steps means the declaration is never reconciled, so every later
+    /// read raises too, forever.
     fn step_physics(&mut self, dts: f32) -> u32 {
         if !self.has_physics {
             return 0;
         }
         let args = vec![self.model.clone()];
-        match self
+        let degraded = match self
             .session
             .call(self.names.physics, args, &mut FunctorHost)
         {
@@ -1306,19 +1314,66 @@ to receive their messages; dropping them",
                     // The recorded drive (Phase 6): every fixed frame goes
                     // through the Timeline, so pause/rewind/replay work.
                     let advanced = self.physics_rt.advance(scene, dts);
-                    *self.pending_events = advanced.events;
-                    *self.physics_frame = advanced.frame;
-                    let steps = advanced.steps;
-                    let warnings = advanced.warnings;
-                    // Command effects apply asynchronously (queued at perform
-                    // time, applied at the step), so their problems — unknown
-                    // tag, queue overflow — surface here, deduped.
-                    for warning in warnings {
-                        self.reporter
-                            .report_once(format!("[functor-lang] {warning}"));
-                    }
-                    return steps;
+                    return self.absorb_advance(advanced);
                 }
+                None => format!(
+                    "[functor-lang] physics must return Physics.scene(gravity, [body, …]), got {}",
+                    value.kind_name()
+                ),
+            },
+            Err(err) => self.reporter.render_frame_error(self.names.physics, &err),
+        };
+        self.reporter.report_once(format!(
+            "{degraded} — keeping the previous frame's declared world and stepping it. \
+The `physics` hook is a pure DECLARATION; physics reads inside it answer with the \
+LAST stepped world, so a read of a tag this hook has never declared still raises."
+        ));
+        let advanced = self.physics_rt.advance_undeclared(dts);
+        self.absorb_advance(advanced)
+    }
+
+    /// Take one [`physics::Advanced`]'s outputs into per-frame state, returning
+    /// the substeps simulated. Command effects apply asynchronously (queued at
+    /// perform time, applied at the step), so their problems — unknown tag,
+    /// queue overflow — surface here, deduped.
+    fn absorb_advance(&mut self, advanced: physics::Advanced) -> u32 {
+        *self.pending_events = advanced.events;
+        *self.physics_frame = advanced.frame;
+        for warning in advanced.warnings {
+            self.reporter
+                .report_once(format!("[functor-lang] {warning}"));
+        }
+        advanced.steps
+    }
+
+    /// Prime the world from the INITIAL model — once, at session start and at
+    /// every model reset (restart), never on hot reload (where the world, like
+    /// the model, survives). The `physics` hook is evaluated on the current
+    /// model and its declaration reconciled with ZERO simulation steps, so the
+    /// first frame's `tick` / hook reads answer with the initial declared poses
+    /// instead of raising against a world nothing has declared yet.
+    ///
+    /// This is the ONE hook evaluation with no stepped world behind it, so it
+    /// runs under a [`PrimingScope`]: a body read answers the identity pose
+    /// rather than raising, letting a hook that derives one body's declaration
+    /// from another's pose bootstrap. From frame 1 on, reads answer the real
+    /// world and an unknown tag raises as it always did.
+    ///
+    /// Deterministic: priming is a pure function of `init`, and it lands before
+    /// the timeline's frame-0 keyframe is taken, so replays and rewinds
+    /// reproduce it byte-identically with no change to the recording format.
+    pub fn prime_physics(&mut self) {
+        if !self.has_physics {
+            return;
+        }
+        let args = vec![self.model.clone()];
+        let _priming = PrimingScope::enter();
+        match self
+            .session
+            .call(self.names.physics, args, &mut FunctorHost)
+        {
+            Ok(value) => match physics_scene_value(&value) {
+                Some(scene) => self.physics_rt.prime(scene),
                 None => self.reporter.report_once(format!(
                     "[functor-lang] physics must return Physics.scene(gravity, [body, …]), got {}",
                     value.kind_name()
@@ -1326,7 +1381,6 @@ to receive their messages; dropping them",
             },
             Err(err) => self.reporter.frame_error(self.names.physics, &err),
         }
-        0
     }
 
     /// Close every connection this producer still has open (a reload that
@@ -2980,6 +3034,319 @@ mod tests {
         assert!(
             journal_swap().is_none(),
             "journaling must stay off until explicitly armed"
+        );
+    }
+
+    // ---- The `physics` hook: degradation, read timing, primed cold start ----
+    //
+    // The three rules of docs/physics.md's "Reading inside the hook" section,
+    // driven headlessly through the same `FrameCtx` the shells use.
+
+    /// The reporter sink for the physics-hook tests: `Reporter::emit` is a
+    /// plain `fn(&str)`, so collect into a thread-local (each test thread has
+    /// its own — as it does its own physics world).
+    thread_local! {
+        static PHYSICS_REPORTS: std::cell::RefCell<Vec<String>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn collect_emit(message: &str) {
+        PHYSICS_REPORTS.with(|r| r.borrow_mut().push(message.to_string()));
+    }
+
+    /// A game driven one fixed frame at a time through the real frame body,
+    /// with a physics hook and a collecting reporter.
+    struct PhysicsHarness {
+        session: Session,
+        model: Value,
+        physics_rt: SteppedPhysics,
+        physics_frame: u64,
+        recorder: SceneRecorder,
+        effect_runner: crate::functor_lang_prelude::FakeEffects,
+        effect_log: EffectLog,
+        deferred_queries: Vec<EffectTree>,
+        pending_events: Vec<PhysicsEvent>,
+        live_conn_keys: HashSet<String>,
+        prev_tts: Option<f64>,
+        input_buf: Vec<RecordedInput>,
+        delivered_asset_progress: Option<AssetProgress>,
+        reporter: Reporter,
+        tts: f32,
+    }
+
+    impl PhysicsHarness {
+        fn new(src: &str) -> PhysicsHarness {
+            physics::remove_world(physics::DEFAULT_WORLD);
+            PHYSICS_REPORTS.with(|r| r.borrow_mut().clear());
+            let project = functor_lang::project::load_single_source("game", src)
+                .unwrap_or_else(|e| panic!("load: {}", e.render()));
+            let session = Session::load(&project.module, &mut FunctorHost)
+                .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+            let model = session.global("init").expect("init");
+            PhysicsHarness {
+                session,
+                model,
+                physics_rt: SteppedPhysics::new(),
+                physics_frame: 0,
+                recorder: SceneRecorder::new(),
+                effect_runner: crate::functor_lang_prelude::FakeEffects::new(0.0, vec![0.0]),
+                effect_log: EffectLog::new(),
+                deferred_queries: Vec::new(),
+                pending_events: Vec::new(),
+                live_conn_keys: HashSet::new(),
+                prev_tts: None,
+                input_buf: Vec::new(),
+                delivered_asset_progress: None,
+                reporter: Reporter::new(
+                    SpanSource::Single {
+                        src: src.to_string(),
+                        path: "game.fun".to_string(),
+                    },
+                    collect_emit,
+                ),
+                tts: 0.0,
+            }
+        }
+
+        fn ctx(&mut self) -> FrameCtx<'_> {
+            FrameCtx {
+                session: &self.session,
+                names: &EntryNames::UNPREFIXED,
+                model: &mut self.model,
+                physics_rt: &mut self.physics_rt,
+                physics_frame: &mut self.physics_frame,
+                recorder: &mut self.recorder,
+                effect_runner: &mut self.effect_runner as &mut dyn EffectRunner,
+                effect_log: &mut self.effect_log,
+                deferred_queries: &mut self.deferred_queries,
+                pending_events: &mut self.pending_events,
+                live_conn_keys: &mut self.live_conn_keys,
+                prev_tts: &mut self.prev_tts,
+                input_buf: &mut self.input_buf,
+                has_physics: true,
+                has_subscriptions: false,
+                asset_progress: None,
+                delivered_asset_progress: &mut self.delivered_asset_progress,
+                suppress_outbound: false,
+                reporter: &mut self.reporter,
+            }
+        }
+
+        /// One rendered frame at exactly one fixed substep.
+        fn frame(&mut self) {
+            self.tts += physics::FIXED_DT;
+            let frame_time = FrameTime {
+                dts: physics::FIXED_DT,
+                tts: self.tts,
+            };
+            self.ctx().run_frame(frame_time, None);
+        }
+
+        /// A body's live world-space height, `None` when no such body exists.
+        fn height(&self, tag: &str) -> Option<f32> {
+            physics::with_world(physics::DEFAULT_WORLD, |w| {
+                w.body_transform(tag).map(|(pos, _)| pos[1])
+            })
+            .flatten()
+        }
+
+        fn reports() -> Vec<String> {
+            PHYSICS_REPORTS.with(|r| r.borrow().clone())
+        }
+    }
+
+    /// A ball falling in vacuum, plus:
+    ///
+    /// * `probe` — a body the HOOK parks at whatever height its own
+    ///   `Physics.position(ballTag)` read answered, so the probe's height after
+    ///   frame N is exactly what the in-hook read saw on frame N;
+    /// * `seen` in the model — what a `tick` read answered, so the same rule
+    ///   can be checked from the pre-step side.
+    ///
+    /// Both reads are UNGUARDED — this is the program shape that used to wedge
+    /// the runtime forever (the hook's read raised, so nothing was ever
+    /// declared, so it raised again).
+    const HOOK_READ_SRC: &str = "\
+        let ballTag = Physics.tag(\"ball\")\n\
+        let probeTag = Physics.tag(\"probe\")\n\
+        let init = { n: 0.0, seen: 0.0 }\n\
+        let tick = (m, dt, tts) =>\n\
+        \x20 { n: m.n + 1.0, seen: Physics.position(ballTag).y }\n\
+        let physics = (m) =>\n\
+        \x20 Physics.scene(Vec3.make(0.0, 0.0 - 10.0, 0.0),\n\
+        \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5))\n\
+        \x20       |> Physics.at(Vec3.make(0.0, 10.0, 0.0)),\n\
+        \x20     Physics.fixed(probeTag, Physics.box(0.2, 0.2, 0.2))\n\
+        \x20       |> Physics.at(Vec3.make(0.0, Physics.position(ballTag).y, 0.0)) ])\n\
+        let draw = (m, tts) =>\n\
+        \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+        \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+
+    /// Cold start: the hook is evaluated once on `init` — declaration only,
+    /// zero simulation steps — so the very first frame's reads (in `tick`, and
+    /// in the hook) answer with the INITIAL DECLARED poses instead of raising.
+    /// This is what the examples' `started` flags used to work around.
+    #[test]
+    fn the_hook_is_primed_at_init_so_the_first_frames_reads_answer() {
+        let mut h = PhysicsHarness::new(HOOK_READ_SRC);
+        h.ctx().prime_physics();
+        // Priming declares, it does not simulate: the ball is exactly where
+        // `init`'s declaration put it and no fixed frame has been recorded.
+        assert_eq!(h.height("ball"), Some(10.0));
+        assert_eq!(h.physics_frame, 0);
+        assert_eq!(h.physics_rt.seekable_range(), None);
+        // The prime evaluation has no stepped world behind it, so its own read
+        // answered the identity pose — the probe sits at the origin for
+        // exactly this one declaration, instead of the hook raising.
+        assert_eq!(h.height("probe"), Some(0.0));
+
+        h.frame();
+        // `tick` ran BEFORE this frame's step, so its read is the primed pose.
+        assert_eq!(field(&h.model, "seen"), 10.0);
+        // …and so is the hook's, which runs after `tick` and before the step.
+        assert_eq!(
+            h.height("probe"),
+            Some(10.0),
+            "frame 1's in-hook read must see the primed initial pose"
+        );
+        assert!(
+            PhysicsHarness::reports().is_empty(),
+            "{:?}",
+            PhysicsHarness::reports()
+        );
+    }
+
+    /// Reads inside the hook are LAST frame's stepped world — the same rule
+    /// `tick` follows, one frame of read latency, no error. Only `draw` sees
+    /// the freshly stepped world.
+    #[test]
+    fn a_read_inside_the_hook_sees_last_frames_world() {
+        let mut h = PhysicsHarness::new(HOOK_READ_SRC);
+        h.ctx().prime_physics();
+        h.frame();
+        let after_first = h.height("ball").expect("ball");
+        assert!(
+            after_first < 10.0,
+            "the ball must have fallen: {after_first}"
+        );
+
+        h.frame();
+        let probe = h.height("probe").expect("probe");
+        assert!(
+            (probe - after_first).abs() < 1e-6,
+            "the hook's read must answer with the previous frame's stepped pose \
+             (probe {probe} vs previous ball {after_first})"
+        );
+        // `tick`, the other pre-step reader, answered the same pose…
+        assert!((field(&h.model, "seen") as f32 - after_first).abs() < 1e-6);
+        // …and the world `draw` reads has already moved on.
+        assert!(h.height("ball").expect("ball") < after_first);
+        assert!(
+            PhysicsHarness::reports().is_empty(),
+            "{:?}",
+            PhysicsHarness::reports()
+        );
+    }
+
+    /// The prime's identity-pose read is scoped to the prime ALONE: a tag the
+    /// hook never declares (a typo) still raises from frame 1 on — loudly,
+    /// once, with the world kept and stepping.
+    #[test]
+    fn an_undeclared_tag_still_raises_after_the_prime() {
+        const SRC: &str = "\
+            let ballTag = Physics.tag(\"ball\")\n\
+            let init = { n: 0.0 }\n\
+            let tick = (m, dt, tts) => { n: m.n + 1.0 }\n\
+            let physics = (m) =>\n\
+            \x20 Physics.scene(Vec3.make(0.0, 0.0 - 10.0, 0.0),\n\
+            \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5))\n\
+            \x20       |> Physics.at(Vec3.make(0.0, 10.0 + Physics.position(Physics.tag(\"bal\")).y, 0.0)) ])\n\
+            let draw = (m, tts) =>\n\
+            \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+            \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        assert!(
+            PhysicsHarness::reports().is_empty(),
+            "the prime read answers"
+        );
+        assert_eq!(h.height("ball"), Some(10.0));
+
+        h.frame();
+        h.frame();
+        let reports = PhysicsHarness::reports();
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(reports[0].contains("no body tagged \"bal\""), "{reports:?}");
+        // Degraded, not wedged: the primed declaration is kept and stepping.
+        assert!(h.height("ball").expect("ball") < 10.0);
+    }
+
+    /// One number field out of a record model.
+    fn field(model: &Value, name: &str) -> f64 {
+        match model {
+            Value::Record(fields) => match fields.iter().find(|(f, _)| f == name) {
+                Some((_, Value::Number(n))) => *n,
+                _ => panic!("no number field `{name}` in {model}"),
+            },
+            other => panic!("not a record: {other}"),
+        }
+    }
+
+    /// A hook that starts erroring must not wedge the world: the previous
+    /// frame's declaration is kept, the world keeps stepping, and the teaching
+    /// error is surfaced ONCE.
+    #[test]
+    fn a_hook_error_degrades_loudly_instead_of_wedging_the_world() {
+        const SRC: &str = "\
+            let ballTag = Physics.tag(\"ball\")\n\
+            let ghostTag = Physics.tag(\"ghost\")\n\
+            let init = { n: 0.0 }\n\
+            let tick = (m, dt, tts) => { n: m.n + 1.0 }\n\
+            let world = (m) =>\n\
+            \x20 Physics.scene(Vec3.make(0.0, 0.0 - 10.0, 0.0),\n\
+            \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5))\n\
+            \x20       |> Physics.at(Vec3.make(0.0, 10.0, 0.0)) ])\n\
+            let physics = (m) =>\n\
+            \x20 if m.n > 2.0 then\n\
+            \x20   let boom = Physics.position(ghostTag) in\n\
+            \x20   world(m)\n\
+            \x20 else world(m)\n\
+            let draw = (m, tts) =>\n\
+            \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+            \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        // Two healthy frames, then the hook starts raising on every call.
+        h.frame();
+        h.frame();
+        assert!(PhysicsHarness::reports().is_empty());
+        let healthy = h.height("ball").expect("ball");
+        let healthy_frame = h.physics_frame;
+
+        let mut last = healthy;
+        for _ in 0..5 {
+            h.frame();
+            let now = h
+                .height("ball")
+                .expect("the world must survive the hook error");
+            assert!(
+                now < last,
+                "the world must keep stepping through a broken hook ({now} vs {last})"
+            );
+            last = now;
+        }
+        assert!(
+            h.physics_frame > healthy_frame + 4,
+            "every frame must still simulate: {} -> {}",
+            healthy_frame,
+            h.physics_frame
+        );
+        let reports = PhysicsHarness::reports();
+        assert_eq!(reports.len(), 1, "the error must surface ONCE: {reports:?}");
+        assert!(reports[0].contains("physics error"), "{reports:?}");
+        assert!(
+            reports[0].contains("keeping the previous frame"),
+            "the error must teach what the runtime did instead: {reports:?}"
         );
     }
 }

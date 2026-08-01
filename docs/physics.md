@@ -167,8 +167,15 @@ engine one-for-one); an F# surface would need that data-crossing `DrawContext`
 plumbing and is deferred indefinitely.
 
 Because these are direct reads and not a `draw`-only view, they are valid in
-**any** entry point. In `tick` they answer against the previous step (physics
-runs after `tick`); in `draw`, against this frame's. Alongside `position` the
+**any** entry point — the `physics` hook included. One rule covers all of
+them: **a physics read answers with the LAST stepped world**. Everything that
+runs before this frame's step — `tick`, `input`, a pre-step `update`, and the
+`physics` hook itself — sees the previous step; only `draw` (and the post-step
+`update`s driven by a `Physics.raycast` tagger or a `Physics.events` message)
+sees the world this frame just stepped. That one step of read latency is
+inherent to read → decide → step.
+
+Alongside `position` the
 same class provides `Physics.linearVelocity(tag)` and the synchronous ray
 queries `Physics.cast` / `Physics.castExcluding` — together the
 read-decide-write triple a character controller needs, all inside one frame:
@@ -181,6 +188,45 @@ Read semantics worth knowing: physics reads of a missing tag are **loud
 spanned errors** — games read only tags their `physics` hook declares. (An
 Option-shaped variant return is possible now that Functor Lang has `match`; loud
 remains the default because a missing declared body is a bug, not a case.)
+
+### Cold start: the world is primed from `init`
+
+At session start — and at every model reset (restart), but **not** on hot
+reload, where the world survives with the model — the runtime evaluates the
+`physics` hook once on the INITIAL model and reconciles that declaration with
+**zero simulation steps**. So frame 1's pre-step readers (`tick`, and the hook
+itself) answer with the initial declared poses instead of raising against a
+world nothing has declared yet. This is what games used to hand-roll as a
+`started: bool` first-frame guard; those guards are now dead weight
+(`examples/terrain` and `examples/physics-controller` lost theirs).
+
+The prime is the ONE hook evaluation with no stepped world behind it, so it has
+its own small rule: **inside the prime, a body read answers the identity pose**
+(the origin, zero velocity) rather than raising — a hook that derives one
+body's declaration from another's pose can therefore bootstrap, at the cost of
+that derived body sitting at its identity pose for the single primed
+declaration. From frame 1 on, reads answer the real world and an unknown tag
+(a typo, an undeclared body) raises exactly as it always did.
+
+Priming is deterministic — a pure function of `init` — and it lands *before*
+the timeline records anything, so the frame-0 keyframe already contains the
+primed world: rewind, seek, and replay reproduce it byte-identically, with **no
+new entry in the recording format** (`physics/driver.rs`'s
+`SteppedPhysics::prime`).
+
+### When the hook errors: degrade, don't wedge
+
+An error raised inside the `physics` hook (or a return value that is not a
+`Physics.scene`) used to stop reconciliation permanently: zero steps, so the
+declaration was never reconciled, so the next frame's read raised the same way
+— forever, taking `draw`'s `Physics.transformed` down with it.
+
+Now the frame **degrades**: the world KEEPS the previous frame's declaration
+and keeps stepping (the frame records no `DeclareScene`, which replays exactly
+as it ran), and the teaching error is surfaced ONCE — the same discipline as
+hot reload's broken edit, which keeps the old program running. A hook that is
+broken from the very first evaluation has no previous declaration to keep, so
+its world stays empty; it is still loud, and the rest of the game still runs.
 
 Capture gotcha: `--fixed-time` pins the clock with `dts = 0`, so physics never
 steps under it — a physics golden captures a *settled* scene via plain
@@ -647,6 +693,8 @@ resume still **branches** (`TimelineLog::truncate_from` discards the old
 future). History is bounded (~15s at 60Hz, pruned each frame); rewind clamps
 to it. Frame 0's pre-step state is the empty world, so the rewind floor is
 frame 1 (the world's first stepped state) — reads never hit an empty world.
+(Frame 0's keyframe is snapshotted after the cold-start prime, so it is the
+*primed* world, not an empty one; priming adds no `Command` of its own.)
 
 ## Debug visualization (wireframes via Rapier's debug renderer)
 

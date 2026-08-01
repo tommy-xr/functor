@@ -10,19 +10,24 @@
 //! its declared position or rotation drives that field — a dynamic or fixed
 //! body teleports immediately, and a kinematic body takes the new pose as its
 //! next-step target, so it carries velocity into contacts. Reading a tag that
-//! is not in the live world — never declared, or declared but not yet
-//! reconciled and stepped — is a runtime error rather than an empty answer, so
-//! read only bodies your hook has already declared. Like the model, the world
-//! survives hot reload for as long as the hook does; deleting the hook drops
-//! it.
+//! is not in the live world is a runtime error rather than an empty answer, so
+//! read only bodies your hook has declared. Like the model, the world survives
+//! hot reload for as long as the hook does; deleting the hook drops it. An
+//! error raised inside the hook does NOT stop the world: the previous frame's
+//! declaration is kept and stepped, and the error is reported once.
 //!
 //! Reads are SYNCHRONOUS and writes are QUEUED. `Physics.position`,
-//! `Physics.linearVelocity`, and `Physics.cast` answer in place from the last
-//! stepped world, while every mutation returns an `Effect.t` that applies at
-//! the next physics step after it queues — after reconcile, on that step's
-//! first substep. A command issued from `tick` therefore normally lands in
-//! time for the same frame's `draw`; on a frame that takes no substep at all
-//! (normal above 60fps) it waits for the next simulated frame.
+//! `Physics.linearVelocity`, and `Physics.cast` answer in place from the LAST
+//! STEPPED world — in any entry point, the `physics` hook included. Everything
+//! that runs before the step (`tick`, `input`, a pre-step `update`, the hook)
+//! sees the previous step; only `draw` and the post-step `update`s see the
+//! world this frame just stepped. The world is primed from `init` before the
+//! first frame, so frame 1's reads answer with the initial declared poses.
+//! Every mutation instead returns an `Effect.t` that applies at the next
+//! physics step after it queues — after reconcile, on that step's first
+//! substep. A command issued from `tick` therefore normally lands in time for
+//! the same frame's `draw`; on a frame that takes no substep at all (normal
+//! above 60fps) it waits for the next simulated frame.
 
 /// An opaque collision shape.
 type shape
@@ -126,6 +131,9 @@ let upright : (body) => body
 let scene : (Vec3.t, List<body>) => world
 
 /// Read a body's live, stepped world position.
+///
+/// Answers with the LAST stepped world, so a pre-step caller (`tick`, the
+/// `physics` hook) sees the previous step and `draw` sees this frame's.
 let position : (tag) => position
 
 /// Read a body's live, stepped linear velocity.

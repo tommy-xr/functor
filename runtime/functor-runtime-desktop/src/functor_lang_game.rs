@@ -442,7 +442,7 @@ impl FunctorLangGame {
         let source_hashes = inspector_sources(&loaded.sources);
         let sources = project_sources_of(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
-        FunctorLangGame {
+        let mut game = FunctorLangGame {
             path: path.to_string(),
             role,
             names: loaded.names,
@@ -494,7 +494,11 @@ impl FunctorLangGame {
             draw_ns: 0,
             render_ns: 0,
             swap_ns: 0,
-        }
+        };
+        // Cold start (docs/physics.md): declare the initial world before the
+        // first frame, so frame 1's physics reads answer instead of raising.
+        game.ctx().prime_physics();
+        game
     }
 
     /// Bundle this producer's per-frame state into the shared [`FrameCtx`]
@@ -694,6 +698,10 @@ impl FunctorLangGame {
         self.draw_ns = 0;
         self.render_ns = 0;
         self.swap_ns = 0;
+        // A reset is a cold start: the model is `init` again and the world was
+        // removed, so re-prime it (a hot reload deliberately does NOT — there
+        // the world, like the model, survives).
+        self.ctx().prime_physics();
     }
 
     fn report_stats(&mut self) {

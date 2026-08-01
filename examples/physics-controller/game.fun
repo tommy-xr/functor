@@ -157,71 +157,67 @@ let surfaceVelocity = (probe) =>
 
 let tick = (model, dt, tts) =>
   let m = { model with clock: model.clock + dt, frame: model.frame + 1.0 } in
-  // The pre-step physics reads raise on the very first frame: the `physics`
-  // hook's declaration has not been reconciled and stepped yet.
-  if not m.ctl.started then { m with ctl: { m.ctl with started: true } }
-  else
-    let pos = Physics.position(playerTag) in
-    let vel = Physics.linearVelocity(playerTag) in
-    let probe = groundProbe(pos) in
-    // The observation handed to the pure controller. It needs no probe
-    // distance and no rest height: the controller never writes the vertical
-    // axis, so it has no standing height to hold. `vy` is here only so a
-    // landing's impact can scale the squash.
-    let obs = {
-      grounded: probe.hit,
-      vx: vel.x, vy: vel.y, vz: vel.z,
+  let pos = Physics.position(playerTag) in
+  let vel = Physics.linearVelocity(playerTag) in
+  let probe = groundProbe(pos) in
+  // The observation handed to the pure controller. It needs no probe
+  // distance and no rest height: the controller never writes the vertical
+  // axis, so it has no standing height to hold. `vy` is here only so a
+  // landing's impact can scale the squash.
+  let obs = {
+    grounded: probe.hit,
+    vx: vel.x, vy: vel.y, vz: vel.z,
+  } in
+  let carry = surfaceVelocity(probe) in
+  let sensed = Control.sense(dt, obs, m.jumpEdge, m.ctl) in
+  let want = Control.desiredVelocity(dt, obs, carry, sensed) in
+  let ctl = if Control.jumpNow(sensed) then Control.consumeJump(sensed) else sensed in
+  let next =
+    { m with
+      ctl: ctl,
+      jumpEdge: false,
+      onDeck: probe.hit && probe.tag == deckTag,
+      carryX: carry.x,
     } in
-    let carry = surfaceVelocity(probe) in
-    let sensed = Control.sense(dt, obs, m.jumpEdge, m.ctl) in
-    let want = Control.desiredVelocity(dt, obs, carry, sensed) in
-    let ctl = if Control.jumpNow(sensed) then Control.consumeJump(sensed) else sensed in
-    let next =
-      { m with
-        ctl: ctl,
-        jumpEdge: false,
-        onDeck: probe.hit && probe.tag == deckTag,
-        carryX: carry.x,
-      } in
-    // Respawn — either because the character fell out of the world, or because
-    // ENTER asked for one. Both go through `tick`, and both return `respawn`
-    // INSTEAD of this frame's velocity command, never alongside it: commands
-    // apply in queue order, so a `setVelocity` issued after the respawn's would
-    // win and hand the body back its pre-teleport fall speed.
-    //
-    // The body is put back with a command rather than by re-declaring its
-    // spawn: a changed declaration would teleport it, but then every later
-    // frame's declaration would be a change back again.
-    let fellOut = pos.y < World.voidY in
-    if fellOut || m.respawnPending then
-      ({ next with
-         falls: if fellOut then next.falls + 1.0 else next.falls,
-         respawnPending: false,
-         ctl: Control.respawned(next.ctl) },
-       respawn)
-    else
-      // Built lazily: under the default `traceOn = false` the record — and the
-      // `Math.cos` inside `World.deckVx` — is never constructed, because `if`
-      // only evaluates the branch it takes. (The closure itself is still
-      // allocated each frame; only its body is skipped.)
-      let row = () => {
-        f: next.frame,
-        x: pos.x, y: pos.y, z: pos.z, vy: vel.y,
-        g: obs.grounded, deck: next.onDeck,
-        carry: carry.x, deckVx: World.deckVx(m.clock),
-        coy: ctl.coyote, sq: ctl.squash, impact: ctl.landImpact,
-      } in
-      // Steer the horizontal plane and leave the vertical axis to the solver,
-      // which owns the ground contact, the landing impulse, and gravity. The
-      // ONLY frame that writes vy is the one a jump fires on — `Control.
-      // verticalCommand` is `Some` exactly then, and its expects pin that.
-      // The two writes touch disjoint axes, so the pair applies as one
-      // whole-vector write without either clobbering the other.
-      let steer = Physics.setVelocityXZ(playerTag, want.x, want.z) in
-      (trace(row, next),
-       match Control.verticalCommand(carry, sensed) with
-       | Option.Some(vy) => Effect.batch([steer, Physics.setVelocityY(playerTag, vy)])
-       | Option.None => steer)
+  // Respawn — either because the character fell out of the world, or because
+  // ENTER asked for one. Both go through `tick`, and both return `respawn`
+  // INSTEAD of this frame's velocity command, never alongside it: commands
+  // apply in queue order, so a `setVelocity` issued after the respawn's would
+  // win and hand the body back its pre-teleport fall speed.
+  //
+  // The body is put back with a command rather than by re-declaring its
+  // spawn: a changed declaration would teleport it, but then every later
+  // frame's declaration would be a change back again.
+  let fellOut = pos.y < World.voidY in
+  if fellOut || m.respawnPending then
+    ({ next with
+       falls: if fellOut then next.falls + 1.0 else next.falls,
+       respawnPending: false,
+       ctl: Control.respawned(next.ctl) },
+     respawn)
+  else
+    // Built lazily: under the default `traceOn = false` the record — and the
+    // `Math.cos` inside `World.deckVx` — is never constructed, because `if`
+    // only evaluates the branch it takes. (The closure itself is still
+    // allocated each frame; only its body is skipped.)
+    let row = () => {
+      f: next.frame,
+      x: pos.x, y: pos.y, z: pos.z, vy: vel.y,
+      g: obs.grounded, deck: next.onDeck,
+      carry: carry.x, deckVx: World.deckVx(m.clock),
+      coy: ctl.coyote, sq: ctl.squash, impact: ctl.landImpact,
+    } in
+    // Steer the horizontal plane and leave the vertical axis to the solver,
+    // which owns the ground contact, the landing impulse, and gravity. The
+    // ONLY frame that writes vy is the one a jump fires on — `Control.
+    // verticalCommand` is `Some` exactly then, and its expects pin that.
+    // The two writes touch disjoint axes, so the pair applies as one
+    // whole-vector write without either clobbering the other.
+    let steer = Physics.setVelocityXZ(playerTag, want.x, want.z) in
+    (trace(row, next),
+     match Control.verticalCommand(carry, sensed) with
+     | Option.Some(vy) => Effect.batch([steer, Physics.setVelocityY(playerTag, vy)])
+     | Option.None => steer)
 
 let input = (model, key, isDown) =>
   match key with

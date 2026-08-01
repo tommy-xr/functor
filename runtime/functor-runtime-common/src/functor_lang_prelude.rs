@@ -5368,19 +5368,55 @@ Fog.linear(near, far, color) or Fog.exp(density, color)"
     }
 }
 
+thread_local! {
+    /// Set only while the producer evaluates the `physics` hook to PRIME the
+    /// world (docs/physics.md, "Cold start"). See [`PrimingScope`].
+    static PRIMING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII scope marking the COLD prime evaluation of the `physics` hook — the
+/// one call with no stepped world behind it, because nothing has ever been
+/// declared. Inside it a body read answers the IDENTITY pose (the origin, zero
+/// velocity) instead of raising, so a hook that derives one body's declaration
+/// from another's pose can bootstrap. Every later evaluation (frame 1 onward)
+/// reads the real world, where a genuinely unknown tag raises exactly as
+/// before — including a tag misspelled here, one frame later.
+pub struct PrimingScope;
+
+impl PrimingScope {
+    pub fn enter() -> PrimingScope {
+        PRIMING.with(|p| p.set(true));
+        PrimingScope
+    }
+}
+
+impl Drop for PrimingScope {
+    fn drop(&mut self) {
+        PRIMING.with(|p| p.set(false));
+    }
+}
+
 /// Live pose of a body in the ACTIVE world (normally the singleton world the
 /// shell steps — same process, same crate statics as this prelude; under a
 /// dry-run forward-step scope, the throwaway projected world, so ghost draws
 /// read the stepped poses — docs/time-travel.md T6b).
 fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
-    physics::with_world(physics::active_world(), |w| w.body_transform(tag)).flatten()
+    physics::with_world(physics::active_world(), |w| w.body_transform(tag))
+        .flatten()
+        .or_else(|| {
+            PRIMING
+                .with(|p| p.get())
+                .then(|| ([0.0; 3], [0.0, 0.0, 0.0, 1.0]))
+        })
 }
 
 /// Live linear velocity of a body in the ACTIVE world — the read counterpart
 /// of `Physics.setVelocity`, on the same world-scope rules as
 /// [`live_transform`].
 fn live_velocity(tag: &str) -> Option<[f32; 3]> {
-    physics::with_world(physics::active_world(), |w| w.body_velocity(tag)).flatten()
+    physics::with_world(physics::active_world(), |w| w.body_velocity(tag))
+        .flatten()
+        .or_else(|| PRIMING.with(|p| p.get()).then_some([0.0; 3]))
 }
 
 /// A synchronous ray query against the ACTIVE world, shared by `Physics.cast`
