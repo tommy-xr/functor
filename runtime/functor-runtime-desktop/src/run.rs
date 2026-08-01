@@ -1296,15 +1296,10 @@ pub fn run(args: Args) {
     let mut game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
     } else if args.functor_lang {
-        let role = if args.entry_module.is_empty() {
-            functor_runtime_common::functor_lang_producer::EntryRole::Prefix(
-                args.entry_prefix.clone(),
-            )
-        } else {
-            functor_runtime_common::functor_lang_producer::EntryRole::Module(
-                args.entry_module.clone(),
-            )
-        };
+        let role = functor_runtime_common::functor_lang_producer::EntryRole::from_parts(
+            &args.entry_module,
+            &args.entry_prefix,
+        );
         Box::new(functor_lang_game::FunctorLangGame::create_for_role(
             game_path.as_str(),
             role,

@@ -523,12 +523,10 @@ impl FunctorLangProject {
     /// binding prefix. The config refuses both at once, so the choice is
     /// unambiguous here.
     fn entry_role(&self) -> functor_runtime_common::functor_lang_producer::EntryRole {
-        use functor_runtime_common::functor_lang_producer::EntryRole;
-        if self.module.is_empty() {
-            EntryRole::Prefix(self.prefix.clone())
-        } else {
-            EntryRole::Module(self.module.clone())
-        }
+        functor_runtime_common::functor_lang_producer::EntryRole::from_parts(
+            &self.module,
+            &self.prefix,
+        )
     }
 
     /// `build`'s per-role contract gate (same-file entries): load a Session
@@ -636,16 +634,16 @@ impl FunctorLangProject {
     /// until it is taught them. The config refuses a role declaring both
     /// forms, so at most one is ever named here.
     fn check_role_supported(&self, environment: &Environment) -> Result<(), Error> {
-        let shell = match environment {
+        use functor_runtime_common::functor_lang_producer::EntryRole;
+        match environment {
             Environment::Native | Environment::Wasm => return Ok(()),
-            Environment::Vr => "vr",
-        };
-        let (form, name) = if !self.module.is_empty() {
-            ("module", self.module.as_str())
-        } else if !self.prefix.is_empty() {
-            ("prefix", self.prefix.as_str())
-        } else {
-            return Ok(());
+            Environment::Vr => {}
+        }
+        let shell = environment.as_str();
+        let (form, name) = match self.entry_role() {
+            EntryRole::Prefix(prefix) if prefix.is_empty() => return Ok(()),
+            EntryRole::Prefix(prefix) => ("prefix", prefix),
+            EntryRole::Module(module) => ("module", module),
         };
         Err(Error::other(format!(
             "entry {form} `{name}` is not supported on {shell} yet — run this role with \

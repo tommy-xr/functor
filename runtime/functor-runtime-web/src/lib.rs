@@ -184,12 +184,7 @@ fn functor_lang_entry_module() -> String {
 /// the prefix when a module is given), otherwise the binding prefix (empty =
 /// the classic unprefixed contract).
 fn functor_lang_entry_role() -> EntryRole {
-    let module = functor_lang_entry_module();
-    if module.is_empty() {
-        EntryRole::Prefix(functor_lang_entry_prefix())
-    } else {
-        EntryRole::Module(module)
-    }
+    EntryRole::from_parts(&functor_lang_entry_module(), &functor_lang_entry_prefix())
 }
 
 /// Where the runtime's networking goes. Two routings exist: real browser

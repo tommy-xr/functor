@@ -461,10 +461,11 @@ const loadExample = async (id: string) => {
     serverParams.delete("prefix");
     if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
     serverParams.delete("file");
-    // The client's ROLE must not leak into the server pane: a same-file
-    // sample states the server's own inline module (absent = the file's plain
-    // top-level contract).
+    // The client's ROLE must not leak into the server pane — neither form.
+    // A same-file sample states the server's own inline module; absent, the
+    // server file's plain top-level contract is the role.
     serverParams.delete("module");
+    serverParams.delete("prefix");
     if (example?.server?.module) serverParams.set("module", example.server.module);
     for (const file of [serverFile, ...files.filter((f) => f !== serverFile)]) {
       serverParams.append("file", file);
