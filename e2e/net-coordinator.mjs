@@ -160,6 +160,11 @@ try {
     "a keydown in client 1 sends to the server, and only from client 1",
     `client 1 ${before.c1}->${after.c1}, client 2 ${before.c2}->${after.c2}`
   );
+  // Release the key: the held `w` is a velocity, and the server integrates and
+  // WRAPS it at the arena edge, so a mover left running would eventually wrap
+  // back past its spawn lane. The release pins its z for 5b below.
+  await page.evaluate(() => window.__netHost.key("client 1", "KeyW", false));
+  await sleep(200);
 
   // 4. Model state, read from each pane's paused inspector trace.
   await page.evaluate((ids) => ids.forEach((id) => window.__netHost.pause(id)), PANES);
@@ -188,9 +193,17 @@ try {
     models["server"]
   );
   // 5b. Cross-client propagation. Each client's world must hold BOTH rows,
-  // and the row for the player that pressed `w` (pid 0, spawned at z = -1.8)
-  // must have moved in z in the OTHER client's copy — client 1's input
-  // reached client 2 through the server.
+  // and the row for the player that pressed `w` must have moved in z in the
+  // OTHER client's copy — client 1's input reached client 2 through the
+  // server.
+  //
+  // Which pid that is depends on JOIN ORDER, which nothing here sequences:
+  // the three panes boot as independent iframes, the coordinator hands out
+  // connection ids in arrival order (site/src/net-coordinator.ts), and the
+  // server assigns `pid = nextPid` per Joined (examples/mp/server.fun). So
+  // client 1 is pid 0 only when it wins the boot race. Read the mover's
+  // identity out of the data instead: the coordinator's log says which
+  // connection is client 1's, and the server's model maps that cid to a pid.
   const rowsOf = (text) =>
     [...text.matchAll(/\{ pid: (-?[\d.]+), x: (-?[\d.]+), z: (-?[\d.]+) \}/g)].map((m) => ({
       pid: Number(m[1]),
@@ -198,17 +211,38 @@ try {
       z: Number(m[3]),
     }));
   const worlds = { 1: rowsOf(models["client 1"]), 2: rowsOf(models["client 2"]) };
+  // The two joiners are pids 0 and 1 whichever pane won the race — join order
+  // decides WHO owns which, not which pids exist.
+  const pidsOf = (rows) => [...rows.map((r) => r.pid)].sort().join(",");
   check(
-    worlds[1].length === 2 && worlds[2].length === 2,
+    pidsOf(worlds[1]) === "0,1" && pidsOf(worlds[2]) === "0,1",
     "each client's world contains both players",
-    `client 1: ${worlds[1].length} rows, client 2: ${worlds[2].length} rows`
+    `client 1: [${pidsOf(worlds[1])}], client 2: [${pidsOf(worlds[2])}]`
   );
-  const moved = worlds[2].find((r) => r.pid === 0);
-  const untouched = worlds[2].find((r) => r.pid === 1);
+  // Client 1's connection id, then the pid the server gave that cid.
+  const connOfClient1 = connected.find((p) => p.to === "client 1")?.conn;
+  const serverPlayers = [...models["server"].matchAll(/cid: (-?[\d.]+), pid: (-?[\d.]+)/g)].map(
+    (m) => ({ cid: Number(m[1]), pid: Number(m[2]) })
+  );
+  const moverPid = serverPlayers.find((p) => p.cid === connOfClient1)?.pid;
+  // Each player spawns on its own z-lane: `z = pid * 1.8 - 1.8` (server.fun).
+  // The other player never moves in z (its auto-move is +x only, and the
+  // server's integration of a zero velocity is exact), so its z is its spawn.
+  const spawnZ = (pid) => pid * 1.8 - 1.8;
+  const moved = worlds[2].find((r) => r.pid === moverPid);
+  const untouched = worlds[2].find((r) => r.pid !== moverPid);
   check(
-    !!moved && moved.z > -1.8 && !!untouched && untouched.z === 0,
+    moverPid !== undefined &&
+      !!moved &&
+      moved.z > spawnZ(moverPid) &&
+      !!untouched &&
+      untouched.z === spawnZ(untouched.pid),
     "client 1's `w` moved its player in CLIENT 2's world (client -> server -> client)",
-    JSON.stringify(worlds[2])
+    `client 1 is conn ${connOfClient1} = pid ${moverPid} (spawn z ${spawnZ(
+      moverPid
+    )}); client 2's world ${JSON.stringify(worlds[2])}; server players ${JSON.stringify(
+      serverPlayers
+    )}`
   );
 
   // 6. Teardown: reloading a pane closes its connection at BOTH ends — proved

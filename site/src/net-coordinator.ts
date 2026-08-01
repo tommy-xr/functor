@@ -58,10 +58,14 @@ type DeliveredEvent =
   | { kind: "disconnected"; key: string; conn: number }
   | { kind: "error"; key: string; conn: number; message: string };
 
-/** One routed packet, as the (not yet rendered) packet-log rail will read it. */
+/** One routed packet, as the packet-log rail and the network view read it. */
 export interface Packet {
   /** The step it belongs to — always null until the barrier lands (see above). */
   tick: number | null;
+  /** When the coordinator routed it (`performance.now()`). Host-clock time, not
+   * game time: until the barrier lands a packet has no step to belong to, and
+   * the network view still has to place it on a wall-clock timeline. */
+  at: number;
   /** Pane id the packet originated from. */
   from: string;
   /** Pane id it was delivered to. */
@@ -139,6 +143,7 @@ export class NetCoordinator {
   private readonly conns = new Map<number, Conn>();
   private readonly pending: PendingConnect[] = [];
   private readonly log: Packet[] = [];
+  private readonly watchers = new Set<(packet: Packet) => void>();
   private nextConn = 1;
   private raf = 0;
   private readonly abort = new AbortController();
@@ -204,6 +209,19 @@ export class NetCoordinator {
   }
 
   /**
+   * Watch packets as they route. The log is the record; this is the live feed a
+   * view animates from, so it does not have to poll a 10k array every frame.
+   *
+   * Called synchronously from the routing path, so a watcher must be cheap and
+   * must not route anything itself — the network view buffers and spends its
+   * work on the next frame. Returns an unsubscribe.
+   */
+  onPacket(watcher: (packet: Packet) => void): () => void {
+    this.watchers.add(watcher);
+    return () => this.watchers.delete(watcher);
+  }
+
+  /**
    * How many live connections each pane holds. The coordinator is the only
    * place that knows who is actually talking to whom, so this is what a pane's
    * link indicator reads — a pane absent from the map is still waiting.
@@ -226,6 +244,7 @@ export class NetCoordinator {
     this.listeners.clear();
     this.conns.clear();
     this.pending.length = 0;
+    this.watchers.clear();
   }
 
   // ------------------------------------------------------------------ ingress
@@ -371,10 +390,20 @@ export class NetCoordinator {
     const pane = this.panes.get(to.pane);
     if (!pane) return;
     pane.outbox.push(event);
-    this.log.push({ tick: null, from, to: to.pane, conn: event.conn, kind: event.kind, size });
+    const packet: Packet = {
+      tick: null,
+      at: performance.now(),
+      from,
+      to: to.pane,
+      conn: event.conn,
+      kind: event.kind,
+      size,
+    };
+    this.log.push(packet);
     if (this.log.length > PACKET_LOG_CAP + PACKET_LOG_SLACK) {
       this.log.splice(0, this.log.length - PACKET_LOG_CAP);
     }
+    for (const watcher of this.watchers) watcher(packet);
   }
 
   /** Close everything a pane owns without deregistering the pane itself. */
