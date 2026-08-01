@@ -347,8 +347,14 @@ fn complete_impl(sources: Vec<(PathBuf, String)>, active: &Path, offset: usize) 
         let file = project.sources.file_by_path(active);
         let module = file.map_or_else(|| project.entry.clone(), |file| file.module.clone());
         let inline = file
-            .and_then(|file| project.inline_module_at(file.base + byte))
-            .map(|module| module.name.clone());
+            .and_then(|file| {
+                // A stale cache can put the live offset past this file's
+                // range — never adopt another file's block.
+                project
+                    .inline_module_at(file.base + byte)
+                    .filter(|module| module.file == file.module)
+            })
+            .map(|module| module.path.clone());
         let items =
             functor_lang::complete::complete(project, &module, inline.as_deref(), &live, byte);
         completion_json(&items)

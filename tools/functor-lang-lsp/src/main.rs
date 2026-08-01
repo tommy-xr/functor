@@ -320,10 +320,13 @@ fn run(
             }
             ("textDocument/foldingRange", Some(id)) => {
                 let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-                let result = documents
-                    .contains_key(uri)
-                    .then(|| folding_ranges(uri, &documents))
-                    .flatten()
+                // From the last-good load (like completion): no reparse on a
+                // request the client re-issues after every edit, and a
+                // momentarily broken buffer keeps its folds instead of
+                // popping every block open.
+                let result = projects
+                    .get(uri)
+                    .and_then(|project| folding_ranges(project, uri))
                     .unwrap_or_else(|| json!([]));
                 write_message(
                     writer,
@@ -1129,8 +1132,10 @@ fn inlay_hints(uri: &str, documents: &HashMap<String, String>, range: &Value) ->
 /// `module Name { … }` block in the open file. (Indentation-based folding is
 /// the client's own default and needs no server ranges; a `module` block is
 /// the one construct whose extent only the parser knows.)
-fn folding_ranges(uri: &str, documents: &HashMap<String, String>) -> Option<Value> {
-    let project = load_project(uri, documents)?;
+fn folding_ranges(
+    project: &functor_lang::project::Project,
+    uri: &str,
+) -> Option<Value> {
     let file = project.sources.file_by_path(&uri_to_path(uri)?)?;
     let line_of = |offset: usize| lsp_position(&file.src, offset - file.base)["line"].clone();
     let ranges: Vec<Value> = project
@@ -1170,8 +1175,14 @@ fn completion(
     let file = uri_to_path(uri).and_then(|path| project.sources.file_by_path(&path));
     let current_module = file.map_or_else(|| project.entry.clone(), |file| file.module.clone());
     let inline = file
-        .and_then(|file| project.inline_module_at(file.base + offset))
-        .map(|module| module.name.clone());
+        .and_then(|file| {
+            // A stale cache can put the live offset past this file's range —
+            // never adopt another file's block.
+            project
+                .inline_module_at(file.base + offset)
+                .filter(|module| module.file == file.module)
+        })
+        .map(|module| module.path.clone());
     let items = functor_lang::complete::complete(
         project,
         &current_module,
