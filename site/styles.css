@@ -1609,15 +1609,16 @@ a:hover {
 }
 
 .api-nav-group-label {
-  color: var(--text-dim);
+  color: rgba(65, 216, 230, 0.78);
   font-family: var(--font-display);
   font-size: 0.58rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
-/* Categories are the second level of the nav: a hairline ties each topic's
-   modules together without a second uppercase shout. */
+/* Categories are the second level of the nav, in the same color language as
+   the content dividers — cyan names a group, pink names a category — muted so
+   the column stays quiet. The hairline ties each topic's modules together. */
 .api-nav-category {
   display: flex;
   flex-direction: column;
@@ -1627,9 +1628,11 @@ a:hover {
 }
 
 .api-nav-category-label {
-  color: var(--text-dim);
-  font-size: 0.62rem;
-  letter-spacing: 0.04em;
+  color: rgba(232, 88, 184, 0.72);
+  font-family: var(--font-display);
+  font-size: 0.54rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 .api-intro {
@@ -1817,12 +1820,13 @@ a:hover {
 }
 
 /* And within a half, a category names the topic the next few modules share —
-   quieter than the group, marked by a short cyan tick rather than color. */
+   one level down from the group, encoded by color role: cyan names a group,
+   pink names a category. The rule fades out from the label's own pink. */
 .api-category-divider {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 40px 0 18px;
+  gap: 14px;
+  margin: 44px 0 16px;
 }
 
 .api-group-divider + .api-category-divider {
@@ -1832,7 +1836,7 @@ a:hover {
 .api-category-divider::after {
   flex: 1;
   height: 1px;
-  background: var(--line);
+  background: linear-gradient(90deg, rgba(232, 88, 184, 0.35), var(--line) 30%);
   content: "";
 }
 
@@ -1842,10 +1846,10 @@ a:hover {
   margin: 0;
   padding-top: 0;
   border-top: 0;
-  color: var(--text);
+  color: var(--pink);
   font-family: var(--font-display);
-  font-size: 0.66rem;
-  letter-spacing: 0.16em;
+  font-size: 0.64rem;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
 }
 
@@ -1855,15 +1859,6 @@ a:hover {
   margin-top: 22px;
   padding-top: 0;
   border-top: 0;
-}
-
-.api-category-divider h2::before {
-  display: inline-block;
-  width: 14px;
-  margin-right: 10px;
-  border-top: 2px solid var(--cyan);
-  content: "";
-  vertical-align: middle;
 }
 
 .api-module > h2 {
