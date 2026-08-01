@@ -922,7 +922,7 @@ impl Scrubber {
                                             // resize together. `sign` is -1 on
                                             // the backward cap: dragging LEFT
                                             // grows the window there.
-                                            let mut cap = |ui: &mut egui::Ui,
+                                            let cap = |ui: &mut egui::Ui,
                                                            x: f32,
                                                            id: &'static str,
                                                            sign: f32,
