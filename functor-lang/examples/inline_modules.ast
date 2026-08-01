@@ -233,6 +233,7 @@ Program {
                     ),
                 ],
                 span: 97..110,
+                block: 97..393,
             },
         ),
         Module(
@@ -325,6 +326,7 @@ Program {
                     ),
                 ],
                 span: 395..408,
+                block: 395..576,
             },
         ),
         Let(

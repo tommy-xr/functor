@@ -232,6 +232,7 @@ fn run(
                         "hoverProvider": true,
                         "definitionProvider": true,
                         "inlayHintProvider": true,
+                        "foldingRangeProvider": true,
                         "codeLensProvider": { "resolveProvider": false },
                         "completionProvider": { "triggerCharacters": ["."] },
                         "executeCommandProvider": {
@@ -315,6 +316,21 @@ fn run(
                 write_message(
                     writer,
                     &json!({ "jsonrpc": "2.0", "id": id, "result": Value::Array(hints) }),
+                );
+            }
+            ("textDocument/foldingRange", Some(id)) => {
+                let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+                // From the last-good load (like completion): no reparse on a
+                // request the client re-issues after every edit, and a
+                // momentarily broken buffer keeps its folds instead of
+                // popping every block open.
+                let result = projects
+                    .get(uri)
+                    .and_then(|project| folding_ranges(project, uri))
+                    .unwrap_or_else(|| json!([]));
+                write_message(
+                    writer,
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 );
             }
             ("textDocument/codeLens", Some(id)) => {
@@ -1112,12 +1128,42 @@ fn inlay_hints(uri: &str, documents: &HashMap<String, String>, range: &Value) ->
     Some(Value::Array(hints))
 }
 
+/// Answer a folding-range request: one collapsible region per inline
+/// `module Name { … }` block in the open file. (Indentation-based folding is
+/// the client's own default and needs no server ranges; a `module` block is
+/// the one construct whose extent only the parser knows.)
+fn folding_ranges(
+    project: &functor_lang::project::Project,
+    uri: &str,
+) -> Option<Value> {
+    let file = project.sources.file_by_path(&uri_to_path(uri)?)?;
+    let line_of = |offset: usize| lsp_position(&file.src, offset - file.base)["line"].clone();
+    let ranges: Vec<Value> = project
+        .inline_modules
+        .iter()
+        .filter(|module| owns(file, module.span.start))
+        .filter_map(|module| {
+            let (start, end) = (line_of(module.span.start), line_of(module.span.end - 1));
+            // A one-line block has nothing to fold.
+            (start != end).then(|| json!({
+                "startLine": start,
+                "endLine": end,
+                "kind": "region",
+            }))
+        })
+        .collect();
+    Some(Value::Array(ranges))
+}
+
 /// Answer a completion request. Unlike hover/definition, the offset stays
 /// **local** to the live buffer (no `file.base +`): `functor_lang::complete`
 /// derives context textually from that buffer, while candidates come from the
 /// (possibly stale) last-good `project`. `current_module` is the open file's
 /// module (a sibling's own defs are referenced bare), falling back to the
-/// project entry.
+/// project entry, and the cursor's inline `module` block (if any) is the
+/// namespace nested inside it — found by SPAN, since one file holds several.
+/// Like the candidates, the block comes from the cached project: a stale cache
+/// can name the previous block, which the same low-confidence rule tolerates.
 fn completion(
     project: &functor_lang::project::Project,
     uri: &str,
@@ -1126,15 +1172,24 @@ fn completion(
 ) -> Option<Value> {
     let text = documents.get(uri)?;
     let offset = position_to_offset(text, position)?;
-    let current_module = uri_to_path(uri)
-        .and_then(|path| {
+    let file = uri_to_path(uri).and_then(|path| project.sources.file_by_path(&path));
+    let current_module = file.map_or_else(|| project.entry.clone(), |file| file.module.clone());
+    let inline = file
+        .and_then(|file| {
+            // A stale cache can put the live offset past this file's range —
+            // never adopt another file's block.
             project
-                .sources
-                .file_by_path(&path)
-                .map(|file| file.module.clone())
+                .inline_module_at(file.base + offset)
+                .filter(|module| module.file == file.module)
         })
-        .unwrap_or_else(|| project.entry.clone());
-    let items = functor_lang::complete::complete(project, &current_module, text, offset);
+        .map(|module| module.path.clone());
+    let items = functor_lang::complete::complete(
+        project,
+        &current_module,
+        inline.as_deref(),
+        text,
+        offset,
+    );
     if items.is_empty() {
         return None;
     }

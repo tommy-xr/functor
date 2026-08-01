@@ -459,4 +459,33 @@ mod tests {
         let module = crate::lower(crate::parse(src).unwrap()).unwrap();
         assert!(definition_span(&module, src.len()).is_none());
     }
+
+    // --- Inline `module` blocks (PR 2) ---
+
+    // Every kind of reference into a `module Server { … }` block resolves to
+    // its declaration: the flat canonical name (`Server.step`) is what the IR
+    // carries, so the name index needs no module awareness.
+    #[test]
+    fn references_into_an_inline_module_resolve() {
+        let src = "module Server {\n  \
+                   type Cmd = | Spawn(id: float)\n  \
+                   let step = (c: Cmd) => 1.0\n\
+                   }\n\
+                   let go = () => Server.step(Server.Spawn(1.0))\n";
+        assert_eq!(def_at(src, "Server.step("), Some("let step = "));
+        assert_eq!(def_at(src, "Server.Spawn(1.0"), Some("Spawn(id: float)"));
+        // The annotation inside the block, on the module's own type.
+        assert_eq!(def_at(src, "Cmd)"), Some("type Cmd = | Spawn(id: float)"));
+    }
+
+    // A def INSIDE a module referring to the enclosing file's top level (the
+    // lowering scope rule) still jumps to the file-level binding.
+    #[test]
+    fn a_module_member_jumps_to_a_file_level_definition() {
+        let src = "let speed = 4.0\n\
+                   module Server {\n  \
+                   let step = () => speed\n\
+                   }\n";
+        assert_eq!(def_at(src, "speed\n}"), Some("let speed = "));
+    }
 }

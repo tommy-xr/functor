@@ -100,4 +100,17 @@ mod tests {
         // `b`'s lens anchors at the start of its `let`, on line 2.
         assert_eq!(&src[lenses[1].span.start..lenses[1].span.start + 5], "let b");
     }
+
+    // PR 2. A def inside an inline `module` gets its own lens, titled with the
+    // canonical name and anchored at its (indented) `let`.
+    #[test]
+    fn a_def_inside_a_module_gets_a_qualified_lens() {
+        let src = "module Server {\n  let step = (d: float) => d\n}\n";
+        let module = crate::lower(crate::parse(src).unwrap()).unwrap();
+        let (_, types) = check_with_types(&module);
+        let lenses = signatures(&module, &types);
+        assert_eq!(lenses.len(), 1);
+        assert_eq!(lenses[0].title, "Server.step : (float) => float");
+        assert_eq!(lenses[0].span.start, src.find("let step").unwrap());
+    }
 }

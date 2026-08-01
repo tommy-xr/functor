@@ -25,7 +25,13 @@
 //! other stale or broken buffer skips both layers and falls back to the
 //! textual-only answer — the low-confidence rule, in its simplest honest form.
 //!
-//! Non-goals: chained members (`a.b.`), type-position members (`Scene.t` /
+//! Inline `module` blocks are namespaces too: the cursor's block (the caller
+//! passes it — see [`complete`]) contributes its own names bare and shadows
+//! the file's, `Utils.` offers the inline modules nested under it, and
+//! `Utils.Grid.` offers that block's members.
+//!
+//! Non-goals: chained members off a VALUE (`pos.origin.`), type-position
+//! members (`Scene.t` /
 //! `Pieces.Shape` in annotations), `open`ed modules' exports offered bare (the
 //! merged module does not retain `open` metadata), and expression receivers
 //! (`foo().`). Each testable one is pinned as an empty result by a boundary
@@ -72,12 +78,30 @@ const KEYWORDS: [&str; 12] = [
 /// OFFSET CONTRACT: `offset` is LOCAL to `live_text` (the live buffer), NOT
 /// project-wide. Context comes purely from `live_text`; candidates purely from
 /// `project` (possibly a stale last-good load). The two span spaces never mix.
+///
+/// `current_module` is the open FILE's module (`Game`, `Utils`);
+/// `inline_module` is the CANONICAL PATH
+/// ([`InlineModule::path`](crate::project::InlineModule::path) — `Server` in
+/// the entry, `Utils.Grid` elsewhere) of the `module Name { … }` block the
+/// cursor sits inside, if any; the caller finds it with
+/// [`Project::inline_module_at`](crate::project::Project::inline_module_at).
+/// Its members are visible bare and SHADOW the file's, mirroring `lower`'s
+/// resolution order.
 pub fn complete(
     project: &Project,
     current_module: &str,
+    inline_module: Option<&str>,
     live_text: &str,
     offset: usize,
 ) -> Vec<CompletionItem> {
+    // The namespaces the cursor sees, MOST SPECIFIC FIRST: the inline `module`
+    // block it sits in, then the file's own (`lower`'s resolution order — a
+    // module's own names shadow the file's).
+    let scopes: Vec<String> = inline_module
+        .into_iter()
+        .chain(Some(current_module))
+        .map(str::to_string)
+        .collect();
     match context_at(live_text, offset) {
         Context::None => Vec::new(),
         Context::Member {
@@ -89,11 +113,18 @@ pub fn complete(
             // the buffer that is exactly the cached text plus the `.partial`
             // tail being typed (see [`member_fresh_offset`]).
             let fresh = member_fresh_offset(project, current_module, live_text, dot, offset);
-            member_candidates(project, current_module, &qualifier, &partial, fresh)
+            member_candidates(
+                project,
+                current_module,
+                &scopes,
+                &qualifier,
+                &partial,
+                fresh,
+            )
         }
         Context::TopLevel { partial } => {
             let fresh = fresh_offset(project, current_module, live_text, offset);
-            top_level_candidates(project, current_module, &partial, fresh)
+            top_level_candidates(project, current_module, &scopes, &partial, fresh)
         }
     }
 }
@@ -309,8 +340,8 @@ fn lex_completion_prefix(prefix: &str) -> Option<Vec<Token>> {
 
 /// The dotted qualifier ending at `tokens[end]` (an `Ident`): walk back over an
 /// `Ident (Dot Ident)*` chain so `a.b.` yields `"a.b"`. A multi-segment
-/// qualifier matches no module in v1 (its candidates come back empty — the
-/// chained-member boundary).
+/// qualifier names a nested namespace (`Utils.Grid.`); one that names no
+/// module comes back empty — the chained-member boundary.
 fn qualifier_chain(tokens: &[Token], end: usize) -> String {
     let mut names = Vec::new();
     let mut i = end;
@@ -343,16 +374,17 @@ fn is_keyword(kind: &TokenKind) -> bool {
 }
 
 /// Candidates for `Qualifier.partial`: the module's `.funi` signatures, its
-/// sibling defs, its ADT constructors, and the builtins in its namespace.
+/// sibling defs, its ADT constructors, the builtins in its namespace, and its
+/// nested inline modules (`Utils.` offers `Grid`).
 fn member_candidates(
     project: &Project,
     current_module: &str,
+    scopes: &[String],
     qualifier: &str,
     partial: &str,
     fresh: Option<usize>,
 ) -> Vec<CompletionItem> {
     let module = &project.module;
-    let prefix = format!("{qualifier}.");
     // Lazy: only checked now that a context matched (defs need the checker's
     // types for their details). The check is on `project` (last-good), never
     // on the live buffer.
@@ -362,23 +394,34 @@ fn member_candidates(
     // top-level lets BEFORE sibling/builtin modules (see `crate::lower`'s
     // resolution order), so `List.x` on a record-typed binder named `List` is
     // a field access, not a builtin call. When the buffer is fresh and the
-    // qualifier is a single segment that names a value, answer as that value:
-    // a declared record offers its fields, anything else offers nothing
-    // (field access on a non-record has no members). Chained `a.b.` stays
-    // empty — the chained-member boundary.
-    if !qualifier.contains('.') {
-        if let Some(offset) = fresh {
-            if let Some(ty) = qualifier_type(project, current_module, qualifier, offset, &types) {
-                return finish(record_fields_of(project, &ty), partial);
-            }
+    // qualifier's HEAD names a value, answer as that value: a single segment
+    // over a declared record offers its fields, anything else offers nothing
+    // (field access on a non-record has no members, and a chained `a.b.` is
+    // the chained-member boundary — never a namespace's members).
+    let head = qualifier.split_once('.').map_or(qualifier, |(head, _)| head);
+    if let Some(offset) = fresh {
+        if let Some(ty) = qualifier_type(project, scopes, head, offset, &types) {
+            let fields = if qualifier.contains('.') {
+                Vec::new()
+            } else {
+                record_fields_of(project, &ty)
+            };
+            return finish(fields, partial);
         }
     }
 
+    // The namespace the written qualifier names HERE, as a canonical prefix.
+    // `None` means it names none (an entry-file `module Server` written bare
+    // from a sibling, where the spelling is `Game.Server`) — no candidates.
+    let Some(canonical) = canonical_qualifier(project, current_module, qualifier) else {
+        return Vec::new();
+    };
+    let prefix = format!("{canonical}.");
     let mut items = Vec::new();
 
     // Host-provided values (`Scene.cube : () => Scene.t`).
     for sig in &module.signatures {
-        if let Some(label) = sig.name.strip_prefix(&prefix) {
+        if let Some(label) = direct_member(&sig.name, &prefix) {
             let kind = if sig.ty.name == "=>" {
                 CompletionKind::Function
             } else {
@@ -394,7 +437,7 @@ fn member_candidates(
 
     // Sibling/user-module defs (detail from the checker, hover-identical).
     for def in &module.defs {
-        if let Some(label) = def.name.strip_prefix(&prefix) {
+        if let Some(label) = direct_member(&def.name, &prefix) {
             let ty = types.expr(def.value.id).cloned().unwrap_or(Type::Unknown);
             items.push(CompletionItem {
                 label: label.to_string(),
@@ -409,7 +452,7 @@ fn member_candidates(
         if let TypeBody::Variants(decls) = &ty.body {
             let ret = ctor_return(ty);
             for variant in decls {
-                if let Some(label) = variant.name.strip_prefix(&prefix) {
+                if let Some(label) = direct_member(&variant.name, &prefix) {
                     items.push(CompletionItem {
                         label: label.to_string(),
                         detail: Some(ctor_detail(variant, &ret)),
@@ -424,7 +467,7 @@ fn member_candidates(
     // functions, but a constant like `Math.pi` is a plain value.
     for &b in &BUILTINS {
         let name = builtin_name(b);
-        if let Some(label) = name.strip_prefix(&prefix) {
+        if let Some(label) = direct_member(name, &prefix) {
             items.push(CompletionItem {
                 label: label.to_string(),
                 detail: Some(format!("{name} : {}", builtin_signature(b))),
@@ -433,7 +476,73 @@ fn member_candidates(
         }
     }
 
+    // The namespaces nested under the qualifier (`Utils.` offers `Grid`).
+    // Inline modules are their only source: no builtin or `.funi` name has a
+    // second dot, so a member's own name can never imply one.
+    for inline in &project.inline_modules {
+        if let Some(segment) = inline.path.strip_prefix(&prefix) {
+            items.push(CompletionItem {
+                label: segment.to_string(),
+                detail: None,
+                kind: CompletionKind::Module,
+            });
+        }
+    }
+
     finish(items, partial)
+}
+
+/// `name` (a canonical dotted name) as a DIRECT member of `prefix`: `None`
+/// when it is not under `prefix`, or when it belongs to a namespace nested
+/// below it — `Utils.Grid.cell` is not a member `Grid.cell` of `Utils`
+/// (finding 9 of PR 1's review); the nested `Grid` is offered separately.
+fn direct_member<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+    let rest = name.strip_prefix(prefix)?;
+    (!rest.contains('.')).then_some(rest)
+}
+
+/// The canonical prefix a WRITTEN qualifier names HERE, or `None` when it
+/// names no namespace reachable from `current_module`. Mirrors
+/// `lower::Lowerer::resolve_module_prefix` + `canonical_prefix`:
+///
+/// - one of this FILE's inline modules, referenced by its bare name there
+///   (`Grid` inside `utils.fun` → `Utils.Grid`);
+/// - an entry-qualified path, which canonicalizes with the entry stripped
+///   (`Game.Server` → `Server`, the same members the entry file writes bare);
+/// - an entry-file inline module written bare from ANOTHER file — not
+///   reachable (`Server.step` there is an unknown external): `None`;
+/// - anything else — a sibling (`Utils`), a sibling's inline module
+///   (`Utils.Grid`), a builtin namespace (`Scene`) — as written.
+fn canonical_qualifier(
+    project: &Project,
+    current_module: &str,
+    qualifier: &str,
+) -> Option<String> {
+    let (head, rest) = match qualifier.split_once('.') {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (qualifier, None),
+    };
+    let inline_of = |file: &str| {
+        project
+            .inline_modules
+            .iter()
+            .find(|inline| inline.file == file && inline.name == head)
+    };
+    if let Some(inline) = inline_of(current_module) {
+        return Some(match rest {
+            Some(rest) => format!("{}.{rest}", inline.path),
+            None => inline.path.clone(),
+        });
+    }
+    if head == project.entry {
+        // `Game.` alone would strip to the empty prefix (every canonical name
+        // "under" it) — out of scope; only `Game.Something` canonicalizes.
+        return rest.map(str::to_string);
+    }
+    if inline_of(&project.entry).is_some() {
+        return None;
+    }
+    Some(qualifier.to_string())
 }
 
 /// The fields of a declared record type, or empty. Only a [`Type::Record`]
@@ -462,19 +571,19 @@ fn record_fields_of(project: &Project, ty: &Type) -> Vec<CompletionItem> {
 }
 
 /// The checked type of a single-segment member qualifier at `offset`, when it
-/// names a VALUE: a binder in scope (innermost wins), else an own-module def
-/// (bare for the entry, `Module.name` for a sibling). A binding that exists
-/// but has no checked type is `Unknown` (it still shadows — the caller must
-/// not fall through to namespace members). `None` only when no value binding
-/// has that name.
+/// names a VALUE: a binder in scope (innermost wins), else a def of one of the
+/// cursor's namespaces (`scopes`, most specific first — an inline module's own
+/// def shadows the file's). A binding that exists but has no checked type is
+/// `Unknown` (it still shadows — the caller must not fall through to namespace
+/// members). `None` only when no value binding has that name.
 fn qualifier_type(
     project: &Project,
-    current_module: &str,
+    scopes: &[String],
     qualifier: &str,
     offset: usize,
     types: &ExprTypes,
 ) -> Option<Type> {
-    if let Some(def) = enclosing_def(project, current_module, offset) {
+    if let Some(def) = enclosing_def(project, scopes, offset) {
         if let Some((_, binding, _)) = binders_in_scope(&def.value, offset)
             .into_iter()
             .find(|(name, _, _)| name == qualifier)
@@ -482,24 +591,29 @@ fn qualifier_type(
             return Some(types.binding(binding).cloned().unwrap_or(Type::Unknown));
         }
     }
-    let canonical = if current_module == project.entry {
-        qualifier.to_string()
-    } else {
-        format!("{current_module}.{qualifier}")
-    };
-    let def = project
-        .module
-        .defs
-        .iter()
-        .find(|def| def.name == canonical)?;
+    let def = scopes.iter().find_map(|scope| {
+        let canonical = qualified(scope, &project.entry, qualifier);
+        project.module.defs.iter().find(|def| def.name == canonical)
+    })?;
     Some(types.expr(def.value.id).cloned().unwrap_or(Type::Unknown))
 }
 
-/// Candidates at a top-level position: keywords, the current module's own
-/// defs and constructors (bare), and the visible module names.
+/// A member's canonical name in `scope`: bare in the entry file (whose
+/// members carry no prefix), `Scope.name` everywhere else.
+fn qualified(scope: &str, entry: &str, name: &str) -> String {
+    if scope == entry {
+        name.to_string()
+    } else {
+        format!("{scope}.{name}")
+    }
+}
+
+/// Candidates at a top-level position: keywords, the names visible bare in the
+/// cursor's namespaces (`scopes`, most specific first), and the module names.
 fn top_level_candidates(
     project: &Project,
     current_module: &str,
+    scopes: &[String],
     partial: &str,
     fresh: Option<usize>,
 ) -> Vec<CompletionItem> {
@@ -512,7 +626,7 @@ fn top_level_candidates(
     // keywords/globals below so `finish`'s stable sort + dedup lets an inner
     // binder shadow a same-named global (locals appear first, dedup keeps them).
     if let Some(offset) = fresh {
-        if let Some(def) = enclosing_def(project, current_module, offset) {
+        if let Some(def) = enclosing_def(project, scopes, offset) {
             for (name, binding, mutable) in binders_in_scope(&def.value, offset) {
                 items.push(binder_item(&name, binding, mutable, &types));
             }
@@ -527,30 +641,31 @@ fn top_level_candidates(
         });
     }
 
-    // This module's own defs, referenced bare in source. (Entry defs are
-    // already bare; a sibling's are `Module.name` — the same strip either way.)
-    for def in &module.defs {
-        if owning_module(&def.name, entry) == current_module {
-            let ty = types.expr(def.value.id).cloned().unwrap_or(Type::Unknown);
-            items.push(CompletionItem {
-                label: bare_name(&def.name).to_string(),
-                detail: Some(format!("{} : {ty}", def.name)),
-                kind: value_kind(&ty),
-            });
+    // The defs and constructors referenced bare here, namespace by namespace —
+    // an inline `module`'s own first, then the enclosing file's, so `finish`'s
+    // dedup keeps the shadowing one (`lower`'s resolution order).
+    for scope in scopes {
+        for def in &module.defs {
+            if owning_module(&def.name, entry) == scope {
+                let ty = types.expr(def.value.id).cloned().unwrap_or(Type::Unknown);
+                items.push(CompletionItem {
+                    label: bare_name(&def.name).to_string(),
+                    detail: Some(format!("{} : {ty}", def.name)),
+                    kind: value_kind(&ty),
+                });
+            }
         }
-    }
-
-    // This module's own constructors, also bare.
-    for ty in &module.types {
-        if let TypeBody::Variants(decls) = &ty.body {
-            let ret = ctor_return(ty);
-            for variant in decls {
-                if owning_module(&variant.name, entry) == current_module {
-                    items.push(CompletionItem {
-                        label: bare_name(&variant.name).to_string(),
-                        detail: Some(ctor_detail(variant, &ret)),
-                        kind: CompletionKind::Constructor,
-                    });
+        for ty in &module.types {
+            if let TypeBody::Variants(decls) = &ty.body {
+                let ret = ctor_return(ty);
+                for variant in decls {
+                    if owning_module(&variant.name, entry) == scope {
+                        items.push(CompletionItem {
+                            label: bare_name(&variant.name).to_string(),
+                            detail: Some(ctor_detail(variant, &ret)),
+                            kind: CompletionKind::Constructor,
+                        });
+                    }
                 }
             }
         }
@@ -575,6 +690,19 @@ fn top_level_candidates(
     }
     for &b in &BUILTINS {
         module_segment(builtin_name(b), &mut modules);
+    }
+    // Inline modules are bare only inside their DECLARING file. The entry's
+    // land in `modules` above (its members are canonically bare, so `Server`
+    // is their first segment) — drop those from every other file, where the
+    // spelling is `Game.Server` and a bare `Server.step` is an unknown
+    // external. A sibling's (`Utils.Grid.cell` → segment `Utils`) are the
+    // mirror case: add them back inside `utils.fun`.
+    for inline in &project.inline_modules {
+        if inline.file == current_module {
+            modules.insert(inline.name.clone());
+        } else if inline.file == *entry {
+            modules.remove(&inline.name);
+        }
     }
     modules.remove(current_module);
     for name in modules {
@@ -626,12 +754,15 @@ fn value_kind(ty: &Type) -> CompletionKind {
 }
 
 /// The top-level def whose span contains project-wide `offset` and whose name
-/// belongs to `current_module` (the file being edited) — the def whose value
-/// expression the scope-aware walk explores. Ends are inclusive so a cursor at
-/// the very end of the def (the common completion position) still matches.
-fn enclosing_def<'a>(project: &'a Project, current_module: &str, offset: usize) -> Option<&'a Def> {
+/// belongs to one of the cursor's namespaces (`scopes` — the file being edited
+/// and, inside a `module` block, that block) — the def whose value expression
+/// the scope-aware walk explores. Ends are inclusive so a cursor at the very
+/// end of the def (the common completion position) still matches.
+fn enclosing_def<'a>(project: &'a Project, scopes: &[String], offset: usize) -> Option<&'a Def> {
     project.module.defs.iter().find(|def| {
-        owning_module(&def.name, &project.entry) == current_module
+        scopes
+            .iter()
+            .any(|scope| owning_module(&def.name, &project.entry) == scope)
             && scope_contains(def.span, offset)
     })
 }
@@ -741,16 +872,17 @@ fn binder_item(name: &str, binding: BindingId, mutable: bool, types: &ExprTypes)
     }
 }
 
-/// The module a canonical name belongs to: the segment before its first `.`,
-/// or the entry (whose members are bare).
+/// The module a canonical name belongs to: everything before its LAST `.`
+/// (`Utils.clamp` → `Utils`, `Utils.Grid.cell` → the inline module
+/// `Utils.Grid`), or the entry (whose members are bare).
 fn owning_module<'a>(name: &'a str, entry: &'a str) -> &'a str {
-    name.split_once('.').map_or(entry, |(module, _)| module)
+    name.rsplit_once('.').map_or(entry, |(module, _)| module)
 }
 
 /// A canonical name stripped of its module qualifier (`Utils.clamp` →
-/// `clamp`; a bare name is unchanged).
+/// `clamp`, `Utils.Grid.cell` → `cell`; a bare name is unchanged).
 fn bare_name(name: &str) -> &str {
-    name.split_once('.').map_or(name, |(_, member)| member)
+    name.rsplit_once('.').map_or(name, |(_, member)| member)
 }
 
 /// Record `name`'s module qualifier (its first dotted segment), if any.
@@ -803,7 +935,7 @@ mod tests {
     /// seam.
     fn game(project_src: &str, prelude: &[(&str, &str)], live: &str) -> Vec<CompletionItem> {
         let project = project_of(&[("game.fun", project_src)], prelude);
-        complete(&project, "Game", live, live.len())
+        complete(&project, "Game", None, live, live.len())
     }
 
     /// Complete in module `Game` at byte `offset` inside `src`, with the entry
@@ -811,7 +943,7 @@ mod tests {
     /// scope-aware layers (locals, record fields) run.
     fn fresh(src: &str, prelude: &[(&str, &str)], offset: usize) -> Vec<CompletionItem> {
         let project = project_of(&[("game.fun", src)], prelude);
-        complete(&project, "Game", src, offset)
+        complete(&project, "Game", None, src, offset)
     }
 
     fn labels(items: &[CompletionItem]) -> Vec<String> {
@@ -941,7 +1073,7 @@ mod tests {
             &[],
         );
         let live = "let s = Utils.";
-        let items = complete(&project, "Game", live, live.len());
+        let items = complete(&project, "Game", None, live, live.len());
         assert_eq!(
             items,
             vec![
@@ -974,7 +1106,7 @@ mod tests {
             &[],
         );
         let live = "let s = Pieces.";
-        let items = complete(&project, "Game", live, live.len());
+        let items = complete(&project, "Game", None, live, live.len());
         assert_eq!(labels(&items), ["Circle", "Point", "count"]);
         assert_eq!(find(&items, "Circle").kind, CompletionKind::Constructor);
         assert_eq!(
@@ -1000,7 +1132,7 @@ mod tests {
             )],
             &[],
         );
-        let items = complete(&entry, "Game", "let x = ", "let x = ".len());
+        let items = complete(&entry, "Game", None, "let x = ", "let x = ".len());
         assert!(has(&items, "Left"));
         assert!(has(&items, "Right"));
         assert_eq!(find(&items, "Left").kind, CompletionKind::Constructor);
@@ -1012,7 +1144,7 @@ mod tests {
             ],
             &[],
         );
-        let items = complete(&sibling, "Pieces", "let x = ", "let x = ".len());
+        let items = complete(&sibling, "Pieces", None, "let x = ", "let x = ".len());
         assert!(
             has(&items, "Circle"),
             "own ctor bare in {:?}",
@@ -1037,7 +1169,7 @@ mod tests {
             &[("Scene", SCENE)],
         );
         let live = "let x = ";
-        let items = complete(&project, "Game", live, live.len());
+        let items = complete(&project, "Game", None, live, live.len());
         assert_eq!(find(&items, "let").kind, CompletionKind::Keyword);
         assert!(has(&items, "main"), "own def bare in {:?}", labels(&items));
         assert_eq!(find(&items, "Utils").kind, CompletionKind::Module);
@@ -1064,7 +1196,7 @@ mod tests {
             &[("Scene", SCENE)],
         );
         let live = "let y = ";
-        let items = complete(&project, "Utils", live, live.len());
+        let items = complete(&project, "Utils", None, live, live.len());
         assert!(has(&items, "clamp"), "own def bare in {:?}", labels(&items));
         assert!(has(&items, "Scene"));
         assert!(!has(&items, "Utils"), "own module offered to itself");
@@ -1148,7 +1280,7 @@ mod tests {
         let project = project_of(&[("game.fun", src)], &[]);
 
         // Inside `f`'s body: `score` is offered, typed from its annotation.
-        let in_f = complete(&project, "Game", src, src.find("=> score").unwrap() + 8);
+        let in_f = complete(&project, "Game", None, src, src.find("=> score").unwrap() + 8);
         assert_eq!(
             find(&in_f, "score").detail.as_deref(),
             Some("score : float")
@@ -1156,7 +1288,7 @@ mod tests {
         assert_eq!(find(&in_f, "score").kind, CompletionKind::Value);
 
         // Inside `g`'s body (end of buffer): `g`'s own param, but NOT `score`.
-        let in_g = complete(&project, "Game", src, src.len());
+        let in_g = complete(&project, "Game", None, src, src.len());
         assert!(has(&in_g, "yy"), "g's own param: {:?}", labels(&in_g));
         assert!(!has(&in_g, "score"), "outer param leaked into a later def");
     }
@@ -1170,7 +1302,7 @@ mod tests {
         let project = project_of(&[("game.fun", src)], &[]);
 
         // In the Circle arm (after the body reference `rad`): `rad`, not `side`.
-        let in_circle = complete(&project, "Game", src, src.find("rad |").unwrap() + 3);
+        let in_circle = complete(&project, "Game", None, src, src.find("rad |").unwrap() + 3);
         assert_eq!(
             find(&in_circle, "rad").detail.as_deref(),
             Some("rad : float")
@@ -1178,7 +1310,7 @@ mod tests {
         assert!(!has(&in_circle, "side"), "other arm's binder leaked");
 
         // In the Square arm (end of buffer): `side`, not `rad`.
-        let in_square = complete(&project, "Game", src, src.len());
+        let in_square = complete(&project, "Game", None, src, src.len());
         assert!(
             has(&in_square, "side"),
             "arm binder: {:?}",
@@ -1195,11 +1327,11 @@ mod tests {
         let project = project_of(&[("game.fun", src)], &[]);
 
         // In the `in` body (end, partial `y`): the `let` binder `y` is offered.
-        let in_body = complete(&project, "Game", src, src.len());
+        let in_body = complete(&project, "Game", None, src, src.len());
         assert_eq!(find(&in_body, "y").detail.as_deref(), Some("y : float"));
 
         // In `y`'s value (`x + 1.0`, empty partial): `x` is in scope, `y` NOT.
-        let in_value = complete(&project, "Game", src, src.find("let y = ").unwrap() + 8);
+        let in_value = complete(&project, "Game", None, src, src.find("let y = ").unwrap() + 8);
         assert!(
             has(&in_value, "x"),
             "param in the value: {:?}",
@@ -1234,13 +1366,13 @@ mod tests {
         let src = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => v";
         let project = project_of(&[("game.fun", src)], &[]);
         let live = format!("{src}.");
-        let items = complete(&project, "Game", &live, live.len());
+        let items = complete(&project, "Game", None, &live, live.len());
         assert_eq!(labels(&items), ["x", "y"]);
         assert_eq!(find(&items, "x").kind, CompletionKind::Field);
 
         // And with a partial being typed after the dot: `.y` filters to `y`.
         let live = format!("{src}.y");
-        let items = complete(&project, "Game", &live, live.len());
+        let items = complete(&project, "Game", None, &live, live.len());
         assert_eq!(labels(&items), ["y"]);
     }
 
@@ -1252,7 +1384,7 @@ mod tests {
         let project = project_of(&[("game.fun", src)], &[]);
         let dot = src.find("v +").unwrap() + 1;
         let live = format!("{}.{}", &src[..dot], &src[dot..]);
-        let items = complete(&project, "Game", &live, dot + 1); // cursor after the dot
+        let items = complete(&project, "Game", None, &live, dot + 1); // cursor after the dot
         assert_eq!(labels(&items), ["x"]);
     }
 
@@ -1270,7 +1402,7 @@ mod tests {
         let src = "let Scene = 1.0\nlet f = () => Scene";
         let project = project_of(&[("game.fun", src)], &[("Scene", SCENE)]);
         let live = format!("{src}.");
-        let items = complete(&project, "Game", &live, live.len());
+        let items = complete(&project, "Game", None, &live, live.len());
         assert!(
             items.is_empty(),
             "prelude members leaked past a def: {:?}",
@@ -1314,14 +1446,14 @@ mod tests {
         // partial: the gate is closed, so the param local `v` is suppressed,
         // while the v1 keywords/modules still answer.
         let stale_top = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => ";
-        let top = complete(&project, "Game", stale_top, stale_top.len());
+        let top = complete(&project, "Game", None, stale_top, stale_top.len());
         assert!(!has(&top, "v"), "a local leaked through a stale buffer");
         assert!(has(&top, "let"), "v1 keyword still offered");
         assert!(has(&top, "Scene"), "v1 module still offered");
 
         // A stale member buffer `v.`: record fields must not resolve.
         let stale_v = "type Vec2 = { x: float, y: float }\nlet len = (v: Vec2) => v.";
-        let member = complete(&project, "Game", stale_v, stale_v.len());
+        let member = complete(&project, "Game", None, stale_v, stale_v.len());
         assert!(
             member.is_empty(),
             "record fields resolved stale: {:?}",
@@ -1329,7 +1461,7 @@ mod tests {
         );
 
         // …but a v1 prelude member (no freshness needed) still answers.
-        let scene = complete(&project, "Game", "let s = Scene.", "let s = Scene.".len());
+        let scene = complete(&project, "Game", None, "let s = Scene.", "let s = Scene.".len());
         assert!(has(&scene, "cube"), "v1 prelude member still works");
     }
 
@@ -1340,7 +1472,7 @@ mod tests {
     fn sibling_file_locals_use_base_translation() {
         let utils = "let g = (val: float) => val";
         let project = project_of(&[("game.fun", STUB), ("utils.fun", utils)], &[]);
-        let items = complete(&project, "Utils", utils, utils.len());
+        let items = complete(&project, "Utils", None, utils, utils.len());
         assert!(has(&items, "val"), "sibling local: {:?}", labels(&items));
         assert_eq!(find(&items, "val").detail.as_deref(), Some("val : float"));
     }
@@ -1358,7 +1490,7 @@ mod tests {
             &[],
         );
         let offset = src.find("v.").unwrap() + 2; // after the dot
-        let items = complete(&project, "Game", src, offset);
+        let items = complete(&project, "Game", None, src, offset);
         assert_eq!(labels(&items), ["x", "y"]);
         assert_eq!(find(&items, "x").kind, CompletionKind::Field);
         assert_eq!(find(&items, "x").detail.as_deref(), Some("x : float"));
@@ -1377,7 +1509,7 @@ mod tests {
     #[test]
     fn empty_buffer_offers_top_level() {
         let project = project_of(&[("game.fun", STUB)], &[]);
-        let items = complete(&project, "Game", "", 0);
+        let items = complete(&project, "Game", None, "", 0);
         assert!(has(&items, "let"));
     }
 
@@ -1461,7 +1593,7 @@ mod tests {
             &[],
         );
         let live = "let s = Pieces.";
-        let items = complete(&project, "Game", live, live.len());
+        let items = complete(&project, "Game", None, live, live.len());
         assert_eq!(
             find(&items, "Full").detail.as_deref(),
             Some("Pieces.Full : ('a) => Box<'a>")
@@ -1477,5 +1609,184 @@ mod tests {
     fn full_keyword_still_offered() {
         let items = game(STUB, &[], "let");
         assert!(has(&items, "let"));
+    }
+
+    // --- Inline `module` blocks (PR 2) ---
+
+    /// An entry file with a `module Server` block (canonically BARE members)
+    /// and a sibling `utils.fun` with a `module Grid` block (`Utils.Grid.*`).
+    const MODULES_ENTRY: &str = "let speed = 4.0\n\
+                                 module Server {\n\
+                                 \x20 type Cmd = | Spawn(id: float)\n\
+                                 \x20 let step = (c: Cmd) => 1.0\n\
+                                 }\n";
+    const MODULES_SIBLING: &str = "let version = 3.0\n\
+                                   module Grid {\n\
+                                   \x20 let cell = (x: float) => x\n\
+                                   }\n";
+
+    fn modules_project() -> Project {
+        project_of(
+            &[("game.fun", MODULES_ENTRY), ("utils.fun", MODULES_SIBLING)],
+            &[],
+        )
+    }
+
+    // An entry-file inline module completes by its bare name (its members
+    // canonicalize bare, so this is the ordinary member path).
+    #[test]
+    fn entry_inline_module_members_complete() {
+        let project = modules_project();
+        let live = "let x = Server.";
+        let items = complete(&project, "Game", None, live, live.len());
+        assert_eq!(find(&items, "step").detail.as_deref(), Some("Server.step : (Server.Cmd) => float"));
+        assert_eq!(find(&items, "Spawn").kind, CompletionKind::Constructor);
+    }
+
+    // Finding 9 of PR 1's review: `Utils.` used to offer the MEMBER
+    // `Grid.cell`. It offers the nested module `Grid` instead.
+    #[test]
+    fn a_files_inline_module_is_a_nested_namespace_not_a_member() {
+        let project = modules_project();
+        let live = "let x = Utils.";
+        let items = complete(&project, "Game", None, live, live.len());
+        assert!(!has(&items, "Grid.cell"), "{:?}", labels(&items));
+        assert!(has(&items, "version"));
+        assert_eq!(find(&items, "Grid").kind, CompletionKind::Module);
+    }
+
+    // …and the multi-segment qualifier completes that module's members.
+    #[test]
+    fn members_of_a_siblings_inline_module_complete() {
+        let project = modules_project();
+        let live = "let x = Utils.Grid.";
+        let items = complete(&project, "Game", None, live, live.len());
+        assert_eq!(
+            find(&items, "cell").detail.as_deref(),
+            Some("Utils.Grid.cell : (float) => float")
+        );
+    }
+
+    // Inside the declaring file, an inline module is referenced BARE — both as
+    // a top-level candidate and as a qualifier resolving to `Utils.Grid`.
+    #[test]
+    fn inline_module_is_bare_inside_its_own_file() {
+        let project = modules_project();
+        let top = complete(&project, "Utils", None, "let x = ", "let x = ".len());
+        assert_eq!(find(&top, "Grid").kind, CompletionKind::Module);
+
+        let live = "let x = Grid.";
+        let items = complete(&project, "Utils", None, live, live.len());
+        assert_eq!(labels(&items), ["cell"]);
+    }
+
+    // The cursor INSIDE a `module` block: its own names are visible bare,
+    // alongside the enclosing file's top level.
+    #[test]
+    fn bare_completion_inside_a_module_body_sees_both_namespaces() {
+        let project = modules_project();
+        let items = complete(&project, "Game", Some("Server"), "let x = ", "let x = ".len());
+        assert_eq!(
+            find(&items, "step").detail.as_deref(),
+            Some("Server.step : (Server.Cmd) => float")
+        );
+        assert_eq!(find(&items, "Spawn").kind, CompletionKind::Constructor);
+        // The file's top level, visible from inside the module.
+        assert_eq!(find(&items, "speed").detail.as_deref(), Some("speed : float"));
+    }
+
+    // A module's own name SHADOWS a same-named one at the file's top level —
+    // the module's is the one offered (lowering's resolution order).
+    #[test]
+    fn a_modules_own_name_shadows_the_files() {
+        let project = project_of(
+            &[(
+                "game.fun",
+                "let value = 1.0\nmodule Server {\n  let value = 2.0\n}\n",
+            )],
+            &[],
+        );
+        let inside = complete(&project, "Game", Some("Server"), "let x = ", "let x = ".len());
+        assert_eq!(
+            find(&inside, "value").detail.as_deref(),
+            Some("Server.value : float")
+        );
+        // At the file's top level the file's own binding wins.
+        let outside = complete(&project, "Game", None, "let x = ", "let x = ".len());
+        assert_eq!(find(&outside, "value").detail.as_deref(), Some("value : float"));
+    }
+
+    // In a SIBLING file the cursor's block is passed as its canonical path
+    // (`Utils.Grid`), and its members are offered bare there.
+    #[test]
+    fn bare_completion_inside_a_siblings_module_body() {
+        let project = modules_project();
+        let items = complete(
+            &project,
+            "Utils",
+            Some("Utils.Grid"),
+            "let x = ",
+            "let x = ".len(),
+        );
+        assert_eq!(
+            find(&items, "cell").detail.as_deref(),
+            Some("Utils.Grid.cell : (float) => float")
+        );
+        assert_eq!(find(&items, "version").detail.as_deref(), Some("Utils.version : float"));
+    }
+
+    // [xreview] The ENTRY's inline modules are bare only in the entry file:
+    // from a sibling, `Server.step` is an unknown external, so neither the
+    // name nor its members may be offered there.
+    #[test]
+    fn an_entry_inline_module_is_not_bare_in_a_sibling() {
+        let project = modules_project();
+        let top = complete(&project, "Utils", None, "let x = ", "let x = ".len());
+        assert!(!has(&top, "Server"), "{:?}", labels(&top));
+        let live = "let x = Server.";
+        let items = complete(&project, "Utils", None, live, live.len());
+        assert!(items.is_empty(), "{:?}", labels(&items));
+    }
+
+    // …the spelling that DOES resolve there is the entry-qualified one, whose
+    // canonical members are bare (`Game.Server.step` → `Server.step`).
+    #[test]
+    fn an_entry_inline_module_completes_entry_qualified() {
+        let project = modules_project();
+        let live = "let x = Game.Server.";
+        let items = complete(&project, "Utils", None, live, live.len());
+        assert_eq!(
+            find(&items, "step").detail.as_deref(),
+            Some("Server.step : (Server.Cmd) => float")
+        );
+        assert_eq!(find(&items, "Spawn").kind, CompletionKind::Constructor);
+    }
+
+    // [xreview] A value shadows a MULTI-segment namespace too: with a binder
+    // named `Utils` in scope, `Utils.Grid.` is field access on it (the
+    // chained-member boundary), not the sibling's inline module.
+    #[test]
+    fn a_value_shadows_a_nested_namespace_qualifier() {
+        let src = "let f = (Utils) => Utils.Grid.";
+        // The cached project holds this buffer minus the trailing `.` — the
+        // one edit the member freshness gate accepts.
+        let cached = "let f = (Utils) => Utils.Grid";
+        let project = project_of(
+            &[("game.fun", cached), ("utils.fun", MODULES_SIBLING)],
+            &[],
+        );
+        let items = complete(&project, "Game", None, src, src.len());
+        assert!(items.is_empty(), "{:?}", labels(&items));
+    }
+
+    // The scope-aware layer follows the cursor into a module body: a lambda
+    // param of a def declared INSIDE the block is offered there.
+    #[test]
+    fn locals_inside_a_module_body_are_offered() {
+        let src = "module Server {\n  let step = (delta: float) => delta\n}\n";
+        let project = project_of(&[("game.fun", src)], &[]);
+        let offset = src.find("=> delta").unwrap() + 3;
+        let items = complete(&project, "Game", Some("Server"), src, offset);
+        assert_eq!(find(&items, "delta").detail.as_deref(), Some("delta : float"));
     }
 }

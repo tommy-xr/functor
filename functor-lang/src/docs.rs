@@ -185,6 +185,29 @@ mod tests {
         );
     }
 
+    /// A comment block above an INDENTED def inside an inline `module`
+    /// attaches to it — the walk is line-based, so the block's indentation is
+    /// immaterial.
+    #[test]
+    fn a_def_inside_a_module_attaches_its_comment_block() {
+        let src = "module Server {\n  \
+                   // Advance the world by one command.\n  \
+                   let step = (d: float) => d\n\
+                   }\n";
+        let project =
+            load_single_source("game", src).unwrap_or_else(|e| panic!("loads: {}", e.render()));
+        let step = project
+            .module
+            .defs
+            .iter()
+            .find(|d| d.name == "Server.step")
+            .expect("Server.step def");
+        assert_eq!(
+            doc_comment(&project.sources, step.span).as_deref(),
+            Some("Advance the world by one command.")
+        );
+    }
+
     #[test]
     fn source_only_extraction_understands_explicit_doc_comments() {
         let src = "/// Make a widget.\nlet make : () => t\n";

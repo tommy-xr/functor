@@ -38,6 +38,10 @@ pub struct ModuleDecl {
     /// The `module Name` header span (not the whole block) — the span
     /// collision errors point at.
     pub span: Span,
+    /// The WHOLE block, `module` through the closing `}` — what editor
+    /// tooling folds and what decides which module the cursor is in
+    /// (see `functor_lang::project::InlineModule`).
+    pub block: Span,
 }
 
 /// `expect <expr>` — an inline test: a bool expression evaluated by test
