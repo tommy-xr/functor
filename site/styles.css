@@ -2309,6 +2309,9 @@ a:hover {
   gap: 8px;
   max-width: 40%;
   padding: 0 10px;
+  /* Cancel the strip's right padding: the mode block sits truly flush with
+     the strip's corner, like a real airline segment. */
+  margin-right: -8px;
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: 0.72rem;
