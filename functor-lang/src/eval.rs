@@ -502,8 +502,13 @@ pub fn run_expects_budgeted(
         host,
     };
     if let Err(error) = interp
-        .eval_defs(module)
-        .and_then(|_| interp.load_brand_ops(module).map(|ops| interp.brand_ops = ops))
+        .load_brand_ops(module, false)
+        .and_then(|ops| {
+            interp.brand_ops = ops;
+            interp.eval_defs(module)
+        })
+        .and_then(|_| interp.load_brand_ops(module, true))
+        .map(|ops| interp.brand_ops = ops)
     {
         return Err(RunFailure {
             error,
@@ -547,7 +552,20 @@ pub struct Session {
 pub(crate) type BrandOps = Rc<HashMap<String, BrandOpRow>>;
 
 /// One brand's declared operators, indexed by [`op_slot`].
-pub(crate) type BrandOpRow = [Option<Value>; 4];
+pub(crate) type BrandOpRow = [Option<OpImpl>; 4];
+
+/// A declared operator's implementation. A top-level NAME stays late-bound,
+/// exactly like every other global reference in the language: the table is
+/// built before the module's defs are evaluated (so a top-level constant may
+/// use branded arithmetic), and hot-reload's rebinding then reaches the
+/// operator for free.
+#[derive(Clone)]
+pub(crate) enum OpImpl {
+    /// An external, a constructor, or a lambda — self-contained.
+    Value(Value),
+    /// A top-level `let`, resolved from the globals at dispatch.
+    Global(String),
+}
 
 /// Which slot of a [`BrandOpRow`] an operator owns — `None` for the
 /// comparisons, which are not declarable.
@@ -587,8 +605,12 @@ impl Session {
             host,
         };
         let loaded = interp
-            .eval_defs(module)
-            .and_then(|_| interp.load_brand_ops(module));
+            .load_brand_ops(module, false)
+            .and_then(|ops| {
+                interp.brand_ops = ops;
+                interp.eval_defs(module)
+            })
+            .and_then(|_| interp.load_brand_ops(module, true));
         match loaded {
             Ok(brand_ops) => Ok(Session {
                 globals: interp.globals,
@@ -883,8 +905,9 @@ impl Interp<'_> {
     }
 
     fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
+        self.brand_ops = self.load_brand_ops(module, false)?;
         let bindings = self.eval_defs(module)?;
-        self.brand_ops = self.load_brand_ops(module)?;
+        self.brand_ops = self.load_brand_ops(module, true)?;
         match module.defs.iter().find(|def| def.name == "main") {
             Some(main_def) => Ok(RunOutcome::Main(self.call_main(main_def)?)),
             None => Ok(RunOutcome::Bindings(bindings)),
@@ -892,7 +915,7 @@ impl Interp<'_> {
     }
 
     /// Resolve every `unit <suffix> (<op>) = <impl>` declaration into the
-    /// dispatch table, once, after the module's defs exist.
+    /// dispatch table.
     ///
     /// A brand's runtime identity is taken from a value it actually BUILDS:
     /// the suffix's own constructor is applied to `1.0` and the result's tag
@@ -900,7 +923,14 @@ impl Interp<'_> {
     /// shape — a host function (`Angle.degrees`), a variant constructor
     /// (`Px`), or an ordinary Functor Lang function — with no type
     /// information, which the interpreter does not have.
-    fn load_brand_ops(&mut self, module: &Module) -> Result<BrandOps, RunError> {
+    ///
+    /// It runs TWICE: once before the module's defs are evaluated, so a
+    /// top-level constant may itself use branded arithmetic
+    /// (`let turn: Angle.t = 90deg + 45deg`), and once after, to pick up the
+    /// rare unit whose own constructor is a top-level `let` and so could not
+    /// be probed yet. The first pass is best-effort (a suffix it cannot probe
+    /// yet is simply absent); the second reports what is still broken.
+    fn load_brand_ops(&mut self, module: &Module, strict: bool) -> Result<BrandOps, RunError> {
         if module.unit_ops.is_empty() {
             return Ok(BrandOps::default());
         }
@@ -919,35 +949,60 @@ impl Interp<'_> {
                         // suffix, so this is unreachable in a loaded project.
                         continue;
                     };
-                    let ctor = self.eval(&unit.target, &Env::empty())?;
-                    let probe = self.call(
-                        ctor,
-                        vec![Value::Number(1.0)],
-                        unit.suffix.clone(),
-                        unit_op.span,
-                        None,
-                    )?;
-                    let Some(tag) = brand_tag(&probe).map(str::to_string) else {
-                        return Err(RunError {
-                            message: format!(
-                                "`unit {} ({})` needs a unit whose values carry a runtime tag — \
-`{}` builds {}, which nothing can dispatch on (use a constructor, or a host value)",
-                                unit_op.suffix,
-                                unit_op.op.symbol(),
-                                unit_op.suffix,
-                                probe.kind_name()
-                            ),
-                            span: unit_op.span,
-                        });
+                    // A brand whose values carry no tag (a record) cannot be
+                    // dispatched on; the CHECKER refuses that declaration, so
+                    // here it is simply left out of the table rather than
+                    // failing the whole load.
+                    let probed = self
+                        .eval(&unit.target, &Env::empty())
+                        .and_then(|ctor| {
+                            self.call(
+                                ctor,
+                                vec![Value::Number(1.0)],
+                                unit.suffix.clone(),
+                                unit_op.span,
+                                None,
+                            )
+                        })
+                        .map(|probe| brand_tag(&probe).map(str::to_string));
+                    let tag = match probed {
+                        Ok(Some(tag)) => tag,
+                        // Untagged, or (before the defs are evaluated) not yet
+                        // buildable: skip it. The post-def pass retries.
+                        Ok(None) | Err(_) => continue,
                     };
                     tags.insert(unit_op.suffix.as_str(), tag.clone());
                     tag
                 }
             };
-            let implementation = self.eval(&unit_op.target, &Env::empty())?;
-            if let Some(slot) = op_slot(unit_op.op) {
-                ops.entry(tag).or_default()[slot] = Some(implementation);
+            let Some(slot) = op_slot(unit_op.op) else {
+                continue;
+            };
+            // A name stays late-bound (globals resolve at call time, and the
+            // defs may not be evaluated yet); anything else is a value.
+            let implementation = match &unit_op.target.kind {
+                ExprKind::Global(name) => OpImpl::Global(name.clone()),
+                _ => OpImpl::Value(self.eval(&unit_op.target, &Env::empty())?),
+            };
+            let row = ops.entry(tag.clone()).or_default();
+            // The checker rejects a second declaration for one brand and
+            // operator; `run` skips the checker, so refuse it here too rather
+            // than silently picking the last one.
+            if row[slot].is_some() {
+                if !strict {
+                    continue;
+                }
+                return Err(RunError {
+                    message: format!(
+                        "duplicate operator: `{}` is declared more than once for the brand \
+`{tag}` builds — an operator belongs to the brand, so every suffix of it shares one \
+implementation",
+                        unit_op.op.symbol()
+                    ),
+                    span: unit_op.span,
+                });
             }
+            row[slot] = Some(implementation);
         }
         Ok(Rc::new(ops))
     }
@@ -1562,7 +1617,7 @@ evaluation depth."
         // The declared form takes the branded value FIRST. Scaling commutes,
         // so `2.0 * 45deg` is the same call with its arguments swapped —
         // matching what the checker resolves (`/` deliberately does not).
-        let call = match declared(&self.brand_ops, &lhs) {
+        let found = match declared(&self.brand_ops, &lhs) {
             Some(implementation) => Some((implementation, lhs.clone(), rhs.clone())),
             None if matches!(op, BinOp::Mul) && matches!(lhs, Value::Number(_)) => {
                 declared(&self.brand_ops, &rhs)
@@ -1570,6 +1625,28 @@ evaluation depth."
             }
             None => None,
         };
+        let mut call = None;
+        if let Some((implementation, first, second)) = found {
+            match implementation {
+                OpImpl::Value(value) => call = Some((value, first, second)),
+                // A named implementation is late-bound like any global, so it
+                // obeys the same rule: a top-level initializer may only use
+                // globals defined ABOVE it.
+                OpImpl::Global(name) => match self.globals.get(&name) {
+                    Some(value) => call = Some((value.clone(), first, second)),
+                    None => {
+                        return Err(RunError {
+                            message: format!(
+                                "`{}` on this branded value calls `{name}`, which is used before \
+its definition (a top-level initializer may only use globals defined above it)",
+                                op.symbol()
+                            ),
+                            span,
+                        })
+                    }
+                },
+            }
+        }
         match call {
             Some((implementation, first, second)) => self.call(
                 implementation,
@@ -1608,21 +1685,7 @@ evaluation depth."
                     .map(|(slot, _)| slot_op(slot).symbol())
             })
             .collect();
-        if declared.is_empty() {
-            return format!(
-                " — `{tag}` declares no arithmetic; declare it with `unit <suffix> ({}) = …`",
-                op.symbol()
-            );
-        }
-        format!(
-            " — `{tag}` declares {}, but not `{}`",
-            declared
-                .iter()
-                .map(|symbol| format!("`{symbol}`"))
-                .collect::<Vec<_>>()
-                .join(", "),
-            op.symbol()
-        )
+        crate::ast::declared_operators_hint(tag, &declared, op)
     }
 
     fn compare(

@@ -1040,10 +1040,15 @@ with `unit {suffix} = SomeFn` (a `(float) => 't` function), or write the call it
                         span: decl.suffix_span,
                     });
                 }
+                let module = self
+                    .current_path()
+                    .map(|path| self.canonical_prefix(&path))
+                    .unwrap_or_default();
                 let target = self.expr(decl.target)?;
                 out.unit_ops.push(UnitOpDef {
                     suffix: decl.suffix,
                     op: decl.op,
+                    module,
                     target,
                     op_span: decl.op_span,
                     span: decl.span,

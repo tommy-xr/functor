@@ -123,6 +123,11 @@ unit px (/) = dividePx               // (Px, float) => Px
   the brand is named: `s`, `ms`, `us`, `min`, and `hr` are all `Time.t`, so ONE
   `unit s (+) = Time.add` makes `1.5s - 200ms` work. Declaring the same brand +
   operator twice — through any suffix — is a duplicate error.
+- **The brand must be distinguishable at run time**, because the interpreter
+  dispatches on a value's tag: a single-constructor variant, or an opaque host
+  type (`Angle.t`). A record brand carries no tag and a multi-constructor type
+  carries a different one per constructor, so an operator on either is a check
+  error at the declaration.
 - Comparisons (`<`, `>`, `==`) are deliberately not declarable: `==` is already
   structural for plain-data brands, and ordering wants its own design pass.
 
@@ -172,7 +177,17 @@ different types, so no branded reading exists; it can only be float. (`v + v`
 *does* have a branded reading, so it still asks.)
 
 Note how narrow that leaves the error: it needs BOTH operands *and* the result
-to be unconstrained, and a branded reading to be possible at all. `(a, b) => a + b` in a project that declares an operator for `+`
+to be unconstrained, and a branded reading to be possible at all.
+
+> **This is a breaking change, and deliberately so.** The engine prelude always
+> declares `+`, `-`, and `*` on `Angle.t` and `Time.t`, so a helper like
+> `let plus = (a, b) => a + b` — which used to infer as float — now asks for an
+> annotation, even in a game that never touches a brand. That is the price of
+> resolving operators deterministically instead of guessing; the alternative
+> (default to float, and report the mismatch at the call site instead) was
+> rejected in the design. Every example in this repository typechecks
+> unchanged, so the practical blast radius is small, but existing user code with
+> fully unannotated numeric helpers needs one annotation each. `(a, b) => a + b` in a project that declares an operator for `+`
 is ambiguous and says so; `(a, b): float => a + b`, `(a) => a + 1.0`, and every
 `+` in a project with no operator declarations infer and run exactly as they
 did before. And a brand with no implementation for the operator keeps the old
@@ -198,10 +213,17 @@ Two consequences worth stating:
 - **Plain float arithmetic is untouched.** The number/number case is still the
   first match in the same `match`; the table is consulted only when an operand
   is not a number. `frame_bench` shows no allocation or byte change.
-- **`functor-lang run` (which does not typecheck) behaves identically to the
-  checked path**, and so does a fake/plain prelude: both roads end at exactly
-  the call the declaration names. An operand with no implementation gets the
-  same teaching text at runtime that the checker gives at check time.
+- **The table exists before the module's defs are evaluated**, so a top-level
+  constant may use branded arithmetic (`let turn: Angle.t = 90deg + 45deg`). A
+  named implementation stays LATE-BOUND, like every other global, so it obeys
+  the same rule as any initializer: it must be defined above the constant that
+  uses it.
+- **`functor-lang run` (which does not typecheck) behaves like the checked
+  path**, and so does a fake/plain prelude: both roads end at exactly the call
+  the declaration names, and both refuse a duplicate declaration. An operand
+  with no implementation gets the same teaching sentence at runtime the checker
+  gives at check time — naming the brand as that side knows it (the checker has
+  the type, `Angle.t`; the interpreter has the runtime tag, `Angle`).
 
 ### Where the implementations live for prelude brands
 

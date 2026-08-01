@@ -399,6 +399,11 @@ pub enum BinOp {
 }
 
 impl BinOp {
+    /// The arithmetic operators, in declaration order — the ONE list of what
+    /// a `unit <suffix> (<op>)` may declare, shared by the parser, the
+    /// typechecker, and the interpreter's dispatch table.
+    pub const ARITHMETIC: [BinOp; 4] = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div];
+
     /// The operator's source spelling — the single source of truth for
     /// diagnostics in the typechecker and the interpreter.
     pub fn symbol(self) -> &'static str {
@@ -415,6 +420,31 @@ impl BinOp {
             BinOp::Ne => "!=",
         }
     }
+}
+
+/// What a "this needs float operands" / "arithmetic needs numbers" error adds
+/// once a UNIT BRAND is in play: which operators that brand does declare, or
+/// how to declare one. Written once so the typechecker's and the interpreter's
+/// twin messages cannot drift (they differ only in how the brand is named:
+/// the checker knows the type, `Angle.t`; the interpreter knows the runtime
+/// tag, `Angle`).
+pub fn declared_operators_hint(brand: &str, declared: &[&str], op: BinOp) -> String {
+    if declared.is_empty() {
+        return format!(
+            " — `{brand}` is a branded value with no arithmetic; declare it with \
+`unit <suffix> ({}) = …`",
+            op.symbol()
+        );
+    }
+    format!(
+        " — `{brand}` declares {}, but not `{}`",
+        declared
+            .iter()
+            .map(|symbol| format!("`{symbol}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        op.symbol()
+    )
 }
 
 /// The short-circuiting boolean operators. `And` binds tighter than `Or`;

@@ -639,7 +639,12 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   duplicate error.
 - **The implementation is an expression**: a name, or a lambda (the prelude's
   `.funi` declarations name host externals). It is checked against the shape
-  above at the DECLARATION.
+  above at the DECLARATION. A NAME is late-bound like any global, so it must be
+  defined above any top-level constant that uses the operator.
+- **The brand must be distinguishable at run time** — a single-constructor
+  variant, or a host type like `Angle.t`. A record brand or a multi-constructor
+  type is a check error at the declaration (the interpreter dispatches on a
+  value's tag).
 - **Scaling commutes, division does not**: `2.0 * 45deg` works (same call,
   arguments swapped); `2.0 / 45deg` is an error.
 - **Resolution is ad-hoc overloading AFTER inference**: a node whose operand

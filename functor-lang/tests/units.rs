@@ -599,6 +599,84 @@ fn unannotated_arithmetic_is_untouched_without_unit_operators() {
     assert!(diags.is_empty(), "{diags:?}");
 }
 
+/// Top-level constants are evaluated EAGERLY, before anything else runs, so
+/// the dispatch table has to exist by then: branded arithmetic in a top-level
+/// initializer must work, not die at load. [xreview: Critical]
+#[test]
+fn a_top_level_constant_may_use_branded_arithmetic() {
+    let src = format!("{PX}let total = 16px + 4px\nlet main = () => unwrap(total)\n");
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(main_result(&src), "20");
+}
+
+/// …including when the implementation is a top-level NAME rather than a
+/// lambda: like every other global reference it stays late-bound, so it obeys
+/// exactly the same "an initializer may only use globals defined above it"
+/// rule — and says so when it doesn't.
+#[test]
+fn a_named_implementation_is_late_bound_like_any_global() {
+    let px = "type Px = | Px(value: float)\n\
+              unit px = Px\n\
+              unit px (+) = addPx\n\
+              let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+              let addPx = (a: Px, b: Px): Px => Px(unwrap(a) + unwrap(b))\n";
+    let src = format!("{px}let total = 16px + 4px\nlet main = () => unwrap(total)\n");
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(main_result(&src), "20");
+
+    // The implementation defined BELOW the constant that uses it: the
+    // language's ordinary eager-initializer rule, with a message that says so.
+    let src = "type Px = | Px(value: float)\n\
+               unit px = Px\n\
+               unit px (+) = addPx\n\
+               let total = 16px + 4px\n\
+               let addPx = (a: Px, b: Px): Px => a\n";
+    let program = functor_lang::parse(src).expect("parses");
+    let module = functor_lang::lower(program).expect("lowers");
+    let failure = functor_lang::run(&module, Tracing::Off)
+        .err()
+        .expect("`addPx` is not defined yet");
+    assert!(
+        failure.error.message.contains("used before its definition"),
+        "{}",
+        failure.error.message
+    );
+}
+
+/// The interpreter dispatches on a value's runtime TAG, so a brand whose
+/// values carry none (a record) or carry several (a multi-constructor type)
+/// is refused at the declaration instead of checking clean and failing at
+/// run time. [xreview: High]
+#[test]
+fn a_brand_must_be_distinguishable_at_run_time() {
+    let diags = check_src(
+        "type Length = | Px(value: float) | Em(value: float)\n\
+         unit px = Px\n\
+         unit px (+) = add\n\
+         let add = (a: Length, b: Length): Length => a\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("distinguishable at run time") && d.contains("`Length`")),
+        "{diags:?}"
+    );
+
+    let diags = check_src(
+        "type Px = { value: float }\n\
+         let px = (n: float): Px => { value: n }\n\
+         unit px2 = px\n\
+         unit px2 (+) = add\n\
+         let add = (a: Px, b: Px): Px => a\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("distinguishable at run time")),
+        "{diags:?}"
+    );
+}
+
 /// A brand's operator is dispatched by the INTERPRETER too (`run` does not
 /// typecheck), and it produces the same value the handwritten call does.
 #[test]

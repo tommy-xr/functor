@@ -113,6 +113,10 @@ pub struct UnitDef {
 pub struct UnitOpDef {
     pub suffix: String,
     pub op: crate::ast::BinOp,
+    /// The declaring module's canonical prefix (`"Utils"`; empty for the
+    /// entry) — the checker scopes the implementation's bare record literals
+    /// by it, exactly as it does a def's or an expect's.
+    pub module: String,
     pub target: Expr,
     /// The `(<op>)` span — what an operator diagnostic points at.
     pub op_span: Span,

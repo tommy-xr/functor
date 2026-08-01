@@ -946,8 +946,8 @@ fn check_impl(
         // type is nominal, so a `.funi` signature's return type or a
         // constructor's owning type already says which brand it is.
         let branded = |ty: &Type| match ty {
-            Type::Variant(name, args) | Type::Record(name, args) if args.is_empty() => {
-                Some((name.clone(), ty.clone()))
+            Type::Variant(_, args) | Type::Record(_, args) if args.is_empty() => {
+                brand_name(ty).map(|name| (name, ty.clone()))
             }
             _ => None,
         };
@@ -1015,10 +1015,36 @@ to a branded type, so the unit's target must be a constructor or a function with
             );
             continue;
         };
-        let name = match &brand {
-            Type::Variant(name, _) | Type::Record(name, _) => name.clone(),
-            _ => continue,
+        let Some(name) = brand_name(&brand) else {
+            continue;
         };
+        // The interpreter dispatches on a VALUE's runtime tag — a variant's
+        // constructor, or an opaque host value's type name. A record carries
+        // no tag, and a multi-constructor type carries a different one per
+        // constructor while the brand (and so the operator) is one. Both are
+        // refused here rather than checking clean and failing at run time.
+        let dispatchable = match &brand {
+            Type::Variant(_, _) => match checker.variants.get(&name) {
+                Some((_, ctors)) => ctors.len() <= 1,
+                // Not a variant declared in this project — an opaque `.funi`
+                // type like `Angle.t`, whose values the host tags itself.
+                None => true,
+            },
+            _ => false,
+        };
+        if !dispatchable {
+            checker.diag(
+                unit_op.span,
+                format!(
+                    "`unit {} ({})` needs a brand whose values are distinguishable at run time — \
+`{name}` is a record, or has several constructors, so an operator on it could not be dispatched; \
+use a single-constructor variant (`type Px = | Px(value: float)`)",
+                    unit_op.suffix,
+                    unit_op.op.symbol()
+                ),
+            );
+            continue;
+        }
         if let Some(previous) = checker.brand_ops.get(&(name.clone(), unit_op.op)) {
             let previous = format!(
                 "`{}` already declares `{}` (through `unit {}`)",
@@ -1119,7 +1145,7 @@ suffix of `{name}` shares one implementation"
     // an operator resolves to never depends on inference order.
     for (unit_op, brand) in module.unit_ops.iter().zip(&op_brands) {
         checker.annot_vars.clear();
-        checker.current_module = String::new();
+        checker.current_module = unit_op.module.clone();
         let Some(brand) = brand.clone() else { continue };
         let want = Type::Fn(
             vec![brand.clone(), operand_type(unit_op.op, &brand)],
@@ -3411,30 +3437,17 @@ is {other}"
         };
         // Operator order, not alphabetical — and the same order the
         // interpreter's twin message uses.
-        let declared: Vec<&str> = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div]
+        let declared: Vec<&str> = BinOp::ARITHMETIC
             .into_iter()
             .filter(|declared| self.brand_ops.contains_key(&(name.clone(), *declared)))
             .map(|declared| declared.symbol())
             .collect();
-        if !declared.is_empty() {
-            return format!(
-                " — `{name}` declares {}, but not `{}`",
-                declared
-                    .iter()
-                    .map(|symbol| format!("`{symbol}`"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                op.symbol()
-            );
+        // A type nothing knows as a brand gets no unit advice at all — only
+        // declared units (which the hint table indexes) can carry operators.
+        if declared.is_empty() && !self.unit_hints.contains_key(&name) {
+            return String::new();
         }
-        match self.unit_hints.get(&name).and_then(|units| units.first()) {
-            Some((suffix, _)) => format!(
-                " — `{name}` is a branded value with no arithmetic; declare it with \
-`unit {suffix} ({}) = …`",
-                op.symbol()
-            ),
-            None => String::new(),
-        }
+        crate::ast::declared_operators_hint(&name, &declared, op)
     }
 
     /// Constrain an operand of a boolean operator (`&&`, `||`, `not`) to

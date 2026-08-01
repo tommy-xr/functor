@@ -974,12 +974,6 @@ impl HostData for FunctorLangAnim {
 /// discipline, carried across the boundary).
 pub struct FunctorLangAngle(pub Angle);
 
-/// An angle in radians — the canonical scalar `Angle.add`/`sub`/`scale` work
-/// in (degrees and radians are the same value, differently spelled).
-fn radians_of(angle: FunctorLangAngle) -> f32 {
-    let radians: cgmath::Rad<f32> = angle.0.into();
-    radians.0
-}
 
 /// An RGB color as an opaque Functor Lang value — made by `Color.rgb(r, g, b)`.
 /// Material/light/fog/UI color parameters accept ONLY this, never three bare
@@ -1486,21 +1480,21 @@ fn register_branded_constructors(reg: &mut crate::host_registry::Registry) {
         "Angle.add",
         "Angle.add(a, b)",
         |a: FunctorLangAngle, b: FunctorLangAngle| {
-            FunctorLangAngle(Angle::from_radians(radians_of(a) + radians_of(b)))
+            FunctorLangAngle(Angle::from_radians(a.0.radians() + b.0.radians()))
         },
     );
     reg.fn2(
         "Angle.sub",
         "Angle.sub(a, b)",
         |a: FunctorLangAngle, b: FunctorLangAngle| {
-            FunctorLangAngle(Angle::from_radians(radians_of(a) - radians_of(b)))
+            FunctorLangAngle(Angle::from_radians(a.0.radians() - b.0.radians()))
         },
     );
     reg.fn2(
         "Angle.scale",
         "Angle.scale(angle, factor)",
         |a: FunctorLangAngle, factor: f64| {
-            FunctorLangAngle(Angle::from_radians(radians_of(a) * factor as f32))
+            FunctorLangAngle(Angle::from_radians(a.0.radians() * factor as f32))
         },
     );
     reg.fn1("Time.seconds", "Time.seconds(n)", FunctorLangDuration);
@@ -5590,6 +5584,35 @@ mod tests {
     // (`90deg`, `0.5s`), but the suffixes themselves are declared in the
     // `.funi` prelude, which this crate cannot read at runtime. Pin the two
     // together so renaming or dropping a `unit` fails here instead of leaving
+    // a message that teaches a suffix nobody can write.
+    #[test]
+    fn prelude_units_match_the_teaching_errors() {
+        use std::collections::BTreeSet;
+        let mut suffixes: BTreeSet<String> = BTreeSet::new();
+        for (module, src) in functor_prelude::modules() {
+            let program = functor_lang::parse_interface(&src)
+                .unwrap_or_else(|e| panic!("prelude module `{module}` must parse: {}", e.message));
+            for item in &program.items {
+                if let functor_lang::ast::Item::Unit(decl) = item {
+                    assert!(
+                        suffixes.insert(decl.suffix.clone()),
+                        "unit `{}` is declared more than once in the prelude",
+                        decl.suffix
+                    );
+                }
+            }
+        }
+        let expected: BTreeSet<String> = ["deg", "rad", "s", "ms", "us", "min", "hr"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            suffixes, expected,
+            "the prelude's unit suffixes changed — update the Angle/Duration teaching errors \
+in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list together"
+        );
+    }
+
     /// Evaluate a `main` under the prelude WITH the engine's `.funi`
     /// interfaces linked, so unit suffixes and their operators resolve —
     /// `eval` above lowers one bare source, where no `unit` is declared.
@@ -5612,27 +5635,13 @@ mod tests {
     }
 
     fn radians(value: &Value) -> f32 {
-        match value {
-            Value::HostData(data) => radians_of(FunctorLangAngle(
-                data.as_any()
-                    .downcast_ref::<FunctorLangAngle>()
-                    .expect("an Angle")
-                    .0,
-            )),
-            other => panic!("expected an Angle, got {other}"),
-        }
+        angle_of(value, "an Angle", Span::new(0, 0))
+            .expect("an Angle")
+            .radians()
     }
 
     fn seconds(value: &Value) -> f64 {
-        match value {
-            Value::HostData(data) => {
-                data.as_any()
-                    .downcast_ref::<FunctorLangDuration>()
-                    .expect("a Duration")
-                    .0
-            }
-            other => panic!("expected a Duration, got {other}"),
-        }
+        duration_of(value, "a Duration", Span::new(0, 0)).expect("a Duration")
     }
 
     /// The headline: branded arithmetic, resolved through the `unit deg (+)`
@@ -5685,41 +5694,25 @@ mod tests {
         assert!(error.contains("but not `/`"), "{error}");
     }
 
+    /// Top-level constants evaluate eagerly, before anything else runs, so
+    /// branded arithmetic has to work there too — the shape a game's tuning
+    /// constants and `init` actually take. [xreview: Critical]
+    #[test]
+    fn a_top_level_constant_may_use_branded_arithmetic() {
+        let value = eval_with_prelude(
+            "let quarter: Angle.t = 90deg + 45deg\n\
+             let main = () => quarter\n",
+        )
+        .expect("runs");
+        assert!((radians(&value) - std::f32::consts::FRAC_PI_2 * 1.5).abs() < 1e-6);
+    }
+
     /// The branded result flows on into the APIs that take it — the whole
     /// point of keeping arithmetic inside the brand.
     #[test]
     fn a_branded_sum_flows_into_a_branded_parameter() {
         eval_with_prelude("let main = () => Scene.cube() |> Scene.rotateY(90deg + 45deg)\n")
             .expect("a summed angle is still an Angle");
-    }
-
-    // a message that teaches a suffix nobody can write.
-    #[test]
-    fn prelude_units_match_the_teaching_errors() {
-        use std::collections::BTreeSet;
-        let mut suffixes: BTreeSet<String> = BTreeSet::new();
-        for (module, src) in functor_prelude::modules() {
-            let program = functor_lang::parse_interface(&src)
-                .unwrap_or_else(|e| panic!("prelude module `{module}` must parse: {}", e.message));
-            for item in &program.items {
-                if let functor_lang::ast::Item::Unit(decl) = item {
-                    assert!(
-                        suffixes.insert(decl.suffix.clone()),
-                        "unit `{}` is declared more than once in the prelude",
-                        decl.suffix
-                    );
-                }
-            }
-        }
-        let expected: BTreeSet<String> = ["deg", "rad", "s", "ms", "us", "min", "hr"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        assert_eq!(
-            suffixes, expected,
-            "the prelude's unit suffixes changed — update the Angle/Duration teaching errors \
-in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list together"
-        );
     }
 
     // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`

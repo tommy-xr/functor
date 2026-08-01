@@ -22,6 +22,8 @@ let add : (t, t) => t
 /// Subtract one duration from another. This is what `1.5s - 200ms` calls.
 let sub : (t, t) => t
 /// Scale a duration by a plain number. This is what `0.5s * 2.0` calls.
+/// It takes the duration FIRST — the shape every declared `*` has — so unlike
+/// most of the prelude it is not written to be piped into.
 let scale : (t, float) => t
 
 /// Seconds as a literal suffix: `0.5s` is exactly `Time.seconds(0.5)`.

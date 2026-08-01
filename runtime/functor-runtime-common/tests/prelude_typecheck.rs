@@ -356,6 +356,33 @@ fn an_undeclared_prelude_operator_names_the_declared_ones() {
     assert!(!diags.is_empty(), "an angle plus a duration must not check");
 }
 
+/// The cost of ad-hoc overloading, pinned deliberately: because the prelude
+/// always declares `+`/`-`/`*` on `Angle.t` and `Time.t`, a helper whose
+/// operands inference never pins down is now ambiguous and asks for an
+/// annotation instead of silently defaulting to float. This is a BREAKING
+/// change for existing unannotated helpers (`docs/functor-lang-units.md`), so
+/// it is a test rather than a surprise.
+#[test]
+fn a_fully_unannotated_helper_asks_for_an_annotation() {
+    let diags = check("let plus = (a, b) => a + b\n");
+    assert!(
+        diags
+            .iter()
+            .any(|m| m.contains("could be float arithmetic") && m.contains("annotate an operand")),
+        "{diags:?}"
+    );
+    // Any of the ordinary ways of pinning a type resolves it.
+    for src in [
+        "let plus = (a: float, b) => a + b\n",
+        "let plus = (a, b): float => a + b\n",
+        "let bump = (a) => a + 1.0\n",
+        "let square = (v) => v * v\n",
+    ] {
+        let diags = check(src);
+        assert!(diags.is_empty(), "{src}: {diags:?}");
+    }
+}
+
 /// A project declares operators on its OWN brand beside the prelude's, with
 /// lambda implementations (a `.fun` may write bodies; a `.funi` may not).
 #[test]

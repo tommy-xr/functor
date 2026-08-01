@@ -17,6 +17,8 @@ let add : (t, t) => t
 /// Subtract one angle from another. This is what `90deg - 45deg` calls.
 let sub : (t, t) => t
 /// Scale an angle by a plain number. This is what `45deg * 2.0` calls.
+/// It takes the angle FIRST — the shape every declared `*` has — so unlike
+/// most of the prelude it is not written to be piped into.
 let scale : (t, float) => t
 
 /// Degrees as a literal suffix: `90deg` is exactly `Angle.degrees(90.0)`.
