@@ -942,6 +942,17 @@ impl Game for FunctorLangGame {
         self.recorder.scene_frame_range()
     }
 
+    /// The recording generation, which bumps whenever existing recorded frames
+    /// may have been REPLACED (a destructive rewind, a reload that resets the
+    /// rings). Without this the trait's default `0` made the preview cache's
+    /// generation term dead on native: an in-place branch commit — same
+    /// selected frame, same tts, same program revision, rewritten history —
+    /// would keep serving the pre-branch backward trail, showing a past that
+    /// no longer exists.
+    fn scene_timeline_generation(&self) -> u64 {
+        self.recorder.generation()
+    }
+
     fn scene_program_revision(&self) -> u64 {
         self.recorder.program_revision()
     }
@@ -1000,6 +1011,7 @@ impl Game for FunctorLangGame {
     fn history_frames(&self, divisions: usize, dt: f32) -> Vec<(Frame, FrameTime)> {
         functor_runtime_common::functor_lang_producer::history_frames(
             &self.session,
+            &self.names,
             &self.recorder,
             &self.physics_rt,
             self.has_physics,
@@ -3258,6 +3270,132 @@ mod tests {
         );
 
         physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A MULTI-ENTRY role must reconstruct its past through the ROLE's entry
+    /// names. `history_frames` used to call a hardcoded `draw`, which a
+    /// `client`-prefixed project does not define — and because a failed draw is
+    /// deliberately skipped rather than fatal, the backward trail came back
+    /// EMPTY with no error at all. The regression is silent, so this test
+    /// asserts frames actually come back.
+    #[test]
+    fn history_frames_resolve_draw_through_prefixed_entry_names() {
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-hist-entry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        // Every entry carries the `client` prefix, exactly as a multi-entry
+        // project's role does.
+        std::fs::write(
+            dir.join("game.fun"),
+            "let clientInit = { n: 0.0 }\n\
+             let clientTick = (m, dt, tts) => { n: m.n + 1.0 }\n\
+             let clientDraw = (m, tts) => Frame.create(\n\
+               Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.cube() |> Scene.translate(Vec3.make(m.n, 0.0, 0.0)))\n",
+        )
+        .expect("write game");
+        let mut game = FunctorLangGame::create_with_prefix(
+            dir.join("game.fun").to_str().expect("utf-8 path"),
+            "client",
+        );
+
+        const SUB_DT: f32 = 1.0 / 60.0;
+        let mut tts = 0.0f32;
+        for _ in 0..12 {
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+            game.render(FrameTime { tts, dts: SUB_DT });
+        }
+
+        let past = game.history_frames(3, 2.0 / 60.0);
+        assert_eq!(past.len(), 3, "the prefixed role's past must reconstruct");
+        // Each past frame is a real recorded pose: the cube walked +x, so
+        // further back is a SMALLER x.
+        let xs: Vec<f32> = past.iter().map(|(f, _)| f.scene.xform.w.x).collect();
+        let live_x = game.last_frame.scene.xform.w.x;
+        assert!(
+            xs[0] < live_x,
+            "the nearest past is behind the live pose: {xs:?}"
+        );
+        for pair in xs.windows(2) {
+            assert!(pair[1] < pair[0], "further back = smaller x: {xs:?}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The preview cache keys on `scene_timeline_generation` so a rewritten
+    /// timeline invalidates it. The native producer used to inherit the trait's
+    /// constant `0`, making that term dead here: an in-place destructive
+    /// rewind — same selected frame, same tts, same program revision, but the
+    /// recorded future discarded — left every other key term identical, so a
+    /// cached backward trail would keep showing a past that no longer exists.
+    #[test]
+    fn a_destructive_rewind_bumps_the_timeline_generation_on_native() {
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-hist-gen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.fun"),
+            "let init = { n: 0.0 }\n\
+             let tick = (m, dt, tts) => { n: m.n + 1.0 }\n\
+             let draw = (m, tts) => Frame.create(\n\
+               Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.cube() |> Scene.translate(Vec3.make(m.n, 0.0, 0.0)))\n",
+        )
+        .expect("write game");
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
+
+        const SUB_DT: f32 = 1.0 / 60.0;
+        let mut tts = 0.0f32;
+        for _ in 0..12 {
+            tts += SUB_DT;
+            game.tick(FrameTime { tts, dts: SUB_DT });
+            game.render(FrameTime { tts, dts: SUB_DT });
+        }
+
+        // The producer must report the recorder's real generation, not the
+        // trait default.
+        let gen_before = game.scene_timeline_generation();
+
+        // A non-destructive scrub is exactly what the cache is meant to serve:
+        // it changes the selected frame but NOT the generation.
+        game.seek_scene_to(6).expect("seek to an earlier frame");
+        let key_before = (
+            game.current_scene_frame(),
+            game.scene_program_revision(),
+            game.scene_timeline_generation(),
+        );
+        assert_eq!(
+            key_before.2, gen_before,
+            "a non-destructive scrub must not invalidate the preview cache"
+        );
+
+        // Resuming from the scrubbed frame COMMITS a branch in place: the
+        // program is unchanged, so the generation is the only term that can
+        // carry the invalidation.
+        game.tick(FrameTime {
+            tts: tts + SUB_DT,
+            dts: SUB_DT,
+        });
+        let key_after = (
+            game.current_scene_frame(),
+            game.scene_program_revision(),
+            game.scene_timeline_generation(),
+        );
+        assert_eq!(
+            key_before.1, key_after.1,
+            "the program did not change, so the revision term cannot catch this"
+        );
+        assert_ne!(
+            key_before.2, key_after.2,
+            "a destructive rewind must bump the generation so the cache drops \
+             its now-stale backward trail"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

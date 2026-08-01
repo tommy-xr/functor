@@ -735,6 +735,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
     fn history_frames(&self, divisions: usize, dt: f32) -> Vec<(Frame, FrameTime)> {
         crate::functor_lang_producer::history_frames(
             &self.session,
+            &self.names,
             &self.recorder,
             &self.physics_rt,
             self.has_physics,

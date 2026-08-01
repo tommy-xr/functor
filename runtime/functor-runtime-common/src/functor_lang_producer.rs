@@ -1918,8 +1918,10 @@ pub fn ghost_frames(
 /// yields 1 second of trail. Frames whose `draw` errors, or that resolve to a
 /// frame already emitted (a window finer than the recording cadence), are
 /// skipped — so the result may be shorter than `divisions`.
+#[allow(clippy::too_many_arguments)]
 pub fn history_frames(
     session: &Session,
+    names: &EntryNames,
     recorder: &SceneRecorder,
     physics: &SteppedPhysics,
     has_physics: bool,
@@ -2008,8 +2010,12 @@ pub fn history_frames(
             _ => None,
         };
         let args = vec![model.clone(), Value::Number(tts)];
-        // A draw error or non-Frame return for a division is skipped, not fatal.
-        if let Ok(value) = session.call("draw", args, &mut FunctorHost) {
+        // Resolve `draw` through the ROLE's entry names, exactly as
+        // `ghost_frames` does. A multi-entry project binds `clientDraw` /
+        // `serverDraw`, so a hardcoded "draw" would fail every call — and
+        // since a failed draw is deliberately skipped rather than fatal, the
+        // backward trail would silently come back EMPTY instead of erroring.
+        if let Ok(value) = session.call(names.draw, args, &mut FunctorHost) {
             if let Some(frame) = frame_value(&value) {
                 frames.push((
                     frame.clone(),
