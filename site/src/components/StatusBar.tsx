@@ -152,8 +152,8 @@ export const StatusBar = ({
         {tab("problems", problemsLabel(problems.length, errors), errors > 0 ? " has-problems" : "")}
         {tab("output", "output")}
         {tab("executions", executions.length ? `⏸ ${executions.length} executions` : "executions")}
-        <VimSegment controller={editorKeybindings} />
         <EditorKeybindingsButton controller={editorKeybindings} />
+        <VimSegment controller={editorKeybindings} />
       </div>
     </>
   );
