@@ -58,8 +58,9 @@ pub struct UnitDecl {
 /// an error.
 ///
 /// `+` and `-` take `('t, 't) => 't`; `*` and `/` take the SCALAR form
-/// `('t, float) => 't`. The target is an ordinary expression (a name in a
-/// `.funi`, which has no bodies; a name or a lambda in a `.fun`).
+/// `('t, float) => 't`. The target is an ordinary expression — a name (what
+/// the prelude's `.funi` interfaces use, naming a host external) or a
+/// lambda.
 #[derive(Debug)]
 pub struct UnitOpDecl {
     /// The suffix whose brand this operator belongs to (`deg`, `px`).

@@ -637,9 +637,9 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   `hr` are all `Time.t`, so one declaration serves them all and `1.5s - 200ms`
   works. Declaring the same brand + operator twice — through ANY suffix — is a
   duplicate error.
-- **The implementation is an expression**: a name, or a lambda (a `.funi` has
-  no bodies, so prelude declarations name host externals). It is checked
-  against the shape above at the DECLARATION.
+- **The implementation is an expression**: a name, or a lambda (the prelude's
+  `.funi` declarations name host externals). It is checked against the shape
+  above at the DECLARATION.
 - **Scaling commutes, division does not**: `2.0 * 45deg` works (same call,
   arguments swapped); `2.0 / 45deg` is an error.
 - **Resolution is ad-hoc overloading AFTER inference**: a node whose operand
@@ -648,8 +648,9 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   unsolved is a teaching error asking for an annotation, never a silent float
   guess — ```+` here could be float arithmetic or `Px` arithmetic — annotate an
   operand (e.g. `(a: Px)`)``. So `(a, b) => a + b` needs an annotation in a
-  project that declares `+` on a brand, while `(a, b): float => a + b` and
-  `(a) => a + 1.0` do not.
+  project that declares `+` on a brand, while `(a, b): float => a + b`,
+  `(a) => a + 1.0`, and `(v) => v * v` (the scalar form's operands have
+  DIFFERENT types, so one operand twice can only be float) do not.
 - **A brand with no implementation** keeps the old error, now naming what it
   has: ```-` needs float operands, got Angle.t — `Angle.t` declares `*`, `+`, but
   not `-```. The interpreter says the same thing on the same inputs.

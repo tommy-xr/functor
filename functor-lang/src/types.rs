@@ -3353,9 +3353,17 @@ is {other}"
                 );
                 continue;
             }
+            // `v * v` (the SAME unsolved operand twice) can only be float:
+            // the scalar form's operands have different types, so no brand
+            // reading exists to be ambiguous with. `v + v` has one, and stays
+            // ambiguous.
+            let one_operand_twice = matches!((&lhs, &rhs), (Type::Var(a), Type::Var(b)) if a == b);
+            let branded_reading_exists =
+                !(one_operand_twice && matches!(node.op, BinOp::Mul | BinOp::Div));
             // Nothing about the node — neither operand, nor the type its
             // result flows into — says which arithmetic this is.
-            if matches!(lhs, Type::Var(_))
+            if branded_reading_exists
+                && matches!(lhs, Type::Var(_))
                 && matches!(rhs, Type::Var(_))
                 && matches!(self.zonk(&node.result), Type::Var(_))
             {

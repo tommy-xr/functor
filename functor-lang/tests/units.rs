@@ -577,6 +577,20 @@ fn an_unresolvable_operator_asks_for_an_annotation() {
     assert!(diags.is_empty(), "{diags:?}");
 }
 
+/// `v * v` is not ambiguous even with a scalar `*` declared: the scalar form's
+/// operands have DIFFERENT types, so one unsolved operand used twice can only
+/// be float. (`v + v` genuinely could be either, and still asks.)
+#[test]
+fn squaring_one_unsolved_operand_is_not_ambiguous() {
+    let diags = check_src(&format!("{PX}let sq = (v) => v * v\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    let diags = check_src(&format!("{PX}let double = (v) => v + v\n"));
+    assert!(
+        diags.iter().any(|d| d.contains("annotate an operand")),
+        "{diags:?}"
+    );
+}
+
 /// With no operator declared anywhere, arithmetic infers exactly as it always
 /// has: the ambiguity error can only fire where an ambiguity exists.
 #[test]

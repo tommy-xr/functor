@@ -117,8 +117,8 @@ unit px (/) = dividePx               // (Px, float) => Px
   is dimensional analysis — see the non-goal below.
 - Each implementation is typechecked against the shape above **at the
   declaration**, exactly as Phase 1 typechecks the constructor. It is an
-  ordinary expression: a name, or a lambda (a `.funi` has no bodies, so a
-  prelude declaration always names a host external).
+  ordinary expression: a name, or a lambda. The prelude's `.funi` interfaces
+  name host externals.
 - **The operator belongs to the BRAND, not the suffix.** The suffix is only how
   the brand is named: `s`, `ms`, `us`, `min`, and `hr` are all `Time.t`, so ONE
   `unit s (+) = Time.add` makes `1.5s - 200ms` work. Declaring the same brand +
@@ -166,8 +166,13 @@ an annotation, never a silent float guess:
 (e.g. `(a: Px)`) so the operator can be resolved
 ```
 
-Note how narrow that is: the error needs BOTH operands *and* the result to be
-unconstrained. `(a, b) => a + b` in a project that declares an operator for `+`
+One more case is decided rather than reported: `v * v` — the SAME unsolved
+operand on both sides of a scalar operator. The scalar form's operands have
+different types, so no branded reading exists; it can only be float. (`v + v`
+*does* have a branded reading, so it still asks.)
+
+Note how narrow that leaves the error: it needs BOTH operands *and* the result
+to be unconstrained, and a branded reading to be possible at all. `(a, b) => a + b` in a project that declares an operator for `+`
 is ambiguous and says so; `(a, b): float => a + b`, `(a) => a + 1.0`, and every
 `+` in a project with no operator declarations infer and run exactly as they
 did before. And a brand with no implementation for the operator keeps the old
