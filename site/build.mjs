@@ -360,11 +360,11 @@ const assertPreloaded = async (
   required.delete(entryOutputName); // the page's module script already fetches it
 
   const missing = [...required].filter((name) => !preloaded.has(name));
-  const stale = [...preloaded].filter((name) => !outputs.has(name));
+  const stale = [...preloaded].filter((name) => !required.has(name));
   if (missing.length || stale.length) {
     console.error(
       `${htmlName} modulepreloads are incomplete: missing ${JSON.stringify(missing)}, ` +
-        `not emitted ${JSON.stringify(stale)}`
+        `unexpected ${JSON.stringify(stale)}`
     );
     process.exit(1);
   }
