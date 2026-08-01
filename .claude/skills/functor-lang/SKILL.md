@@ -653,7 +653,8 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   unsolved is a teaching error asking for an annotation, never a silent float
   guess — ```+` here could be float arithmetic or `Px` arithmetic — annotate an
   operand (e.g. `(a: Px)`)``. So `(a, b) => a + b` needs an annotation in a
-  project that declares `+` on a brand, while `(a, b): float => a + b`,
+  project that declares `+` on a brand, while `(a, b): Px => a + b` (the RESULT
+  decides it for `+`/`-`), `(a, b): float => a + b`,
   `(a) => a + 1.0`, and `(v) => v * v` (the scalar form's operands have
   DIFFERENT types, so one operand twice can only be float) do not.
 - **A brand with no implementation** keeps the old error, now naming what it

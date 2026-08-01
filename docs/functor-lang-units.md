@@ -162,6 +162,11 @@ Scaling commutes, so a brand may sit on either side of `*` (`2.0 * 45deg` is
 the declared call with its arguments swapped). Division does not: `2.0 / 45deg`
 is refused, because the scalar form divides a branded value BY a number.
 
+The node's RESULT counts as evidence too: `+` and `-` stay inside their brand,
+so an annotated `(a, b): Px => a + b` resolves with no operand annotation at
+all. (The scalar `*` and `/` cannot be decided that way — which SIDE is the
+brand would still be unknown.)
+
 The critical rule is what happens when the deferred node is *still* undecided —
 both operands and its result unsolved. That is a **teaching error** asking for
 an annotation, never a silent float guess:
@@ -217,7 +222,9 @@ Two consequences worth stating:
   constant may use branded arithmetic (`let turn: Angle.t = 90deg + 45deg`). A
   named implementation stays LATE-BOUND, like every other global, so it obeys
   the same rule as any initializer: it must be defined above the constant that
-  uses it.
+  uses it. A unit whose own *constructor* is a top-level `let` cannot be probed
+  that early, so the table is completed as the defs land — the first
+  initializer that could use it already can.
 - **`functor-lang run` (which does not typecheck) behaves like the checked
   path**, and so does a fake/plain prelude: both roads end at exactly the call
   the declaration names, and both refuse a duplicate declaration. An operand

@@ -372,6 +372,7 @@ pub fn run_with_host(
         call_depth: 0,
         fuel: None,
         brand_ops: BrandOps::default(),
+        brand_ops_complete: true,
         host,
     };
     match interp.run_module(module) {
@@ -499,16 +500,13 @@ pub fn run_expects_budgeted(
         call_depth: 0,
         fuel: budget.map(Fuel::new),
         brand_ops: BrandOps::default(),
+        brand_ops_complete: true,
         host,
     };
     if let Err(error) = interp
-        .load_brand_ops(module, false)
-        .and_then(|ops| {
-            interp.brand_ops = ops;
-            interp.eval_defs(module)
-        })
-        .and_then(|_| interp.load_brand_ops(module, true))
-        .map(|ops| interp.brand_ops = ops)
+        .load_unit_operators(module)
+        .and_then(|_| interp.eval_defs(module))
+        .and_then(|_| interp.settle_unit_operators(module))
     {
         return Err(RunFailure {
             error,
@@ -602,19 +600,17 @@ impl Session {
             call_depth: 0,
             fuel: None,
             brand_ops: BrandOps::default(),
+            brand_ops_complete: true,
             host,
         };
         let loaded = interp
-            .load_brand_ops(module, false)
-            .and_then(|ops| {
-                interp.brand_ops = ops;
-                interp.eval_defs(module)
-            })
-            .and_then(|_| interp.load_brand_ops(module, true));
+            .load_unit_operators(module)
+            .and_then(|_| interp.eval_defs(module))
+            .and_then(|_| interp.settle_unit_operators(module));
         match loaded {
-            Ok(brand_ops) => Ok(Session {
+            Ok(()) => Ok(Session {
+                brand_ops: interp.brand_ops.clone(),
                 globals: interp.globals,
-                brand_ops,
             }),
             Err(error) => Err(RunFailure {
                 error,
@@ -650,6 +646,7 @@ impl Session {
             call_depth: 0,
             fuel: None,
             brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         interp.call(callee, args, name.to_string(), Span::new(0, 0), None)
@@ -675,6 +672,7 @@ impl Session {
             call_depth: 0,
             fuel: None,
             brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         interp.call(callee, args, label.to_string(), Span::new(0, 0), None)
@@ -707,6 +705,7 @@ impl Session {
             call_depth: 0,
             fuel: None,
             brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
@@ -748,6 +747,7 @@ impl Session {
             call_depth: 0,
             fuel: None,
             brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
@@ -837,6 +837,10 @@ struct Interp<'h> {
     /// consulted ONLY when an arithmetic operand is not a number — so plain
     /// float math costs exactly what it did before.
     brand_ops: BrandOps,
+    /// Whether every declared operator in [`Self::brand_ops`] found its brand.
+    /// False only while a unit's own constructor is still an unevaluated def
+    /// (see [`Interp::load_brand_ops`]).
+    brand_ops_complete: bool,
     host: &'h mut dyn Host,
 }
 
@@ -849,6 +853,16 @@ impl Interp<'_> {
             let value = self.eval(&def.value, &Env::empty())?;
             self.globals.insert(def.name.clone(), value.clone());
             bindings.push((def.name.clone(), value));
+            // A unit whose own constructor is a top-level `let` could not be
+            // probed before the defs ran; retry as soon as more globals exist,
+            // so the very next initializer can use its operators. Normal
+            // programs (every prelude unit) resolve up front and never enter
+            // this branch.
+            if !self.brand_ops_complete {
+                let (ops, complete) = self.load_brand_ops(module, false)?;
+                self.brand_ops = ops;
+                self.brand_ops_complete = complete;
+            }
         }
         Ok(bindings)
     }
@@ -904,10 +918,32 @@ impl Interp<'_> {
         }
     }
 
+    /// Build the operator table before the defs run (see
+    /// [`Interp::load_brand_ops`]).
+    fn load_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
+        let (ops, complete) = self.load_brand_ops(module, false)?;
+        self.brand_ops = ops;
+        self.brand_ops_complete = complete;
+        Ok(())
+    }
+
+    /// The final attempt, once every def exists: only needed when something
+    /// could not be resolved earlier, and it reports why instead of leaving
+    /// the operator silently missing.
+    fn settle_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
+        if self.brand_ops_complete {
+            return Ok(());
+        }
+        let (ops, complete) = self.load_brand_ops(module, true)?;
+        self.brand_ops = ops;
+        self.brand_ops_complete = complete;
+        Ok(())
+    }
+
     fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
-        self.brand_ops = self.load_brand_ops(module, false)?;
+        self.load_unit_operators(module)?;
         let bindings = self.eval_defs(module)?;
-        self.brand_ops = self.load_brand_ops(module, true)?;
+        self.settle_unit_operators(module)?;
         match module.defs.iter().find(|def| def.name == "main") {
             Some(main_def) => Ok(RunOutcome::Main(self.call_main(main_def)?)),
             None => Ok(RunOutcome::Bindings(bindings)),
@@ -924,16 +960,25 @@ impl Interp<'_> {
     /// (`Px`), or an ordinary Functor Lang function — with no type
     /// information, which the interpreter does not have.
     ///
-    /// It runs TWICE: once before the module's defs are evaluated, so a
-    /// top-level constant may itself use branded arithmetic
-    /// (`let turn: Angle.t = 90deg + 45deg`), and once after, to pick up the
-    /// rare unit whose own constructor is a top-level `let` and so could not
-    /// be probed yet. The first pass is best-effort (a suffix it cannot probe
-    /// yet is simply absent); the second reports what is still broken.
-    fn load_brand_ops(&mut self, module: &Module, strict: bool) -> Result<BrandOps, RunError> {
+    /// It is built BEFORE the module's defs are evaluated, so a top-level
+    /// constant may itself use branded arithmetic
+    /// (`let turn: Angle.t = 90deg + 45deg`). A unit whose own constructor is
+    /// a top-level `let` cannot be probed that early; the build reports
+    /// itself INCOMPLETE and [`Interp::eval_defs`] retries as the defs land,
+    /// so such a unit works from the first initializer that could use it.
+    /// `strict` (the final attempt) reports what is still unresolvable
+    /// instead of leaving it silently absent.
+    ///
+    /// Returns the table and whether every declared operator found its brand.
+    fn load_brand_ops(
+        &mut self,
+        module: &Module,
+        strict: bool,
+    ) -> Result<(BrandOps, bool), RunError> {
         if module.unit_ops.is_empty() {
-            return Ok(BrandOps::default());
+            return Ok((BrandOps::default(), true));
         }
+        let mut complete = true;
         let mut tags: HashMap<&str, String> = HashMap::new();
         let mut ops: HashMap<String, BrandOpRow> = HashMap::new();
         for unit_op in &module.unit_ops {
@@ -949,10 +994,6 @@ impl Interp<'_> {
                         // suffix, so this is unreachable in a loaded project.
                         continue;
                     };
-                    // A brand whose values carry no tag (a record) cannot be
-                    // dispatched on; the CHECKER refuses that declaration, so
-                    // here it is simply left out of the table rather than
-                    // failing the whole load.
                     let probed = self
                         .eval(&unit.target, &Env::empty())
                         .and_then(|ctor| {
@@ -967,9 +1008,30 @@ impl Interp<'_> {
                         .map(|probe| brand_tag(&probe).map(str::to_string));
                     let tag = match probed {
                         Ok(Some(tag)) => tag,
-                        // Untagged, or (before the defs are evaluated) not yet
-                        // buildable: skip it. The post-def pass retries.
-                        Ok(None) | Err(_) => continue,
+                        // A brand whose values carry no runtime tag (a record)
+                        // cannot be dispatched on — the CHECKER refuses that
+                        // declaration, and the final attempt says so too.
+                        Ok(None) if strict => {
+                            return Err(RunError {
+                                message: format!(
+                                    "`unit {} ({})` needs a brand whose values carry a runtime \
+tag — `{}` builds a value nothing can dispatch on; use a single-constructor variant, or a host \
+type",
+                                    unit_op.suffix,
+                                    unit_op.op.symbol(),
+                                    unit_op.suffix
+                                ),
+                                span: unit_op.span,
+                            })
+                        }
+                        // Not buildable YET (its constructor is a def that has
+                        // not been evaluated): leave it out and report the
+                        // build incomplete, so `eval_defs` retries.
+                        Err(error) if strict => return Err(error),
+                        Ok(None) | Err(_) => {
+                            complete = false;
+                            continue;
+                        }
                     };
                     tags.insert(unit_op.suffix.as_str(), tag.clone());
                     tag
@@ -989,9 +1051,6 @@ impl Interp<'_> {
             // operator; `run` skips the checker, so refuse it here too rather
             // than silently picking the last one.
             if row[slot].is_some() {
-                if !strict {
-                    continue;
-                }
                 return Err(RunError {
                     message: format!(
                         "duplicate operator: `{}` is declared more than once for the brand \
@@ -1004,7 +1063,7 @@ implementation",
             }
             row[slot] = Some(implementation);
         }
-        Ok(Rc::new(ops))
+        Ok((Rc::new(ops), complete))
     }
 
     fn call_main(&mut self, def: &Def) -> Result<Value, RunError> {

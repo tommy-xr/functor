@@ -643,6 +643,36 @@ fn a_named_implementation_is_late_bound_like_any_global() {
     );
 }
 
+/// An annotated RESULT decides the node on its own: `+` stays inside its
+/// brand, so `(a, b): Px => a + b` needs no operand annotation. [xreview:
+/// High]
+#[test]
+fn an_annotated_result_resolves_the_operands() {
+    let diags = check_src(&format!("{PX}let add = (a, b): Px => a + b\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    // A binding annotation on the def works the same way.
+    let diags = check_src(&format!("{PX}let add: (Px, Px) => Px = (a, b) => a + b\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    // (A helper whose type is only pinned by a LATER call site is still
+    // ambiguous — it generalizes first, the ordinary let-polymorphism rule.)
+}
+
+/// A unit whose own constructor is a top-level `let` cannot be probed before
+/// the defs run — the table is completed as the defs land, so an initializer
+/// below the constructor still gets its operators. [xreview: High]
+#[test]
+fn a_unit_built_by_a_top_level_function_still_dispatches() {
+    let src = "type Px = | Px(value: float)\n\
+               let make = (n: float): Px => Px(n)\n\
+               unit px = make\n\
+               let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+               unit px (+) = (a, b) => make(unwrap(a) + unwrap(b))\n\
+               let total = 1px + 2px\n\
+               let main = () => unwrap(total)\n";
+    assert!(check_src(src).is_empty(), "{:?}", check_src(src));
+    assert_eq!(main_result(src), "3");
+}
+
 /// The interpreter dispatches on a value's runtime TAG, so a brand whose
 /// values carry none (a record) or carry several (a multi-constructor type)
 /// is refused at the declaration instead of checking clean and failing at

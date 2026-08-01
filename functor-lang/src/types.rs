@@ -1052,8 +1052,9 @@ use a single-constructor variant (`type Px = | Px(value: float)`)",
                 unit_op.op.symbol(),
                 previous
             );
+            // Point at the `(<op>)` itself — the part that is the duplicate.
             checker.diag(
-                unit_op.span,
+                unit_op.op_span,
                 format!(
                     "duplicate operator: {previous} — an operator belongs to the BRAND, so every \
 suffix of `{name}` shares one implementation"
@@ -3361,8 +3362,24 @@ is {other}"
     /// float (the rule that makes `unit` operators safe to add).
     fn flush_pending_ops(&mut self) {
         for node in std::mem::take(&mut self.pending_ops) {
-            let lhs = self.zonk(&node.lhs);
-            let rhs = self.zonk(&node.rhs);
+            let mut lhs = self.zonk(&node.lhs);
+            let mut rhs = self.zonk(&node.rhs);
+            // The RESULT can decide the node on its own: an annotated
+            // `(a, b): Px => a + b` says the operands are `Px`, because `+`
+            // stays inside its brand. (`*`//` cannot be decided this way —
+            // which SIDE is the brand would still be unknown.)
+            let result = self.zonk(&node.result);
+            if matches!(node.op, BinOp::Add | BinOp::Sub) {
+                if let Some(name) = brand_name(&result) {
+                    if self.brand_ops.contains_key(&(name.clone(), node.op)) {
+                        let what = format!("an operand of `{}` on `{name}`", node.op.symbol());
+                        self.unify(&lhs, &result, node.lhs_span, &what);
+                        self.unify(&rhs, &result, node.rhs_span, &what);
+                        lhs = self.zonk(&node.lhs);
+                        rhs = self.zonk(&node.rhs);
+                    }
+                }
+            }
             if let Some(ty) = self.brand_binary(
                 node.op,
                 &lhs,
