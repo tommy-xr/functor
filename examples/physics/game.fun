@@ -152,7 +152,7 @@ let update = (model, msg) =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(10.5, 7.5, -10.5), Vec3.make(0.0, 0.8, 0.0)),
+    Camera3D.lookAt(Vec3.make(10.5, 7.5, -10.5), Vec3.make(0.0, 0.8, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.55, 0.58, 0.62)),
       Scene.sphere() |> Scene.scale(0.6) |> Scene.lit(Color.rgb(0.95, 0.35, 0.25)) |> Physics.transformed(ballTag),

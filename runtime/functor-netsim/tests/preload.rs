@@ -39,7 +39,7 @@ fn add_preload_game(
            then (1.0, Effect.preloadThen(warmed, {first}.0))\n\
            else model\n\
          let draw = (model, tts) => Frame.create(\n\
-           Camera.lookAt(Vec3.make(0.0, 0.0, -1.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+           Camera3D.lookAt(Vec3.make(0.0, 0.0, -1.0), Vec3.make(0.0, 0.0, 0.0)),\n\
            Scene.group([]))\n"
     );
     add_source_game(sim, &dir, source)
@@ -86,7 +86,7 @@ fn add_delivery_game(
          let subscriptions = (model) => {subscription}\n\
          let tick = (model, dt, tts) => model\n\
          let draw = (model, tts) => Frame.create(\n\
-           Camera.lookAt(Vec3.make(0.0, 0.0, -1.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+           Camera3D.lookAt(Vec3.make(0.0, 0.0, -1.0), Vec3.make(0.0, 0.0, 0.0)),\n\
            Scene.group([]))\n"
     );
     add_source_game(sim, &dir, source)
@@ -266,7 +266,7 @@ fn replay_does_not_revive_a_preload_token_dropped_by_the_per_target_cap() {
            else if model == 1.0 then (2.0, {second})\n\
            else model\n\
          let draw = (model, tts) => Frame.create(\n\
-           Camera.lookAt(Vec3.make(0.0, 0.0, -1.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+           Camera3D.lookAt(Vec3.make(0.0, 0.0, -1.0), Vec3.make(0.0, 0.0, 0.0)),\n\
            Scene.group([]))\n"
     );
     let mut sim = NetSim::new(17);

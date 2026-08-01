@@ -224,7 +224,7 @@ let draw = (model, tts: float) =>
   let scene = Scene.group([objects, shark, fountain, ..markers(tts)]) in
 
   let camera =
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(model.eye.x, model.eye.y, model.eye.z),
       Angle.radians(model.yaw), Angle.radians(model.pitch), Angle.degrees(60.0)) in
 

@@ -86,7 +86,7 @@ name (contract in the `functor-lang` skill; reference: `examples/hello/game.fun`
 - `tick = (model, dt, tts) => model'` — per-frame simulation step
 - `update = (model, msg) => model'` — OPTIONAL; handles messages (ADT variants) from subscriptions/effects
 - `subscriptions = (model) => Sub.every(...)` — OPTIONAL declarative timers, polled each frame (requires `update`)
-- `draw = (model, tts) => Frame.create(camera, scene)` — pure frame description: a `Camera` plus a scene
+- `draw = (model, tts) => Frame.create(camera, scene)` — pure frame description: a `Camera3D` plus a scene
 - `physics = (model) => Physics.scene(...)`, `soundScape = (model) => AudioScene.create(...)`,
   `ui = (model) => …` — OPTIONAL hooks
 
@@ -99,7 +99,7 @@ a `(model', effect)` tuple instead of a bare model, whose effect result folds ba
 
 **Coordinates: Y-up, right-handed** (like OpenGL / glTF / Unity / Godot; *not* Unreal's Z-up). +Y
 is up, +X is right, and the ground is the XZ plane. The camera's up is `[0,1,0]` and view uses
-`look_at_rh`; `Camera.firstPerson` treats yaw = 0 / pitch = 0 as looking down **+Z**, with positive
+`look_at_rh`; `Camera3D.firstPerson` treats yaw = 0 / pitch = 0 as looking down **+Z**, with positive
 pitch looking up. glTF models are authored Y-up, so this matches imported assets with no conversion.
 By convention, `plane` geometry lies in XZ (ground) and `quad` in XY (screen/wall-facing).
 
@@ -117,7 +117,7 @@ deterministic (the test seam).
 **The Functor Lang producer is the seam between game logic and the shells.** `functor_lang_game.rs` (desktop) and
 its wasm sibling in `runtime/functor-runtime-web/` run `.fun` logic through an `functor_lang::Session` with
 the **Functor prelude** (`FunctorHost` in `functor_runtime_common::functor_lang_prelude`): the host-provided
-externals that make `Scene.*` / `Camera.*` / `Frame.*` / `Light.*` / `Physics.*` / `Effect.*` /
+externals that make `Scene.*` / `Camera3D.*` / `Frame.*` / `Light.*` / `Physics.*` / `Effect.*` /
 `Sub.*` resolve to real protocol values. Both producers implement the shared
 `functor_runtime_common::protocol::GameProducer` trait the runtime loop consumes; the versioned
 logic↔runtime boundary is enumerated in `functor_runtime_common::protocol`. When you add or change
@@ -462,7 +462,7 @@ rules: release only, compare the **min** column.
 - **`file = module`.** Every `.fun` in the entry's directory loads with the project — an
   unreferenced (or stray scratch) sibling still parses, checks, and evaluates. Keep scratch `.fun`
   files in their own directory, and don't leave a broken sibling next to a game.
-- **The engine prelude only exists under the host.** `Scene.*`/`Camera.*`/`Frame.*`/`Physics.*`
+- **The engine prelude only exists under the host.** `Scene.*`/`Camera3D.*`/`Frame.*`/`Physics.*`
   etc. resolve only in runner-hosted Functor Lang (and tests via `functor_runtime_common::functor_lang_prelude`), NOT
   in a plain `cargo run -p functor-lang -- run`. Branded values (`Angle`, `Time`/`Duration`, `Fog`, render
   targets) refuse bare numbers/strings with a teaching error — pass `Angle.degrees(60.0)`, not `60`.

@@ -175,7 +175,7 @@ let draw = (model, tts) =>
     else scene
   in
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 0.8, 6.0), Vec3.make(0.0, 0.2, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 0.8, 6.0), Vec3.make(0.0, 0.2, 0.0)),
     withBar,
     [
       Light.ambient(Color.rgb(0.4, 0.4, 0.45)),

@@ -13,7 +13,7 @@
 // to make the head follow the pointer (the auto mode sweeps it until then).
 
 let camera =
-  Camera.lookAt(Vec3.make(0.0, 1.4, -3.2), Vec3.make(0.0, 0.9, 0.0))
+  Camera3D.lookAt(Vec3.make(0.0, 1.4, -3.2), Vec3.make(0.0, 0.9, 0.0))
 
 let init = {
   speed: 0.0,
@@ -38,7 +38,7 @@ let input = (model, key, isDown) =>
 // 180-degree scene rotation: Anim.lookAt targets live in model space because
 // the animation evaluator intentionally knows nothing about Scene transforms.
 let pointerTarget = (mouse: Input.mouse) =>
-  match Camera.toWorldRay(mouse, camera) with
+  match Camera3D.toWorldRay(mouse, camera) with
   | Option.None => Option.None
   | Option.Some(ray) =>
     let dz = Vec3.z(ray.direction) in

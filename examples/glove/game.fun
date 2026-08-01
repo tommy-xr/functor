@@ -112,7 +112,7 @@ let handPose = (c) =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 0.25, -0.65), Vec3.make(0.0, 0.1, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 0.25, -0.65), Vec3.make(0.0, 0.1, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(6.0) |> Scene.translate(Vec3.make(0.0, -0.25, 0.0))
         |> Scene.lit(Color.rgb(0.42, 0.47, 0.55)),

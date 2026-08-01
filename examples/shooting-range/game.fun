@@ -200,7 +200,7 @@ let init = {
 // ------------------------------------------------------------ camera basis
 //
 // Rotate a camera-local offset (+X right-of-frame mirrored, +Y up, +Z forward)
-// into world space: Ry(yaw) . Rx(-pitch). `Camera.firstPerson` has no
+// into world space: Ry(yaw) . Rx(-pitch). `Camera3D.firstPerson` has no
 // camera-space scene node, so the viewmodel and the muzzle are placed by hand.
 
 let camRot = (yaw: float, pitch: float, l: V): V =>
@@ -765,12 +765,12 @@ let crosshair = (m) =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       v3(model.eye),
       Angle.radians(aimYaw(model)),
       Angle.radians(aimPitch(model)),
       Angle.degrees(72.0))
-      |> Camera.clip(0.08, 200.0),
+      |> Camera3D.clip(0.08, 200.0),
     Scene.group([
       rangeNode,
       Scene.group(model.targets |> List.map(targetNode)),

@@ -1,6 +1,6 @@
 //! The Functor Lang producer (docs/functor-lang.md Track C2): game logic written in `.fun`,
 //! run by the real interpreter (`functor_lang::Session`) with the Functor prelude
-//! (`Scene.*` / `Camera.*` / `Frame.*` — see
+//! (`Scene.*` / `Camera3D.*` / `Frame.*` — see
 //! `functor_runtime_common::functor_lang_prelude`). This replaces the Milestone-0
 //! throwaway spike (`functor_lang_spike.rs`, deleted with this producer's arrival).
 //!
@@ -1486,7 +1486,7 @@ mod tests {
                      let tick = (model, dt, tts) => model\n\
                      let draw = (model, tts) => \
                        Frame.create(\
-                         Camera.lookAt(\
+                         Camera3D.lookAt(\
                            Vec3.make(0.0, 0.0, -3.0), \
                            Vec3.make(0.0, 0.0, 0.0)), \
                          Scene.cube())\n"
@@ -1530,7 +1530,7 @@ mod tests {
              let subscriptions = (m: Model) => Sub.connect(\"ws://127.0.0.1:9001/echo\", Ws)\n\
              let tick = (m: Model, dt: Float, tts: Float) => m\n\
              let draw = (m: Model, tts: Float) =>\n\
-               Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+               Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .unwrap();
         let _ = drain_conn_commands(); // clear the shared queue
@@ -1600,7 +1600,7 @@ mod tests {
              let subscriptions = (m: Model) => Sub.listen(\"127.0.0.1:9001\", toMsg)\n\
              let tick = (m: Model, dt: Float, tts: Float) => m\n\
              let draw = (m: Model, tts: Float) =>\n\
-               Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+               Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .unwrap();
         let _ = drain_conn_commands();
@@ -1662,7 +1662,7 @@ mod tests {
 
     const BASE: &str = "let init = { n: 0.0 }\n\
          let tick = (m, dt, tts) => m\n\
-         let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+         let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
 
     /// Subscriptions produce messages; without an `update` they have nowhere
     /// to go — a load error, not a per-frame one.
@@ -1686,7 +1686,7 @@ mod tests {
             "init-effect",
             "let init = (0.0, Effect.none())
              let tick = (m, dt, tts) => m
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 ",
         );
         assert!(
@@ -1880,7 +1880,7 @@ mod tests {
             dir.join("game.fun"),
             "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
@@ -1921,7 +1921,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let src = "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
         std::fs::write(dir.join("game.fun"), src).expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
 
@@ -1993,7 +1993,7 @@ mod tests {
              let physics = (m) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
              \x20 Physics.fixed(\"ground\", Physics.box(20.0, 0.4, 20.0)) |> Physics.at(Vec3.make(0.0, -0.2, 0.0)),\n\
              \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 8.0, 0.0))])\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
@@ -2060,7 +2060,7 @@ mod tests {
             dir.join("game.fun"),
             "let init = { n: 0.0 }\n\
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
@@ -2126,7 +2126,7 @@ mod tests {
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let physics = (m) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
              \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 8.0, 0.0))])\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
@@ -2207,7 +2207,7 @@ mod tests {
              let tick = (m, dt, tts) => { m with n: m.n + 1.0 }\n\
              let physics = (m) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
              \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 8.0, 0.0))])\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
@@ -2271,7 +2271,7 @@ mod tests {
              let update = (m, msg) =>\n\
                match msg with\n\
                | Contact(e) => (match e.started with | true => { m with hits: m.hits + 1.0 } | false => m)\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
@@ -2659,7 +2659,7 @@ mod tests {
              let tick = (m, dt, tts) => { m with t: m.t + dt }\n\
              let ui = (m) => Ui.button(\"ui\", UiClicked)\n\
              let webview = (m) => Html.button([Attr.onClick(WebClicked)], [Html.text(\"web\")])\n\
-             let draw = (m, tts) => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
         )
         .expect("write game");
         let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
@@ -3015,7 +3015,7 @@ mod tests {
              \x20 Physics.fixed(\"ground\", Physics.box(10.0, 0.4, 10.0)) |> Physics.at(Vec3.make(0.0, -0.2, 0.0)),\n\
              \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 4.0, 0.0))])\n\
              let draw = (m, tts) => Frame.create(\n\
-               Camera.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(tts, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(tts, 0.0, 0.0)),\n\
                Scene.sphere() |> Physics.transformed(\"ball\"))\n",
         )
         .expect("write game");
@@ -3140,7 +3140,7 @@ mod tests {
         let input = (m: Model, key: Key.t, isDown: Bool) => { m with ticks: m.ticks + 100.0 }\n\
         let tick = (m: Model, dt: Float, tts: Float) => m\n\
         let draw = (m: Model, tts: Float) =>\n\
-          Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+          Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
 
     #[test]
     fn inspector_trace_replays_the_paused_frame_and_is_empty_while_playing() {

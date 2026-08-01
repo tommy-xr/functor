@@ -38,7 +38,7 @@ const TICK = `let tick = (model, dt: float, tts: float) => { model with spin: mo
 // assertion can't be confused by animation phase.
 const GREEN_DRAW = `let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)) |> Scene.scale(2.0))`;
 
 const V_GREEN = `let init = { spin: 0.0, beat: 0.0 }

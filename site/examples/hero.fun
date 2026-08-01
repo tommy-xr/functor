@@ -64,5 +64,5 @@ let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 3.4, -13.0), Vec3.make(0.0, 1.8, 12.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 3.4, -13.0), Vec3.make(0.0, 1.8, 12.0)),
     Scene.group([sky(), ground(), sun(model.t), grid(model.t)]))

@@ -53,7 +53,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Scene",
     "Anim",
     "Asset",
-    "Camera",
+    "Camera3D",
     "Camera2D",
     "Sprite",
     "Frame",
@@ -470,7 +470,7 @@ pub fn load_with_overrides(
 
 /// [`load_with_overrides`], plus a set of injected PRELUDE interface modules —
 /// `(module name, .funi source)` pairs describing host-provided values
-/// (`Scene.*`, `Camera.*`, …). Unlike project files they are not read from the
+/// (`Scene.*`, `Camera3D.*`, …). Unlike project files they are not read from the
 /// directory and are EXEMPT from the protected-namespace check: they are
 /// precisely what defines those namespaces. This is the host's seam to give
 /// the checker real types for its externals (see `docs/functor-lang-interfaces.md`); plain `functor_lang`

@@ -37,5 +37,5 @@ let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 2.6, -7.5), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.6, -7.5), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([ground(), core(model.t), ring(model.t)]))

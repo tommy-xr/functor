@@ -20,7 +20,7 @@ let mouseMove = (model, x, y) => { model with mouseLeaked: true }
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.5, -5.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.5, -5.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.color(Color.rgb(0.1, 0.8, 0.9)))
 let webview = (model) =>
   Html.div([], [
@@ -40,7 +40,7 @@ let mouseMove = (model, x, y) => { model with leaked: true }
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.5, -5.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.5, -5.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.color(Color.rgb(0.1, 0.8, 0.9)))
 let webview = (model) =>
   Html.div([], [Html.text(if model.held then "HELD" else if model.leaked then "LEAKED" else "UP")])

@@ -277,7 +277,7 @@ let playerVisual = (model) =>
 let draw = (model, tts) =>
   let pos = Physics.position(playerTag) in
   Frame.createLit(
-    Camera.lookAt(Vec3.make(pos.x + 6.5, pos.y + 4.5, pos.z + 12.0),
+    Camera3D.lookAt(Vec3.make(pos.x + 6.5, pos.y + 4.5, pos.z + 12.0),
                   Vec3.make(pos.x, pos.y + 0.7, pos.z)),
     Scene.group([
       slabVisual(groundColor, World.ground),

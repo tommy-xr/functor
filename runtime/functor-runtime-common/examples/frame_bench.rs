@@ -13,7 +13,7 @@
 //!
 //! This harness is the honest middle: it loads a game-shaped program under the
 //! REAL engine prelude ([`functor_runtime_common::functor_lang_prelude::FunctorHost`] — the
-//! same `Scene.*`/`Camera.*`/`Frame.*` host both shells use) and calls its
+//! same `Scene.*`/`Camera3D.*`/`Frame.*` host both shells use) and calls its
 //! `draw` back-to-back in a tight loop at full clock. No GL, no window, no
 //! GPU — pure CPU, runnable by an agent or CI box.
 //!
@@ -154,7 +154,7 @@ let draw = (m: float, tts: float) =>
     |> Scene.emissiveTexture(skyTexture) in
   let scene = Scene.group([sky, sun, terrain]) in
   Frame.create(
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(0.0, 5.0, -12.0),
       Angle.radians(0.0), Angle.radians(-0.05), Angle.degrees(70.0)),
     scene)

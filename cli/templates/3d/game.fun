@@ -10,7 +10,7 @@ let tick = (model, dt, tts) => model
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(6.0, 4.0, -8.0), Vec3.make(0.0, 0.5, 0.0)),
+    Camera3D.lookAt(Vec3.make(6.0, 4.0, -8.0), Vec3.make(0.0, 0.5, 0.0)),
     Scene.group([
       Scene.plane()
         |> Scene.scale(20.0)

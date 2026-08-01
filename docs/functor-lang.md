@@ -380,10 +380,10 @@ snapshots — no GPU, fully agent-verifiable.
 - [x] **Branded `Vec3` values** (2026-07-16; strong-typing track). The Angle
       rule applied to space: `Vec3.make(x, y, z)` makes an opaque `Vec3.t`,
       and every position/direction/velocity/gravity parameter takes one —
-      `Scene.translate`, `Camera.lookAt(eye, target)` (6 floats → 2 Vec3s —
+      `Scene.translate`, `Camera3D.lookAt(eye, target)` (6 floats → 2 Vec3s —
       arity slips and float interleaving become unrepresentable, though the
       two Vec3s themselves remain swappable) and
-      `Camera.firstPerson`, `Light.directional`/`point`/`spot`,
+      `Camera3D.firstPerson`, `Light.directional`/`point`/`spot`,
       `Physics.at`/`velocity`/`scene`/the command effects/`raycast(origin,
       dir, …)`, `Effect.playAt`, and `AudioSource.at`. Reads that hand
       vectors BACK (`Physics.position`, `rayHit`) stay plain `{x, y, z}`
@@ -660,7 +660,7 @@ Starts once A2 + B3 exist.
 - [x] **C1. Functor prelude.** The `functor_lang::Host` seam (host-provided externals
       + opaque `HostData` values, added to the interpreter) and
       `functor_runtime_common::functor_lang_prelude::FunctorHost`: `Scene.*`
-      constructors/transforms/color/group, `Camera.lookAt`, `Frame.create` —
+      constructors/transforms/color/group, `Camera3D.lookAt`, `Frame.create` —
       Functor Lang snippets emit real protocol `Frame`s (extracted via `frame_value`).
       Transforms wrap in `Group` nodes, which makes them immune to the
       Material-drops-its-xform quirk AND apply outermost-last (the order the
@@ -716,7 +716,7 @@ Starts once A2 + B3 exist.
         Optional `mouseMove(model, x, y)` / `mouseWheel(model, delta)`
         entry points; prelude grows the lit pipeline — `Scene.lit`/
         `Scene.emissive`, all three `Light.*` kinds + `castShadows`,
-        `Camera.firstPerson`, `Frame.createLit`. `examples/primitives`
+        `Camera3D.firstPerson`, `Frame.createLit`. `examples/primitives`
         ports the F# golden scene (shadow-casting sun, orbiting colored
         point lights, emissive markers) — **0.000% pixels over the golden
         tolerance vs the F# render** at the same fixed time.

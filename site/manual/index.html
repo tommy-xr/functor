@@ -89,7 +89,7 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
 let tick = (m, dt, tts) => m
 let draw = (m, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube()
       |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8))
       |> Scene.rotateY(Angle.radians(tts)))</pre>
@@ -131,7 +131,7 @@ let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
 
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere()
       |> Scene.emissive(Color.rgb(1.0, 0.3, 0.8))
       |> Scene.scale(1.0 + 0.2 * Math.sin(model.spin * 4.0)))</pre>
@@ -154,7 +154,7 @@ let tick = (model, dt, tts) => model
 
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube()
       |> Scene.emissive(Color.rgb(0.2, 0.9, 1.0))
       |> Scene.translate(Vec3.make(model.x, 0.0, 0.0)))</pre>
@@ -178,7 +178,7 @@ let physics = (m) =>
 
 let draw = (m, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 3.0, -8.0), Vec3.make(0.0, 1.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 3.0, -8.0), Vec3.make(0.0, 1.0, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(20.0) |> Scene.lit(Color.rgb(0.4, 0.45, 0.55)),
       Scene.sphere()
@@ -503,8 +503,8 @@ let pos = model.pos |> Vec3.add(step)</pre>
           <h3>Camera, lights, frames</h3>
           <table>
             <tbody>
-              <tr><td><code>Camera.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))</code></td><td>up = +Y, fov 45°</td></tr>
-              <tr><td><code>Camera.firstPerson(Vec3.make(ex, ey, ez), yaw, pitch, fov)</code></td><td>all three are Angles; yaw 0 / pitch 0 looks down +Z</td></tr>
+              <tr><td><code>Camera3D.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))</code></td><td>up = +Y, fov 45°</td></tr>
+              <tr><td><code>Camera3D.firstPerson(Vec3.make(ex, ey, ez), yaw, pitch, fov)</code></td><td>all three are Angles; yaw 0 / pitch 0 looks down +Z</td></tr>
               <tr><td><code>Light.ambient(Color.rgb(r, g, b))</code></td><td></td></tr>
               <tr><td><code>Light.directional(Vec3.make(dx, dy, dz), Color.rgb(r, g, b), intensity)</code></td><td><code>|> Light.castShadows</code> for a shadowed key light</td></tr>
               <tr><td><code>Light.point(Vec3.make(px, py, pz), Color.rgb(r, g, b), intensity, range)</code></td><td></td></tr>

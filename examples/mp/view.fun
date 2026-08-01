@@ -18,7 +18,7 @@ let world = (rows: List<Protocol.Row>) =>
   let scene = Scene.group([ground, ..playerNodes]) in
   // Top-down-ish view so player movement stays on screen.
   let camera =
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(0.0, 9.0, -2.0),
       Angle.radians(0.0), Angle.radians(-1.2), Angle.degrees(70.0)) in
   Frame.createLit(

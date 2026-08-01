@@ -40,7 +40,7 @@ const GREEN = `let init = { t: 0.0 }
 let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)) |> Scene.scale(2.0))
 `;
 const BROKEN = "let init = {\n";
@@ -52,7 +52,7 @@ const INLINE_SPIN = `let init = { spin: 0.0 }
 let tick = (model, dt: float, tts: float) => { model with spin: model.spin + dt }
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.radians(model.spin)) |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8)))
 `;
 
@@ -64,7 +64,7 @@ let init = { t: 0.0, behavior: offset(1.0) }
 let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.radians(model.t)) |> Scene.emissive(Color.rgb(0.2, 0.8, 1.0)))
 `;
 
@@ -79,7 +79,7 @@ let init = 0.0
 let tick = (model, dt: float, tts: float) => model + dt
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2))
       |> Scene.rotateY(Angle.radians(model)) |> Scene.scale(speed))
 `;
@@ -1120,7 +1120,7 @@ for (const example of examples) {
     const clean = JSON.parse(
       mod.functor_lang_analyze(
         "let draw = (model, tts: float) =>\n" +
-          "  Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n"
+          "  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n"
       )
     );
     return { bad, clean };
@@ -1499,7 +1499,7 @@ let tick = (model, dt: float, tts: float) =>
     | false => { n: model.n + 1.0, hp: 2.0 }
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
+    Camera3D.lookAt(0.0, 0.0, -6.0, 0.0, 0.0, 0.0),
     Scene.sphere() |> Scene.emissive(Color.rgb(0.1, 1.0, 0.2)))
 `;
   const b64u = Buffer.from(PARITY).toString("base64url");

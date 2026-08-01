@@ -39,7 +39,7 @@ fn terrain_game_source(declarations: &str, tag: &str, remove_on_frame_three: boo
          let tick = (model, dt, tts) => {tick}\n\
          let physics = (model) => {bodies}\n\
          let draw = (model, tts) => Frame.create(\
-           Camera.lookAt(Vec3.make(0.0, 5.0, -10.0), Vec3.make(0.0, 0.0, 0.0)), \
+           Camera3D.lookAt(Vec3.make(0.0, 5.0, -10.0), Vec3.make(0.0, 0.0, 0.0)), \
            Scene.group([]))\n"
     )
 }

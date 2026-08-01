@@ -50,11 +50,11 @@ fn real_tuple_mismatch_still_errors() {
 /// Host calls carry real types from the prelude `.funi`, across namespaces.
 #[test]
 fn host_calls_have_real_types() {
-    let diags = check("let bad : float = Camera.lookAt(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0))");
-    assert!(diags.iter().any(|m| m.contains("Camera.t")), "{diags:?}");
+    let diags = check("let bad : float = Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0))");
+    assert!(diags.iter().any(|m| m.contains("Camera3D.t")), "{diags:?}");
     let diags = check(
         "let bad : float =\n\
-         Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
+         Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
     );
     assert!(diags.iter().any(|m| m.contains("Frame.t")), "{diags:?}");
 }
@@ -64,16 +64,16 @@ fn host_calls_have_real_types() {
 #[test]
 fn camera_world_ray_checks_as_physics_cast_input() {
     let diags = check(
-        "let camera = Camera.lookAt(\n\
+        "let camera = Camera3D.lookAt(\n\
            Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0))\n\
          let pick = (mouse: Input.mouse): Option.t<Physics.rayHit> =>\n\
-           match Camera.toWorldRay(mouse, camera) with\n\
+           match Camera3D.toWorldRay(mouse, camera) with\n\
            | Option.Some(ray) => Option.Some(Physics.cast(ray.origin, ray.direction, 100.0))\n\
            | Option.None => Option.None",
     );
     assert!(
         diags.is_empty(),
-        "Camera.toWorldRay should feed Physics.cast directly: {diags:?}"
+        "Camera3D.toWorldRay should feed Physics.cast directly: {diags:?}"
     );
 }
 
@@ -82,17 +82,17 @@ fn camera_world_ray_checks_as_physics_cast_input() {
 #[test]
 fn camera_world_ray_checks_as_anim_look_at_input() {
     let diags = check(
-        "let camera = Camera.lookAt(\n\
+        "let camera = Camera3D.lookAt(\n\
            Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0))\n\
          let aim = (mouse: Input.mouse): Anim.t =>\n\
-           match Camera.toWorldRay(mouse, camera) with\n\
+           match Camera3D.toWorldRay(mouse, camera) with\n\
            | Option.Some(ray) => Anim.rest() |> Anim.lookAt(\n\
                \"head\", ray.origin |> Vec3.add(ray.direction), Angle.degrees(80.0), 1.0)\n\
            | Option.None => Anim.rest()",
     );
     assert!(
         diags.is_empty(),
-        "Camera.toWorldRay should feed Anim.lookAt directly: {diags:?}"
+        "Camera3D.toWorldRay should feed Anim.lookAt directly: {diags:?}"
     );
 }
 
@@ -215,7 +215,7 @@ fn vec3_arithmetic_checks_clean() {
          let cz: float = Vec3.z(sum)\n\
          let total = cx + cy + cz + d + len + dist\n\
          let scene = Scene.cube() |> Scene.translate(perp) |> Scene.scale(total)\n\
-         let draw = (m, tts) => Frame.create(Camera.lookAt(mid, unit), scene)",
+         let draw = (m, tts) => Frame.create(Camera3D.lookAt(mid, unit), scene)",
     );
     assert!(diags.is_empty(), "Vec3 arithmetic should check clean: {diags:?}");
 }

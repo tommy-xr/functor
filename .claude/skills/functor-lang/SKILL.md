@@ -37,7 +37,7 @@ The habits that break first, in one place. Each is expanded below.
   mutually visible.
 - **File = module**: every sibling `.fun` in the entry's directory loads with
   the project, referenced or not.
-- **The engine prelude (`Scene.*`, `Camera.*`, `Frame.*`, `Physics.*`) exists
+- **The engine prelude (`Scene.*`, `Camera3D.*`, `Frame.*`, `Physics.*`) exists
   only under the runner host**, not in plain `functor-lang run`. Its branded
   values refuse bare numbers: `Angle.degrees(60.0)`, `Time.seconds(0.5)`.
 - **A game is `init` / `tick` / `draw`** plus optional hooks — see The game
@@ -273,7 +273,7 @@ let grab = (s) =>
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude or bundled-core namespace (Net, Key, Mouse, Random, Option, Result,
   List, Map, Text, Math, Debug, Scene,
-  Sprite, Anim, Asset, Camera, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
+  Sprite, Anim, Asset, Camera3D, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
   Style, AudioSource, AudioScene) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
@@ -383,12 +383,12 @@ open Widget                                              // …or open, bringing
   provides its value at run time), so `.funi` is a pure check-time overlay.
 - This is how the **engine prelude's types are declared**: the `functor-prelude`
   crate ships a `.funi` for every host namespace (`Scene`, `Sprite`, `Asset`,
-  `Camera`, `Camera2D`, `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`,
+  `Camera3D`, `Camera2D`, `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`,
   `Texture`, `Angle`, `Time`, `Sub`, `Effect`, `Physics`, `Ui`, `Html`, `Attr`,
   `Style`, `AudioSource`, `AudioScene`),
   loaded by the
   runner so engine calls carry real types (no longer `Unknown`). Each module's
-  primary opaque handle is `Mod.t` (`Camera.t`, `Frame.t`, `Effect.t`, …);
+  primary opaque handle is `Mod.t` (`Camera3D.t`, `Frame.t`, `Effect.t`, …);
   modules that own several name each (`Scene.t`; `Physics.shape`/`body`/`world`;
   `Ui.view`/`anchor`; `Html.node`/`Attr.t`; `Asset.Model`/`Texture`/`Sound`). Physics query/event results are records
   (`Physics.position`, `Physics.rayHit`, `Physics.collisionEvent`).
@@ -960,8 +960,8 @@ anim |> Anim.lookAt("jointName", target, maxAngle, weight)  // post-pass: aim th
                                                            //   transforms are intentionally
                                                            //   outside the solver, so invert
                                                            //   them before constructing target
-Camera.lookAt(eye, target)                                 // two Vec3s; up=+Y, fov 45°
-Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles for the rest
+Camera3D.lookAt(eye, target)                                 // two Vec3s; up=+Y, fov 45°
+Camera3D.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles for the rest
                                                            //   On XR this is the authored
                                                            //   reference center-eye rig:
                                                            //   live head/eye deltas compose
@@ -969,7 +969,7 @@ Camera.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles f
                                                            //   orientation, near/far remain
                                                            //   game-owned; OpenXR owns IPD
                                                            //   and per-eye optical FOV
-Camera.toWorldRay(mouse, camera)                           // -> Option.t<{origin: Vec3.t,
+Camera3D.toWorldRay(mouse, camera)                           // -> Option.t<{origin: Vec3.t,
                                                            //     direction: Vec3.t}>; maps an
                                                            //   Input.mouse's top-left logical
                                                            //   position through the authored
@@ -980,10 +980,10 @@ Camera.toWorldRay(mouse, camera)                           // -> Option.t<{origi
                                                            //   a degenerate camera. Position +
                                                            //   extent share one coordinate
                                                            //   space, so resize/DPR stay correct
-Camera.mapTrackedPose(camera, pose)                        // map rig-local Input.pose through
+Camera3D.mapTrackedPose(camera, pose)                        // map rig-local Input.pose through
                                                            //   the authored camera; returns
                                                            //   world-space {position,forward,up}
-camera |> Camera.clip(0.5, 6000.0)                         // positive near/far, near < far;
+camera |> Camera3D.clip(0.5, 6000.0)                         // positive near/far, near < far;
                                                            //   useful for world-scale terrain
 Camera2D.create(width, height)                             // center-origin, +X right, +Y up;
                                                            //   width/height are visible world
@@ -1818,7 +1818,7 @@ stored in the model likewise adopt the edited declaration's arity.
 Transforms wrap in Group nodes: the **outer call applies last in world
 space** — `s |> Scene.rotateY(r) |> Scene.translate(Vec3.make(x, 0.0, 0.0))` rotates in
 place, then moves (the order the source reads). Most engine values (`<Scene>`,
-`<Camera>`, `<Camera2D>`, `<Frame>`) are opaque: they can be passed around but
+`<Camera3D>`, `<Camera2D>`, `<Frame>`) are opaque: they can be passed around but
 not inspected, compared, or serialized. `Sprite.t` is the deliberate
 exception: its abstract type hides a private plain-data picture tree, so sprite
 values do support structural display/equality, snapshots, and hot reload.

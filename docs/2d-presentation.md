@@ -335,7 +335,7 @@ Worth recording because it is independent of the API, and because it was the
 single highest-leverage finding in the jam: **the manual does not mention 2D at
 all.** Searching the published manual for `Sprite`, `Camera2D`, `create2D`, or
 even the bare string `2D` returns nothing. The manual presents cameras as
-`Camera.lookAt` / `Camera.firstPerson`, both perspective, and reads
+`Camera3D.lookAt` / `Camera3D.firstPerson`, both perspective, and reads
 unambiguously as a 3D-only engine — so a user following the docs concludes
 Functor cannot do 2D. Multiple jam entries only learned `Frame.create2D` exists
 by reading `examples/mario` and the `.funi` sources. A complete, well-designed

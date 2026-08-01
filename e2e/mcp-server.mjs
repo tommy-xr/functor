@@ -567,7 +567,7 @@ let tick = (m: Model, dt, tts) => m
 
 let draw = (m: Model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube(),
   )
 `;
@@ -835,7 +835,7 @@ let tick = (m: Model, dt, tts) => { m with n: m.n + Step.amount }
 
 let draw = (m: Model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube() |> Scene.rotateY(Angle.degrees(m.n)),
   )
 `;

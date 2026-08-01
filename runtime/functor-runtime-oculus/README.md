@@ -87,7 +87,7 @@ not absolute stage coordinates. An inactive or untracked controller is
 represented explicitly instead of retaining a stale pose. This is the first
 half of the input seam: runtime/debug tooling can inspect it. Functor Lang
 games consume the same portable record once per fixed step through the optional
-`sampledInput(model, snapshot: Input.snapshot)` hook; `Camera.mapTrackedPose`
+`sampledInput(model, snapshot: Input.snapshot)` hook; `Camera3D.mapTrackedPose`
 maps its rig-local poses through the game's authored `Frame.camera`.
 
 ## Benchmark on the actual headset

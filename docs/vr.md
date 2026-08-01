@@ -147,7 +147,7 @@ functor -d examples/xr-controllers run native --emulate-xr \
 
 - The typed XR snapshot is exposed to Functor Lang through the per-tick
   `sampledInput` hook and maps through the authored rig with
-  `Camera.mapTrackedPose`; desktop can synthesize the same record with
+  `Camera3D.mapTrackedPose`; desktop can synthesize the same record with
   `--emulate-xr`, and `examples/xr-controllers` exercises both paths. Keep
   gamepad and mobile-touch input as typed sibling domains rather than
   XR-specific producer APIs.

@@ -67,7 +67,7 @@ Rules:
   benchmark is correct before trusting its timing.
 - The harness uses the plain-`functor_lang` prelude (no engine host), so benchmarks may
   use only core builtins (`List.*`, `Text.*`, `Math.*`, user code) — **not**
-  `Scene.*`/`Camera.*`/etc., which resolve only under the runtime host.
+  `Scene.*`/`Camera3D.*`/etc., which resolve only under the runtime host.
 - Because a directory is one Functor Lang project (`file = module`), every `.fun` in
   `corpus/` loads together. Keep each self-contained; sibling `main`/helper
   names don't collide (they are per-module).
@@ -132,7 +132,7 @@ downclocking between frames), so neither number tells you what a frame truly
 costs on CPU.
 
 For that, use the **macro frame bench** — headless, no GL, engine prelude
-(`Scene.*`/`Camera.*`/`Frame.*` resolve for real), calling a synthwave-shaped
+(`Scene.*`/`Camera3D.*`/`Frame.*` resolve for real), calling a synthwave-shaped
 game's `draw` back-to-back at full clock, reporting µs/frame, µs/cell, and —
 the deterministic, run-to-run-identical metric — **allocations per frame**:
 
