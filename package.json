@@ -35,6 +35,7 @@
     "site:serve": "node site/serve.mjs",
     "test:site": "node e2e/site-sandbox.mjs",
     "test:net-coordinator": "node e2e/net-coordinator.mjs",
+    "test:sandbox-mp": "node e2e/sandbox-mp.mjs",
     "test:detached-camera": "node e2e/detached-camera.mjs",
     "test:ide": "node e2e/ide-project.mjs",
     "test:ide-page": "node e2e/ide-page.mjs",
