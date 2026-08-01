@@ -1,15 +1,15 @@
-// mario — a pure-model 2D sprite platformer (walk, jump, gravity) with a
+// platformer — a pure-model 2D sprite platformer (walk, jump, gravity) with a
 // CHASM: two ground platforms with a visible gap between them. Inspired by
-// Elm's classic Mario demo. Everything the simulation needs lives IN the
+// Elm's classic platformer demo. Everything the simulation needs lives IN the
 // model, and there is deliberately NO `physics` hook — the whole state
 // forward-steps in `tick`, so the game can be rewound / ghosted / replayed
 // exactly. This is the vehicle for a "rewind + tweak a constant + replay the
 // jump" time-travel demo.
 //
 // Run with:
-//   functor -d examples/mario run native
+//   functor -d examples/platformer run native
 //
-// Controls (held-key movement, Elm-Mario style — `tick` does the moving):
+// Controls (held-key movement, Elm-style — `tick` does the moving):
 //   Left / A , Right / D  — run
 //   Up / W / Space        — jump (only when grounded)
 

@@ -338,6 +338,6 @@ even the bare string `2D` returns nothing. The manual presents cameras as
 `Camera3D.lookAt` / `Camera3D.firstPerson`, both perspective, and reads
 unambiguously as a 3D-only engine — so a user following the docs concludes
 Functor cannot do 2D. Multiple jam entries only learned `Frame.create2D` exists
-by reading `examples/mario` and the `.funi` sources. A complete, well-designed
+by reading `examples/platformer` and the `.funi` sources. A complete, well-designed
 2D subsystem is invisible to its audience, and a "2D games" manual section
 belongs alongside "A complete game".

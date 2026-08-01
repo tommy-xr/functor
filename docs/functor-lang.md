@@ -862,11 +862,11 @@ Starts once A2 + B3 exist.
         aspect-preserving fit plus pan/zoom; `Frame.create2D` makes a 2D-only
         frame and `Frame.with2D` layers sprites above an existing frame. The
         host lowers the picture to the existing quad/material/texture path at
-        the frame boundary. `examples/mario` keeps its pure platformer model
+        the frame boundary. `examples/platformer` keeps its pure platformer model
         and replaces the cube presentation with CC0 2D art.
         *Verify (done):* prelude tests pin the plain-data representation and
         protocol round-trip; Camera2D viewport tests cover letterbox and
-        pillarbox fitting; Mario typechecks and captures through the native
+        pillarbox fitting; the platformer typechecks and captures through the native
         renderer.
       - [x] **C4b-7. Pixel-art sampling + atlas regions** (done 2026-07-23):
         `Sprite.region(x, y, width, height)` describes a whole-pixel,
@@ -877,7 +877,7 @@ Starts once A2 + B3 exist.
         source pixels from the bound texture dimensions, samples atlas edges
         from texel centers to prevent neighbor bleed, and reasserts filtering
         per bind so a shared texture cannot inherit another draw's choice.
-        Mario exercises the path with one character atlas and nearest-neighbor
+        The platformer exercises the path with one character atlas and nearest-neighbor
         sampling.
 - [x] **C5. Wasm** (done 2026-07-03). `FunctorLangWebGame` in the web runtime — the
       wasm sibling of the desktop producer behind the same `GameProducer`

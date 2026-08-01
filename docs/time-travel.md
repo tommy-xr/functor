@@ -75,7 +75,7 @@ on both the desktop runner and the web/VSCode preview. Exercised by
   ordinary O(1) snapshot restore, and extrapolation projects from new-code
   history only. The reload status reports the rebuilt frame count and elapsed
   time; a broken replay-origin invariant reports a diagnostic instead of
-  silently falling back to old-data semantics. Derived state from the old program (for example Mario's
+  silently falling back to old-data semantics. Derived state from the old program (for example the platformer's
   already-launched vertical velocity) therefore cannot pull the edited
   trajectory back toward the recorded failure. Games with `update` or physics
   keep the selected-snapshot behavior; exact

@@ -23,7 +23,7 @@ Use the scrubber bar to move backward and forward in time, and use the extrapola
 
 ![Rewinding a physics scene on the timeline and extrapolating its future](site/media/feature-time-travel.gif)
 
-> try it yourself at https://functor.games/sandbox?example=mario
+> try it yourself at https://functor.games/sandbox?example=platformer
 
 ### Live evaluation
 
@@ -53,7 +53,7 @@ any coding agent can build, run, inspect, and rewind your game — real Functor 
 scaffold a project, launch it, iterate on it, and save it to disk entirely through the server, with
 no filesystem of its own.
 
-![An MCP client launching examples/mario, pausing it, injecting a keypress, and stepping the jump four frames at a time while reading the model back as JSON](site/media/feature-mcp-drive.gif)
+![An MCP client launching examples/platformer, pausing it, injecting a keypress, and stepping the jump four frames at a time while reading the model back as JSON](site/media/feature-mcp-drive.gif)
 
 ```sh
 claude mcp add functor -- functor mcp

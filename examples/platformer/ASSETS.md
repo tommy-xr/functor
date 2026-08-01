@@ -1,4 +1,4 @@
-# Mario example assets
+# Platformer example assets
 
 The character atlas and ground texture in this directory are assembled from
 images selected from Kenney's
