@@ -3180,6 +3180,9 @@ a:hover {
 .mp-grid {
   flex: 1;
   min-height: 0;
+  /* The header row the letterboxing views pin, and subtract to size the body
+     (see the aspect block). */
+  --mp-hd-h: 22px;
   display: grid;
   gap: 10px;
   padding: 10px;
@@ -3201,6 +3204,32 @@ a:hover {
   min-width: 0;
 }
 
+/* ---- cells and cards ----
+
+   Every pane sits in a CELL (mp-panes.ts) and draws itself as a CARD inside
+   it. Tiled and tabs hand the whole cell to the card; GRID and NETWORK
+   letterbox it (Addendum 5b.2) — see the aspect block below. Splitting the
+   two is what lets the layout place a slot and the card still read as a game
+   window rather than a stretched rectangle. */
+
+.mp-cell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.mp-cell > .mp-pane {
+  flex: 1;
+  min-width: 0;
+}
+
+/* An open link menu drops out of its header and must paint over the pane
+   beside it — but a size container (the aspect cells below) is a stacking
+   context, so the cell has to be raised, not just the menu. */
+.mp-cell:has(.mp-link-menu:not([hidden])) {
+  z-index: 20;
+}
+
 .mp-grid[data-view="tiled"] .mp-add-tile {
   flex: 0 0 clamp(44px, 5%, 68px);
 }
@@ -3214,8 +3243,89 @@ a:hover {
   padding-top: 0;
 }
 
-.mp-grid[data-view="tabs"] .mp-pane:not(.focus) {
+.mp-grid[data-view="tabs"] .mp-cell:not(.focus) {
   display: none;
+}
+
+/* ---- aspect-true cards: a game window reads as a game window ----
+
+   Addendum 5b.2. In GRID and NETWORK a pane's BODY letterboxes to 16:9 and
+   the card floats in its cell, instead of stretching to whatever shape the
+   track handed it (which is why network's full-height clients read as absurdly
+   tall towers). Shrink to fit: the card takes the cell's width, unless the
+   cell is too short for that width's 16:9 body, in which case the height wins
+   and the card narrows. Whatever slack is left over becomes margin around a
+   centred card.
+
+   The cell is a SIZE CONTAINER purely so that "too short" is expressible: the
+   card's width is the smaller of the cell's width and the width whose body
+   fits the cell's height, and only container units can compare the two axes.
+   The header is a fixed row so that subtraction is exact — its content already
+   clips by container query, so pinning its height costs nothing.
+
+   It is a WIDE-STAGE rule. Below the breakpoint every view collapses to a
+   one-column stack of short, full-width cells, so "shrink to fit" is always
+   height-driven there and each card would letterbox down to a third of the
+   column — a stack of stamps in a gutter of empty space. The narrow stack
+   keeps stretching, as it did before. */
+
+@media (min-width: 1281px) {
+  .mp-grid[data-view="grid"] .mp-cell,
+  .mp-grid[data-view="network"] .mp-cell {
+    container-type: size;
+  }
+
+  .mp-grid[data-view="grid"] .mp-cell > .mp-pane,
+  .mp-grid[data-view="network"] .mp-cell > .mp-pane {
+    flex: none;
+    /* Auto margins centre the card in its cell on both axes. */
+    margin: auto;
+    /* The card's own 1px borders are outside the body the ratio governs, so
+       the height budget has to give them back — otherwise the card lands a
+       fraction of a pixel taller than the cell it is fitting into. */
+    width: min(100cqw, calc((100cqh - var(--mp-hd-h) - 2px) * 16 / 9 + 2px));
+  }
+
+  /* GRID's slack goes OUTWARD. Left centred, it would pool between the client
+     row and the authority strip and read as a seam splitting the layout in
+     two; so the clients sit at the foot of their cells and the strip at the
+     head of its band, the two meet, and what is left over collects at the
+     outside of the stage where it is just margin. (Horizontally they stay
+     centred. NETWORK keeps both axes centred — there the cards are a diagram,
+     and the space around each one is what the wires cross.) */
+  .mp-grid[data-view="grid"] .mp-cell:not(.server) > .mp-pane {
+    margin-block: auto 0;
+  }
+
+  .mp-grid[data-view="grid"] .mp-cell.server > .mp-pane {
+    margin-block: 0 auto;
+  }
+
+  .mp-grid[data-view="grid"] .mp-pane-hd,
+  .mp-grid[data-view="network"] .mp-pane-hd {
+    height: var(--mp-hd-h);
+  }
+
+  .mp-grid[data-view="grid"] .mp-pane-body,
+  .mp-grid[data-view="network"] .mp-pane-body {
+    flex: none;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+  }
+
+  /* The error strip is a THIRD row the aspect arithmetic knows nothing about
+     (its height depends on how long the message is), so where the card is
+     sized to fit it overlays the foot of the body instead of growing the card
+     out of its cell. It keeps its own backdrop so the message stays readable
+     over a game. */
+  .mp-grid[data-view="grid"] .mp-pane-err,
+  .mp-grid[data-view="network"] .mp-pane-err {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--bg-panel) 88%, rgba(242, 99, 127, 0.5));
+  }
 }
 
 /* ---- grid view: client cells over a server strip ----
@@ -3239,32 +3349,36 @@ a:hover {
    The two cases where a client would otherwise sit beside a HOLE rather than a
    notch stretch instead: a lone client (no peer to match), and an odd last
    client in a single-role example (no strip below it, so the empty cell is a
-   whole quadrant). */
+   whole quadrant).
+
+   Each card then letterboxes inside the cell it is given, centred across it
+   and anchored towards the layout's middle (see the aspect block); the cells
+   themselves are what this section places.
+
+   The open SEAT is not one of these cells: it rides the bottom edge as a band
+   (Addendum 5b.1, and see its own block below). */
 
 .mp-grid[data-view="grid"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.mp-grid[data-view="grid"] .mp-pane {
+.mp-grid[data-view="grid"] .mp-cell {
   grid-row: span 2;
 }
 
-/* A lone client stretches only when nothing else wants the cell beside it. An
-   OPEN SEAT (the "+" tile) is not a hole — it is the picture of what pressing
-   it does — so with the seat showing, the client sits beside it at the size its
-   new peer will be. */
-.mp-grid[data-view="grid"][data-clients="1"][data-seat="full"] .mp-pane:not(.server) {
+/* A lone client has no peer to match, so it takes the whole row. */
+.mp-grid[data-view="grid"][data-clients="1"] .mp-cell:not(.server) {
   grid-column: 1 / -1;
 }
 
 /* Three clients and no authority: nothing closes the bottom row (no server
    strip, and the seat is full at MAX_CLIENTS), so the odd last client stretches
    rather than leaving a whole empty quadrant. */
-.mp-grid[data-view="grid"][data-clients="3"][data-server="no"] .mp-pane:nth-child(3) {
+.mp-grid[data-view="grid"][data-clients="3"][data-server="no"] .mp-cell:nth-child(3) {
   grid-column: 1 / -1;
 }
 
-.mp-grid[data-view="grid"] .mp-pane.server {
+.mp-grid[data-view="grid"] .mp-cell.server {
   grid-column: 1 / -1;
   grid-row: span 1;
 }
@@ -3286,56 +3400,68 @@ a:hover {
    span rather than a computed position — the same class-change-only rule the
    other views follow, and the wires re-measure from wherever the cards land.
 
-     1 client  · the spoke on the left, the hub far right, a long wire between.
-     2 clients · left and right, full height, with the hub in the channel
-                 between them and parked ABOVE their centreline, so the two
-                 wires leave at different angles instead of forming one
-                 straight line drawn through the hub.
-     3 clients · the same two flanking cards, the third parked below the hub in
-                 the middle channel — the channel its wire runs down.
+   The clients are STAGGERED, half the stage tall each (Addendum 5b.3, and the
+   approved mockup's proportions): client 1 in the upper left, client 2 in the
+   lower right, the hub in the channel between them. Two things fall out of
+   that. The cards are 16:9 windows with the slack around them rather than
+   towers filling a full-height column — the tall-client complaint 5b.2 names.
+   And every wire leaves at its own angle, because no two cards share a
+   centreline.
 
-   Client 1 holds column 1, rows 1–8, at EVERY count: adding or dropping a
-   client never moves the pane you are playing in. */
+     1 client  · the spoke upper left, the hub across in the far column.
+     2 clients · upper left and lower right, the hub in the middle channel.
+     3 clients · the same two, the third filling the empty upper right.
+
+   The middle channel is the HUB's alone. A client parked in it would be a
+   gameplay pane at hub scale — the inversion 5a.2 exists to prevent — so the
+   third client takes the quadrant its two peers leave open instead, at their
+   size. Client 1 holds column 1, rows 1–4, and client 2 column 3, rows 5–8, at
+   EVERY count: adding or dropping a client never moves a pane you are playing
+   in. */
 
 .mp-grid[data-view="network"] {
   /* The middle track is a channel, not a pane slot: it holds the hub (which is
-     smaller than the track) and the wires that cross it. */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.52fr) minmax(0, 1fr);
+     smaller than the track) and the wires that cross it. Its floor is the
+     hub's own minimum — a channel narrower than that would squeeze the node
+     into an unreadable thumbnail. */
+  grid-template-columns: minmax(0, 1fr) minmax(132px, 0.52fr) minmax(0, 1fr);
   grid-template-rows: repeat(8, minmax(0, 1fr));
   gap: 8px 44px;
   padding: 12px 18px;
 }
 
-.mp-grid[data-view="network"] .mp-pane:not(.server):nth-child(1) {
+.mp-grid[data-view="network"] .mp-cell:not(.server):nth-child(1) {
   grid-column: 1;
-  grid-row: 1 / span 8;
+  grid-row: 1 / span 4;
 }
 
-.mp-grid[data-view="network"] .mp-pane:not(.server):nth-child(2) {
+.mp-grid[data-view="network"] .mp-cell:not(.server):nth-child(2) {
   grid-column: 3;
-  grid-row: 1 / span 8;
-}
-
-.mp-grid[data-view="network"] .mp-pane:not(.server):nth-child(3) {
-  grid-column: 2;
   grid-row: 5 / span 4;
 }
 
-/* The hub: a compact node parked in the upper middle. `justify-self`/
-   `align-self` are what make it smaller than its cell — the clamp then keeps
-   it a node at any stage size rather than a scaled-down window. */
-.mp-grid[data-view="network"] .mp-pane.server {
+.mp-grid[data-view="network"] .mp-cell:not(.server):nth-child(3) {
+  grid-column: 3;
+  grid-row: 1 / span 4;
+}
+
+/* The hub: a compact node in the middle channel, level with the gap the two
+   staggered clients leave. It is aspect-true like every other card — it is a
+   running pane, not an icon, so it keeps a floor as well as a cap: capped it
+   stays the smallest window on the stage, floored it stays a window at all. */
+.mp-grid[data-view="network"] .mp-cell.server {
   grid-column: 2;
-  grid-row: 1 / span 3;
-  justify-self: center;
-  align-self: center;
-  width: clamp(128px, 100%, 232px);
-  height: clamp(92px, 100%, 176px);
+  grid-row: 3 / span 3;
+}
+
+.mp-grid[data-view="network"] .mp-cell.server > .mp-pane {
+  min-width: 128px;
+  max-width: 232px;
 }
 
 /* A lone client has no second flank, so the hub crosses to the far column and
    the wire gets the whole stage to run across. */
-.mp-grid[data-view="network"][data-clients="1"] .mp-pane.server {
+.mp-grid[data-view="network"][data-clients="1"] .mp-cell.server {
   grid-column: 3;
 }
 
@@ -3989,27 +4115,32 @@ a:hover {
     padding: 10px;
   }
 
-  .preview-pane.mp .mp-grid[data-view="network"] .mp-pane {
+  .preview-pane.mp .mp-grid[data-view="network"] .mp-cell {
     grid-column: 1;
     grid-row: auto;
   }
 
   /* The hub keeps its full width in a one-column stack (a centred node in a
      list reads as a broken cell) but stays the SHORT card — still the smallest
-     window, still the thing the wires run to. */
-  .preview-pane.mp .mp-grid[data-view="network"] .mp-pane.server {
-    justify-self: stretch;
-    width: auto;
+     window, still the thing the wires run to. The letterbox that carries that
+     rank on the wide stage is off here (see the aspect block), so the stack
+     states it directly. */
+  .preview-pane.mp .mp-grid[data-view="network"] .mp-cell.server > .mp-pane {
+    min-width: 0;
+    max-width: none;
     height: clamp(76px, 62%, 132px);
   }
 }
 
-/* ---- the "+" tile: add a client where the client will appear ----
+/* ---- the "+" seat: add a client at the edge of the arrangement ----
 
-   Addendum 5a.7. The CLIENTS dropdown is the numeric control; this is the
-   spatial one — an empty seat at the table, drawn as the dashed outline of the
-   pane it would become. It sits in the cell after the last client, so the
-   layout answers "what happens if I press this" before the tooltip does.
+   Addendum 5a.7, revised by 5b.1. The CLIENTS dropdown is the numeric control;
+   this is the spatial one — an empty seat at the table. It sits AFTER every
+   occupied cell, never between them: a seat placed in "the cell the next
+   client takes" lands mid-layout and reads as a hole in the arrangement, and
+   an invitation should sit at the edge you would reach for. So it is the last
+   grid child (mp-panes.ts) and takes an edge shape rather than a pane's: a
+   slim rail at the end of the tiled row, a short band under the grid.
    Hidden at MAX_CLIENTS, and in TABS (which has its own "+" tab) and NETWORK
    (a topology of real participants only — see mp-panes.ts). */
 
@@ -4046,20 +4177,15 @@ a:hover {
   opacity: 0.8;
 }
 
-/* In GRID the seat is exactly the cell the next client will take — except when
-   it would be alone on its row, where it becomes a short full-width band
-   instead of a cell beside a hole. */
+/* In GRID the seat closes the layout as a band across the bottom — under the
+   clients, under the authority strip, last in reading order at every count. It
+   opts out of the row's stretch, so an empty seat never outweighs the panes
+   that are actually running. */
 .mp-grid[data-view="grid"] .mp-add-tile {
-  grid-row: span 2;
-}
-
-.mp-grid[data-view="grid"][data-clients="2"] .mp-add-tile {
   grid-column: 1 / -1;
   grid-row: span 1;
-  /* A band, not a cell: it opts out of the row's stretch so an empty seat
-     never outweighs the panes that are actually running. */
   align-self: center;
-  height: clamp(64px, 100%, 116px);
+  height: clamp(56px, 100%, 96px);
 }
 
 .mp-grid[data-view="tabs"] .mp-add-tile,

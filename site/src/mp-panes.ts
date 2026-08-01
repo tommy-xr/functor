@@ -152,6 +152,10 @@ interface Pane {
   /** Aborts every listener this pane registered outside its own subtree. */
   scope: AbortController;
   iframe: HTMLIFrameElement;
+  /** The pane's CELL — its slot in the grid. The layout places this; the CARD
+   * inside letterboxes to 16:9 within it (Addendum 5b.2), so a pane's visible
+   * box is the game window, never the cell it happens to sit in. */
+  cell: HTMLElement;
   shell: HTMLElement;
   tab: HTMLButtonElement;
   state: PaneState;
@@ -334,11 +338,14 @@ export function initMultiplayerPanes({
   grid.className = "mp-grid";
   grid.dataset.view = "tiled";
 
-  // The "+" tile (Addendum 5a.7): the SPATIAL way to add a client, sitting
-  // where the client it would create is about to appear — the CLIENTS dropdown
-  // stays the numeric one, and both go through the same host call. It is a real
-  // <button>, so it is tab-reachable and answers to Enter/Space for free; it is
-  // a grid child so it takes a cell in tiled/grid, and CSS hides it in tabs
+  // The "+" tile (Addendum 5a.7): the SPATIAL way to add a client — the CLIENTS
+  // dropdown stays the numeric one, and both go through the same host call. It
+  // is always the LAST grid child (Addendum 5b.1): an open seat placed in "the
+  // cell the next client takes" can land mid-layout, where it reads as a hole
+  // rather than an invitation, so it lives at the EDGE of the arrangement,
+  // after every occupied cell. It is a real <button>, so it is
+  // tab-reachable and answers to Enter/Space for free; it is
+  // a grid child so it takes a slot in tiled/grid, and CSS hides it in tabs
   // (which has its own "+" tab) and in network. NETWORK gets no ghost spoke: a
   // wire is measured between two panes that are actually talking, and drawing
   // one to a card that is not a participant would be the one lie this view
@@ -361,9 +368,9 @@ export function initMultiplayerPanes({
 
   // The stage holds the grid plus the layers the NETWORK view adds (mounted by
   // the graph itself: the wires under the cards, the chips over them). They are
-  // siblings of the grid, never children of it — the grid's cells are the panes
-  // and the "+" tile, and another child would shift the `:nth-child` rules the
-  // grid and network views lay out with.
+  // siblings of the grid, never children of it — the grid's children are the
+  // pane cells and the "+" tile, and another child would shift the
+  // `:nth-child` rules the grid and network views lay out with.
   const stage = document.createElement("div");
   stage.className = "mp-stage";
   stage.dataset.view = "tiled";
@@ -478,12 +485,18 @@ export function initMultiplayerPanes({
       <div class="mp-pane-body"></div>
       <div class="mp-pane-err" hidden></div>`;
     shell.querySelector(".mp-pane-body")!.appendChild(iframe);
-    // A client tile is INSERTED BEFORE the "+" tile (and so before the server's
-    // card, which follows it), never appended after them: re-appending a
-    // mounted node is a remove + insert, and that reloads an iframe — the same
-    // invariant that keeps pane 1 in place would be broken for the authority,
-    // wiping the world every time the count changed.
-    grid.insertBefore(shell, client ? addTile : null);
+    // The CELL is the pane's slot; the card letterboxes inside it (see the
+    // Pane type). It is also what the aspect rules measure against, so it is a
+    // size container in the views that letterbox.
+    const cell = document.createElement("div");
+    cell.className = client ? "mp-cell" : "mp-cell server";
+    cell.appendChild(shell);
+    // A client cell is INSERTED BEFORE the server's (and both before the "+"
+    // seat, which is always last — Addendum 5b.1), never appended after them:
+    // re-appending a mounted node is a remove + insert, and that reloads an
+    // iframe — the same invariant that keeps pane 1 in place would be broken
+    // for the authority, wiping the world every time the count changed.
+    grid.insertBefore(cell, (client && serverPane?.pane.cell) || addTile);
 
     const tab = document.createElement("button");
     tab.className = client ? "mp-tab" : "mp-tab server";
@@ -500,6 +513,7 @@ export function initMultiplayerPanes({
       id,
       color,
       iframe,
+      cell,
       shell,
       tab,
       scope: new AbortController(),
@@ -620,7 +634,7 @@ export function initMultiplayerPanes({
     if (!serverPane) return;
     serverPane.bridge.reset();
     serverPane.pane.scope.abort();
-    serverPane.pane.shell.remove();
+    serverPane.pane.cell.remove();
     serverPane.pane.tab.remove();
     paneDetails.delete(serverPane.pane);
     serverPane = null;
@@ -632,7 +646,7 @@ export function initMultiplayerPanes({
     if (!removed) return;
     removed.bridge.reset();
     removed.pane.scope.abort(); // window/document/bridge listeners
-    removed.pane.shell.remove();
+    removed.pane.cell.remove();
     removed.pane.tab.remove();
     panes.pop();
   };
@@ -660,6 +674,11 @@ export function initMultiplayerPanes({
     current.forEach((pane) => {
       const on = pane === focusedPane;
       pane.shell.classList.toggle("focus", on);
+      // The CELL carries it too: TABS hides every cell but the focused one, and
+      // a class it can select directly beats asking the cell to match on its
+      // child — a selector that, unsupported, would drop the whole rule and
+      // stack every pane.
+      pane.cell.classList.toggle("focus", on);
       pane.tab.classList.toggle("focus", on);
       const you = pane.shell.querySelector(".mp-you") as HTMLElement | null;
       if (you) you.hidden = !on;
@@ -875,10 +894,8 @@ export function initMultiplayerPanes({
     const canAdd = !single && panes.length < MAX_CLIENTS;
     addTile.hidden = !canAdd;
     addTab.hidden = !canAdd;
-    // Grid's cell rules need both of these as data, not as structure: a hidden
-    // tile is still a child, so `:last-child` cannot answer "is the bottom row
-    // closed" any more.
-    grid.dataset.seat = canAdd ? "open" : "full";
+    // Grid's odd-last-client rule needs "is there an authority" as data: the
+    // strip is a cell like any other, so no structural selector answers it.
     grid.dataset.server = serverPane ? "yes" : "no";
     if (single) setView("tiled", true);
     // An example that dropped its server pane cannot stay in the hub view.
