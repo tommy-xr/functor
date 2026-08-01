@@ -32,6 +32,11 @@ type collisionEvent = { started: bool, a: tag, b: tag, sensor: bool }
 /// Construct a stable body tag from a string.
 ///
 /// The empty tag is reserved as the no-body sentinel in a raycast miss.
+///
+/// The brand is check-time only: declare a tag once and use that VALUE at
+/// every site — a bare string where a tag is expected is a check error. At
+/// runtime a tag simply IS its string, so comparing one against a collision
+/// event's `a`/`b` with `==` works.
 let tag : (string) => tag
 
 /// Create a local-axis box shape from its full width, height, and depth.

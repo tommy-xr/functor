@@ -32,9 +32,14 @@ let playAt : (Asset.Sound, Vec3.t) => t
 /// Play a sound once and deliver a message when playback finishes.
 let playThen : (Asset.Sound, 'msg) => t
 /// Begin loading a model or texture before it is referenced by `draw`.
+///
+/// The imperative prefetch; the declarative default is simply that `draw`
+/// references the asset. Model and texture locators only — a sound decodes at
+/// play time and has no pending state.
 let preload : ('asset) => t
 /// Preload an asset and deliver a message when the load settles.
 ///
 /// Settlement includes success and failure; `Sub.assets` reports which assets
-/// failed.
+/// failed. Preloads count toward `Sub.assets` totals, and unlike `playThen`'s
+/// completion message this one is delivered on wasm too.
 let preloadThen : ('asset, 'msg) => t

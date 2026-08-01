@@ -18,6 +18,10 @@ let quad : () => t
 let plane : () => t
 
 /// Create a scene node from a model asset.
+///
+/// A locator whose file is missing logs an error and renders the empty
+/// fallback asset, so a mistyped or unfetched model shows as nothing rather
+/// than failing the frame.
 let model : (Asset.Model) => t
 /// Create terrain from a rectangular grid of height values.
 let heightmap : (List<List<float>>) => t
@@ -40,6 +44,11 @@ let emissiveTexture : ('texture, t) => t
 /// Apply a lit color and normal-map texture.
 let litNormalMapped : (Color.t, 'texture, t) => t
 /// Display a render target on this surface.
+///
+/// The surface is emissive, so the feed is shown unlit. A target no frame
+/// writes renders magenta with one warning. A quad's front face is `+Z`, so a
+/// monitor built from `Scene.quad` has to be rotated to face the viewer or the
+/// feed reads mirrored.
 let screen : (RenderTarget.t, t) => t
 
 /// Attach an animation pose to model nodes; the scene is last for piping.

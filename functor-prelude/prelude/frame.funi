@@ -11,15 +11,22 @@ let createLit : (Camera3D.t, Scene.t, List<Light.t>) => t
 let create2D : (Camera2D.t, Sprite.t) => t
 /// Render another frame into a target before rendering the main frame.
 ///
-/// The main frame is last for piping.
+/// The target frame is a complete `Frame.create` / `Frame.createLit` with its
+/// OWN lights, so a lit or shadowed feed needs `createLit` plus
+/// `Light.castShadows` there. A scene that samples the very target it is drawn
+/// into sees the previous frame's image. The main frame is last for piping.
 let withRenderTarget : (RenderTarget.t, t, t) => t
 /// Attach fog to a frame; the frame is last for piping.
 let withFog : (Fog.t, t) => t
 /// Attach a cubemap skybox to a frame; the frame is last for piping.
 let withSkybox : (Skybox.t, t) => t
 /// Override a frame's background clear color.
+///
+/// This overrides the default of clearing to the fog color, and paints the
+/// background only — it does not change how fog blends over geometry.
 let withClearColor : (Color.t, t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///
+/// Layers render in call order, so a second `with2D` draws above the first.
 /// The main frame is last for piping.
 let with2D : (Camera2D.t, Sprite.t, t) => t

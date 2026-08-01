@@ -8,6 +8,10 @@ let lookAt : (Vec3.t, Vec3.t) => t
 /// Create a first-person camera from position, yaw, pitch, and field of view.
 ///
 /// Zero yaw and pitch look down `+Z`.
+///
+/// On XR this camera is the authored reference center-eye rig: live head and
+/// eye deltas compose in its local basis. Position, orientation, and the near/
+/// far planes stay game-owned, while OpenXR owns IPD and per-eye optical FOV.
 let firstPerson : (Vec3.t, Angle.t, Angle.t, Angle.t) => t
 /// A world-space ray from the camera eye through a logical surface point.
 type ray = { origin: Vec3.t, direction: Vec3.t }

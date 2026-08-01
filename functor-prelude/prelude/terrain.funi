@@ -15,6 +15,10 @@ let heightmap : (Asset.Texture, float, float, float, float) => t
 let maxPixelError : (float, t) => t
 
 /// Set the basic lit terrain color; the terrain is last for piping.
+///
+/// This is the ALTERNATIVE to `Terrain.layered`, not a stage before it: it
+/// clears any layers, so whichever of the two comes last in a pipeline wins
+/// and the earlier one is simply dead. Pick one.
 let color : (Color.t, t) => t
 
 /// Blend lowland, highland, rock, and snow colors by height and slope.

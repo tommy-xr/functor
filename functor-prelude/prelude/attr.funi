@@ -25,6 +25,16 @@ let value : (string) => t
 /// Set an input's placeholder text.
 let placeholder : (string) => t
 /// Deliver a message through `update` when the element is clicked.
+///
+/// A click on a descendant counts too, through ordinary DOM bubbling. The
+/// message is delivered verbatim, like `Ui.button`'s.
 let onClick : ('msg) => t
 /// Apply a tagger to edited text and deliver its message through `update`.
+///
+/// Works on both shells. Clicking the input focuses it, after which keys type
+/// into the field rather than reaching the game's `input` hook (Escape
+/// defocuses first, releases the cursor second), and focus survives the
+/// per-edit re-render. As with `Ui.textInput`, an `update` that transforms the
+/// text resets the caret to the end. IME composition (CJK, dead keys) is
+/// deferred on native.
 let onInput : ('tagger) => t

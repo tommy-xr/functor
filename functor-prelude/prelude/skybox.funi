@@ -4,4 +4,8 @@
 type t
 
 /// Load six cubemap faces in `+X, -X, +Y, -Y, +Z, -Z` order.
+///
+/// Faces are ordinary fetched image files resolved from the game directory.
+/// While they load the frame's clear color shows through, and a face that
+/// fails to load warns once and leaves the frame with no sky.
 let files : (string, string, string, string, string, string) => t
