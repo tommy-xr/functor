@@ -2,9 +2,10 @@
 //
 //   - the standard default does not fetch the Vim chunk;
 //   - opting in through the visible control lazy-loads and persists it;
+//   - failed loads remain visible and preserve the right preference;
 //   - common normal/insert operations work and normal-mode Tab is inert;
 //   - the IDE keeps the active Vim mode while switching files;
-//   - the landing hero inherits the preference and draws visual selections;
+//   - the landing hero inherits the preference and supports blockwise edits;
 //   - opting back out removes Vim and persists Standard.
 
 import { spawn, spawnSync } from "node:child_process";
@@ -43,8 +44,8 @@ for (let attempt = 0; ; attempt++) {
 const browser = await chromium.launch();
 try {
   // Failure behavior is part of the option's contract too: an explicit failed
-  // opt-in stays retryable without stealing keyboard focus, while an automatic
-  // restore failure must not erase the user's saved Vim preference.
+  // opt-in reports the problem without stealing keyboard focus, while an
+  // automatic restore failure must not erase the user's saved Vim preference.
   const failureContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const failurePage = await failureContext.newPage();
   await failurePage.route("**/assets/sandbox-dist.js", (route) => route.abort("failed"));
@@ -53,8 +54,8 @@ try {
   await failurePage.click("#editor-keybindings");
   await failurePage.waitForFunction(() => window.__sandbox.keybindings().error);
   check(
-    "failed opt-in exposes a retry label and keeps button focus",
-    (await failurePage.locator("#editor-keybindings").innerText()) === "retry vim" &&
+    "failed opt-in reports unavailability and keeps button focus",
+    (await failurePage.locator("#editor-keybindings").innerText()) === "vim unavailable" &&
       (await failurePage.evaluate(() => document.activeElement?.id)) === "editor-keybindings" &&
       (await failurePage.getAttribute("#editor-keybindings", "aria-live")) === "polite"
   );
@@ -219,6 +220,26 @@ try {
     JSON.stringify(heroSelection)
   );
   await page.keyboard.press("Escape");
+
+  // Blockwise insert needs CodeMirror's allowMultipleSelections facet. A
+  // selection-layer count alone cannot distinguish this from one wrapped
+  // range, so assert that Vim applies the edit at both cursors.
+  await page.evaluate(() => window.__hero.setRegion("alpha\nbeta\ngamma"));
+  await page.locator(".hero-editor .cm-content").focus();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("g");
+  await page.keyboard.press("g");
+  await page.keyboard.press("Control+v");
+  await page.keyboard.press("j");
+  await page.keyboard.press("I");
+  await page.keyboard.type("X");
+  await page.keyboard.press("Escape");
+  const blockEditedRegion = await page.evaluate(() => window.__hero.region());
+  check(
+    "hero blockwise visual mode edits at multiple cursors",
+    blockEditedRegion.split("\n").filter((line) => line.startsWith("X")).length === 2,
+    blockEditedRegion
+  );
 
   // Opting out through the hero's visible control removes the adapter and
   // updates the shared preference for the next page.

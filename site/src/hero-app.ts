@@ -47,7 +47,7 @@ const mount = document.getElementById("hero-editor")!;
 const card = document.querySelector(".hero-card")!;
 const editorKeybindings = createEditorKeybindingsController({
   showStatus: false,
-  includeDrawSelection: true,
+  includeSelectionSupport: true,
 });
 
 // A small, unobtrusive status dot pinned to the card corner: green when the

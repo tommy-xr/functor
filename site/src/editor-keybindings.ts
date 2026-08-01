@@ -36,8 +36,8 @@ export interface EditorKeybindingsController {
 interface EditorKeybindingsOptions {
   /** Keep a persistent --NORMAL-- / --INSERT-- command panel. */
   showStatus?: boolean;
-  /** The hero omits basicSetup, so Vim visual mode needs this explicitly. */
-  includeDrawSelection?: boolean;
+  /** The hero omits basicSetup, so Vim multi-selection support lives here. */
+  includeSelectionSupport?: boolean;
 }
 
 type VimModule = typeof import("@replit/codemirror-vim");
@@ -54,13 +54,7 @@ let vimModulePromise: Promise<VimModule> | null = null;
 let getVimEditor: VimModule["getCM"] | null = null;
 
 const loadVim = (): Promise<VimModule> => {
-  if (!vimModulePromise) {
-    vimModulePromise = import("@replit/codemirror-vim").catch((error: unknown) => {
-      // A transient chunk failure should be retryable on the next opt-in.
-      vimModulePromise = null;
-      throw error;
-    });
-  }
+  vimModulePromise ??= import("@replit/codemirror-vim");
   return vimModulePromise;
 };
 
@@ -90,7 +84,7 @@ export const editorKeybindingsButtonPresentation = (
   const enabled = state.mode === "vim";
   return {
     enabled,
-    text: state.error ? "retry vim" : `vim keys${state.loading ? " …" : ""}`,
+    text: state.error ? "vim unavailable" : `vim keys${state.loading ? " …" : ""}`,
     title: state.error
       ? `Vim keybindings could not load: ${state.error}`
       : `${enabled ? "Disable" : "Enable"} Vim keybindings`,
@@ -134,7 +128,7 @@ export const createEditorKeybindingsController = (
       target.dispatch({
         effects: compartment.reconfigure([
           module.vim({ status: options.showStatus ?? true }),
-          ...(options.includeDrawSelection
+          ...(options.includeSelectionSupport
             ? [EditorState.allowMultipleSelections.of(true), drawSelection()]
             : []),
         ]),
@@ -143,9 +137,10 @@ export const createEditorKeybindingsController = (
       if (focus) target.focus();
     } catch (error) {
       if (request !== generation) return;
-      // Say what is actually active. A later click can retry the lazy import.
+      // Say what is actually active. Browsers cache failed module imports for
+      // the document lifetime, so recovery happens on a later page load.
       // A restore-time network failure must not erase an existing preference;
-      // an explicit failed opt-in returns persistence to Standard until retry.
+      // an explicit failed opt-in returns persistence to Standard.
       if (downgradeStoredModeOnFailure) persistMode("standard");
       state.set({ mode: "standard", loading: false, error: errorMessage(error) });
       console.error("editor: could not load Vim keybindings", error);
