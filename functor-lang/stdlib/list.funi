@@ -30,12 +30,14 @@ let fold : (('b, 'a) => 'b, 'b, List<'a>) => 'b
 /// Map each element to a list and concatenate the results (one level).
 let concatMap : (('a) => List<'b>, List<'a>) => List<'b>
 
-/// `[0, 1, … n - 1]`. A non-positive `n` gives the empty list.
+/// `[0, 1, … n - 1]`. A non-positive `n` gives the empty list; a count that
+/// is not finite, or above one million, is an error.
 let range : (float) => List<float>
 
 /// Build a `rows` x `cols` grid by calling `fn(row, col)` for every cell, both
 /// 0-based — the procedural-heightmap shape, e.g.
-/// `Scene.heightmap(List.grid(height, rows, cols))`.
+/// `Scene.heightmap(List.grid(height, rows, cols))`. Both counts must be
+/// whole and non-negative, and the cells must total at most one million.
 let grid : ((float, float) => 'a, float, float) => List<List<'a>>
 
 /// The largest number in the list. Errors on an empty list — the one accessor
@@ -73,11 +75,14 @@ let zip : (List<'b>, List<'a>) => List<('a, 'b)>
 let sortBy : (('a) => float, List<'a>) => List<'a>
 
 /// The first `count` elements, saturating: past the end gives the whole list,
-/// and a negative count behaves as `0`.
+/// and a negative count behaves as `0`. A fractional count truncates toward
+/// zero rather than raising — unlike `nth`, where a fractional index is a
+/// caller bug.
 let take : (float, List<'a>) => List<'a>
 
 /// Everything after the first `count` elements, saturating: past the end gives
-/// the empty list, and a negative count behaves as `0`.
+/// the empty list, and a negative count behaves as `0`. A fractional count
+/// truncates, like `take`.
 let drop : (float, List<'a>) => List<'a>
 
 /// Whether ANY element satisfies the predicate. The empty list is `false`.
@@ -87,8 +92,8 @@ let any : (('a) => bool, List<'a>) => bool
 let all : (('a) => bool, List<'a>) => bool
 
 /// The element at a 0-based `index`, or `Option.None` when the index is out of
-/// range. A FRACTIONAL index is an error rather than an absence — it is a
-/// caller bug, not a missing element.
+/// range. An index that is not a whole, finite number is an ERROR rather than
+/// an absence — that is a caller bug, not a missing element.
 let nth : (float, List<'a>) => Option.t<'a>
 
 /// The first element, or `Option.None` for an empty list.

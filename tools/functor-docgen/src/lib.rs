@@ -7,7 +7,7 @@
 //! only in the rendered output, as the [`ApiGroup`] each module carries.
 
 use functor_lang::ast::{ExprKind, Item, TypeName};
-use functor_lang::project::{stdlib_documentation_modules, BundledModule, BundledModuleKind};
+use functor_lang::project::stdlib_documentation_modules;
 use functor_lang::{docs::public_doc_comment_in_source, line_col, parse, parse_interface, Span};
 use serde::Serialize;
 use std::fmt;
@@ -141,21 +141,45 @@ impl ApiReference {
 /// Generate the whole API from the exact sources embedded in every Functor
 /// runtime and editor: the host prelude, then the language standard library.
 pub fn generate() -> Result<ApiReference, GenerateError> {
-    let mut modules = engine_modules()
+    let mut modules = functor_prelude::modules()
         .into_iter()
         .map(|(name, source)| extract_module(name, source, ApiGroup::Engine, Parse::Interface))
         .collect::<Result<Vec<_>, _>>()?;
     for module in stdlib_documentation_modules() {
-        modules.push(extract_bundled(&module, ApiGroup::Stdlib)?);
+        let parse_as = if module.is_interface() {
+            Parse::Interface
+        } else {
+            Parse::Implementation
+        };
+        modules.push(extract_module(
+            module.name().to_string(),
+            module.source().to_string(),
+            ApiGroup::Stdlib,
+            parse_as,
+        )?);
+    }
+    // The two halves share reserved namespaces (`Debug`, `List`, … are
+    // protected in both), and the page keys its anchors, nav links, and search
+    // filter on the module name — so a collision would silently desync the
+    // filter rather than look wrong. Refuse it here instead.
+    for (index, module) in modules.iter().enumerate() {
+        if let Some(earlier) = modules[..index].iter().find(|m| m.name == module.name) {
+            return Err(GenerateError {
+                module: module.name.clone(),
+                extension: "funi",
+                line: 1,
+                col: 1,
+                message: format!(
+                    "`{}` is documented twice (once as {:?}, once as {:?})",
+                    module.name, earlier.group, module.group
+                ),
+            });
+        }
     }
     Ok(ApiReference {
         schema_version: 2,
         modules,
     })
-}
-
-fn engine_modules() -> Vec<(String, String)> {
-    functor_prelude::modules()
 }
 
 /// Generate a reference from `(module name, .funi source)` pairs — the
@@ -171,19 +195,6 @@ pub fn generate_from_modules(
         schema_version: 2,
         modules,
     })
-}
-
-fn extract_bundled(module: &BundledModule, group: ApiGroup) -> Result<ApiModule, GenerateError> {
-    let parse_as = match module.kind() {
-        BundledModuleKind::Interface => Parse::Interface,
-        BundledModuleKind::Implementation => Parse::Implementation,
-    };
-    extract_module(
-        module.name().to_string(),
-        module.source().to_string(),
-        group,
-        parse_as,
-    )
 }
 
 /// Whether a documentation source is a bodyless `.funi` interface or an
@@ -418,7 +429,9 @@ fn module_doc(source: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate, generate_from_modules, render_markdown, ApiGroup, ApiItemKind};
+    use super::{
+        generate, generate_from_modules, render_markdown, ApiGroup, ApiItemKind, ApiModule,
+    };
 
     #[test]
     fn extracts_module_and_item_docs_with_exact_declarations() {
@@ -444,9 +457,23 @@ mod tests {
         assert!(markdown.contains("#### `Widget.make`"));
     }
 
+    /// Both halves of the embedded API are complete and fully documented. The
+    /// counts are inventory pins: a module or declaration dropping out of the
+    /// reference has to be a deliberate edit here, not a silent regression.
     #[test]
     fn embedded_api_is_a_complete_documented_surface() {
         let reference = generate().unwrap();
+        let count = |group: ApiGroup| {
+            let modules: Vec<&ApiModule> = reference
+                .modules
+                .iter()
+                .filter(|module| module.group == group)
+                .collect();
+            let items: usize = modules.iter().map(|module| module.items.len()).sum();
+            (modules.len(), items)
+        };
+        assert_eq!(count(ApiGroup::Engine), (27, 272));
+        assert_eq!(count(ApiGroup::Stdlib), (10, 94));
         assert!(reference
             .modules
             .iter()

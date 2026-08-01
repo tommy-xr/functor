@@ -32,8 +32,12 @@ let seed : (float) => Seed
 /// otherwise the stream never advances.
 let step : (Seed) => (float, Seed)
 
-/// Draw one value rescaled into `[lo, hi)`, as `(value, nextSeed)`. Expects
-/// `lo <= hi`.
+/// Draw one value rescaled into `[lo, hi)`, as `(value, nextSeed)` — one
+/// `step` draw, interpolated between the bounds.
+///
+/// Only finiteness is checked, so the bounds are yours to get right: reversed
+/// ones simply interpolate the other way (landing in `(hi, lo]`), and equal
+/// ones always answer that value.
 let range : (float, float, Seed) => (float, Seed)
 
 /// The seed of decorrelated child stream `i` — the typed replacement for

@@ -307,6 +307,37 @@ fn core_modules() -> Vec<BundledModule> {
     ]
 }
 
+/// One standard-library module as the API-reference generator sees it.
+///
+/// Deliberately NOT a [`BundledModule`]: half of these are documentation-only
+/// interfaces for Rust builtins, and linking one would shadow the builtin
+/// registry with externals nothing implements. This type cannot be handed to a
+/// loader at all.
+pub struct DocumentationModule {
+    name: &'static str,
+    source: &'static str,
+    /// Bodyless `.funi` signatures, versus executable `.fun` code whose
+    /// signatures come from its own annotations.
+    interface: bool,
+}
+
+impl DocumentationModule {
+    /// Module name used by qualified access (`List`, `Option`, …).
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The documented source text.
+    pub fn source(&self) -> &'static str {
+        self.source
+    }
+
+    /// Whether the source is a bodyless `.funi` interface.
+    pub fn is_interface(&self) -> bool {
+        self.interface
+    }
+}
+
 /// The Functor Lang standard library as documentation sources, in reference
 /// order — what `functor docs` renders beside the engine prelude.
 ///
@@ -319,19 +350,29 @@ fn core_modules() -> Vec<BundledModule> {
 ///   a drift test;
 /// - the modules written in Functor Lang and linked into every project
 ///   (`Option`, `Result`, `Key`, `Mouse`), documented from the exact source
-///   that runs.
-pub fn stdlib_documentation_modules() -> Vec<BundledModule> {
+///   that runs, so those cannot drift at all.
+pub fn stdlib_documentation_modules() -> Vec<DocumentationModule> {
+    let interface = |name, source| DocumentationModule {
+        name,
+        source,
+        interface: true,
+    };
+    let implementation = |name, source| DocumentationModule {
+        name,
+        source,
+        interface: false,
+    };
     vec![
-        BundledModule::builtin("List", LIST_DOC_SRC, BundledModuleKind::Interface),
-        BundledModule::builtin("Map", MAP_DOC_SRC, BundledModuleKind::Interface),
-        BundledModule::builtin("Text", TEXT_DOC_SRC, BundledModuleKind::Interface),
-        BundledModule::builtin("Math", MATH_DOC_SRC, BundledModuleKind::Interface),
-        BundledModule::builtin("Random", RANDOM_MODULE_SRC, BundledModuleKind::Interface),
-        BundledModule::builtin("Debug", DEBUG_DOC_SRC, BundledModuleKind::Interface),
-        BundledModule::implementation("Option", OPTION_MODULE_SRC),
-        BundledModule::implementation("Result", RESULT_MODULE_SRC),
-        BundledModule::builtin("Key", KEY_MODULE_SRC, BundledModuleKind::Implementation),
-        BundledModule::builtin("Mouse", MOUSE_MODULE_SRC, BundledModuleKind::Implementation),
+        interface("List", LIST_DOC_SRC),
+        interface("Map", MAP_DOC_SRC),
+        interface("Text", TEXT_DOC_SRC),
+        interface("Math", MATH_DOC_SRC),
+        interface("Random", RANDOM_MODULE_SRC),
+        interface("Debug", DEBUG_DOC_SRC),
+        implementation("Option", OPTION_MODULE_SRC),
+        implementation("Result", RESULT_MODULE_SRC),
+        implementation("Key", KEY_MODULE_SRC),
+        implementation("Mouse", MOUSE_MODULE_SRC),
     ]
 }
 

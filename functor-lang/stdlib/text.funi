@@ -19,7 +19,8 @@ let concat : (string, string) => string
 let fromFloat : (float) => string
 
 /// A number rendered with exactly `decimals` digits after the point.
-/// `Text.fixed(42.0, 0.0)` is `"42"`, the integer-formatting shape.
+/// `Text.fixed(42.0, 0.0)` is `"42"`, the integer-formatting shape. The digit
+/// count must be a whole number from 0 to 12; anything else is an error.
 let fixed : (float, float) => string
 
 /// The strings as a bulleted block, one item per line.
