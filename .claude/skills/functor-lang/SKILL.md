@@ -250,7 +250,7 @@ open Utils                                    // bring Utils in unqualified
 let a = area(Circle(2.0)) + tau               // via the open…
 let b = Utils.area(Utils.Circle(2.0))         // …or QUALIFIED — no open needed
 let biggest = (shapes: List<Utils.Shape>) =>  // qualified types in annotations
-  shapes |> List.map(area) |> List.maximum
+  shapes |> List.map(area) |> List.maximum |> Option.defaultValue(0.0)
 let grab = (s) =>
   match s with
   | Utils.Circle(r) => r                      // qualified ctor PATTERNS work too
@@ -572,6 +572,12 @@ patterns (or `open Option` first).
 `None`) · `Option.isSome(option)` · `Option.isNone(option)` ·
 `Option.filter(predicate, option)` · `Option.toList(option)`.
 
+`Option.t` is also what every PARTIAL builtin answers with, uniformly:
+`List.nth` / `List.head` / `List.last` / `List.find` / `List.maximum` and
+`Map.get`. None of them raise on absence — an empty list or a missing key is
+`Option.None`, so `xs |> List.maximum |> Option.defaultValue(0.0)` is the
+one-liner when you want a fallback.
+
 `Result.Ok(value)` / `Result.Error(error)` ·
 `Result.map(fn, result)` · `Result.mapError(fn, result)` ·
 `Result.bind(fn, result)` · `Result.defaultValue(fallback, result)` ·
@@ -615,20 +621,21 @@ thread through `|>` (which appends): `list |> List.map(fn)` == `List.map(fn, lis
 `List.grid(fn, rows, cols)` (→ `List<List<'a>>`; calls `fn(row, col)`, both
 0-based, per cell — the engine-loop form of a procedural heightmap, e.g.
 `Scene.heightmap(List.grid(height, r, c))`) ·
-`List.maximum(list)` · `List.length(list)` (→ Float) · `List.isEmpty(list)` ·
+`List.length(list)` (→ Float) · `List.isEmpty(list)` ·
 `List.reverse(list)` · `List.flatten(list)` (`List<List<'a>>` → `List<'a>`, one
 level) · `List.append(other, list)` (subject-LAST: `xs |> List.append(ys)` is
 `xs` followed by `ys`) · `List.any(fn, list)` / `List.all(fn, list)` (predicate
 first, list last — `xs |> List.any(pred)`; empty list is vacuously all-true /
 any-false) ·
 `List.nth(index, list)` / `List.head(list)` / `List.last(list)` /
-`List.find(fn, list)` — the PARTIAL accessors, each returning
-**`Option.t<'a>`** (`Option.Some(x)` / `Option.None`), never a sentinel;
+`List.find(fn, list)` / `List.maximum(list)` — the PARTIAL accessors, each
+returning **`Option.t<'a>`** (`Option.Some(x)` / `Option.None`), never a
+sentinel and never an error on an empty list;
 `List.nth`'s index is 0-based and out of range is `Option.None`, but a
-FRACTIONAL index is an error (a caller bug, not an absence). Match them, or
-collapse with `Option.defaultValue(fallback)`. (`List.maximum` predates
-`Option` and still ERRORS on an empty list — the one inconsistency, kept
-because changing it would break existing games.) ·
+FRACTIONAL index is an error (a caller bug, not an absence). `List.maximum`
+takes `List<float>` and answers `Option.t<float>` (NaN elements are ignored
+unless every element is NaN). Match them, or
+collapse with `Option.defaultValue(fallback)`. ·
 `List.indexedMap(fn, list)` (like `map`, but `fn(index, element)` — index
 FIRST, 0-based) · `List.sortBy(fn, list)` (ascending by the Float the key
 returns; **stable**, and the key runs exactly once per element. **NaN keys

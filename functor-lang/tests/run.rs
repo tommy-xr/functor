@@ -484,9 +484,14 @@ fn long_flat_expression_chains_evaluate() {
 }
 
 #[test]
-fn error_maximum_of_empty_list() {
-    let (message, _, _) = run_err("let main = () => List.maximum([])");
-    assert_eq!(message, "List.maximum of an empty list");
+fn maximum_of_empty_list_is_none() {
+    // `List.maximum` is PARTIAL like `nth`/`head`/`last`/`find`: absence is
+    // `Option.None`, not a runtime error.
+    assert_eq!(main_result("let main = () => List.maximum([])"), "Option.None");
+    assert_eq!(
+        main_result("let main = () => List.maximum([1.0, 3.0, 2.0])"),
+        "Option.Some(3)"
+    );
 }
 
 #[test]
@@ -1216,11 +1221,11 @@ fn error_calling_math_pi() {
 fn maximum_ignores_nan_unless_all_nan() {
     assert_eq!(
         main_result("let main = () => List.maximum([0.0 / 0.0, 1.0])"),
-        "1"
+        "Option.Some(1)"
     );
     assert_eq!(
         main_result("let main = () => List.maximum([0.0 / 0.0])"),
-        "NaN"
+        "Option.Some(NaN)"
     );
 }
 
@@ -1353,14 +1358,16 @@ fn closures_may_capture_immutable_lets() {
 // replacement — with host externals the RHS can have effects.
 #[test]
 fn update_validates_target_before_evaluating_value() {
+    // The replacement is itself a would-be error (a fractional `List.nth`
+    // index), so evaluating it at all would surface a DIFFERENT message.
     let failure = run_failure(
-        "let main = () => { { x: 1.0 } with y: List.maximum([]) }",
+        "let main = () => { { x: 1.0 } with y: List.nth(0.5, []) }",
         Tracing::On,
     );
     assert_eq!(failure.error.message, "record has no field `y` to update");
     let rendered = functor_lang::render_trace(&failure.trace);
     assert!(
-        !rendered.contains("List.maximum"),
+        !rendered.contains("List.nth"),
         "the replacement must not have run: {rendered}"
     );
 }

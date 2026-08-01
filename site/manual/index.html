@@ -664,22 +664,25 @@ let pos = model.pos |> Vec3.add(step)</pre>
               <tr><td><code>List.zip(other, list)</code></td><td>pairs into a list of tuples, stopping at the <strong>shorter</strong> one. The piped list is the first slot: <code>xs |> List.zip(ys)</code> gives <code>(x, y)</code></td></tr>
               <tr><td><code>List.take(count, list)</code> · <code>List.drop(count, list)</code></td><td>they <strong>saturate</strong> instead of failing at the edges: past the end is the whole list / <code>[]</code>, and a negative count acts as <code>0</code>. <code>take(n)</code> then <code>drop(n)</code> always reconstructs the list</td></tr>
               <tr><td><code>List.sum(list)</code></td><td>numbers only; an empty list is <code>0.0</code></td></tr>
-              <tr><td><code>List.maximum(list)</code></td><td>numbers only; an <strong>empty list is a runtime error</strong>. (It predates <code>Option</code> — the accessors below are the modern shape)</td></tr>
             </tbody>
           </table>
 
           <p>
-            These four are <strong>partial</strong> — there may be no such element — so they answer
+            These are <strong>partial</strong> — there may be no such element — so they answer
             with an <a href="#stdlib-option"><code>Option</code></a> rather than a made-up
             sentinel like <code>-1.0</code>. That is the point: a sentinel typechecks as the very
             thing it stands in for, so it flows onward silently, whereas an <code>Option</code>
-            makes the compiler ask what happens when nothing is there.
+            makes the compiler ask what happens when nothing is there. The rule is uniform —
+            <strong>every</strong> partial builtin hands back an <code>Option</code> and none of
+            them raise on absence, so unwrap with <code>Option.defaultValue</code> or
+            <code>match</code>.
           </p>
           <table>
             <tbody>
               <tr><td><code>List.head(list)</code> · <code>List.last(list)</code></td><td><code>Option.Some(x)</code>, or <code>Option.None</code> for an empty list</td></tr>
               <tr><td><code>List.nth(index, list)</code></td><td>0-based. Out of range (including negative) is <code>Option.None</code> — but a <em>fractional</em> index is a runtime error, since that is a bug rather than an absence</td></tr>
               <tr><td><code>List.find(fn, list)</code></td><td>the first element the predicate accepts, short-circuiting; <code>Option.None</code> when none match</td></tr>
+              <tr><td><code>List.maximum(list)</code></td><td>numbers only: <code>Option.Some(largest)</code>, or <code>Option.None</code> for an empty list. NaN elements are ignored unless every element is NaN</td></tr>
             </tbody>
           </table>
           <pre><code>let hp = enemies |> List.nth(i) |> Option.map((e) =&gt; e.hp) |> Option.defaultValue(0.0)
@@ -968,7 +971,6 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             <li><code>Math</code> is only the entries above — there is still no <code>lerp</code>, <code>sinh</code>, or <code>hypot</code>. <code>Math.round</code> goes half <em>away from zero</em>, not to even.</li>
             <li><code>Math.mod</code> is Euclidean — <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code>, not <code>-1.0</code>.</li>
             <li><code>Math.pi</code> is a value, not a call.</li>
-            <li>The partial list accessors (<code>nth</code>, <code>head</code>, <code>last</code>, <code>find</code>) hand back an <code>Option</code>, so unwrap with <code>Option.defaultValue</code> or <code>match</code> — but <code>List.maximum</code> is the holdout that still <em>errors</em> on an empty list.</li>
             <li>The primitives take no size arguments — a box is <code>Scene.cube() |> Scene.scaleXYZ(w, h, d)</code>.</li>
             <li>Key repeats arrive as <code>isDown = true</code> — latch for rising edges.</li>
             <li>Physics reads belong in <code>draw</code>; in <code>tick</code> you see last frame's world.</li>

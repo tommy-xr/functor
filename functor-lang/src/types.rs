@@ -504,8 +504,9 @@ pub fn builtin_signature(b: Builtin) -> Type {
             vec![func(vec![Float, Float], Var(0)), Float, Float],
             List(Box::new(List(Box::new(Var(0))))),
         ),
-        // List.maximum : (List<Float>) => Float
-        Builtin::ListMaximum => func(vec![List(Box::new(Float))], Float),
+        // List.maximum : (List<Float>) => Option.t<Float> — partial like
+        // `nth`/`head`/`last`/`find`: an empty list is `Option.None`.
+        Builtin::ListMaximum => func(vec![List(Box::new(Float))], option(Float)),
         // List.length : (List<'a>) => Float
         Builtin::ListLength => func(vec![List(Box::new(Var(0)))], Float),
         // Subject-LAST. List.append : (List<'a>, List<'a>) => List<'a> — (other, list)
