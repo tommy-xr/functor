@@ -52,8 +52,10 @@
 //! - `first` names a top-level `let` → [`ExprKind::Global`]; remaining
 //!   segments likewise become field access.
 //! - `first` names a declared variant constructor → [`ExprKind::Ctor`]
-//!   (the `Type.Ctor` qualified form is deliberately NOT supported — a
-//!   qualified name whose head is a type name stays an unknown external).
+//!   (the `Type.Ctor` qualified form is deliberately NOT supported — naming
+//!   a type's own constructor through it is an error teaching the bare
+//!   form, since it could otherwise only fail as an unknown external at run
+//!   time).
 //! - `first` names an `open`ed module's def or constructor → the qualified
 //!   [`ExprKind::Global`] / [`ExprKind::Ctor`].
 //! - `first` names a sibling module → resolve `rest[0]` against its exports
@@ -180,6 +182,7 @@ fn lower_module(
     // variant types too.
     let mut globals = HashSet::new();
     let mut ctors: HashMap<String, usize> = HashMap::new();
+    let mut ctor_types: HashMap<String, String> = HashMap::new();
     let mut type_names = HashSet::new();
     for item in &program.items {
         match item {
@@ -246,6 +249,7 @@ namespace)",
                             });
                         }
                         ctors.insert(variant.name.clone(), variant.fields.len());
+                        ctor_types.insert(variant.name.clone(), decl.name.clone());
                     }
                 }
             }
@@ -371,6 +375,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
         globals,
         ctors,
         types: type_names,
+        ctor_types,
         project,
         open_values,
         open_types,
@@ -481,6 +486,10 @@ struct Lowerer<'p> {
     ctors: HashMap<String, usize>,
     /// This module's own declared type names (bare).
     types: HashSet<String>,
+    /// This module's own constructors → the variant type that declares them.
+    /// Only used to teach the `Shape.Circle` mistake (constructors resolve
+    /// bare); resolution itself never consults it.
+    ctor_types: HashMap<String, String>,
     /// The project context, when lowering as part of one (B8 modules).
     project: Option<&'p ProjectEnv<'p>>,
     /// Names brought into scope by `open`s (collision-free by pass 1b).
@@ -1175,11 +1184,25 @@ impl Lowerer<'_> {
                 (kind, 2)
             }
             None if segments.len() > 1 => {
+                // `Shape.Circle(2.0)` — TYPE-qualifying a constructor. It is
+                // not a module reference, so it would otherwise fall through
+                // to the host seam and die at run time as an unknown
+                // external. Constructors resolve bare.
+                if self.ctor_types.get(&segments[1]) == Some(first) {
+                    return Err(LowerError {
+                        message: format!(
+                            "`{}` is a constructor of the type `{first}`, not a member of a \
+module — constructors resolve bare: write `{}`",
+                            segments[1], segments[1]
+                        ),
+                        span,
+                    });
+                }
                 return Ok(Expr {
                     id: self.expr_id(),
                     kind: ExprKind::External(segments),
                     span,
-                })
+                });
             }
             None => {
                 let hint = if self

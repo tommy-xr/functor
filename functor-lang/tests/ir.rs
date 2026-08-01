@@ -327,16 +327,37 @@ fn error_ctor_collides_with_let() {
 
 /// …but `type Shape` itself stays in the type namespace: a `let Shape` is
 /// fine, and `Shape.Circle` is deliberately NOT a constructor reference
-/// (only bare `Circle` is) — it stays an unknown external.
+/// (only bare `Circle` is). It used to fall through to the host seam and die
+/// at RUN time as `unknown external `Shape.Circle``; now the resolver names
+/// the mistake.
 #[test]
-fn qualified_ctor_form_is_not_supported() {
-    let module = lower_src("type Shape = | Circle(r: float)\nlet f = () => Shape.Circle(1.0)");
+fn qualified_ctor_form_teaches_the_bare_form() {
+    let (message, line, col) =
+        lower_err("type Shape = | Circle(r: float)\nlet f = () => Shape.Circle(1.0)");
+    assert_eq!(
+        message,
+        "`Circle` is a constructor of the type `Shape`, not a member of a module — \
+constructors resolve bare: write `Circle`"
+    );
+    assert_eq!((line, col), (2, 15));
+}
+
+/// The teaching error is keyed to the ctor's OWN type, so an unrelated
+/// qualified name (a host external, or another type's constructor) still
+/// lowers to the gradual external seam.
+#[test]
+fn unrelated_qualified_names_stay_external() {
+    let module = lower_src(
+        "type Shape = | Circle(r: float)\n\
+         type Blob = | Splat\n\
+         let f = () => Blob.Circle(1.0)",
+    );
     let (_, body) = lambda_body(&module, 0);
     let ExprKind::Call { callee, .. } = &body.kind else {
         panic!("expected a call, got {body:?}");
     };
     assert!(
-        matches!(&callee.kind, ExprKind::External(path) if path == &["Shape", "Circle"]),
+        matches!(&callee.kind, ExprKind::External(path) if path == &["Blob", "Circle"]),
         "expected an external, got {callee:?}"
     );
 }

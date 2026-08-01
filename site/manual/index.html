@@ -332,7 +332,9 @@ let area = (s: Shape): float =>
           </p>
           <p>
             <strong>Arms are greedy:</strong> a nested <code>match</code> inside an arm consumes
-            the following <code>|</code> arms as its own — parenthesize the inner match.
+            the following <code>|</code> arms as its own — parenthesize the inner match. The
+            checker diagnoses it for you: a swallowed arm reports as "not a constructor of" the
+            inner scrutinee, with a hint pointing back at the outer match.
           </p>
 
           <h3>The conditional</h3>
@@ -965,7 +967,6 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
             <li>Captured game mouse input defaults on when captured hooks exist. <code>"mouseCapture":false</code> opts out; <code>"cursor":"visible"</code> selects absolute pointer input instead. Held buttons are force-released on focus loss.</li>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
-            <li>A nested <code>match</code> inside an arm eats the following arms — parenthesize it.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
             <li>Piping into <code>Text.concat</code> <em>prepends</em>: <code>s |> Text.concat(p)</code> is <code>p</code> then <code>s</code>. And <code>Text.fixed(n, decimals)</code> takes its number first, so it can't be piped on.</li>
             <li><code>Math</code> is only the entries above — there is still no <code>lerp</code>, <code>sinh</code>, or <code>hypot</code>. <code>Math.round</code> goes half <em>away from zero</em>, not to even.</li>

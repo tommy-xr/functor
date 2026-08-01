@@ -899,6 +899,79 @@ fn error_foreign_ctor_in_a_match() {
     assert_eq!((line, col), (3, 45));
 }
 
+/// The greedy-arm trap: a nested `match` in an arm swallows the arms that
+/// follow it, so the OUTER match loses them (non-exhaustive) and they arrive
+/// at the INNER one as foreign constructors. The two diagnostics are
+/// connected — the foreign-ctor one names the real cause.
+#[test]
+fn nested_match_swallowing_arms_teaches_parenthesizing() {
+    let diags = check_src(
+        "type A = | X | Y\n\
+         type B = | P | Q\n\
+         let f = (a: A, b: B): string =>\n\
+         \x20 match a with\n\
+         \x20 | X =>\n\
+         \x20   match b with\n\
+         \x20   | P => \"xp\"\n\
+         \x20   | Q => \"xq\"\n\
+         \x20 | Y => \"y\"\n",
+    );
+    assert_eq!(diags.len(), 2, "got {diags:?}");
+    assert_eq!(diags[0].0, "match on `A` is not exhaustive: missing `Y`");
+    assert!(
+        diags[1]
+            .0
+            .starts_with("`Y` is not a constructor of `B` — did you mean to parenthesize"),
+        "got: {}",
+        diags[1].0
+    );
+    assert!(
+        diags[1].0.contains("`A` match around it"),
+        "the hint names the enclosing match's type; got: {}",
+        diags[1].0
+    );
+}
+
+/// An already-parenthesized inner match whose OUTER match still has that
+/// arm swallowed nothing — it is an ordinary typo, and advising parens
+/// would be wrong. [BOTH engines — review]
+#[test]
+fn parenthesized_inner_match_gets_no_greedy_hint() {
+    let (message, _, _) = single_diag(
+        "type A = | X | Y\n\
+         type B = | P | Q\n\
+         let f = (a: A, b: B): string =>\n\
+         \x20 match a with\n\
+         \x20 | X =>\n\
+         \x20   (match b with\n\
+         \x20    | P => \"xp\"\n\
+         \x20    | Y => \"typo\"\n\
+         \x20    | Q => \"xq\")\n\
+         \x20 | Y => \"y\"\n",
+    );
+    assert_eq!(message, "`Y` is not a constructor of `B`");
+}
+
+/// …and an ordinary foreign constructor — including one inside a nested
+/// match that no enclosing scrutinee explains — keeps the bare message.
+#[test]
+fn foreign_ctor_without_an_enclosing_match_has_no_hint() {
+    let (message, _, _) = single_diag(
+        "type A = | X | Y\n\
+         type B = | P | Q\n\
+         type C = | R\n\
+         let f = (a: A, b: B): string =>\n\
+         \x20 match a with\n\
+         \x20 | X =>\n\
+         \x20   (match b with\n\
+         \x20    | P => \"xp\"\n\
+         \x20    | Q => \"xq\"\n\
+         \x20    | R => \"r\")\n\
+         \x20 | Y => \"y\"\n",
+    );
+    assert_eq!(message, "`R` is not a constructor of `B`");
+}
+
 /// A constructor pattern against a known non-variant scrutinee.
 #[test]
 fn error_ctor_pattern_against_a_float() {

@@ -89,6 +89,7 @@ fn parse_impl(src: &str, base: usize, interface: bool) -> Result<Program, ParseE
         pos: 0,
         depth: 0,
         interface,
+        in_assign_value: 0,
     }
     .program()
 }
@@ -107,6 +108,14 @@ struct Parser {
     depth: usize,
     /// Parsing a `.funi` interface file: `let` is a bodyless signature.
     interface: bool,
+    /// Nesting depth inside an assignment's VALUE (`acc := <here>; rest`).
+    /// A `;` is produced by nothing but `assign`, so while this is non-zero
+    /// the `;` an expression ends at may be an enclosing assignment's rather
+    /// than a mistyped `<-`'s — see [`Parser::arrow_assign`], which then
+    /// stays quiet. Deliberately conservative: a genuine `<-` nested inside
+    /// an assignment value keeps the old (worse) error instead of risking a
+    /// wrong one on valid code.
+    in_assign_value: u32,
 }
 
 impl Parser {
@@ -623,11 +632,25 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             TokenKind::If => self.if_expr(),
             TokenKind::Ident(_) if self.nth_kind(1) == &TokenKind::ColonEq => self.assign(),
             _ => {
+                let start = self.pos;
                 let expr = self.pipeline();
                 // A stray `:=` after a non-name expression would otherwise
                 // surface as a baffling error at the enclosing context.
                 if expr.is_ok() && self.peek_kind() == &TokenKind::ColonEq {
                     self.error("nothing (assignment targets must be a bare `let mut` name)")
+                } else if expr.is_ok() && self.peek_kind() == &TokenKind::Semi {
+                    // `acc <- acc + 1.0;` lexes as the comparison
+                    // `acc < (-acc + 1.0)`, which parses fine and only dies at
+                    // the `;` — far from the mistake. Teach it here.
+                    match self.arrow_assign(start) {
+                        Some(span) => Err(ParseError {
+                            message: "assignment is `:=`, not `<-` (`<-` is reserved for future \
+do-binds)"
+                                .to_string(),
+                            span,
+                        }),
+                        None => expr,
+                    }
                 } else {
                     expr
                 }
@@ -635,6 +658,37 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         };
         self.depth -= 1;
         result
+    }
+
+    /// Did the expression starting at `start` open with `name<-` — an F#-style
+    /// assignment? The lexer has no `<-` token, so it arrives as `<` then `-`
+    /// and the whole thing parses as a comparison against a negation; only the
+    /// caller's trailing `;` reveals that an assignment was meant. Both halves
+    /// of the tell are required, and the pair must be ADJACENT in the source,
+    /// so a real `a < -b` comparison (and `a <- b` with no `;` after it) is
+    /// untouched. Returns the `<-` span.
+    fn arrow_assign(&self, start: usize) -> Option<Span> {
+        // The `;` we are standing on may be the terminator of an ENCLOSING
+        // assignment, in which case this expression is that assignment's
+        // value (possibly several `let … in` / `if` levels down) and the
+        // comparison is exactly what was meant. Someone already writing `:=`
+        // is never taught `:=`.
+        if self.in_assign_value > 0 {
+            return None;
+        }
+        let name = self.tokens.get(start)?;
+        let lt = self.tokens.get(start + 1)?;
+        let minus = self.tokens.get(start + 2)?;
+        let adjacent = lt.span.end == minus.span.start;
+        if matches!(name.kind, TokenKind::Ident(_))
+            && lt.kind == TokenKind::Lt
+            && minus.kind == TokenKind::Minus
+            && adjacent
+        {
+            Some(lt.span.to(minus.span))
+        } else {
+            None
+        }
     }
 
     /// `let [mut] name = value in body` — expression-level binding.
@@ -700,7 +754,12 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
     fn assign(&mut self) -> Result<Expr, ParseError> {
         let (name, name_span) = self.expect_ident("a name")?;
         self.expect(TokenKind::ColonEq, "`:=`")?;
-        let value = self.expr()?;
+        // The value's `;` terminator is this assignment's, at whatever depth
+        // the value's tail expression ends — see `arrow_assign`.
+        self.in_assign_value += 1;
+        let value = self.expr();
+        self.in_assign_value -= 1;
+        let value = value?;
         self.expect(
             TokenKind::Semi,
             "`;` (an assignment carries its continuation)",
