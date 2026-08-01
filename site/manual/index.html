@@ -29,6 +29,7 @@
         <a href="#get-started">Get started</a>
         <a href="#complete-game">A complete game</a>
         <a href="#contract">The game contract</a>
+        <a href="#debug-camera">The debug camera</a>
         <a href="#language">The language</a>
         <a href="#prelude">The prelude</a>
         <a href="#builtins">Standard library</a>
@@ -58,33 +59,23 @@
         <section id="get-started">
           <h2>Get started</h2>
           <p>
-            The fastest path is the <a href="../sandbox.html">sandbox</a> — nothing to install. For
-            local development you need Rust (stable), Node 22, and
-            <code>wasm-pack</code>; then:
+            <strong>Nothing to install:</strong> the <a href="../sandbox.html">sandbox</a> runs
+            Functor Lang in the browser. Start there; install only when you want a desktop
+            window, real assets, and your own files on disk.
+          </p>
+
+          <h3>Set up</h3>
+          <p>
+            Local development needs Rust (stable), Node 22, and <code>wasm-pack</code>:
           </p>
           <pre class="shell">git clone https://github.com/tommy-xr/functor && cd functor
 npm run build:cli                    # builds the functor CLI + runtimes</pre>
-          <p>An Functor Lang project is a directory with two files:</p>
+          <p>A Functor Lang project is a directory with two files — a manifest and the game:</p>
           <pre class="shell"># functor.json
 { "language": "functor-lang", "entry": "game.fun" }</pre>
-          <p>
-            Games capture relative mouse input by default when they implement captured mouse
-            hooks. Set <code>"mouseCapture":false</code> to opt out. An absolute-pointer game
-            uses <code>"cursor":"visible"</code> instead, which also disables capture. Programs
-            without captured mouse hooks show no capture control.
-          </p>
-          <p>
-            Every project has a shell-owned <strong>Debug camera</strong> in the timeline,
-            available while playing or paused with no manifest setting. In 3D, use mouse look,
-            WASD, Q/E for down/up, and the wheel for FOV; in 2D, pan with the mouse or WASD and
-            zoom with the wheel. Its contextual drawer switches between FPS and orbit views,
-            makes authored materials transparent or visualizes normals/tangents, overlays live
-            physics and the authored camera frustum, and can hide game UI. Pure 2D views omit
-            those 3D-only controls. It never changes game state, replay, or the authored camera
-            used for culling and portal views. Escape releases the pointer, clicking the viewport
-            recaptures it, and <strong>Exit debug view</strong> returns to the authored camera.
-          </p>
-          <p>And the game itself — here is the smallest interesting one:</p>
+
+          <h3>Your first run</h3>
+          <p>Here is the smallest interesting <code>game.fun</code> — a spinning cube:</p>
           <pre class="functor-lang runnable">let init = {}
 let tick = (m, dt, tts) => m
 let draw = (m, tts: float) =>
@@ -215,11 +206,12 @@ let draw = (m, tts) =>
           </table>
           <p>
             The three mouse hooks receive captured shell input by default. Set
-            <code>"mouseCapture":false</code> to disable that path, or
-            <code>"cursor":"visible"</code> for absolute pointer input. Native capture starts on
-            a non-UI click and <code>Escape</code> releases it. Manifest-less site IDE and
-            inline-sandbox sessions use <code>?mouseCapture=false</code> or
-            <code>?cursor=visible</code> on the page URL.
+            <code>"mouseCapture":false</code> in <code>functor.json</code> to disable that path,
+            or <code>"cursor":"visible"</code> for absolute pointer input (which also disables
+            capture). A program with no captured mouse hooks shows no capture control at all.
+            Native capture starts on a non-UI click and <code>Escape</code> releases it.
+            Manifest-less site IDE and inline-sandbox sessions use
+            <code>?mouseCapture=false</code> or <code>?cursor=visible</code> on the page URL.
           </p>
           <p>
             The model-returning entry points (<code>tick</code>, <code>input</code>,
@@ -262,6 +254,24 @@ let draw = (m, tts) =>
             <code>draw</code> see <em>this</em> frame's stepped world; reads in <code>tick</code>
             see the previous frame's — so on the very first frame declared bodies don't exist
             yet. Keep physics reads in <code>draw</code>.
+          </p>
+        </section>
+
+        <section id="debug-camera">
+          <h2>The debug camera</h2>
+          <p>
+            Every project gets a shell-owned <strong>Debug camera</strong> in the timeline — no
+            manifest setting, available while playing or paused. Fly it with mouse look, WASD, and
+            Q/E for down/up (the wheel adjusts FOV); a 2D view pans and zooms instead. Its drawer
+            switches between FPS and orbit views, makes authored materials transparent or
+            visualizes normals/tangents, overlays live physics and the authored camera frustum,
+            and can hide game UI; a pure 2D view shows only the pan and zoom controls.
+          </p>
+          <p>
+            It never touches game state, replay, or the authored camera used for culling and
+            portal views — it is a way to <em>look</em>, not to play. <code>Escape</code> releases
+            the pointer, clicking the viewport recaptures it, and <strong>Exit debug view</strong>
+            returns to the authored camera.
           </p>
         </section>
 
@@ -831,17 +841,21 @@ type t&lt;'value, 'error> = | Ok(value: 'value) | Error(error: 'error)   // Resu
             at once.
           </p>
 
-          <h3>The tools</h3>
-          <table>
-            <tbody>
-              <tr><td><strong>Sessions</strong><br /><code>launch_game</code> · <code>connect_game</code> · <code>list_sessions</code> · <code>stop_game</code></td><td>spawn a game as a child process on a free port, or attach to a runtime someone else is running (another <code>--debug-port</code>, or a Quest). <code>launch_game</code>'s <code>mode</code> is <code>hidden</code> (the default — it renders, so frames can be captured) or <code>headless</code> (no GL context at all — CI-friendly, but nothing to read back)</td></tr>
-              <tr><td><strong>Observing</strong><br /><code>get_state</code> · <code>get_scene</code> · <code>get_trace</code> · <code>capture_frame</code></td><td>the model as structured JSON alongside <code>frame</code>/<code>tts</code>/sampled input; the camera, scene graph, and lights <code>draw</code> produced; the paused inspector trace; a PNG of the next frame</td></tr>
-              <tr><td><strong>Driving</strong><br /><code>pause</code> · <code>step</code> · <code>resume</code> · <code>send_input</code> · <code>rewind</code> · <code>reload_source</code> / <code>reload_project</code></td><td>pin the clock, run <em>n</em> frames of a fixed <em>dt</em>, inject a key / mouse / UI / XR command, restore the model and physics to a recorded frame, or hot-reload the source with the live model preserved</td></tr>
-              <tr><td><strong>Trusted automation</strong><br /><code>run_game_code_unsafe</code></td><td>run one Playwright-style JavaScript function against an injected, session-bound game SDK; this is the preferred surface for trusted multi-step automation</td></tr>
-              <tr><td><strong>Authoring</strong><br /><code>init_game</code> · <code>save_project</code></td><td>scaffold the same starter <code>functor init</code> writes, and write a session's <em>current</em> source out to a directory</td></tr>
-              <tr><td><strong>Knowledge</strong><br /><code>language_guide</code> · <code>api_reference</code></td><td>the two halves of learning Functor, and neither needs a session: the language guide (syntax, semantics, the game contract) and a search over the same <code>.funi</code> prelude this site's <a href="../docs/">API reference</a> is generated from</td></tr>
-            </tbody>
-          </table>
+          <p>
+            The tools cover sessions (<code>launch_game</code> / <code>connect_game</code> /
+            <code>list_sessions</code> / <code>stop_game</code>), observation
+            (<code>get_state</code> / <code>get_scene</code> / <code>get_trace</code> /
+            <code>capture_frame</code>), driving (<code>pause</code> / <code>step</code> /
+            <code>resume</code> / <code>send_input</code> / <code>rewind</code> /
+            <code>reload_source</code>), authoring (<code>init_game</code> /
+            <code>save_project</code>), and two knowledge tools that need no session at all
+            (<code>language_guide</code> / <code>api_reference</code>).
+            <code>launch_game</code>'s <code>mode</code> is <code>hidden</code> (the default — it
+            renders, so frames can be captured) or <code>headless</code> (no GL context at all —
+            CI-friendly, but nothing to read back). The full tool-by-tool reference — every
+            argument, the protocol versions each tool needs, and the errors they surface — is
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/mcp.md">docs/mcp.md</a>.
+          </p>
 
           <h3>One trusted automation function</h3>
           <p>
@@ -951,11 +965,6 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             Everything else is identical. <code>capture_frame</code> returns the two raw eye
             buffers side by side, and injected <code>xr</code> samples are rejected on device —
             the headset resamples live tracking every frame.
-          </p>
-          <p class="docs-footnote">
-            The full tool-by-tool reference — every argument, the protocol versions each tool
-            needs, and the errors they surface — is
-            <a href="https://github.com/tommy-xr/functor/blob/main/docs/mcp.md">docs/mcp.md</a>.
           </p>
         </section>
 
