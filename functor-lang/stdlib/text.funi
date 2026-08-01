@@ -12,15 +12,22 @@
 //! `List.length(Text.chars(s))`.
 
 /// `a` followed by `b`.
+///
+/// The subject is LAST here too, which means piping PREPENDS: the piped
+/// string lands in `b`, so `"SUF" |> Text.concat("PRE")` is `"PRESUF"`.
 let concat : (string, string) => string
 
 /// A number rendered in Functor Lang's canonical display form — the same text
-/// string interpolation produces.
+/// string interpolation produces. That is the shortest round-tripping form, so
+/// `1.0` renders as `"1"`; use `Text.fixed` when a HUD needs a stable width.
 let fromFloat : (float) => string
 
 /// A number rendered with exactly `decimals` digits after the point.
-/// `Text.fixed(42.0, 0.0)` is `"42"`, the integer-formatting shape. The digit
-/// count must be a whole number from 0 to 12; anything else is an error.
+/// `Text.fixed(42.0, 0.0)` is `"42"`, the integer-formatting shape — the one
+/// to reach for in a HUD. The digit count must be a whole number from 0 to
+/// 12; anything else is an error. Unlike the string functions, the NUMBER
+/// comes first, so this cannot be piped on: write `Text.fixed(hp, 0.0)`, not
+/// `hp |> Text.fixed(0.0)`.
 let fixed : (float, float) => string
 
 /// The strings as a bulleted block, one item per line.
@@ -30,12 +37,15 @@ let toBullets : (List<string>) => string
 /// gives `[""]`; an empty separator is an error.
 let split : (string, string) => List<string>
 
-/// Join the strings with `sep` between them.
+/// Join the strings with `sep` between them. An empty separator is fine here —
+/// unlike `Text.split` — and simply concatenates.
 let join : (string, List<string>) => string
 
 /// Parse a number, ignoring surrounding whitespace. Unparseable text answers
 /// `0.0` rather than raising — validate the input yourself when the difference
-/// matters.
+/// matters. Text that parses to a non-finite number (`"inf"`, `"NaN"`, an
+/// overflowing literal) degrades to `0.0` as well, so the result is always
+/// finite.
 let parseFloat : (string) => float
 
 /// How many Unicode scalar values the string contains.

@@ -3,10 +3,11 @@
 //! Compose text and widgets into rows or columns, then pin them to a screen
 //! anchor with `Ui.panel`. Text is 14pt monospace.
 //!
-//! The interactive widgets (`button`, `slider`, `textInput`) deliver their
-//! messages through `update`, so a game using them must define that hook. They
-//! are CONTROLLED: a slider and a text input show the value the model holds,
-//! and an `update` that transforms it is what changes what is displayed.
+//! Like `draw`, the hook is a pure function of the model, and the widgets are
+//! CONTROLLED: a view shows what the model says, and interacting with it sends
+//! a message — the model stays the only state. Those messages (a button's, and
+//! a slider's or text input's tagger result) are folded through `update`, so a
+//! program with interactive UI must define that hook.
 
 /// An opaque UI view.
 type view

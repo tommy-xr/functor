@@ -2,6 +2,27 @@
 //!
 //! Shapes and bodies are values, body attributes pipe naturally, and stable
 //! branded tags connect declarations, reads, commands, and collision events.
+//!
+//! The hook DECLARES the world each frame and the runtime reconciles that
+//! declaration against the live one. A tag is cross-frame identity: the same
+//! tag is the same body, and a body is dropped by no longer declaring it.
+//! Re-declaring an unchanged body leaves the simulation alone, while changing
+//! its declared position or rotation drives that field — a dynamic or fixed
+//! body teleports immediately, and a kinematic body takes the new pose as its
+//! next-step target, so it carries velocity into contacts. Reading a tag that
+//! is not in the live world — never declared, or declared but not yet
+//! reconciled and stepped — is a runtime error rather than an empty answer, so
+//! read only bodies your hook has already declared. Like the model, the world
+//! survives hot reload for as long as the hook does; deleting the hook drops
+//! it.
+//!
+//! Reads are SYNCHRONOUS and writes are QUEUED. `Physics.position`,
+//! `Physics.linearVelocity`, and `Physics.cast` answer in place from the last
+//! stepped world, while every mutation returns an `Effect.t` that applies at
+//! the next physics step after it queues — after reconcile, on that step's
+//! first substep. A command issued from `tick` therefore normally lands in
+//! time for the same frame's `draw`; on a frame that takes no substep at all
+//! (normal above 60fps) it waits for the next simulated frame.
 
 /// An opaque collision shape.
 type shape

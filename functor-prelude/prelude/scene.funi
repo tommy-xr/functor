@@ -2,6 +2,14 @@
 //!
 //! Constructors produce immutable scene values. Most modifiers take the scene
 //! last so a node can be built as a readable pipeline.
+//!
+//! Coordinates are Y-up and right-handed: +Y is up, +X is right, and the
+//! ground is the XZ plane.
+//!
+//! Transforms wrap outward, so the OUTER call applies last in world space —
+//! `s |> Scene.rotateY(r) |> Scene.translate(v)` rotates in place and then
+//! moves, which is the order the source reads. The primitives take no size
+//! arguments, so a box is `Scene.cube() |> Scene.scaleXYZ(w, h, d)`.
 
 /// An opaque scene node.
 type t
@@ -12,7 +20,7 @@ let cube : () => t
 let sphere : () => t
 /// Create a unit cylinder aligned to the Y axis.
 let cylinder : () => t
-/// Create a unit quad in the XY plane.
+/// Create a unit quad in the XY plane, facing `+Z`.
 let quad : () => t
 /// Create a unit plane in the XZ ground plane.
 let plane : () => t
@@ -33,7 +41,8 @@ let group : (List<t>) => t
 
 /// Apply an unlit solid color; the scene is last for piping.
 let color : (Color.t, t) => t
-/// Apply a lit solid-color material; the scene is last for piping.
+/// Apply a lit solid-color material; the scene is last for piping. It needs
+/// lights to be visible — under a plain `Frame.create` it renders black.
 let lit : (Color.t, t) => t
 /// Apply an emissive solid-color material; the scene is last for piping.
 let emissive : (Color.t, t) => t
