@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>net coordinator host — examples/mp across panes</title>
+    <style>
+      body { margin: 0; background: #12071f; color: #d8d0e8; font: 13px monospace; }
+      .row { display: flex; gap: 4px; padding: 4px; }
+      iframe { width: 320px; height: 200px; border: 1px solid #402a5a; }
+    </style>
+  </head>
+  <body>
+    <!--
+      The e2e host for the net coordinator (driven by e2e/net-coordinator.mjs).
+
+      It is the smallest possible embodiment of what site/src/mp-panes.ts does:
+      mount N `player.html?net=embedder` panes, hand them all to ONE
+      NetCoordinator, and let them talk. The panes here run examples/mp — a
+      SERVER entry and two CLIENT entries over a shared protocol.fun — which
+      the sandbox cannot yet express (it has no server-pane UI; that is a later
+      PR). Copied into site/dist by the driver, next to the coordinator bundle
+      and a copy of examples/mp.
+    -->
+    <div class="row" id="panes"></div>
+    <script type="module">
+      import { NetCoordinator } from "./net-coordinator.js";
+
+      // Entry FIRST, then siblings — the ?file= contract (file = module).
+      const SIBLINGS = [
+        "examples/mp/protocol.fun",
+        "examples/mp/view.fun",
+        "examples/mp/client.fun",
+        "examples/mp/server.fun",
+      ];
+
+      const net = new NetCoordinator();
+      const traces = new Map();
+      const consoleLines = [];
+      const frames = new Map();
+
+      const mount = (id, entry) => {
+        const frame = document.createElement("iframe");
+        frame.title = id;
+        const params = new URLSearchParams({ game: entry, scrubber: "hidden", net: "embedder" });
+        params.append("file", entry);
+        for (const sibling of SIBLINGS) {
+          if (sibling !== entry) params.append("file", sibling);
+        }
+        frames.set(id, frame);
+        net.addPane(id, frame);
+        document.getElementById("panes").appendChild(frame);
+        frame.src = `player.html?${params}`;
+      };
+
+      // The panes' relays: the paused inspector trace (how the driver reads a
+      // pane's model) and forwarded console lines (so a runtime error is
+      // visible rather than silent).
+      window.addEventListener("message", (event) => {
+        if (event.origin !== window.location.origin) return;
+        const paneId = [...frames].find(([, f]) => f.contentWindow === event.source)?.[0];
+        if (!paneId) return;
+        const data = event.data;
+        if (data?.type === "functor-inspector-trace") traces.set(paneId, data.trace);
+        if (data?.type === "functor-lang-console") {
+          consoleLines.push(`[${paneId}] ${data.level}: ${data.message}`);
+        }
+      });
+
+      // One server, two clients — so a client's view must include the OTHER
+      // client's player for propagation to be proved.
+      mount("server", "examples/mp/server.fun");
+      mount("client 1", "examples/mp/client.fun");
+      mount("client 2", "examples/mp/client.fun");
+
+      window.__netHost = {
+        packets: () => net.packets().map((p) => ({ ...p })),
+        console: () => consoleLines.slice(),
+        frame: (id) => frames.get(id)?.contentWindow?.__scrub?.frame() ?? null,
+        // Pausing makes each pane publish its inspector trace, which is how a
+        // host page can read a pane's live model at all.
+        pause: (id) => {
+          const seam = frames.get(id)?.contentWindow?.__scrub;
+          if (!seam || seam.paused()) return false;
+          seam.togglePause();
+          return true;
+        },
+        resume: (id) => {
+          const seam = frames.get(id)?.contentWindow?.__scrub;
+          if (!seam || !seam.paused()) return false;
+          seam.togglePause();
+          return true;
+        },
+        trace: (id) => traces.get(id) ?? null,
+        // The pane's live model, rendered by the interpreter: the paused
+        // trace replays each entry point, and every one of them binds the
+        // model as `m`.
+        model: (id) => {
+          const trace = traces.get(id);
+          const invocations = trace?.invocations ?? [];
+          const inv = invocations.find((i) => i.entry === "draw") ?? invocations[0];
+          return inv?.bindings?.find((b) => b.name === "m")?.value ?? null;
+        },
+        // Pane teardown: a reloaded pane is a new game, and the coordinator
+        // must close what the old document had open.
+        reload: (id) => frames.get(id)?.contentWindow?.location.reload(),
+        key: (id, code, down = true) => {
+          const win = frames.get(id)?.contentWindow;
+          if (!win) return false;
+          win.dispatchEvent(new win.KeyboardEvent(down ? "keydown" : "keyup", { code }));
+          return true;
+        },
+      };
+    </script>
+  </body>
+</html>
