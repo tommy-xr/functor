@@ -1,0 +1,6 @@
+{
+  "language": "functor-lang",
+  "entries": {
+    "server": { "file": "game.fun", "module": "Server" }
+  }
+}

@@ -181,6 +181,21 @@ pub enum EntryRole {
 }
 
 impl EntryRole {
+    /// The role a config/flag/boot-config PAIR declares. Every carrier of a
+    /// same-file role transports it as two strings — functor.json's
+    /// `module`/`prefix` keys, the runtime's `--entry-module`/`--entry-prefix`
+    /// flags, the web page's `__functorLangEntryModule`/`…Prefix` globals — so
+    /// the "a non-empty module wins, else the prefix (empty = the plain
+    /// contract)" rule lives here once rather than at each seam. The declaring
+    /// layers refuse both at once; this resolves the pair regardless.
+    pub fn from_parts(module: &str, prefix: &str) -> EntryRole {
+        if module.is_empty() {
+            EntryRole::Prefix(prefix.to_string())
+        } else {
+            EntryRole::Module(module.to_string())
+        }
+    }
+
     /// Resolve this role's binding names against the linked `project` whose
     /// entry is the role's file. An inline-module role names a block of THAT
     /// file; an unknown name is an error listing the blocks it does declare.

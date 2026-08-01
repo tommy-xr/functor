@@ -156,7 +156,7 @@ export const EXAMPLES: Example[] = [
     multiplayer: true,
     // The sandbox plays the `client` role, which is the file's ordinary
     // top-level contract (the `server` role lives in its `module Server`
-    // block, a native-only entries form) — so no `prefix` is needed.
+    // block) — so no `prefix`/`module` is needed.
   },
   // The client/server sample: two ROLES over a shared typed protocol, run
   // end-to-end in the pane grid — the client panes and a server pane, wired to
