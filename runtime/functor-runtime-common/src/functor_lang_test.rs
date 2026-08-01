@@ -255,6 +255,32 @@ expect List.length([Scene.cube(), Scene.sphere()]) == 2
         assert!(!err.message.is_empty());
     }
 
+    /// Unit-suffix literals under the ENGINE prelude: the built-in suffixes
+    /// evaluate to real branded values, and a project's own unit builds
+    /// exactly what the handwritten constructor call does.
+    #[test]
+    fn unit_suffix_literals_evaluate_under_the_engine_prelude() {
+        let (_dir, entry) = project(
+            "game.fun",
+            &[(
+                "game.fun",
+                r#"type Px = | Px(value: float)
+
+unit px = Px
+
+expect List.length([90deg, 1.5rad]) == 2
+expect List.length([0.5s, 500ms, 250us, 2min, 1hr]) == 5
+expect 16px == Px(16.0)
+expect -2.5px == Px(-2.5)
+expect List.length([Scene.cube() |> Scene.rotateY(90deg)]) == 1
+"#,
+            )],
+        );
+        let run = run_project_expects(&entry).expect("project runs");
+        assert_eq!(run.total(), 5);
+        assert_eq!(run.failed(), 0, "{:?}", run.cases);
+    }
+
     #[test]
     fn a_project_with_no_expects_runs_clean() {
         let (_dir, entry) = project("game.fun", &[("game.fun", "let x = 1.0\n")]);

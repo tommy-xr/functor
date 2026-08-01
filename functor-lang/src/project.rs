@@ -35,7 +35,8 @@ use std::path::{Path, PathBuf};
 use crate::ast;
 use crate::ir::Module;
 use crate::lower::{
-    exports_of, lower_in_project, open_module_path, Exports, IdBases, ProjectEnv,
+    exports_of, lower_in_project, open_module_path, resolve_units, unit_decls, Exports, IdBases,
+    ProjectEnv, UnitTarget,
 };
 use crate::parser::{capitalize, parse_interface_with_base, parse_with_base};
 use crate::span::line_col;
@@ -861,6 +862,47 @@ rename it"
     }
     let exports = exports;
 
+    // Units are PROJECT-WIDE (file = module makes them like constructors), so
+    // resolve every module's `unit` declarations — each in its own scope —
+    // before any file lowers: a suffixed literal may precede, or live in a
+    // different file from, its declaration. A suffix may be declared once.
+    // Duplicate suffixes are caught FIRST, on names alone: a redeclaration
+    // should report as a duplicate even when the second declaration's target
+    // is also broken.
+    let mut declared_in: HashMap<&str, usize> = HashMap::new();
+    for (index, program) in programs.iter().enumerate() {
+        for decl in unit_decls(&program.items) {
+            if let Some(&previous) = declared_in.get(decl.suffix.as_str()) {
+                return Err(render_span(
+                    &files,
+                    index,
+                    decl.span,
+                    &format!(
+                        "duplicate unit `{}` — it is already declared in {} (units are \
+project-wide, like constructors)",
+                        decl.suffix,
+                        files[previous].path.display()
+                    ),
+                ));
+            }
+            declared_in.insert(&decl.suffix, index);
+        }
+    }
+    let mut units: HashMap<String, UnitTarget> = HashMap::new();
+    for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
+        let env = ProjectEnv {
+            name: &file.module,
+            entry: &entry,
+            modules: &exports,
+            units: &HashMap::new(),
+        };
+        let resolved = resolve_units(&program.items, Some(&env))
+            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+        for (suffix, target, _) in resolved {
+            units.insert(suffix, target);
+        }
+    }
+
     // Lower each file with the project environment, threading ID bases so
     // the merged module is one ID space. Collect dependency edges.
     let mut bases = IdBases::default();
@@ -938,6 +980,7 @@ rename it"
             name: &file.module,
             entry: &entry,
             modules: &exports,
+            units: &units,
         };
         let (module, next, module_deps) = lower_in_project(program, &env, bases)
             .map_err(|e| render_span(&files, index, e.span, &e.message))?;
@@ -984,6 +1027,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         defs: Vec::new(),
         signatures: Vec::new(),
         expects: Vec::new(),
+        units: Vec::new(),
     };
     let mut by_module: HashMap<String, Module> = files
         .iter()
@@ -996,6 +1040,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         merged.defs.extend(module.defs);
         merged.signatures.extend(module.signatures);
         merged.expects.extend(module.expects);
+        merged.units.extend(module.units);
     }
 
     Ok(Project {

@@ -101,7 +101,9 @@ export const functorLangLanguage = StreamLanguage.define<State>({
         return "bracket";
       }
     }
-    if (stream.match(/^\d+(\.\d+)?/)) return "number";
+    // A number, with an optional unit suffix touching the digits (`90deg`) —
+    // one token, as the lexer sees it.
+    if (stream.match(/^\d+(\.\d+)?([A-Za-z_][A-Za-z0-9_]*)?/)) return "number";
     // Uppercase head: constructors and prelude namespaces (Scene, Math, …).
     if (stream.match(/^[A-Z][A-Za-z0-9_]*/)) return "typeName";
     if (stream.match(/^[a-z_][A-Za-z0-9_]*/)) {

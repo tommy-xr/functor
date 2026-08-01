@@ -79,6 +79,22 @@ pub struct Module {
     /// evaluates them — only test tooling does
     /// ([`crate::eval::run_expects`]).
     pub expects: Vec<ExpectDef>,
+    /// `unit deg = Angle.degrees` declarations, in file order. Uses are
+    /// already desugared (a suffixed literal lowers to the plain call), so
+    /// these exist only so the CHECKER can verify each target really is a
+    /// `(float) => 't` function and can teach the suffix form in
+    /// branded-value errors. Evaluation ignores them.
+    pub units: Vec<UnitDef>,
+}
+
+/// One lowered `unit <suffix> = <name>` declaration: the suffix, and the
+/// already-resolved target as an expression (an `External` / `Global` /
+/// `Ctor` node — exactly what a use site calls).
+#[derive(Debug)]
+pub struct UnitDef {
+    pub suffix: String,
+    pub target: Expr,
+    pub span: Span,
 }
 
 /// One lowered `expect <expr>` test. `module` is the owning module's

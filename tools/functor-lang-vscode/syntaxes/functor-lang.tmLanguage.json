@@ -108,7 +108,8 @@
     },
     "number": {
       "name": "constant.numeric.functor",
-      "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+      "comment": "Numbers, including a unit suffix touching the digits (`90deg`)",
+      "match": "\\b[0-9]+(\\.[0-9]+)?([A-Za-z_][A-Za-z0-9_]*)?\\b"
     },
     "qualified-name": {
       "comment": "Module access like `List.map` / `Text.concat`",

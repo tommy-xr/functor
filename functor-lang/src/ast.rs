@@ -23,6 +23,28 @@ pub enum Item {
     Sig(SigDecl),
     Expect(ExpectDecl),
     Module(ModuleDecl),
+    /// `unit deg = Angle.degrees` — declares the literal suffix `deg`, so
+    /// `90deg` desugars to `Angle.degrees(90.0)` (see [`UnitDecl`]).
+    Unit(UnitDecl),
+}
+
+/// `unit <suffix> = <name>` — a unit-suffixed literal's meaning: which
+/// `(float) => 't` function or constructor a suffixed numeric literal calls.
+/// Units are project-wide (file = module, like constructors), so a suffix may
+/// be declared exactly once across the whole project. Resolution and
+/// desugaring happen in lowering: `90deg` becomes exactly the call
+/// `Angle.degrees(90.0)`, so hover, inlay, typechecking, and the host's
+/// teaching errors all see an ordinary call.
+#[derive(Debug)]
+pub struct UnitDecl {
+    /// The literal suffix, as spelled (`deg`, `s`, `px`).
+    pub suffix: String,
+    /// The target's name, one segment per `.` (`["Angle", "degrees"]`).
+    pub target: Vec<String>,
+    /// The target name's own span (what a resolution error points at).
+    pub target_span: Span,
+    /// The whole declaration.
+    pub span: Span,
 }
 
 /// `module Server { … }` — an INLINE module inside a `.fun` file: a named
@@ -145,6 +167,11 @@ pub struct Expr {
 pub enum ExprKind {
     /// Ints and floats both parse to f64 (Functor Lang has one number type for now).
     Number(f64),
+    /// `90deg` / `0.5s` — a numeric literal with a unit suffix. Lowering
+    /// resolves the suffix against the project's `unit` declarations and
+    /// desugars it to the plain call (`Angle.degrees(90.0)`); the IR has no
+    /// unit-literal node.
+    NumberUnit { value: f64, suffix: String },
     String(String),
     /// `$"score: {score}"` — text and full expression holes, evaluated
     /// left-to-right. `{{` / `}}` produce literal braces.

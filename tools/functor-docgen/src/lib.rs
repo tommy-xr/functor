@@ -142,6 +142,9 @@ pub struct ApiItem {
 pub enum ApiItemKind {
     Type,
     Value,
+    /// A `unit` declaration: the literal suffix a number may carry
+    /// (`90deg` → `Angle.degrees(90.0)`).
+    Unit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -493,6 +496,14 @@ fn extract_module(
                     signature_of(&source, &decl).map_err(|message| error_at(decl.span, message))?;
                 (decl.name, ApiItemKind::Value, decl.span, declaration)
             }
+            // A `unit` is public API: it is what makes `90deg` mean
+            // `Angle.degrees(90.0)`, so it documents beside the function it
+            // calls, quoted verbatim from the source.
+            Item::Unit(decl) => {
+                let declaration = declaration_at(&source, decl.span)
+                    .ok_or_else(|| error_at(decl.span, invalid_span(&decl.suffix)))?;
+                (decl.suffix, ApiItemKind::Unit, decl.span, declaration)
+            }
             Item::Let(_) | Item::Open(_) | Item::Expect(_) | Item::Module(_) => continue,
         };
         items.push(ApiItem {
@@ -645,7 +656,7 @@ mod tests {
             let items: usize = modules.iter().map(|module| module.items.len()).sum();
             (modules.len(), items)
         };
-        assert_eq!(count(ApiGroup::Engine), (27, 272));
+        assert_eq!(count(ApiGroup::Engine), (27, 282));
         assert_eq!(count(ApiGroup::Stdlib), (10, 97));
         assert!(reference
             .modules

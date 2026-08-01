@@ -6,8 +6,14 @@ use std::collections::HashMap;
 
 /// Check `src` as a single-file game with the complete engine bundle.
 fn check(src: &str) -> Vec<String> {
-    let dir =
-        std::env::temp_dir().join(format!("functor-prelude-typecheck-{}", src.len()));
+    // Unique per CALL: tests run in parallel, and two sources of the same
+    // length would otherwise share (and delete) one directory.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "functor-prelude-typecheck-{}-{id}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("game.fun"), src).unwrap();
@@ -237,5 +243,96 @@ fn vec3_arithmetic_rejects_unbranded_values_at_check_time() {
     assert!(
         !check("let bad: float = Vec3.make(1.0, 2.0, 3.0) |> Vec3.normalize()").is_empty(),
         "normalize returns a Vec3, not a float"
+    );
+}
+
+// ------------------------------------------------------ unit-suffix literals
+
+/// The prelude's own `unit` declarations resolve under the engine bundle: a
+/// suffixed literal IS the branded call, so it checks as the branded type.
+#[test]
+fn builtin_unit_suffixes_check_as_their_branded_types() {
+    for src in [
+        "let turn: Angle.t = 90deg",
+        "let turn: Angle.t = 0.5rad",
+        "let d: Time.t = 0.5s",
+        "let d: Time.t = 500ms",
+        "let d: Time.t = 250us",
+        "let d: Time.t = 2min",
+        "let d: Time.t = 1hr",
+    ] {
+        assert!(check(src).is_empty(), "{src}: {:?}", check(src));
+    }
+    // …and they are branded, not floats.
+    assert!(
+        check("let bad: float = 90deg")
+            .iter()
+            .any(|m| m.contains("Angle.t")),
+        "{:?}",
+        check("let bad: float = 90deg")
+    );
+}
+
+/// A suffixed literal satisfies a branded PARAMETER exactly like the
+/// handwritten call it desugars to.
+#[test]
+fn unit_suffixes_satisfy_branded_parameters() {
+    let diags = check(
+        "type Msg = | Pulse\n\
+         let subscriptions = (m) => Sub.every(0.5s, Pulse)\n\
+         let update = (m, msg) => m\n\
+         let scene = Scene.cube() |> Scene.rotateY(90deg)",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+/// A bare number in a branded position teaches BOTH spellings now — the
+/// suffix and the constructor call.
+#[test]
+fn a_bare_number_in_a_branded_position_teaches_the_suffix() {
+    let diags = check("let scene = Scene.cube() |> Scene.rotateY(90.0)");
+    assert!(
+        diags.iter().any(|m| m.contains("write `90deg`")),
+        "{diags:?}"
+    );
+}
+
+/// An undeclared suffix lists the ones the prelude does declare.
+#[test]
+fn an_unknown_suffix_lists_the_prelude_units() {
+    let diags = check("let bad = 90degrees");
+    assert!(
+        diags
+            .iter()
+            .any(|m| m.contains("unknown unit `degrees`") && m.contains("`deg`")
+                && m.contains("`ms`")),
+        "{diags:?}"
+    );
+}
+
+/// A project may declare its OWN unit beside the prelude's — units are
+/// project-wide and compose.
+#[test]
+fn a_project_unit_lives_beside_the_prelude_units() {
+    let diags = check(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         let width: Px = 16px\n\
+         let turn: Angle.t = 45deg",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+/// Redeclaring a prelude suffix is refused — one meaning per suffix, project
+/// wide, exactly like a constructor name.
+#[test]
+fn redeclaring_a_prelude_suffix_is_an_error() {
+    let diags = check(
+        "type Px = | Px(value: float)\n\
+         unit deg = Px\n",
+    );
+    assert!(
+        diags.iter().any(|m| m.contains("duplicate unit `deg`")),
+        "{diags:?}"
     );
 }

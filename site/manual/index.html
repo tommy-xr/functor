@@ -152,7 +152,8 @@ let draw = (model, tts: float) =>
       |> Scene.rotateY(Angle.radians(tts)))</pre>
           <p>
             Angles are branded values — <code>Scene.rotateY(1.57)</code> is a teaching error, not
-            a rotation. Say <code>Angle.radians(1.57)</code> or <code>Angle.degrees(90.0)</code>.
+            a rotation. Say <code>Angle.radians(1.57)</code> or <code>Angle.degrees(90.0)</code> —
+            or their literal suffixes, <code>1.57rad</code> and <code>90deg</code>.
           </p>
 
           <h3>3 &middot; Handle input</h3>
@@ -223,7 +224,7 @@ let draw = (model, tts: float) =>
           <p>
             <code>subscriptions</code> requires <code>update</code>. Durations are branded like
             Angles, so <code>Sub.every(1.0, Beat)</code> is an error — say
-            <code>Time.seconds(1.0)</code>. The <code>ui</code> hook is the screen-space HUD,
+            <code>Time.seconds(1.0)</code> or <code>1s</code>. The <code>ui</code> hook is the screen-space HUD,
             another pure function of the model.
           </p>
 
@@ -813,7 +814,9 @@ functor docs --format json         # the machine-readable shape</pre>
             <strong>branded values</strong> rather than bare numbers or strings —
             <code>Angle.degrees(60.0)</code>, <code>Time.seconds(0.5)</code>,
             <code>Physics.tag("ball")</code>, <code>RenderTarget.named("feed")</code> — so a
-            mixed-up unit is a check-time error instead of a puzzling frame.
+            mixed-up unit is a check-time error instead of a puzzling frame. Angles and
+            durations also read as unit-suffixed literals (<code>90deg</code>,
+            <code>0.5s</code>), which build exactly the same branded values.
           </p>
         </section>
 
@@ -824,7 +827,7 @@ functor docs --format json         # the machine-readable shape</pre>
             <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
             <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
             <li>Captured game mouse input defaults on when captured hooks exist. <code>"mouseCapture":false</code> opts out; <code>"cursor":"visible"</code> selects absolute pointer input instead. Held buttons are force-released on focus loss.</li>
-            <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
+            <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors. Angles and durations also take literal suffixes: <code>90deg</code>, <code>1.57rad</code>, <code>0.5s</code>, <code>500ms</code> — the suffix must touch the digits, and <code>unit px = Px</code> declares one for your own brand.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
             <li>Piping into <code>Text.concat</code> <em>prepends</em>: <code>s |> Text.concat(p)</code> is <code>p</code> then <code>s</code>. And <code>Text.fixed(n, decimals)</code> takes its number first, so it can't be piped on.</li>
             <li><code>Math</code> is only what the <a href="../docs/#api-math">reference</a> lists — there is still no <code>sinh</code> or <code>hypot</code>. <code>Math.round</code> goes half <em>away from zero</em>, not to even.</li>

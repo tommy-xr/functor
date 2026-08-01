@@ -41,7 +41,8 @@ The habits that break first, in one place. Each is expanded below.
   (`module Server { … }`, one level deep) — see Modules below.
 - **The engine prelude (`Scene.*`, `Camera3D.*`, `Frame.*`, `Physics.*`) exists
   only under the runner host**, not in plain `functor-lang run`. Its branded
-  values refuse bare numbers: `Angle.degrees(60.0)`, `Time.seconds(0.5)`.
+  values refuse bare numbers: `Angle.degrees(60.0)`, `Time.seconds(0.5)` — or
+  their **unit-suffix literals**, `60deg` / `0.5s` (see `unit` below).
 - **A game is `init` / `tick` / `draw`** plus optional hooks — see The game
   contract below.
 
@@ -118,6 +119,10 @@ let grade = (n: float): string =>             // `else if` chains — just an `i
   else "C"
 
 let threshold = 10                            // top-level let; ints/floats are all float (f64)
+type Px = | Px(value: float)                  // a single-ctor brand…
+unit px = Px                                  // …with a literal SUFFIX: `16px` == `Px(16.0)`
+let width = 16px                              //   the suffix must TOUCH the digits (`16 px` is
+                                              //   two tokens); `-2.5px` == `Px(-2.5)`
 let origin: Position = { x: 0.0, y: 0.0 }     // OPTIONAL binding annotation `let name: Type = …`
                                               //   (checked against the value; also on `let … in`)
 let scores = [1.0, 2.0, 3.0]                  // list literal; [x, ..xs] prepends
@@ -570,6 +575,45 @@ that's what `functor test` is for.
   assert on numbers/records you derive instead. The highest-value tests
   are pure logic anyway: model/`tick`/`update` math.
 
+## Unit-suffix literals (`unit`)
+
+A numeric literal may carry a **unit suffix** — `90deg`, `0.5s`, `16px` — which
+is exactly the call the suffix's `unit` declaration names. Design and the
+Phase 2 (operators) plan: `docs/functor-lang-units.md`.
+
+```functor
+unit deg = Angle.degrees            // a top-level ITEM, in `.fun` and `.funi`
+unit px = Px                        // target: any (float) => 't function OR constructor
+
+let turn = Scene.rotateY(90deg)     // == Scene.rotateY(Angle.degrees(90.0))
+let beat = Sub.every(0.5s, Tick)    // == Sub.every(Time.seconds(0.5), Tick)
+```
+
+- **Adjacency is the rule**: the suffix must touch the digits. `90 deg` is
+  still a number and a name; `16px2` is one suffix (`px2`), never a split.
+- **A prefix minus folds in**: `-90deg` is `Angle.degrees(-90.0)`, not a
+  negation of the branded value (branded values have no arithmetic — that is
+  Phase 2). Binary subtraction is untouched.
+- **Units are project-wide**, like constructors: a suffix declared in ANY
+  module means the same thing in every module, and declaring one twice
+  anywhere in the project is an error.
+- **The target is typechecked as exactly `(float) => 't`** at the
+  declaration, and it is a NAME (`Angle.degrees`, `Px`, `Utils.Meters`), never
+  an expression.
+- **It desugars at load**: the IR holds the ordinary call, so hover, inlay,
+  go-to-definition, typechecking, and runtime teaching errors all see
+  `Angle.degrees(90.0)` — and there is no per-frame cost.
+- **An undeclared suffix is a load/check error** listing the declared units,
+  and a bare number in a branded position now teaches both spellings
+  (``expected Angle.t, got float — write `90deg` or `Angle.degrees(90.0)` ``).
+- **Built-in suffixes (engine prelude only)**: `deg` / `rad` (`Angle.degrees`
+  / `Angle.radians`) and `s` / `ms` / `us` / `min` / `hr` (`Time.seconds` /
+  `millis` / `micros` / `minutes` / `hours`). They are declared in
+  `angle.funi` / `time.funi`, so — like every prelude name — they exist only
+  under the runner host, not in a plain `functor-lang run`.
+- **`unit` is contextual** (the `open` / `expect` / `module` rule): only item
+  position declares one, so the name stays usable everywhere else.
+
 ## Semantics rules that WILL bite you
 
 - **Pipelines append (thread-last)**: `x |> f(a)` is `f(a, x)`. Every
@@ -788,8 +832,8 @@ The generated modules:
 | `Skybox` | six-face cubemaps |
 | `Color` | `Color.rgb` — the ONE color type across 3D, lighting, fog, and UI |
 | `Vec3` | branded 3D vectors and their arithmetic |
-| `Angle` | branded angles (`degrees` / `radians`) |
-| `Time` | branded durations (`seconds` / `millis`) |
+| `Angle` | branded angles (`degrees` / `radians`; suffixes `deg` / `rad`) |
+| `Time` | branded durations (`seconds` / `millis` / `micros` / `minutes` / `hours`; suffixes `s` / `ms` / `us` / `min` / `hr`) |
 | `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator) |
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
@@ -831,6 +875,13 @@ Declare the identity-shaped ones (`RenderTarget.named`, `Physics.tag`) ONCE as a
 top-level `let` and use that value at every site. `Scene.animate` takes an
 `Anim` value, never a bare clip-name string; `Sub.every` takes a `Time`, never
 `0.5`; `Style` values, not CSS strings, go into `Attr.styles`.
+
+**Angles and durations also have literal SUFFIXES** (see "Unit-suffix literals"
+above): `90deg` / `0.5rad` are `Angle.degrees(90.0)` / `Angle.radians(0.5)`,
+and `0.5s` / `500ms` / `250us` / `2min` / `1hr` are the matching `Time.*`
+calls. They are the same value by a shorter name — the brand is not weakened,
+and a bare `90.0` is still an error (one that now names the suffix in its fix).
+Declare `unit` suffixes for your own brands the same way.
 
 **Everything pipes subject-last**, like the stdlib: `scene |> Scene.color(c)`,
 `body |> Physics.at(v)`, `sprite |> Sprite.move(x, y)`,

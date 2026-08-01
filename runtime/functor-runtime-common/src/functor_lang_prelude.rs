@@ -1477,6 +1477,15 @@ fn register_branded_constructors(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Time.millis", "Time.millis(n)", |n: f64| {
         FunctorLangDuration(n / 1000.0)
     });
+    reg.fn1("Time.micros", "Time.micros(n)", |n: f64| {
+        FunctorLangDuration(n / 1_000_000.0)
+    });
+    reg.fn1("Time.minutes", "Time.minutes(n)", |n: f64| {
+        FunctorLangDuration(n * 60.0)
+    });
+    reg.fn1("Time.hours", "Time.hours(n)", |n: f64| {
+        FunctorLangDuration(n * 3600.0)
+    });
     reg.fn3("Color.rgb", "Color.rgb(r, g, b)", |r: f64, g: f64, b: f64| {
         FunctorLangColor((r as f32, g as f32, b as f32))
     });
@@ -4046,7 +4055,7 @@ fn angle_of(value: &Value, what: &str, span: Span) -> Result<Angle, RunError> {
         Value::Number(_) => Err(RunError {
             message: format!(
                 "{what}: expected an Angle, got a bare number — say which unit: \
-Angle.degrees(…) or Angle.radians(…)"
+`90deg` / `1.5rad`, or Angle.degrees(…) / Angle.radians(…)"
             ),
             span,
         }),
@@ -4127,7 +4136,7 @@ fn duration_of(value: &Value, what: &str, span: Span) -> Result<f64, RunError> {
         Value::Number(_) => Err(RunError {
             message: format!(
                 "{what}: expected a Duration, got a bare number — say which unit: \
-Time.seconds(…) or Time.millis(…)"
+`0.5s` / `500ms`, or Time.seconds(…) / Time.millis(…)"
             ),
             span,
         }),
@@ -5487,6 +5496,39 @@ mod tests {
             .clone()
     }
 
+    // Drift guard: the branded-value teaching errors name unit SUFFIXES
+    // (`90deg`, `0.5s`), but the suffixes themselves are declared in the
+    // `.funi` prelude, which this crate cannot read at runtime. Pin the two
+    // together so renaming or dropping a `unit` fails here instead of leaving
+    // a message that teaches a suffix nobody can write.
+    #[test]
+    fn prelude_units_match_the_teaching_errors() {
+        use std::collections::BTreeSet;
+        let mut suffixes: BTreeSet<String> = BTreeSet::new();
+        for (module, src) in functor_prelude::modules() {
+            let program = functor_lang::parse_interface(&src)
+                .unwrap_or_else(|e| panic!("prelude module `{module}` must parse: {}", e.message));
+            for item in &program.items {
+                if let functor_lang::ast::Item::Unit(decl) = item {
+                    assert!(
+                        suffixes.insert(decl.suffix.clone()),
+                        "unit `{}` is declared more than once in the prelude",
+                        decl.suffix
+                    );
+                }
+            }
+        }
+        let expected: BTreeSet<String> = ["deg", "rad", "s", "ms", "us", "min", "hr"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            suffixes, expected,
+            "the prelude's unit suffixes changed — update the Angle/Duration teaching errors \
+in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list together"
+        );
+    }
+
     // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`
     // signatures and the registered externals. Every `.funi` `val`/`let`
     // signature must name a real host external, AND every host external must
@@ -6812,7 +6854,7 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
         assert_eq!(
             failure.error.message,
             "Scene.rotateY: expected an Angle, got a bare number — say which unit: \
-Angle.degrees(…) or Angle.radians(…)"
+`90deg` / `1.5rad`, or Angle.degrees(…) / Angle.radians(…)"
         );
     }
 
@@ -7977,7 +8019,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
 Physics.box(4.0, 1.0, 2.0)) |> Physics.rotateY(1.57)"
             ),
             "Physics.rotateY: expected an Angle, got a bare number — say which unit: \
-Angle.degrees(…) or Angle.radians(…)"
+`90deg` / `1.5rad`, or Angle.degrees(…) / Angle.radians(…)"
         );
         assert_eq!(
             fail_message(
@@ -8684,6 +8726,29 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         assert!(fired(millis, 1.0, 1.4).is_empty());
     }
 
+    /// The whole `Time` family lands on the same canonical seconds — the
+    /// constructors the `s`/`ms`/`us`/`min`/`hr` literal suffixes call.
+    #[test]
+    fn every_time_constructor_is_canonical_seconds() {
+        let seconds = |src: &str| {
+            let value = eval(&format!("let main = () => {src}"));
+            match &value {
+                Value::HostData(data) => {
+                    data.as_any()
+                        .downcast_ref::<FunctorLangDuration>()
+                        .expect("a Duration")
+                        .0
+                }
+                other => panic!("expected a Duration, got {other}"),
+            }
+        };
+        assert_eq!(seconds("Time.seconds(0.5)"), 0.5);
+        assert_eq!(seconds("Time.millis(500.0)"), 0.5);
+        assert_eq!(seconds("Time.micros(250.0)"), 0.00025);
+        assert_eq!(seconds("Time.minutes(2.0)"), 120.0);
+        assert_eq!(seconds("Time.hours(1.5)"), 5400.0);
+    }
+
     /// Batches fire in declaration order; `Sub.none` fires nothing; the msg
     /// crosses back verbatim (here, a parameterful variant).
     #[test]
@@ -9358,7 +9423,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         assert_eq!(
             failure.error.message,
             "Sub.every: expected a Duration, got a bare number — say which unit: \
-Time.seconds(…) or Time.millis(…)"
+`0.5s` / `500ms`, or Time.seconds(…) / Time.millis(…)"
         );
     }
 
