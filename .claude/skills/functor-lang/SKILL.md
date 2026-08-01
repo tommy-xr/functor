@@ -234,9 +234,16 @@ error listing the blocks the file does declare). The transitional form names
 a binding **prefix** — `"server": { "file": "game.fun", "prefix": "server" }`
 — resolving every canonical entry binding through the prefix as camelCase
 (`serverInit`/`serverTick`/…). A role declares at most one of the two.
-`examples/orbs` is the same-file reference: its `client` role is the file's
-plain top-level contract and its `server` role is a `module Server { … }`
-block. **Both forms run on native and wasm**: `run wasm`/`build wasm` bake the
+The two shipped multiplayer samples are the two canonical shapes.
+**`examples/orbs`** is the ONE-FILE reference: a whole game in a single
+buffer, both roles inline modules of it (`"client": { "file": "game.fun",
+"module": "Client" }` + the same for `Server`), with the protocol, the world
+step and the renderer shared bare at the file's top level — one edit
+hot-reloads both roles atomically. **`examples/mp`** is the SEPARATE-FILES
+reference (deliberately not migrated): `client.fun` and `server.fun` as plain
+top-level contracts over a shared `protocol.fun`, the shape to reach for once
+the roles grow past one screen or want independent deploy units.
+**Both forms run on native and wasm**: `run wasm`/`build wasm` bake the
 role into the served/exported page's boot config (`window.__functorLangEntryModule`
 / `…EntryPrefix`; the site player takes `?module=<Ident>` or `?prefix=<ident>`,
 one of the two). Only **vr** still refuses a role — its device push path boots
@@ -440,7 +447,13 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   plain entry. A functor.json ROLE may opt into a block instead —
   `"server": { "file": "game.fun", "module": "Server" }` resolves
   `Server.init`/`Server.tick`/… (see `entries` above); `examples/orbs` is the
-  reference. Such a role runs on native and wasm; only vr still refuses it.
+  reference — EVERY role of it is a block (`Client` and `Server`), nothing at
+  its top level answers a plain entry. Such a role runs on native and wasm;
+  only vr still refuses it.
+  Note the shadowing trap when two roles share a value: a block's own `init`
+  shadows the file's, so `let init = init` inside it is self-referential —
+  name the shared value distinctly (orbs' `initialGame` / `board`) and have
+  each block alias that.
 - **Hot reload**: canonical names are the rebind identity, so an inline
   module's closures rebind normally — but MOVING a def into (or out of) a
   module renames it (`step` → `Server.step`), which the rebinder treats

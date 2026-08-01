@@ -18,7 +18,9 @@
 //   4. every pane header shows its coordinator link state;
 //   5. the GRID layout puts the clients in two columns with the server as a
 //      full-width strip below them — and switching layout reloads no pane;
-//   6. switching to a single-role example removes the server pane again.
+//   6. switching to a single-role example removes the server pane again;
+//   7. the ONE-FILE shape (examples/orbs) mounts the same grid, with the two
+//      panes differing only in which inline module they boot.
 //
 // Run manually (needs the web-runtime wasm bundle):
 //
@@ -85,6 +87,9 @@ const installProbe = (page) =>
     window.__mpProbe = {
       roles: () => shells().map((s) => s.role),
       headers: () => shells().map((s) => s.header),
+      // Each pane's player URL — what says which FILE it booted and, for a
+      // same-file sample, which inline module it booted it as.
+      srcs: () => shells().map((s) => s.frame.getAttribute("src")),
       // The link indicator, read as STATE rather than as prose: the dot is what
       // survives when a thumbnail header clips the word off (see headerParts).
       links: () =>
@@ -814,6 +819,49 @@ try {
       "in a single-role example the odd last client spans the bottom row",
       JSON.stringify(solo.map((b) => [b.role, b.x, b.y, b.w, b.h]))
     );
+    await page.close();
+  }
+
+  // --- 6. ORBS: both roles out of ONE file, as inline modules. ----------------
+  // examples/mp proves the pane grid over roles-as-FILES. Orbs is the other
+  // canonical shape — one buffer, `module Client` and `module Server` — so the
+  // server pane re-enters the SAME dist file at a different module. That the
+  // panes differ ONLY in `module=` is the whole claim; if the client's role
+  // leaked, or the server's were inherited, both would boot the same half.
+  {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(`${BASE}/sandbox.html?example=orbs`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+    const mounted = await page
+      .waitForFunction(() => window.__mpProbe.roles().length === 2, null, { timeout: 15000 })
+      .then(() => true)
+      .catch(() => false);
+    check(
+      mounted,
+      "a one-file sample mounts a server pane too",
+      (await page.evaluate(() => window.__mpProbe.roles())).join(", ")
+    );
+    const srcs = (await page.evaluate(() => window.__mpProbe.srcs())).map(
+      (src) => new URLSearchParams(src.split("?")[1])
+    );
+    check(
+      srcs.length === 2 && srcs[0].get("game") === srcs[1].get("game"),
+      "both roles boot the very same file",
+      srcs.map((p) => p.get("game")).join(" vs ")
+    );
+    check(
+      srcs[0]?.get("module") === "Client" && srcs[1]?.get("module") === "Server",
+      "the panes differ only in which inline module they boot",
+      srcs.map((p) => p.get("module")).join(" / ")
+    );
+    // A `?module=` the runtime cannot resolve boots the plain contract and
+    // never reaches `live`, so a live pill over both panes IS the proof both
+    // blocks answered their contract in the browser.
+    const pill = await page.evaluate(() => window.__mpProbe.pill());
+    check(pill.includes("1+1"), "the pill counts the client and its authority", pill);
     await page.close();
   }
 } finally {

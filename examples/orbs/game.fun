@@ -155,12 +155,12 @@ let botIntent = (ship: Ship, orbs: List<Orb>): Intent =>
     { turn: if arrived then 0.0 else Math.sign(diff),
       thrust: not arrived, claim: arrived }
 
-// ===========================  CLIENT  =================================
-// The `client` role is this file's ordinary top-level contract
-// (init/sampledInput/tick/draw — functor.json maps it to "game.fun").
-// YOU (cyan) and the bot (pink) join through the real protocol path; both
-// Intents fold in as Steers + Claims, then `step` runs. With a real
-// transport the client keeps only its OWN sends; nothing changes shape.
+// ===========================  SHARED  =================================
+// The palette, the starting model, the claim send and the renderer: named at
+// the FILE's top level so BOTH role blocks below can reach them bare. A role
+// block's own `init`/`draw` would shadow a same-named top-level binding, so
+// the shared values carry distinct names (`initialGame`, `board`) and each
+// role aliases them — `let init = init` inside a block is self-referential.
 
 // Palette: zero-arg functions, not top-level values — the sandbox's lang-intel
 // evaluates this module under the plain prelude, where Color.* doesn't exist.
@@ -171,25 +171,12 @@ let wallColor = () => Color.rgb(0.3, 0.35, 0.55)
 let bg = () => Color.rgb(0.02, 0.025, 0.06)
 
 // The starting model both roles begin from: two seats joined through the
-// handshake. `init` aliases it rather than owning it (like `draw`/`board`
-// below), so the `Server` block can start from the same model without
-// shadowing itself.
+// handshake.
 let initialGame =
   let (w1, meWelcome) = join(newWorld()) in
   let (w2, botWelcome) = join(w1) in
   { myPid: welcomePid(meWelcome), botPid: welcomePid(botWelcome),
     world: w2, intent: coast }
-
-let init = initialGame
-
-// Held LEVELS, read once per tick — exactly what a transport forwards as a Steer.
-let sampledInput = (m, snap: Input.snapshot) =>
-  let held = (k: Key.t) => snap.heldKeys |> List.any((h) => h == k) in
-  { m with intent: {
-      turn: (if held(Key.Left) || held(Key.A) then 1.0 else 0.0)
-          - (if held(Key.Right) || held(Key.D) then 1.0 else 0.0),
-      thrust: held(Key.Up) || held(Key.W),
-      claim: held(Key.Space) } }
 
 // Over an unclaimed orb with claim held -> a Claim on the wire; the server decides.
 let sendClaim = (pid: float, intent: Intent, w: World): World =>
@@ -201,19 +188,6 @@ let sendClaim = (pid: float, intent: Intent, w: World): World =>
       (match w.orbs |> List.find((o) => o.owner < 0.0 && overOrb(s, o)) with
        | Option.Some(o) => w |> recv(pid, Claim(o.id))
        | Option.None => w)
-
-let tick = (m, dt: float, tts: float) =>
-  let bot =
-    (match shipOf(m.botPid, m.world) with
-     | Option.None => coast
-     | Option.Some(s) => botIntent(s, m.world.orbs)) in
-  { m with world:
-      m.world
-        |> recv(m.myPid, Steer(m.intent))
-        |> recv(m.botPid, Steer(bot))
-        |> sendClaim(m.myPid, m.intent)
-        |> sendClaim(m.botPid, bot)
-        |> step(dt) }
 
 // ---------- rendering ----------
 let colorFor = (m, pid: float) => if pid == m.myPid then cyan() else pink()
@@ -240,8 +214,7 @@ let hud = (m) =>
     Text.concat("BOT ", Text.fixed(scoreOf(m.botPid, m.world.orbs), 0.0))
       |> Sprite.text(pink(), 1.2) |> Sprite.move(halfW * 0.5, halfH + 2.2)])
 
-// The board both roles render. `draw` aliases it rather than owning the body,
-// so the `Server` block can render the same view without shadowing itself.
+// The board both roles render — each role's `draw` aliases it.
 let board = (m, tts: float) =>
   Frame.create2D(
     Camera2D.create((halfW + 2.0) * 2.0, (halfH + 3.0) * 2.0),
@@ -253,17 +226,58 @@ let board = (m, tts: float) =>
         |> List.append([hud(m)])))
     |> Frame.withClearColor(bg())
 
-let draw = board
+// ==========================  THE ROLES  ===============================
+// Both entry roles are inline modules in THIS file, so functor.json names a
+// block per role and the runner resolves that block's members as the
+// contract — Client.init/Client.tick/Client.draw and Server.init/… :
+//
+//   "entries": { "client": { "file": "game.fun", "module": "Client" },
+//                "server": { "file": "game.fun", "module": "Server" } }
+//
+//   functor -d examples/orbs run native --entry client   (you steer)
+//   functor -d examples/orbs run native --entry server   (the authority)
+//
+// One buffer, both roles, one hot reload. Everything at the file's top level
+// (the protocol, the world step, the renderer) is visible in here bare.
+// `examples/mp` is the other canonical shape: roles as separate FILES over a
+// shared protocol.fun.
+
+// ========================  CLIENT ROLE  ===============================
+// YOU (cyan) and the bot (pink) join through the real protocol path; both
+// Intents fold in as Steers + Claims, then `step` runs. With a real
+// transport the client keeps only its OWN sends; nothing changes shape.
+
+module Client {
+  let init = initialGame
+
+  // Held LEVELS, read once per tick — what a transport forwards as a Steer.
+  let sampledInput = (m, snap: Input.snapshot) =>
+    let held = (k: Key.t) => snap.heldKeys |> List.any((h) => h == k) in
+    { m with intent: {
+        turn: (if held(Key.Left) || held(Key.A) then 1.0 else 0.0)
+            - (if held(Key.Right) || held(Key.D) then 1.0 else 0.0),
+        thrust: held(Key.Up) || held(Key.W),
+        claim: held(Key.Space) } }
+
+  let tick = (m, dt: float, tts: float) =>
+    let bot =
+      (match shipOf(m.botPid, m.world) with
+       | Option.None => coast
+       | Option.Some(s) => botIntent(s, m.world.orbs)) in
+    { m with world:
+        m.world
+          |> recv(m.myPid, Steer(m.intent))
+          |> recv(m.botPid, Steer(bot))
+          |> sendClaim(m.myPid, m.intent)
+          |> sendClaim(m.botPid, bot)
+          |> step(dt) }
+
+  let draw = board
+}
 
 // ========================  SERVER ROLE  ===============================
-// The same file is ALSO the `server` entry: functor.json maps the role to
-// { "file": "game.fun", "module": "Server" }, so the runner resolves this
-// block's members as the contract — Server.init/Server.tick/Server.draw
-// (functor -d examples/orbs run native --entry server). One buffer, both
-// roles, one hot reload. The role is the authoritative SERVER section
-// stepped directly, with the bot steering both seats so the view moves on
-// its own. Everything at the file's top level (the protocol, the world
-// step, the renderer) is visible in here bare.
+// The authoritative SERVER section stepped directly, with the bot steering
+// both seats so the view moves on its own.
 
 module Server {
   let init = initialGame

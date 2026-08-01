@@ -251,9 +251,13 @@ most one of the two. `build` validates every declared role's contract with its r
 names. Both forms run on native and wasm — `run wasm`/`build wasm` bake the role into the
 served/exported page's boot config, and the site player takes `?module=<Ident>` or
 `?prefix=<ident>`. Only `run vr` refuses a role (the device push path boots the APK's
-embedded producer with the unprefixed contract). `examples/orbs` is the same-file
-reference: its `client` role is the file's plain top-level contract and its `server` role
-is a `module Server { … }` block.
+embedded producer with the unprefixed contract). The two multiplayer samples are the two
+canonical shapes: **`examples/orbs`** is the whole game in ONE file, both roles inline
+modules of it (`{"client": {"file": "game.fun", "module": "Client"}, "server": {…,
+"module": "Server"}}`), sharing the protocol/world-step/renderer bare at the file's top
+level so one edit hot-reloads both; **`examples/mp`** is the roles-as-separate-FILES
+reference (`client.fun` + `server.fun` over a shared `protocol.fun`), for when the roles
+outgrow one buffer.
 
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with

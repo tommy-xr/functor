@@ -2268,13 +2268,25 @@ examples move?",
                     &functor_prelude::bundled_modules(),
                 ) {
                     Ok(loaded) => {
-                        for diag in loaded.check() {
+                        let diags = loaded.check();
+                        let clean = diags.is_empty();
+                        for diag in diags {
                             let (file, line, col) = loaded.sources.resolve(diag.span.start);
                             failures.push(format!(
                                 "{label}: {}:{line}:{col}: {}",
                                 file.path.display(),
                                 diag.message
                             ));
+                        }
+                        // A multi-entry project's ROLE also has to answer its
+                        // contract at the names it declares — a typecheck
+                        // alone cannot see that `module Client` lost its
+                        // `init`, since nothing in the file references it.
+                        // This is `build`'s exact per-role gate.
+                        if clean && config.is_named() {
+                            if let Err(e) = project.check_contract(&loaded) {
+                                failures.push(format!("{label}: {e}"));
+                            }
                         }
                     }
                     Err(e) => failures.push(format!(

@@ -36,9 +36,8 @@ export interface Example {
   assets?: ExampleCopy[];
   /**
    * Marks a sample that declares a server entry point (the functor.json
-   * `entries` shape, like examples/mp) or is otherwise structured for
-   * multiple clients (like examples/orbs) — the sandbox shows its CLIENTS
-   * control only for those.
+   * `entries` shape — `examples/mp` across files, `examples/orbs` in one) —
+   * the sandbox shows its CLIENTS control only for those.
    */
   multiplayer?: boolean;
   /**
@@ -62,9 +61,10 @@ export interface Example {
    * net coordinator routes the client panes' traffic to it. The editable
    * `source` stays the CLIENT entry.
    *
-   * The file must ALSO appear in `siblings`: that is what copies it into the
-   * built site and puts it in the fetched project file list. Naming a file
-   * here that nothing copies would 404 the server pane.
+   * The file must ALSO be in the example's copied file list — either the
+   * entry itself (`exampleEntryPath(id)`, when both roles share ONE file) or
+   * a `siblings` entry. Naming a file here that nothing copies would 404 the
+   * server pane.
    *
    * `module` is the server ROLE's inline entry module when both roles live in
    * one file (`{ "file": …, "module": "Server" }`): the server pane derives
@@ -146,17 +146,26 @@ export const EXAMPLES: Example[] = [
   // Named `bounce` (not `physics`): the flat copy makes `file = module`, and a
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
-  // The minimal multiplayer-mechanics sample in ONE module (banner sections:
-  // PROTOCOL / SERVER / BOT / CLIENT), so the wire ADT and the authoritative
-  // claim resolution are right there in the editable buffer.
+  // The minimal multiplayer-mechanics sample in ONE file (banner sections:
+  // PROTOCOL / SERVER / BOT / SHARED / the two role blocks), so the wire ADT
+  // and the authoritative claim resolution are right there in the editable
+  // buffer.
   {
     id: "orbs",
     label: "Orbs (multiplayer)",
     source: "examples/orbs/game.fun",
     multiplayer: true,
-    // The sandbox plays the `client` role, which is the file's ordinary
-    // top-level contract (the `server` role lives in its `module Server`
-    // block) — so no `prefix`/`module` is needed.
+    // Both roles are inline modules in the ONE editable buffer, so the client
+    // panes boot `module Client` and the server pane re-enters the SAME file
+    // at `module Server` — no sibling copy needed, since the entry copy is
+    // already in the fetched file list.
+    //
+    // Orbs hosts its world IN-PROCESS (no transport yet), so its panes are
+    // independent sims: the server pane shows the authoritative board, but
+    // the NETWORK view's wires carry no packets until orbs adopts the
+    // transport. mp is the sample with real coordinator traffic.
+    module: "Client",
+    server: { file: exampleEntryPath("orbs"), module: "Server" },
   },
   // The client/server sample: two ROLES over a shared typed protocol, run
   // end-to-end in the pane grid — the client panes and a server pane, wired to

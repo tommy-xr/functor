@@ -685,10 +685,10 @@ snapshots — no GPU, fully agent-verifiable.
       on every hot reload, so deleting the block fails loudly and keeps the
       old program instead of reporting every binding missing. Module roles
       landed native-only here; Part 9 lifted that to wasm. `examples/orbs`
-      is the reference: its `client`
-      role is now the file's plain top-level contract (so the sandbox and
-      the docs teach the same `init`/`tick`/`draw`) and its `server` role is
-      a `module Server { … }` block. *Verify:* config-shape tests
+      moved off prefixes here: its `client` role became the file's plain
+      top-level contract (the only form the sandbox could boot on wasm at the
+      time) and its `server` role a `module Server { … }` block — Part 10
+      completed the symmetry. *Verify:* config-shape tests
       (module form, module+prefix refusal, non-string/non-Capitalized names,
       unknown keys), contract tests naming `Server.tick`, an unknown-block
       error test, a desktop load + hot-reload test for a module role, the
@@ -713,6 +713,22 @@ snapshots — no GPU, fully agent-verifiable.
       block lists the file's blocks), CLI tests for the lifted guards and the
       page's baked boot config, and a headless `run wasm` browser smoke of a
       `module Server` role.
+      **Part 10 — the samples adopt the two canonical shapes — done:** with
+      wasm unblocked, `examples/orbs` moved its `client` role into a
+      `module Client { … }` block as well, so **both** of its roles are inline
+      modules of one file and nothing at its top level answers a plain entry;
+      the protocol, the world step and the renderer stay shared bare at the
+      file's top level, and one edit hot-reloads both roles. The sandbox plays
+      it as `?module=Client` and mounts a SERVER pane on the very same buffer
+      at `?module=Server`. `examples/mp` deliberately stays the
+      roles-as-separate-FILES reference (`client.fun` + `server.fun` over a
+      shared `protocol.fun`), so the two shipped multiplayer samples document
+      the two shapes side by side. *Verify:* the example sweep now validates
+      every declared role's CONTRACT (not just its typecheck), so a role whose
+      block loses a binding fails `cargo test`; plus `build`/`test`/`build
+      wasm` on orbs, headless native captures of both roles compared against
+      the pre-migration renders, and the site sandbox e2e over the client and
+      server panes.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values
