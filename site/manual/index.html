@@ -27,25 +27,25 @@
     <div class="docs-layout">
       <!-- Four labelled groups, in the order a reader meets them: run something,
            understand it, drive it from a tool, then look things up. -->
-      <nav class="docs-nav" aria-label="Manual sections">
-        <div class="docs-nav-group">
-          <div class="docs-nav-group-label">Start</div>
+      <nav class="docs-nav docs-nav-grouped" aria-label="Manual sections">
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-start">
+          <div class="docs-nav-group-label" id="nav-start">Start</div>
           <a href="#get-started">Get started</a>
           <a href="#tutorial">Tutorial</a>
         </div>
-        <div class="docs-nav-group">
-          <div class="docs-nav-group-label">Concepts</div>
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-concepts">
+          <div class="docs-nav-group-label" id="nav-concepts">Concepts</div>
           <a href="#contract">The game contract</a>
           <a href="#debug-camera">The debug camera</a>
           <a href="#language">The language</a>
         </div>
-        <div class="docs-nav-group">
-          <div class="docs-nav-group-label">Tooling</div>
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-tooling">
+          <div class="docs-nav-group-label" id="nav-tooling">Tooling</div>
           <a href="#agents">Driving with agents</a>
         </div>
-        <div class="docs-nav-group">
-          <div class="docs-nav-group-label">Reference</div>
-          <a class="docs-nav-out" href="../docs/">API reference ↗</a>
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-reference">
+          <div class="docs-nav-group-label" id="nav-reference">Reference</div>
+          <a class="docs-nav-out" href="../docs/">API reference <span aria-hidden="true">↗</span></a>
           <a href="#prelude">The prelude</a>
           <a href="#builtins">Standard library</a>
           <a href="#sharp-edges">Sharp edges</a>
