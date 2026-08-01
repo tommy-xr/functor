@@ -1,9 +1,10 @@
 # Unit-suffix literals
 
 Functor Lang lets a numeric literal carry a **unit suffix** — `90deg`, `0.5s`,
-`16px` — where a `unit` declaration says what the suffix means. This document
-covers what shipped (Phase 1) and the design for operators on branded units
-(Phase 2), which is **not** implemented.
+`16px` — where a `unit` declaration says what the suffix means, and lets that
+brand carry arithmetic: `90deg + 45deg`, `1.5s - 200ms`, `45deg * 2.0`. This
+document covers both shipped phases — the literals (Phase 1) and the operators
+(Phase 2).
 
 Syntax and semantics for day-to-day use live in the `functor-lang` skill; the
 prelude's own suffixes are documented at their source
@@ -88,77 +89,129 @@ They resolve only where the engine prelude does (a runner-hosted project, or
 the headless test seam), like every other prelude name. A project declares its
 own units for its own brands.
 
-## Phase 2 (designed, not implemented): operators on units
+## Phase 2 (shipped): operators on units
 
-Phase 1 gives a brand a cheap way IN from a number. What it does not give is
-arithmetic: `90deg + 45deg` does not typecheck, because `+` is `(float, float)
-=> float`. Today the answer is to unwrap, add, and rebrand — which is exactly
-the ceremony the suffix removed.
+Phase 1 gives a brand a cheap way IN from a number. What it did not give is
+arithmetic: `90deg + 45deg` did not typecheck, because `+` was `(float, float)
+=> float`, so the answer was to unwrap, add, and rebrand — exactly the ceremony
+the suffix removed. It typechecks now.
 
 ### The declaration
 
-A unit may declare operator implementations beside itself:
+An operator is its own top-level item, naming the suffix whose brand it acts
+on:
 
 ```functor
 type Px = | Px(value: float)
 
-unit px = Px {
-  (+) = addPx        // (Px, Px) => Px
-  (-) = subPx        // (Px, Px) => Px
-  (*) = scalePx      // (Px, float) => Px   — the scalar form
-  (/) = dividePx     // (Px, float) => Px
-}
+unit px = Px
+unit px (+) = addPx                  // (Px, Px) => Px
+unit px (-) = subPx                  // (Px, Px) => Px
+unit px (*) = (a, k) => scalePx(a, k)   // (Px, float) => Px — the scalar form
+unit px (/) = dividePx               // (Px, float) => Px
 ```
 
 - `+` and `-` take `('t, 't) => 't`: adding two lengths gives a length.
 - `*` and `/` take `('t, float) => 't`: scaling a length by a number gives a
   length. A brand-by-brand product would be a *different* type (an area), which
   is dimensional analysis — see the non-goal below.
-- Every implementation is an ordinary named function, typechecked against the
-  shape above at the declaration, exactly as Phase 1 typechecks the constructor.
-- Comparisons (`<`, `>`, `==`) are deliberately out of this list for now: `==`
-  is already structural for plain-data brands, and ordering wants its own
-  design pass.
+- Each implementation is typechecked against the shape above **at the
+  declaration**, exactly as Phase 1 typechecks the constructor. It is an
+  ordinary expression: a name, or a lambda (a `.funi` has no bodies, so a
+  prelude declaration always names a host external).
+- **The operator belongs to the BRAND, not the suffix.** The suffix is only how
+  the brand is named: `s`, `ms`, `us`, `min`, and `hr` are all `Time.t`, so ONE
+  `unit s (+) = Time.add` makes `1.5s - 200ms` work. Declaring the same brand +
+  operator twice — through any suffix — is a duplicate error.
+- Comparisons (`<`, `>`, `==`) are deliberately not declarable: `==` is already
+  structural for plain-data brands, and ordering wants its own design pass.
+
+> **Deviation from the original design.** The design sketch attached operators
+> to the unit declaration as a block (`unit px = Px { (+) = … }`). Shipping them
+> as separate items keeps the `.funi` prelude honest — `Angle` and `Time`
+> declare their suffixes and their operators in the same flat item list the rest
+> of an interface uses, docgen renders each one with its own `///` prose, and
+> a project can add an operator to a brand without touching the (possibly
+> already-published) unit declaration.
 
 ### Resolution: ad-hoc overloading, after inference
 
-Operator selection happens **after** ordinary Hindley–Milner inference has run
-and the operand types are zonked — never during unification, which would make
-inference order-dependent:
+Operator selection happens **after** ordinary Hindley–Milner inference has
+solved the operand types — never during unification, which would make inference
+order-dependent:
 
-1. Infer the whole program as today, with `+` constrained as usual.
-2. Post-zonk, walk each arithmetic node. If an operand's solved type is a brand
-   that declares that operator, replace the node with a call to the declared
-   implementation.
-3. If neither operand is a declaring brand, the node stays the float operator
-   and its ordinary `float` constraint applies.
+1. Infer as today, with `+` constrained as usual.
+2. At each arithmetic node, zonk the operands. If either resolved type is a
+   brand that declares that operator, the node IS that implementation: the
+   other operand is checked against the implementation's signature (the same
+   brand for `+`/`-`, a plain float for the scalar side of `*` and `/`) and the
+   node's type is the brand.
+3. If neither operand is a declaring brand, the node is float arithmetic and
+   its ordinary `float` constraint applies — unchanged.
+4. A node whose operands are *still unsolved* when it is first seen is
+   **deferred** to a pass that runs when the enclosing definition group has
+   settled, then re-resolved by the same rules. That is what lets a brand that
+   only becomes known later still reach the node.
 
-The critical rule is what happens when the operand type is still an **unsolved
-type variable** at that point: that is a *teaching error* asking for an
-annotation, never a silent guess.
+Scaling commutes, so a brand may sit on either side of `*` (`2.0 * 45deg` is
+the declared call with its arguments swapped). Division does not: `2.0 / 45deg`
+is refused, because the scalar form divides a branded value BY a number.
+
+The critical rule is what happens when the deferred node is *still* undecided —
+both operands and its result unsolved. That is a **teaching error** asking for
+an annotation, never a silent float guess:
 
 ```
-`+` here could be float addition or `Px` addition — annotate the operand
+`+` here could be float arithmetic or `Px` arithmetic — annotate an operand
 (e.g. `(a: Px)`) so the operator can be resolved
 ```
 
-This keeps two properties: a program either resolves every operator
-deterministically or says so, and code that never uses a unit operator infers
-and runs exactly as it does today.
+Note how narrow that is: the error needs BOTH operands *and* the result to be
+unconstrained. `(a, b) => a + b` in a project that declares an operator for `+`
+is ambiguous and says so; `(a, b): float => a + b`, `(a) => a + 1.0`, and every
+`+` in a project with no operator declarations infer and run exactly as they
+did before. And a brand with no implementation for the operator keeps the old
+teaching error, now naming what the brand *does* declare:
 
-Because resolution is a post-pass rewrite, the IR again ends up with an
-ordinary call — the Phase 1 property that there is no second evaluation path is
-preserved, so the interpreter is untouched and there is no per-frame cost.
+```
+`-` needs float operands, got Angle.t — `Angle.t` declares `*`, `+`, but not `-`
+```
 
-### Open questions for Phase 2
+### Runtime
 
-- **Mixed literals.** `90deg + 45` — is the bare number an error, or is it
-  lifted through the unit's constructor? Erroring is the conservative start.
-- **Prefix minus.** `-(someAngle)` would want a `negate` in the same block, or
-  to derive from `(-)` with a zero the brand cannot supply.
-- **Where the implementations live** for prelude brands: `Angle` and `Time` are
-  host types, so their operator impls are host externals, not Functor Lang
-  functions. The declaration form is the same; only the target is.
+Unlike a suffixed literal, an operator is **not** desugared at lowering — the
+operand types are not known there. So the interpreter dispatches too: an
+arithmetic node whose operands are not both numbers consults a table of the
+declared implementations, keyed by the operand's runtime tag (a variant's
+constructor, or an opaque host value's type name). The table is built once when
+a session loads, by applying each unit's own constructor to a probe value and
+reading the tag off the result — which works for every unit target shape
+without any type information.
+
+Two consequences worth stating:
+
+- **Plain float arithmetic is untouched.** The number/number case is still the
+  first match in the same `match`; the table is consulted only when an operand
+  is not a number. `frame_bench` shows no allocation or byte change.
+- **`functor-lang run` (which does not typecheck) behaves identically to the
+  checked path**, and so does a fake/plain prelude: both roads end at exactly
+  the call the declaration names. An operand with no implementation gets the
+  same teaching text at runtime that the checker gives at check time.
+
+### Where the implementations live for prelude brands
+
+`Angle` and `Time` are host types, so their implementations are host externals
+(`Angle.add` / `Angle.sub` / `Angle.scale`, `Time.add` / `Time.sub` /
+`Time.scale`) declared beside the units in `angle.funi` / `time.funi`. Both are
+public API and appear in the generated reference.
+
+### Still open
+
+- **Mixed literals.** `90deg + 45` is an error (the bare number is not lifted
+  through the unit's constructor). Erroring is the conservative start.
+- **Prefix minus.** `-(someAngle)` would want a `negate` declaration, or to
+  derive from `(-)` with a zero the brand cannot supply.
+- **Comparisons.** `==`, `<`, `>` on brands are a follow-up.
 
 ### Explicit non-goal: dimensional analysis
 

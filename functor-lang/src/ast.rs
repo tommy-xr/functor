@@ -26,6 +26,9 @@ pub enum Item {
     /// `unit deg = Angle.degrees` — declares the literal suffix `deg`, so
     /// `90deg` desugars to `Angle.degrees(90.0)` (see [`UnitDecl`]).
     Unit(UnitDecl),
+    /// `unit deg (+) = Angle.add` — an OPERATOR implementation for the brand
+    /// the suffix builds (see [`UnitOpDecl`]).
+    UnitOp(UnitOpDecl),
 }
 
 /// `unit <suffix> = <name>` — a unit-suffixed literal's meaning: which
@@ -43,6 +46,30 @@ pub struct UnitDecl {
     pub target: Vec<String>,
     /// The target name's own span (what a resolution error points at).
     pub target_span: Span,
+    /// The whole declaration.
+    pub span: Span,
+}
+
+/// `unit <suffix> (<op>) = <target>` — an arithmetic operator on the BRAND a
+/// unit builds. The op attaches to the brand TYPE (resolved through the
+/// suffix's declared target), so every suffix of one brand shares it: `s` and
+/// `ms` are both `Time.t`, so `1.5s - 200ms` uses the one `(-)` declared for
+/// `Time`. Declaring the same brand + operator twice (through any suffix) is
+/// an error.
+///
+/// `+` and `-` take `('t, 't) => 't`; `*` and `/` take the SCALAR form
+/// `('t, float) => 't`. The target is an ordinary expression (a name in a
+/// `.funi`, which has no bodies; a name or a lambda in a `.fun`).
+#[derive(Debug)]
+pub struct UnitOpDecl {
+    /// The suffix whose brand this operator belongs to (`deg`, `px`).
+    pub suffix: String,
+    pub suffix_span: Span,
+    /// The operator — only `+`, `-`, `*`, `/` (comparisons are not declarable).
+    pub op: BinOp,
+    pub op_span: Span,
+    /// The implementation.
+    pub target: Expr,
     /// The whole declaration.
     pub span: Span,
 }
@@ -354,7 +381,7 @@ pub struct Param {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,

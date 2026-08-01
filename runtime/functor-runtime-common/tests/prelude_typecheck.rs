@@ -323,6 +323,54 @@ fn a_project_unit_lives_beside_the_prelude_units() {
     assert!(diags.is_empty(), "{diags:?}");
 }
 
+/// Branded arithmetic under the real prelude: the declarations in
+/// `angle.funi` / `time.funi` make `+`, `-`, and scalar `*` typecheck on
+/// angles and durations — across suffixes, since an operator belongs to the
+/// brand.
+#[test]
+fn prelude_brands_carry_their_declared_arithmetic() {
+    let diags = check(
+        "let turn: Angle.t = 90deg + 45deg\n\
+         let back: Angle.t = 90deg - 1.5rad\n\
+         let wide: Angle.t = 45deg * 2.0\n\
+         let also: Angle.t = 2.0 * 45deg\n\
+         let wait: Time.t = 1.5s - 200ms\n\
+         let long: Time.t = 2min + 30s\n\
+         let twice: Time.t = 0.5s * 2.0\n",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+/// …and what they do NOT declare still teaches, now naming what exists.
+#[test]
+fn an_undeclared_prelude_operator_names_the_declared_ones() {
+    let diags = check("let bad: Angle.t = 90deg / 2.0\n");
+    assert!(
+        diags
+            .iter()
+            .any(|m| m.contains("`Angle.t` declares") && m.contains("but not `/`")),
+        "{diags:?}"
+    );
+    // Mixing brands is still a type error: an angle is not a duration.
+    let diags = check("let bad: Angle.t = 90deg + 1.5s\n");
+    assert!(!diags.is_empty(), "an angle plus a duration must not check");
+}
+
+/// A project declares operators on its OWN brand beside the prelude's, with
+/// lambda implementations (a `.fun` may write bodies; a `.funi` may not).
+#[test]
+fn a_project_declares_operators_on_its_own_brand() {
+    let diags = check(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+         unit px (+) = (a, b) => Px(unwrap(a) + unwrap(b))\n\
+         let total: Px = 16px + 4px\n\
+         let turn: Angle.t = 45deg + 45deg\n",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
 /// Redeclaring a prelude suffix is refused — one meaning per suffix, project
 /// wide, exactly like a constructor name.
 #[test]

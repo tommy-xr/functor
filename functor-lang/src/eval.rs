@@ -371,6 +371,7 @@ pub fn run_with_host(
         depth: 0,
         call_depth: 0,
         fuel: None,
+        brand_ops: BrandOps::default(),
         host,
     };
     match interp.run_module(module) {
@@ -497,9 +498,13 @@ pub fn run_expects_budgeted(
         depth: 0,
         call_depth: 0,
         fuel: budget.map(Fuel::new),
+        brand_ops: BrandOps::default(),
         host,
     };
-    if let Err(error) = interp.eval_defs(module) {
+    if let Err(error) = interp
+        .eval_defs(module)
+        .and_then(|_| interp.load_brand_ops(module).map(|ops| interp.brand_ops = ops))
+    {
         return Err(RunFailure {
             error,
             trace: interp.trace,
@@ -526,6 +531,42 @@ pub fn run_expects_budgeted(
 /// swap the session and keep the model; docs/functor-lang.md C3).
 pub struct Session {
     globals: HashMap<String, Value>,
+    brand_ops: BrandOps,
+}
+
+/// Declared unit operators, resolved to callable VALUES and keyed by the
+/// runtime tag of the brand they act on ([`brand_tag`]) — one row of four
+/// slots, `+` `-` `*` `/`, so dispatch is a BORROWED lookup that allocates
+/// nothing on the operand path.
+///
+/// The checker resolves `90deg + 45deg` statically, but the interpreter must
+/// dispatch too: `check` is not on every path (`functor-lang run` skips it),
+/// and a value can reach an operator through a gradual `unknown` seam. Both
+/// roads lead to exactly the call the declaration names — under a fake or
+/// plain prelude the behaviour is the handwritten call's, precisely.
+pub(crate) type BrandOps = Rc<HashMap<String, BrandOpRow>>;
+
+/// One brand's declared operators, indexed by [`op_slot`].
+pub(crate) type BrandOpRow = [Option<Value>; 4];
+
+/// Which slot of a [`BrandOpRow`] an operator owns — `None` for the
+/// comparisons, which are not declarable.
+fn op_slot(op: crate::ast::BinOp) -> Option<usize> {
+    use crate::ast::BinOp;
+    match op {
+        BinOp::Add => Some(0),
+        BinOp::Sub => Some(1),
+        BinOp::Mul => Some(2),
+        BinOp::Div => Some(3),
+        _ => None,
+    }
+}
+
+/// The operator a [`BrandOpRow`] slot holds — the inverse of [`op_slot`],
+/// for the "declares `+`, `*`, but not `-`" teaching error.
+fn slot_op(slot: usize) -> crate::ast::BinOp {
+    use crate::ast::BinOp;
+    [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div][slot]
 }
 
 impl Session {
@@ -542,11 +583,16 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: BrandOps::default(),
             host,
         };
-        match interp.eval_defs(module) {
-            Ok(_) => Ok(Session {
+        let loaded = interp
+            .eval_defs(module)
+            .and_then(|_| interp.load_brand_ops(module));
+        match loaded {
+            Ok(brand_ops) => Ok(Session {
                 globals: interp.globals,
+                brand_ops,
             }),
             Err(error) => Err(RunFailure {
                 error,
@@ -581,6 +627,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
             host,
         };
         interp.call(callee, args, name.to_string(), Span::new(0, 0), None)
@@ -605,6 +652,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
             host,
         };
         interp.call(callee, args, label.to_string(), Span::new(0, 0), None)
@@ -636,6 +684,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
@@ -676,6 +725,7 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
@@ -760,6 +810,11 @@ struct Interp<'h> {
     /// norm — every game-loop path) means zero cost beyond one branch per
     /// eval step, the same hot-path cost class as `recorder`.
     fuel: Option<Fuel>,
+    /// Declared unit operators, keyed by an operand's runtime brand tag
+    /// (see [`brand_tag`]). Empty for every program that declares none, and
+    /// consulted ONLY when an arithmetic operand is not a number — so plain
+    /// float math costs exactly what it did before.
+    brand_ops: BrandOps,
     host: &'h mut dyn Host,
 }
 
@@ -829,10 +884,72 @@ impl Interp<'_> {
 
     fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
         let bindings = self.eval_defs(module)?;
+        self.brand_ops = self.load_brand_ops(module)?;
         match module.defs.iter().find(|def| def.name == "main") {
             Some(main_def) => Ok(RunOutcome::Main(self.call_main(main_def)?)),
             None => Ok(RunOutcome::Bindings(bindings)),
         }
+    }
+
+    /// Resolve every `unit <suffix> (<op>) = <impl>` declaration into the
+    /// dispatch table, once, after the module's defs exist.
+    ///
+    /// A brand's runtime identity is taken from a value it actually BUILDS:
+    /// the suffix's own constructor is applied to `1.0` and the result's tag
+    /// ([`brand_tag`]) becomes the key. That works for every unit target
+    /// shape — a host function (`Angle.degrees`), a variant constructor
+    /// (`Px`), or an ordinary Functor Lang function — with no type
+    /// information, which the interpreter does not have.
+    fn load_brand_ops(&mut self, module: &Module) -> Result<BrandOps, RunError> {
+        if module.unit_ops.is_empty() {
+            return Ok(BrandOps::default());
+        }
+        let mut tags: HashMap<&str, String> = HashMap::new();
+        let mut ops: HashMap<String, BrandOpRow> = HashMap::new();
+        for unit_op in &module.unit_ops {
+            let tag = match tags.get(unit_op.suffix.as_str()) {
+                Some(tag) => tag.clone(),
+                None => {
+                    let Some(unit) = module
+                        .units
+                        .iter()
+                        .find(|unit| unit.suffix == unit_op.suffix)
+                    else {
+                        // Lowering refuses an operator on an undeclared
+                        // suffix, so this is unreachable in a loaded project.
+                        continue;
+                    };
+                    let ctor = self.eval(&unit.target, &Env::empty())?;
+                    let probe = self.call(
+                        ctor,
+                        vec![Value::Number(1.0)],
+                        unit.suffix.clone(),
+                        unit_op.span,
+                        None,
+                    )?;
+                    let Some(tag) = brand_tag(&probe).map(str::to_string) else {
+                        return Err(RunError {
+                            message: format!(
+                                "`unit {} ({})` needs a unit whose values carry a runtime tag — \
+`{}` builds {}, which nothing can dispatch on (use a constructor, or a host value)",
+                                unit_op.suffix,
+                                unit_op.op.symbol(),
+                                unit_op.suffix,
+                                probe.kind_name()
+                            ),
+                            span: unit_op.span,
+                        });
+                    };
+                    tags.insert(unit_op.suffix.as_str(), tag.clone());
+                    tag
+                }
+            };
+            let implementation = self.eval(&unit_op.target, &Env::empty())?;
+            if let Some(slot) = op_slot(unit_op.op) {
+                ops.entry(tag).or_default()[slot] = Some(implementation);
+            }
+        }
+        Ok(Rc::new(ops))
     }
 
     fn call_main(&mut self, def: &Def) -> Result<Value, RunError> {
@@ -1377,12 +1494,12 @@ evaluation depth."
     ) -> Result<Value, RunError> {
         use crate::ast::BinOp;
         match op {
-            BinOp::Add => self.arith(lhs, rhs, span, |a, b| a + b),
-            BinOp::Sub => self.arith(lhs, rhs, span, |a, b| a - b),
-            BinOp::Mul => self.arith(lhs, rhs, span, |a, b| a * b),
+            BinOp::Add => self.arith(op, lhs, rhs, span, |a, b| a + b),
+            BinOp::Sub => self.arith(op, lhs, rhs, span, |a, b| a - b),
+            BinOp::Mul => self.arith(op, lhs, rhs, span, |a, b| a * b),
             // Division follows IEEE-754 (x/0 is ±inf/NaN, printed as
             // `inf`/`NaN`) — one number type, no checked division.
-            BinOp::Div => self.arith(lhs, rhs, span, |a, b| a / b),
+            BinOp::Div => self.arith(op, lhs, rhs, span, |a, b| a / b),
             BinOp::Lt => self.compare(lhs, rhs, span, |a, b| a < b),
             BinOp::Gt => self.compare(lhs, rhs, span, |a, b| a > b),
             // IEEE ordering, like `<`/`>`: every comparison with NaN is false.
@@ -1408,22 +1525,104 @@ evaluation depth."
 
     fn arith(
         &mut self,
+        op: crate::ast::BinOp,
         lhs: Value,
         rhs: Value,
         span: Span,
-        op: fn(f64, f64) -> f64,
+        arith: fn(f64, f64) -> f64,
     ) -> Result<Value, RunError> {
         match (lhs, rhs) {
-            (Value::Number(a), Value::Number(b)) => Ok(Value::Number(op(a, b))),
-            (a, b) => Err(RunError {
+            (Value::Number(a), Value::Number(b)) => Ok(Value::Number(arith(a, b))),
+            // Not two numbers: a branded operand may still have a declared
+            // implementation for this operator.
+            (a, b) => self.brand_arith(op, a, b, span),
+        }
+    }
+
+    /// Arithmetic where at least one operand is not a number — the runtime
+    /// half of unit operators. The implementation is exactly the one the
+    /// `unit … (<op>) = …` declaration names, called with the operands in the
+    /// declared order.
+    fn brand_arith(
+        &mut self,
+        op: crate::ast::BinOp,
+        lhs: Value,
+        rhs: Value,
+        span: Span,
+    ) -> Result<Value, RunError> {
+        use crate::ast::BinOp;
+        let Some(slot) = op_slot(op) else {
+            unreachable!("only arithmetic reaches brand dispatch")
+        };
+        let declared = |ops: &BrandOps, value: &Value| {
+            brand_tag(value)
+                .and_then(|tag| ops.get(tag))
+                .and_then(|row| row[slot].clone())
+        };
+        // The declared form takes the branded value FIRST. Scaling commutes,
+        // so `2.0 * 45deg` is the same call with its arguments swapped —
+        // matching what the checker resolves (`/` deliberately does not).
+        let call = match declared(&self.brand_ops, &lhs) {
+            Some(implementation) => Some((implementation, lhs.clone(), rhs.clone())),
+            None if matches!(op, BinOp::Mul) && matches!(lhs, Value::Number(_)) => {
+                declared(&self.brand_ops, &rhs)
+                    .map(|implementation| (implementation, rhs.clone(), lhs.clone()))
+            }
+            None => None,
+        };
+        match call {
+            Some((implementation, first, second)) => self.call(
+                implementation,
+                vec![first, second],
+                format!("({})", op.symbol()),
+                span,
+                None,
+            ),
+            None => Err(RunError {
                 message: format!(
-                    "arithmetic needs numbers, got {} and {}",
-                    a.kind_name(),
-                    b.kind_name()
+                    "arithmetic needs numbers, got {} and {}{}",
+                    lhs.kind_name(),
+                    rhs.kind_name(),
+                    self.brand_arith_hint(op, &lhs, &rhs)
                 ),
                 span,
             }),
         }
+    }
+
+    /// What a failed branded arithmetic adds to its error: which operators
+    /// the brand DOES declare, or how to declare one — the same teaching the
+    /// checker gives, for the paths that reach the interpreter first.
+    fn brand_arith_hint(&self, op: crate::ast::BinOp, lhs: &Value, rhs: &Value) -> String {
+        let Some(tag) = brand_tag(lhs).or_else(|| brand_tag(rhs)) else {
+            return String::new();
+        };
+        let declared: Vec<&str> = self
+            .brand_ops
+            .get(tag)
+            .into_iter()
+            .flat_map(|row| {
+                row.iter()
+                    .enumerate()
+                    .filter(|(_, implementation)| implementation.is_some())
+                    .map(|(slot, _)| slot_op(slot).symbol())
+            })
+            .collect();
+        if declared.is_empty() {
+            return format!(
+                " — `{tag}` declares no arithmetic; declare it with `unit <suffix> ({}) = …`",
+                op.symbol()
+            );
+        }
+        format!(
+            " — `{tag}` declares {}, but not `{}`",
+            declared
+                .iter()
+                .map(|symbol| format!("`{symbol}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            op.symbol()
+        )
     }
 
     fn compare(
@@ -2794,6 +2993,18 @@ got edge0 {edge0} and edge1 {edge1}"
                 ),
             },
         }
+    }
+}
+
+/// A value's BRAND identity for unit-operator dispatch: a variant's
+/// constructor, or an opaque host value's type name (`Angle`, `Duration`).
+/// Everything else — numbers, strings, records, collections — carries no tag
+/// an operator could be declared against, so it never dispatches.
+pub(crate) fn brand_tag(value: &Value) -> Option<&str> {
+    match value {
+        Value::Variant { ctor, .. } => Some(ctor),
+        Value::HostData(host) => Some(host.type_name()),
+        _ => None,
     }
 }
 

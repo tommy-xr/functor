@@ -17,6 +17,13 @@ let minutes : (float) => t
 /// Construct a duration from hours.
 let hours : (float) => t
 
+/// Add two durations. This is what `1.5s + 200ms` calls.
+let add : (t, t) => t
+/// Subtract one duration from another. This is what `1.5s - 200ms` calls.
+let sub : (t, t) => t
+/// Scale a duration by a plain number. This is what `0.5s * 2.0` calls.
+let scale : (t, float) => t
+
 /// Seconds as a literal suffix: `0.5s` is exactly `Time.seconds(0.5)`.
 unit s = Time.seconds
 /// Milliseconds as a literal suffix: `500ms` is exactly `Time.millis(500.0)`.
@@ -27,3 +34,13 @@ unit us = Time.micros
 unit min = Time.minutes
 /// Hours as a literal suffix: `1hr` is exactly `Time.hours(1.0)`.
 unit hr = Time.hours
+
+/// `+` on durations: `1.5s + 200ms` is `Time.add(1.5s, 200ms)`. An operator
+/// belongs to the BRAND, so every duration suffix shares it — seconds and
+/// milliseconds add directly.
+unit s (+) = Time.add
+/// `-` on durations: `1.5s - 200ms` is `Time.sub(1.5s, 200ms)`.
+unit s (-) = Time.sub
+/// `*` scales a duration by a number, on either side: `0.5s * 2.0` and
+/// `2.0 * 0.5s` are both `Time.scale(0.5s, 2.0)`.
+unit s (*) = Time.scale

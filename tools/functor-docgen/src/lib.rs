@@ -145,6 +145,10 @@ pub enum ApiItemKind {
     /// A `unit` declaration: the literal suffix a number may carry
     /// (`90deg` → `Angle.degrees(90.0)`).
     Unit,
+    /// A `unit <suffix> (<op>)` declaration: an arithmetic operator on the
+    /// brand that suffix builds (`90deg + 45deg` → `Angle.add(…)`).
+    #[serde(rename = "unit-operator")]
+    UnitOperator,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -504,6 +508,15 @@ fn extract_module(
                     .ok_or_else(|| error_at(decl.span, invalid_span(&decl.suffix)))?;
                 (decl.suffix, ApiItemKind::Unit, decl.span, declaration)
             }
+            // An operator on a unit's brand is public API too — it is what
+            // makes `90deg + 45deg` mean anything — and it documents beside
+            // the implementation it names.
+            Item::UnitOp(decl) => {
+                let declaration = declaration_at(&source, decl.span)
+                    .ok_or_else(|| error_at(decl.span, invalid_span(&decl.suffix)))?;
+                let name = format!("{} ({})", decl.suffix, decl.op.symbol());
+                (name, ApiItemKind::UnitOperator, decl.span, declaration)
+            }
             Item::Let(_) | Item::Open(_) | Item::Expect(_) | Item::Module(_) => continue,
         };
         items.push(ApiItem {
@@ -656,7 +669,7 @@ mod tests {
             let items: usize = modules.iter().map(|module| module.items.len()).sum();
             (modules.len(), items)
         };
-        assert_eq!(count(ApiGroup::Engine), (27, 282));
+        assert_eq!(count(ApiGroup::Engine), (27, 294));
         assert_eq!(count(ApiGroup::Stdlib), (10, 97));
         assert!(reference
             .modules
