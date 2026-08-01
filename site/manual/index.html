@@ -644,8 +644,10 @@ let pos = model.pos |> Vec3.add(step)</pre>
               <tr><td><code>Math.sqrt(n)</code> · <code>Math.abs(n)</code> · <code>Math.floor(n)</code></td><td></td></tr>
               <tr><td><code>Math.pow(base, exp)</code></td><td><code>base</code> raised to <code>exp</code></td></tr>
               <tr><td><code>Math.min(a, b)</code> · <code>Math.max(a, b)</code></td><td></td></tr>
-              <tr><td><code>Math.clamp(low, high, n)</code></td><td>the general clamp, and the one exception to "<code>Math</code> takes its number first" — it threads <strong>last</strong>, so <code>n |> Math.clamp(0.0, 10.0)</code> reads the way it sounds. <code>low &gt; high</code> is a runtime error, not a silent swap</td></tr>
+              <tr><td><code>Math.clamp(low, high, n)</code></td><td>the general clamp, and one of the few exceptions to "<code>Math</code> takes its number first" — it threads <strong>last</strong>, so <code>n |> Math.clamp(0.0, 10.0)</code> reads the way it sounds. <code>low &gt; high</code> is a runtime error, not a silent swap</td></tr>
               <tr><td><code>Math.clamp01(n)</code></td><td>clamp into <code>[0, 1]</code> — the shorthand for <code>Math.clamp(0.0, 1.0, n)</code></td></tr>
+              <tr><td><code>Math.lerp(target, t, from)</code></td><td><code>from + (target - from) * t</code>, with <code>t = 1</code> answering <code>target</code> itself so <strong>both endpoints land exactly</strong> — an ease that runs to completion arrives. <strong>Unclamped</strong>, so <code>t</code> outside <code>[0, 1]</code> extrapolates; clamp the parameter first when you want the bounded form. It threads the <strong>start value last</strong> — <code>x |> Math.lerp(target, t)</code> — which is <a href="#prelude-vec3"><code>Vec3.lerp</code></a>'s shape exactly, so scalars and vectors interpolate the same way. The parameter sits in the middle, unlike GLSL's <code>mix(a, b, t)</code></td></tr>
+              <tr><td><code>Math.smoothstep(edge0, edge1, x)</code></td><td>the standard eased ramp: flat <code>0</code> at or below <code>edge0</code>, flat <code>1</code> at or above <code>edge1</code>, and the Hermite curve <code>3t² - 2t³</code> between (so it is <strong>clamped</strong>, unlike <code>lerp</code>). the range must be <strong>finite and ascending</strong>: <code>edge0 &gt;= edge1</code>, a NaN edge, and an infinite or overflow-wide one are all runtime errors rather than a silent NaN</td></tr>
               <tr><td><code>Math.tan(n)</code> · <code>Math.atan(n)</code></td><td>radians</td></tr>
               <tr><td><code>Math.asin(n)</code> · <code>Math.acos(n)</code></td><td>radians. Outside <code>[-1, 1]</code> they are <strong>NaN</strong> rather than clamping — so a dot product that float error nudged past <code>1.0</code> needs <code>dot |> Math.clamp(-1.0, 1.0) |> Math.acos</code></td></tr>
               <tr><td><code>Math.round(n)</code> · <code>Math.ceil(n)</code></td><td><code>round</code> goes <strong>half away from zero</strong>, not to even: <code>0.5</code> → <code>1</code>, <code>2.5</code> → <code>3</code>, <code>-2.5</code> → <code>-3</code></td></tr>
@@ -694,7 +696,7 @@ let pos = model.pos |> Vec3.add(step)</pre>
               <tr><td><code>List.head(list)</code> · <code>List.last(list)</code></td><td><code>Option.Some(x)</code>, or <code>Option.None</code> for an empty list</td></tr>
               <tr><td><code>List.nth(index, list)</code></td><td>0-based. Out of range (including negative) is <code>Option.None</code> — but a <em>fractional</em> index is a runtime error, since that is a bug rather than an absence</td></tr>
               <tr><td><code>List.find(fn, list)</code></td><td>the first element the predicate accepts, short-circuiting; <code>Option.None</code> when none match</td></tr>
-              <tr><td><code>List.maximum(list)</code></td><td>numbers only: <code>Option.Some(largest)</code>, or <code>Option.None</code> for an empty list. NaN elements are ignored unless every element is NaN</td></tr>
+              <tr><td><code>List.maximum(list)</code> · <code>List.minimum(list)</code></td><td>numbers only: the largest / smallest as <code>Option.Some(x)</code>, or <code>Option.None</code> for an empty list. NaN elements are ignored unless every element is NaN</td></tr>
             </tbody>
           </table>
           <pre><code>let hp = enemies |> List.nth(i) |> Option.map((e) =&gt; e.hp) |> Option.defaultValue(0.0)
@@ -978,7 +980,7 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors.</li>
             <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
             <li>Piping into <code>Text.concat</code> <em>prepends</em>: <code>s |> Text.concat(p)</code> is <code>p</code> then <code>s</code>. And <code>Text.fixed(n, decimals)</code> takes its number first, so it can't be piped on.</li>
-            <li><code>Math</code> is only the entries above — there is still no <code>lerp</code>, <code>sinh</code>, or <code>hypot</code>. <code>Math.round</code> goes half <em>away from zero</em>, not to even.</li>
+            <li><code>Math</code> is only the entries above — there is still no <code>sinh</code> or <code>hypot</code>. <code>Math.round</code> goes half <em>away from zero</em>, not to even.</li>
             <li><code>Math.mod</code> is Euclidean — <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code>, not <code>-1.0</code>.</li>
             <li><code>Math.pi</code> is a value, not a call.</li>
             <li>The primitives take no size arguments — a box is <code>Scene.cube() |> Scene.scaleXYZ(w, h, d)</code>.</li>

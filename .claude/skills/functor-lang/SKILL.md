@@ -48,7 +48,7 @@ The habits that break first, in one place. Each is expanded below.
 ## Verification loop (always available, no GPU)
 
 Builtin-module MEMBER names are validated at `check` time: `List.tail`,
-`List.minimum`, `Text.padLeft` (none exist) are check ERRORS with a near-miss
+`List.partition`, `Text.padLeft` (none exist) are check ERRORS with a near-miss
 hint or the namespace's member list — a typo in a `List.*` / `Text.*` /
 `Math.*` call no longer survives to runtime. Note this is a hard error with
 no escape hatch, and it gates hot-reload: a builtin typo in a DEAD branch
@@ -715,13 +715,13 @@ level) · `List.append(other, list)` (subject-LAST: `xs |> List.append(ys)` is
 first, list last — `xs |> List.any(pred)`; empty list is vacuously all-true /
 any-false) ·
 `List.nth(index, list)` / `List.head(list)` / `List.last(list)` /
-`List.find(fn, list)` / `List.maximum(list)` — the PARTIAL accessors, each
+`List.find(fn, list)` / `List.maximum(list)` / `List.minimum(list)` — the PARTIAL accessors, each
 returning **`Option.t<'a>`** (`Option.Some(x)` / `Option.None`), never a
 sentinel and never an error on an empty list;
 `List.nth`'s index is 0-based and out of range is `Option.None`, but a
-FRACTIONAL index is an error (a caller bug, not an absence). `List.maximum`
-takes `List<float>` and answers `Option.t<float>` (NaN elements are ignored
-unless every element is NaN). Match them, or
+FRACTIONAL index is an error (a caller bug, not an absence). `List.maximum` /
+`List.minimum` take `List<float>` and answer `Option.t<float>` (NaN elements
+are ignored unless every element is NaN). Match them, or
 collapse with `Option.defaultValue(fallback)`. ·
 `List.indexedMap(fn, list)` (like `map`, but `fn(index, element)` — index
 FIRST, 0-based) · `List.sortBy(fn, list)` (ascending by the Float the key
@@ -774,6 +774,18 @@ never re-scans what it wrote; empty `from` is an error) ·
 `Math.clamp01(n)` · `Math.clamp(low, high, n)` (the GENERAL clamp,
 subject-LAST — `n |> Math.clamp(0.0, 10.0)`; `clamp01(n)` ==
 `clamp(0.0, 1.0, n)`; `low > high` is an error, not a silent swap) ·
+`Math.lerp(target, t, from)` (= `from + (target - from) * t`, and `t == 1`
+answers `target` itself so BOTH endpoints land exactly; **UNCLAMPED**, so `t`
+outside `[0, 1]` extrapolates — clamp the parameter first when you need the
+bounded form. Subject-LAST on the START value, **exactly `Vec3.lerp`'s shape**,
+so the scalar and the vector pipe identically:
+`x |> Math.lerp(target, t)` beside `pos |> Vec3.lerp(target, t)`. NOTE this is
+NOT `mix`/`std::lerp`'s `(a, b, t)` — the parameter sits in the MIDDLE) ·
+`Math.smoothstep(edge0, edge1, x)` (the standard Hermite ramp `3t² - 2t³`
+over the CLAMPED `t = (x - edge0) / (edge1 - edge0)`: flat `0` at/below
+`edge0`, flat `1` at/above `edge1`. The range must be FINITE and ascending —
+`edge0 >= edge1`, a NaN edge, and an infinite/overflow-wide one are all errors
+— the `Math.clamp` rule — rather than the silent NaN the formula would give) ·
 `Math.sin(n)` · `Math.cos(n)` · `Math.tan(n)` ·
 `Math.asin(n)` / `Math.acos(n)` (NaN outside `[-1, 1]` — they do NOT clamp,
 so a dot product nudged past 1.0 by float error needs
@@ -835,7 +847,7 @@ members in every embedding, so anything else is a **check-time error** —
 `Text.padLeft` with `` `List` has no builtin `tail` `` plus the nearest name
 or the namespace's full member list. Do NOT assume an F#/Elm stdlib function
 exists just because it is idiomatic there: `List` still has no
-`tail`/`minimum`/`partition`/`unzip`/`chunk`/`mapMaybe`/`sortWith`/`foldRight`,
+`tail`/`partition`/`unzip`/`chunk`/`mapMaybe`/`sortWith`/`foldRight`,
 and `Text` no `padLeft`/`startsWith`/`slice`. Build those from `List.fold` /
 `List.filter` / `List.take` + `List.drop` / `Math.min` + `Math.max`.
 (`Scene.*` and the

@@ -2007,7 +2007,8 @@ fn unknown_builtin_member_is_a_check_error() {
             "let a = List.tail([1.0])",
             "`List` has no builtin `tail` — `List` has: all, any, append, concatMap, \
              drop, filter, find, flatten, fold, grid, head, indexedMap, isEmpty, last, \
-             length, map, maximum, nth, range, reverse, sortBy, sum, take, zip",
+             length, map, maximum, minimum, nth, range, reverse, sortBy, sum, take, \
+             zip",
         ),
         (
             "let a = Text.padLeft(\"hi\")",
@@ -2025,7 +2026,7 @@ fn unknown_builtin_member_is_a_check_error() {
     }
 
     // Still-absent members are flagged, and name what the user typed.
-    for member in ["minimum", "partition", "unzip", "mapMaybe", "chunk"] {
+    for member in ["partition", "unzip", "mapMaybe", "chunk"] {
         let src = format!("let a = List.{member}([1.0])");
         let (message, _, _) = single_diag(&src);
         assert!(
@@ -2069,6 +2070,16 @@ fn the_jam_reached_for_builtins_exist() {
          let h = Text.contains(\"a\", \"abc\")\n\
          let i = Text.replace(\"a\", \"b\", \"abc\")\n\
          let j = Text.trim(\"  a  \")",
+    );
+    // The third cluster: the interpolation/easing pair and the Option-shaped
+    // `List.minimum` (its `List.maximum` sibling still answers a bare float).
+    assert_clean(
+        "let a = Math.lerp(10.0, 0.5, 0.0)\n\
+         let b = Math.smoothstep(0.0, 1.0, 0.25)\n\
+         let c = 0.0 |> Math.lerp(10.0, 0.5)\n\
+         let d = 0.25 |> Math.smoothstep(0.0, 1.0)\n\
+         let e = List.minimum([3.0, 1.0])\n\
+         let f = [3.0, 1.0] |> List.minimum",
     );
 }
 
@@ -2116,6 +2127,7 @@ fn partial_list_builtins_return_option() {
         "let a = List.nth(0.0, [1.0]) + 1.0",
         "let a = List.find((v) => v > 0.0, [1.0]) + 1.0",
         "let a = List.maximum([1.0]) + 1.0",
+        "let a = List.minimum([1.0]) + 1.0",
     ] {
         let (message, _, _) = single_diag(src);
         assert!(
