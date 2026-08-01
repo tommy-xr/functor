@@ -304,28 +304,6 @@ impl DebugCamera {
         }
     }
 
-    /// Number of projected frames that can share one pinned observer view.
-    ///
-    /// A preview is temporal, so compatibility is a prefix: once a future
-    /// switches between 2D and 3D (or changes a pure-2D layer count), later
-    /// frames must not be stitched back in after the incompatible boundary.
-    pub fn compatible_prefix_len<'a>(
-        anchor: &Frame,
-        frames: impl IntoIterator<Item = &'a Frame>,
-    ) -> usize {
-        frames
-            .into_iter()
-            .take_while(|candidate| {
-                if anchor.is_pure_2d() {
-                    candidate.is_pure_2d()
-                        && candidate.sprite_layers.len() == anchor.sprite_layers.len()
-                } else {
-                    !candidate.is_pure_2d()
-                }
-            })
-            .count()
-    }
-
     /// The effective main 3D view camera. A 2D debug view leaves the frame's
     /// dummy/main 3D camera alone.
     pub fn camera<'a>(&'a self, authored: &'a Camera) -> &'a Camera {
@@ -923,38 +901,6 @@ mod tests {
         assert!(debug.detach(&two_layers));
         assert!(!debug.is_compatible(&frame_2d()));
         assert!(!debug.is_compatible(&frame_3d()));
-    }
-
-    #[test]
-    fn pinned_preview_stops_at_the_first_incompatible_view_layout() {
-        let anchor_3d = frame_3d();
-        let projected_3d = frame_3d();
-        let projected_2d = frame_2d();
-        let later_3d = frame_3d();
-        assert_eq!(
-            DebugCamera::compatible_prefix_len(
-                &anchor_3d,
-                [&projected_3d, &projected_2d, &later_3d]
-            ),
-            1
-        );
-
-        let anchor_2d = frame_2d();
-        let matching_2d = frame_2d();
-        let changed_layers = Frame::with_2d(
-            frame_2d(),
-            SpriteLayer {
-                camera: Camera2D::new(10.0, 10.0),
-                scene: Scene3D::quad(),
-            },
-        );
-        assert_eq!(
-            DebugCamera::compatible_prefix_len(
-                &anchor_2d,
-                [&matching_2d, &changed_layers, &matching_2d]
-            ),
-            1
-        );
     }
 
     #[test]

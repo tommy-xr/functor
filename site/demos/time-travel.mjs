@@ -33,8 +33,8 @@ const GIF_WIDTH = 640;
 const FPS = Number(process.env.DEMO_FPS || 18);
 
 // Extrapolation preview settings (tweakable): window in seconds of predicted
-// future, strobe samples per second, and mode (1 trail / 2 strobe / 3 both /
-// 4 ghost). A short window + low rate reads as a clean "where it's headed next"
+// future, strobe samples per second, and mode (1 trail / 2 strobe / 3 both).
+// A short window + low rate reads as a clean "where it's headed next"
 // prediction rather than a busy full-arc fan.
 const WIN = Number(process.env.DEMO_WIN || 1);
 const RATE = Number(process.env.DEMO_RATE || 2);
@@ -120,16 +120,9 @@ await hold(5);
 // the prediction visibly tracks.
 await page.evaluate(
   ({ win, rate, mode }) => {
-    // mode (trail/strobe/both/ghost) is driven by the select; the window and
-    // strobe rate go through the scrub seam so they apply authoritatively
-    // (setting #scrub-win by hand raced with the seam and could land on the
-    // default window instead).
-    const sel = document.querySelector("#scrub-mode");
-    if (sel) {
-      sel.value = String(mode);
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    window.__scrub.setPreview({ enabled: true, seconds: win, rate });
+    // Mode, window and strobe rate all go through the scrub seam — the only
+    // configuration surface for the preview.
+    window.__scrub.setPreview({ enabled: true, seconds: win, rate, mode });
   },
   { win: WIN, rate: RATE, mode: MODE }
 );

@@ -462,7 +462,7 @@ fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, St
 ///
 /// This is a real inconsistency, not a style rule. Live playback applies the
 /// held-state discipline (`apply_mouse_button_edge`) and SUPPRESSES such a
-/// release, but the `--ghost` / trail forward-step preview replays the script's
+/// release, but the trail forward-step preview replays the script's
 /// events unconditionally — so a malformed script would preview a future the
 /// real run never plays. Failing the parse keeps the two paths honest by
 /// construction, and a stray release is an authoring mistake either way.
@@ -707,52 +707,36 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = CompositeDemoArg::Off)]
     composite_demo: CompositeDemoArg,
 
-    /// Forward-ghosting trajectory preview (docs/time-travel.md T6d): composite
-    /// N forward-stepped frames into one image (chronophotography), so moving
-    /// elements smear into a strobe of their ~2s future positions while static
-    /// geometry stays solid. Off by default; when on it composites every frame
-    /// (no pause gating), so it's deterministically capturable under
-    /// --fixed-time. The window is fixed at ~2s (`dt = 2.0 / --ghost-divisions`).
-    #[arg(long)]
-    ghost: bool,
-
-    /// Number of forward divisions composited by --ghost (clamped to 8, the
-    /// compositor max). More divisions = a finer strobe over the same ~2s window.
-    #[arg(long, default_value_t = 8)]
-    ghost_divisions: usize,
-
     /// Scene-diff trajectory preview (docs/time-travel.md T6, scene-diff
     /// variant): forward-simulate the model and draw a clean trail of
     /// direction-of-travel arrowheads tracing ONLY the scene nodes that move
     /// — derived by the runtime from
-    /// `draw`, with no game logic. Unlike --ghost's whole-scene strobe, static
-    /// geometry contributes nothing. Capturable under --fixed-time.
+    /// `draw`, with no game logic. Static geometry contributes nothing.
+    /// Capturable under --fixed-time.
     #[arg(long)]
     trajectory: bool,
 
     /// Scene-space strobe preview: forward-simulate the model and overlay
     /// real-geometry copies of each MOVING scene node at its future poses,
     /// color-faded by age — full-intensity chronophotography on the normal
-    /// render path. The geometry complement to --ghost's screen-space
-    /// compositor (which pins every copy at 1/N opacity and freezes the
-    /// camera); like --trajectory it's runtime-derived from `draw`, shares one
-    /// forward-sim with it, and is capturable under --fixed-time.
+    /// render path. Like --trajectory it's runtime-derived from `draw`, shares
+    /// one forward-sim with it, and is capturable under --fixed-time.
     #[arg(long)]
     strobe: bool,
 
     /// Start with the time-travel scrubber overlay visible (it is otherwise
     /// hidden until summoned with `~`). Useful for demos and captures of the
     /// scrubber itself. NOTE: with the overlay up, previews follow the
-    /// interactive rule (paused only) — combine with --trajectory/--strobe/
-    /// --ghost WITHOUT --scrubber for headless overlay captures.
+    /// interactive rule (paused only) — combine with --trajectory/--strobe
+    /// WITHOUT --scrubber for headless overlay captures.
     #[arg(long)]
     scrubber: bool,
 
     /// Narrate the game clock + time-travel seams to stderr: pause/resume/seek
-    /// rebases (with the tts they land on), ghost on/off, and per-frame HITCH
-    /// warnings when a rendered frame's dt blows past 33ms (the tell-tale of the
-    /// ghost compositor starving the frame loop). High-signal diagnostics for the
-    /// interactive scrubber — off by default.
+    /// rebases (with the tts they land on), preview mode changes, and
+    /// per-frame HITCH warnings when a rendered frame's dt blows past 33ms (the
+    /// tell-tale of a forward-sim starving the frame loop). High-signal
+    /// diagnostics for the interactive scrubber — off by default.
     #[arg(long)]
     debug_clock: bool,
 
@@ -1529,22 +1513,20 @@ Escape releases while captured"
         // you can scrub right away; --scrubber starts it open, e.g. for
         // captures). The wasm/vscode preview shows it always.
         let mut scrubber_visible = args.scrubber;
-        // Future-preview (docs/time-travel.md T6/T6d) state, driven
-        // interactively from the scrubber's "extrapolate" switch and ⚙ popover
-        // (mode / window / rate). Extrapolation defaults ON with trail+strobe
-        // out of the box (the demo default), and the launch
-        // flags pick the mode; they stay authoritative while the overlay is
-        // hidden (the headless-capture escape hatch), where they may also
-        // COMBINE (--ghost --trajectory composes the trail into the strobe).
+        // Future-preview (docs/time-travel.md T6) state, driven interactively
+        // from the scrubber's "extrapolate" switch (and, for the window, the
+        // rail's endpoint handle). Extrapolation defaults ON with trail+strobe
+        // out of the box (the demo default), and the launch flags pick the
+        // mode; they stay authoritative while the overlay is hidden (the
+        // headless-capture escape hatch).
         let mut extrapolate_on = true;
-        let mut preview_mode = match (args.ghost, args.trajectory, args.strobe) {
-            (true, _, _) => functor_runtime_common::PreviewMode::Ghost,
-            (false, true, false) => functor_runtime_common::PreviewMode::Trail,
-            (false, false, true) => functor_runtime_common::PreviewMode::Strobe,
+        let mut preview_mode = match (args.trajectory, args.strobe) {
+            (true, false) => functor_runtime_common::PreviewMode::Trail,
+            (false, true) => functor_runtime_common::PreviewMode::Strobe,
             _ => functor_runtime_common::PreviewMode::Both,
         };
-        // The ⚙ popover's shared forward window and samples-per-second rate
-        // (density holds as the window resizes: total samples = rate × window).
+        // The shared forward window and samples-per-second rate (density holds
+        // as the window resizes: total samples = rate × window).
         let mut preview_window: f32 = 2.0;
         let mut preview_rate: usize = 5;
         // --trajectory/--strobe preview cache. The 32-division forward-sim is
@@ -1562,12 +1544,6 @@ Escape releases while captured"
         )> = None;
         let mut trail_refresh: u32 = 0;
         let mut next_live_trail_refresh: f32 = 0.0;
-        let mut ghost_cache: Option<(
-            (Option<u64>, u32, bool, u64, usize, u32),
-            Vec<(Frame, FrameTime)>,
-        )> = None;
-        let mut ghost_refresh: u32 = 0;
-        let mut next_live_ghost_refresh: f32 = 0.0;
 
         gl.clear_color(0.1, 0.2, 0.3, 1.0);
 
@@ -1703,17 +1679,13 @@ Escape releases while captured"
             // wall-clock, so frame N is always the same sim state. Queued as a
             // one-shot step (which the clock consumes in `frame()` below), making
             // every rendered frame a single fixed dt regardless of real timing.
-            // Under --ghost the script drives the GHOST, not the live game (F2,
-            // docs/time-travel.md): the live game stays at its init anchor, so
-            // don't fixed-step its clock — the ghost forward-step supplies the
-            // deterministic sub-dt itself.
-            if input_script.is_some() && !args.ghost {
+            if input_script.is_some() {
                 clock.step(args.script_dt);
             }
             // The fixed-timestep model loop (docs/time-travel.md): advance `tick`
             // in whole 1/60 steps decoupled from the render rate, so the sim is
             // deterministic and a recorded frame is exactly one forward-step fine
-            // step (the ghost replay's assumption). Scripted playback queued a
+            // step (the forward-step replay's assumption). Scripted playback queued a
             // one-shot `step` above, so that yields one sub-frame per iteration
             // (a debug `advance` batch can queue more, draining ≤8 per frame);
             // --fixed-time / the debug pin yields one {dts:0} sub-frame; paused
@@ -1730,8 +1702,8 @@ Escape releases while captured"
             };
 
             // Surface frame hitches (a real delta past 33ms = under 30fps) — the
-            // signature of the ghost compositor's N forward-steps starving the
-            // loop, which reads to the user as "jerky / can't move".
+            // signature of a preview's N forward-steps starving the loop, which
+            // reads to the user as "jerky / can't move".
             if args.debug_clock && real_delta > 1.0 / 30.0 {
                 eprintln!(
                     "[clock] HITCH dt={:.1}ms tts={:.3} (slow frame)",
@@ -2413,14 +2385,12 @@ Escape again to quit"
             // Run this render frame's fixed model steps (0..N). Scripted input
             // (docs/time-travel.md T6b) is fed per fixed frame through the SAME
             // `key_event` path the live GLFW handlers use, before that frame's
-            // tick. Under --ghost the script drives the GHOST instead (F2): leave
-            // the live game at its init anchor so the strobed arc reads against a
-            // clean, static pose. `--capture-at-frame` fires on the fixed frame it
+            // tick. `--capture-at-frame` fires on the fixed frame it
             // names — scripted playback is exactly one fixed step per render frame,
             // so that index stays deterministic.
             let mut capture_due = false;
             for sub in &sub_frames {
-                if let Some(script) = input_script.as_ref().filter(|_| !args.ghost) {
+                if let Some(script) = input_script.as_ref() {
                     if let Some(events) = script.get(&frame_count) {
                         apply_scripted_events(
                             &mut *game,
@@ -2474,37 +2444,24 @@ Escape again to quit"
             // trajectory overlay goes on a render-only copy below.
             let frame = game.render(time.clone());
 
-            // Drive the ghost from the interactive toggle when the overlay is up,
-            // and from the `--ghost` launch flag when it's hidden (the headless
-            // capture path — F2 demo, goldens, tests — is byte-for-byte
-            // unchanged). Computed HERE, above the scene-diff preview, because
-            // the preview's gating reads it.
-            // One wanted-set drives every future preview (docs/time-travel.md
-            // T6/T6d): the scene-diff trail/strobe overlays AND the
-            // screen-space ghost compositor. With the overlay up, the
-            // scrubber's selector picks ONE mode. Its anchor follows the live
-            // tail while playing and freezes when paused. With the overlay
-            // hidden the launch flags drive it — several may combine
-            // there (--ghost --trajectory composes the trail into the strobe) —
-            // so headless captures are byte-for-byte unchanged.
-            let (trail_wanted, strobe_wanted, ghost_active) = if scrubber_visible {
+            // One wanted-set drives the future preview
+            // (docs/time-travel.md T6): the scene-diff trail/strobe overlays.
+            // With the overlay up, the seam-selected mode drives it; its
+            // anchor follows the live tail while playing and freezes when
+            // paused. With the overlay hidden the launch flags drive it, so
+            // headless captures are byte-for-byte unchanged.
+            let (trail_wanted, strobe_wanted) = if scrubber_visible {
                 let selected = functor_runtime_common::interactive_preview(
                     preview_mode,
                     extrapolate_on,
                     clock.pending_frames() > 0,
                 );
-                (selected.trail, selected.strobe, selected.ghost)
+                (selected.trail, selected.strobe)
             } else {
-                (args.trajectory, args.strobe, args.ghost)
+                (args.trajectory, args.strobe)
             };
-            // Under the screen-space ghost compositor the scene-space strobe
-            // would double-ghost — and the compositor arm never draws the
-            // display frame — so while the ghost is active the strobe is off
-            // (the trail still shows: it rides IN the composited frames), and
-            // it must not silently burn a forward-sim it can't display.
-            let strobe_wanted = strobe_wanted && !ghost_active;
             // Forward window/densities. The SIM samples fine (~20/s — the
-            // trail's smooth-arc rate) while the ⚙ rate governs STROBE COPIES
+            // trail's smooth-arc rate) while the preview rate governs STROBE COPIES
             // per second, so dots stay visible between copies and both hold
             // their density as the window resizes. The flag path keeps its
             // historical constants (32 samples over 1.6s, 8 copies), keeping
@@ -2527,8 +2484,8 @@ Escape again to quit"
                 && clock.pending_frames() == 0
                 && clock.pending_steps() == 0;
             let preview: Option<functor_runtime_common::FramePreview> = if preview_active {
-                // Not bound by the 8-target compositor cap — this only reads node
-                // transforms — so sample finely for a smooth arc.
+                // Sample finely for a smooth arc — this only reads node
+                // transforms.
                 let divisions = preview_divisions;
                 let window = preview_window_s;
                 let dt = window / divisions as f32;
@@ -2564,8 +2521,8 @@ Escape again to quit"
                     trail_cache.as_ref().map(|(_, p)| p.clone())
                 } else {
                     // Under --input-script the live loop keeps consuming the
-                    // script (its gate is `!args.ghost`), so the forward-sim must
-                    // replay the SAME upcoming slice — with `None` it would
+                    // script, so the forward-sim must replay the SAME upcoming
+                    // slice — with `None` it would
                     // replay the recorder's (empty-at-head) log and predict an
                     // input-free future the game won't play. The slice anchors at
                     // the fine step after the newest recorded frame, mirroring
@@ -2575,25 +2532,9 @@ Escape again to quit"
                             let sub_dt = 1.0f32 / 60.0;
                             let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
                             let total = (divisions * steps_per_division) as u64;
-                            // Under --ghost the live loop does NOT consume the
-                            // script (the model holds at the init anchor while
-                            // the recorder still advances), and the ghost slice
-                            // below replays from frame 0 — anchor the trail the
-                            // same way or the two projections diverge. Live
-                            // playback consumes the script, so there the next
+                            // Live playback consumes the script, so the next
                             // unconsumed frame (k + 1) is the right anchor.
-                            // Deliberately keyed on the LAUNCH FLAG, not the
-                            // interactive mode: `--ghost --input-script` is the
-                            // F2 session semantic (the script drives the
-                            // anchored future, never the live game), so
-                            // selecting trail/strobe there previews the SAME
-                            // scripted future — switching modes changes the
-                            // visualization, not the script routing.
-                            let base = if args.ghost {
-                                0
-                            } else {
-                                game.current_scene_frame().map_or(0, |k| k + 1)
-                            };
+                            let base = game.current_scene_frame().map_or(0, |k| k + 1);
                             (0..total)
                                 .map(|j| script.get(&(base + j)).cloned().unwrap_or_default())
                                 .collect()
@@ -2633,133 +2574,6 @@ Escape again to quit"
                 next_live_trail_refresh = 0.0;
                 None
             };
-
-            // Forward-ghosting (docs/time-travel.md T6d): when --ghost is on, step
-            // the scene forward over a ~2s window and collect a Frame per division
-            // (a dry run — the live producer is untouched), for the compositor arm
-            // in the render ladder below. Empty when --ghost is off (or the
-            // producer has no model history, e.g. web's trait default). `start_tts
-            // = time.tts` (under --fixed-time T, that's T, so the ghost projects
-            // T+dt … T+N·dt). Always composites when on — no pause gating — so it's
-            // deterministically capturable under --fixed-time.
-            // Gate on the full ladder condition so we don't pay the dry-run + N
-            // draws only to have stereo / composite-demo outrank the ghost arm.
-            // (`ghost_active` is computed above the scene-diff preview block.)
-            let ghost_frames = if ghost_active
-                && !args.stereo_sbs
-                && args.composite_demo == CompositeDemoArg::Off
-                // Skipped during a catch-up or batched-advance drain, like the
-                // scene-diff preview.
-                && clock.pending_frames() == 0
-                && clock.pending_steps() == 0
-            {
-                const MAX_GHOST: usize = 8;
-                // Interactive: the ⚙ popover's rate × window (clamped to the
-                // compositor's 8-target cap). Flag path: the historical
-                // --ghost-divisions over a 2s window, byte-identical captures.
-                let (divisions, ghost_window) = if scrubber_visible {
-                    (
-                        ((preview_rate as f32 * preview_window).round() as usize)
-                            .clamp(1, MAX_GHOST),
-                        preview_window,
-                    )
-                } else {
-                    (args.ghost_divisions.clamp(1, MAX_GHOST), 2.0f32)
-                };
-                let dt = ghost_window / divisions as f32;
-                // F2 (docs/time-travel.md): when an --input-script is loaded, the
-                // ghost previews the SCRIPT's trajectory from the live anchor
-                // (mario at init) rather than the recorder's own input log. Build a
-                // per-fine-step slice covering the ghost window (frame f → the
-                // script's events at f, empty when it has none). The fine step is
-                // 1/60 and script frames advance by 1/60, so the frame index maps
-                // straight to the fine-step index. `None` keeps the T6d behavior
-                // (e.g. the lighting ghost, which has no script).
-                let script_slice: Option<Vec<Vec<RecordedInput>>> =
-                    input_script.as_ref().map(|script| {
-                        let sub_dt = 1.0f32 / 60.0;
-                        let steps_per_division = ((dt / sub_dt).round() as usize).max(1);
-                        let total = (divisions * steps_per_division) as u64;
-                        (0..total)
-                            .map(|f| script.get(&f).cloned().unwrap_or_default())
-                            .collect()
-                    });
-                if scrubber_visible {
-                    let key = (
-                        game.current_scene_frame(),
-                        time.tts.to_bits(),
-                        clock.is_paused(),
-                        game.scene_program_revision(),
-                        divisions,
-                        ghost_window.to_bits(),
-                    );
-                    let cache_hit = ghost_cache.as_ref().is_some_and(|(k, _)| {
-                        if clock.is_paused() {
-                            ghost_refresh > 0 && *k == key
-                        } else {
-                            elapsed_time < next_live_ghost_refresh
-                                && !k.2
-                                && k.3 == key.3
-                                && k.4 == key.4
-                                && k.5 == key.5
-                        }
-                    });
-                    if cache_hit {
-                        if clock.is_paused() {
-                            ghost_refresh -= 1;
-                        }
-                        ghost_cache
-                            .as_ref()
-                            .map(|(_, frames)| frames.clone())
-                            .unwrap_or_default()
-                    } else {
-                        let frames = game.ghost_frames(
-                            divisions,
-                            dt,
-                            time.tts as f64,
-                            script_slice.as_deref(),
-                        );
-                        if clock.is_paused() {
-                            ghost_refresh = PAUSED_PREVIEW_REUSE_FRAMES;
-                        } else {
-                            ghost_refresh = 0;
-                            next_live_ghost_refresh =
-                                start_time.elapsed().as_secs_f32() + LIVE_PREVIEW_INTERVAL_SECONDS;
-                        }
-                        ghost_cache = Some((key, frames.clone()));
-                        frames
-                    }
-                } else {
-                    ghost_cache = None;
-                    next_live_ghost_refresh = 0.0;
-                    game.ghost_frames(divisions, dt, time.tts as f64, script_slice.as_deref())
-                }
-            } else {
-                ghost_cache = None;
-                next_live_ghost_refresh = 0.0;
-                Vec::new()
-            };
-            // The trail composes with --ghost's screen-space strobe by riding IN
-            // each composited frame: 3D dots repeat at identical world positions,
-            // while 2D dots repeat in an extra layer using the anchor Camera2D.
-            // The equal-weight average therefore reconstructs both at full
-            // intensity (unlike movers, which appear in only one frame each).
-            // Without this the ghost render arm draws only `ghost_frames` and
-            // the trail would silently vanish.
-            // The scene-space strobe is deliberately NOT folded in — layering
-            // geometry copies under the compositor's strobe would double-ghost.
-            let mut ghost_frames = ghost_frames;
-            let compatible_ghosts = DebugCamera::compatible_prefix_len(
-                &frame,
-                ghost_frames.iter().map(|(candidate, _)| candidate),
-            );
-            ghost_frames.truncate(compatible_ghosts);
-            let mut ghost_sprite_layers_compatible = true;
-            if let Some(preview) = &preview {
-                for (f, _) in ghost_frames.iter_mut() {
-                    ghost_sprite_layers_compatible &= preview.apply_trails(f);
-                }
-            }
 
             // A live game may switch between a pure 2D and a 3D/mixed frame.
             // Never retain a debug snapshot whose navigation semantics no
@@ -2849,10 +2663,8 @@ Escape again to quit"
 
             // The frame the render ladder draws: the game frame plus the
             // preview overlays (`frame` itself stays pristine for GET /scene).
-            // Skipped when the ghost arm will draw instead — the trail already
-            // rides inside `ghost_frames`.
-            let display_frame = match (&preview, ghost_frames.is_empty()) {
-                (Some(p), true) if !p.is_empty() => {
+            let display_frame = match &preview {
+                Some(p) if !p.is_empty() => {
                     let mut f = frame.clone();
                     p.apply_all(&mut f);
                     Some(f)
@@ -2972,35 +2784,6 @@ Escape again to quit"
                     &[0.5, 0.5],
                     Some(&view_camera),
                     detached_camera.sprite_cameras(),
-                    viewport,
-                    diagnostics.render_mode,
-                );
-            } else if !ghost_frames.is_empty() {
-                // Forward-ghosting (docs/time-travel.md T6d): composite the ~2s
-                // forward-stepped frames (computed above) at equal weight so moving
-                // elements strobe across their future and static geometry stays
-                // solid. Each frame renders at ITS OWN division-boundary time, so
-                // render-time animation (the skinned pose) advances through the
-                // strobe. Empty (→ this arm skipped) when --ghost is off or the
-                // producer yields no frames, so live rendering is unchanged.
-                let weights = vec![1.0f32; ghost_frames.len()];
-                let ghost_sprite_cameras = ghost_sprite_layers_compatible
-                    .then(|| detached_camera.sprite_cameras())
-                    .flatten()
-                    .map(|cameras| match &preview {
-                        Some(preview) => preview.trail_camera_overrides(cameras),
-                        None => cameras.to_vec(),
-                    });
-                functor_runtime_common::render_composited_frames_with_view(
-                    &gl,
-                    shader_version,
-                    asset_cache.clone(),
-                    &scene_context,
-                    &shadow_map,
-                    &ghost_frames,
-                    &weights,
-                    Some(&view_camera),
-                    ghost_sprite_cameras.as_deref(),
                     viewport,
                     diagnostics.render_mode,
                 );

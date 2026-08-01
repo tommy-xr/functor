@@ -312,7 +312,7 @@ fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> 
 // A THREAD-LOCAL sink (rather than a `FrameCtx` field) keeps this off the web
 // producer entirely (it never arms it → the pushes are a `None` check) and off
 // the shared effect machinery's signatures. The dry-run forward-step pauses it
-// ([`JournalPause`]) so `--ghost` calls are never journaled.
+// ([`JournalPause`]) so `ghost_frames` calls are never journaled.
 // ---------------------------------------------------------------------------
 
 /// One journaled model-updating call: the entry name, its Rc-cloned args, and a
@@ -471,7 +471,7 @@ pub fn journal_disarm() {
 
 /// RAII guard that PAUSES journaling for its lifetime: takes the current
 /// journal out (leaving `None`, so nested pushes no-op) and restores it on
-/// drop. Wraps the dry-run forward-step so `--ghost` forward-projection calls
+/// drop. Wraps the dry-run forward-step so its forward-projection calls
 /// never land in the journal, even on an unwind from stepped game code.
 struct JournalPause(Option<Vec<JournalEntry>>);
 
@@ -1572,7 +1572,7 @@ fn forward_step_scene_with_error(
     Vec<(Value, Option<physics::PhysicsSnapshot>)>,
     Option<String>,
 ) {
-    // Pause the paused-inspector journal for the whole dry run: `--ghost`
+    // Pause the paused-inspector journal for the whole dry run: the
     // forward-projection replays `tick`/`update` over throwaway state, and those
     // calls must NOT land in the live frame's journal (they are not real frame
     // executions). Restored on drop, including on an unwind from stepped game
@@ -2693,9 +2693,9 @@ mod tests {
         let last_frame = journal_swap().expect("armed");
         assert_eq!(last_frame.len(), 3);
 
-        // A dry-run forward-step (the `--ghost` projection) calls tick/update
-        // over throwaway state — and must NOT touch the live journal. After it,
-        // the freshly-armed journal is still empty (ghost calls excluded).
+        // A dry-run forward-step (the `ghost_frames` projection) calls
+        // tick/update over throwaway state — and must NOT touch the live
+        // journal. After it, the freshly-armed journal is still empty.
         let _ = forward_step_scene(
             &session,
             &EntryNames::UNPREFIXED,
