@@ -41,7 +41,7 @@ let tick = (m, dt, tts) => m
 
 let draw = (m, tts: float) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 2.4, -6.0), Vec3.make(0.0, 1.0, 8.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.4, -6.0), Vec3.make(0.0, 1.0, 8.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(70.0) |> Scene.lit(Color.rgb(0.5, 0.55, 0.52)),
       Scene.group([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0] |> List.map(pillar)),

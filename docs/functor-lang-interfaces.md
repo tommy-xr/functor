@@ -8,7 +8,7 @@ truth — update it alongside each slice), `functor-lang/src/project.rs` (module
 ## Goal
 
 Give the Functor Lang typechecker **real types for the host prelude** (`Scene.*`,
-`Camera.*`, `Physics.*`, `Effect.*`, `Sub.*`, …) and let users **ascribe types**
+`Camera3D.*`, `Physics.*`, `Effect.*`, `Sub.*`, …) and let users **ascribe types**
 to their own bindings — so inference flows real types through engine-touching
 code instead of collapsing to `Unknown`.
 
@@ -168,7 +168,7 @@ error; `open` and qualified access both resolve.
 
 ### 2e — Ship the host prelude `.funi` + drift test
 
-Author the FunctorHost surface as `.funi` files (`scene.funi`, `camera.funi`,
+Author the FunctorHost surface as `.funi` files (`scene.funi`, `camera3d.funi`,
 `physics.funi`, …), **bundle them into the `functor_lang` crate** (`include_str!`), and
 load them by default whenever the checker runs — so host-awareness works
 everywhere (`functor-lang check`, the LSP) with **no config**. This flips the
@@ -196,7 +196,7 @@ is *replaced* by real interface-only modules for the host.
   *encapsulation* — valuable, but not needed for host types (host modules have no
   `.fun`). Design `.funi` so it slots in later; don't build it now.
 - **Scope ergonomics for host types** — whether common prelude types
-  (`SceneNode`, `Camera`) are always written qualified (`Scene.SceneNode`) or a
+  (`SceneNode`, `Camera3D`) are always written qualified (`Scene.SceneNode`) or a
   curated set is bare-in-scope like builtins. Decide before 2e; not a blocker for
   the grammar work.
 - **Unifying builtins into `.funi`** — the 17 builtins (`List.map`, …) get types

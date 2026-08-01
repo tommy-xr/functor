@@ -31,7 +31,7 @@ let sampledInput = (m, snapshot: Input.snapshot) => {
 }
 let tick = (m, dt, tts) => m
 let draw = (m, tts) =>
-  Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
+  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
 
 function field(model: string, name: string): number {

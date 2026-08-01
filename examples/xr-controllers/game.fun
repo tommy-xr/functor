@@ -12,12 +12,12 @@
 //   functor -d examples/xr-controllers run vr
 
 let camera =
-  Camera.lookAt(
+  Camera3D.lookAt(
     Vec3.make(0.0, 1.6, -3.0),
     Vec3.make(0.0, 1.2, 0.0))
 
 let fallbackPose = (x) =>
-  Camera.mapTrackedPose(camera, {
+  Camera3D.mapTrackedPose(camera, {
     position: { x: x, y: -0.12, z: -0.55 },
     orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }
   })
@@ -44,7 +44,7 @@ let init = {
 let mappedPose = (fallback, trackedPose) =>
   match trackedPose with
   | Option.None => fallback
-  | Option.Some(pose) => Camera.mapTrackedPose(camera, pose)
+  | Option.Some(pose) => Camera3D.mapTrackedPose(camera, pose)
 
 let sampledInput = (model, snapshot: Input.snapshot) =>
   match snapshot.xr with

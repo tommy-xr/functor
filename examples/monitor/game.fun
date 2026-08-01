@@ -63,7 +63,7 @@ let cameraGadget = (tts: float) =>
 // films only the courtyard: a target's scene is independent of the main one.)
 let feedFrame = (tts: float) =>
   Frame.createLit(
-    Camera.lookAt(
+    Camera3D.lookAt(
       Vec3.make(0.0, 3.2, -5.0),
       Vec3.make(Math.sin(pan(tts)) * 8.0, 0.5, -5.0 + Math.cos(pan(tts)) * 8.0)),
     courtyard(tts),
@@ -90,7 +90,7 @@ let tick = (m, dt, tts) => m
 
 let draw = (m, tts: float) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 2.6, -9.5), Vec3.make(0.0, 1.2, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.6, -9.5), Vec3.make(0.0, 1.2, 0.0)),
     Scene.group([courtyard(tts), cameraGadget(tts), monitor()]),
     lights())
   |> Frame.withRenderTarget(feed, feedFrame(tts))

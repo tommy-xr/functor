@@ -31,7 +31,7 @@ let tick = (m: Model, dt, tts) => { m with spin: m.spin + dt * 20.0 }
 
 let draw = (m: Model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.5, -4.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube()
       |> Scene.lit(Color.rgb(0.35, 0.75, 0.55))
       |> Scene.rotateY(Angle.degrees(m.spin + m.count * 15.0)),

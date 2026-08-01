@@ -95,7 +95,7 @@ let draw = (m: float, tts: float) =>
   // Low camera near the front edge, looking down +Z across the hills to the sun
   // on the horizon. A hair of downward pitch frames the grid.
   Frame.create(
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(0.0, 5.0, -12.0),
       Angle.radians(0.0), Angle.radians(-0.05), Angle.degrees(70.0)),
     scene)

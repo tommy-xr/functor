@@ -28,7 +28,7 @@ let pose = (tts: float): Anim.t =>
 
 let draw = (model, tts: float) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 1.4, -3.4), Vec3.make(0.0, 0.9, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.4, -3.4), Vec3.make(0.0, 0.9, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(10.0) |> Scene.lit(Color.rgb(0.4, 0.45, 0.55)),
       Scene.model(hero)

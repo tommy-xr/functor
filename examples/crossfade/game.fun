@@ -78,7 +78,7 @@ let figure = (anim: Anim.t, x: float): Scene.t =>
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 1.5, -4.4), Vec3.make(0.0, 0.9, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.5, -4.4), Vec3.make(0.0, 0.9, 0.0)),
     Scene.group([
       Scene.plane() |> Scene.scale(12.0) |> Scene.lit(Color.rgb(0.42, 0.47, 0.55)),
       // Camera looks down +Z, so world +X is screen LEFT.

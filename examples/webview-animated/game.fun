@@ -28,7 +28,7 @@ let tick = (m: Model, dt, tts) => m
 // poses it too — same 2s period as the CSS loops, for a seamless GIF.
 let draw = (m: Model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 1.4, -4.5), Vec3.make(0.0, 0.6, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.4, -4.5), Vec3.make(0.0, 0.6, 0.0)),
     Scene.group([
       Scene.sphere()
         |> Scene.lit(Color.rgb(0.9, 0.35, 0.55))

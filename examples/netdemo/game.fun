@@ -49,7 +49,7 @@ let draw = (m: Model, tts: float) =>
   // A single emissive cube so there's something on screen; the meaningful
   // state is the textual phase, inspected via /state.
   Frame.create(
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(0.0, 0.0, -5.0),
       Angle.radians(0.0), Angle.radians(0.0), Angle.degrees(60.0)),
     Scene.cube() |> Scene.emissive(Color.rgb(0.2, 0.9, 0.6)))

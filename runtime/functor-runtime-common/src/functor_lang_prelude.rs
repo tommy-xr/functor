@@ -39,9 +39,9 @@
 //!   (a diffuse-lit textured surface — F#'s `Material.litTexture`)
 //! Scene.emissiveTexture(texture, scene)                     -> Scene
 //!   (a self-lit textured surface, fullbright — F#'s `Material.emissiveTexture`)
-//! Camera.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))                     -> Camera
+//! Camera3D.lookAt(Vec3.make(ex, ey, ez), Vec3.make(tx, ty, tz))                     -> Camera3D
 //!   (up is +Y; vertical fov pinned at 45°, near/far at protocol defaults)
-//! Camera.toWorldRay(mouse, camera)                         -> Option<{ origin, direction }>
+//! Camera3D.toWorldRay(mouse, camera)                         -> Option<{ origin, direction }>
 //!   (top-left logical mouse coordinates through the authored perspective;
 //!    both fields are Vec3 values and direction is normalized)
 //! Anim.lookAt(joint, target, maxDeflection, weight, anim)  -> Anim
@@ -1356,7 +1356,7 @@ impl HostData for FunctorLangTerrain {
 
 impl HostData for FunctorLangCamera {
     fn type_name(&self) -> &'static str {
-        "Camera"
+        "Camera3D"
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -2148,8 +2148,8 @@ row 0 has {cols} heights, row {r} has {}",
 fn register_camera(reg: &mut crate::host_registry::Registry) {
     // Eye + target (Y-up, right-handed), a fixed 45° fov.
     reg.fn2(
-        "Camera.lookAt",
-        "Camera.lookAt(eye, target) — Vec3 values (Vec3.make)",
+        "Camera3D.lookAt",
+        "Camera3D.lookAt(eye, target) — Vec3 values (Vec3.make)",
         |eye: FunctorLangVec3, target: FunctorLangVec3| {
             let (ex, ey, ez) = eye.0;
             let (tx, ty, tz) = target.0;
@@ -2163,8 +2163,8 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
     );
     // Eye + yaw/pitch/fov Angles: yaw = 0 / pitch = 0 looks down +Z.
     reg.fn4(
-        "Camera.firstPerson",
-        "Camera.firstPerson(eye, yaw, pitch, fov) — a Vec3 eye and Angle values \
+        "Camera3D.firstPerson",
+        "Camera3D.firstPerson(eye, yaw, pitch, fov) — a Vec3 eye and Angle values \
 (Angle.degrees/Angle.radians)",
         |eye: FunctorLangVec3, yaw: FunctorLangAngle, pitch: FunctorLangAngle, fov: FunctorLangAngle| {
             let (ex, ey, ez) = eye.0;
@@ -2172,15 +2172,15 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn2(
-        "Camera.mapTrackedPose",
-        "Camera.mapTrackedPose(camera, pose)",
+        "Camera3D.mapTrackedPose",
+        "Camera3D.mapTrackedPose(camera, pose)",
         |camera: FunctorLangCamera, pose: Value| {
             let tracked = crate::tracking_pose_from_value(&pose)?;
             let mapped = camera
                 .0
                 .map_tracking_pose(crate::TrackingPose::IDENTITY, tracked)
                 .ok_or_else(|| {
-                    "Camera.mapTrackedPose: invalid pose or degenerate authored camera".to_string()
+                    "Camera3D.mapTrackedPose: invalid pose or degenerate authored camera".to_string()
                 })?;
             let point = |xyz: [f32; 3]| {
                 Value::Record(Rc::new(vec![
@@ -2197,8 +2197,8 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn2(
-        "Camera.toWorldRay",
-        "Camera.toWorldRay(mouse, camera)",
+        "Camera3D.toWorldRay",
+        "Camera3D.toWorldRay(mouse, camera)",
         |mouse: FunctorLangMouse, camera: FunctorLangCamera| {
             crate::input::option_value(
                 camera
@@ -2222,13 +2222,13 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn3(
-        "Camera.clip",
-        "Camera.clip(near, far, camera) — finite distances with 0 < near < far",
+        "Camera3D.clip",
+        "Camera3D.clip(near, far, camera) — finite distances with 0 < near < far",
         |near: f64, far: f64, mut camera: FunctorLangCamera| {
             let (near, far) = (near as f32, far as f32);
             if !near.is_finite() || !far.is_finite() || near <= 0.0 || far <= near {
                 return Err(
-                    "usage: Camera.clip(near, far, camera) — finite distances with 0 < near < far"
+                    "usage: Camera3D.clip(near, far, camera) — finite distances with 0 < near < far"
                         .to_string(),
                 );
             }
@@ -3925,7 +3925,7 @@ handle_arg!(
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
     FunctorLangLight => "a Light",
-    FunctorLangCamera => "a Camera",
+    FunctorLangCamera => "a Camera3D",
     FunctorLangFrame => "a Frame",
     FunctorLangShape => "a Shape",
     FunctorLangBody => "a Body",
@@ -5563,7 +5563,7 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     fn functor_lang_snippet_emits_protocol_frame() {
         let frame = frame_of(
             "let main = () =>\n\
-             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
         );
         let json = serde_json::to_string(&frame).expect("serialize");
         // Camera: eye/target as given, up +Y, 45° fov, protocol defaults.
@@ -5582,8 +5582,8 @@ module is CLOSED, so games referencing these break at load: {missing:?}"
     fn tracked_pose_maps_through_the_authored_camera_rig() {
         let value = eval(
             "let main = () =>\n\
-             Camera.mapTrackedPose(\n\
-               Camera.lookAt(Vec3.make(4.0, 2.0, -3.0), Vec3.make(4.0, 2.0, -2.0)),\n\
+             Camera3D.mapTrackedPose(\n\
+               Camera3D.lookAt(Vec3.make(4.0, 2.0, -3.0), Vec3.make(4.0, 2.0, -2.0)),\n\
                { position: { x: 0.0, y: 0.0, z: 0.0 }, \
                  orientation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } })",
         );
@@ -5598,9 +5598,9 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
     fn camera_world_ray_is_normalized_and_uses_vec3_fields() {
         let value = eval(
             "let main = () =>\n\
-             Camera.toWorldRay(\n\
+             Camera3D.toWorldRay(\n\
                { x: 400.0, y: 300.0, surfaceWidth: 800.0, surfaceHeight: 600.0 },\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)))",
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)))",
         );
         let Value::Variant { ctor, args } = value else {
             panic!("world ray should return an Option");
@@ -5630,9 +5630,9 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
     #[test]
     fn camera_world_ray_returns_none_for_an_invalid_surface() {
         let value = eval(
-            "let main = () => Camera.toWorldRay(\n\
+            "let main = () => Camera3D.toWorldRay(\n\
                { x: 0.0, y: 0.0, surfaceWidth: 0.0, surfaceHeight: 600.0 },\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)))",
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)))",
         );
         assert!(matches!(
             value,
@@ -6313,7 +6313,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.translate(Vec3.make(2.0, 0.0, 0.0)))",
         );
         // Outermost node: a Group carrying the translation…
@@ -6336,7 +6336,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.cube() |> Scene.rotateY(Angle.degrees(90.0)) |> Scene.translate(Vec3.make(3.0, 0.0, 0.0)))",
         );
         // World composition for nested Groups is parent-first:
@@ -6361,7 +6361,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.cube() |> Scene.scaleXYZ(2.0, 3.0, 4.0))",
         );
         // The wrapper Group carries a non-uniform scale on its diagonal — the
@@ -6377,7 +6377,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             "let cubeAt = (i) => Scene.cube() |> Scene.color(Color.rgb(1.0, 0.5, 0.2)) |> Scene.translate(Vec3.make(i, 0.0, 0.0))\n\
              let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.group([0.0, 1.0, 2.0] |> List.map(cubeAt)))",
         );
         let SceneObject::Group(children) = &frame.scene.obj else {
@@ -6398,7 +6398,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.model(Asset.model(\"shark.glb\")) |> Scene.scale(0.002) |> Scene.translate(Vec3.make(3.0, 1.0, 3.0)))",
         );
         // Outermost: the translate wrapper; inside it, the scale wrapper;
@@ -6465,7 +6465,7 @@ Asset.model(\"shark.glb\") at the data boundary"
     /// `Texture.file` value (both lit and the normal-map slot).
     #[test]
     fn asset_texture_matches_texture_file_form() {
-        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let camera = "Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
         for (by_texture, by_asset) in [
             (
                 "Scene.plane() |> Scene.litTexture(Texture.file(\"wood.png\"))",
@@ -6617,7 +6617,7 @@ construct it with Asset.sound(…)",
     /// placeholder is tried first, then its own chain, then the asset's).
     #[test]
     fn while_pending_chains_flatten_into_the_model_description() {
-        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let camera = "Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
         let frame = frame_of(&format!(
             "let proxy = Asset.model(\"low.glb\") |> Asset.whilePending(Asset.model(\"cube.glb\"))\n\
              let boss = Asset.model(\"boss.glb\") |> Asset.whilePending(proxy)\n\
@@ -6638,7 +6638,7 @@ construct it with Asset.sound(…)",
     /// `while_pending` key at all) — replays and cross-version scenes agree.
     #[test]
     fn chainless_models_keep_the_v1_wire_shape() {
-        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let camera = "Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
         let frame = frame_of(&format!(
             "let main = () => Frame.create({camera}, Scene.model(Asset.model(\"shark.glb\")))"
         ));
@@ -6650,7 +6650,7 @@ construct it with Asset.sound(…)",
     /// texture assets keep the plain `File` shape.
     #[test]
     fn while_pending_textures_flow_into_materials() {
-        let camera = "Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
+        let camera = "Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0))";
         let frame = frame_of(&format!(
             "let wood = Asset.texture(\"wood.png\") |> Asset.whilePending(Asset.texture(\"grey.png\"))\n\
              let main = () => Frame.create({camera}, Scene.plane() |> Scene.litTexture(wood))"
@@ -6700,7 +6700,7 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
         let frame = frame_of(
             "let main = () =>
              Frame.createLit(
-               Camera.firstPerson(Vec3.make(0.0, 3.5, -8.0), Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
+               Camera3D.firstPerson(Vec3.make(0.0, 3.5, -8.0), Angle.radians(0.0), Angle.radians(-0.3), Angle.degrees(60.0)),
                Scene.group([
                  Scene.plane() |> Scene.scale(24.0) |> Scene.lit(Color.rgb(0.6, 0.6, 0.62)),
                  Scene.sphere() |> Scene.emissive(Color.rgb(1.0, 0.3, 0.25)),
@@ -6726,8 +6726,8 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
     fn camera_clip_supports_large_worlds_and_validates_depth_precision() {
         let value = eval(
             "let main = () =>\n\
-               Camera.lookAt(Vec3.make(0.0, 100.0, -500.0), Vec3.make(0.0, 0.0, 0.0))\n\
-               |> Camera.clip(0.5, 6000.0)",
+               Camera3D.lookAt(Vec3.make(0.0, 100.0, -500.0), Vec3.make(0.0, 0.0, 0.0))\n\
+               |> Camera3D.clip(0.5, 6000.0)",
         );
         let Value::HostData(data) = value else {
             panic!("expected Camera host data");
@@ -6739,15 +6739,15 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
         assert_eq!((camera.0.near, camera.0.far), (0.5, 6000.0));
         assert_eq!(
             fail_message(
-                "let main = () => Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera.clip(1.0, 0.5)"
+                "let main = () => Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.clip(1.0, 0.5)"
             ),
-            "usage: Camera.clip(near, far, camera) — finite distances with 0 < near < far"
+            "usage: Camera3D.clip(near, far, camera) — finite distances with 0 < near < far"
         );
         assert_eq!(
             fail_message(
-                "let main = () => Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera.clip(1.0, 1.00000001)"
+                "let main = () => Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)) |> Camera3D.clip(1.0, 1.00000001)"
             ),
-            "usage: Camera.clip(near, far, camera) — finite distances with 0 < near < far"
+            "usage: Camera3D.clip(near, far, camera) — finite distances with 0 < near < far"
         );
     }
 
@@ -6757,7 +6757,7 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
             "let bumps = Texture.file(\"bumps-normal.png\")\n\
              let main = () =>\n\
              Frame.createLit(\n\
-               Camera.firstPerson(Vec3.make(0.0, 3.0, -8.0), Angle.radians(0.0), Angle.radians(-0.25), Angle.degrees(60.0)),\n\
+               Camera3D.firstPerson(Vec3.make(0.0, 3.0, -8.0), Angle.radians(0.0), Angle.radians(-0.25), Angle.degrees(60.0)),\n\
                Scene.cube() |> Scene.litNormalMapped(Color.rgb(0.9, 0.9, 0.92), bumps),\n\
                [\n\
                  Light.spot(Vec3.make(0.0, 7.0, 5.0), Vec3.make(0.0, -1.0, -0.5), Color.rgb(1.0, 1.0, 0.95), 5.0, 18.0, Angle.radians(0.5))\n\
@@ -6909,9 +6909,9 @@ Vec3.make(x, y, z)"
         );
         assert_eq!(
             fail(
-                "let main = () => Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), 0.0)"
+                "let main = () => Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), 0.0)"
             ),
-            "Camera.lookAt: expected a Vec3, got a bare number — wrap the components: \
+            "Camera3D.lookAt: expected a Vec3, got a bare number — wrap the components: \
 Vec3.make(x, y, z)"
         );
         // Vec3.make itself still validates its components.
@@ -7262,7 +7262,7 @@ Vec3.make(x, y, z)"
             "let main = () =>\n\
              let eye = Vec3.make(0.0, 2.0, 0.0) |> Vec3.add(Vec3.make(0.0, 0.0, -6.0)) in\n\
              Frame.create(\n\
-             Camera.lookAt(eye, Vec3.make(0.0, 0.0, 0.0)),\n\
+             Camera3D.lookAt(eye, Vec3.make(0.0, 0.0, 0.0)),\n\
              Scene.cube() |> Scene.translate(Vec3.make(1.0, 0.0, 0.0) |> Vec3.scale(3.0)))",
         );
         // The camera got the summed eye, and the scene the scaled offset.
@@ -7590,11 +7590,11 @@ manifest's Assets.<name>, or Asset.sound(…)), got a number"
     #[test]
     fn degrees_and_radians_agree() {
         let deg = frame_of(
-            "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
+            "let main = () => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube() |> Scene.rotateY(Angle.degrees(90.0)))",
         );
         let rad = frame_of(
-            "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
+            "let main = () => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         );
         assert_eq!(
@@ -7649,14 +7649,14 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
             "let feed = RenderTarget.named(\"security\") |> RenderTarget.sized(256.0, 128.0)\n\
              let main = () =>\n\
              Frame.createLit(\n\
-               Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)),\n\
                Scene.group([\n\
                  Scene.plane() |> Scene.lit(Color.rgb(0.6, 0.6, 0.6)),\n\
                  Scene.quad() |> Scene.screen(feed),\n\
                ]),\n\
                [Light.ambient(Color.rgb(0.1, 0.1, 0.1))])\n\
              |> Frame.withRenderTarget(feed, Frame.createLit(\n\
-                  Camera.lookAt(Vec3.make(0.0, 4.0, -6.0), Vec3.make(0.0, 0.5, 0.0)),\n\
+                  Camera3D.lookAt(Vec3.make(0.0, 4.0, -6.0), Vec3.make(0.0, 0.5, 0.0)),\n\
                   Scene.cube() |> Scene.lit(Color.rgb(0.8, 0.2, 0.2)),\n\
                   [Light.ambient(Color.rgb(0.2, 0.2, 0.2))]))",
         );
@@ -7684,7 +7684,7 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.quad() |> Scene.screen(RenderTarget.named(\"feed\")))",
         );
         let json = serde_json::to_string(&frame.scene).expect("serialize");
@@ -7716,9 +7716,9 @@ with RenderTarget.named(\"…\") and pass that value at both sites"
         );
         assert_eq!(
             fail(
-                "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
+                "let main = () => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube()) |> Frame.withRenderTarget(\"feed\", Frame.create(\
-Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube()))"
+Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube()))"
             ),
             "Frame.withRenderTarget: expected a RenderTarget, got a bare string — declare \
 it once with RenderTarget.named(\"…\") and pass that value at both sites"
@@ -7752,7 +7752,7 @@ piped through RenderTarget.sized"
     fn functor_lang_snippet_declares_fog() {
         let frame = frame_of(
             "let main = () =>\n\
-             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
              |> Frame.withFog(Fog.linear(4.0, 30.0, Color.rgb(0.5, 0.6, 0.7)))",
         );
         assert_eq!(frame.fog, Some(Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7)));
@@ -7768,7 +7768,7 @@ piped through RenderTarget.sized"
     fn functor_lang_snippet_declares_clear_color() {
         let frame = frame_of(
             "let main = () =>\n\
-             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
              |> Frame.withClearColor(Color.rgb(0.2, 0.4, 0.6))",
         );
         assert_eq!(frame.clear_color, Some([0.2, 0.4, 0.6]));
@@ -7778,14 +7778,14 @@ piped through RenderTarget.sized"
         // with fog it's the fog color; withClearColor overrides even that.
         let plain = frame_of(
             "let main = () => \
-             Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())",
         );
         assert_eq!(plain.clear_color, None);
         assert_eq!(plain.resolved_clear_color(), [0.1, 0.2, 0.3]);
 
         let both = frame_of(
             "let main = () => \
-             Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube()) \
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube()) \
              |> Frame.withFog(Fog.linear(4.0, 30.0, Color.rgb(0.5, 0.6, 0.7))) \
              |> Frame.withClearColor(Color.rgb(0.0, 0.0, 0.0))",
         );
@@ -7806,7 +7806,7 @@ piped through RenderTarget.sized"
         };
         assert_eq!(
             fail(
-                "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
+                "let main = () => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube()) |> Frame.withFog(0.5)"
             ),
             "Frame.withFog: expected a Fog, got a bare number — build one with \
@@ -7832,7 +7832,7 @@ Fog.linear(near, far, color) or Fog.exp(density, color)"
             "let sky = Skybox.files(\"px.jpg\", \"nx.jpg\", \"py.jpg\", \"ny.jpg\", \
 \"pz.jpg\", \"nz.jpg\")\n\
              let main = () =>\n\
-             Frame.create(Camera.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 1.0, 0.0)), Scene.cube())\n\
              |> Frame.withSkybox(sky)",
         );
         let sky = frame.skybox.as_ref().expect("skybox set");
@@ -7860,7 +7860,7 @@ Fog.linear(near, far, color) or Fog.exp(density, color)"
         };
         assert_eq!(
             fail(
-                "let main = () => Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
+                "let main = () => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), \
 Scene.cube()) |> Frame.withSkybox(\"sky.jpg\")"
             ),
             "Frame.withSkybox: expected a Skybox, got a bare string — build one with \
@@ -9402,7 +9402,7 @@ Time.seconds(…) or Time.millis(…)"
         let frame = frame_of(
             "let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.heightmap([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]]))",
         );
         let SceneObject::Geometry(Shape::Heightmap {
@@ -9430,7 +9430,7 @@ Time.seconds(…) or Time.millis(…)"
             "let ripple = (r, c) => 0.05 * (Math.sin(c * 0.5) + Math.cos(r * 0.5))\n\
              let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.heightmap(\n\
                  List.range(4.0) |> List.map((r) =>\n\
                    List.range(4.0) |> List.map((c) => ripple(r, c)))))",
@@ -9488,7 +9488,7 @@ row 1 has 3"
                |> Terrain.color(Color.rgb(0.2, 0.4, 0.1))\n\
              let main = () =>\n\
                Frame.create(\n\
-                 Camera.lookAt(Vec3.make(0.0, 400.0, -900.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+                 Camera3D.lookAt(Vec3.make(0.0, 400.0, -900.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                  Scene.terrain(world))",
         );
         let SceneObject::Terrain(terrain) = &frame.scene.obj else {
@@ -9554,7 +9554,7 @@ a texture Asset, positive dimensions, and maxHeight greater than minHeight";
              let grid = Texture.file(\"grid.png\")\n\
              let main = () =>\n\
              Frame.create(\n\
-               Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),\n\
                Scene.group([\n\
                  Scene.plane() |> Scene.litTexture(dirt),\n\
                  Scene.quad() |> Scene.emissiveTexture(grid),\n\

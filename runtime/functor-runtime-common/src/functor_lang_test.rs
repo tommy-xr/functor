@@ -3,7 +3,7 @@
 //!
 //! `functor-lang test` (the language crate's CLI) evaluates expects under the
 //! plain `NoHost` prelude, so it fails on any project whose modules mention
-//! `Scene.*` / `Sprite.*` / `Camera.*` — and `file = module` means *every*
+//! `Scene.*` / `Sprite.*` / `Camera3D.*` — and `file = module` means *every*
 //! sibling loads, so one rendering module is enough to make a whole game
 //! untestable. This module supplies the real [`FunctorHost`] instead, which is
 //! the same host the shells run and is a unit struct: no external in the

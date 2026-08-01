@@ -31,5 +31,5 @@ let tick = (m: Model, dt: float, tts: float) => m
 
 let draw = (m: Model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 2.0, -4.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, -4.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())

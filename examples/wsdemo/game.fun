@@ -43,7 +43,7 @@ let tick = (m: Model, dt: float, tts: float) => m
 
 let draw = (m: Model, tts: float) =>
   Frame.create(
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(0.0, 0.0, -5.0),
       Angle.radians(0.0), Angle.radians(0.0), Angle.degrees(60.0)),
     Scene.cube() |> Scene.emissive(Color.rgb(0.6, 0.4, 0.9)))

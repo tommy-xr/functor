@@ -1158,7 +1158,7 @@ let tick = (model, dt, tts) => { spin: model.spin + dt }
 
 let draw = (model, tts) =>
   Frame.createLit(
-    Camera.lookAt(Vec3.make(6.0, 4.0, -8.0), Vec3.make(0.0, 0.5, 0.0)),
+    Camera3D.lookAt(Vec3.make(6.0, 4.0, -8.0), Vec3.make(0.0, 0.5, 0.0)),
     Scene.group([
       Scene.cube() |> Scene.rotateY(Angle.radians(model.spin))
     ]),
@@ -1274,7 +1274,7 @@ let serverUpdate = (m, msg) =>\n\
 let serverTick = (m, dt, tts) =>\n\
   ({ m with ticks: m.ticks + dt }, Effect.now((t) => GotTime(t)))\n\
 let serverDraw = (m, tts) =>\n\
-  Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+  Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
         let mut game = FunctorLangEmbeddedGame::create_with_prefix(
             vec![("game.fun".to_string(), source.to_string())],
             "server",
@@ -1345,7 +1345,7 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let mut game = FunctorLangEmbeddedGame::create(
@@ -1409,7 +1409,7 @@ let tick = (model, dt, tts) =>
   { sample: model.sample, ticks: model.ticks + 1.0 }
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let mut game = FunctorLangEmbeddedGame::create(
@@ -1454,7 +1454,7 @@ let tick = (model, dt, tts) =>
   { n: model.n + 1.0, gate: model.gate }
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let new = r#"
@@ -1465,7 +1465,7 @@ let tick = (model, dt, tts) =>
   { n: model.n + model.gate, gate: model.gate }
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let mut game = FunctorLangEmbeddedGame::create(
@@ -1514,7 +1514,7 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let without_sampled = r#"
@@ -1522,7 +1522,7 @@ let init = { sum: 0.0 }
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let mut game = FunctorLangEmbeddedGame::create(
@@ -1564,7 +1564,7 @@ let init = { sum: 0.0 }
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let sampled = r#"
@@ -1574,7 +1574,7 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let mut game = FunctorLangEmbeddedGame::create(
@@ -1613,7 +1613,7 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let without_sampled = r#"
@@ -1621,7 +1621,7 @@ let init = { sum: 0.0 }
 let tick = (model, dt, tts) => model
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 1.0, -3.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.cube())
 "#;
         let mut game = FunctorLangEmbeddedGame::create(

@@ -88,7 +88,7 @@ let shapeFor = (e) =>
 
 let draw = (m, tts: float) =>
   Frame.createLit(
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(0.0, 9.0, -16.0),
       Angle.radians(0.0), Angle.radians(-0.5), Angle.degrees(60.0)),
     Scene.group([

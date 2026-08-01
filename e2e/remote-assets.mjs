@@ -166,7 +166,7 @@ let tick = (model, dt, tts) => { model with frame: model.frame + 1.0 }
 
 let draw = (model, tts) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 2.0, 0.0 - 6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, 0.0 - 6.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([
       Scene.model(Asset.model("${goodUrl}")),
       Scene.model(Asset.model("${badUrl}")) |> Scene.translate(Vec3.make(3.0, 0.0, 0.0)),${soft}

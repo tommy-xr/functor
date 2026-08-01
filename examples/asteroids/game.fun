@@ -444,7 +444,7 @@ let draw = (model, tts) =>
      | Lost => []
      | _ => shipScenes(model, tts)) in
   Frame.createLit(
-    Camera.lookAt(Vec3.make(0.0, 46.0, 10.0), Vec3.make(0.0, 0.0, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 46.0, 10.0), Vec3.make(0.0, 0.0, 0.0)),
     Scene.group([Scene.group(starfield()), Scene.group(rocks),
                  Scene.group(bullets), Scene.group(ship),
                  Scene.group(titleScenes(model, tts))]),

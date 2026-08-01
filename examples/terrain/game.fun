@@ -106,7 +106,7 @@ let mouseMove = (model, x, y) =>
         pitch: clamp(model.pitch - (y - lastY) * sensitivity, 0.0 - pitchLimit, pitchLimit),
         lastMouse: MouseAt(x, y) }
 
-// Where the camera is pointing. `Camera.firstPerson` treats yaw 0 / pitch 0 as
+// Where the camera is pointing. `Camera3D.firstPerson` treats yaw 0 / pitch 0 as
 // looking down +Z, with positive pitch looking up.
 let lookDir = (yaw, pitch) =>
   let flat = Math.cos(pitch) in
@@ -218,12 +218,12 @@ let physics = (model) =>
 
 let draw = (model, tts) =>
   let camera =
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(model.eye.x, model.eye.y, model.eye.z),
       Angle.radians(model.yaw),
       Angle.radians(model.pitch),
       Angle.degrees(68.0))
-    |> Camera.clip(0.5, 6000.0) in
+    |> Camera3D.clip(0.5, 6000.0) in
   let water =
     Scene.plane()
     |> Scene.scale(worldSize)

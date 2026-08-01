@@ -4,9 +4,9 @@
 type t
 
 /// Create an unlit frame from a camera and scene.
-let create : (Camera.t, Scene.t) => t
+let create : (Camera3D.t, Scene.t) => t
 /// Create a lit frame from a camera, scene, and lights.
-let createLit : (Camera.t, Scene.t, List<Light.t>) => t
+let createLit : (Camera3D.t, Scene.t, List<Light.t>) => t
 /// Create a standalone 2D frame from a camera and sprite tree.
 let create2D : (Camera2D.t, Sprite.t) => t
 /// Render another frame into a target before rendering the main frame.

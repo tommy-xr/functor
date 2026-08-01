@@ -124,7 +124,7 @@ let tick = (model, dt: float, tts: float) => { model with t: model.t + dt }
 
 let draw = (model, tts: float) =>
   Frame.create(
-    Camera.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.5, 0.0)),
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.5, 0.0)),
     Scene.group([
       Scene.sphere() |> Scene.emissive(Color.rgb(0.15, 1.0, Palette.glow)) |> Scene.scale(1.4),
       Scene.plane() |> Scene.scale(12.0) |> Scene.lit(Color.rgb(Palette.sky, 0.12, 0.35)),

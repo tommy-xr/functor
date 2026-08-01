@@ -175,7 +175,7 @@ let litRow = () =>
 let draw = (model, tts) =>
   Frame.createLit(
     // First-person camera: WASD moves the eye, the mouse turns yaw/pitch.
-    Camera.firstPerson(
+    Camera3D.firstPerson(
       Vec3.make(model.eye.x, model.eye.y, model.eye.z),
       Angle.radians(model.yaw), Angle.radians(model.pitch), Angle.degrees(60.0)),
     Scene.group([
