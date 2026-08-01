@@ -16,6 +16,7 @@ import {
   functor_lang_scrub_set_preview_config,
   functor_lang_timeline_events,
   functor_lang_timeline_events_gen,
+  functor_lang_ui_wants_keyboard,
   functor_lang_viewer_detached,
   functor_lang_viewer_detached_generation,
   functor_lang_viewer_authored_frustum,
@@ -86,7 +87,7 @@ const STYLE = `
   position: relative; flex: 1; min-width: 80px; height: 30px; cursor: ew-resize;
   touch-action: none; user-select: none;
   /* The handles overhang the rail ends by half their width; reserve that so a
-     fully-out playhead never crowds the step / extrapolate buttons. */
+     fully-out playhead never crowds the buttons flanking the rail. */
   margin: 0 7px;
 }
 #scrub-timeline { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
@@ -273,7 +274,9 @@ const HTML = `
     <button id="scrub-camera" title="Open the debug camera" hidden>📷</button>
     <button id="scrub-extrapolate" title="Extrapolate the game into the future">🔮</button>
   </div>
-  <span id="scrub-toast" role="status" aria-live="polite">Paused — ⏸ resume · 🔮 preview</span>
+  <!-- ▶, not ⏸: the notice only ever shows while paused, and the transport
+       button reads ▶ then. It must name the glyph actually on the bar. -->
+  <span id="scrub-toast" role="status" aria-live="polite">Paused — ▶ resume · 🔮 preview</span>
   <section id="scrub-debug" aria-label="Debug Camera controls">
     <span id="scrub-debug-title">Debug Camera</span>
     <label>View
@@ -919,6 +922,11 @@ export function mountScrubber({ hidden = false } = {}) {
       refused();
     }
   });
+  const dismissAttention = () => {
+    attentionDismissed = true;
+    extrapolate.classList.remove("attention");
+  };
+
   step.addEventListener("click", () => functor_lang_scrub_step());
   reset.addEventListener("click", () => {
     if (resetAction) resetAction();
@@ -929,11 +937,6 @@ export function mountScrubber({ hidden = false } = {}) {
     pushPreview();
   });
 
-  const dismissAttention = () => {
-    attentionDismissed = true;
-    extrapolate.classList.remove("attention");
-  };
-
   // Game input while the clock is paused does nothing, which reads as a broken
   // page. Say so, once, next to the two controls that DO respond.
   //
@@ -943,17 +946,13 @@ export function mountScrubber({ hidden = false } = {}) {
   // (arrow nudges on the handles, Enter/Space on a button), any focused text
   // field or the webview overlay that swallows keys first, modifier chords, and
   // shell-owned debug-camera navigation. Keys landing on the canvas remain.
-  const GAME_KEYS = new Set([
-    "ArrowUp",
-    "ArrowDown",
-    "ArrowLeft",
-    "ArrowRight",
-    "Space",
-    "KeyW",
-    "KeyA",
-    "KeyS",
-    "KeyD",
-  ]);
+  // The host page's `keyCode(e.code)` surface: every letter, every digit
+  // (top row and numpad), the arrows, Space and Enter. Escape is left out on
+  // purpose — the browser and the shell own it (pointer-lock exit, field
+  // blur), so it is not a key the visitor aimed at the game.
+  const GAME_KEY = /^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|Arrow(Up|Down|Left|Right)|Space|Enter)$/;
+  // The host page's shell-owned debug-camera movement keys.
+  const DEBUG_KEYS = /^Key[WASDQE]$/;
   const CHROME = "input, textarea, select, button, [contenteditable], #webview";
   const showPausedToast = () => {
     toast.classList.add("show");
@@ -961,11 +960,21 @@ export function mountScrubber({ hidden = false } = {}) {
     toastTimer = setTimeout(() => toast.classList.remove("show"), 1600);
   };
   const onPausedGameKey = (event) => {
-    if (!GAME_KEYS.has(event.code)) return;
+    if (!GAME_KEY.test(event.code)) return;
+    // Auto-repeat is dropped by the host's key router too, so a held key is
+    // ONE press — and re-arming the dismiss timer on every repeat would pin
+    // the notice open for as long as the key is down.
+    if (event.repeat) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target;
     if (target instanceof Element && (el.contains(target) || target.closest(CHROME))) return;
-    if (ownsDetachedInput()) return;
+    // A focused in-game text field (Ui.textInput) lives on the CANVAS, so no
+    // DOM check can see it: the keystroke reaches the field, not the paused
+    // clock, and the notice would be a lie.
+    // The debug camera only takes its OWN movement keys; everything else still
+    // falls through to the game, so bailing on any detached state would go
+    // silent exactly where the notice is wanted.
+    if (ownsDetachedInput() && DEBUG_KEYS.test(event.code)) return;
     const current = view();
     if (!current || !current.paused) return;
     // Staging a moment programmatically (the landing hero) pauses and then

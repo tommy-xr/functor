@@ -49,6 +49,7 @@ interface HeroScrubEvent {
 interface HeroScrubSeam {
   paused(): boolean;
   frame(): number;
+  range(): ArrayLike<number>;
   seek(frame: number): void;
   scheduleKeyInputs(inputs: Array<{ frame: number; code: number; isDown: boolean }>): boolean;
   togglePause(): void;
@@ -176,12 +177,60 @@ const fullProgram = () => prefix + region + suffix;
 // return to it after the visitor scrubs away. Code edits are the visitor's —
 // ↺ re-seeks the timeline, it never restores the source.
 let stagedAnchor: number | null = null;
+// The takeoff the anchor sits before. ↺ re-parks only if THIS marker is still
+// recorded: resuming branches the timeline, which discards the recorded jump,
+// and the bounded ring eventually drops it — in both cases the anchor frame
+// survives as a number while the moment it named is gone.
+let stagedJumpFrame: number | null = null;
+// ↺ is asynchronous (it waits on the runtime's pause acknowledgement, and may
+// re-record), so it latches: a second click while one is in flight would
+// otherwise push a second pause toggle and leave the demo RUNNING.
+let reparking = false;
+
+const settle = async (done: () => boolean) => {
+  const deadline = performance.now() + 3000;
+  while (performance.now() < deadline && !done()) await delay(16);
+  return done();
+};
 
 const reparkStagedMoment = () => {
   const scrub = (frame.contentWindow as HeroPlayerWindow | null)?.__scrub;
-  if (!scrub || stagedAnchor === null) return;
-  if (!scrub.paused()) scrub.togglePause();
-  scrub.seek(stagedAnchor);
+  if (reparking || !scrub || stagedAnchor === null || !scriptedInputs) return;
+  reparking = true;
+  const inputs = scriptedInputs;
+  void (async () => {
+    const range = scrub.range();
+    // Re-park only onto a jump that is still THERE. `seek` clamps silently, so
+    // a stale anchor would land the demo on an arbitrary frame — and a resumed
+    // run branches the recorded future away, leaving the anchor pointing at a
+    // takeoff that no longer happens. Either way, re-record instead.
+    const jumpIntact =
+      range.length === 2 &&
+      stagedAnchor !== null &&
+      stagedAnchor >= range[0] &&
+      scrub
+        .events()
+        .some((event) => event.label === "Up down" && event.frame === stagedJumpFrame);
+    if (jumpIntact) {
+      if (!scrub.paused()) {
+        scrub.togglePause();
+        await settle(() => scrub.paused());
+      }
+      scrub.seek(stagedAnchor);
+      return;
+    }
+    if (scrub.paused()) {
+      scrub.togglePause();
+      await settle(() => !scrub.paused());
+    }
+    await seedJumpHistory(inputs);
+  })()
+    .catch((err: unknown) => {
+      setStatus("error", err instanceof Error ? err.message : String(err));
+    })
+    .finally(() => {
+      reparking = false;
+    });
 };
 
 const seedJumpHistory = async (inputs: ScriptedInput[]) => {
@@ -196,21 +245,28 @@ const seedJumpHistory = async (inputs: ScriptedInput[]) => {
   // Queue the desktop script at the runtime's fixed-step boundary. The runtime
   // applies every edge immediately before its designated simulation frame, so
   // low refresh rates and main-thread stalls cannot collapse the jump timing.
+  //
+  // Everything below matches only markers from THIS pass. ↺ can re-run the
+  // staging after the first recording has aged out of the ring, and an
+  // earlier run's markers would otherwise satisfy every wait instantly and
+  // hand back a stale (possibly already-evicted) jump frame.
+  const scheduledAt = scrub.frame();
   if (!scrub.scheduleKeyInputs(inputs)) {
     throw new Error("the platformer rejected the checked-in input script");
   }
+  const recorded = () => scrub.events().filter((event) => event.frame > scheduledAt);
 
   // The event markers publish separately from the fixed steps. Count paints
   // rather than wall time so a backgrounded tab simply resumes this wait.
   let markerPaints = 0;
   while (
     markerPaints < 600 &&
-    !inputs.every((input) => scrub.events().some((event) => event.label === input.label))
+    !inputs.every((input) => recorded().some((event) => event.label === input.label))
   ) {
     markerPaints += 1;
     await nextPaint();
   }
-  const events = scrub.events();
+  const events = recorded();
   if (!inputs.every((input) => events.some((event) => event.label === input.label))) {
     throw new Error("the platformer did not record every scripted input");
   }
@@ -251,6 +307,7 @@ const seedJumpHistory = async (inputs: ScriptedInput[]) => {
   while (performance.now() < seekDeadline && scrub.frame() !== anchor) await delay(16);
   if (scrub.frame() !== anchor) throw new Error("the platformer timeline did not reach the jump");
   stagedAnchor = anchor;
+  stagedJumpFrame = jump.frame;
 
   // The hero's bar trades ⏭ (one frame forward, which reads as fast-forward
   // here) for ↺, which re-parks THIS staged moment. The scrubber owns the

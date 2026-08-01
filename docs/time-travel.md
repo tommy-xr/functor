@@ -442,8 +442,9 @@ trades real complexity for a cost the cache already hides.
 The bar reads left to right as **transport, then ways to look**. Left of the rail
 are the controls that move time (⏸ and ⏭); right of it are the two that change
 how you see the frame time landed on — 📷 (the debug camera) and 🔮
-(extrapolation). Both scrubbers order it that way, the web bar and the native
-egui one, so the two surfaces teach the same layout.
+(extrapolation). All three bars over the seam order it that way — the web
+scrubber, the native egui one, and the sandbox's own chrono bar — so every
+surface teaches the same layout.
 
 Two affordances answer moments the bar previously left silent:
 
@@ -468,7 +469,12 @@ swaps ⏭ for ↺ and calls the handler; passing `null` restores ⏭. The scrubb
 owns the button, never the meaning of "reset" — on the landing hero the handler
 re-parks *that* demo's staged anchor (pause, then seek), which is knowledge only
 the host has. It re-seeks the timeline and never touches the visitor's edits, so
-↺ works the same over an edited or a broken program. The sandbox and IDE pass no
+↺ works the same over an edited or a broken program. The recorded ring is
+bounded, so after a long resumed run the anchor is simply gone and `seek` would
+clamp silently onto an arbitrary late frame; the hero checks the recorded range
+first and re-records the jump when the anchor has aged out. The click latches
+while that is in flight, since a second pause toggle would leave the demo
+running. The sandbox and IDE pass no
 handler and keep ⏭ unchanged.
 
 ## Deferred follow-ups: keep and reconstruct the old future
