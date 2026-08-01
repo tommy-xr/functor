@@ -327,7 +327,7 @@ const playerFrame = (page) => {
       staged.jumpFrame !== undefined &&
       staged.frame === staged.jumpFrame - 2 &&
       staged.preview.enabled === false &&
-      staged.preview.seconds === 0.9 &&
+      staged.preview.seconds === 1.3 &&
       staged.preview.rate === 8,
     JSON.stringify(staged)
   );
