@@ -250,7 +250,7 @@ open Utils                                    // bring Utils in unqualified
 let a = area(Circle(2.0)) + tau               // via the open…
 let b = Utils.area(Utils.Circle(2.0))         // …or QUALIFIED — no open needed
 let biggest = (shapes: List<Utils.Shape>) =>  // qualified types in annotations
-  shapes |> List.map(area) |> List.maximum
+  shapes |> List.map(area) |> List.maximum |> Option.defaultValue(0.0)
 let grab = (s) =>
   match s with
   | Utils.Circle(r) => r                      // qualified ctor PATTERNS work too

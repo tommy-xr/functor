@@ -3036,7 +3036,8 @@ fn stable_sort_comparison_ceiling(len: usize) -> u64 {
 }
 
 /// Wrap a "maybe absent" result as the language's `Option.t` — the shared
-/// answer of every PARTIAL builtin (`List.nth`/`head`/`last`/`find`).
+/// answer of every PARTIAL builtin (`List.nth`/`head`/`last`/`find`/`maximum`
+/// and `Map.get`).
 ///
 /// The constructor names are the QUALIFIED ones the `Option` module's
 /// declarations lower to (`crate::project`'s bundled `stdlib/option.fun`), so

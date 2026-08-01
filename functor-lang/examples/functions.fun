@@ -9,7 +9,9 @@ let average = (a, b) => (a + b) / 2.0
 let total = (p: Player): float => p.scores |> List.fold(add, 0.0)
 
 // `List.maximum` is partial, so this answers `Option.t<float>` — an empty
-// roster is `Option.None` rather than an error.
+// roster is `Option.None` rather than an error. (It stays UNANNOTATED
+// because this golden is checked as a lone module, without the bundled
+// `Option` stdlib that makes `Option.t` a resolvable type name.)
 let bestTotal = (players: List<Player>) =>
   players |> List.map((p) => total(p)) |> List.maximum
 
