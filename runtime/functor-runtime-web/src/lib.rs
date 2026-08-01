@@ -147,6 +147,21 @@ fn functor_lang_game_path() -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
+/// The role's entry-point binding prefix (same-file entries, mirroring the
+/// desktop `--entry-prefix` flag): the page sets
+/// `window.__functorLangEntryPrefix` before initializing this module (the
+/// CLI's Functor Lang index page substitutes the role's declared prefix;
+/// the site's player.html reads `?prefix=<ident>`), and the producer
+/// resolves every canonical entry binding through it as camelCase
+/// (`"server"` → `serverInit`/`serverTick`/…). Absent or empty = the
+/// classic unprefixed contract.
+fn functor_lang_entry_prefix() -> String {
+    js_sys::Reflect::get(&window(), &JsValue::from_str("__functorLangEntryPrefix"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
 /// The project's full file list (entry FIRST, then siblings), as the CLI's Functor Lang
 /// index page injects it (`window.__functorLangProjectFiles`, mirroring `__functorLangGamePath`
 /// — see `wasm_dev_server.rs`). Absent (a page that only set the single entry,
@@ -199,7 +214,11 @@ fn parse_project_files(value: &JsValue) -> Option<Vec<(String, String)>> {
 /// `run_async` to fail loud with.
 async fn create_functor_lang_game(entry: &str) -> Result<FunctorLangEmbeddedGame, String> {
     let sources = load_project_sources(entry).await?;
-    FunctorLangEmbeddedGame::create(sources, Box::new(WebPlatform::new()))
+    FunctorLangEmbeddedGame::create_with_prefix(
+        sources,
+        &functor_lang_entry_prefix(),
+        Box::new(WebPlatform::new()),
+    )
 }
 
 /// The project's `(path, source)` pairs, however this page supplies them —

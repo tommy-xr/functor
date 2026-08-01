@@ -33,6 +33,12 @@ use crate::Environment;
 pub struct FunctorLangProject {
     /// The game source, relative to the project dir (default `game.fun`).
     pub entry: String,
+    /// The role's entry-point binding prefix (same-file entries): every
+    /// canonical entry binding resolves through it as camelCase (`"server"`
+    /// → `serverInit`/`serverTick`/…). Empty = the classic unprefixed
+    /// contract. Declared per role as `{ "file": "game.fun", "prefix":
+    /// "server" }` so two roles can share one file.
+    pub prefix: String,
     /// Whether physical relative mouse input is captured and routed to the game.
     pub mouse_capture: bool,
     /// Whether the shell exposes an absolute pointer to the game.
@@ -162,8 +168,9 @@ because capture is now the default",
         // capture unless the manifest explicitly asks for the contradictory
         // combination above.
         let mouse_capture = requested_mouse_capture.unwrap_or(cursor != CursorPolicy::Visible);
-        let project = |entry: String| FunctorLangProject {
+        let project = |entry: String, prefix: String| FunctorLangProject {
             entry,
+            prefix,
             mouse_capture,
             cursor,
         };
@@ -172,11 +179,11 @@ because capture is now the default",
                 "functor.json declares both `entry` and `entries` — keep one",
             )),
             FunctorLangEntries::Malformed => Err(Error::other(
-                "functor.json `entries` must be a map of name → .fun path \
-(e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"})",
+                "functor.json `entries` must be a map of name → .fun path (or \
+{ \"file\": …, \"prefix\": … }) — e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"}",
             )),
             FunctorLangEntries::Single(entry) => match requested {
-                None => Ok(project(entry.clone())),
+                None => Ok(project(entry.clone(), String::new())),
                 Some(name) => Err(Error::other(format!(
                     "--entry {name}: this project has a single `entry` — `--entry` picks from \
 an `entries` map in functor.json"
@@ -189,11 +196,8 @@ an `entries` map in functor.json"
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                let pick = |name: &str, value: &serde_json::Value| match value.as_str() {
-                    Some(entry) if !entry.is_empty() => Ok(project(entry.to_string())),
-                    _ => Err(Error::other(format!(
-                        "functor.json entry `{name}` must be a path to a .fun file"
-                    ))),
+                let pick = |name: &str, value: &serde_json::Value| {
+                    pick_entry(name, value).map(|(entry, prefix)| project(entry, prefix))
                 };
                 match requested {
                     Some(name) => match map.iter().find(|(k, _)| k == name) {
@@ -223,15 +227,87 @@ name → .fun path (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"
         }
     }
 
-    /// Every declared entry, resolved — the example-sweep test typechecks each.
-    #[cfg(test)]
-    fn all(&self) -> Result<Vec<FunctorLangProject>, Error> {
+    /// Does this project use the named-`entries` form? `build`'s contract
+    /// gate — which EVALUATES the role's top-level defs to resolve its
+    /// (possibly prefixed) bindings — is scoped to it, so a classic single
+    /// `entry` keeps the old "typecheck only, run nothing" build semantics.
+    pub fn is_named(&self) -> bool {
+        matches!(self.entries, FunctorLangEntries::Named(_))
+    }
+
+    /// Every declared entry, resolved — `build` validates each role's
+    /// contract, and the example-sweep test typechecks each.
+    pub fn all(&self) -> Result<Vec<FunctorLangProject>, Error> {
         match &self.entries {
             FunctorLangEntries::Named(map) => {
                 map.iter().map(|(k, _)| self.select(Some(k))).collect()
             }
             _ => self.select(None).map(|p| vec![p]),
         }
+    }
+}
+
+/// Resolve one `entries` value: the classic string form (`"client.fun"`) or
+/// the object form (`{ "file": "game.fun", "prefix": "server" }` — same-file
+/// entries, where the role's entry bindings resolve through the prefix as
+/// camelCase: `serverInit`/`serverTick`/…). Malformed shapes get teaching
+/// errors naming the exact fix. Returns the `(entry, prefix)` pair; the
+/// caller folds in the project-wide settings.
+fn pick_entry(name: &str, value: &serde_json::Value) -> Result<(String, String), Error> {
+    match value {
+        serde_json::Value::String(entry) if !entry.is_empty() => {
+            Ok((entry.clone(), String::new()))
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(unknown) = map.keys().find(|k| k.as_str() != "file" && k.as_str() != "prefix")
+            {
+                return Err(Error::other(format!(
+                    "functor.json entry `{name}`: unknown key \"{unknown}\" — the object form \
+takes \"file\" and an optional \"prefix\""
+                )));
+            }
+            let entry = match map.get("file") {
+                Some(serde_json::Value::String(file)) if !file.is_empty() => file.clone(),
+                _ => {
+                    return Err(Error::other(format!(
+                        "functor.json entry `{name}`: the object form needs a \"file\" — \
+{{ \"file\": \"game.fun\", \"prefix\": \"{name}\" }}"
+                    )))
+                }
+            };
+            let prefix = match map.get("prefix") {
+                None | Some(serde_json::Value::Null) => String::new(),
+                Some(serde_json::Value::String(prefix)) => prefix.clone(),
+                Some(_) => {
+                    return Err(Error::other(format!(
+                        "functor.json entry `{name}`: \"prefix\" must be a string — the \
+camelCase binding prefix (e.g. \"server\" resolves serverInit/serverTick/…)"
+                    )))
+                }
+            };
+            // A prefix concatenates into binding NAMES, so it must itself be a
+            // valid identifier — refuse `"my server"` here, not as a baffling
+            // "has no top-level `let my serverInit`" later.
+            let mut chars = prefix.chars();
+            let valid = match chars.next() {
+                None => true,
+                Some(first) => {
+                    (first.is_ascii_alphabetic() || first == '_')
+                        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+                }
+            };
+            if !valid {
+                return Err(Error::other(format!(
+                    "functor.json entry `{name}`: \"prefix\" must be a valid identifier \
+(it becomes the binding prefix: `{prefix}Init`, `{prefix}Tick`, …)"
+                )));
+            }
+            Ok((entry, prefix))
+        }
+        _ => Err(Error::other(format!(
+            "functor.json entry `{name}` must be a path to a .fun file, or \
+{{ \"file\": \"game.fun\", \"prefix\": \"{name}\" }} for a same-file role"
+        ))),
     }
 }
 
@@ -373,6 +449,34 @@ impl FunctorLangProject {
         Ok(project)
     }
 
+    /// `build`'s per-role contract gate (same-file entries): load a Session
+    /// under the ENGINE prelude from the project [`Self::build`] already
+    /// typechecked, and validate THIS role's entry-point contract — its
+    /// (possibly prefixed) names at their required arities. A project
+    /// declaring a server role whose `serverTick` is missing or misarityed
+    /// fails here with an error naming `serverTick`, instead of at launch.
+    /// The validation body is the exact one the runtimes use at load
+    /// (`functor_runtime_common::functor_lang_producer::validate_contract`).
+    pub fn check_contract(
+        &self,
+        project: &functor_lang::project::Project,
+    ) -> Result<(), Error> {
+        use functor_runtime_common::functor_lang_prelude::FunctorHost;
+        use functor_runtime_common::functor_lang_producer::{validate_contract, EntryNames};
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .map_err(|f| {
+                Error::other(format!(
+                    "cannot load the {} project: {}",
+                    self.entry,
+                    project.sources.render(f.error.span.start, &f.error.message)
+                ))
+            })?;
+        let names = EntryNames::with_prefix(&self.prefix);
+        validate_contract(&self.entry, &session, &names)
+            .map(|_| ())
+            .map_err(Error::other)
+    }
+
     /// Run the project's inline `expect` tests headlessly under the ENGINE
     /// prelude (no GL context, no window, no game loop) — the thin CLI shell
     /// over [`functor_runtime_common::functor_lang_test::run_expects_in`].
@@ -443,6 +547,17 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
+        // A prefixed role can't run on VR yet: the device push path boots the
+        // APK's embedded producer with the unprefixed contract, so running it
+        // would silently play the wrong role. (Native passes --entry-prefix;
+        // wasm bakes the prefix into the served page's boot config.)
+        if !self.prefix.is_empty() && matches!(environment, Environment::Vr) {
+            return Err(Error::other(format!(
+                "entry prefix `{}` is not supported on vr yet — run this role with \
+`run native` or `run wasm` (the vr shell loads the unprefixed contract)",
+                self.prefix
+            )));
+        }
         if matches!(environment, Environment::Vr) {
             if !runner_args.is_empty() {
                 emit(Event::Warning {
@@ -491,6 +606,12 @@ impl FunctorLangProject {
             "--cursor".to_string(),
             self.cursor.as_str().to_string(),
         ];
+        if !self.prefix.is_empty() {
+            // The role's entry-point prefix (same-file entries): the runtime
+            // resolves `serverInit`/`serverTick`/… through it.
+            argv.push("--entry-prefix".to_string());
+            argv.push(self.prefix.clone());
+        }
         if self.mouse_capture {
             argv.push("--mouse-capture".to_string());
         }
@@ -779,6 +900,7 @@ relative path inside it (got {})",
                 &self.entry,
                 self.mouse_capture,
                 self.cursor.as_str(),
+                &self.prefix,
             )?;
             for name in &export.shadowed {
                 emit(Event::Warning {
@@ -876,6 +998,7 @@ relative path inside it (got {})",
                 &self.entry,
                 self.mouse_capture,
                 self.cursor.as_str(),
+                &self.prefix,
             );
             if no_open {
                 emit(Event::Info {
@@ -1650,6 +1773,85 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("no entry named `sever`"), "{err}");
         assert!(err.to_string().contains("client"), "{err}");
+    }
+
+    fn named_json(pairs: &[(&str, serde_json::Value)]) -> FunctorLangConfig {
+        FunctorLangConfig {
+            entries: FunctorLangEntries::Named(
+                pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.clone()))
+                    .collect(),
+            ),
+            mouse_capture: Ok(None),
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn an_object_entry_resolves_file_and_prefix() {
+        let config = named_json(&[
+            ("client", serde_json::json!("game.fun")),
+            (
+                "server",
+                serde_json::json!({ "file": "game.fun", "prefix": "server" }),
+            ),
+        ]);
+        let client = config.select(Some("client")).unwrap();
+        assert_eq!((client.entry.as_str(), client.prefix.as_str()), ("game.fun", ""));
+        let server = config.select(Some("server")).unwrap();
+        assert_eq!(
+            (server.entry.as_str(), server.prefix.as_str()),
+            ("game.fun", "server")
+        );
+    }
+
+    #[test]
+    fn an_object_entry_without_prefix_is_unprefixed() {
+        let config = named_json(&[("client", serde_json::json!({ "file": "client.fun" }))]);
+        let client = config.select(None).unwrap();
+        assert_eq!(
+            (client.entry.as_str(), client.prefix.as_str()),
+            ("client.fun", "")
+        );
+    }
+
+    #[test]
+    fn an_object_entry_without_file_is_refused() {
+        let config = named_json(&[("server", serde_json::json!({ "prefix": "server" }))]);
+        let err = config.select(Some("server")).unwrap_err();
+        assert!(err.to_string().contains("needs a \"file\""), "{err}");
+        assert!(err.to_string().contains("server"), "{err}");
+    }
+
+    #[test]
+    fn a_non_string_prefix_is_refused() {
+        let config = named_json(&[(
+            "server",
+            serde_json::json!({ "file": "game.fun", "prefix": 3 }),
+        )]);
+        let err = config.select(Some("server")).unwrap_err();
+        assert!(err.to_string().contains("must be a string"), "{err}");
+    }
+
+    #[test]
+    fn a_non_identifier_prefix_is_refused() {
+        let config = named_json(&[(
+            "server",
+            serde_json::json!({ "file": "game.fun", "prefix": "my server" }),
+        )]);
+        let err = config.select(Some("server")).unwrap_err();
+        assert!(err.to_string().contains("valid identifier"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_object_key_is_refused() {
+        let config = named_json(&[(
+            "server",
+            serde_json::json!({ "file": "game.fun", "prefx": "server" }),
+        )]);
+        let err = config.select(Some("server")).unwrap_err();
+        assert!(err.to_string().contains("unknown key \"prefx\""), "{err}");
     }
 
     #[test]

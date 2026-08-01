@@ -235,7 +235,16 @@ Instead of one `entry`, a project may declare named **`entries`**
 directory of sibling modules (file = module). `--entry <name>` picks the role
 (default: `client`, or the sole entry), anywhere on the line:
 `functor -d examples/mp run native --entry server`. `examples/mp` is the reference —
-client + authoritative server over a shared `protocol.fun`.
+client + authoritative server over a shared `protocol.fun`. A role may also be an
+object pointing at a **shared file** with a binding prefix —
+`"server": {"file": "game.fun", "prefix": "server"}` — resolving every canonical
+entry binding through the prefix as camelCase (`serverInit`/`serverTick`/`serverDraw`/…;
+empty/absent prefix = the plain names), so two roles live in ONE file and an edit
+hot-reloads both atomically. `build` validates every declared role's contract with its
+prefixed names; prefixed roles run on native and wasm (`run wasm`/`build wasm` bake the
+prefix into the page's boot config; the site player takes `?prefix=<ident>`) — vr still
+loads the unprefixed contract only. `examples/orbs` is the same-file reference (both
+roles are prefixed: `client` wraps the CLIENT section, `server` the SERVER section).
 
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with

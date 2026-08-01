@@ -156,6 +156,8 @@ let botIntent = (ship: Ship, orbs: List<Orb>): Intent =>
       thrust: not arrived, claim: arrived }
 
 // ===========================  CLIENT  =================================
+// The `client` role: functor.json maps it to { "file": "game.fun",
+// "prefix": "client" }, so the runner resolves clientInit/clientTick/… here.
 // YOU (cyan) and the bot (pink) join through the real protocol path; both
 // Intents fold in as Steers + Claims, then `step` runs. With a real
 // transport the client keeps only its OWN sends; nothing changes shape.
@@ -168,14 +170,14 @@ let orbFree = () => Color.rgb(0.85, 0.88, 0.95)   // unclaimed: dim white glow
 let wallColor = () => Color.rgb(0.3, 0.35, 0.55)
 let bg = () => Color.rgb(0.02, 0.025, 0.06)
 
-let init =
+let clientInit =
   let (w1, meWelcome) = join(newWorld()) in
   let (w2, botWelcome) = join(w1) in
   { myPid: welcomePid(meWelcome), botPid: welcomePid(botWelcome),
     world: w2, intent: coast }
 
 // Held LEVELS, read once per tick — exactly what a transport forwards as a Steer.
-let sampledInput = (m, snap: Input.snapshot) =>
+let clientSampledInput = (m, snap: Input.snapshot) =>
   let held = (k: Key.t) => snap.heldKeys |> List.any((h) => h == k) in
   { m with intent: {
       turn: (if held(Key.Left) || held(Key.A) then 1.0 else 0.0)
@@ -194,7 +196,7 @@ let sendClaim = (pid: float, intent: Intent, w: World): World =>
        | Option.Some(o) => w |> recv(pid, Claim(o.id))
        | Option.None => w)
 
-let tick = (m, dt: float, tts: float) =>
+let clientTick = (m, dt: float, tts: float) =>
   let bot =
     (match shipOf(m.botPid, m.world) with
      | Option.None => coast
@@ -232,7 +234,7 @@ let hud = (m) =>
     Text.concat("BOT ", Text.fixed(scoreOf(m.botPid, m.world.orbs), 0.0))
       |> Sprite.text(pink(), 1.2) |> Sprite.move(halfW * 0.5, halfH + 2.2)])
 
-let draw = (m, tts: float) =>
+let clientDraw = (m, tts: float) =>
   Frame.create2D(
     Camera2D.create((halfW + 2.0) * 2.0, (halfH + 3.0) * 2.0),
     Sprite.group(
@@ -242,3 +244,24 @@ let draw = (m, tts: float) =>
         |> List.append(m.world.pilots |> List.map((p) => shipSprite(m, p)))
         |> List.append([hud(m)])))
     |> Frame.withClearColor(bg())
+
+// ========================  SERVER ROLE  ===============================
+// The same file is ALSO the `server` entry: functor.json maps the role to
+// { "file": "game.fun", "prefix": "server" }, so the runner resolves
+// serverInit/serverTick/serverDraw here (functor -d examples/orbs run
+// native --entry server) — one buffer, both roles, one hot reload. The
+// role is the authoritative SERVER section stepped directly, with the bot
+// steering both seats so the view moves on its own.
+
+let serverInit = clientInit
+
+let serverTick = (m, dt: float, tts: float) =>
+  let steer = (pid: float, w: World): World =>
+    (match shipOf(pid, w) with
+     | Option.None => w
+     | Option.Some(s) =>
+       let i = botIntent(s, w.orbs) in
+       w |> recv(pid, Steer(i)) |> sendClaim(pid, i)) in
+  { m with world: m.world |> steer(m.myPid) |> steer(m.botPid) |> step(dt) }
+
+let serverDraw = clientDraw   // the same board, seen from the authority

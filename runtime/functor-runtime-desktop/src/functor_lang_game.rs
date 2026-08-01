@@ -40,8 +40,8 @@ use functor_runtime_common::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
-    journal_arm, journal_push, journal_swap, FrameCtx, JournalEntry, Provenance, Reporter,
-    SpanSource,
+    journal_arm, journal_push, journal_swap, validate_contract, EntryNames, FrameCtx,
+    JournalEntry, Provenance, Reporter, SpanSource,
 };
 use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
@@ -62,6 +62,10 @@ fn replay_status(history_replay: Option<(usize, f64)>) -> String {
 
 pub struct FunctorLangGame {
     path: String,
+    /// The role's resolved entry-point names (same-file entries): built once
+    /// from the role's prefix at create time and reused by every reload —
+    /// every canonical lookup and contract error goes through it.
+    names: EntryNames,
     /// Per-file mtimes of the WHOLE project (every sibling `.fun` — B8:
     /// file = module), so editing a non-entry module hot-reloads too; a
     /// file appearing or disappearing changes the stamp as well.
@@ -256,18 +260,18 @@ struct Loaded {
 /// every sibling `.fun` file — file = module). Errors come back as fully
 /// rendered strings (`path:line:col: message`) so `create` can exit loud with
 /// them and hot-reload can print-and-keep-running with the same text.
-fn load_game(path: &str) -> Result<Loaded, String> {
-    load_project(path, None)
+fn load_game(path: &str, names: &EntryNames) -> Result<Loaded, String> {
+    load_project(path, None, names)
 }
 
 /// The source-shaped half of [`load_game`]: the pushed source stands in for
 /// the ENTRY file (the network reload path, `reload_source`); sibling
 /// modules still load from disk.
-fn load_source(path: &str, src: String) -> Result<Loaded, String> {
-    load_project(path, Some(src))
+fn load_source(path: &str, src: String, names: &EntryNames) -> Result<Loaded, String> {
+    load_project(path, Some(src), names)
 }
 
-fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String> {
+fn load_project(path: &str, entry_src: Option<String>, names: &EntryNames) -> Result<Loaded, String> {
     let entry = std::path::Path::new(path);
     // A pushed buffer (network reload) stands in for the entry file; siblings
     // still load from disk.
@@ -282,13 +286,13 @@ fn load_project(path: &str, entry_src: Option<String>) -> Result<Loaded, String>
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project)
+    finish_load(path, project, names)
 }
 
 /// Load an exact in-memory project: entry first, then sibling modules. This
 /// is the desktop counterpart of the embedded/Quest producer's whole-project
 /// push and deliberately performs no filesystem reads.
-fn load_sources(files: &[(String, String)]) -> Result<Loaded, String> {
+fn load_sources(files: &[(String, String)], names: &EntryNames) -> Result<Loaded, String> {
     let path = files
         .first()
         .map(|(path, _)| path.as_str())
@@ -302,7 +306,7 @@ fn load_sources(files: &[(String, String)]) -> Result<Loaded, String> {
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project)
+    finish_load(path, project, names)
 }
 
 /// The project's OWN files out of a linked source map: bundled prelude and
@@ -327,7 +331,11 @@ fn project_sources_of(sources: &SourceMap) -> Vec<(String, String)> {
 
 /// Contract-check the already linked project. Both disk-backed and pushed
 /// projects pass through this one validation path.
-fn finish_load(path: &str, project: functor_lang::project::Project) -> Result<Loaded, String> {
+fn finish_load(
+    path: &str,
+    project: functor_lang::project::Project,
+    names: &EntryNames,
+) -> Result<Loaded, String> {
     // Type diagnostics are advisory in the dev loop: print, keep going.
     for diag in project.check() {
         eprintln!(
@@ -343,110 +351,26 @@ fn finish_load(path: &str, project: functor_lang::project::Project) -> Result<Lo
             sources.render(f.error.span.start, &f.error.message)
         )
     })?;
-    // The producer contract is knowable at load — fail here, not once per
-    // frame: `init` must be a model VALUE, `tick`/`draw` functions of the
-    // right arity.
-    let init = session
-        .global("init")
-        .ok_or_else(|| format!("{path} has no top-level `let init = …`"))?;
-    if matches!(
-        init,
-        Value::Closure(_) | Value::Builtin(_) | Value::HostFn(_)
-    ) {
-        return Err(format!(
-            "{path}: `init` must be a model value, not a function"
-        ));
-    }
-    if functor_runtime_common::functor_lang_prelude::contains_effect(&init) {
-        return Err(format!(
-            "{path}: `init` contains an Effect value — Effects are commands, not data; \
-return them beside the model as `(model, effect)`"
-        ));
-    }
-    require_function(path, &session, "tick", 3)?;
-    require_function(path, &session, "draw", 2)?;
-    // `input` is optional (many games are non-interactive), but when present
-    // it must honor the contract: (model, key, isDown) => model.
-    let has_input = session.global("input").is_some();
-    if has_input {
-        require_function(path, &session, "input", 3)?;
-    }
-    let has_sampled_input = session.global("sampledInput").is_some();
-    if has_sampled_input {
-        require_function(path, &session, "sampledInput", 2)?;
-    }
-    // Same deal for the mouse: `mouseMove(model, x, y)` in logical window points,
-    // `mouseWheel(model, delta)`.
-    let has_mouse_move = session.global("mouseMove").is_some();
-    if has_mouse_move {
-        require_function(path, &session, "mouseMove", 3)?;
-    }
-    let has_mouse_wheel = session.global("mouseWheel").is_some();
-    if has_mouse_wheel {
-        require_function(path, &session, "mouseWheel", 2)?;
-    }
-    // `mouseButton(model, button, isDown)` — the `input` twin for the pointer.
-    let has_mouse_button = session.global("mouseButton").is_some();
-    if has_mouse_button {
-        require_function(path, &session, "mouseButton", 3)?;
-    }
-    // The MVU pair: `subscriptions(model)` declares timers whose fired
-    // messages fold through `update(model, msg)` — so subscriptions without
-    // an update have nowhere to deliver.
-    let has_subscriptions = session.global("subscriptions").is_some();
-    if has_subscriptions {
-        require_function(path, &session, "subscriptions", 1)?;
-        if session.global("update").is_none() {
-            return Err(format!(
-                "{path}: `subscriptions` produces messages but there is no \
-`let update = (model, msg) => …` to receive them"
-            ));
-        }
-    }
-    if session.global("update").is_some() {
-        require_function(path, &session, "update", 2)?;
-    }
-    // Optional physics: `physics(model) => Physics.scene(…)` declares the
-    // bodies that should exist; the host reconciles + fixed-steps the world
-    // after each tick (docs/physics.md).
-    let has_physics = session.global("physics").is_some();
-    if has_physics {
-        require_function(path, &session, "physics", 1)?;
-    }
-    // Optional soundscape: `soundScape(model)` returns an AudioScene (the
-    // continuous, reconciled half of audio). No `update` requirement — the
-    // scene is reconciled by the shell, not folded back as a message.
-    let has_soundscape = session.global("soundScape").is_some();
-    if has_soundscape {
-        require_function(path, &session, "soundScape", 1)?;
-    }
-    // Optional HUD: `ui(model)` returns a View (Ui.text / Ui.column /
-    // Ui.panel), lowered to the shared text overlay — the F# `ui` hook.
-    let has_ui = session.global("ui").is_some();
-    if has_ui {
-        require_function(path, &session, "ui", 1)?;
-    }
-    // Optional webview: `webview(model)` returns an Html node (Html.div /
-    // Html.text / …), rendered as an HTML/CSS overlay above the frame.
-    let has_webview = session.global("webview").is_some();
-    if has_webview {
-        require_function(path, &session, "webview", 1)?;
-    }
+    // The producer contract (init a value, tick/draw functions of the right
+    // arity, optional hooks well-shaped) is shared with the embedded producer
+    // and the CLI's build gate — errors name the ROLE'S resolved bindings
+    // (`serverTick`, not `tick`) via `names`.
+    let contract = validate_contract(path, &session, names)?;
     Ok(Loaded {
         sources,
         module,
         session,
-        init,
-        has_input,
-        has_sampled_input,
-        has_mouse_move,
-        has_mouse_wheel,
-        has_mouse_button,
-        has_subscriptions,
-        has_physics,
-        has_soundscape,
-        has_ui,
-        has_webview,
+        init: contract.init,
+        has_input: contract.has_input,
+        has_sampled_input: contract.has_sampled_input,
+        has_mouse_move: contract.has_mouse_move,
+        has_mouse_wheel: contract.has_mouse_wheel,
+        has_mouse_button: contract.has_mouse_button,
+        has_subscriptions: contract.has_subscriptions,
+        has_physics: contract.has_physics,
+        has_soundscape: contract.has_soundscape,
+        has_ui: contract.has_ui,
+        has_webview: contract.has_webview,
     })
 }
 
@@ -476,15 +400,24 @@ fn project_stamp(path: &str) -> Vec<(PathBuf, SystemTime)> {
 
 impl FunctorLangGame {
     pub fn create(path: &str) -> FunctorLangGame {
+        Self::create_with_prefix(path, "")
+    }
+
+    /// [`Self::create`] for a PREFIXED role (same-file entries): every
+    /// canonical entry binding resolves through `prefix` as camelCase
+    /// (`"server"` → `serverInit`/`serverTick`/…). An empty prefix is the
+    /// classic unprefixed contract.
+    pub fn create_with_prefix(path: &str, prefix: &str) -> FunctorLangGame {
         // Route Functor Lang `Debug.log` traces into the region-aware event stream (once
         // per process; survives hot-reload's Session rebuild — the sink is
         // installed on the process, not the Session). See functor_lang_prelude.
         functor_runtime_common::functor_lang_prelude::install_debug_log_sink();
+        let names = EntryNames::with_prefix(prefix);
         // Stat BEFORE reading: an edit that lands mid-load then compares
         // unequal on the next frame and triggers a reload, instead of being
         // silently absorbed into a stale session.
         let stamp = project_stamp(path);
-        let loaded = match load_game(path) {
+        let loaded = match load_game(path, &names) {
             Ok(loaded) => loaded,
             Err(message) => {
                 eprintln!("error: {message}");
@@ -501,6 +434,7 @@ impl FunctorLangGame {
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
         FunctorLangGame {
             path: path.to_string(),
+            names,
             stamp,
             pushed_entry: None,
             pushed_project: None,
@@ -559,6 +493,7 @@ impl FunctorLangGame {
     fn ctx(&mut self) -> FrameCtx<'_> {
         FrameCtx {
             session: &self.session,
+            names: &self.names,
             model: &mut self.model,
             physics_rt: &mut self.physics_rt,
             physics_frame: &mut self.physics_frame,
@@ -673,6 +608,7 @@ impl FunctorLangGame {
         let history_replay = match
             functor_runtime_common::functor_lang_producer::materialize_counterfactual_history(
                 &self.session,
+                &self.names,
                 &mut self.model,
                 &mut self.recorder,
                 self.has_physics,
@@ -819,8 +755,8 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let loaded = match &self.pushed_entry {
-            Some(src) => load_source(&self.path, src.clone()),
-            None => load_game(&self.path),
+            Some(src) => load_source(&self.path, src.clone(), &self.names),
+            None => load_game(&self.path, &self.names),
         };
         match loaded {
             Ok(loaded) => {
@@ -876,8 +812,8 @@ impl Game for FunctorLangGame {
             files
         });
         let loaded = match &pushed_project {
-            Some(files) => load_sources(files),
-            None => load_source(&self.path, source.to_string()),
+            Some(files) => load_sources(files, &self.names),
+            None => load_source(&self.path, source.to_string(), &self.names),
         }?;
         if let Some(files) = pushed_project {
             self.pushed_project = Some(files);
@@ -911,7 +847,7 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let stamp = project_stamp(&self.path);
-        let loaded = load_sources(files)?;
+        let loaded = load_sources(files, &self.names)?;
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
         let (rebound, history_replay) = self.swap_in(loaded);
@@ -941,7 +877,7 @@ impl Game for FunctorLangGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = Instant::now();
-        let loaded = load_sources(files)?;
+        let loaded = load_sources(files, &self.names)?;
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
         self.reset_in(loaded);
@@ -1045,6 +981,7 @@ impl Game for FunctorLangGame {
         // through one impl; this just hands it the producer's state.
         functor_runtime_common::functor_lang_producer::ghost_frames(
             &self.session,
+            &self.names,
             &self.model,
             &self.recorder,
             self.has_physics,
@@ -1134,10 +1071,10 @@ impl Game for FunctorLangGame {
             return; // unrecognized code / Key::Unknown — never delivered.
         };
         let args = vec![self.model.clone(), key_value, Value::Bool(is_down)];
-        journal_push("input", &args, Provenance::Input);
-        match self.session.call("input", args, &mut FunctorHost) {
+        journal_push(self.names.input, &args, Provenance::Input);
+        match self.session.call(self.names.input, args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("input", &err),
+            Err(err) => self.reporter.frame_error(self.names.input, &err),
         }
         // Buffer the raw event for the frame-indexed input log (T6b): flushed
         // into the recorder by `record_frame`, replayed by the forward-step.
@@ -1153,10 +1090,13 @@ impl Game for FunctorLangGame {
             Value::Number(x as f64),
             Value::Number(y as f64),
         ];
-        journal_push("mouseMove", &args, Provenance::MouseMove);
-        match self.session.call("mouseMove", args, &mut FunctorHost) {
+        journal_push(self.names.mouse_move, &args, Provenance::MouseMove);
+        match self
+            .session
+            .call(self.names.mouse_move, args, &mut FunctorHost)
+        {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("mouseMove", &err),
+            Err(err) => self.reporter.frame_error(self.names.mouse_move, &err),
         }
         self.input_buf
             .push(functor_runtime_common::RecordedInput::MouseMove { x, y });
@@ -1167,10 +1107,13 @@ impl Game for FunctorLangGame {
             return;
         }
         let args = vec![self.model.clone(), Value::Number(delta as f64)];
-        journal_push("mouseWheel", &args, Provenance::MouseWheel);
-        match self.session.call("mouseWheel", args, &mut FunctorHost) {
+        journal_push(self.names.mouse_wheel, &args, Provenance::MouseWheel);
+        match self
+            .session
+            .call(self.names.mouse_wheel, args, &mut FunctorHost)
+        {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("mouseWheel", &err),
+            Err(err) => self.reporter.frame_error(self.names.mouse_wheel, &err),
         }
         self.input_buf
             .push(functor_runtime_common::RecordedInput::MouseWheel { delta });
@@ -1187,10 +1130,13 @@ impl Game for FunctorLangGame {
             return; // unrecognized code / MouseButton::Unknown — never delivered.
         };
         let args = vec![self.model.clone(), button_value, Value::Bool(is_down)];
-        journal_push("mouseButton", &args, Provenance::MouseButton);
-        match self.session.call("mouseButton", args, &mut FunctorHost) {
+        journal_push(self.names.mouse_button, &args, Provenance::MouseButton);
+        match self
+            .session
+            .call(self.names.mouse_button, args, &mut FunctorHost)
+        {
             Ok(returned) => self.ctx().absorb(returned),
-            Err(err) => self.reporter.frame_error("mouseButton", &err),
+            Err(err) => self.reporter.frame_error(self.names.mouse_button, &err),
         }
         self.input_buf
             .push(functor_runtime_common::RecordedInput::MouseButton { button, is_down });
@@ -1237,15 +1183,16 @@ impl Game for FunctorLangGame {
             .scrub_render_tts()
             .unwrap_or(frame_time.tts as f64);
         let args = vec![self.model.clone(), Value::Number(tts)];
-        match self.session.call("draw", args, &mut FunctorHost) {
+        match self.session.call(self.names.draw, args, &mut FunctorHost) {
             Ok(value) => match frame_value(&value) {
                 Some(frame) => self.last_frame = frame.clone(),
                 None => self.reporter.report_once(format!(
-                    "[functor-lang] draw must return Frame.create(camera, scene), got {}",
+                    "[functor-lang] {} must return Frame.create(camera, scene), got {}",
+                    self.names.draw,
                     value.kind_name()
                 )),
             },
-            Err(err) => self.reporter.frame_error("draw", &err),
+            Err(err) => self.reporter.frame_error(self.names.draw, &err),
         }
         // The optional HUD, evaluated beside `draw` (same settled model) and
         // cached — `Game::ui` is a `&self` accessor, and errors need `&mut`
@@ -1253,7 +1200,7 @@ impl Game for FunctorLangGame {
         if self.has_ui {
             match self
                 .session
-                .call("ui", vec![self.model.clone()], &mut FunctorHost)
+                .call(self.names.ui, vec![self.model.clone()], &mut FunctorHost)
             {
                 Ok(value) => match view_value(&value) {
                     Some(view) => {
@@ -1265,7 +1212,8 @@ impl Game for FunctorLangGame {
                     None => {
                         let _ = take_ui_handlers();
                         self.reporter.report_once(format!(
-                            "[functor-lang] ui must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                            "[functor-lang] {} must return a View (Ui.text / Ui.column / Ui.panel), got {}",
+                            self.names.ui,
                             value.kind_name()
                         ))
                     }
@@ -1274,17 +1222,18 @@ impl Game for FunctorLangGame {
                     // A failed evaluation keeps the last good view AND its
                     // handlers; drop the partial table it registered.
                     let _ = take_ui_handlers();
-                    self.reporter.frame_error("ui", &err)
+                    self.reporter.frame_error(self.names.ui, &err)
                 }
             }
         }
         // The optional webview, evaluated beside `draw` like `ui` — same
         // caching, same handler-adoption lockstep, its own handler table.
         if self.has_webview {
-            match self
-                .session
-                .call("webview", vec![self.model.clone()], &mut FunctorHost)
-            {
+            match self.session.call(
+                self.names.webview,
+                vec![self.model.clone()],
+                &mut FunctorHost,
+            ) {
                 Ok(value) => match html_node_value(&value) {
                     Some(node) => {
                         self.last_webview = Some(node.clone());
@@ -1293,14 +1242,15 @@ impl Game for FunctorLangGame {
                     None => {
                         let _ = take_ui_handlers();
                         self.reporter.report_once(format!(
-                            "[functor-lang] webview must return an Html node (Html.div / Html.text / …), got {}",
+                            "[functor-lang] {} must return an Html node (Html.div / Html.text / …), got {}",
+                            self.names.webview,
                             value.kind_name()
                         ))
                     }
                 },
                 Err(err) => {
                     let _ = take_ui_handlers();
-                    self.reporter.frame_error("webview", &err)
+                    self.reporter.frame_error(self.names.webview, &err)
                 }
             }
         }
@@ -1309,22 +1259,24 @@ impl Game for FunctorLangGame {
         // need `&mut` dedupe. A bad frame keeps the last good scene (the
         // last_frame rule).
         if self.has_soundscape {
-            match self
-                .session
-                .call("soundScape", vec![self.model.clone()], &mut FunctorHost)
-            {
+            match self.session.call(
+                self.names.sound_scape,
+                vec![self.model.clone()],
+                &mut FunctorHost,
+            ) {
                 Ok(value) => match audio_scene_of(&value) {
                     Some(scene) => {
                         self.last_soundscape_json =
                             functor_runtime_common::audio::scene_to_json(scene)
                     }
                     None => self.reporter.report_once(format!(
-                        "[functor-lang] soundScape must return an AudioScene (AudioScene.create / \
+                        "[functor-lang] {} must return an AudioScene (AudioScene.create / \
 AudioScene.empty), got {}",
+                        self.names.sound_scape,
                         value.kind_name()
                     )),
                 },
-                Err(err) => self.reporter.frame_error("soundScape", &err),
+                Err(err) => self.reporter.frame_error(self.names.sound_scape, &err),
             }
         }
         self.draw_ns += started.elapsed().as_nanos() as u64;
@@ -1387,7 +1339,7 @@ AudioScene.empty), got {}",
             tts,
             &self.source_hashes,
             &self.last_frame_journal,
-            Some(&draw_args),
+            Some((self.names.draw, &draw_args)),
             &ring,
             &self.runnable,
             &self.session,
@@ -1481,23 +1433,6 @@ AudioScene.empty), got {}",
 
     fn quit(&mut self) {
         self.ctx().close_all_connections();
-    }
-}
-
-/// `name` must be a function of `arity` params — a contract violation is
-/// reportable at load, and the alternative is one error per frame, forever.
-fn require_function(path: &str, session: &Session, name: &str, arity: usize) -> Result<(), String> {
-    match session.global(name) {
-        Some(Value::Closure(closure)) if closure.params.len() == arity => Ok(()),
-        Some(Value::Closure(closure)) => Err(format!(
-            "{path}: `{name}` must take {arity} parameter(s), takes {}",
-            closure.params.len()
-        )),
-        Some(other) => Err(format!(
-            "{path}: `{name}` must be a function, got {}",
-            other.kind_name()
-        )),
-        None => Err(format!("{path} has no top-level `let {name} = …`")),
     }
 }
 
@@ -1718,7 +1653,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let path = dir.join("game.fun");
         std::fs::write(&path, src).expect("write temp game");
-        let err = load_game(path.to_str().expect("utf-8 temp path"))
+        let err = load_game(path.to_str().expect("utf-8 temp path"), &EntryNames::UNPREFIXED)
             .err()
             .expect("load should fail");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2368,6 +2303,7 @@ mod tests {
         // the fork — a dry run over throwaway state.
         let forward = functor_runtime_common::functor_lang_producer::forward_step_scene(
             &game.session,
+            &EntryNames::UNPREFIXED,
             &fork_model,
             game.has_physics,
             game.has_subscriptions,
@@ -2533,6 +2469,7 @@ mod tests {
         // SUB-STEPPED at 1/60 (STEPS_PER_DIV fine ticks per division snapshot).
         let forward = functor_runtime_common::functor_lang_producer::forward_step_scene(
             &game.session,
+            &EntryNames::UNPREFIXED,
             &fork_model,
             game.has_physics,
             game.has_subscriptions,
@@ -2653,6 +2590,7 @@ mod tests {
         const STEPS_PER_DIV: usize = 5;
         let forward = functor_runtime_common::functor_lang_producer::forward_step_scene(
             &game.session,
+            &EntryNames::UNPREFIXED,
             &game.model, // the scrubbed model = seek(k)
             game.has_physics,
             game.has_subscriptions,
@@ -2777,6 +2715,7 @@ mod tests {
         // steps of 1, so each boundary is one rendered frame).
         let forward = functor_runtime_common::functor_lang_producer::forward_step_scene(
             &game.session,
+            &EntryNames::UNPREFIXED,
             &fork_model,
             game.has_physics,
             game.has_subscriptions,
@@ -2912,6 +2851,7 @@ mod tests {
         let anchor = game.model.clone();
         let forward = functor_runtime_common::functor_lang_producer::forward_step_scene(
             &game.session,
+            &EntryNames::UNPREFIXED,
             &anchor,
             game.has_physics,
             game.has_subscriptions,
