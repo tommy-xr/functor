@@ -1,11 +1,13 @@
-// Focused browser coverage for the site's opt-in Vim keybindings:
+// Focused browser coverage for the site's opt-in Vim keybindings (a
+// sandbox/IDE feature — the landing hero's mini-editor deliberately has none):
 //
 //   - the standard default does not fetch the Vim chunk;
 //   - opting in through the visible control lazy-loads and persists it;
 //   - failed loads remain visible and preserve the right preference;
 //   - common normal/insert operations work and normal-mode Tab is inert;
+//   - the mode segment colors the status strip by mode (background blocks);
 //   - the IDE keeps the active Vim mode while switching files;
-//   - the landing hero inherits the preference and supports blockwise edits;
+//   - the landing hero stays Vim-free even with the preference persisted;
 //   - opting back out removes Vim and persists Standard.
 
 import { spawn, spawnSync } from "node:child_process";
@@ -55,7 +57,7 @@ try {
   await failurePage.waitForFunction(() => window.__sandbox.keybindings().error);
   check(
     "failed opt-in reports unavailability and keeps button focus",
-    (await failurePage.locator("#editor-keybindings").innerText()) === "keys: unavailable" &&
+    (await failurePage.locator("#editor-keybindings").innerText()) === "vim unavailable" &&
       (await failurePage.evaluate(() => document.activeElement?.id)) === "editor-keybindings" &&
       (await failurePage.getAttribute("#editor-keybindings", "aria-live")) === "polite" &&
       (await failurePage.getAttribute("#editor-keybindings", "aria-disabled")) === "true"
@@ -118,7 +120,7 @@ try {
   check(
     "sandbox defaults to Standard keybindings",
     (await page.evaluate(() => window.__sandbox.keybindings().mode)) === "standard" &&
-      (await page.locator("#editor-keybindings").innerText()) === "keys: standard"
+      (await page.locator("#editor-keybindings").innerText()) === "standard"
   );
   check(
     "sandbox keeps keybindings in the status bar",
@@ -140,13 +142,21 @@ try {
   check(
     "sandbox Vim control reports enabled",
     (await page.getAttribute("#editor-keybindings", "aria-pressed")) === "true" &&
-      (await page.locator("#editor-keybindings").innerText()) === "keys: vim"
+      (await page.locator("#editor-keybindings").innerText()) === "vim"
   );
   check(
     "sandbox shows the Vim mode in the status bar strip",
     (await page.locator("#statusbar .statusbar-vim").innerText()).includes("NORMAL") &&
       (await page.getAttribute("#statusbar .statusbar-vim", "data-vim-mode")) === "normal" &&
       (await page.locator("#editor .cm-vim-panel").count()) === 0
+  );
+  // The mode block colors the segment's BACKGROUND (airline-style), cyan in
+  // Normal — rgb(65, 216, 230) is the theme's --cyan.
+  check(
+    "Normal mode paints the segment background cyan",
+    (await page
+      .locator("#statusbar .statusbar-vim")
+      .evaluate((el) => getComputedStyle(el).backgroundColor)) === "rgb(65, 216, 230)"
   );
 
   const source = "alpha\nbeta\ngamma\n";
@@ -233,84 +243,31 @@ try {
   );
   await page.keyboard.press("Escape");
 
-  // The landing mini-editor has no basicSetup, so visual selection exercises
-  // its explicit drawSelection integration as well as preference inheritance.
+  // Vim is a sandbox/IDE feature: even with the preference persisted, the
+  // landing hero mounts no control and fetches no adapter chunk.
   await page.goto(BASE);
-  await page.waitForFunction(
-    () => window.__hero && window.__hero.keybindings().mode === "vim" && !window.__hero.keybindings().loading
-  );
-  check("hero inherits the Vim preference", true);
-  check("hero fetches its lazy Vim chunk", requested.includes("/assets/hero-dist.js"));
-  const heroControl = await page.evaluate(() => {
-    const control = document.querySelector(".hero-editor-keybindings");
-    return {
-      pressed: control?.getAttribute("aria-pressed") ?? null,
-      text: control?.textContent ?? null,
-      direct: control?.parentElement?.id === "hero-editor",
-    };
-  });
-  check(
-    "hero Vim control reports enabled with the mode readout",
-    heroControl.pressed === "true" && heroControl.text === "keys: vim · NORMAL" && heroControl.direct,
-    JSON.stringify(heroControl)
-  );
+  await page.waitForFunction(() => window.__hero);
   await page.locator(".hero-editor .cm-content").waitFor({ state: "visible" });
-  await page.locator(".hero-editor .cm-content").focus();
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("g");
-  await page.keyboard.press("g");
-  await page.keyboard.press("v");
-  await page.keyboard.press("j");
-  await page.locator(".hero-editor .cm-selectionBackground").first().waitFor({
-    state: "attached",
-    timeout: 2_000,
-  }).catch(() => {});
-  const heroSelection = await page.evaluate(() => ({
-    activeClass: document.activeElement?.className ?? "",
-    nativeSelection: window.getSelection()?.toString() ?? "",
-    selectionLayers: document.querySelectorAll(".hero-editor .cm-selectionLayer").length,
-    backgrounds: document.querySelectorAll(".hero-editor .cm-selectionBackground").length,
-  }));
   check(
-    "hero draws Vim visual selection",
-    heroSelection.backgrounds > 0,
-    JSON.stringify(heroSelection)
-  );
-  check(
-    "hero control reads out Visual mode with its color hook",
-    (await page.locator(".hero-editor-keybindings").innerText()) === "keys: vim · VISUAL" &&
-      (await page.getAttribute(".hero-editor-keybindings", "data-vim-mode")) === "visual"
-  );
-  await page.keyboard.press("Escape");
-
-  // Blockwise insert needs CodeMirror's allowMultipleSelections facet. A
-  // selection-layer count alone cannot distinguish this from one wrapped
-  // range, so assert that Vim applies the edit at both cursors.
-  await page.evaluate(() => window.__hero.setRegion("alpha\nbeta\ngamma"));
-  await page.locator(".hero-editor .cm-content").focus();
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("g");
-  await page.keyboard.press("g");
-  await page.keyboard.press("Control+v");
-  await page.keyboard.press("j");
-  await page.keyboard.press("I");
-  await page.keyboard.type("X");
-  await page.keyboard.press("Escape");
-  const blockEditedRegion = await page.evaluate(() => window.__hero.region());
-  check(
-    "hero blockwise visual mode edits at multiple cursors",
-    blockEditedRegion.split("\n").filter((line) => line.startsWith("X")).length === 2,
-    blockEditedRegion
+    "hero stays Vim-free with the preference persisted",
+    (await page.evaluate(() => window.__hero.keybindings === undefined)) &&
+      (await page.locator(".hero-editor .editor-keybindings-toggle").count()) === 0 &&
+      !requested.some((path) => path.includes("hero-dist"))
   );
 
-  // Opting out through the hero's visible control removes the adapter and
-  // updates the shared preference for the next page.
-  await page.click(".hero-editor-keybindings");
-  await page.waitForFunction(() => window.__hero.keybindings().mode === "standard");
+  // Opting out through the IDE's control removes the adapter and updates the
+  // shared preference for the next page.
+  await page.goto(`${BASE}/ide.html`);
+  await page.waitForFunction(
+    () => window.__ide && window.__ide.keybindings().mode === "vim" && !window.__ide.keybindings().loading
+  );
+  await page.click("#editor-keybindings");
+  await page.waitForFunction(() => window.__ide.keybindings().mode === "standard");
   check(
-    "hero option disables Vim keybindings",
-    (await page.getAttribute(".hero-editor-keybindings", "aria-pressed")) === "false" &&
-      (await page.locator(".hero-editor-keybindings").innerText()) === "keys: standard"
+    "IDE option disables Vim keybindings",
+    (await page.getAttribute("#editor-keybindings", "aria-pressed")) === "false" &&
+      (await page.locator("#editor-keybindings").innerText()) === "standard" &&
+      (await page.locator("#statusbar .statusbar-vim").isHidden())
   );
   check(
     "opting out persists Standard",

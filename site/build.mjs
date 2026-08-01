@@ -405,7 +405,15 @@ const heroBuild = await esbuild.build({
   chunkNames: "hero-[name]",
   metafile: true,
 });
-assertLazyVim(heroBuild, "hero");
+// No assertLazyVim here: Vim keybindings are a sandbox/IDE feature — the hero
+// mini-editor has no opt-in, so the adapter must not be in its graph at all.
+const heroVimInput = Object.values(heroBuild.metafile.outputs).find((meta) =>
+  Object.keys(meta.inputs).some((input) => input.includes(VIM_ADAPTER))
+);
+if (heroVimInput) {
+  console.error("the hero build must not include the Vim adapter");
+  process.exit(1);
+}
 
 // The landing page preloads both the deferred island and its static shared
 // chunk. Otherwise the tiny island shell would introduce a serial discovery

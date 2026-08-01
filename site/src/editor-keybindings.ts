@@ -1,12 +1,11 @@
-// Shared, opt-in editor keybindings for every CodeMirror surface on the site.
+// Shared, opt-in editor keybindings for the sandbox and IDE editors.
 // Standard bindings remain the zero-download default. Selecting Vim loads the
 // adapter on demand, then installs it into the FIRST extension compartment so
 // its event handlers run ahead of basicSetup and the editors' other keymaps.
 
 import { indentLess, indentMore, indentWithTab } from "@codemirror/commands";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
-import { drawSelection } from "@codemirror/view";
 import type { EditorView, KeyBinding } from "@codemirror/view";
 import { createStore } from "./store.js";
 import type { Store } from "./store.js";
@@ -38,14 +37,8 @@ export interface EditorKeybindingsController {
    * active it renders the --MODE-- readout, pending keys, and the `:`/`/`
    * command input there instead of in its own editor panel. Pass null to
    * detach. Without a host, dialogs fall back to the adapter's floating
-   * panel inside the editor (the hero's arrangement). */
+   * panel inside the editor. */
   setStatusbarHost(host: HTMLElement | null): void;
-}
-
-interface EditorKeybindingsOptions {
-  /** The hero omits basicSetup, so Vim selection rendering and multi-cursor
-   * support live here. */
-  includeSelectionSupport?: boolean;
 }
 
 type VimModule = typeof import("@replit/codemirror-vim");
@@ -81,32 +74,21 @@ const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 export const editorKeybindingsButtonPresentation = (
-  state: EditorKeybindingsState,
-  options: {
-    /** Append the live Vim mode (`keys: vim · NORMAL`) — the hero's control
-     * doubles as its mode readout, having no status bar of its own. */
-    withVimMode?: boolean;
-  } = {}
+  state: EditorKeybindingsState
 ): EditorKeybindingsButtonPresentation => {
   const enabled = state.mode === "vim";
-  const mode =
-    options.withVimMode && enabled && !state.loading && state.vimMode
-      ? ` · ${state.vimMode.toUpperCase()}`
-      : "";
   return {
     enabled,
     text: state.error
-      ? "keys: unavailable"
-      : `keys: ${enabled || state.loading ? "vim" : "standard"}${mode}${state.loading ? " …" : ""}`,
+      ? "vim unavailable"
+      : `${enabled || state.loading ? "vim" : "standard"}${state.loading ? " …" : ""}`,
     title: state.error
       ? `Vim keybindings could not load: ${state.error}`
       : `${enabled ? "Disable" : "Enable"} Vim keybindings`,
   };
 };
 
-export const createEditorKeybindingsController = (
-  options: EditorKeybindingsOptions = {}
-): EditorKeybindingsController => {
+export const createEditorKeybindingsController = (): EditorKeybindingsController => {
   const compartment = new Compartment();
   const initialMode = storedMode();
   const state = createStore<EditorKeybindingsState>({
@@ -158,13 +140,9 @@ export const createEditorKeybindingsController = (
       getVimEditor = module.getCM;
       target.dispatch({
         effects: compartment.reconfigure([
-          // status: false — the readout lives in the page's status bar (or,
-          // hostless as in the hero, in the control itself), never in an
-          // adapter panel row of its own. Dialogs follow the host when set.
+          // status: false — the readout lives in the page's status bar, never
+          // in an adapter panel row of its own. Dialogs follow the host.
           module.vim({ status: false }),
-          ...(options.includeSelectionSupport
-            ? [EditorState.allowMultipleSelections.of(true), drawSelection()]
-            : []),
         ]),
       });
       const cm = module.getCM(target);

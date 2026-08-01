@@ -14,11 +14,6 @@
 
 import type { EditorView } from "@codemirror/view";
 import { createMiniEditor } from "./mini-editor.js";
-import {
-  createEditorKeybindingsController,
-  editorKeybindingsButtonPresentation,
-} from "./editor-keybindings.js";
-import type { EditorKeybindings, EditorKeybindingsState } from "./editor-keybindings.js";
 import { PlayerBridge } from "./player-bridge.js";
 
 /** The status dot's three states — also its `data-state` attribute value. */
@@ -34,8 +29,6 @@ interface HeroSeam {
   setRegion(src: string): void;
   region: () => string;
   status: () => HeroStatus;
-  keybindings: () => EditorKeybindingsState;
-  setKeybindings: (mode: EditorKeybindings) => Promise<void>;
 }
 
 const HERO_URL = "examples/hero.fun";
@@ -45,9 +38,6 @@ const CLOSE = "// </editable>";
 const frame = document.querySelector<HTMLIFrameElement>(".hero-scene")!;
 const mount = document.getElementById("hero-editor")!;
 const card = document.querySelector(".hero-card")!;
-const editorKeybindings = createEditorKeybindingsController({
-  includeSelectionSupport: true,
-});
 
 // A small, unobtrusive status dot pinned to the card corner: green when the
 // last edit is live, red on a broken edit (the old program keeps running).
@@ -111,40 +101,6 @@ const bridge = new PlayerBridge(frame, {
 
 let editor: EditorView | null = null;
 
-const mountKeybindingsButton = () => {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "editor-keybindings-toggle hero-editor-keybindings";
-  button.setAttribute("aria-live", "polite");
-  button.addEventListener("click", () => {
-    const { mode, error } = editorKeybindings.state.getSnapshot();
-    if (error) return;
-    void editorKeybindings.setMode(mode === "vim" ? "standard" : "vim");
-  });
-  const render = () => {
-    const state = editorKeybindings.state.getSnapshot();
-    // The hero has no status bar, so its control doubles as the Vim mode
-    // readout — `keys: vim · NORMAL` — and carries the mode's color.
-    const presentation = editorKeybindingsButtonPresentation(state, { withVimMode: true });
-    button.textContent = presentation.text;
-    button.setAttribute("aria-pressed", String(presentation.enabled));
-    button.setAttribute("aria-busy", String(state.loading));
-    button.setAttribute("aria-disabled", String(Boolean(state.error)));
-    button.title = presentation.title;
-    if (state.vimMode && !state.loading && !state.error) {
-      button.dataset.vimMode = state.vimMode;
-    } else {
-      delete button.dataset.vimMode;
-    }
-  };
-  editorKeybindings.state.subscribe(render);
-  render();
-  // Keep the control inside the editor's reserved footer. The whole editor is
-  // visibility-hidden during boot, so this also removes the occluded button
-  // from hit-testing and the tab order until the hero is ready.
-  mount.appendChild(button);
-};
-
 const boot = async () => {
   let source: string;
   try {
@@ -176,11 +132,9 @@ const boot = async () => {
   }
 
   mount.hidden = false;
-  mountKeybindingsButton();
   editor = createMiniEditor({
     parent: mount,
     doc: region,
-    keybindings: editorKeybindings,
     onChange: (src) => {
       region = src;
       bridge.push(fullProgram());
@@ -213,6 +167,4 @@ void boot().finally(() => {
   },
   region: () => region,
   status: () => ({ ...statusState }),
-  keybindings: () => editorKeybindings.state.getSnapshot(),
-  setKeybindings: (mode) => editorKeybindings.setMode(mode),
 };

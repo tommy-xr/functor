@@ -306,28 +306,10 @@ a:hover {
 /* The live code panel below the scene, inside the card (~9 visible lines at
    the shared editor type below); the mini-editor carries the synthwave theme. */
 .hero-editor {
-  position: relative;
-  box-sizing: border-box;
   border-top: 1px solid var(--line);
-  /* Preserve the original 172px code viewport and reserve a real footer for
-     the live dot + keybindings option instead of laying controls over source. */
-  height: 202px;
-  padding-bottom: 30px;
-  overflow: hidden;
+  height: 172px;
+  overflow: auto;
   background: #161226;
-}
-
-.hero-editor::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 1;
-  height: 29px;
-  pointer-events: none;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--line);
 }
 
 .hero-editor .cm-editor {
@@ -340,20 +322,13 @@ a:hover {
   line-height: 1.65;
 }
 
-/* The hero has no outer toolbar, so its opt-in sits in the mini-editor footer. */
-.hero-editor .hero-editor-keybindings {
-  position: absolute;
-  right: 8px;
-  bottom: 0;
-  z-index: 2;
-}
-
 /* A small status dot pinned to the card corner: green live / red on a broken
    edit. The message lives in its tooltip (title) — calm, not a banner. */
 .hero-status {
   position: absolute;
-  /* Bottom-left, opposite the editor-keybindings opt-in. Purely an indicator,
-     so it never intercepts clicks. */
+  /* Bottom-left: the top edge belongs to the (top-docked) scrubber, and
+     bottom-right is the mouse-capture chip's corner. Purely an indicator, so it
+     never intercepts clicks. */
   bottom: 10px;
   left: 10px;
   pointer-events: none;
@@ -907,8 +882,7 @@ a:hover {
 }
 
 /* Editor configuration reads as state, not as a header action. Sandbox and
-   IDE place this at the right edge of their status strip; the hero uses the
-   same quiet treatment in its miniature footer. */
+   IDE place this at the right edge of their status strip. */
 .editor-keybindings-toggle {
   appearance: none;
   margin-left: auto;
@@ -938,32 +912,33 @@ a:hover {
   color: var(--cyan);
 }
 
-/* The Vim mode colors — one block for both wearers: the sandbox/IDE status
-   segment and the hero control, which doubles as the mode readout
-   (`keys: vim · NORMAL`). Cyan NORMAL, green INSERT, pink VISUAL, red
-   REPLACE, each with a soft neon glow. */
-.statusbar-vim[data-vim-mode="normal"],
-.editor-keybindings-toggle[data-vim-mode="normal"] {
-  color: var(--cyan);
-  text-shadow: 0 0 9px rgba(65, 216, 230, 0.55);
+/* The Vim mode block — airline-style: the segment's BACKGROUND takes the
+   mode's color (cyan NORMAL, green INSERT, pink VISUAL, red REPLACE) with
+   dark ink and a soft neon glow bleeding into the strip. */
+.statusbar-vim[data-vim-mode] {
+  color: var(--bg);
+  font-weight: 600;
+  border-right: 0;
 }
 
-.statusbar-vim[data-vim-mode="insert"],
-.editor-keybindings-toggle[data-vim-mode="insert"] {
-  color: var(--green);
-  text-shadow: 0 0 9px rgba(111, 220, 146, 0.55);
+.statusbar-vim[data-vim-mode="normal"] {
+  background: var(--cyan);
+  box-shadow: 0 0 10px rgba(65, 216, 230, 0.5);
 }
 
-.statusbar-vim[data-vim-mode^="visual"],
-.editor-keybindings-toggle[data-vim-mode^="visual"] {
-  color: var(--pink);
-  text-shadow: 0 0 9px rgba(232, 88, 184, 0.55);
+.statusbar-vim[data-vim-mode="insert"] {
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(111, 220, 146, 0.5);
 }
 
-.statusbar-vim[data-vim-mode="replace"],
-.editor-keybindings-toggle[data-vim-mode="replace"] {
-  color: var(--red);
-  text-shadow: 0 0 9px rgba(242, 99, 127, 0.55);
+.statusbar-vim[data-vim-mode^="visual"] {
+  background: var(--pink);
+  box-shadow: 0 0 10px rgba(232, 88, 184, 0.5);
+}
+
+.statusbar-vim[data-vim-mode="replace"] {
+  background: var(--red);
+  box-shadow: 0 0 10px rgba(242, 99, 127, 0.5);
 }
 
 .editor-keybindings-toggle[aria-busy="true"] {
@@ -1337,28 +1312,6 @@ a:hover {
 
 #editor .cm-content {
   line-height: 1.65;
-}
-
-/* The adapter's floating dialog panel — hero only: the sandbox and IDE host
-   the Vim readout (and `:` / `/` command input) inside their status-bar
-   strip, so no adapter panel ever appears there. The hero keeps the floating
-   panel for dialogs, styled into the same quiet chrome. */
-.hero-editor .cm-vim-panel {
-  min-height: 22px;
-  align-items: center;
-  padding: 2px 10px;
-  color: var(--text-dim);
-  background: var(--bg-panel);
-  border-top: 1px solid var(--line);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
-}
-
-.hero-editor .cm-vim-panel input {
-  min-width: 0;
-  color: var(--text);
-  font: inherit;
 }
 
 .preview-pane {
@@ -2308,7 +2261,9 @@ a:hover {
   border: 0;
   outline: none;
   background: none;
-  color: var(--text);
+  /* Inherit the mode block's dark ink — the `:` dialog sits on a colored
+     background. */
+  color: inherit;
   font: inherit;
 }
 

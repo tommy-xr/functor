@@ -4,9 +4,7 @@
 // feel like an editor without pulling the sandbox's full weight.
 
 import { EditorView, keymap } from "@codemirror/view";
-import { history, historyKeymap } from "@codemirror/commands";
-import { editorIndentWithTab } from "./editor-keybindings.js";
-import type { EditorKeybindingsController } from "./editor-keybindings.js";
+import { history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 
 export interface MiniEditorOptions {
@@ -15,20 +13,16 @@ export interface MiniEditorOptions {
   doc?: string;
   /** Fires on every document edit (undo/redo included). */
   onChange?: (source: string) => void;
-  /** Optional shared Standard/Vim controller; the landing hero supplies one. */
-  keybindings?: EditorKeybindingsController;
 }
 
 export const createMiniEditor = ({
   parent,
   doc = "",
   onChange,
-  keybindings,
 }: MiniEditorOptions): EditorView => {
   const extensions = [
-    ...(keybindings ? [keybindings.extension] : []),
     history(),
-    keymap.of([editorIndentWithTab, ...historyKeymap]),
+    keymap.of([indentWithTab, ...historyKeymap]),
     functorLangLanguage,
     synthwaveEditorTheme,
   ];
@@ -39,7 +33,5 @@ export const createMiniEditor = ({
       })
     );
   }
-  const view = new EditorView({ parent, doc, extensions });
-  keybindings?.attach(view);
-  return view;
+  return new EditorView({ parent, doc, extensions });
 };
