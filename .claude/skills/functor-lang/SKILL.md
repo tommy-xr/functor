@@ -37,7 +37,8 @@ The habits that break first, in one place. Each is expanded below.
 - **Local bindings are `let … in`** inside a body; top-level defs are
   mutually visible.
 - **File = module**: every sibling `.fun` in the entry's directory loads with
-  the project, referenced or not.
+  the project, referenced or not. A file may also declare **inline** modules
+  (`module Server { … }`, one level deep) — see Modules below.
 - **The engine prelude (`Scene.*`, `Camera3D.*`, `Frame.*`, `Physics.*`) exists
   only under the runner host**, not in plain `functor-lang run`. Its branded
   values refuse bare numbers: `Angle.degrees(60.0)`, `Time.seconds(0.5)`.
@@ -355,6 +356,76 @@ let grab = (s) =>
   keeps its old body with a warning).
 - Current limits: `run wasm` and the VSCode live preview interpret ONE
   source text (multi-file is native-only for now).
+
+### Inline `module` declarations
+
+A `.fun` file may also declare **named modules inline** — one file, several
+namespaces. This is how a single-file multiplayer game separates its
+authoritative and presentation halves without splitting into files:
+
+```functor
+// game.fun                                   → module Game (the entry)
+type World = { tick: float }                  // shared, at the FILE's top level
+
+module Server {
+  type Cmd = | Spawn(id: float) | Despawn(id: float)
+  let step = (c: Cmd, w: World): World =>     // `World` is visible bare
+    match c with
+    | Spawn(id) => { tick: w.tick + id }
+    | Despawn(_) => { tick: w.tick - 1.0 }
+  expect step(Spawn(2.0), { tick: 1.0 }).tick == 3.0
+}
+
+module Client {
+  type Cmd = | Spawn(id: float)               // `Spawn` again: ctor uniqueness
+  let describe = (w: World) => $"tick {w.tick}"   //   is per MODULE
+}
+
+let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
+```
+
+- **One level.** `module` inside `module` is a parse error ("nested modules
+  are not supported yet"). A `module` in a `.funi` is a parse error too.
+- **Items allowed inside**: `let`, `type`, `expect`. `open` inside a module
+  body is a parse error for now — put `open`s at the file's top level (they
+  are in scope inside the modules too).
+- **Canonical names** carry the extra segment. The ENTRY file's members stay
+  bare, so `game.fun`'s `module Server` yields `Server.step` /
+  `Server.Spawn`; a sibling `utils.fun`'s `module Grid` yields
+  `Utils.Grid.cell` / `Utils.Grid.Full`. That is what `run`/`trace`/`/state`
+  display and what closures rebind by.
+- **Referencing them**: bare-qualified inside the declaring file
+  (`Server.step`), fully qualified from a sibling (`Game.Server.step`) — in
+  expressions, type annotations (`(c: Game.Server.Cmd)`), and constructor
+  patterns (`| Game.Server.Spawn(id) =>`).
+- **Name resolution inside a module body**: locals → the module's own
+  defs/ctors/types → the enclosing FILE's top-level names → file-level
+  `open`ed names → builtins/externals. The module's own names **shadow**
+  same-named file-level ones (they are distinct canonical defs, not a
+  collision). Top-level code references module members qualified only.
+- **`open` works on them**: `open Server` for a module declared in the same
+  file, `open Game.Server` for a sibling's — same collision rules as any
+  `open`. A file's own inline module also shadows a same-named sibling FILE
+  in qualified position.
+- **Ctor uniqueness is per module**, so `Server` and `Client` may each
+  declare `Spawn`.
+- **Collisions are load errors** naming both sides: a module name colliding
+  with a top-level `let`/constructor/`type` in the same file (a module name
+  occupies both the value and type namespaces), with another inline module
+  in the same file, with a protected/bundled namespace (`module Scene` in
+  the entry), or with a sibling FILE whose canonical prefix would clash
+  (entry `module Server` + `server.fun` — both want `Server.*`). A
+  NON-entry file's inline module is prefixed, so `utils.fun`'s
+  `module Scene` (→ `Utils.Scene`) is fine.
+- **Dependency edges are between FILES**: a sibling's `Game.Server.foo`
+  records a dep on `Game`, so cycles are detected exactly as before.
+- **The entry contract is unchanged**: `init`/`tick`/`draw` are bare
+  top-level lookups. `module Main { let tick = … }` does NOT satisfy it.
+- **Hot reload**: canonical names are the rebind identity, so an inline
+  module's closures rebind normally — but MOVING a def into (or out of) a
+  module renames it (`step` → `Server.step`), which the rebinder treats
+  like any rename: the stored closure keeps its OLD body and prints a loud
+  `[functor-lang]` warning.
 
 ### Interface files (`.funi`)
 

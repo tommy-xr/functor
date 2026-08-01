@@ -194,7 +194,8 @@ fn extract_module(name: String, source: String) -> Result<ApiModule, GenerateErr
         let (item_name, kind, span) = match item {
             Item::Type(decl) => (decl.name, ApiItemKind::Type, decl.span),
             Item::Sig(decl) => (decl.name, ApiItemKind::Value, decl.span),
-            Item::Let(_) | Item::Open(_) | Item::Expect(_) => continue,
+            // `.funi` interfaces have neither (both are parse errors there).
+            Item::Let(_) | Item::Open(_) | Item::Expect(_) | Item::Module(_) => continue,
         };
         let declaration = declaration_at(&source, span).ok_or_else(|| GenerateError {
             module: name.clone(),

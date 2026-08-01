@@ -78,6 +78,13 @@ fn golden_strings() {
     check_golden("strings");
 }
 
+/// Inline modules canonicalize their members (`Server.step`,
+/// `Server.Spawn`) while the file's own top-level names stay bare.
+#[test]
+fn golden_inline_modules() {
+    check_golden("inline_modules");
+}
+
 /// Same source must always produce byte-identical IR (stable IDs are
 /// sequential, never random or time-based).
 #[test]

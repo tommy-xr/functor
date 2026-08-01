@@ -227,17 +227,83 @@ impl Parser {
                 TokenKind::Ident(name) if name == "expect" => {
                     items.push(Item::Expect(self.expect_decl()?))
                 }
-                _ => return self.error("`let`, `type`, `open`, or `expect` at top level"),
+                // …and so is `module` (an inline module declaration).
+                TokenKind::Ident(name) if name == "module" => {
+                    items.push(Item::Module(self.module_decl()?))
+                }
+                _ => {
+                    return self.error("`let`, `type`, `open`, `expect`, or `module` at top level")
+                }
             }
         }
         Ok(Program { items })
     }
 
+    /// `module Server { <items> }` — an inline module. One level only, and
+    /// only `let` / `type` / `expect` inside.
+    fn module_decl(&mut self) -> Result<ModuleDecl, ParseError> {
+        let kw = self.bump();
+        if self.interface {
+            return Err(ParseError {
+                message: "interface files (.funi) declare signatures — inline `module` \
+declarations belong in a `.fun` file"
+                    .to_string(),
+                span: kw.span,
+            });
+        }
+        let (name, name_span) = self.expect_ident("a module name after `module`")?;
+        if !starts_uppercase(&name) {
+            return Err(ParseError {
+                message: format!(
+                    "module names are capitalized: `module {}`",
+                    capitalize(&name)
+                ),
+                span: name_span,
+            });
+        }
+        self.expect(TokenKind::LBrace, "`{` after the module name")?;
+        let mut items = Vec::new();
+        while self.peek_kind() != &TokenKind::RBrace {
+            match self.peek_kind() {
+                TokenKind::Let => items.push(self.let_item()?),
+                TokenKind::Type => items.push(Item::Type(self.type_decl()?)),
+                TokenKind::Ident(kw) if kw == "expect" => {
+                    items.push(Item::Expect(self.expect_decl()?))
+                }
+                TokenKind::Ident(kw) if kw == "module" => {
+                    return Err(ParseError {
+                        message: "nested modules are not supported yet — declare \
+`module` blocks at the top level of the file"
+                            .to_string(),
+                        span: self.peek().span,
+                    })
+                }
+                TokenKind::Ident(kw) if kw == "open" => {
+                    return Err(ParseError {
+                        message: format!(
+                            "`open` inside `module {name}` is not supported yet — move it to \
+the top level of the file"
+                        ),
+                        span: self.peek().span,
+                    })
+                }
+                _ => return self.error("`let`, `type`, `expect`, or `}` inside a module"),
+            }
+        }
+        self.bump();
+        Ok(ModuleDecl {
+            name,
+            items,
+            span: kw.span.to(name_span),
+        })
+    }
+
     /// `open Utils` — the module name is capitalized, like the file-derived
-    /// module names it refers to.
+    /// module names it refers to. A dotted `open Game.Server` names a sibling
+    /// file's inline module.
     fn open_decl(&mut self) -> Result<OpenDecl, ParseError> {
         let kw = self.bump();
-        let (module, module_span) = self.expect_ident("a module name after `open`")?;
+        let (mut module, mut module_span) = self.expect_ident("a module name after `open`")?;
         if !starts_uppercase(&module) {
             return Err(ParseError {
                 message: format!(
@@ -246,6 +312,18 @@ impl Parser {
                 ),
                 span: module_span,
             });
+        }
+        while self.peek_kind() == &TokenKind::Dot {
+            self.bump();
+            let (segment, span) = self.expect_ident("a module name after `.`")?;
+            if !starts_uppercase(&segment) {
+                return Err(ParseError {
+                    message: format!("module names are capitalized: `{}`", capitalize(&segment)),
+                    span,
+                });
+            }
+            module = format!("{module}.{segment}");
+            module_span = module_span.to(span);
         }
         Ok(OpenDecl {
             module,
@@ -565,13 +643,13 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         Ok(inner)
     }
 
-    /// A type-position name, possibly module-qualified: `Shape` or
-    /// `Utils.Shape` (one level — modules do not nest). The dotted form is
-    /// kept as a single dotted [`TypeName::name`]; lowering canonicalizes it
-    /// against the project (see `crate::lower`).
+    /// A type-position name, possibly module-qualified: `Shape`,
+    /// `Utils.Shape`, or `Game.Server.Cmd` (a sibling file's inline module).
+    /// The dotted form is kept as a single dotted [`TypeName::name`];
+    /// lowering canonicalizes it against the project (see `crate::lower`).
     fn qualified_type_head(&mut self) -> Result<(String, Span), ParseError> {
         let (mut name, mut span) = self.expect_ident("a type name")?;
-        if starts_uppercase(&name)
+        while starts_uppercase(&name)
             && self.peek_kind() == &TokenKind::Dot
             && matches!(self.nth_kind(1), TokenKind::Ident(_))
         {
@@ -969,9 +1047,10 @@ and an `else` branch)",
     /// only (the deliberately-minimal B5 pattern language; no nesting).
     fn ctor_pattern(&mut self) -> Result<Pattern, ParseError> {
         let (mut name, mut name_span) = self.expect_ident("a constructor name")?;
-        // Module-qualified: `Utils.Circle(r)` — one dotted level, like
-        // qualified type names.
-        if self.peek_kind() == &TokenKind::Dot && matches!(self.nth_kind(1), TokenKind::Ident(_)) {
+        // Module-qualified: `Utils.Circle(r)`, or `Game.Server.Spawn(id)` for
+        // a sibling file's inline module — like qualified type names.
+        while self.peek_kind() == &TokenKind::Dot && matches!(self.nth_kind(1), TokenKind::Ident(_))
+        {
             self.bump();
             let (member, member_span) = self.expect_ident("a constructor name after `.`")?;
             name = format!("{name}.{member}");

@@ -625,6 +625,35 @@ snapshots — no GPU, fully agent-verifiable.
       `animator.fun` example module should remove that file to use the bundled
       API, or rename it if they maintain a customized implementation; bundled
       namespaces cannot be shadowed.
+      **Part 6 — inline `module` declarations — done:** a `.fun` file may
+      declare named namespaces inline (`module Server { let step = … }`),
+      one level deep, holding `let` / `type` / `expect` (an `open` inside a
+      module body, a nested `module`, and a `module` in a `.funi` are parse
+      errors). Members canonicalize under the declaring FILE
+      (`utils.fun` + `module Grid` → `Utils.Grid.cell`; the entry stays
+      bare → `Server.step`), so the IR, interpreter, `Session`, and rebind
+      treat them as ordinary dotted names and need no change. References
+      are bare-qualified inside the file (`Server.step`) and fully
+      qualified from a sibling (`Game.Server.step`) — in expressions, type
+      annotations, and constructor patterns, which lost their one-dot cap.
+      Inside a module body, resolution is locals → the module's own names
+      → the enclosing file's top level → file-level `open`s → builtins; a
+      module's names SHADOW same-named file-level ones. `open Server` (a
+      local module) and `open Game.Server` (a sibling's) both work.
+      Constructor uniqueness is per module, so two inline modules may each
+      declare `Spawn`. Load errors, naming both sides: a module name
+      colliding with a top-level `let`/ctor/`type` in the same file (module
+      names occupy the value AND type namespaces), with another inline
+      module in the file, with a protected/bundled namespace, or with a
+      sibling FILE whose canonical prefix would clash (entry `module
+      Server` + `server.fun`). Dependency edges stay between FILES, so
+      cycle detection is unchanged. The entry contract still reads bare
+      top-level `init`/`tick`/`draw`. *Verify:* parser error tests, an
+      `inline_modules` AST/IR/run golden triple, and project tests for
+      canonicalization, shadowing, opens, record-literal scopes, each
+      collision, file-level cycle attribution, and cross-reload rebind.
+      Follow-ups: LSP completion/goto for inline modules, and a
+      `functor.json` `entries` form that names them as roles.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values

@@ -1,0 +1,437 @@
+Program {
+    items: [
+        Type(
+            TypeDecl {
+                name: "World",
+                params: [],
+                body: Record(
+                    [
+                        FieldTy {
+                            name: "tick",
+                            ty: TypeName {
+                                name: "float",
+                                args: [],
+                                span: 88..93,
+                            },
+                            span: 82..93,
+                        },
+                    ],
+                ),
+                span: 67..95,
+            },
+        ),
+        Module(
+            ModuleDecl {
+                name: "Server",
+                items: [
+                    Type(
+                        TypeDecl {
+                            name: "Cmd",
+                            params: [],
+                            body: Variants(
+                                [
+                                    VariantDecl {
+                                        name: "Spawn",
+                                        fields: [
+                                            FieldTy {
+                                                name: "id",
+                                                ty: TypeName {
+                                                    name: "float",
+                                                    args: [],
+                                                    span: 142..147,
+                                                },
+                                                span: 138..147,
+                                            },
+                                        ],
+                                        span: 132..148,
+                                    },
+                                    VariantDecl {
+                                        name: "Despawn",
+                                        fields: [
+                                            FieldTy {
+                                                name: "id",
+                                                ty: TypeName {
+                                                    name: "float",
+                                                    args: [],
+                                                    span: 167..172,
+                                                },
+                                                span: 163..172,
+                                            },
+                                        ],
+                                        span: 155..173,
+                                    },
+                                ],
+                            ),
+                            span: 115..173,
+                        },
+                    ),
+                    Let(
+                        LetDecl {
+                            name: "step",
+                            ty: None,
+                            value: Expr {
+                                kind: Lambda {
+                                    params: [
+                                        Param {
+                                            name: "w",
+                                            ty: Some(
+                                                TypeName {
+                                                    name: "World",
+                                                    args: [],
+                                                    span: 266..271,
+                                                },
+                                            ),
+                                            span: 263..271,
+                                        },
+                                        Param {
+                                            name: "c",
+                                            ty: Some(
+                                                TypeName {
+                                                    name: "Cmd",
+                                                    args: [],
+                                                    span: 276..279,
+                                                },
+                                            ),
+                                            span: 273..279,
+                                        },
+                                    ],
+                                    ret: Some(
+                                        TypeName {
+                                            name: "World",
+                                            args: [],
+                                            span: 282..287,
+                                        },
+                                    ),
+                                    body: Expr {
+                                        kind: Match {
+                                            scrutinee: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "c",
+                                                    ],
+                                                ),
+                                                span: 301..302,
+                                            },
+                                            arms: [
+                                                MatchArm {
+                                                    pattern: Pattern {
+                                                        kind: Ctor {
+                                                            name: "Spawn",
+                                                            args: [
+                                                                Pattern {
+                                                                    kind: Var(
+                                                                        "id",
+                                                                    ),
+                                                                    span: 320..322,
+                                                                },
+                                                            ],
+                                                        },
+                                                        span: 314..323,
+                                                    },
+                                                    body: Expr {
+                                                        kind: Record(
+                                                            [
+                                                                Field {
+                                                                    name: "tick",
+                                                                    value: Expr {
+                                                                        kind: Binary {
+                                                                            op: Add,
+                                                                            lhs: Expr {
+                                                                                kind: FieldAccess {
+                                                                                    object: Expr {
+                                                                                        kind: Ident(
+                                                                                            [
+                                                                                                "w",
+                                                                                            ],
+                                                                                        ),
+                                                                                        span: 335..336,
+                                                                                    },
+                                                                                    field: "tick",
+                                                                                },
+                                                                                span: 335..341,
+                                                                            },
+                                                                            rhs: Expr {
+                                                                                kind: Ident(
+                                                                                    [
+                                                                                        "id",
+                                                                                    ],
+                                                                                ),
+                                                                                span: 344..346,
+                                                                            },
+                                                                        },
+                                                                        span: 335..346,
+                                                                    },
+                                                                    span: 329..346,
+                                                                },
+                                                            ],
+                                                        ),
+                                                        span: 327..348,
+                                                    },
+                                                    span: 312..348,
+                                                },
+                                                MatchArm {
+                                                    pattern: Pattern {
+                                                        kind: Ctor {
+                                                            name: "Despawn",
+                                                            args: [
+                                                                Pattern {
+                                                                    kind: Wildcard,
+                                                                    span: 363..364,
+                                                                },
+                                                            ],
+                                                        },
+                                                        span: 355..365,
+                                                    },
+                                                    body: Expr {
+                                                        kind: Record(
+                                                            [
+                                                                Field {
+                                                                    name: "tick",
+                                                                    value: Expr {
+                                                                        kind: Binary {
+                                                                            op: Sub,
+                                                                            lhs: Expr {
+                                                                                kind: FieldAccess {
+                                                                                    object: Expr {
+                                                                                        kind: Ident(
+                                                                                            [
+                                                                                                "w",
+                                                                                            ],
+                                                                                        ),
+                                                                                        span: 377..378,
+                                                                                    },
+                                                                                    field: "tick",
+                                                                                },
+                                                                                span: 377..383,
+                                                                            },
+                                                                            rhs: Expr {
+                                                                                kind: Number(
+                                                                                    1.0,
+                                                                                ),
+                                                                                span: 386..389,
+                                                                            },
+                                                                        },
+                                                                        span: 377..389,
+                                                                    },
+                                                                    span: 371..389,
+                                                                },
+                                                            ],
+                                                        ),
+                                                        span: 369..391,
+                                                    },
+                                                    span: 353..391,
+                                                },
+                                            ],
+                                        },
+                                        span: 295..391,
+                                    },
+                                },
+                                span: 262..391,
+                            },
+                            span: 251..391,
+                        },
+                    ),
+                ],
+                span: 97..110,
+            },
+        ),
+        Module(
+            ModuleDecl {
+                name: "Client",
+                items: [
+                    Type(
+                        TypeDecl {
+                            name: "Cmd",
+                            params: [],
+                            body: Variants(
+                                [
+                                    VariantDecl {
+                                        name: "Spawn",
+                                        fields: [
+                                            FieldTy {
+                                                name: "id",
+                                                ty: TypeName {
+                                                    name: "float",
+                                                    args: [],
+                                                    span: 511..516,
+                                                },
+                                                span: 507..516,
+                                            },
+                                        ],
+                                        span: 501..517,
+                                    },
+                                ],
+                            ),
+                            span: 488..517,
+                        },
+                    ),
+                    Let(
+                        LetDecl {
+                            name: "describe",
+                            ty: None,
+                            value: Expr {
+                                kind: Lambda {
+                                    params: [
+                                        Param {
+                                            name: "w",
+                                            ty: Some(
+                                                TypeName {
+                                                    name: "World",
+                                                    args: [],
+                                                    span: 540..545,
+                                                },
+                                            ),
+                                            span: 537..545,
+                                        },
+                                    ],
+                                    ret: Some(
+                                        TypeName {
+                                            name: "string",
+                                            args: [],
+                                            span: 548..554,
+                                        },
+                                    ),
+                                    body: Expr {
+                                        kind: InterpolatedString(
+                                            [
+                                                Text(
+                                                    "tick ",
+                                                ),
+                                                Expr(
+                                                    Expr {
+                                                        kind: FieldAccess {
+                                                            object: Expr {
+                                                                kind: Ident(
+                                                                    [
+                                                                        "w",
+                                                                    ],
+                                                                ),
+                                                                span: 566..567,
+                                                            },
+                                                            field: "tick",
+                                                        },
+                                                        span: 566..572,
+                                                    },
+                                                ),
+                                            ],
+                                        ),
+                                        span: 558..574,
+                                    },
+                                },
+                                span: 536..574,
+                            },
+                            span: 521..574,
+                        },
+                    ),
+                ],
+                span: 395..408,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "start",
+                ty: Some(
+                    TypeName {
+                        name: "World",
+                        args: [],
+                        span: 589..594,
+                    },
+                ),
+                value: Expr {
+                    kind: Record(
+                        [
+                            Field {
+                                name: "tick",
+                                value: Expr {
+                                    kind: Number(
+                                        0.0,
+                                    ),
+                                    span: 605..608,
+                                },
+                                span: 599..608,
+                            },
+                        ],
+                    ),
+                    span: 597..610,
+                },
+                span: 578..610,
+            },
+        ),
+        Let(
+            LetDecl {
+                name: "main",
+                ty: None,
+                value: Expr {
+                    kind: Lambda {
+                        params: [],
+                        ret: None,
+                        body: Expr {
+                            kind: Call {
+                                callee: Expr {
+                                    kind: Ident(
+                                        [
+                                            "Client",
+                                            "describe",
+                                        ],
+                                    ),
+                                    span: 629..644,
+                                },
+                                args: [
+                                    Expr {
+                                        kind: Call {
+                                            callee: Expr {
+                                                kind: Ident(
+                                                    [
+                                                        "Server",
+                                                        "step",
+                                                    ],
+                                                ),
+                                                span: 645..656,
+                                            },
+                                            args: [
+                                                Expr {
+                                                    kind: Ident(
+                                                        [
+                                                            "start",
+                                                        ],
+                                                    ),
+                                                    span: 657..662,
+                                                },
+                                                Expr {
+                                                    kind: Call {
+                                                        callee: Expr {
+                                                            kind: Ident(
+                                                                [
+                                                                    "Server",
+                                                                    "Spawn",
+                                                                ],
+                                                            ),
+                                                            span: 664..676,
+                                                        },
+                                                        args: [
+                                                            Expr {
+                                                                kind: Number(
+                                                                    4.0,
+                                                                ),
+                                                                span: 677..680,
+                                                            },
+                                                        ],
+                                                    },
+                                                    span: 664..681,
+                                                },
+                                            ],
+                                        },
+                                        span: 645..682,
+                                    },
+                                ],
+                            },
+                            span: 629..683,
+                        },
+                    },
+                    span: 623..683,
+                },
+                span: 612..683,
+            },
+        ),
+    ],
+}

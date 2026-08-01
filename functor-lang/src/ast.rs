@@ -22,6 +22,22 @@ pub enum Item {
     /// `.fun` or a `.funi`, never both, so there is no paired implementation).
     Sig(SigDecl),
     Expect(ExpectDecl),
+    Module(ModuleDecl),
+}
+
+/// `module Server { … }` — an INLINE module inside a `.fun` file: a named
+/// namespace holding `let`/`type`/`expect` items. One level only (a `module`
+/// inside a `module` is a parse error), and only in `.fun` files. Its members
+/// canonicalize under the file's module (`utils.fun` + `module Grid` →
+/// `Utils.Grid.cell`; the entry file's stay `Grid.cell`), so the IR,
+/// interpreter, and rebind treat them as ordinary dotted names.
+#[derive(Debug)]
+pub struct ModuleDecl {
+    pub name: String,
+    pub items: Vec<Item>,
+    /// The `module Name` header span (not the whole block) — the span
+    /// collision errors point at.
+    pub span: Span,
 }
 
 /// `expect <expr>` — an inline test: a bool expression evaluated by test

@@ -697,11 +697,57 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     }
 
     // Every module's exports, for cross-module resolution during lowering.
-    let exports: HashMap<String, Exports> = files
-        .iter()
-        .zip(&programs)
-        .map(|(file, program)| (file.module.clone(), exports_of(program)))
-        .collect();
+    // Inline `module` blocks are keyed by their full path (`Utils.Grid`);
+    // a file's own top-level exports never include them.
+    let mut exports: HashMap<String, Exports> = HashMap::new();
+    let file_modules: HashSet<&str> = files.iter().map(|f| f.module.as_str()).collect();
+    for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
+        exports.insert(file.module.clone(), exports_of(&program.items));
+        for decl in program.items.iter().filter_map(|item| match item {
+            ast::Item::Module(decl) => Some(decl),
+            _ => None,
+        }) {
+            let (name, span) = (decl.name.as_str(), decl.span);
+            // The canonical prefix an inline module's members carry — the
+            // ENTRY file's stay bare, so `game.fun`'s `module Server` owns
+            // the whole `Server.*` namespace and cannot coexist with a
+            // `server.fun` (or a protected/bundled `Server`).
+            let canonical = if file.module == entry {
+                name.to_string()
+            } else {
+                format!("{}.{name}", file.module)
+            };
+            if PROTECTED_NAMESPACES.contains(&canonical.as_str()) {
+                return Err(render_span(
+                    &files,
+                    index,
+                    span,
+                    &format!(
+                        "`module {name}` collides with the built-in `{canonical}` namespace — \
+rename it"
+                    ),
+                ));
+            }
+            if let Some(other) = file_modules.get(canonical.as_str()) {
+                let other = files
+                    .iter()
+                    .find(|f| f.module == *other)
+                    .expect("module name came from files");
+                return Err(render_span(
+                    &files,
+                    index,
+                    span,
+                    &format!(
+                        "`module {name}` canonicalizes to `{canonical}`, which is already the \
+module of {} — rename one",
+                        other.path.display()
+                    ),
+                ));
+            }
+            exports.insert(format!("{}.{name}", file.module), exports_of(&decl.items));
+        }
+    }
+    let exports = exports;
 
     // Lower each file with the project environment, threading ID bases so
     // the merged module is one ID space. Collect dependency edges.
@@ -712,9 +758,16 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     for (index, (file, program)) in files.iter().zip(programs).enumerate() {
         // Record-literal visibility for this module: its own types plus its
         // `open`ed modules' (by canonical name — the entry's are bare).
+        // Mirrors `lower::Lowerer::qualify`: the entry file's members stay
+        // bare, so its inline modules keep only their own segment.
         let canon = |module: &str, name: &str| {
             if module == entry {
                 name.to_string()
+            } else if let Some(inline) = module
+                .strip_prefix(entry.as_str())
+                .and_then(|rest| rest.strip_prefix('.'))
+            {
+                format!("{inline}.{name}")
             } else {
                 format!("{module}.{name}")
             }
@@ -728,8 +781,15 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
             let ast::Item::Open(decl) = item else {
                 continue;
             };
-            if let Some(opened) = exports.get(&decl.module) {
-                visible.extend(opened.types.iter().map(|name| canon(&decl.module, name)));
+            // `open Server` may name one of this file's inline modules.
+            let relative = format!("{}.{}", file.module, decl.module);
+            let path = if exports.contains_key(&relative) {
+                relative
+            } else {
+                decl.module.clone()
+            };
+            if let Some(opened) = exports.get(&path) {
+                visible.extend(opened.types.iter().map(|name| canon(&path, name)));
             }
         }
         let prefix = if file.module == entry {
@@ -737,6 +797,22 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         } else {
             file.module.clone()
         };
+        // An inline module sees its own record types PLUS the file's (and
+        // the file's `open`ed ones) — the lowering scope rule.
+        for item in &program.items {
+            let ast::Item::Module(decl) = item else {
+                continue;
+            };
+            let path = format!("{}.{}", file.module, decl.name);
+            let mut inner = visible.clone();
+            inner.extend(exports[&path].types.iter().map(|name| canon(&path, name)));
+            let inner_prefix = if prefix.is_empty() {
+                decl.name.clone()
+            } else {
+                format!("{prefix}.{}", decl.name)
+            };
+            scopes.by_module.insert(inner_prefix, inner);
+        }
         scopes.by_module.insert(prefix, visible);
 
         let env = ProjectEnv {
