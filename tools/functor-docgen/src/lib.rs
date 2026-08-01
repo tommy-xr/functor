@@ -1,8 +1,14 @@
-//! Structured API documentation generated from Functor's embedded `.funi`
-//! prelude.
+//! Structured API documentation generated from the exact Functor Lang sources
+//! embedded in Functor: the host's `.funi` prelude and the language's own
+//! standard library.
+//!
+//! The two are the same extraction — module `//!` prose, then a `///` block
+//! above each type or value — over different sources, and they stay separate
+//! only in the rendered output, as the [`ApiGroup`] each module carries.
 
-use functor_lang::ast::Item;
-use functor_lang::{docs::public_doc_comment_in_source, line_col, parse_interface, Span};
+use functor_lang::ast::{ExprKind, Item, TypeName};
+use functor_lang::project::{stdlib_documentation_modules, BundledModule, BundledModuleKind};
+use functor_lang::{docs::public_doc_comment_in_source, line_col, parse, parse_interface, Span};
 use serde::Serialize;
 use std::fmt;
 use std::io;
@@ -19,8 +25,44 @@ pub struct ApiReference {
 #[derive(Debug, Serialize)]
 pub struct ApiModule {
     pub name: String,
+    pub group: ApiGroup,
     pub docs: Option<String>,
     pub items: Vec<ApiItem>,
+}
+
+/// Which half of the API a module belongs to. Engine modules exist only under
+/// a game runner; standard-library modules ship with the language and are
+/// available everywhere Functor Lang runs, the plain CLI included.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiGroup {
+    Engine,
+    Stdlib,
+}
+
+impl ApiGroup {
+    /// The heading this group renders under.
+    pub fn title(self) -> &'static str {
+        match self {
+            ApiGroup::Engine => "Engine modules",
+            ApiGroup::Stdlib => "Language standard library",
+        }
+    }
+
+    /// One line of orientation, rendered under the group heading.
+    pub fn summary(self) -> &'static str {
+        match self {
+            ApiGroup::Engine => {
+                "Provided by the game runner. These resolve when Functor runs a game — \
+                 natively, on the web, or in a headless test — and not under the plain \
+                 `functor-lang` CLI."
+            }
+            ApiGroup::Stdlib => {
+                "Ships with the language. These are available in every Functor Lang \
+                 program, with or without a game runner."
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +90,9 @@ pub enum OutputFormat {
 #[derive(Debug)]
 pub struct GenerateError {
     module: String,
+    /// The extension the module's source would carry on disk, so the error
+    /// names a plausible file (`Option.fun`, not `Option.funi`).
+    extension: &'static str,
     line: usize,
     col: usize,
     message: String,
@@ -57,8 +102,8 @@ impl fmt::Display for GenerateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}.funi:{}:{}: {}",
-            self.module, self.line, self.col, self.message
+            "{}.{}:{}:{}: {}",
+            self.module, self.extension, self.line, self.col, self.message
         )
     }
 }
@@ -93,24 +138,60 @@ impl ApiReference {
     }
 }
 
-/// Generate the engine API from the exact prelude sources embedded in every
-/// Functor runtime and editor.
+/// Generate the whole API from the exact sources embedded in every Functor
+/// runtime and editor: the host prelude, then the language standard library.
 pub fn generate() -> Result<ApiReference, GenerateError> {
-    generate_from_modules(functor_prelude::modules())
+    let mut modules = engine_modules()
+        .into_iter()
+        .map(|(name, source)| extract_module(name, source, ApiGroup::Engine, Parse::Interface))
+        .collect::<Result<Vec<_>, _>>()?;
+    for module in stdlib_documentation_modules() {
+        modules.push(extract_bundled(&module, ApiGroup::Stdlib)?);
+    }
+    Ok(ApiReference {
+        schema_version: 2,
+        modules,
+    })
 }
 
-/// Generate a reference from `(module name, .funi source)` pairs.
+fn engine_modules() -> Vec<(String, String)> {
+    functor_prelude::modules()
+}
+
+/// Generate a reference from `(module name, .funi source)` pairs — the
+/// interface-only shape, used by tests.
 pub fn generate_from_modules(
     modules: impl IntoIterator<Item = (String, String)>,
 ) -> Result<ApiReference, GenerateError> {
     let modules = modules
         .into_iter()
-        .map(|(name, source)| extract_module(name, source))
+        .map(|(name, source)| extract_module(name, source, ApiGroup::Engine, Parse::Interface))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ApiReference {
-        schema_version: 1,
+        schema_version: 2,
         modules,
     })
+}
+
+fn extract_bundled(module: &BundledModule, group: ApiGroup) -> Result<ApiModule, GenerateError> {
+    let parse_as = match module.kind() {
+        BundledModuleKind::Interface => Parse::Interface,
+        BundledModuleKind::Implementation => Parse::Implementation,
+    };
+    extract_module(
+        module.name().to_string(),
+        module.source().to_string(),
+        group,
+        parse_as,
+    )
+}
+
+/// Whether a documentation source is a bodyless `.funi` interface or an
+/// executable `.fun` module whose signatures come from its annotations.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Parse {
+    Interface,
+    Implementation,
 }
 
 pub fn render(format: OutputFormat) -> Result<String, GenerateError> {
@@ -152,10 +233,20 @@ pub fn render_markdown(reference: &ApiReference) -> String {
     let mut out = String::from(
         "<!-- Generated by `npm run generate:docs`; do not edit by hand. -->\n\n\
          # Functor API reference\n\n\
-         This reference is generated from the `.funi` interface files embedded in Functor.\n",
+         This reference is generated from the Functor Lang sources embedded in Functor: \
+         the host runtime's `.funi` prelude and the language's own standard library.\n",
     );
+    let mut group = None;
     for module in &reference.modules {
-        out.push_str("\n## ");
+        if group != Some(module.group) {
+            group = Some(module.group);
+            out.push_str("\n## ");
+            out.push_str(module.group.title());
+            out.push_str("\n\n");
+            out.push_str(module.group.summary());
+            out.push('\n');
+        }
+        out.push_str("\n### ");
         out.push_str(&module.name);
         out.push('\n');
         if let Some(docs) = &module.docs {
@@ -164,7 +255,7 @@ pub fn render_markdown(reference: &ApiReference) -> String {
             out.push('\n');
         }
         for item in &module.items {
-            out.push_str("\n### `");
+            out.push_str("\n#### `");
             out.push_str(&item.qualified_name);
             out.push_str("`\n\n```functor\n");
             out.push_str(&item.declaration);
@@ -179,30 +270,53 @@ pub fn render_markdown(reference: &ApiReference) -> String {
     out
 }
 
-fn extract_module(name: String, source: String) -> Result<ApiModule, GenerateError> {
-    let program = parse_interface(&source).map_err(|error| {
-        let (line, col) = line_col(&source, error.span.start);
+fn extract_module(
+    name: String,
+    source: String,
+    group: ApiGroup,
+    parse_as: Parse,
+) -> Result<ApiModule, GenerateError> {
+    let error_at = |span: Span, message: String| {
+        let (line, col) = line_col(&source, span.start);
         GenerateError {
             module: name.clone(),
+            extension: match parse_as {
+                Parse::Interface => "funi",
+                Parse::Implementation => "fun",
+            },
             line,
             col,
-            message: error.message,
+            message,
         }
-    })?;
+    };
+    let parsed = match parse_as {
+        Parse::Interface => parse_interface(&source),
+        Parse::Implementation => parse(&source),
+    };
+    let program = parsed.map_err(|error| error_at(error.span, error.message))?;
     let mut items = Vec::new();
     for item in program.items {
-        let (item_name, kind, span) = match item {
-            Item::Type(decl) => (decl.name, ApiItemKind::Type, decl.span),
-            Item::Sig(decl) => (decl.name, ApiItemKind::Value, decl.span),
-            // `.funi` interfaces have neither (both are parse errors there).
+        let (item_name, kind, span, declaration) = match item {
+            Item::Type(decl) => {
+                let declaration = declaration_at(&source, decl.span)
+                    .ok_or_else(|| error_at(decl.span, invalid_span(&decl.name)))?;
+                (decl.name, ApiItemKind::Type, decl.span, declaration)
+            }
+            Item::Sig(decl) => {
+                let declaration = declaration_at(&source, decl.span)
+                    .ok_or_else(|| error_at(decl.span, invalid_span(&decl.name)))?;
+                (decl.name, ApiItemKind::Value, decl.span, declaration)
+            }
+            // An executable module's public surface is its `let`s; the
+            // reference shows the SIGNATURE, not the implementation, so it is
+            // rebuilt from the definition's own annotations.
+            Item::Let(decl) if parse_as == Parse::Implementation => {
+                let declaration =
+                    signature_of(&source, &decl).map_err(|message| error_at(decl.span, message))?;
+                (decl.name, ApiItemKind::Value, decl.span, declaration)
+            }
             Item::Let(_) | Item::Open(_) | Item::Expect(_) | Item::Module(_) => continue,
         };
-        let declaration = declaration_at(&source, span).ok_or_else(|| GenerateError {
-            module: name.clone(),
-            line: 1,
-            col: 1,
-            message: format!("invalid source span for `{item_name}`"),
-        })?;
         items.push(ApiItem {
             qualified_name: format!("{name}.{item_name}"),
             name: item_name,
@@ -213,9 +327,63 @@ fn extract_module(name: String, source: String) -> Result<ApiModule, GenerateErr
     }
     Ok(ApiModule {
         name,
+        group,
         docs: module_doc(&source),
         items,
     })
+}
+
+fn invalid_span(name: &str) -> String {
+    format!("invalid source span for `{name}`")
+}
+
+/// The `let name : Type` line for a definition in an executable module, built
+/// from the annotations the definition itself carries. Each type is quoted
+/// VERBATIM from the source (every `TypeName` knows its own span), so the
+/// published signature cannot disagree with the code it documents.
+///
+/// A public definition therefore has to be fully annotated; an unannotated one
+/// is an error rather than a silently vague entry.
+fn signature_of(source: &str, decl: &functor_lang::ast::LetDecl) -> Result<String, String> {
+    if let Some(ty) = &decl.ty {
+        return Ok(format!("let {} : {}", decl.name, type_text(source, ty)?));
+    }
+    let ExprKind::Lambda { params, ret, .. } = &decl.value.kind else {
+        return Err(format!(
+            "`{}` needs a type annotation to appear in the API reference",
+            decl.name
+        ));
+    };
+    let mut rendered = Vec::with_capacity(params.len());
+    for param in params {
+        let ty = param.ty.as_ref().ok_or_else(|| {
+            format!(
+                "`{}`'s parameter `{}` needs a type annotation to appear in the \
+                 API reference",
+                decl.name, param.name
+            )
+        })?;
+        rendered.push(type_text(source, ty)?);
+    }
+    let ret = ret.as_ref().ok_or_else(|| {
+        format!(
+            "`{}` needs a return type annotation to appear in the API reference",
+            decl.name
+        )
+    })?;
+    Ok(format!(
+        "let {} : ({}) => {}",
+        decl.name,
+        rendered.join(", "),
+        type_text(source, ret)?
+    ))
+}
+
+fn type_text(source: &str, ty: &TypeName) -> Result<String, String> {
+    source
+        .get(ty.span.start..ty.span.end)
+        .map(|text| normalize_newlines(text.trim()))
+        .ok_or_else(|| format!("invalid source span for the type `{}`", ty.name))
 }
 
 fn declaration_at(source: &str, span: Span) -> Option<String> {
@@ -250,7 +418,7 @@ fn module_doc(source: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate, generate_from_modules, render_markdown, ApiItemKind};
+    use super::{generate, generate_from_modules, render_markdown, ApiGroup, ApiItemKind};
 
     #[test]
     fn extracts_module_and_item_docs_with_exact_declarations() {
@@ -272,30 +440,88 @@ mod tests {
         assert_eq!(module.items[1].docs.as_deref(), Some("Make one."));
 
         let markdown = render_markdown(&reference);
-        assert!(markdown.contains("## Widget"));
-        assert!(markdown.contains("### `Widget.make`"));
+        assert!(markdown.contains("### Widget"));
+        assert!(markdown.contains("#### `Widget.make`"));
     }
 
     #[test]
-    fn embedded_prelude_is_a_complete_parseable_surface() {
+    fn embedded_api_is_a_complete_documented_surface() {
         let reference = generate().unwrap();
-        assert_eq!(reference.modules.len(), 25);
-        assert_eq!(
-            reference
-                .modules
-                .iter()
-                .flat_map(|module| &module.items)
-                .count(),
-            214
-        );
         assert!(reference
             .modules
             .iter()
-            .any(|module| module.name == "Scene"));
+            .any(|module| module.name == "Scene" && module.group == ApiGroup::Engine));
         assert_eq!(
             reference.undocumented(),
             Vec::<String>::new(),
             "the embedded public API must stay fully documented"
+        );
+    }
+
+    /// Every language-owned module reaches the reference, and the two groups
+    /// stay contiguous so the rendered output has one heading each.
+    #[test]
+    fn the_standard_library_is_documented_beside_the_engine() {
+        let reference = generate().unwrap();
+        let groups: Vec<ApiGroup> = reference
+            .modules
+            .iter()
+            .map(|module| module.group)
+            .collect();
+        let switches = groups.windows(2).filter(|pair| pair[0] != pair[1]).count();
+        assert_eq!(switches, 1, "modules must be grouped, not interleaved");
+
+        let stdlib: Vec<&str> = reference
+            .modules
+            .iter()
+            .filter(|module| module.group == ApiGroup::Stdlib)
+            .map(|module| module.name.as_str())
+            .collect();
+        assert_eq!(
+            stdlib,
+            [
+                "List", "Map", "Text", "Math", "Random", "Debug", "Option", "Result", "Key",
+                "Mouse"
+            ]
+        );
+    }
+
+    /// A `.fun` module's entries are its SIGNATURES, taken from the
+    /// definition's own annotations rather than its body.
+    #[test]
+    fn executable_modules_publish_signatures_not_bodies() {
+        let reference = generate().unwrap();
+        let option = reference
+            .modules
+            .iter()
+            .find(|module| module.name == "Option")
+            .expect("Option is documented");
+        let map = option
+            .items
+            .iter()
+            .find(|item| item.name == "map")
+            .expect("Option.map is documented");
+        assert_eq!(
+            map.declaration,
+            "let map : (('value) => 'mapped, t<'value>) => t<'mapped>"
+        );
+        assert!(matches!(map.kind, ApiItemKind::Value));
+    }
+
+    /// A public definition without annotations cannot be documented honestly,
+    /// so it is a generation error rather than a vague entry.
+    #[test]
+    fn unannotated_definitions_fail_generation() {
+        let error = super::extract_module(
+            "Widget".to_string(),
+            "//! Widgets.\n/// Make one.\nlet make = (size) => size\n".to_string(),
+            ApiGroup::Stdlib,
+            super::Parse::Implementation,
+        )
+        .expect_err("an unannotated parameter cannot be documented");
+        assert!(
+            error.to_string().contains("parameter `size`"),
+            "unexpected error: {error}"
         );
     }
 

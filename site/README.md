@@ -44,7 +44,9 @@ npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
   and topic guides. Runnable examples link directly into the sandbox.
 - `docs/index.html` / `src/api-reference-html.mjs` / `src/api-docs.ts` — the API
   reference. `site:build` regenerates gitignored `generated/api-reference.json`
-  from the embedded prelude, then **prerenders** it into the page with
+  from the embedded prelude and language standard library (each module carries
+  its `group`, which the nav and the in-page dividers use), then **prerenders**
+  it into the page with
   `src/api-reference-html.mjs`; `src/api-docs.ts` only adds search/filter on top.
   The page is therefore complete without JavaScript — a plain `curl` (or an LLM
   agent) sees every signature. The build also publishes machine-readable mirrors

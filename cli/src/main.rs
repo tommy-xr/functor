@@ -103,8 +103,9 @@ impl Environment {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Generate the Functor engine API reference from the embedded `.funi`
-    /// prelude. Writes Markdown to stdout by default.
+    /// Generate the Functor API reference from the embedded sources: the
+    /// engine's `.funi` prelude plus the Functor Lang standard library.
+    /// Writes Markdown to stdout by default.
     Docs {
         /// Generated representation.
         #[arg(long, value_enum, default_value = "markdown")]

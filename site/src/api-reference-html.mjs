@@ -52,7 +52,7 @@ const module_ = (module) => {
   const id = slug(module.name);
   const entries = `${module.items.length} ${module.items.length === 1 ? "entry" : "entries"}`;
   return [
-    `<section class="api-module" id="${escapeAttr(id)}" data-search="${escapeAttr(`${module.name} ${module.docs}`.toLowerCase())}">`,
+    `<section class="api-module" id="${escapeAttr(id)}" data-group="${escapeAttr(module.group ?? "engine")}" data-search="${escapeAttr(`${module.name} ${module.docs}`.toLowerCase())}">`,
     `<h2><span>${escapeText(module.name)}</span><span class="api-module-count">${entries}</span></h2>`,
     prose(module.docs),
     `<div class="api-items">`,
@@ -62,15 +62,68 @@ const module_ = (module) => {
   ].join("\n");
 };
 
+const GROUP_LABELS = { engine: "Engine", stdlib: "Standard library" };
+
+const navLink = (module) =>
+  `<a href="#${escapeAttr(slug(module.name))}" data-module="${escapeAttr(module.name.toLowerCase())}">${escapeText(module.name)}</a>`;
+
+// The nav is grouped so the two halves of the API — what the game runner
+// provides, and what the language itself ships — are visibly distinct. Each
+// group is one element so the search filter can hide a whole empty group.
+const navGroups = (modules) => {
+  const groups = [];
+  for (const module of modules) {
+    const group = module.group ?? "engine";
+    if (groups.at(-1)?.group !== group) groups.push({ group, modules: [] });
+    groups.at(-1).modules.push(module);
+  }
+  return groups
+    .map((entry) =>
+      [
+        `<div class="api-nav-group" data-group="${escapeAttr(entry.group)}">`,
+        `<div class="api-nav-group-label">${escapeText(GROUP_LABELS[entry.group] ?? entry.group)}</div>`,
+        entry.modules.map(navLink).join("\n"),
+        `</div>`,
+      ].join("\n"),
+    )
+    .join("\n");
+};
+
+const GROUP_BLURBS = {
+  engine: "Provided by the game runner — available to a hosted <code>.fun</code> game.",
+  stdlib:
+    "Ships with the language — available in every Functor Lang program, runner or not.",
+};
+
+// A labelled divider announces each group in the scrolling reference. It is
+// presentational (the headings that structure the page are the module ones),
+// and api-docs.ts hides it when the filter empties its group.
+const divider = (group) =>
+  [
+    `<div class="api-group-divider" data-group="${escapeAttr(group)}">`,
+    `<h2>${escapeText(GROUP_LABELS[group] ?? group)}</h2>`,
+    `<p>${GROUP_BLURBS[group] ?? ""}</p>`,
+    `</div>`,
+  ].join("\n");
+
+const sections = (modules) => {
+  const out = [];
+  let group;
+  for (const module of modules) {
+    const moduleGroup = module.group ?? "engine";
+    if (moduleGroup !== group) {
+      group = moduleGroup;
+      out.push(divider(group));
+    }
+    out.push(module_(module));
+  }
+  return out.join("\n");
+};
+
 /** The static markup for the reference page: module nav, sections, and counts. */
 export const renderApiReference = (reference) => ({
-  nav: reference.modules
-    .map(
-      (module) =>
-        `<a href="#${escapeAttr(slug(module.name))}" data-module="${escapeAttr(module.name.toLowerCase())}">${escapeText(module.name)}</a>`,
-    )
-    .join("\n"),
-  sections: reference.modules.map(module_).join("\n"),
+  nav: navGroups(reference.modules),
+  sections: sections(reference.modules),
   moduleCount: reference.modules.length,
   itemCount: reference.modules.reduce((total, module) => total + module.items.length, 0),
 });

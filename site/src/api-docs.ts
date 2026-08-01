@@ -16,6 +16,9 @@ const filterReference = (): void => {
   const query = search.value.trim().toLowerCase();
   let visibleItems = 0;
   let visibleModules = 0;
+  // Modules still showing per group ("engine" / "stdlib"), so a group's
+  // divider and nav block disappear along with its last module.
+  const perGroup = new Map<string, number>();
 
   for (const section of referenceRoot.querySelectorAll<HTMLElement>(".api-module")) {
     const moduleMatches = query && section.dataset.search!.includes(query);
@@ -33,7 +36,15 @@ const filterReference = (): void => {
     if (moduleItems > 0) {
       visibleModules += 1;
       visibleItems += moduleItems;
+      const group = section.dataset.group ?? "engine";
+      perGroup.set(group, (perGroup.get(group) ?? 0) + 1);
     }
+  }
+
+  for (const element of document.querySelectorAll<HTMLElement>(
+    ".api-group-divider, .api-nav-group"
+  )) {
+    element.hidden = (perGroup.get(element.dataset.group ?? "engine") ?? 0) === 0;
   }
 
   results.textContent = query

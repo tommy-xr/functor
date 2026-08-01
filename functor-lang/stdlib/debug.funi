@@ -1,0 +1,20 @@
+//! The observability escape hatch.
+//!
+//! `Debug` is the one impure corner of the standard library, and it is impure
+//! only in the direction of the terminal: it cannot influence the model or the
+//! simulation, so a game with and without it evolves identically.
+
+/// Log `label: value` and return `value` UNCHANGED — an Elm-style trace.
+///
+/// The value is rendered exactly as `functor-lang run` displays it, whatever
+/// its type. Because the label comes first and the subject last, it reads
+/// standalone (`Debug.log("x", model.x)`) and threads through a pipeline
+/// (`model.x |> Debug.log("x") |> Math.clamp01`) without changing what flows
+/// through.
+///
+/// Under the plain `functor-lang` CLI the line goes to stdout; under the game
+/// runner it goes to the CLI's log stream, or the browser console on wasm. It
+/// is NOT rate-limited, so a call in `tick` or `draw` fires every frame —
+/// prefer an event path such as `input` or `update`, or remove the call when
+/// you are done with it.
+let log : (string, 'a) => 'a

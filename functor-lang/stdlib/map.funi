@@ -1,0 +1,46 @@
+//! Immutable keyed collections.
+//!
+//! A `Map` is plain data: it compares structurally, displays, snapshots, and
+//! survives hot reload. Every operation returns a NEW map rather than mutating
+//! the old one, and every function takes the map LAST so it threads through a
+//! pipeline.
+//!
+//! Keys are bounded to `bool`, FINITE `float`, and `string`. Inference keeps a
+//! map homogeneous in ordinary code, and a generic or `unknown` seam is
+//! checked again at runtime; NaN and the infinities are refused, while `-0.0`
+//! and `0.0` are the same key.
+//!
+//! Every map is stored in one canonical key order — bool before float before
+//! string, then `false` before `true`, ascending numerically, and strings by
+//! Unicode scalar value (not locale-aware). So `values`, `toList`, structural
+//! equality, and display all agree byte-for-byte between native and wasm.
+//!
+//! `get` and `member` are logarithmic; the immutable `insert` and `remove`
+//! copy the ordered storage and are linear, as are `values` and `toList`;
+//! `fromList` is O(n log n).
+
+/// The empty map.
+let empty : () => Map<'a, 'b>
+
+/// The value stored under `key`, or `Option.None` when the map has no such
+/// key.
+let get : ('a, Map<'a, 'b>) => Option.t<'b>
+
+/// The map with `key` bound to `value`, replacing any existing binding.
+let insert : ('a, 'b, Map<'a, 'b>) => Map<'a, 'b>
+
+/// The map without `key`. Removing an absent key is not an error.
+let remove : ('a, Map<'a, 'b>) => Map<'a, 'b>
+
+/// Whether the map holds a binding for `key`.
+let member : ('a, Map<'a, 'b>) => bool
+
+/// Every value, in canonical key order.
+let values : (Map<'a, 'b>) => List<'b>
+
+/// Every `(key, value)` pair, in canonical key order.
+let toList : (Map<'a, 'b>) => List<('a, 'b)>
+
+/// Build a map from `(key, value)` pairs. For a repeated key the LAST pair
+/// wins.
+let fromList : (List<('a, 'b)>) => Map<'a, 'b>

@@ -1,0 +1,102 @@
+//! Immutable list operations.
+//!
+//! Functor Lang has no loops: iteration is `List.map`, `List.filter`, and
+//! `List.fold`, which run iteratively in the interpreter and so consume no
+//! evaluation depth (unlike a hand-rolled recursive walk, which trips the
+//! recursion cap).
+//!
+//! Every function takes its list LAST, so it threads through the thread-last
+//! pipeline operator: `xs |> List.map(f)` is exactly `List.map(f, xs)`.
+//!
+//! The partial accessors — `nth`, `head`, `last`, `find` — answer with
+//! `Option.t`, never a sentinel, so the absent case has to be handled.
+
+/// Apply `fn` to every element, preserving order and length.
+let map : (('a) => 'b, List<'a>) => List<'b>
+
+/// Apply `fn` to every element with its 0-based index, as `fn(index, element)`
+/// — index FIRST, unlike the subject-last list argument.
+let indexedMap : ((float, 'a) => 'b, List<'a>) => List<'b>
+
+/// Keep the elements the predicate accepts, in order.
+let filter : (('a) => bool, List<'a>) => List<'a>
+
+/// Reduce left-to-right from an initial accumulator, calling `fn(acc, element)`.
+/// This is the iteration primitive to reach for when `map` and `filter` do not
+/// fit — a recursive walk hits the interpreter's recursion cap around 40–60
+/// elements, while `fold` has no such limit.
+let fold : (('b, 'a) => 'b, 'b, List<'a>) => 'b
+
+/// Map each element to a list and concatenate the results (one level).
+let concatMap : (('a) => List<'b>, List<'a>) => List<'b>
+
+/// `[0, 1, … n - 1]`. A non-positive `n` gives the empty list.
+let range : (float) => List<float>
+
+/// Build a `rows` x `cols` grid by calling `fn(row, col)` for every cell, both
+/// 0-based — the procedural-heightmap shape, e.g.
+/// `Scene.heightmap(List.grid(height, rows, cols))`.
+let grid : ((float, float) => 'a, float, float) => List<List<'a>>
+
+/// The largest number in the list. Errors on an empty list — the one accessor
+/// that predates `Option` and still raises rather than answering `None`.
+let maximum : (List<float>) => float
+
+/// The sum of the numbers. The empty list sums to `0.0`.
+let sum : (List<float>) => float
+
+/// How many elements the list has, as a number.
+let length : (List<'a>) => float
+
+/// Whether the list has no elements.
+let isEmpty : (List<'a>) => bool
+
+/// The list in reverse order.
+let reverse : (List<'a>) => List<'a>
+
+/// The piped list followed by `other`: `xs |> List.append(ys)` is `xs` then
+/// `ys`.
+let append : (List<'a>, List<'a>) => List<'a>
+
+/// Concatenate a list of lists, one level deep.
+let flatten : (List<List<'a>>) => List<'a>
+
+/// Pair each element of the piped list with the element of `other` at the same
+/// index — the PIPED list fills the first slot of every tuple. The result
+/// truncates to the shorter of the two.
+let zip : (List<'b>, List<'a>) => List<('a, 'b)>
+
+/// Sort ascending by the number `fn` returns. The sort is STABLE and calls
+/// `fn` exactly once per element. NaN keys sort last, tied with each other
+/// regardless of sign, so the order is identical on every platform; `-0.0` and
+/// `0.0` tie.
+let sortBy : (('a) => float, List<'a>) => List<'a>
+
+/// The first `count` elements, saturating: past the end gives the whole list,
+/// and a negative count behaves as `0`.
+let take : (float, List<'a>) => List<'a>
+
+/// Everything after the first `count` elements, saturating: past the end gives
+/// the empty list, and a negative count behaves as `0`.
+let drop : (float, List<'a>) => List<'a>
+
+/// Whether ANY element satisfies the predicate. The empty list is `false`.
+let any : (('a) => bool, List<'a>) => bool
+
+/// Whether EVERY element satisfies the predicate. The empty list is `true`.
+let all : (('a) => bool, List<'a>) => bool
+
+/// The element at a 0-based `index`, or `Option.None` when the index is out of
+/// range. A FRACTIONAL index is an error rather than an absence — it is a
+/// caller bug, not a missing element.
+let nth : (float, List<'a>) => Option.t<'a>
+
+/// The first element, or `Option.None` for an empty list.
+let head : (List<'a>) => Option.t<'a>
+
+/// The last element, or `Option.None` for an empty list.
+let last : (List<'a>) => Option.t<'a>
+
+/// The first element satisfying the predicate, or `Option.None` when none
+/// does.
+let find : (('a) => bool, List<'a>) => Option.t<'a>

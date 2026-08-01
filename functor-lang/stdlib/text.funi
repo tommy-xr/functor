@@ -1,0 +1,62 @@
+//! String building, formatting, and inspection.
+//!
+//! There is no string-concatenation operator and no character type:
+//! interpolation (`$"score: {n}"`) covers most formatting, `Text.concat` joins
+//! two strings, and single characters are one-character STRINGS.
+//!
+//! Functions with a clear subject take the string LAST so they thread through
+//! a pipeline: `s |> Text.contains("ab")` is `Text.contains("ab", s)`.
+//!
+//! Lengths and character splits count **Unicode scalar values** — not bytes,
+//! and not grapheme clusters. `Text.length(s)` always equals
+//! `List.length(Text.chars(s))`.
+
+/// `a` followed by `b`.
+let concat : (string, string) => string
+
+/// A number rendered in Functor Lang's canonical display form — the same text
+/// string interpolation produces.
+let fromFloat : (float) => string
+
+/// A number rendered with exactly `decimals` digits after the point.
+/// `Text.fixed(42.0, 0.0)` is `"42"`, the integer-formatting shape.
+let fixed : (float, float) => string
+
+/// The strings as a bulleted block, one item per line.
+let toBullets : (List<string>) => string
+
+/// Split the subject on every occurrence of `sep`. Splitting the empty string
+/// gives `[""]`; an empty separator is an error.
+let split : (string, string) => List<string>
+
+/// Join the strings with `sep` between them.
+let join : (string, List<string>) => string
+
+/// Parse a number, ignoring surrounding whitespace. Unparseable text answers
+/// `0.0` rather than raising — validate the input yourself when the difference
+/// matters.
+let parseFloat : (string) => float
+
+/// How many Unicode scalar values the string contains.
+let length : (string) => float
+
+/// The string's Unicode scalar values, each as a one-character string.
+let chars : (string) => List<string>
+
+/// The string uppercased, Unicode-aware — so the LENGTH may change (`"ß"`
+/// uppercases to `"SS"`).
+let toUpper : (string) => string
+
+/// The string lowercased, Unicode-aware — so the length may change.
+let toLower : (string) => string
+
+/// The string without leading or trailing whitespace.
+let trim : (string) => string
+
+/// Whether the subject contains `needle`. The empty needle is contained in
+/// every string.
+let contains : (string, string) => bool
+
+/// Replace EVERY occurrence of `from` with `to`, never re-scanning what was
+/// just written. An empty `from` is an error.
+let replace : (string, string, string) => string
