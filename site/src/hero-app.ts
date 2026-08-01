@@ -116,6 +116,7 @@ const mountKeybindingsButton = () => {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "editor-keybindings-toggle hero-editor-keybindings";
+  button.setAttribute("aria-live", "polite");
   button.addEventListener("click", () => {
     const mode = editorKeybindings.state.getSnapshot().mode;
     void editorKeybindings.setMode(mode === "vim" ? "standard" : "vim");

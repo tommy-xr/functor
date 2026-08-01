@@ -4,7 +4,7 @@
 // its event handlers run ahead of basicSetup and the editors' other keymaps.
 
 import { indentLess, indentMore, indentWithTab } from "@codemirror/commands";
-import { Compartment } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import { drawSelection } from "@codemirror/view";
 import type { EditorView, KeyBinding } from "@codemirror/view";
@@ -110,7 +110,11 @@ export const createEditorKeybindingsController = (
   let view: EditorView | null = null;
   let generation = 0;
 
-  const apply = async (mode: EditorKeybindings, focus: boolean): Promise<void> => {
+  const apply = async (
+    mode: EditorKeybindings,
+    focus: boolean,
+    downgradeStoredModeOnFailure: boolean
+  ): Promise<void> => {
     const target = view;
     if (!target) return;
     const request = ++generation;
@@ -130,7 +134,9 @@ export const createEditorKeybindingsController = (
       target.dispatch({
         effects: compartment.reconfigure([
           module.vim({ status: options.showStatus ?? true }),
-          ...(options.includeDrawSelection ? [drawSelection()] : []),
+          ...(options.includeDrawSelection
+            ? [EditorState.allowMultipleSelections.of(true), drawSelection()]
+            : []),
         ]),
       });
       state.set({ mode, loading: false, error: null });
@@ -138,10 +144,11 @@ export const createEditorKeybindingsController = (
     } catch (error) {
       if (request !== generation) return;
       // Say what is actually active. A later click can retry the lazy import.
-      persistMode("standard");
+      // A restore-time network failure must not erase an existing preference;
+      // an explicit failed opt-in returns persistence to Standard until retry.
+      if (downgradeStoredModeOnFailure) persistMode("standard");
       state.set({ mode: "standard", loading: false, error: errorMessage(error) });
       console.error("editor: could not load Vim keybindings", error);
-      if (focus) target.focus();
     }
   };
 
@@ -151,12 +158,12 @@ export const createEditorKeybindingsController = (
     attach(nextView) {
       if (view) throw new Error("editor keybindings controller is already attached");
       view = nextView;
-      void apply(state.getSnapshot().mode, false);
+      void apply(state.getSnapshot().mode, false, false);
     },
     async setMode(mode) {
       persistMode(mode);
       state.set({ mode, loading: mode === "vim", error: null });
-      await apply(mode, true);
+      await apply(mode, true, true);
     },
   };
 };

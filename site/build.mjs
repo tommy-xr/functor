@@ -319,35 +319,52 @@ const assertLazyVim = (result, label) => {
   }
 };
 
-const outputNamed = (result, name) =>
-  Object.entries(result.metafile.outputs).find(
-    ([output]) => output.split("/").pop() === name
+const assertPreloaded = async (
+  result,
+  htmlName,
+  entryOutputName,
+  deferredRoots = []
+) => {
+  const outputs = new Map(
+    Object.entries(result.metafile.outputs).map(([output, meta]) => [
+      output.split("/").pop(),
+      meta,
+    ])
   );
-
-const assertPreloaded = async (result, htmlName, eagerOutputNames) => {
   const html = await readFile(`${dist}/${htmlName}`, "utf8");
   const preloaded = new Set(
     [...html.matchAll(/<link rel="modulepreload" href="assets\/([^"]+)"/g)].map(
       (match) => match[1]
     )
   );
-  const required = new Set(eagerOutputNames);
-  for (const outputName of eagerOutputNames) {
-    const output = outputNamed(result, outputName);
+  const required = new Set(deferredRoots);
+  const visited = new Set();
+  const visitStaticGraph = (outputName) => {
+    if (visited.has(outputName)) return;
+    const output = outputs.get(outputName);
     if (!output) {
-      console.error(`${htmlName} expects missing build output ${outputName}`);
+      console.error(`${htmlName} references missing build output ${outputName}`);
       process.exit(1);
     }
-    for (const imported of output[1].imports) {
-      if (imported.kind === "import-statement") {
-        required.add(imported.path.split("/").pop());
+    visited.add(outputName);
+    for (const imported of output.imports) {
+      if (imported.kind === "import-statement" && !imported.external) {
+        const importedName = imported.path.split("/").pop();
+        required.add(importedName);
+        visitStaticGraph(importedName);
       }
     }
-  }
+  };
+  visitStaticGraph(entryOutputName);
+  for (const root of deferredRoots) visitStaticGraph(root);
+  required.delete(entryOutputName); // the page's module script already fetches it
+
   const missing = [...required].filter((name) => !preloaded.has(name));
-  if (missing.length) {
+  const stale = [...preloaded].filter((name) => !outputs.has(name));
+  if (missing.length || stale.length) {
     console.error(
-      `${htmlName} is missing modulepreload links for ${JSON.stringify(missing)}`
+      `${htmlName} modulepreloads are incomplete: missing ${JSON.stringify(missing)}, ` +
+        `not emitted ${JSON.stringify(stale)}`
     );
     process.exit(1);
   }
@@ -362,7 +379,7 @@ for (const [name, entry, htmlName] of editorBuilds) {
     metafile: true,
   });
   assertLazyVim(result, name);
-  await assertPreloaded(result, htmlName, [`${name}-chunk.js`]);
+  await assertPreloaded(result, htmlName, `${name}.js`);
 }
 
 // The hero is built SEPARATELY, with code splitting on, because it is the only
@@ -393,6 +410,6 @@ assertLazyVim(heroBuild, "hero");
 // The landing page preloads both the deferred island and its static shared
 // chunk. Otherwise the tiny island shell would introduce a serial discovery
 // hop before the CodeMirror payload despite the preload above it.
-await assertPreloaded(heroBuild, "index.html", ["hero-hero-app.js"]);
+await assertPreloaded(heroBuild, "index.html", "hero.js", ["hero-hero-app.js"]);
 
 console.log(`site built at ${dist}`);

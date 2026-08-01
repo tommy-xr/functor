@@ -24,6 +24,7 @@ export const EditorKeybindingsButton = ({
       type="button"
       aria-pressed={presentation.enabled}
       aria-busy={state.loading}
+      aria-live="polite"
       title={presentation.title}
       onClick={() =>
         void controller.setMode(presentation.enabled ? "standard" : "vim")

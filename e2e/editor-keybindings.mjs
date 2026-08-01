@@ -42,6 +42,41 @@ for (let attempt = 0; ; attempt++) {
 
 const browser = await chromium.launch();
 try {
+  // Failure behavior is part of the option's contract too: an explicit failed
+  // opt-in stays retryable without stealing keyboard focus, while an automatic
+  // restore failure must not erase the user's saved Vim preference.
+  const failureContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const failurePage = await failureContext.newPage();
+  await failurePage.route("**/assets/sandbox-dist.js", (route) => route.abort("failed"));
+  await failurePage.goto(`${BASE}/sandbox.html`);
+  await failurePage.waitForFunction(() => window.__sandbox);
+  await failurePage.click("#editor-keybindings");
+  await failurePage.waitForFunction(() => window.__sandbox.keybindings().error);
+  check(
+    "failed opt-in exposes a retry label and keeps button focus",
+    (await failurePage.locator("#editor-keybindings").innerText()) === "retry vim" &&
+      (await failurePage.evaluate(() => document.activeElement?.id)) === "editor-keybindings" &&
+      (await failurePage.getAttribute("#editor-keybindings", "aria-live")) === "polite"
+  );
+  check(
+    "explicit failed opt-in persists Standard",
+    (await failurePage.evaluate(() => localStorage.getItem("functor-editor-keybindings-v1"))) ===
+      "standard"
+  );
+  await failurePage.evaluate(() =>
+    localStorage.setItem("functor-editor-keybindings-v1", "vim")
+  );
+  await failurePage.reload();
+  await failurePage.waitForFunction(
+    () => window.__sandbox && window.__sandbox.keybindings().error
+  );
+  check(
+    "restore-time chunk failure preserves the Vim preference",
+    (await failurePage.evaluate(() => localStorage.getItem("functor-editor-keybindings-v1"))) ===
+      "vim"
+  );
+  await failureContext.close();
+
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
   const requested = [];
