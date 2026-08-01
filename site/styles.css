@@ -918,7 +918,6 @@ a:hover {
 .statusbar-vim[data-vim-mode] {
   color: var(--bg);
   font-weight: 600;
-  border-right: 0;
 }
 
 .statusbar-vim[data-vim-mode="normal"] {
@@ -2230,17 +2229,19 @@ a:hover {
   box-shadow: inset 0 2px 0 var(--cyan);
 }
 
-/* The Vim mode segment at the left edge of the strip. The adapter renders
-   into it imperatively: the clickable --MODE-- readout, pending keys, and
-   the `:` / `/` command input. The per-mode background blocks live with the
-   `.statusbar-vim[data-vim-mode]` rules above. */
+/* The Vim mode segment at the right edge of the strip, beside the vim
+   toggle. The adapter renders into it imperatively: the clickable --MODE--
+   readout, pending keys, and the `:` / `/` command input. The per-mode
+   background blocks live with the `.statusbar-vim[data-vim-mode]` rules
+   above. It owns the right-pushing auto margin while visible (the toggle
+   yields its own — see below), so both sit flush right together. */
 .statusbar-vim {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   max-width: 40%;
+  margin-left: auto;
   padding: 0 10px;
-  border-right: 1px solid var(--line);
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -2250,6 +2251,12 @@ a:hover {
   white-space: nowrap;
   overflow: hidden;
   min-width: 0;
+}
+
+/* Only one auto margin may push right: with the segment visible, the toggle
+   sits directly against it instead of splitting the free space. */
+.statusbar-vim:not([hidden]) + .editor-keybindings-toggle {
+  margin-left: 0;
 }
 
 .statusbar-vim[hidden] {
