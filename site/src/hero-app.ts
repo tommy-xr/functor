@@ -118,7 +118,8 @@ const mountKeybindingsButton = () => {
   button.className = "editor-keybindings-toggle hero-editor-keybindings";
   button.setAttribute("aria-live", "polite");
   button.addEventListener("click", () => {
-    const mode = editorKeybindings.state.getSnapshot().mode;
+    const { mode, error } = editorKeybindings.state.getSnapshot();
+    if (error) return;
     void editorKeybindings.setMode(mode === "vim" ? "standard" : "vim");
   });
   const render = () => {
@@ -127,6 +128,7 @@ const mountKeybindingsButton = () => {
     button.textContent = presentation.text;
     button.setAttribute("aria-pressed", String(presentation.enabled));
     button.setAttribute("aria-busy", String(state.loading));
+    button.setAttribute("aria-disabled", String(Boolean(state.error)));
     button.title = presentation.title;
   };
   editorKeybindings.state.subscribe(render);

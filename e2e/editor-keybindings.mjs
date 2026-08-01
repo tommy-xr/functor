@@ -57,7 +57,8 @@ try {
     "failed opt-in reports unavailability and keeps button focus",
     (await failurePage.locator("#editor-keybindings").innerText()) === "vim unavailable" &&
       (await failurePage.evaluate(() => document.activeElement?.id)) === "editor-keybindings" &&
-      (await failurePage.getAttribute("#editor-keybindings", "aria-live")) === "polite"
+      (await failurePage.getAttribute("#editor-keybindings", "aria-live")) === "polite" &&
+      (await failurePage.getAttribute("#editor-keybindings", "aria-disabled")) === "true"
   );
   check(
     "explicit failed opt-in persists Standard",
@@ -73,6 +74,12 @@ try {
   );
   check(
     "restore-time chunk failure preserves the Vim preference",
+    (await failurePage.evaluate(() => localStorage.getItem("functor-editor-keybindings-v1"))) ===
+      "vim"
+  );
+  await failurePage.evaluate(() => document.querySelector("#editor-keybindings").click());
+  check(
+    "unavailable control does not discard the preserved preference",
     (await failurePage.evaluate(() => localStorage.getItem("functor-editor-keybindings-v1"))) ===
       "vim"
   );

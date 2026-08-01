@@ -36,7 +36,8 @@ export interface EditorKeybindingsController {
 interface EditorKeybindingsOptions {
   /** Keep a persistent --NORMAL-- / --INSERT-- command panel. */
   showStatus?: boolean;
-  /** The hero omits basicSetup, so Vim multi-selection support lives here. */
+  /** The hero omits basicSetup, so Vim selection rendering and multi-cursor
+   * support live here. */
   includeSelectionSupport?: boolean;
 }
 

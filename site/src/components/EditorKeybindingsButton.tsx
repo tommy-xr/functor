@@ -24,11 +24,14 @@ export const EditorKeybindingsButton = ({
       type="button"
       aria-pressed={presentation.enabled}
       aria-busy={state.loading}
+      aria-disabled={Boolean(state.error)}
       aria-live="polite"
       title={presentation.title}
-      onClick={() =>
-        void controller.setMode(presentation.enabled ? "standard" : "vim")
-      }
+      onClick={() => {
+        if (!state.error) {
+          void controller.setMode(presentation.enabled ? "standard" : "vim");
+        }
+      }}
     >
       {presentation.text}
     </button>
