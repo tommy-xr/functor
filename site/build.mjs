@@ -407,17 +407,15 @@ const heroBuild = await esbuild.build({
 });
 // No assertLazyVim here: Vim keybindings are a sandbox/IDE feature — the hero
 // mini-editor has no opt-in, so the adapter must not be in its graph at all.
-const heroVimInput = Object.values(heroBuild.metafile.outputs).find((meta) =>
-  Object.keys(meta.inputs).some((input) => input.includes(VIM_ADAPTER))
-);
-if (heroVimInput) {
+// metafile.inputs is the whole resolved graph, so even a fully tree-shaken
+// import cannot slip through.
+if (Object.keys(heroBuild.metafile.inputs).some((input) => input.includes(VIM_ADAPTER))) {
   console.error("the hero build must not include the Vim adapter");
   process.exit(1);
 }
 
-// The landing page preloads both the deferred island and its static shared
-// chunk. Otherwise the tiny island shell would introduce a serial discovery
-// hop before the CodeMirror payload despite the preload above it.
+// The landing page preloads the deferred island so the tiny loader shell adds
+// no serial discovery hop before the editor payload.
 await assertPreloaded(heroBuild, "index.html", "hero.js", ["hero-hero-app.js"]);
 
 console.log(`site built at ${dist}`);

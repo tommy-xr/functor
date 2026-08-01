@@ -150,14 +150,39 @@ try {
       (await page.getAttribute("#statusbar .statusbar-vim", "data-vim-mode")) === "normal" &&
       (await page.locator("#editor .cm-vim-panel").count()) === 0
   );
-  // The mode block colors the segment's BACKGROUND (airline-style), cyan in
-  // Normal — rgb(65, 216, 230) is the theme's --cyan.
+  // The mode block colors the segment's BACKGROUND (airline-style) with the
+  // theme's dark ink on top — cyan here in Normal (--cyan).
+  const segmentPaint = () =>
+    page.locator("#statusbar .statusbar-vim").evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { background: style.backgroundColor, ink: style.color };
+    });
+  const normalPaint = await segmentPaint();
   check(
-    "Normal mode paints the segment background cyan",
-    (await page
-      .locator("#statusbar .statusbar-vim")
-      .evaluate((el) => getComputedStyle(el).backgroundColor)) === "rgb(65, 216, 230)"
+    "Normal mode paints the segment background cyan with dark ink",
+    normalPaint.background === "rgb(65, 216, 230)" && normalPaint.ink === "rgb(15, 12, 29)",
+    JSON.stringify(normalPaint)
   );
+  await page.locator("#editor .cm-content").focus();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("i");
+  await page.waitForFunction(() =>
+    document.querySelector("#statusbar .statusbar-vim")?.textContent?.includes("INSERT")
+  );
+  check(
+    "Insert mode paints the segment background green",
+    (await segmentPaint()).background === "rgb(111, 220, 146)"
+  );
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("V");
+  await page.waitForFunction(() =>
+    document.querySelector("#statusbar .statusbar-vim")?.textContent?.includes("VISUAL LINE")
+  );
+  check(
+    "Visual Line mode paints the segment background pink",
+    (await segmentPaint()).background === "rgb(232, 88, 184)"
+  );
+  await page.keyboard.press("Escape");
 
   const source = "alpha\nbeta\ngamma\n";
   await page.evaluate((text) => window.__sandbox.setSource(text), source);
@@ -214,6 +239,21 @@ try {
     );
   }
 
+  // Vim is a sandbox/IDE feature: even with the preference persisted, the
+  // landing hero mounts no control and fetches no adapter chunk — the only
+  // hero- assets are the island shell and its (Vim-free) deferred module.
+  await page.goto(BASE);
+  await page.waitForFunction(() => window.__hero);
+  await page.locator(".hero-editor .cm-content").waitFor({ state: "visible" });
+  check(
+    "hero stays Vim-free with the preference persisted",
+    (await page.evaluate(() => window.__hero.keybindings === undefined)) &&
+      (await page.locator(".hero-editor .editor-keybindings-toggle").count()) === 0 &&
+      !requested.some(
+        (path) => path.startsWith("/assets/hero-") && path !== "/assets/hero-hero-app.js"
+      )
+  );
+
   // The persisted preference is shared by the multi-file IDE. Its one editor
   // view survives file switches, so the current modal state should too.
   await page.goto(`${BASE}/ide.html`);
@@ -243,24 +283,8 @@ try {
   );
   await page.keyboard.press("Escape");
 
-  // Vim is a sandbox/IDE feature: even with the preference persisted, the
-  // landing hero mounts no control and fetches no adapter chunk.
-  await page.goto(BASE);
-  await page.waitForFunction(() => window.__hero);
-  await page.locator(".hero-editor .cm-content").waitFor({ state: "visible" });
-  check(
-    "hero stays Vim-free with the preference persisted",
-    (await page.evaluate(() => window.__hero.keybindings === undefined)) &&
-      (await page.locator(".hero-editor .editor-keybindings-toggle").count()) === 0 &&
-      !requested.some((path) => path.includes("hero-dist"))
-  );
-
   // Opting out through the IDE's control removes the adapter and updates the
   // shared preference for the next page.
-  await page.goto(`${BASE}/ide.html`);
-  await page.waitForFunction(
-    () => window.__ide && window.__ide.keybindings().mode === "vim" && !window.__ide.keybindings().loading
-  );
   await page.click("#editor-keybindings");
   await page.waitForFunction(() => window.__ide.keybindings().mode === "standard");
   check(

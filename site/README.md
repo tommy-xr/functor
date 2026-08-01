@@ -14,7 +14,7 @@ npm run site:serve       # http://127.0.0.1:8123
 npm run test:site        # headless e2e — sandbox (e2e/site-sandbox.mjs)
 npm run test:ide         # headless e2e — the set-project seam (e2e/ide-project.mjs)
 npm run test:ide-page    # headless e2e — the IDE page (e2e/ide-page.mjs)
-npm run test:editor-keybindings # headless e2e — opt-in Vim across editor surfaces
+npm run test:editor-keybindings # headless e2e — opt-in Vim in the sandbox and IDE
 ```
 
 - `player.html` — the runtime host page; the sibling of the CLI dev server's

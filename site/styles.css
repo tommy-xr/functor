@@ -2232,8 +2232,8 @@ a:hover {
 
 /* The Vim mode segment at the left edge of the strip. The adapter renders
    into it imperatively: the clickable --MODE-- readout, pending keys, and
-   the `:` / `/` command input. Modes carry the synthwave palette — cyan
-   NORMAL, green INSERT, pink VISUAL, red REPLACE — with a soft neon glow. */
+   the `:` / `/` command input. The per-mode background blocks live with the
+   `.statusbar-vim[data-vim-mode]` rules above. */
 .statusbar-vim {
   display: inline-flex;
   align-items: center;
