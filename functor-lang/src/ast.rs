@@ -428,7 +428,7 @@ impl BinOp {
 /// twin messages cannot drift (they differ only in how the brand is named:
 /// the checker knows the type, `Angle.t`; the interpreter knows the runtime
 /// tag, `Angle`).
-pub fn declared_operators_hint(brand: &str, declared: &[&str], op: BinOp) -> String {
+pub(crate) fn declared_operators_hint(brand: &str, declared: &[&str], op: BinOp) -> String {
     if declared.is_empty() {
         return format!(
             " — `{brand}` is a branded value with no arithmetic; declare it with \
