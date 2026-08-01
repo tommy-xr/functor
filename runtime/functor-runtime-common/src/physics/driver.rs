@@ -146,6 +146,14 @@ impl SteppedPhysics {
     /// frame-0 keyframe, and that snapshot is taken AFTER this reconcile — so a
     /// seek/rewind to any recorded frame restores the primed world exactly, and
     /// replay stays byte-identical without a synthetic pre-frame in the log.
+    ///
+    /// Body READS (`Physics.position` / `linearVelocity` / `transformed`)
+    /// answer from a primed world, but synchronous RAY QUERIES do not: rapier's
+    /// broad phase ingests colliders at the step, so `Physics.cast` still
+    /// reports a miss until the first substep has run (docs/physics.md). This
+    /// deliberately does not force a broad-phase update to paper over that —
+    /// hand-updating it outside the pipeline would put the determinism the
+    /// Timeline depends on at risk for one frame of probe latency.
     pub fn prime(&mut self, scene: &PhysicsScene) {
         let scene = scene.hydrated_heightfields();
         with_world(self.world, |w| {
@@ -285,7 +293,8 @@ impl SteppedPhysics {
     }
 
     /// The fixed-frame range a rewind can restore EXACTLY: the practical floor
-    /// (frame 0's pre-step is the empty pre-reconcile world, so 1 is the real
+    /// (frame 0's pre-step is the world before any STEP — empty, or the
+    /// cold-start primed declaration — so 1 is the real
     /// floor) through the newest recorded frame. `None` until something has
     /// stepped. The coupled scene rewind (docs/time-travel.md T1) uses this to
     /// refuse rather than silently clamp — a clamp would land the world on a
@@ -313,12 +322,13 @@ impl SteppedPhysics {
         };
         if hi == 0 {
             // Only the empty frame-0 exists — nothing meaningful to seek to
-            // (frame 0's pre-step state is the empty world, before any
+            // (frame 0's pre-step state is the world before any step — empty,
+            // or the cold-start primed declaration, before any
             // reconcile, which draw-reads can't use).
             warnings.push("physics rewind: no stepped frame recorded yet".to_string());
             return;
         }
-        // Pre-step of fixed frame 0 is the empty world, so the practical floor
+        // Pre-step of fixed frame 0 is the world before any step, so the floor
         // is frame 1 (= the world after its first step).
         let floor = if lo == 0 { 1 } else { lo };
         let target = frame.clamp(floor, hi);

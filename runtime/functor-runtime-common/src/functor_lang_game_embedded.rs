@@ -366,6 +366,10 @@ impl FunctorLangEmbeddedGame {
         };
         // Cold start (docs/physics.md): declare the initial world before the
         // first frame, so frame 1's physics reads answer instead of raising.
+        // The world is a thread-local, so drop whatever an earlier producer on
+        // this thread left behind first — otherwise a same-tag body from the
+        // previous session would answer this session's priming reads.
+        physics::remove_world(physics::DEFAULT_WORLD);
         game.ctx().prime_physics();
         Ok(game)
     }
@@ -413,9 +417,17 @@ impl FunctorLangEmbeddedGame {
         self.has_mouse_wheel = loaded.has_mouse_wheel;
         self.has_mouse_button = loaded.has_mouse_button;
         self.has_subscriptions = loaded.has_subscriptions;
+        let had_physics = self.has_physics;
         self.has_physics = loaded.has_physics;
         if !self.has_physics {
             physics::remove_world(physics::DEFAULT_WORLD);
+        } else if !had_physics {
+            // The edit ADDED the hook: there is no surviving world to keep, so
+            // this reload is a cold start for physics and must prime like one
+            // (docs/physics.md). Without it the very next frame's reads face an
+            // empty world — the cold-start hole this PR closes, reopened by the
+            // most common way to reach it.
+            self.ctx().prime_physics();
         }
         self.has_soundscape = loaded.has_soundscape;
         if !self.has_soundscape {

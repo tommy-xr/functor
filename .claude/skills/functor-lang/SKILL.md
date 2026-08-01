@@ -994,7 +994,8 @@ frame and it lands on the next one). Reads and writes both live in `tick`.
 
 Note the rule this example obeys: a local `let` needs `in`. It needs no
 first-frame gate — the world is primed from `init` before frame 1, so the
-pre-step reads answer from the very first tick.
+pre-step reads answer from the very first tick. (The `probe` cast is the one
+exception: ray queries need a step, so frame 1 reads "not grounded".)
 
 ⚠️ The sketch above is the LOOP SHAPE, not a usable controller — it has no
 coyote time, jump buffering, or post-jump lockout. See the next section.
@@ -1217,11 +1218,13 @@ Three rules follow from that one:
   runtime evaluates the hook once on `init` and reconciles it with ZERO steps,
   so frame 1's `tick`/hook reads answer with the initial declared poses. A
   `started: bool` guard is no longer needed — `examples/terrain` and
-  `examples/physics-controller` deleted theirs. Two footnotes: priming re-runs
-  at a RESTART but not at a hot reload (there the world survives with the
-  model), and inside the prime evaluation itself — the one call with no stepped
-  world behind it — a body read answers the identity pose (origin, zero
-  velocity) instead of raising.
+  `examples/physics-controller` deleted theirs. Three footnotes: priming re-runs
+  at a RESTART (and at a reload that ADDS the hook) but not at an ordinary hot
+  reload, where the world survives with the model; inside the prime evaluation
+  itself — the one call with no stepped world behind it — a body read answers
+  the identity pose (origin, zero velocity) instead of raising; and priming
+  answers BODY reads only — `Physics.cast` needs a step (rapier ingests
+  colliders there), so a grounding probe still answers from frame 2.
 - **A hook error degrades, loudly.** An error inside the hook (or a
   non-`Physics.scene` return) keeps the previous frame's declaration, keeps
   stepping the world, and reports the teaching error ONCE — the hot-reload

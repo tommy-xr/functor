@@ -203,10 +203,23 @@ world nothing has declared yet. This is what games used to hand-roll as a
 The prime is the ONE hook evaluation with no stepped world behind it, so it has
 its own small rule: **inside the prime, a body read answers the identity pose**
 (the origin, zero velocity) rather than raising — a hook that derives one
-body's declaration from another's pose can therefore bootstrap, at the cost of
-that derived body sitting at its identity pose for the single primed
-declaration. From frame 1 on, reads answer the real world and an unknown tag
-(a typo, an undeclared body) raises exactly as it always did.
+body's declaration from another's pose can therefore bootstrap. The hook is
+then evaluated a SECOND time, outside that rule, so a derived pose is declared
+at its real value before the first frame (otherwise it would be primed at the
+origin and jump on frame 1, which the divergence rule would turn into a
+teleport). Both passes are declaration-only and neither reports: a hook broken
+at startup surfaces on frame 1 through the degraded path below. From frame 1 on
+reads answer the real world, and an unknown tag (a typo, an undeclared body)
+raises exactly as it always did.
+
+⚠️ **Priming answers body reads, not ray queries.** `Physics.position` /
+`linearVelocity` / `transformed` read the primed poses on frame 1, but rapier's
+broad phase ingests colliders **at the step**, so `Physics.cast` /
+`castExcluding` still report a miss until the first substep has run — a
+grounding probe therefore answers from frame 2. That is one frame of "not
+grounded" at spawn, which is what a character in the air reads anyway; forcing
+a broad-phase update outside the pipeline would risk the determinism the
+Timeline depends on, so priming deliberately does not.
 
 Priming is deterministic — a pure function of `init` — and it lands *before*
 the timeline records anything, so the frame-0 keyframe already contains the

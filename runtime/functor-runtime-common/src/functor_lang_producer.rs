@@ -25,7 +25,7 @@
 //! differently); live input still funnels through [`FrameCtx::absorb`], so the
 //! frame body begins at the scrub-commit and never absorbs live input itself.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use functor_lang::{line_col, project::SourceMap, RunError, Session, Span, Value};
 
@@ -589,6 +589,11 @@ impl SpanSource {
 /// ([`SpanSource`]).
 pub struct Reporter {
     last_error: Option<String>,
+    /// Per-CHANNEL dedupe slots ([`Reporter::report_keyed`]) for a persistent
+    /// condition that co-occurs with other errors — the single `last_error`
+    /// slot only suppresses a repeat of the message that printed LAST, so two
+    /// persistent messages alternating would both re-emit every frame.
+    keyed: HashMap<&'static str, String>,
     source: SpanSource,
     emit: fn(&str),
 }
@@ -597,6 +602,7 @@ impl Reporter {
     pub fn new(source: SpanSource, emit: fn(&str)) -> Reporter {
         Reporter {
             last_error: None,
+            keyed: HashMap::new(),
             source,
             emit,
         }
@@ -607,9 +613,10 @@ impl Reporter {
         self.source = source;
     }
 
-    /// Clear the dedupe slot: a reload starts a fresh error stream.
+    /// Clear the dedupe slots: a reload starts a fresh error stream.
     pub fn reset(&mut self) {
         self.last_error = None;
+        self.keyed.clear();
     }
 
     fn last_error(&self) -> Option<String> {
@@ -622,6 +629,18 @@ impl Reporter {
         if self.last_error.as_deref() != Some(message.as_str()) {
             (self.emit)(&message);
             self.last_error = Some(message);
+        }
+    }
+
+    /// Print a message once per distinct string ON ITS OWN CHANNEL — for a
+    /// persistent condition that co-occurs with other reported errors (the
+    /// degraded `physics` hook, whose broken declaration also provokes
+    /// per-frame command warnings). Sharing the single `report_once` slot would
+    /// make the two alternate and re-emit at 60 Hz.
+    pub fn report_keyed(&mut self, channel: &'static str, message: String) {
+        if self.keyed.get(channel).map(String::as_str) != Some(message.as_str()) {
+            (self.emit)(&message);
+            self.keyed.insert(channel, message);
         }
     }
 
@@ -1304,32 +1323,60 @@ to receive their messages; dropping them",
         if !self.has_physics {
             return 0;
         }
+        let mut steps = None;
+        let problem = self.with_physics_scene(|ctx, scene| {
+            // The recorded drive (Phase 6): every fixed frame goes through the
+            // Timeline, so pause/rewind/replay work.
+            let advanced = ctx.physics_rt.advance(scene, dts);
+            steps = Some(advanced);
+        });
+        if let Some(advanced) = steps {
+            return self.absorb_advance(advanced);
+        }
+        // Degraded: keep the previous frame's declaration and keep stepping.
+        // Reported on its OWN dedupe channel — `report_once` is a single slot,
+        // and this message co-occurs with the command warnings a broken hook
+        // provokes, which would make the pair alternate every frame.
+        self.reporter.report_keyed(
+            "physics-hook",
+            format!(
+                "{} — keeping the previous frame's declared world and stepping it. \
+The `physics` hook is a pure DECLARATION; physics reads inside it answer with the \
+LAST stepped world, so a read of a tag this hook has never declared still raises.",
+                problem.expect("a frame that did not advance has a problem to report")
+            ),
+        );
+        let advanced = self.physics_rt.advance_undeclared(dts);
+        self.absorb_advance(advanced)
+    }
+
+    /// Evaluate the `physics` hook on the current model and hand its declared
+    /// scene to `f`. Returns `None` when the hook produced one, or the rendered
+    /// problem (a raised error, or a return value that is not a
+    /// `Physics.scene`) when it did not — the CALLER decides how to report it,
+    /// so the live frame and the cold-start prime can differ without the
+    /// teaching text drifting apart.
+    fn with_physics_scene(
+        &mut self,
+        f: impl FnOnce(&mut Self, &physics::PhysicsScene),
+    ) -> Option<String> {
         let args = vec![self.model.clone()];
-        let degraded = match self
+        match self
             .session
             .call(self.names.physics, args, &mut FunctorHost)
         {
             Ok(value) => match physics_scene_value(&value) {
                 Some(scene) => {
-                    // The recorded drive (Phase 6): every fixed frame goes
-                    // through the Timeline, so pause/rewind/replay work.
-                    let advanced = self.physics_rt.advance(scene, dts);
-                    return self.absorb_advance(advanced);
+                    f(self, scene);
+                    None
                 }
-                None => format!(
+                None => Some(format!(
                     "[functor-lang] physics must return Physics.scene(gravity, [body, …]), got {}",
                     value.kind_name()
-                ),
+                )),
             },
-            Err(err) => self.reporter.render_frame_error(self.names.physics, &err),
-        };
-        self.reporter.report_once(format!(
-            "{degraded} — keeping the previous frame's declared world and stepping it. \
-The `physics` hook is a pure DECLARATION; physics reads inside it answer with the \
-LAST stepped world, so a read of a tag this hook has never declared still raises."
-        ));
-        let advanced = self.physics_rt.advance_undeclared(dts);
-        self.absorb_advance(advanced)
+            Err(err) => Some(self.reporter.render_frame_error(self.names.physics, &err)),
+        }
     }
 
     /// Take one [`physics::Advanced`]'s outputs into per-frame state, returning
@@ -1353,11 +1400,19 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
     /// first frame's `tick` / hook reads answer with the initial declared poses
     /// instead of raising against a world nothing has declared yet.
     ///
-    /// This is the ONE hook evaluation with no stepped world behind it, so it
-    /// runs under a [`PrimingScope`]: a body read answers the identity pose
-    /// rather than raising, letting a hook that derives one body's declaration
-    /// from another's pose bootstrap. From frame 1 on, reads answer the real
-    /// world and an unknown tag raises as it always did.
+    /// The hook is evaluated TWICE, both times declaration-only:
+    ///
+    /// 1. under a [`PrimingScope`], where a body read answers the identity pose
+    ///    instead of raising — the only way a hook that derives one body's
+    ///    declaration from another's pose can bootstrap at all;
+    /// 2. normally, now that pass 1's bodies exist, so any derived pose is
+    ///    declared at its REAL value before the first frame. Without this a
+    ///    derived body would be primed at the origin and then jump to its true
+    ///    pose on frame 1 — which the divergence rule turns into a teleport (a
+    ///    kinematic body would carry that jump into contacts as velocity).
+    ///
+    /// Neither pass REPORTS: a hook broken at startup surfaces on frame 1
+    /// through the degraded path, with the full teaching text, exactly once.
     ///
     /// Deterministic: priming is a pure function of `init`, and it lands before
     /// the timeline's frame-0 keyframe is taken, so replays and rewinds
@@ -1366,21 +1421,11 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         if !self.has_physics {
             return;
         }
-        let args = vec![self.model.clone()];
-        let _priming = PrimingScope::enter();
-        match self
-            .session
-            .call(self.names.physics, args, &mut FunctorHost)
         {
-            Ok(value) => match physics_scene_value(&value) {
-                Some(scene) => self.physics_rt.prime(scene),
-                None => self.reporter.report_once(format!(
-                    "[functor-lang] physics must return Physics.scene(gravity, [body, …]), got {}",
-                    value.kind_name()
-                )),
-            },
-            Err(err) => self.reporter.frame_error(self.names.physics, &err),
+            let _priming = PrimingScope::enter();
+            let _ = self.with_physics_scene(|ctx, scene| ctx.physics_rt.prime(scene));
         }
+        let _ = self.with_physics_scene(|ctx, scene| ctx.physics_rt.prime(scene));
     }
 
     /// Close every connection this producer still has open (a reload that
@@ -3195,10 +3240,10 @@ mod tests {
         assert_eq!(h.height("ball"), Some(10.0));
         assert_eq!(h.physics_frame, 0);
         assert_eq!(h.physics_rt.seekable_range(), None);
-        // The prime evaluation has no stepped world behind it, so its own read
-        // answered the identity pose — the probe sits at the origin for
-        // exactly this one declaration, instead of the hook raising.
-        assert_eq!(h.height("probe"), Some(0.0));
+        // The prime's own read had no stepped world behind it, so pass 1
+        // answered the identity pose and pass 2 re-declared the derived body at
+        // the ball's primed height — either way the hook did not raise.
+        assert_eq!(h.height("probe"), Some(10.0));
 
         h.frame();
         // `tick` ran BEFORE this frame's step, so its read is the primed pose.
@@ -3246,6 +3291,105 @@ mod tests {
             "{:?}",
             PhysicsHarness::reports()
         );
+    }
+
+    /// A body whose declared pose is DERIVED from another body's is primed at
+    /// its real pose, not the identity pose pass 1 read — the prime evaluates
+    /// the hook a second time once pass 1's bodies exist. Otherwise frame 1's
+    /// first real declaration would be a pose CHANGE, which the divergence rule
+    /// turns into a teleport (and a kinematic body would carry it as velocity).
+    #[test]
+    fn a_derived_body_is_primed_at_its_real_pose() {
+        let mut h = PhysicsHarness::new(HOOK_READ_SRC);
+        h.ctx().prime_physics();
+        assert_eq!(h.height("ball"), Some(10.0));
+        assert_eq!(
+            h.height("probe"),
+            Some(10.0),
+            "the second prime pass must re-declare the derived body at the \
+             pose the first pass established"
+        );
+        assert!(PhysicsHarness::reports().is_empty());
+    }
+
+    /// Priming declares; it does not simulate — and rapier's broad phase
+    /// ingests colliders at the step, so a synchronous ray query still misses
+    /// on frame 1 while body reads answer. Pinning the caveat the docs state.
+    #[test]
+    fn a_primed_world_answers_body_reads_but_not_casts_until_it_steps() {
+        const SRC: &str = "\
+            let ballTag = Physics.tag(\"ball\")\n\
+            let init = { y: 0.0 - 1.0, hit: false }\n\
+            let tick = (m, dt, tts) =>\n\
+            \x20 { y: Physics.position(ballTag).y,\n\
+            \x20   hit: Physics.cast(Vec3.make(0.0, 12.0, 0.0),\n\
+            \x20                     Vec3.make(0.0, 0.0 - 1.0, 0.0), 20.0).hit }\n\
+            let physics = (m) =>\n\
+            \x20 Physics.scene(Vec3.make(0.0, 0.0 - 10.0, 0.0),\n\
+            \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5))\n\
+            \x20       |> Physics.at(Vec3.make(0.0, 10.0, 0.0)) ])\n\
+            let draw = (m, tts) =>\n\
+            \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+            \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        h.frame();
+        assert_eq!(field(&h.model, "y"), 10.0, "the body read answers");
+        assert_eq!(
+            h.model.to_string().contains("hit: true"),
+            false,
+            "a cast against a primed-but-unstepped world misses (documented)"
+        );
+        h.frame();
+        assert!(
+            h.model.to_string().contains("hit: true"),
+            "once a step has run the cast answers: {}",
+            h.model
+        );
+        assert!(PhysicsHarness::reports().is_empty());
+    }
+
+    /// The degraded notice has its OWN dedupe channel, so a broken hook that
+    /// also provokes a per-frame command warning does not make the two
+    /// alternate through `report_once`'s single slot and flood at 60 Hz.
+    #[test]
+    fn a_degraded_frame_does_not_flood_alongside_command_warnings() {
+        const SRC: &str = "\
+            let ballTag = Physics.tag(\"ball\")\n\
+            let ghostTag = Physics.tag(\"ghost\")\n\
+            let init = { n: 0.0 }\n\
+            let tick = (m, dt, tts) =>\n\
+            \x20 ({ n: m.n + 1.0 },\n\
+            \x20  Physics.applyImpulse(ghostTag, Vec3.make(0.0, 1.0, 0.0)))\n\
+            let physics = (m) =>\n\
+            \x20 let boom = Physics.position(ghostTag) in\n\
+            \x20 Physics.scene(Vec3.make(0.0, 0.0 - 10.0, 0.0),\n\
+            \x20   [ Physics.dynamic(ballTag, Physics.sphere(0.5))\n\
+            \x20       |> Physics.at(Vec3.make(0.0, 10.0, 0.0)) ])\n\
+            let draw = (m, tts) =>\n\
+            \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+            \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut h = PhysicsHarness::new(SRC);
+        // The hook reads `ghost`, which it never declares: the prime tolerates
+        // it (identity pose) and declares the ball; every later frame degrades,
+        // while `tick` commands the same unknown tag once per frame.
+        h.ctx().prime_physics();
+        for _ in 0..6 {
+            h.frame();
+        }
+        let reports = PhysicsHarness::reports();
+        assert_eq!(
+            reports.len(),
+            2,
+            "one degraded notice + one command warning, not one pair per frame: {reports:?}"
+        );
+        assert!(reports.iter().any(|r| r.contains("physics error")), "{reports:?}");
+        assert!(
+            reports.iter().any(|r| r.contains("ghost")),
+            "the command warning still surfaces: {reports:?}"
+        );
+        // …and the world the prime declared keeps stepping through all of it.
+        assert!(h.height("ball").expect("ball") < 10.0);
     }
 
     /// The prime's identity-pose read is scoped to the prime ALONE: a tag the

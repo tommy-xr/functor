@@ -497,6 +497,10 @@ impl FunctorLangGame {
         };
         // Cold start (docs/physics.md): declare the initial world before the
         // first frame, so frame 1's physics reads answer instead of raising.
+        // The world is a thread-local, so drop whatever an earlier producer on
+        // this thread left behind first — otherwise a same-tag body from the
+        // previous session would answer this session's priming reads.
+        physics::remove_world(physics::DEFAULT_WORLD);
         game.ctx().prime_physics();
         game
     }
@@ -575,9 +579,17 @@ impl FunctorLangGame {
         self.has_mouse_wheel = loaded.has_mouse_wheel;
         self.has_mouse_button = loaded.has_mouse_button;
         self.has_subscriptions = loaded.has_subscriptions;
+        let had_physics = self.has_physics;
         self.has_physics = loaded.has_physics;
         if !self.has_physics {
             physics::remove_world(physics::DEFAULT_WORLD);
+        } else if !had_physics {
+            // The edit ADDED the hook: there is no surviving world to keep, so
+            // this reload is a cold start for physics and must prime like one
+            // (docs/physics.md). Without it the very next frame's reads face an
+            // empty world — the cold-start hole this PR closes, reopened by the
+            // most common way to reach it.
+            self.ctx().prime_physics();
         }
         self.has_soundscape = loaded.has_soundscape;
         if !self.has_soundscape {
@@ -1805,6 +1817,50 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             "2",
             "a role whose module vanished keeps the old program"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hot reload that ADDS the `physics` hook is a cold start for physics —
+    /// there is no surviving world to keep — so it must prime like one. Without
+    /// this the developer's very next frame faces an empty world, which for a
+    /// hook that reads its own bodies is the permanent wedge the priming exists
+    /// to remove. [xreview High]
+    #[test]
+    fn a_reload_that_adds_the_physics_hook_primes_the_world() {
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-adds-physics",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.fun");
+        std::fs::write(&entry, BASE).expect("write entry");
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
+        assert!(!game.has_physics);
+
+        // The edit introduces a hook that READS the body it declares — the
+        // shape that used to wedge forever.
+        let with_physics = format!(
+            "{BASE}let ballTag = Physics.tag(\"ball\")\n\
+             let physics = (m) =>\n\
+             \x20 let ball = Physics.position(ballTag) in\n\
+             \x20 Physics.scene(Vec3.make(0.0, -10.0, 0.0),\n\
+             \x20   [Physics.dynamic(ballTag, Physics.sphere(0.5))\n\
+             \x20      |> Physics.at(Vec3.make(0.0, ball.y + 4.0, 0.0))])\n"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20)); // distinct mtime
+        std::fs::write(&entry, with_physics).expect("edit entry");
+        game.check_hot_reload(FrameTime { tts: 0.0, dts: 0.0 });
+        assert!(game.has_physics, "the reload must have landed");
+        assert!(
+            physics::with_world(physics::DEFAULT_WORLD, |w| w
+                .body_transform("ball")
+                .is_some())
+            .unwrap_or(false),
+            "adding the hook must prime the world before the next frame"
+        );
+        physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

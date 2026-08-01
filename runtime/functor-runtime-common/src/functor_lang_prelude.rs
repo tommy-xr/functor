@@ -5385,6 +5385,12 @@ pub struct PrimingScope;
 
 impl PrimingScope {
     pub fn enter() -> PrimingScope {
+        // Set/clear rather than save/restore: priming is a single, top-level
+        // producer call that never nests (the hook cannot prime the world).
+        debug_assert!(
+            !PRIMING.with(|p| p.get()),
+            "PrimingScope does not nest — it clears the flag on drop"
+        );
         PRIMING.with(|p| p.set(true));
         PrimingScope
     }
@@ -5465,8 +5471,9 @@ fn sync_cast(
 
 fn no_body(tag: &str) -> String {
     format!(
-        "no body tagged \"{tag}\" in the physics world (bodies exist after the \
-         frame's `physics` declaration has been reconciled and stepped)"
+        "no body tagged \"{tag}\" in the physics world (bodies exist once the \
+         `physics` hook has declared them — the world is declared from `init` \
+         before the first frame, so this is a tag your hook never declares)"
     )
 }
 
