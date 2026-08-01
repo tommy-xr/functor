@@ -9,7 +9,7 @@ the design rests on (`docs/physics.md`) sets a hard rule for the rest.
 
 1. **Pipeline across frames** — render frame N while simulating frame N+1.
 2. **Data-parallel within a system** — physics islands, entity update, cull/draw.
-3. **Many independent worlds** — server rooms/matches, the netsim's N instances.
+3. **Many independent worlds** — server rooms/matches, a multi-instance harness's N games.
 
 "Run all the systems in parallel" overstates it: within a single frame,
 `tick → physics → render` is a **dependency chain**, not a fan-out (physics needs
@@ -54,7 +54,7 @@ rewind / netcode / replay / LLM-observability all break. That gives a clean spli
 2. **Rapier's internal parallelism** — free; just enable it.
 3. **Data-parallel entity update** — `par_iter` over `Entities<'e>` once counts
    demand it (thousands), not before.
-4. **Many independent worlds** — embarrassingly parallel; the netsim already runs N
+4. **Many independent worlds** — embarrassingly parallel; a multi-instance harness runs N
    instances, and server room/match sharding scales across cores cleanly.
 5. **Audio / asset loading off the critical path** — real but low-stakes background
    work, not the bottleneck.

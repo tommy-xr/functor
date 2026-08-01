@@ -296,8 +296,8 @@ pub trait GameProducer {
     fn mouse_wheel(&mut self, delta: i32);
 
     /// Deliver a mouse-button edge. `button` is a [`crate::MouseButton`] as
-    /// `i32`. Defaulted (unlike the three above) so producers with no game
-    /// logic to run — replays, netsim — stay untouched; the Functor Lang
+    /// `i32`. Defaulted (unlike the three above) so a replay producer, which
+    /// has no game logic to run, stays untouched; the Functor Lang
     /// producers call `mouseButton(model, button, isDown)`.
     fn mouse_button(&mut self, _button: i32, _is_down: bool) {}
 
@@ -387,8 +387,8 @@ pub trait GameProducer {
     /// Push the shell's current asset-loading snapshot
     /// ([`crate::asset::AssetCache::progress`]); a change fires the game's
     /// `Sub.assets` taggers with the frame's subscription messages. Default:
-    /// no-op (drivers without an asset cache — replay, netsim — have nothing
-    /// to report).
+    /// no-op (a replay driver owns no asset cache, so it has nothing to
+    /// report).
     fn push_asset_progress(&mut self, _progress: crate::asset::AssetProgress) {}
 
     /// Take the audio commands the game queued this frame (a JSON array of

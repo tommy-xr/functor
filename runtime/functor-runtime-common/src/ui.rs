@@ -1,7 +1,7 @@
 //! In-game text overlay, rendered with egui on top of the 3D frame.
 //!
-//! This is the *shared* 2D pass: the shells (desktop runner, web runtime) and the
-//! netsim visualizer call it after [`crate::render_frame`], handing it a set of
+//! This is the *shared* 2D pass: the shells (desktop runner, web runtime) call
+//! it after [`crate::render_frame`], handing it a set of
 //! absolutely-positioned text labels. egui lives entirely here in the imperative
 //! shell — game code never touches it. A declarative `model -> View` F# API will
 //! later sit on top of this, lowering to the same `Label` list.
@@ -470,7 +470,7 @@ impl TextOverlay {
         if labels.is_empty() {
             return;
         }
-        // Label overlays (netsim, the F# path) are display-only: no pointer.
+        // Label overlays (the F# path) are display-only: no pointer.
         self.run_and_paint(width, height, pixels_per_point, Vec::new(), |ui| {
             // Labels are floating, Context-attached Areas rather than children of
             // the root Ui, so pull the context back out of the supplied `ui`.

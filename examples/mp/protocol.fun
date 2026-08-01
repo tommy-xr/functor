@@ -19,7 +19,7 @@ let arena = 4.0
 let row = (pid: float, x: float, z: float): Row => { pid: pid, x: x, z: z }
 
 // A distinct color per player id (wrapping every 4), shared so a given
-// player is the same color in every pane of the netsim viewer.
+// player is the same color in every multiplayer pane.
 let colorFor = (pid: float): (float, float, float) =>
   match Math.mod(pid, 4.0) with
   | 0.0 => (0.90, 0.35, 0.35)

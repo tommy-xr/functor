@@ -12,16 +12,16 @@
 //
 //     { type: "functor-net-deliver", events: [ …DeliveredEvent… ] }
 //
-// This module is the thing in between. Its routing model deliberately MIRRORS
-// the in-process netsim (`runtime/functor-netsim/src/lib.rs`), so a session that
-// runs in panes and the same session run headlessly agree on semantics:
+// This module is the thing in between. Its ROUTING model mirrors
+// `functor_runtime_common::net`'s `VirtualNet` — the same properties, written
+// again in TypeScript rather than called into:
 //
 //   • a listener registry keyed by AUTHORITY (host:port, scheme and path
 //     ignored), so a client url "ws://127.0.0.1:9001/play" matches a server
-//     bind "127.0.0.1:9001" — `authority()` there, `authorityOf` here;
-//   • one connection id per PAIR, shared by both ends (netsim uses the
-//     `VirtualNet` id the same way), so a send from either end routes to the
-//     other by looking up the same row;
+//     bind "127.0.0.1:9001" — `authorityOf` here;
+//   • one connection id per PAIR, shared by both ends (a `VirtualNet`
+//     `ConnectionId` is used the same way), so a send from either end routes to
+//     the other by looking up the same row;
 //   • both ends are told `connected` — the client under its connect key, the
 //     accepting server under its LISTEN key — because that key is how each
 //     side's runtime routes the event back to the right `Sub.connect` /
@@ -87,8 +87,8 @@ const PACKET_LOG_SLACK = 1_000;
  * client that booted a few hundred ms before its server pane would therefore
  * be permanent, and so would one delivered while the server pane is RELOADING
  * (which is why `close` re-queues the client end — see there). Panes race by
- * construction here; netsim, being lockstep, has no such window and errors
- * immediately. The window is generous because a cold pane boot is a wasm
+ * construction here; a lockstep in-process harness has no such window and
+ * errors immediately. The window is generous because a cold pane boot is a wasm
  * fetch + compile, and the cost of being wrong is a dead session.
  */
 const CONNECT_GRACE_MS = 15_000;
@@ -97,7 +97,7 @@ const CONNECT_GRACE_MS = 15_000;
 const DECODER = new TextDecoder();
 
 /** The authority (host:port) of an endpoint, ignoring scheme and path — the
- * exact rule netsim's `authority()` applies, so both agree on what matches. */
+ * same rule the Rust `authority()` applies, so both agree on what matches. */
 const authorityOf = (endpoint: string): string => {
   const afterScheme = endpoint.split("://").at(-1) ?? endpoint;
   return afterScheme.split("/")[0] ?? afterScheme;
@@ -135,7 +135,7 @@ export class NetCoordinator {
   /** authority -> the listening side (pane + its listen key). */
   private readonly listeners = new Map<string, Side>();
   /** Shared connection id -> its two ends. Ids start at 1: 0 is the "no
-   * connection" id an unroutable-connect error carries (as in netsim). */
+   * connection" id an unroutable-connect error carries. */
   private readonly conns = new Map<number, Conn>();
   private readonly pending: PendingConnect[] = [];
   private readonly log: Packet[] = [];

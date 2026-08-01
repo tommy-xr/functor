@@ -3,7 +3,7 @@
 // Left/Right (A/D) turn, Up (W) thrusts, HOLD SPACE over a glowing orb to
 // claim it: it takes your color, and your score is the orbs you own. A full
 // board deals a fresh round. The client HOSTS the authoritative world
-// in-process — when the netsim transport lands, the SERVER section moves
+// in-process — when the multiplayer transport lands, the SERVER section moves
 // behind the wire (a functor.json `entries` role, see examples/mp) unchanged.
 
 // ==========================  PROTOCOL  ================================

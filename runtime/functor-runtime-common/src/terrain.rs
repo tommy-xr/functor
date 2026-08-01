@@ -26,25 +26,6 @@ pub struct TerrainSource {
     pub while_pending: Vec<String>,
 }
 
-/// One decoded surface published from the terrain asset driver into the
-/// render/physics hydration bridge. Whole-environment replay keeps these
-/// events opaque and re-publishes them at their original frames.
-#[derive(Clone)]
-pub struct TerrainHydrationPublication {
-    pub source: TerrainSource,
-    data: Arc<HeightmapData>,
-}
-
-impl TerrainHydrationPublication {
-    pub(crate) fn new(source: TerrainSource, data: Arc<HeightmapData>) -> Self {
-        Self { source, data }
-    }
-
-    pub fn revision(&self) -> u64 {
-        self.data.revision
-    }
-}
-
 pub(crate) fn request_heightmap(source: TerrainSource) {
     HEIGHTMAP_REQUESTS.with(|requests| {
         requests.borrow_mut().insert(source);
@@ -94,10 +75,6 @@ pub(crate) fn hydrated_heightmap(source: &TerrainSource) -> Option<Arc<Heightmap
 /// `Physics.heightfield` declaration install them before their recorded frame.
 pub fn clear_hydrated_heightmaps() {
     HEIGHTMAPS.with(|heightmaps| heightmaps.borrow_mut().clear());
-}
-
-pub(crate) fn replay_heightmap_publication(publication: &TerrainHydrationPublication) {
-    publish_heightmap(&publication.source, publication.data.clone());
 }
 
 /// The collision-relevant subset of a terrain descriptor.

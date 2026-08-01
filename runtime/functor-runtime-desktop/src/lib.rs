@@ -7,9 +7,8 @@
 //! spawning a separate `functor-runner` process. [`run`] owns the GLFW/OpenGL
 //! window + the game loop and must be called on the main thread (see its docs).
 //!
-//! The game **producers** (`game`/`functor_lang_game`) are also exposed so in-process
-//! drivers in OTHER crates can construct them (the `functor-netsim` harness
-//! drives an [`functor_lang_game::FunctorLangGame`] as one of its instances — E3 phase 0b).
+//! The game **producers** (`game`/`functor_lang_game`) stay public modules; no
+//! crate outside this one constructs them today.
 
 pub mod game;
 pub mod functor_lang_game;

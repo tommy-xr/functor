@@ -50,16 +50,17 @@ Elm-style; persistent connections are a `Sub` (inbound/identity) + `Effect`
         ┌──────────────────────────────────▼──────────────── imperative shell ─┐
         │  ConnectionManager  — owns live connections, keyed by sub identity     │
         │  AsyncInbox         — thread-safe queue; drained ONCE per frame        │
-        │  Transport (trait)  — TcpDirect | Udp | WebSocket | Http | WebRTC      │
-        │                       + VirtualTransport (in-memory, deterministic)    │
+        │  transports         — TcpDirect | Udp | WebSocket | Http | WebRTC      │
+        │                       + VirtualNet (in-memory, deterministic)          │
         └───────────────────────────────────────────────────────────────────────┘
             native: tokio tasks            │   wasm: web-sys / wasm-bindgen-futures
 ```
 
-- **`Transport` trait** (in `functor-runtime-common`) is the seam. The Sub/Effect
-  API and `ConnectionManager` talk only to the trait; real sockets vs. an
-  in-memory `VirtualTransport` are swapped underneath. This is what lets the same
-  game run over real I/O *or* a simulated, deterministic network.
+- **The `ConnCommand` / `NetEvent` vocabulary** (`functor-runtime-common`'s `net`
+  module) is the seam. The Sub/Effect API and `ConnectionManager` speak only that
+  vocabulary; real sockets, the embedder seam, and the in-memory `VirtualNet` are
+  swapped underneath. This is what lets the same game run over real I/O *or* a
+  simulated, deterministic network.
 - **AsyncInbox + once-per-frame drain** is the determinism seam. I/O happens
   whenever on background tasks; the game only *observes* inbound messages at frame
   boundaries, when the runtime drains the inbox into the `EffectQueue` and feeds
@@ -125,8 +126,8 @@ the structured effect log as data (`net.sendMsg` records), so they replay and
 introspect like every other effect. `examples/mp` is the full reference — its
 client and server exchange the shared `Protocol.Wire` ADT (typed `Move`s up,
 typed `Snapshot`s down, full float precision) with no string codec anywhere;
-the netsim fixtures (`runtime/functor-netsim/tests/fixtures/typed/`) are the
-minimal ping/pong form.
+`e2e/net-coordinator.mjs` drives it as a
+whole hosted session.
 
 Two sharp edges, by design: (1) constructors match by their **canonical tag**,
 which includes the module prefix — `Protocol.Ping` sent from one end only matches
@@ -161,27 +162,33 @@ JSON/CBOR), and a bytes-inbound path through the shells (WS binary frames;
 
 ## Test harness / SDK
 
-Both layers, in-process first:
+**A. Hosted panes + a host coordinator (primary SDK).** A whole session runs in
+one browser page as N independent runtimes — a "server" pane and K "client"
+panes, each an ordinary `player.html?net=embedder` with its own model and its
+own render loop. `"embedder"` routes a runtime's networking to the page that
+embeds it instead of to real sockets: the pane posts its drained `ConnCommand`s
+outward (`functor-net-commands`) and takes inbound events back
+(`functor-net-deliver`). The **host coordinator** (`site/src/net-coordinator.ts`)
+is the thing in between — a listener registry keyed by authority, one connection
+id per pair, both ends told `connected`, FIFO per pane. No sockets are opened
+and no server process runs.
 
-**A. In-process deterministic netsim (primary SDK).** A `functor-netsim` crate
-holds N game instances + a `VirtualTransport` bus and steps them in controlled
-lockstep. Because the harness *is* the network, tests of entity sync, high
-latency, loss, reordering, partitions, and disconnect/reconnect are byte-for-byte
-reproducible — fast, no sockets, no GPU.
+Its routing properties mirror `functor_runtime_common::net::VirtualNet`, which
+it does not call: the coordinator ships **perfect links, next-rAF delivery**
+today, not step-time delivery. `VirtualNet`'s scheduling — packets as
+`{deliver_tick, seq, dest, event}` data over a seeded SplitMix64 and a per-link
+`LinkProfile` — is the basis planned for latency, jitter, loss, partitions, and
+the step-time delivery barrier that makes them reproducible.
 
-```
-sim.add_server(game); sim.add_client(game) x K
-sim.set_link(client2, { latency, jitter, loss, reorder })
-sim.advance_ticks(server, 1); sim.deliver()   // you control when bytes cross
-sim.partition([clientA], [server]); sim.heal(...)
-sim.kill(clientB); ...; sim.restart(clientB)
-assert_eq!(sim.state(clientA).entities, sim.state(server).entities)
-```
+`e2e/net-coordinator.mjs` (`npm run test:net-coordinator`) drives `examples/mp`
+as a server plus two clients in headless Chromium and asserts the handshake,
+two-way traffic, convergence across clients, and input propagation.
 
-This shipped as the `functor-netsim` crate: many `functor_lang::Session`-backed game
-instances share a `VirtualTransport` bus in one process, stepped in lockstep. (An
-`functor_lang::Session` is a plain owned value, so hosting a server + many clients in one
-process is natural — there is no per-process global runner to work around.)
+An earlier in-process variant of this SDK — `functor-netsim`, N producers
+stepped in lockstep over `VirtualNet` inside ONE process — was built and then
+removed: it duplicated the protocol the coordinator now owns while running the
+games in a shape (shared command queues, one thread, one clock) that the panes
+do not. `VirtualNet` itself survives as the semantics above.
 
 **B. Multi-process integration harness.** Real `functor` game processes driven
 over an extended debug-server API (add `/net` inject + `/tick` step to the
@@ -190,22 +197,22 @@ validates the real I/O + serialization path. Smoke/integration only.
 
 ## Whole-environment time travel
 
-`NetSim::seek(frame)` rewinds **every instance's model AND the virtual network**
-to the state they settled in at that frame — so a rewound frame shows each
-client's own lagging view, the server's authoritative one, and the packets that
-were genuinely mid-flight between them.
+The goal: seek the WHOLE environment to a past frame — every pane's model *and*
+the packets that were genuinely in flight between them — so a rewound frame
+shows each client's own lagging view beside the server's authoritative one.
 
 It splits along a line the code already draws: each producer records and
 restores its own model (`SceneRecorder` runs inside the frame body `tick`
-executes, and `seek_scene_to` restores it), so the sim only snapshots what lives
-*outside* the producers — the network and its routing tables.
+executes, and `seek_scene_to` restores it), so the coordinator need only
+snapshot what lives *outside* the producers — the network and its routing
+tables.
 
 The **snapshot cut** is load-bearing. Only delivery touches a model outside
-`tick` (`deliver_net_event` folds an inbound message through `update` on the
-spot), so the snapshot is taken after a frame's sends are routed and the network
-has advanced but *before* delivery — the one instant where every model still
-equals its recorded frame. `seek` then replays that frame's pending deliveries,
-so a parked frame shows exactly what a viewer saw live and seeking is idempotent.
+`tick` (an inbound message folds through `update` on the spot), so the snapshot
+must be taken after a frame's sends are routed and the network has advanced but
+*before* delivery — the one instant where every model still equals its recorded
+frame. A seek then replays that frame's pending deliveries, so a parked frame
+shows exactly what a viewer saw live and seeking is idempotent.
 
 Semantics match the single-game scrubber: a seek is non-destructive **while
 parked**, and stepping on **commits the branch**. The commit is rebuilt from the
@@ -214,39 +221,25 @@ timeline byte-for-byte. Because a scrub-back is a plain restore and never a
 re-step, none of this needs determinism — the property `History` relies on for
 one game holds for N games plus the network.
 
-Two rules the harness enforces loudly rather than silently skewing: every
-instance must join before the sim's first step (frame alignment), and a seek
-preflights every instance's recorded range before mutating anything (a producer's
-own `seek_scene_to` *clamps* rather than refusing). Link impairment is treated as
-configuration, not recorded state, so it survives a restore — "rewind, worsen the
-link, watch it again" works.
+Two rules to enforce loudly rather than silently skew: every instance must join
+before the environment's first step (frame alignment), and a seek must preflight
+every instance's recorded range before mutating anything (a producer's own
+`seek_scene_to` *clamps* rather than refusing). Link impairment is configuration,
+not recorded state, so it survives a restore — "rewind, worsen the link, watch it
+again" works.
 
-### In the browser
+This is **not built on the coordinator yet**: the removed in-process harness is
+where these rules were first implemented and regression-tested, and the
+coordinator-seek PR re-establishes them over the panes.
 
-The netsim is platform-free, so it also runs in the **web runtime**, hosting the
-same shared `FunctorLangEmbeddedGame` producers behind the `WebPlatform` seam:
-a whole session — a server and N clients from one multi-entry project — simulated
-inside a single page, with no sockets opened (the sim routes the games' own
-connect/send commands through the virtual network itself). This is the foundation
-for simulating multiplayer inside the VSCode and browser IDEs.
-
-The page exposes it as `window.__sim` (`start` / `step` / `state` / `timeline` /
-`seek` / `len` / `stop`), mirroring the `window.__scrub` seam. While a sim is
-running the single game is **suspended**: producers share the thread's command
-queues and each drain empties them for everyone, so a live single game would
-steal the instances' commands and dispatch them to real sockets. `e2e/wasm-sim.mjs`
-(`npm run test:wasm-sim`) drives `examples/mp` as a server plus two clients in
-headless Chromium and asserts the convergence, the whole-environment rewind, and
-the exact replay.
-
-## Roadmap (small, stacked PRs; each protocol ships with a netsim test)
+## Roadmap (small, stacked PRs; each protocol ships with a test)
 
 | Phase | Scope | Targets |
 | --- | --- | --- |
-| **0. Spine** | `Transport` trait + `AsyncInbox` + `VirtualTransport`, Rust-only unit tests (latency/loss/reorder/partition). No game yet. | n/a |
+| **0. Spine** | the `ConnCommand`/`NetEvent` vocabulary + `AsyncInbox` + `VirtualNet`, Rust-only unit tests (latency/loss/reorder/partition). No game yet. | n/a |
 | **1. HTTP** | `Effect` request + inbound `Sub` response (correlate by token); reqwest/hyper (native) + fetch (wasm). | wasm+native |
 | **2. WebSocket** | `Sub.connect` + `Effect.send`; sub identity/reconciliation. Client first, then `Sub.listen` (server, native). | wasm+native |
-| **3. Multi-instance + netsim SDK** | runner handle refactor + `functor-netsim` crate + first sync/latency/disconnect suite. | both |
+| **3. Multi-instance SDK** | runner handle refactor + the embedder seam + the host coordinator + first sync/latency/disconnect suite. | both |
 | **4. TCP/UDP direct** | raw TCP + UDP `listen`/`connect` (UDP matters most for the real-time game). | native only |
 | **5. WebRTC** | data channels + signaling. Deferred. | wasm+native |
 
@@ -255,6 +248,6 @@ the exact replay.
 For the battle-royale target, on top of the transport layer: server-authoritative
 sim, client-side prediction + server reconciliation, snapshot/delta entity sync,
 interpolation / lag compensation, area-of-interest culling for ~100-player scale.
-The Phase 3 deterministic netsim is precisely the tool to test this — predicted
-vs. authoritative divergence under controlled latency/loss is exactly what
-`VirtualTransport` asserts on.
+The Phase 3 multi-instance SDK is precisely the tool to test this — predicted
+vs. authoritative divergence under controlled latency/loss is exactly what a
+`LinkProfile`-impaired coordinator session asserts on.

@@ -3,11 +3,10 @@
 // coordinator (site/src/net-coordinator.ts) over the embedder seam, with NO
 // sockets and no server process.
 //
-// This is the pane-shaped sibling of e2e/wasm-sim.mjs. That test runs the same
-// project (examples/mp) through the IN-PROCESS netsim inside one page; this one
-// runs it the way the sandbox will: three independent `player.html?net=embedder`
-// runtimes, each with its own model and its own render loop, whose packets cross
-// the postMessage boundary and are routed by the host.
+// This runs examples/mp the way the sandbox will: three independent
+// `player.html?net=embedder` runtimes, each with its own model and its own
+// render loop, whose packets cross the postMessage boundary and are routed by
+// the host.
 //
 // It asserts:
 //

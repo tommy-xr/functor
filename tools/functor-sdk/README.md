@@ -133,7 +133,7 @@ no pixels).
 
 Launch N runners on separate debug ports, networked via `Sub.connect`/`Sub.listen`,
 and drive them together — the out-of-process counterpart to the in-process
-`functor-netsim` harness. `waitFor(poll, predicate, opts)` (and the
+browser-hosted multiplayer panes. `waitFor(poll, predicate, opts)` (and the
 `client.waitForState(predicate, opts)` shorthand) polls until an async condition
 holds, e.g. network convergence; `stepAll(clients, dt)` advances every client by
 one lockstep frame.

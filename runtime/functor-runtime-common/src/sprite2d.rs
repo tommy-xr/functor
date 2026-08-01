@@ -97,7 +97,7 @@ impl Camera2D {
     }
 
     /// Fit the camera's declared aspect inside `viewport`, preserving its
-    /// bottom-left offset for stereo/netsim panes.
+    /// bottom-left offset for sub-rectangle views (stereo, per eye).
     pub(crate) fn fitted_viewport(&self, viewport: Viewport) -> Viewport {
         let Some([_, _, width, height]) =
             self.fitted_rect(viewport.width as f32, viewport.height as f32)

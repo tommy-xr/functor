@@ -340,7 +340,7 @@ export async function waitFor<T>(
  *
  * The building block for **multiplayer simulation**: pin every client's clock,
  * then `stepAll` them by the same dt each tick so their simulations stay in
- * sync (the out-of-process analogue of the in-process `functor-netsim`
+ * sync (the out-of-process analogue of the browser's hosted multiplayer
  * harness).
  *
  * Rejects (via `Promise.all`) if any client's step fails — but the others may

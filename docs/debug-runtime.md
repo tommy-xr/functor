@@ -508,4 +508,5 @@ agents (docs/mcp.md).
 - **Multiplayer simulation.** Launch N runner instances, each on its own
   `--debug-port`, networked via `Sub.connect`/`Sub.listen`; pin all clocks and step
   them in lockstep, injecting input and observing state per client. This is the
-  out-of-process counterpart to the in-process `functor-netsim` harness.
+  out-of-process counterpart to the browser's hosted panes + net coordinator
+  (`docs/multiplayer.md`).

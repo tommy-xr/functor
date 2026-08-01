@@ -8,10 +8,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 functor_runtime_common = { path = "./../functor-runtime-common" }
-# The deterministic multiplayer harness. Platform-free (it drives
-# `Box<dyn GameProducer>` over the virtual network), so it compiles to wasm as
-# is — this is what lets the IDE simulate a whole session in the browser.
-functor-netsim = { path = "./../functor-netsim" }
 functor-prelude = { path = "../../functor-prelude" }
 # The Functor Lang language, for the in-runtime interpreter producer (docs/functor-lang.md C5).
 functor-lang = { path = "../../functor-lang" }

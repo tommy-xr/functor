@@ -1,6 +1,6 @@
 // view.fun — the scene both roles render: one colored cube per player row on
 // the arena ground plane. Client and server share the exact framing and
-// palette, so their panes line up in the netsim viewer.
+// palette, so their panes line up in the multiplayer view.
 
 let world = (rows: List<Protocol.Row>) =>
   let playerNodes =

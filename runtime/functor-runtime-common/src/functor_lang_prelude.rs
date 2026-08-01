@@ -4260,7 +4260,7 @@ fn collect_conn_subs(sub: &SubTree, out: &mut Vec<NetConnSub>) {
 /// `Effect.sendMsg` from the other end) decodes into `Net.Data(id, value)`
 /// instead of `Net.Message`; a frame that does not parse (version skew,
 /// corruption) becomes `Net.Error` rather than leaking the raw frame as text.
-/// This is the single decode site — the native, wasm, and netsim paths all
+/// This is the single decode site — the native and wasm paths all
 /// deliver through it.
 pub fn net_event_value(kind: NetEventKind, conn: u64, text: &str) -> EffectValue {
     let id = EffectValue::Number(conn as f64);
@@ -9916,8 +9916,8 @@ the game dir"
     /// and cargo runs these tests as parallel threads — any two tests that
     /// push or drain it can steal each other's commands (a Windows-CI flake
     /// caught exactly that: a broadcast's second Send vanished into a
-    /// concurrent test's clearing drain). Same rule as functor-netsim's
-    /// NET_LOCK: every test touching the queue takes this first.
+    /// concurrent test's clearing drain). Every test touching the queue takes
+    /// this first.
     static CONN_QUEUE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]

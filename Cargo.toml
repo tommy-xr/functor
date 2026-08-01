@@ -5,7 +5,6 @@ members = [
     "cli",
     "functor-prelude",
     "functor-lang",
-    "runtime/functor-netsim",
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",
     "runtime/functor-runtime-web",

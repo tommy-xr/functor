@@ -11,7 +11,7 @@ name: WASM smoke
 # needed, so this runs on a plain ubuntu runner.
 #
 # It has since become the home for the browser-side e2e suite generally (remote
-# assets, the sandbox and IDE pages, the multiplayer netsim): they all need the
+# assets, the sandbox and IDE pages, the multiplayer panes): they all need the
 # same expensive setup — the wasm bundle, the CLI that embeds it, and headless
 # Chromium — so they run as extra steps here rather than paying for it again in
 # a job of their own.
@@ -97,13 +97,13 @@ jobs:
       - name: Run wasm smoke
         run: npm run test:wasm-smoke
 
-      # The multiplayer netsim hosted in the browser: a server + two clients
-      # from one multi-entry project stepped over the virtual network in a
-      # single page, then rewound as ONE environment. Same "works native, broken
-      # in wasm" guard as the smoke above, for the seam the IDEs' multiplayer
-      # view is built on — and it asserts no REAL sockets are opened.
-      - name: Run wasm netsim e2e
-        run: npm run test:wasm-sim
+      # The multiplayer session hosted in the browser: a server + two client
+      # panes, each its own `player.html?net=embedder` runtime, routed by the
+      # host page's net coordinator over the embedder seam. Same "works native,
+      # broken in wasm" guard as the smoke above, for the seam the IDEs'
+      # multiplayer view is built on — and it asserts no REAL sockets are opened.
+      - name: Run net-coordinator e2e
+        run: npm run test:net-coordinator
 
       # Remote (URL) asset loading in the browser: builds a wasm bundle that
       # loads a good URL and a 404 URL from a localhost CORS server and asserts

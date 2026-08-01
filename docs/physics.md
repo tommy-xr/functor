@@ -2,7 +2,7 @@
 
 Status: **the core roadmap is shipped** (Phases 1a–6, on the Functor Lang surface). This
 is the design doc *and* the record of what landed; it builds on the same seams
-as `docs/multiplayer.md` (effect queue, subs, the `functor-netsim` deterministic
+as `docs/multiplayer.md` (effect queue, subs, the multi-instance test
 harness) and supersedes the `Physics` stub in `docs/todo.md`.
 
 ### What shipped (as of 2026-07-05)
@@ -52,8 +52,9 @@ shape every decision:
    reconciled against a live world each frame — the same shape as `draw3d`
    (`Scene3D`) and `soundScape` (`AudioScene`).
 2. **Local determinism.** Same binary, same inputs → same simulation,
-   byte-for-byte — so we can rewind, replay, and verify in the deterministic
-   netsim. *Local* (single-binary) determinism is sufficient for every scenario
+   byte-for-byte — so we can rewind, replay, and (once the coordinator delivers
+   on step time) verify in the multi-instance harness. *Local* (single-binary)
+   determinism is sufficient for every scenario
    we target — replay, time-travel debugging, and both netcode modes (there is
    only single ownership at any time) — and Rapier provides it with default
    features. Cross-platform determinism is a **non-goal** (see Determinism).
@@ -343,7 +344,7 @@ Physics.synced (fun states -> PhysicsTick states)     // Sub<'msg>
 ```
 
 The `Physics.View` is a cheap read handle to the frame's stepped snapshot, reached
-through the explicit `DrawContext` argument so rewind and netsim still treat
+through the explicit `DrawContext` argument so rewind and networked play still treat
 **model + snapshot** as the whole truth (it is not ambient global state). Changing
 `draw3d` to take the context record is a small migration across the existing
 examples (`hello`, `examples/mp`) — they destructure `{ time }` and are
@@ -519,7 +520,7 @@ What local determinism requires from us (the fine print):
   artifacts. Hot-reloading the *game dylib* is safe — Rapier lives in the
   runtime shell, which is unchanged — but rebuilding the *runtime* invalidates
   recorded history.
-- No wall-clock / unseeded RNG leakage (netsim already uses a seeded SplitMix64).
+- No wall-clock / unseeded RNG leakage (`VirtualNet` already uses a seeded SplitMix64).
 - **Validate with goldens; never assume** (Phase 1).
 
 ## Rewind: the `Simulatable` / `Timeline` seam
@@ -671,9 +672,10 @@ This is the visual proof of reconcile correctness (declared scene vs what the
 solver actually holds) and makes divergence bugs — a body the renderer draws in
 one place and physics has in another — visible immediately.
 
-## Test harness (extends `functor-netsim`)
+## Test harness (extends the multi-instance harness)
 
-The deterministic netsim (`docs/multiplayer.md` Phase 3) is the verification tool.
+The multi-instance harness (`docs/multiplayer.md` Phase 3 — panes routed by the
+host coordinator) is the verification tool.
 The first three goldens are **shipped** (pure Rust, no GL, in
 `physics/goldens.rs`, run under `cargo test`); the last two are the netcode
 phase (7):
@@ -687,11 +689,13 @@ phase (7):
   determinism check.
 - **Replay golden** *(shipped)*: `replay_only()`-seek to the end, assert it
   matches a live run.
-- **Convergence under latency/loss** (extends `tests/mp.rs`): server + 2 clients
+- **Convergence under latency/loss** (extends `e2e/net-coordinator.mjs`): server + 2 clients
   with a physics scene under `LinkProfile { latency, jitter, loss }`; assert each
   client's read-back converges to the server within tolerance after reconcile.
   Sweep profiles; add a partition→heal case (predict through, snap back on heal).
-- **`netsim_viz` overlays**: render the authoritative server transform as a
+  Blocked on the coordinator gaining link impairment and step-time delivery — it
+  routes over perfect links today.
+- **Multi-pane overlays**: render the authoritative server transform as a
   translucent **ghost** beside the client's predicted body (see prediction error +
   the reconcile snap); per-client metrics (max prediction error, rewinds/sec,
   resim depth); wire the existing pause/step controls to the snapshot ring for
@@ -720,8 +724,9 @@ It's worth building in two steps, because they exercise different machinery:
    ball so the *server* is authoritative: the client sends **input** (impulses),
    predicts its ball locally, and `reconcile`s against server snapshots via the
    `Timeline`. This is the path that needs replay determinism and proves the
-   prediction/reconciliation loop end-to-end — verified in `functor-netsim` under
-   latency/loss, with `netsim_viz` ghosts showing predicted vs. authoritative.
+   prediction/reconciliation loop end-to-end — verified in the multi-instance
+   harness under latency/loss, with multi-pane ghosts showing predicted vs.
+   authoritative.
 
 ## Roadmap (small, stacked PRs)
 
@@ -738,7 +743,7 @@ It's worth building in two steps, because they exercise different machinery:
 | **5b. Entity abstraction** | `Entities<'e>` + `Archetype` model-layer library, `Scene3D.instances` primitive, reconcile bail-out + tag interning, despawn-on-collision; `physics` grows a bullet/debris archetype. | both |
 | **6. Pause/rewind/replay** | `SteppedPhysics` recorder over the 1b `Timeline`: per-fixed-frame recording (byte-identical to replay by construction), rewind-then-branch via `TimelineLog::truncate_from`, bounded history. **Shipped**; the game-facing control effects (`Physics.pause`/`resume`/`stepOnce`/`rewindTo`/`timelineFrame`) and the example's keyboard scrub shipped here too but were later **removed** — the recorder now drives the shell-owned whole-game scrubber (docs/time-travel.md) via `rewind_to_frame`/`seek_to_frame`. | native+wasm (Functor Lang) |
 | **7a. Networked physics (state-sync)** | `Authority`, `examples/mp` grown to client-owned balls + server-owned objects, kinematic `Remote` + interpolation. No prediction. | both |
-| **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, `netsim_viz` ghosts + divergence metrics, latency-sweep convergence tests. | both |
+| **7b. Prediction + reconciliation** | Server-authoritative ball, client input + prediction, structural `server`/`client` collections (network snapshot = `server`; reconcile = field swap), `Timeline` reconcile, multi-pane ghosts + divergence metrics, latency-sweep convergence tests. | both |
 
 (No cross-target determinism phase: neither netcode mode needs it — see
 Determinism. `enhanced-determinism` + cross-target goldens is the documented
