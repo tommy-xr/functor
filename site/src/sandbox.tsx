@@ -359,7 +359,11 @@ const loadInline = (b64u: string) => {
   // loader derives module `Main` for a non-identifier entry label.
   // scrubber=hidden: the page's chrono bar is the transport UI; the player
   // mounts the __scrub seam with no bar of its own.
-  const params = new URLSearchParams({ src: b64u, scrubber: "hidden" });
+  // net=embedder, UNCONDITIONALLY: this host always routes pane networking
+  // through its own coordinator (net-coordinator.ts) rather than letting a
+  // pane open browser sockets. A program that declares no `Sub.connect`/
+  // `Sub.listen` posts nothing, so the declaration costs it nothing.
+  const params = new URLSearchParams({ src: b64u, scrubber: "hidden", net: "embedder" });
   if (pageMouseCapture === false) params.set("mouseCapture", "false");
   if (pageCursorPolicy) params.set("cursor", pageCursorPolicy);
   frame.src = `player.html?${params}`;
@@ -408,7 +412,8 @@ const loadExample = async (id: string) => {
   // switching examples resets state; the ready announcement re-arms pushes.
   setDoc(source, siblings, assets);
   setStatus("busy", "◌ loading…");
-  const params = new URLSearchParams({ game: url, scrubber: "hidden" });
+  // scrubber=hidden / net=embedder: as in loadInline above.
+  const params = new URLSearchParams({ game: url, scrubber: "hidden", net: "embedder" });
   const cursorPolicy = example?.cursor ?? pageCursorPolicy;
   const mouseCapture = cursorPolicy
     ? null

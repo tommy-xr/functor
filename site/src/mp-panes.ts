@@ -34,6 +34,7 @@ import { PlayerBridge } from "./player-bridge.js";
 import { asPlayerMessage } from "./protocol.js";
 import type { StatusBar } from "./status-bar-store.js";
 import type { PillState } from "./components/StatusPill.js";
+import { NetCoordinator } from "./net-coordinator.js";
 
 /** The shared scrubber's `window.__scrub` seam (runtime/functor-runtime-web/scrubber.js). */
 interface ScrubSeam {
@@ -309,6 +310,14 @@ export function initMultiplayerPanes({
   const debugGameUi = debugDrawer.querySelector("#mp-debug-game-ui") as HTMLInputElement;
   const debugReset = debugDrawer.querySelector("#mp-debug-reset") as HTMLButtonElement;
 
+  // Every pane's networking routes through ONE coordinator (net-coordinator.ts):
+  // the panes boot `?net=embedder`, post their conn commands to this page, and
+  // it routes them between panes on perfect links. This module owns it because
+  // it owns every pane — including pane 1, the page's own #player — so no pane
+  // can be created outside its view. It is inert for a game that declares no
+  // `Sub.connect`/`Sub.listen`: those panes never post a command.
+  const net = new NetCoordinator();
+
   const panes: Pane[] = [];
   const makePane = (index: number, iframe: HTMLIFrameElement): Pane => {
     const color = PLAYER_COLORS[index % PLAYER_COLORS.length];
@@ -364,6 +373,7 @@ export function initMultiplayerPanes({
     shell.querySelector(".mp-pane-hd")!.addEventListener("mousedown", () => focusPane(index));
     tab.addEventListener("click", () => focusPane(index));
     buildLinkMenu(pane, shell.querySelector(".mp-link-host") as HTMLElement, pane.scope.signal);
+    net.addPane(`client ${index + 1}`, iframe, pane.scope.signal);
     panes.push(pane);
     return pane;
   };
@@ -1184,6 +1194,7 @@ export function initMultiplayerPanes({
     count: () => panes.length,
     destroy() {
       cancelAnimationFrame(raf);
+      net.destroy();
       moduleScope.abort();
       while (mirrors.length) removeMirror();
     },
