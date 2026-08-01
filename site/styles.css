@@ -1449,6 +1449,28 @@ a:hover {
   font-size: 0.85rem;
 }
 
+/* The manual is one long page, so its nav is grouped: a label names what the
+   next few links are for. Each group is one element, so it stays intact when
+   the nav becomes a scrolling row on narrow screens. The spacing lives on its
+   own class — `.docs-nav` is shared with the API reference page. */
+.docs-nav-grouped {
+  gap: 18px;
+}
+
+.docs-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.docs-nav-group-label {
+  color: var(--text-dim);
+  font-family: var(--font-display);
+  font-size: 0.58rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
 .docs-nav a {
   white-space: nowrap;
   color: var(--text-dim);
@@ -1460,6 +1482,11 @@ a:hover {
   color: var(--cyan);
   border-left-color: var(--cyan);
   text-decoration: none;
+}
+
+/* The one link that leaves the page. */
+.docs-nav a.docs-nav-out {
+  color: var(--cyan);
 }
 
 .docs-main h1 {
@@ -1980,6 +2007,25 @@ a:hover {
     gap: 8px;
     overflow-x: auto;
     padding-bottom: 6px;
+  }
+
+  /* Wide enough that a group's label reads as belonging to the links after
+     it, not the link before it — and no wider, since every pixel here is one
+     less link reachable in the scrolling row. */
+  .docs-nav-grouped {
+    gap: 20px;
+  }
+
+  /* One scrolling row, so a group inlines its label with its own links. */
+  .docs-nav-group {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .docs-nav-group-label {
+    flex: 0 0 auto;
   }
 
   .api-nav {
