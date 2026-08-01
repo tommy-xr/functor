@@ -41,7 +41,10 @@ let emissive : (Color.t, t) => t
 let litTexture : ('texture, t) => t
 /// Apply an emissive texture from `Texture.t` or `Asset.Texture`.
 let emissiveTexture : ('texture, t) => t
-/// Apply a lit color and normal-map texture.
+/// Apply a lit color and a TANGENT-SPACE normal-map texture.
+///
+/// The map perturbs the surface normal used for lighting, so its bumps catch
+/// the scene's diffuse and specular response without changing the geometry.
 let litNormalMapped : (Color.t, 'texture, t) => t
 /// Display a render target on this surface.
 ///
@@ -53,7 +56,8 @@ let screen : (RenderTarget.t, t) => t
 
 /// Attach an animation pose to model nodes; the scene is last for piping.
 ///
-/// Without an attached pose, a skinned model plays its first clip.
+/// Without an attached pose, a skinned model plays its FIRST clip on the game
+/// clock — attaching one is what puts the playhead under the game's control.
 let animate : (Anim.t, t) => t
 
 /// Translate a scene node; the scene is last for piping.

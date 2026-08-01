@@ -30,12 +30,18 @@ let play : (Asset.Sound) => t
 /// Play a spatial sound once at a world position.
 let playAt : (Asset.Sound, Vec3.t) => t
 /// Play a sound once and deliver a message when playback finishes.
+///
+/// The completion message is native-only; on wasm the sound plays but the
+/// message is not delivered, so do not gate game progress on it.
 let playThen : (Asset.Sound, 'msg) => t
 /// Begin loading a model or texture before it is referenced by `draw`.
 ///
 /// The imperative prefetch; the declarative default is simply that `draw`
-/// references the asset. Model and texture locators only — a sound decodes at
-/// play time and has no pending state.
+/// references the asset. The parameter is generic, but only an `Asset.Model`
+/// or `Asset.Texture` is accepted: an `Asset.Sound` is a teaching error (a
+/// sound decodes at play time and has no pending state), and a bare path
+/// string is rejected toward `Asset.model` / `Asset.texture` like any other
+/// asset consumer. `preloadThen` takes the same values.
 let preload : ('asset) => t
 /// Preload an asset and deliver a message when the load settles.
 ///

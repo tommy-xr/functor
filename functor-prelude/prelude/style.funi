@@ -58,7 +58,7 @@ let borderPx : (float, Color.t) => t
 /// Set border radius in pixels.
 let roundedPx : (float) => t
 
-/// Set opacity in `0..1`.
+/// Set opacity in `0..1`. A value outside that range is an error, not a clamp.
 let opacity : (float) => t
 
 /// Create an inline declaration for an arbitrary CSS property and value.

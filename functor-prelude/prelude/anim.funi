@@ -17,6 +17,8 @@ let clip : (string, float) => t
 /// Blend a list of `(animation, weight)` pairs.
 ///
 /// Weights are normalized and entries with non-positive weights are ignored.
+/// Translation and scale are interpolated linearly and rotation as a
+/// normalized quaternion mix. An entry may itself be a blend, so blends nest.
 let blend : (List<(t, float)>) => t
 
 /// Return the bind pose as a base for programmatic posing.
@@ -37,8 +39,9 @@ let mask : (List<string>, t) => t
 
 /// Add a local XYZ Euler rotation to one joint.
 ///
-/// The joint is fully driven by this node; an enclosing mask can still exclude
-/// it.
+/// The joint counts as FULLY DRIVEN by this node, so a mask BENEATH it cannot
+/// drop the joint; an enclosing mask — one applied to this node's result —
+/// still can.
 let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t
 
 /// Aim one joint's local +Z axis at a model-space target after evaluating the
@@ -49,5 +52,6 @@ let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t
 /// has to be inverted through the node's own transforms before it is passed
 /// here. `maxDeflection` limits the shortest correction from the evaluated pose and
 /// must be between 0 and 180 degrees. `weight` is clamped to `0..1`. The joint
-/// is fully driven by this node; an enclosing mask can still exclude it.
+/// is fully driven by this node, exactly as with `Anim.rotate`; an enclosing
+/// mask can still exclude it.
 let lookAt : (string, Vec3.t, Angle.t, float, t) => t

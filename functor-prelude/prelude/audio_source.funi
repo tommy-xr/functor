@@ -10,5 +10,6 @@ type t
 let ambient : (string, Asset.Sound) => t
 /// Create a spatial source at a world position, identified by a stable key.
 let at : (string, Asset.Sound, Vec3.t) => t
-/// Set source gain; the source is last for piping.
+/// Set LINEAR source gain, where `1.0` is full volume; the source is last for
+/// piping.
 let gain : (float, t) => t

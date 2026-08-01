@@ -33,6 +33,8 @@ let mapTrackedPose : (t, Input.pose) => mappedPose
 
 /// Set near and far clipping distances; the camera is last for piping.
 ///
-/// Large outdoor worlds should set the far plane explicitly. Keep the near
-/// plane as large as gameplay permits to preserve depth-buffer precision.
+/// Both distances must be finite with `0 < near < far`; anything else is a
+/// teaching error rather than a degenerate projection. Large outdoor worlds
+/// should set the far plane explicitly. Keep the near plane as large as
+/// gameplay permits to preserve depth-buffer precision.
 let clip : (float, float, t) => t
