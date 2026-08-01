@@ -84,3 +84,15 @@ let clamp : (float, float, float) => float
 
 /// `n` confined to `[0, 1]` — the same as `Math.clamp(0.0, 1.0, n)`.
 let clamp01 : (float) => float
+
+/// Linear interpolation from `from` toward `target` by `t` (unclamped):
+/// `from + (target - from) * t`, and `t = 1.0` answers `target` exactly.
+/// Mirrors `Vec3.lerp(target, t, from)` — the pipe subject is the start
+/// value, so `x |> Math.lerp(target, t)` works like its vector sibling.
+/// (Deliberately NOT GLSL's `mix(a, b, t)` order.)
+let lerp : (float, float, float) => float
+
+/// Hermite smoothstep of `x` across `[edge0, edge1]`, clamped to `[0, 1]`.
+/// The edges must be a finite ascending range (`edge0 < edge1`, both finite
+/// and not overflow-wide) — anything else is an error, never a silent NaN.
+let smoothstep : (float, float, float) => float

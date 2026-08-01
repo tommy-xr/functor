@@ -40,9 +40,14 @@ let range : (float) => List<float>
 /// whole and non-negative, and the cells must total at most one million.
 let grid : ((float, float) => 'a, float, float) => List<List<'a>>
 
-/// The largest number in the list. Errors on an empty list — the one accessor
-/// that predates `Option` and still raises rather than answering `None`.
-let maximum : (List<float>) => float
+/// The largest number in the list as `Option.Some`, or `Option.None` for an
+/// empty list — partial like `nth`/`head`/`last`/`find`. NaN elements are
+/// ignored unless every element is NaN.
+let maximum : (List<float>) => Option.t<float>
+
+/// The smallest number in the list as `Option.Some`, or `Option.None` for an
+/// empty list — `maximum`'s mirror, with the same NaN rule.
+let minimum : (List<float>) => Option.t<float>
 
 /// The sum of the numbers. The empty list sums to `0.0`.
 let sum : (List<float>) => float

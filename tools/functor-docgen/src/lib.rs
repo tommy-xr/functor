@@ -473,7 +473,7 @@ mod tests {
             (modules.len(), items)
         };
         assert_eq!(count(ApiGroup::Engine), (27, 272));
-        assert_eq!(count(ApiGroup::Stdlib), (10, 94));
+        assert_eq!(count(ApiGroup::Stdlib), (10, 97));
         assert!(reference
             .modules
             .iter()
