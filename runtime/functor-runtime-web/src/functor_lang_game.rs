@@ -235,7 +235,9 @@ pub fn functor_lang_schedule_key_events(
 
 /// Move the keyboard edges assigned to `frame` into the ordinary page-input
 /// queue immediately before that fixed step. Stale edges are discarded rather
-/// than bunched into a later frame.
+/// than bunched into a later frame. Once queued they are ordinary page input,
+/// so a PINNED frame (paused, or `?fixed-time`) drains and drops them exactly
+/// like everything else — the caller's `drain_input` decides that.
 pub fn queue_scheduled_input_at(frame: u64) -> bool {
     SCHEDULED_INPUT_QUEUE.with(|scheduled| {
         let mut scheduled = scheduled.borrow_mut();
@@ -250,7 +252,13 @@ pub fn queue_scheduled_input_at(frame: u64) -> bool {
         if due.is_empty() {
             return false;
         }
-        INPUT_QUEUE.with(|queue| queue.borrow_mut().extend(due));
+        // Respect the page queue's cap the same way `push_input` does, so a
+        // scheduled batch can never push it past the bound.
+        INPUT_QUEUE.with(|queue| {
+            let mut queue = queue.borrow_mut();
+            let room = INPUT_QUEUE_CAP.saturating_sub(queue.len());
+            queue.extend(due.into_iter().take(room));
+        });
         true
     })
 }

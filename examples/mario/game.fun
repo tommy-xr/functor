@@ -15,10 +15,11 @@
 
 // --- Tunables (tweak these to change whether the jump clears the chasm) ---
 // <editable>
-// Tune the jump — speed, launch, gravity. Click 🔮 to preview.
+// Tune the jump — speed, launch, gravity, gap — then click 🔮.
 let runSpeed = 8.0        // horizontal speed while held
 let jumpVelocity = 13.0   // upward launch speed
 let gravity = 30.0        // downward acceleration
+let chasmHalf = 3.0       // half the gap — widen it and see
 
 let world = (model, tts) =>
   Sprite.group([
@@ -37,14 +38,21 @@ let world = (model, tts) =>
 // a little makes the character fall short. That knife-edge is the whole point.
 
 // --- Level geometry (side view: XY plane, +X right, +Y up) ---
+// The gap itself (chasmHalf) is a tunable above; it spans
+// x in [-chasmHalf, chasmHalf], so the default gap is 6.0 wide.
 let groundTop = 0.0       // y of the platform surface the character stands on
-let chasmHalf = 3.0       // gap spans x in [-chasmHalf, chasmHalf] -> width 6.0
 let leftEdge = -11.0      // outer x of the left platform
 let rightEdge = 11.0      // outer x of the right platform
+
+// Both platforms derive from the editable chasmHalf — the drawn ground AND
+// the ground the simulation collides with — so widening the gap can never
+// drift the picture out of step with the physics. (Top-level value bindings
+// evaluate in order, so these must follow the edges they read.)
 let leftGroundWidth = -chasmHalf - leftEdge
 let leftGroundX = leftEdge + leftGroundWidth / 2.0
 let rightGroundWidth = rightEdge - chasmHalf
 let rightGroundX = chasmHalf + rightGroundWidth / 2.0
+
 let startX = -6.0         // character spawn (on the left platform)
 let fallLimit = -2.0      // fall past this (into the chasm) and respawn.
                           // Shallow on purpose: a weak jump that dips into the

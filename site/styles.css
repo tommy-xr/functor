@@ -304,9 +304,12 @@ a:hover {
    carries the site's shared synthwave theme. */
 .hero-editor {
   border-top: 1px solid var(--line);
-  /* Tall enough for the whole excerpt — the three tunables and their lead
-     comment up top, the world composition below — with no line clipped. */
-  height: 284px;
+  /* Tall enough for the whole excerpt — the four tunables and their lead
+     comment up top, the world composition below — with no line clipped. The
+     budget is 14 code lines at the shared 11.5px/1.65 editor type; adding a
+     line to the <editable> region means growing this too (the e2e asserts
+     nothing clips). */
+  height: 304px;
   overflow: hidden;
   background: #161226;
   display: flex;
@@ -335,6 +338,22 @@ a:hover {
   align-items: center;
   gap: 6px;
   white-space: nowrap;
+}
+
+/* The file name deep-links into the sandbox with this example loaded. It
+   stays a quiet code label — the global cyan link color would make it compete
+   with the tunables below — and only reads as a link on hover/focus. */
+.hero-editor-source {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+}
+
+.hero-editor-source:hover code,
+.hero-editor-source:focus-visible code {
+  color: var(--cyan);
+  text-decoration: underline;
 }
 
 .hero-editor-heading code {

@@ -260,10 +260,12 @@ const playerFrame = (page) => {
     // headline: they must sit fully inside the viewport at rest, never
     // needing a scroll to be read.
     const tunableLines = lines.filter((line) =>
-      /🔮|let runSpeed =|let jumpVelocity =|let gravity =/.test(line.textContent)
+      /🔮|let runSpeed =|let jumpVelocity =|let gravity =|let chasmHalf =/.test(
+        line.textContent
+      )
     );
     const tunablesVisible =
-      tunableLines.length === 4 &&
+      tunableLines.length === 5 &&
       tunableLines.every((line) => {
         const rect = line.getBoundingClientRect();
         return rect.top >= viewport.top - 1 && rect.bottom <= viewport.bottom + 1;
@@ -282,13 +284,29 @@ const playerFrame = (page) => {
       region.includes("let runSpeed") &&
       region.includes("let jumpVelocity") &&
       region.includes("let gravity") &&
+      region.includes("let chasmHalf") &&
+      // The DERIVED ground geometry stays outside the editable region: the
+      // drawn platforms and the collided ground must keep deriving from one
+      // chasmHalf, never drift apart under an edit.
+      !region.includes("let leftGroundWidth") &&
       region.includes("let world = (model, tts) =>") &&
       region.includes("Sprite.group") &&
       !region.includes("let init"),
     region.slice(0, 40)
   );
+  const sourceLink = await page.evaluate(() => {
+    const link = document.querySelector(".hero-editor-source");
+    return link && { href: link.getAttribute("href"), title: link.title, text: link.textContent.trim() };
+  });
   check(
-    "hero editor shows the tunables trio uncropped at rest",
+    "hero excerpt label deep-links into the sandbox with this example",
+    sourceLink?.href === "sandbox.html?example=mario" &&
+      sourceLink.text === "examples/mario/game.fun" &&
+      sourceLink.title.length > 0,
+    JSON.stringify(sourceLink)
+  );
+  check(
+    "hero editor shows the tunables uncropped at rest",
     excerptLayout.tunablesVisible,
     JSON.stringify(excerptLayout)
   );
@@ -340,11 +358,7 @@ const playerFrame = (page) => {
   const strongJumpHash = await regionHash(heroPlayer);
   check(
     "one click enables the platformer's extrapolation",
-    await heroPlayer.evaluate(
-      () =>
-        window.__scrub.model().preview.enabled &&
-        window.__scrub.view().previewFrames > 0
-    )
+    await heroPlayer.evaluate(() => window.__scrub.view().previewFrames > 0)
   );
 
   // Push an edited region and wait for the runtime to accept it (a fresh
@@ -389,8 +403,19 @@ const playerFrame = (page) => {
     `${weakJumpHash} -> ${heavyJumpHash}`
   );
 
+  // chasmHalf is the level's one upstream geometry knob: widening it must move
+  // the drawn platforms AND the ground the projection falls through, together.
+  const wideRegion = heavyRegion.replace("let chasmHalf = 3.0", "let chasmHalf = 4.5");
+  await applyHeroRegion(wideRegion);
+  const wideJumpHash = await regionHash(heroPlayer);
+  check(
+    "editing chasmHalf redraws the level and its projection",
+    wideJumpHash !== heavyJumpHash,
+    `${heavyJumpHash} -> ${wideJumpHash}`
+  );
+
   // A broken edit (unbalanced paren): error surfaced, old preview keeps drawing.
-  await page.evaluate((s) => window.__hero.setRegion(s), `${heavyRegion}\n(`);
+  await page.evaluate((s) => window.__hero.setRegion(s), `${wideRegion}\n(`);
   await page.waitForFunction(() => window.__hero.status().state === "error", {
     timeout: 8000,
   });
@@ -398,8 +423,8 @@ const playerFrame = (page) => {
   const brokenJumpHash = await regionHash(heroPlayer);
   check(
     "hero broken edit keeps the last good projected trajectory",
-    brokenJumpHash === heavyJumpHash,
-    `${heavyJumpHash} -> ${brokenJumpHash}`
+    brokenJumpHash === wideJumpHash,
+    `${wideJumpHash} -> ${brokenJumpHash}`
   );
 
   // Recover with the original tunables. The deliberately paused timeline

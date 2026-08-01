@@ -1662,8 +1662,12 @@ async fn run_async() -> Result<(), JsValue> {
             // trail/strobe overlays, from ONE shared forward-sim —
             // `frame_preview`, the same step the desktop shell runs. While live,
             // its anchor follows the newest frame; pausing freezes that anchor
-            // instead of enabling the preview. Script inputs are `None`: web has
-            // no --input-script.
+            // instead of enabling the preview. Script inputs are `None`: unlike
+            // the desktop shell's --input-script, the browser's scheduled edges
+            // (`queue_scheduled_input_at`) are a one-shot staging queue, not a
+            // whole-run script, so there is no future schedule to predict —
+            // anything still pending is drained before a pause can freeze an
+            // anchor ahead of it.
             // While a drag-into-the-future catch-up is draining, skip the
             // preview recompute (the anchor moves every frame — a full
             // forward-sim per frame would throttle the catch-up to a crawl);

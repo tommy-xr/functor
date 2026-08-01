@@ -71,7 +71,7 @@ const COLD_START_SETTLE_MS = 300;
 // 1.3s is the shortest forward window that reaches the LANDING: the arc
 // crests and sets the character down on the far platform, so the preview
 // answers "does the jump clear the chasm?" in one glance. 8 strobe copies a
-// second reads as a trajectory — 5 starves it into dots, 12 clumps at takeoff.
+// second reads as a trajectory — 5 reads sparse, 12 clumps copies at takeoff.
 // The backward side is clipped by the run-up (the park sits 42 frames in), so
 // a longer window costs the recorded past nothing.
 const PREVIEW_SECONDS = 1.3;
