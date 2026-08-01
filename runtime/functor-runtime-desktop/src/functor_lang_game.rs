@@ -3375,9 +3375,9 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
                Scene.cube() |> Scene.translate(Vec3.make(m.n, 0.0, 0.0)))\n",
         )
         .expect("write game");
-        let mut game = FunctorLangGame::create_with_prefix(
+        let mut game = FunctorLangGame::create_for_role(
             dir.join("game.fun").to_str().expect("utf-8 path"),
-            "client",
+            EntryRole::Prefix("client".to_string()),
         );
 
         const SUB_DT: f32 = 1.0 / 60.0;
