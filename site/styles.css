@@ -3020,6 +3020,258 @@ a:hover {
   grid-row: span 1;
 }
 
+/* ---- network view: the server as the hub, the clients around it ----
+
+   design-multiplayer-ide-frontend.md, Addendum 5. Grid and tiled answer "what
+   is each pane running"; NETWORK answers "who is talking to whom" — so the
+   authority moves to the middle of the stage and the players sit around it,
+   with a measured wire per link (mp-network.ts) drawn behind the cards.
+
+   The arrangement is a fixed eight-row track set, so a card's placement is a
+   span rather than a computed position — the same class-change-only rule the
+   other views follow, and the wires re-measure from wherever the cards land.
+   The hub outsizes its clients in BOTH axes at every count: it is the one card
+   every wire ends at, and size is what says so before any label does.
+
+     1 client  · the spoke on the left, the hub taking the rest.
+     2 clients · left and right of the hub, cascaded down a step each so the
+                 two wires leave at different angles instead of overlapping.
+     3 clients · two flanking the hub, the third parked below it — with a
+                 whole empty row between them, because that row is the channel
+                 its wire runs down. Stable at every count: client 1 never
+                 moves when client 3 arrives.
+*/
+
+.mp-grid[data-view="network"] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr);
+  grid-template-rows: repeat(8, minmax(0, 1fr));
+  /* The wide column gap is what the wires travel through — cards are pulled
+     apart here on purpose, where tiled/grid pack them together. */
+  gap: 8px 52px;
+  padding: 12px 18px;
+}
+
+.mp-grid[data-view="network"][data-clients="1"] .mp-pane:not(.server) {
+  grid-column: 1;
+  grid-row: 2 / span 5;
+}
+
+.mp-grid[data-view="network"][data-clients="1"] .mp-pane.server {
+  grid-column: 2 / span 2;
+  grid-row: 1 / span 8;
+}
+
+.mp-grid[data-view="network"][data-clients="2"] .mp-pane:nth-child(1) {
+  grid-column: 1;
+  grid-row: 1 / span 4;
+}
+
+.mp-grid[data-view="network"][data-clients="2"] .mp-pane:nth-child(2) {
+  grid-column: 3;
+  grid-row: 5 / span 4;
+}
+
+.mp-grid[data-view="network"][data-clients="2"] .mp-pane.server {
+  grid-column: 2;
+  grid-row: 2 / span 6;
+}
+
+.mp-grid[data-view="network"][data-clients="3"] .mp-pane:nth-child(1) {
+  grid-column: 1;
+  grid-row: 1 / span 3;
+}
+
+.mp-grid[data-view="network"][data-clients="3"] .mp-pane:nth-child(2) {
+  grid-column: 3;
+  grid-row: 1 / span 3;
+}
+
+.mp-grid[data-view="network"][data-clients="3"] .mp-pane:nth-child(3) {
+  grid-column: 2;
+  grid-row: 6 / span 3;
+}
+
+.mp-grid[data-view="network"][data-clients="3"] .mp-pane.server {
+  grid-column: 2;
+  grid-row: 1 / span 4;
+}
+
+/* ---- the stage: the grid, its legend, and the wire layer under the cards ---- */
+
+.mp-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* The containing block the wire layer measures against. */
+  position: relative;
+}
+
+.mp-stage .mp-grid {
+  /* The grid keeps its own flex sizing now that the stage is the flex item. */
+  flex: 1;
+  min-height: 0;
+}
+
+/* Two layers, one on each side of the grid in the DOM. The WIRES sit before it
+   so the pane cards (which are positioned) paint over them — wires run behind
+   the windows, like the mockup. The CHIPS sit after it, because a label buried
+   under a card is a label you cannot read. Both share the stage's box, so one
+   measurement places both. */
+.mp-net-layer,
+.mp-net-chips {
+  display: none;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mp-stage[data-view="network"] .mp-net-layer,
+.mp-stage[data-view="network"] .mp-net-chips {
+  display: block;
+}
+
+.mp-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* The wire itself: the client's own ink, kept quiet. It is context — the
+   packets moving along it are the thing to watch. */
+.mp-wire {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  opacity: 0.42;
+}
+
+/* Shape says DIRECTION, color says WHO (Addendum 5): a small filled circle in
+   the client's player color is that client's intent travelling up to the
+   authority; a chunky hollow rounded-rect in cyan is authority coming back. */
+.mp-packet.up {
+  fill: currentColor;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.mp-packet.down {
+  fill: rgba(65, 216, 230, 0.18);
+  stroke: var(--cyan);
+  stroke-width: 1.2;
+}
+
+/* The mid-edge chip: this client's CONFIGURED link profile. It is a label, not
+   a measurement — the coordinator's links are still perfect. */
+.mp-edge-chip {
+  position: absolute;
+  /* The layer is click-through; the chip is not, so its title (the note that
+     the profile is configured, not measured) is reachable on hover. */
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font: 9.5px/1 var(--font-mono);
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  background: rgba(15, 12, 29, 0.92);
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+.mp-edge-chip b {
+  font-weight: 400;
+  color: var(--text);
+}
+
+/* The packet counter rides the chip, and only under reduced motion — see the
+   dots' note below. */
+.mp-edge-chip i {
+  display: none;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reduced motion: NOTHING flies. mp-network.ts stops spawning dots entirely
+   and each edge shows a static packet count instead, so the traffic is still
+   legible — a number that ticks up rather than a movement to track. */
+@media (prefers-reduced-motion: reduce) {
+  .mp-edge-chip i {
+    display: inline;
+    color: var(--cyan);
+  }
+}
+
+/* ---- the legend: what a shape and a size mean (network view only) ---- */
+
+.mp-legend {
+  display: none;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 8px 22px 2px;
+  font: 10px/1.4 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.mp-stage[data-view="network"] .mp-legend {
+  display: flex;
+}
+
+.mp-legend b {
+  font-weight: 400;
+  color: var(--text);
+}
+
+.mp-legend .mp-sw {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 7px;
+}
+
+.mp-legend .mp-sw.up {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--scrub-p1);
+  box-shadow: 0 0 6px var(--scrub-p1);
+}
+
+.mp-legend .mp-sw.down {
+  width: 13px;
+  height: 9px;
+  border-radius: 2px;
+  background: rgba(65, 216, 230, 0.18);
+  border: 1px solid var(--cyan);
+}
+
+.mp-legend-note {
+  opacity: 0.75;
+}
+
+/* One legend per motion preference (see the pane module): the shapes legend
+   only under motion, the counts note only under reduce. */
+.mp-legend .still {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mp-legend .motion {
+    display: none;
+  }
+
+  .mp-legend .still {
+    display: inline;
+  }
+}
+
 /* ---- pane shell ---- */
 
 .mp-pane {
@@ -3354,6 +3606,22 @@ a:hover {
 @media (max-width: 1280px) {
   .preview-pane.mp .mp-grid {
     grid-template-columns: 1fr;
+  }
+
+  /* Network has no room for a hub flanked by spokes in one narrow column, so
+     it collapses to the same stack — the clients over the authority, in DOM
+     order. The wires re-measure and run vertically down the chain, so the
+     topology still reads; only the geometry changes. */
+  .preview-pane.mp .mp-grid[data-view="network"] {
+    grid-template-rows: none;
+    grid-auto-rows: minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .preview-pane.mp .mp-grid[data-view="network"] .mp-pane {
+    grid-column: 1;
+    grid-row: auto;
   }
 }
 

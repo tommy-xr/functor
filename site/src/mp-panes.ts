@@ -35,6 +35,7 @@ import { asPlayerMessage } from "./protocol.js";
 import type { StatusBar } from "./status-bar-store.js";
 import type { PillState } from "./components/StatusPill.js";
 import { NetCoordinator } from "./net-coordinator.js";
+import { initNetworkGraph, type NetworkNode } from "./mp-network.js";
 
 /** The shared scrubber's `window.__scrub` seam (runtime/functor-runtime-web/scrubber.js). */
 interface ScrubSeam {
@@ -121,11 +122,13 @@ type PaneState = PillState["state"];
  * How the panes are laid out. `tiled` is one row of equal tiles; `grid` wraps
  * the CLIENTS into two columns and gives the server its own full-width strip
  * along the bottom (design-multiplayer-ide-frontend.md §5 — the authority reads
- * differently from the players); `tabs` shows one pane at a time.
+ * differently from the players); `network` puts the server in the middle as the
+ * hub with its clients around it and draws the wires between them (Addendum 5);
+ * `tabs` shows one pane at a time.
  *
  * Declaration order is the segmented control's order AND the `f` key's cycle.
  */
-const VIEWS = ["tiled", "grid", "tabs"] as const;
+const VIEWS = ["tiled", "grid", "network", "tabs"] as const;
 type PaneView = (typeof VIEWS)[number];
 
 /**
@@ -140,6 +143,8 @@ interface Pane {
   role: PaneRole;
   /** The pane's routing identity in the coordinator ("client 2", "server"). */
   id: string;
+  /** The pane's ink — a player color, or the server's slate. */
+  color: string;
   /** Aborts every listener this pane registered outside its own subtree. */
   scope: AbortController;
   iframe: HTMLIFrameElement;
@@ -264,6 +269,7 @@ export function initMultiplayerPanes({
     <span class="mp-viewseg" role="group" aria-label="Pane layout">
       <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every pane in one row (f cycles)">⊞ tiled</button>
       <button id="mp-view-grid" aria-pressed="false" title="Grid: clients in two columns over the server strip (f cycles)">▦ grid</button>
+      <button id="mp-view-network" aria-pressed="false" title="Network: the server as the hub, with live packet flow along each link (f cycles)">◈ network</button>
       <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one pane full-size (f cycles)">▤ tabs</button>
     </span>`;
 
@@ -306,8 +312,27 @@ export function initMultiplayerPanes({
   grid.className = "mp-grid";
   grid.dataset.view = "tiled";
 
+  // The stage holds the grid plus the surfaces the NETWORK view adds: the
+  // legend above it, and (mounted by the graph itself) the wire and chip
+  // layers around it. They are siblings of the grid, never children of it —
+  // the grid's cells are exactly the panes, and another child would shift the
+  // `:nth-child` rules the grid and network views lay out with.
+  const stage = document.createElement("div");
+  stage.className = "mp-stage";
+  stage.dataset.view = "tiled";
+  const legend = document.createElement("div");
+  legend.className = "mp-legend";
+  // Two legends, one per motion preference — under `reduce` nothing flies, so
+  // a legend about dot shapes would describe something that is not on screen.
+  legend.innerHTML = `
+    <span class="motion"><i class="mp-sw up"></i><b>intent</b> — client → server</span>
+    <span class="motion"><i class="mp-sw down"></i><b>authority</b> — server → client</span>
+    <span class="motion mp-legend-note">dot size = payload bytes · dots are sampled traffic, not one per packet</span>
+    <span class="still mp-legend-note">reduced motion: each link shows its packet count instead of moving dots</span>`;
+  stage.append(legend, grid);
+
   previewPane.prepend(chrono, debugDrawer, tabsStrip);
-  previewPane.appendChild(grid);
+  previewPane.appendChild(stage);
 
   const $ = (id: string) => chrono.querySelector(`#${id}`) as HTMLElement;
   const $btn = (id: string) => chrono.querySelector(`#${id}`) as HTMLButtonElement;
@@ -343,6 +368,23 @@ export function initMultiplayerPanes({
   // with the server always LAST so client indices (and their digits) never move.
   let serverPane: { pane: Pane; bridge: PlayerBridge } | null = null;
   const allPanes = (): Pane[] => (serverPane ? [...panes, serverPane.pane] : panes);
+
+  // The NETWORK view's wires and packet dots. It measures the pane cards the
+  // CSS laid out and reads the coordinator's packet feed; it is inert until the
+  // view is switched on.
+  const asNode = (pane: Pane): NetworkNode => ({
+    id: pane.id,
+    shell: pane.shell,
+    color: pane.color,
+    linkLabel: () => `${pane.link.name} · ${pane.link.ms}ms`,
+  });
+  const graph = initNetworkGraph({
+    stage,
+    grid,
+    net,
+    clients: () => panes.map(asNode),
+    server: () => (serverPane ? asNode(serverPane.pane) : null),
+  });
 
   const makePane = (role: PaneRole, index: number, iframe: HTMLIFrameElement): Pane => {
     const client = role === "client";
@@ -394,6 +436,7 @@ export function initMultiplayerPanes({
     const pane: Pane = {
       role,
       id,
+      color,
       iframe,
       shell,
       tab,
@@ -614,7 +657,12 @@ export function initMultiplayerPanes({
       if (from >= panes.length) focusPane(delta === 1 ? 0 : panes.length - 1, true);
       else focusPane((from + delta + panes.length) % panes.length, true);
     } else if (event.key === "f") {
-      setView(VIEWS[(VIEWS.indexOf(grid.dataset.view as PaneView) + 1) % VIEWS.length]);
+      let next = VIEWS.indexOf(grid.dataset.view as PaneView);
+      for (let hop = 0; hop < VIEWS.length; hop++) {
+        next = (next + 1) % VIEWS.length;
+        if (viewAvailable(VIEWS[next])) break;
+      }
+      setView(VIEWS[next]);
     }
   }
   window.addEventListener("keydown", pickerKeys, { signal: moduleScope.signal });
@@ -639,13 +687,24 @@ export function initMultiplayerPanes({
   // pure CSS from there. Nothing may reorder or re-parent a pane's node: a
   // re-appended iframe reloads and wipes its model (the same invariant that
   // keeps pane 1, and the server pane, in place across count changes).
+  //
+  // NETWORK is the one view that can be unavailable: it is a hub-and-spoke
+  // picture, and a single-role example has no hub. Rather than inventing a ring
+  // around nothing, the option is DISABLED with a tooltip that says why — and
+  // `f` skips it, so the cycle never stalls on a view it cannot enter.
+  const viewAvailable = (view: PaneView) => view !== "network" || serverPane !== null;
+
   const setView = (view: PaneView, force = false) => {
     if (allPanes().length === 1 && !force) return;
+    if (!viewAvailable(view)) return;
     grid.dataset.view = view;
+    stage.dataset.view = view;
     tabsStrip.hidden = view !== "tabs";
     for (const candidate of VIEWS) {
       $btn(`mp-view-${candidate}`).setAttribute("aria-pressed", String(view === candidate));
     }
+    // Turning the graph on measures the boxes this class change just produced.
+    graph.setActive(view === "network");
   };
   for (const view of VIEWS) $btn(`mp-view-${view}`).addEventListener("click", () => setView(view));
 
@@ -662,7 +721,15 @@ export function initMultiplayerPanes({
     // differently.
     grid.dataset.clients = String(panes.length);
     for (const view of VIEWS) $btn(`mp-view-${view}`).disabled = single;
+    const network = $btn("mp-view-network");
+    if (!single) network.disabled = !viewAvailable("network");
+    network.title = viewAvailable("network")
+      ? "Network: the server as the hub, with live packet flow along each link (f cycles)"
+      : "Network needs an authority — this example declares no server role, so there is no hub to arrange the clients around";
     if (single) setView("tiled", true);
+    // An example that dropped its server pane cannot stay in the hub view.
+    else if (grid.dataset.view === "network" && !viewAvailable("network")) setView("tiled");
+    else if (grid.dataset.view === "network") graph.relayout();
   };
 
   // Live client-count change: grow or shrink the mirror set in place. Pane 1
@@ -1306,6 +1373,9 @@ export function initMultiplayerPanes({
   let raf = 0;
   const tickLoop = () => {
     paint();
+    // One loop for the whole preview column: the network graph advances its
+    // packets here rather than running a second rAF beside this one.
+    graph.step();
     raf = requestAnimationFrame(tickLoop);
   };
   raf = requestAnimationFrame(tickLoop);
@@ -1327,6 +1397,9 @@ export function initMultiplayerPanes({
       } else {
         mountServer(serverSrc);
       }
+      // A different program is a different session: the per-link packet totals
+      // the reduced-motion badge shows start over with it.
+      graph.resetCounts();
       updateChrome();
       paintAggregate();
     },
@@ -1351,6 +1424,7 @@ export function initMultiplayerPanes({
     count: () => panes.length,
     destroy() {
       cancelAnimationFrame(raf);
+      graph.destroy();
       net.destroy();
       moduleScope.abort();
       unmountServer();

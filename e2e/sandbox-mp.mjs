@@ -93,6 +93,25 @@ const installProbe = (page) =>
           (b) => `${b.id.replace("mp-view-", "")}:${b.getAttribute("aria-pressed")}`
         ),
       }),
+      // The NETWORK view's graph layer: one measured wire per client↔server
+      // link, its mid-edge chip, and the packets currently in flight.
+      network: () => {
+        const wires = [...document.querySelectorAll(".mp-wire")];
+        return {
+          wires: wires.length,
+          drawn: wires.filter((w) => (w.getAttribute("d") ?? "").length > 0).length,
+          lengths: wires.map((w) => Math.round(w.getTotalLength())),
+          chips: [...document.querySelectorAll(".mp-edge-chip")].map((c) =>
+            c.textContent.trim()
+          ),
+          dots: document.querySelectorAll(".mp-packet").length,
+          up: document.querySelectorAll(".mp-packet.up").length,
+          down: document.querySelectorAll(".mp-packet.down").length,
+          legend: getComputedStyle(document.querySelector(".mp-legend")).display,
+          networkDisabled: document.getElementById("mp-view-network").disabled,
+          networkTitle: document.getElementById("mp-view-network").title,
+        };
+      },
       // Laid-out geometry per pane, plus the server's resolved grid placement.
       boxes: () =>
         shells().map((s) => {
@@ -113,6 +132,15 @@ const installProbe = (page) =>
         for (const s of shells()) s.frame.contentWindow.__mpAlive = true;
       },
       allAlive: () => shells().every((s) => s.frame.contentWindow?.__mpAlive === true),
+      // A keydown/keyup straight into a pane's window — the mp client only
+      // sends to the server when its input changes, so client → server traffic
+      // has to be provoked.
+      key: (role, code, down) => {
+        const win = shells().find((s) => s.role === role)?.frame.contentWindow;
+        if (!win) return false;
+        win.dispatchEvent(new win.KeyboardEvent(down ? "keydown" : "keyup", { code }));
+        return true;
+      },
       model: (role) => {
         const trace = traces.get(role);
         const invocations = trace?.invocations ?? [];
@@ -325,8 +353,9 @@ try {
       return window.__mpProbe.layout();
     });
     check(
-      tiled.view === "tiled" && tiled.pressed.join(" ") === "tiled:true grid:false tabs:false",
-      "the layout control starts on TILED with three options",
+      tiled.view === "tiled" &&
+        tiled.pressed.join(" ") === "tiled:true grid:false network:false tabs:false",
+      "the layout control starts on TILED with four options",
       `${tiled.view} — ${tiled.pressed.join(" ")}`
     );
 
@@ -334,7 +363,8 @@ try {
     await sleep(400);
     const grid = await page.evaluate(() => window.__mpProbe.layout());
     check(
-      grid.view === "grid" && grid.pressed.join(" ") === "tiled:false grid:true tabs:false",
+      grid.view === "grid" &&
+        grid.pressed.join(" ") === "tiled:false grid:true network:false tabs:false",
       "clicking GRID switches the pane grid's layout",
       `${grid.view} — ${grid.pressed.join(" ")}`
     );
@@ -368,7 +398,7 @@ try {
     const backBoxes = await page.evaluate(() => window.__mpProbe.boxes());
     check(
       back.view === "tiled" &&
-        back.pressed.join(" ") === "tiled:true grid:false tabs:false" &&
+        back.pressed.join(" ") === "tiled:true grid:false network:false tabs:false" &&
         backBoxes.every((b) => Math.abs(b.y - backBoxes[0].y) < 2),
       "switching back to TILED restores the single row",
       `${back.view} — ${JSON.stringify(backBoxes.map((b) => b.y))}`
@@ -378,16 +408,16 @@ try {
       "no pane's iframe was reloaded by the switch back to tiled"
     );
 
-    // `f` cycles the three layouts in the segmented control's order.
+    // `f` cycles the four layouts in the segmented control's order.
     const cycled = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       await page.keyboard.press("f");
       await sleep(250);
       cycled.push(await page.evaluate(() => window.__mpProbe.layout().view));
     }
     check(
-      cycled.join(" → ") === "grid → tabs → tiled",
-      "f cycles tiled → grid → tabs → tiled",
+      cycled.join(" → ") === "grid → network → tabs → tiled",
+      "f cycles tiled → grid → network → tabs → tiled",
       cycled.join(" → ")
     );
     check(
@@ -414,6 +444,108 @@ try {
     await page.close();
   }
 
+  // --- 4d. NETWORK layout: the hub, its measured wires, and live packets. -----
+  // The graph is drawn from MEASURED pane boxes, so the assertions here are
+  // about geometry (who sits where, how many wires exist and that each one has
+  // a real length) rather than about hard-coded coordinates.
+  {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await page.goto(`${BASE}/sandbox.html?example=mp#clients=2`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+    await page.evaluate(() => window.__mpProbe.markAll());
+
+    await page.click("#mp-view-network");
+    await sleep(600);
+    const layout = await page.evaluate(() => window.__mpProbe.layout());
+    check(
+      layout.view === "network" &&
+        layout.pressed.join(" ") === "tiled:false grid:false network:true tabs:false",
+      "clicking NETWORK switches the pane grid's layout",
+      `${layout.view} — ${layout.pressed.join(" ")}`
+    );
+
+    const [c1, c2, server] = await page.evaluate(() => window.__mpProbe.boxes());
+    check(
+      c1.x + c1.w <= server.x + 2 &&
+        c2.x >= server.x + server.w - 2 &&
+        server.h > c1.h &&
+        server.w > c1.w,
+      "the server is the hub between its two clients, and the biggest card",
+      JSON.stringify([c1, server, c2].map((b) => [b.role, b.x, b.y, b.w, b.h]))
+    );
+
+    const graph = await page.evaluate(() => window.__mpProbe.network());
+    check(
+      graph.wires === 2 && graph.drawn === 2 && graph.lengths.every((l) => l > 50),
+      "one measured wire per client↔server link",
+      JSON.stringify(graph.lengths)
+    );
+    check(
+      graph.chips.length === 2 && graph.chips.every((c) => c.includes("Wi-Fi")),
+      "each edge carries its client's link chip mid-wire",
+      graph.chips.join(" | ")
+    );
+    check(graph.legend === "flex", "the packet legend shows in network mode", graph.legend);
+
+    // Packets: the coordinator's live feed, sampled onto the wires. Both
+    // directions must appear — the shapes are what carry direction.
+    let flight = await page.evaluate(() => window.__mpProbe.network());
+    let flowing = false;
+    for (let i = 0; i < 40 && !flowing; i++) {
+      // Drive client 1 so it has intent to send; a dot lives 600ms, so sample
+      // faster than that.
+      await page.evaluate((down) => window.__mpProbe.key("client 1", "KeyW", down), i % 2 === 0);
+      await sleep(150);
+      flight = await page.evaluate(() => window.__mpProbe.network());
+      flowing = flight.up > 0 && flight.down > 0;
+    }
+    check(
+      flowing,
+      "packets fly both ways along the wires (circles up, snapshots down)",
+      `up=${flight.up} down=${flight.down}`
+    );
+    check(
+      flight.dots <= 40,
+      "concurrent dots stay under the cap",
+      String(flight.dots)
+    );
+    check(
+      await page.evaluate(() => window.__mpProbe.allAlive()),
+      "no pane's iframe was reloaded by the switch to network"
+    );
+
+    // Leaving the view is inert again: nothing keeps flying off-screen.
+    await page.click("#mp-view-tiled");
+    await sleep(400);
+    const parked = await page.evaluate(() => window.__mpProbe.network());
+    check(
+      parked.dots === 0 && parked.legend === "none",
+      "leaving network clears the dots and hides the legend",
+      `${parked.dots} dots, legend ${parked.legend}`
+    );
+
+    // Three clients: two flanking the hub, the third parked below it.
+    await page.click("#mp-view-network");
+    await page.selectOption("#client-count", "3");
+    await sleep(2500);
+    const three = await page.evaluate(() => window.__mpProbe.boxes());
+    const graph3 = await page.evaluate(() => window.__mpProbe.network());
+    const hub = three[3];
+    check(
+      three.length === 4 &&
+        three[0].x < hub.x &&
+        three[1].x > hub.x &&
+        three[2].y >= hub.y + hub.h - 2 &&
+        graph3.wires === 3,
+      "a third client parks below the hub, and gets its own wire",
+      `${JSON.stringify(three.map((b) => [b.role, b.x, b.y]))} — ${graph3.wires} wires`
+    );
+    await page.close();
+  }
+
   // --- 5. Switching away drops the server pane. -------------------------------
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -422,6 +554,10 @@ try {
       timeout: 40000,
     });
     await installProbe(page);
+    // Enter the hub view FIRST: dropping the authority must not strand the
+    // session in a layout that no longer has a hub.
+    await page.click("#mp-view-network");
+    await sleep(400);
     await page.selectOption("#example-picker", "counter");
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
@@ -432,6 +568,33 @@ try {
       .catch(() => false);
     const roles = await page.evaluate(() => window.__mpProbe.roles());
     check(gone, "switching to a single-role example removes the server pane", roles.join(", "));
+    check(
+      (await page.evaluate(() => window.__mpProbe.layout().view)) !== "network",
+      "losing the authority falls the layout back out of NETWORK",
+      await page.evaluate(() => window.__mpProbe.layout().view)
+    );
+
+    // No authority, no hub: NETWORK is disabled with a tooltip that says why,
+    // and `f` steps over it instead of stalling the cycle.
+    await page.selectOption("#client-count", "2");
+    await sleep(2500);
+    const soloGraph = await page.evaluate(() => window.__mpProbe.network());
+    check(
+      soloGraph.networkDisabled && soloGraph.networkTitle.includes("no server role"),
+      "a single-role example disables NETWORK and explains why",
+      `disabled=${soloGraph.networkDisabled}; "${soloGraph.networkTitle}"`
+    );
+    const soloCycle = [];
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press("f");
+      await sleep(250);
+      soloCycle.push(await page.evaluate(() => window.__mpProbe.layout().view));
+    }
+    check(
+      soloCycle.join(" → ") === "grid → tabs → tiled",
+      "f skips NETWORK when there is no authority",
+      soloCycle.join(" → ")
+    );
 
     // Grid with no authority: nothing closes the bottom row, so the odd last
     // client stretches rather than leaving a whole empty quadrant.
