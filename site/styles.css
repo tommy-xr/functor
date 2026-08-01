@@ -2798,6 +2798,52 @@ a:hover {
   display: none;
 }
 
+/* ---- grid view: client cells over a server strip ----
+
+   Tiled lays every pane out in one row, which at three clients plus an
+   authority is four slivers. Grid wraps the CLIENTS into two columns and hands
+   the server the full bottom row (design-multiplayer-ide-frontend.md §5): the
+   players are peers of equal size, and the one full-width band belongs to the
+   authority — the SHAPE says which is which before you read a label.
+
+   The strip is half a client row tall, expressed as spans over one set of
+   equal implicit rows rather than per-count track sizes: a client takes two
+   rows, the server one. It stays a thumbnail at every count with no CSS that
+   knows how many panes there are.
+
+   An odd LAST client under an authority (three of them: 2 + 1) keeps its
+   half-width cell instead of stretching: it has peers on the row above, and
+   equal cells are what makes two players comparable at a glance — the notch
+   beside it is small, because the server strip closes the layout below.
+
+   The two cases where a client would otherwise sit beside a HOLE rather than a
+   notch stretch instead: a lone client (no peer to match), and an odd last
+   client in a single-role example (no strip below it, so the empty cell is a
+   whole quadrant). */
+
+.mp-grid[data-view="grid"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mp-grid[data-view="grid"] .mp-pane {
+  grid-row: span 2;
+}
+
+.mp-grid[data-view="grid"][data-clients="1"] .mp-pane:not(.server) {
+  grid-column: 1 / -1;
+}
+
+/* Nothing follows this client — no peer beside it and no server strip below,
+   since a server pane would be the last child instead. */
+.mp-grid[data-view="grid"] .mp-pane:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+.mp-grid[data-view="grid"] .mp-pane.server {
+  grid-column: 1 / -1;
+  grid-row: span 1;
+}
+
 /* ---- pane shell ---- */
 
 .mp-pane {
@@ -2815,18 +2861,41 @@ a:hover {
      carry the rounding: the header clips its top corners, the body clips the
      iframe's bottom corners (unless the error strip is the last row). */
   background: #0b0817;
+  /* Depth in three steps — contact, lift, and a wide ambient pool — so a
+     client pane reads as a window floating over the surface rather than a
+     boxed-off region of it. The border stays a hairline; the shadow does the
+     separating. (The server tile opts out further down: see its block.) */
   box-shadow:
-    0 2px 6px rgba(0, 0, 0, 0.45),
-    0 12px 36px rgba(0, 0, 0, 0.55);
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 9px 22px rgba(0, 0, 0, 0.55),
+    0 26px 60px rgba(0, 0, 0, 0.62);
   transition: border-color 0.18s, box-shadow 0.18s;
 }
 
-.mp-pane.focus {
-  border-color: color-mix(in srgb, var(--pc) 55%, transparent);
+/* The active pane — the client holding the keyboard ("⌨ you") — is lit from
+   its own edge: a spread glow in the player's color over the depth stack, so
+   "who has my keys" is answerable from across the room, not by reading a
+   header. The SERVER is excluded by name: it never owns input, and the flat
+   dashed authority tile is the whole point of its styling. */
+.mp-pane.focus:not(.server) {
+  border-color: color-mix(in srgb, var(--pc) 60%, transparent);
   box-shadow:
-    0 0 22px color-mix(in srgb, var(--pc) 28%, transparent),
-    0 2px 6px rgba(0, 0, 0, 0.45),
-    0 12px 36px rgba(0, 0, 0, 0.55);
+    0 0 26px 5px color-mix(in srgb, var(--pc) 34%, transparent),
+    0 0 72px 14px color-mix(in srgb, var(--pc) 13%, transparent),
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 9px 22px rgba(0, 0, 0, 0.55),
+    0 26px 60px rgba(0, 0, 0, 0.62);
+}
+
+/* The glow itself is static — nothing to stop for reduced motion — but moving
+   focus crossfades three surfaces (the pane's shadow, its header, its tab).
+   Under reduce, focus lands instantly on all three or on none. */
+@media (prefers-reduced-motion: reduce) {
+  .mp-pane,
+  .mp-pane-hd,
+  .mp-tab {
+    transition: none;
+  }
 }
 
 .mp-pane-hd {
@@ -2952,6 +3021,9 @@ a:hover {
 .mp-pane.server {
   border-style: dashed;
   border-color: color-mix(in srgb, var(--pc) 30%, transparent);
+  /* Deliberately NOT the clients' three-step depth stack: the authority sits
+     flat against the surface while the players float over it, and it never
+     takes the focus glow (it owns no keyboard). Quiet where they are lit. */
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
 }
 
@@ -3100,7 +3172,9 @@ a:hover {
   opacity: 0.8;
 }
 
-/* Narrow columns (the sandbox's preview at laptop width): stack the panes. */
+/* Narrow columns (the sandbox's preview at laptop width): stack the panes.
+   Grid's two columns collapse here too — the server strip still spans them,
+   so the layout keeps its shape, one column wide. */
 @media (max-width: 1280px) {
   .preview-pane.mp .mp-grid {
     grid-template-columns: 1fr;

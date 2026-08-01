@@ -16,7 +16,9 @@
 //      inspector trace, the same path the net-coordinator e2e uses — so the
 //      panes are one session, not three lonely sims;
 //   4. every pane header shows its coordinator link state;
-//   5. switching to a single-role example removes the server pane again.
+//   5. the GRID layout puts the clients in two columns with the server as a
+//      full-width strip below them — and switching layout reloads no pane;
+//   6. switching to a single-role example removes the server pane again.
 //
 // Run manually (needs the web-runtime wasm bundle):
 //
@@ -85,6 +87,32 @@ const installProbe = (page) =>
       headers: () => shells().map((s) => s.header),
       pill: () => document.getElementById("status").textContent.trim(),
       pauseAll: () => document.getElementById("mp-pause").click(),
+      layout: () => ({
+        view: document.querySelector(".mp-grid").dataset.view,
+        pressed: [...document.querySelectorAll(".mp-viewseg button")].map(
+          (b) => `${b.id.replace("mp-view-", "")}:${b.getAttribute("aria-pressed")}`
+        ),
+      }),
+      // Laid-out geometry per pane, plus the server's resolved grid placement.
+      boxes: () =>
+        shells().map((s) => {
+          const shell = s.frame.closest(".mp-pane");
+          const box = shell.getBoundingClientRect();
+          return {
+            role: s.role,
+            x: Math.round(box.x),
+            y: Math.round(box.y),
+            w: Math.round(box.width),
+            h: Math.round(box.height),
+            gridColumn: getComputedStyle(shell).gridColumn,
+          };
+        }),
+      // Document-lifetime markers for EVERY pane: a re-parented iframe reloads
+      // into a fresh realm and loses the flag.
+      markAll: () => {
+        for (const s of shells()) s.frame.contentWindow.__mpAlive = true;
+      },
+      allAlive: () => shells().every((s) => s.frame.contentWindow?.__mpAlive === true),
       model: (role) => {
         const trace = traces.get(role);
         const invocations = trace?.invocations ?? [];
@@ -112,6 +140,17 @@ try {
     );
     const clientsControl = await page.inputValue("#client-count");
     check(clientsControl === "1", "the CLIENTS control counts clients only", clientsControl);
+
+    // Grid with a LONE client: no peer to match, so it takes the whole row
+    // rather than sitting beside an empty cell — the server strip below it.
+    await page.click("#mp-view-grid");
+    await sleep(400);
+    const [client, server] = await page.evaluate(() => window.__mpProbe.boxes());
+    check(
+      Math.abs(client.w - server.w) < 2 && server.y >= client.y + client.h && server.h < client.h,
+      "grid with one client stacks it full-width over the server strip",
+      JSON.stringify([client, server])
+    );
     await page.close();
   }
 
@@ -231,6 +270,111 @@ try {
     await page.close();
   }
 
+  // --- 4c. GRID layout: client cells over a server strip, no pane reloaded. ---
+  // Switching layout must be a pure CSS/class change: reordering or re-parenting
+  // a pane's node would reload its iframe and wipe the model, so the same
+  // document-lifetime marker 4b uses on the server is applied to EVERY pane here.
+  {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await page.goto(`${BASE}/sandbox.html?example=mp#clients=2`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+    const tiled = await page.evaluate(() => {
+      window.__mpProbe.markAll();
+      return window.__mpProbe.layout();
+    });
+    check(
+      tiled.view === "tiled" && tiled.pressed.join(" ") === "tiled:true grid:false tabs:false",
+      "the layout control starts on TILED with three options",
+      `${tiled.view} — ${tiled.pressed.join(" ")}`
+    );
+
+    await page.click("#mp-view-grid");
+    await sleep(400);
+    const grid = await page.evaluate(() => window.__mpProbe.layout());
+    check(
+      grid.view === "grid" && grid.pressed.join(" ") === "tiled:false grid:true tabs:false",
+      "clicking GRID switches the pane grid's layout",
+      `${grid.view} — ${grid.pressed.join(" ")}`
+    );
+
+    const boxes = await page.evaluate(() => window.__mpProbe.boxes());
+    const [c1, c2, server] = boxes;
+    check(
+      Math.abs(c1.y - c2.y) < 2 && c2.x > c1.x && Math.abs(c1.w - c2.w) < 2,
+      "the two clients sit side by side in equal columns",
+      JSON.stringify([c1, c2])
+    );
+    check(
+      server.gridColumn === "1 / -1" && server.w > c1.w * 1.8 && server.y >= c1.y + c1.h,
+      "the server pane spans every column as a strip below the clients",
+      JSON.stringify(server)
+    );
+    check(
+      server.h < c1.h,
+      "the server strip is shorter than a client cell",
+      `${server.h} vs ${c1.h}`
+    );
+    check(
+      await page.evaluate(() => window.__mpProbe.allAlive()),
+      "no pane's iframe was reloaded by the switch to grid"
+    );
+
+    // ...and back. Tiled is one row again, still the same three documents.
+    await page.click("#mp-view-tiled");
+    await sleep(400);
+    const back = await page.evaluate(() => window.__mpProbe.layout());
+    const backBoxes = await page.evaluate(() => window.__mpProbe.boxes());
+    check(
+      back.view === "tiled" &&
+        back.pressed.join(" ") === "tiled:true grid:false tabs:false" &&
+        backBoxes.every((b) => Math.abs(b.y - backBoxes[0].y) < 2),
+      "switching back to TILED restores the single row",
+      `${back.view} — ${JSON.stringify(backBoxes.map((b) => b.y))}`
+    );
+    check(
+      await page.evaluate(() => window.__mpProbe.allAlive()),
+      "no pane's iframe was reloaded by the switch back to tiled"
+    );
+
+    // `f` cycles the three layouts in the segmented control's order.
+    const cycled = [];
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press("f");
+      await sleep(250);
+      cycled.push(await page.evaluate(() => window.__mpProbe.layout().view));
+    }
+    check(
+      cycled.join(" → ") === "grid → tabs → tiled",
+      "f cycles tiled → grid → tabs → tiled",
+      cycled.join(" → ")
+    );
+    check(
+      await page.evaluate(() => window.__mpProbe.allAlive()),
+      "no pane's iframe was reloaded by the f cycle"
+    );
+
+    // A third client makes the odd row: it keeps its half-width cell (its peers
+    // are right above it, and the server strip still closes the layout below).
+    await page.selectOption("#client-count", "3");
+    await sleep(2500);
+    await page.click("#mp-view-grid");
+    await sleep(400);
+    const three = await page.evaluate(() => window.__mpProbe.boxes());
+    check(
+      three.length === 4 &&
+        Math.abs(three[2].w - three[0].w) < 2 &&
+        three[2].x === three[0].x &&
+        three[2].y >= three[0].y + three[0].h &&
+        three[3].w > three[2].w * 1.8,
+      "a third client keeps its half-width cell above the full-width strip",
+      JSON.stringify(three.map((b) => [b.role, b.x, b.y, b.w, b.h]))
+    );
+    await page.close();
+  }
+
   // --- 5. Switching away drops the server pane. -------------------------------
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -249,6 +393,19 @@ try {
       .catch(() => false);
     const roles = await page.evaluate(() => window.__mpProbe.roles());
     check(gone, "switching to a single-role example removes the server pane", roles.join(", "));
+
+    // Grid with no authority: nothing closes the bottom row, so the odd last
+    // client stretches rather than leaving a whole empty quadrant.
+    await page.selectOption("#client-count", "3");
+    await sleep(2500);
+    await page.click("#mp-view-grid");
+    await sleep(400);
+    const solo = await page.evaluate(() => window.__mpProbe.boxes());
+    check(
+      solo.length === 3 && solo[2].w > solo[0].w * 1.8 && solo[2].y >= solo[0].y + solo[0].h,
+      "in a single-role example the odd last client spans the bottom row",
+      JSON.stringify(solo.map((b) => [b.role, b.x, b.y, b.w, b.h]))
+    );
     await page.close();
   }
 } finally {

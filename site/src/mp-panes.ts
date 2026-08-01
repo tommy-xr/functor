@@ -4,7 +4,7 @@
 //
 // The preview column becomes:
 //
-//   ┌ chrono bar ─ ⏸ ⏭ ═══rail═══╪══ 🔮 | ⊞ tiled ▤ tabs ┐   (game side only —
+//   ┌ chrono bar ─ ⏸ ⏭ ══rail══╪═ 🔮 | ⊞ tiled ▦ grid ▤ tabs ┐ (game side only —
 //   ├ pane grid ──────────────────────────────────────────────┤    the editor keeps
 //   │  ╔ 1 client · cyan  ⇅ Wi-Fi ▾   #f 841 ● ╗  ┌ 2 client ┐│    its full height)
 //   │  ║             iframe                    ║  │  iframe   ││
@@ -116,6 +116,17 @@ interface LinkProfile {
 }
 
 type PaneState = PillState["state"];
+
+/**
+ * How the panes are laid out. `tiled` is one row of equal tiles; `grid` wraps
+ * the CLIENTS into two columns and gives the server its own full-width strip
+ * along the bottom (design-multiplayer-ide-frontend.md §5 — the authority reads
+ * differently from the players); `tabs` shows one pane at a time.
+ *
+ * Declaration order is the segmented control's order AND the `f` key's cycle.
+ */
+const VIEWS = ["tiled", "grid", "tabs"] as const;
+type PaneView = (typeof VIEWS)[number];
 
 /**
  * What a pane IS in the session. A `client` pane is a player: numbered, player
@@ -251,8 +262,9 @@ export function initMultiplayerPanes({
     </span>
     <button class="mp-sbtn" id="mp-extrap" title="Extrapolate: speculatively simulate forward from the parked frame">🔮</button>
     <span class="mp-viewseg" role="group" aria-label="Pane layout">
-      <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every client visible">⊞ tiled</button>
-      <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one client full-size (f)">▤ tabs</button>
+      <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every pane in one row (f cycles)">⊞ tiled</button>
+      <button id="mp-view-grid" aria-pressed="false" title="Grid: clients in two columns over the server strip (f cycles)">▦ grid</button>
+      <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one pane full-size (f cycles)">▤ tabs</button>
     </span>`;
 
   const debugDrawer = document.createElement("section");
@@ -578,30 +590,38 @@ export function initMultiplayerPanes({
       if (from >= panes.length) focusPane(delta === 1 ? 0 : panes.length - 1);
       else focusPane((from + delta + panes.length) % panes.length);
     } else if (event.key === "f") {
-      setView(grid.dataset.view === "tiled" ? "tabs" : "tiled");
+      setView(VIEWS[(VIEWS.indexOf(grid.dataset.view as PaneView) + 1) % VIEWS.length]);
     }
   }, { signal: moduleScope.signal });
 
-  // ------------------------------------------------------- tiled / tabs view
-  const setView = (view: "tiled" | "tabs", force = false) => {
+  // ------------------------------------------------ tiled / grid / tabs view
+  // Switching layout is a CLASS CHANGE ONLY — `data-view` on the one grid, and
+  // pure CSS from there. Nothing may reorder or re-parent a pane's node: a
+  // re-appended iframe reloads and wipes its model (the same invariant that
+  // keeps pane 1, and the server pane, in place across count changes).
+  const setView = (view: PaneView, force = false) => {
     if (allPanes().length === 1 && !force) return;
     grid.dataset.view = view;
     tabsStrip.hidden = view !== "tabs";
-    $btn("mp-view-tiled").setAttribute("aria-pressed", String(view === "tiled"));
-    $btn("mp-view-tabs").setAttribute("aria-pressed", String(view === "tabs"));
+    for (const candidate of VIEWS) {
+      $btn(`mp-view-${candidate}`).setAttribute("aria-pressed", String(view === candidate));
+    }
   };
-  $btn("mp-view-tiled").addEventListener("click", () => setView("tiled"));
-  $btn("mp-view-tabs").addEventListener("click", () => setView("tabs"));
+  for (const view of VIEWS) $btn(`mp-view-${view}`).addEventListener("click", () => setView(view));
 
   // Everything on the chrono bar that depends on how many panes exist.
   // (CSS keyed on data-count hides the pane header / 🔮 / view toggle.)
   const updateChrome = () => {
     // "Single" is about TILES, not clients: one client plus a server is still
-    // a grid, so it keeps its pane headers and the tiled/tabs toggle.
+    // a grid, so it keeps its pane headers and the layout toggle.
     const single = allPanes().length === 1;
     previewPane.dataset.count = String(allPanes().length);
-    $btn("mp-view-tiled").disabled = single;
-    $btn("mp-view-tabs").disabled = single;
+    // Grid's column rules need the CLIENT count, which `data-count` (every
+    // pane, server included) cannot express: "2 panes" is one client under an
+    // authority or two peers in a single-role example, and those lay out
+    // differently.
+    grid.dataset.clients = String(panes.length);
+    for (const view of VIEWS) $btn(`mp-view-${view}`).disabled = single;
     if (single) setView("tiled", true);
   };
 
