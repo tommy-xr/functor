@@ -14,10 +14,11 @@
 //   Up / W / Space        — jump (only when grounded)
 
 // --- Tunables (tweak these to change whether the jump clears the chasm) ---
-let runSpeed = 8.0        // horizontal speed while a direction is held
 // <editable>
-// Tune the jump, then click 🔮 to preview it.
-let jumpVelocity = 13.0
+// Tune the jump — speed, launch, gravity. Click 🔮 to preview.
+let runSpeed = 8.0        // horizontal speed while held
+let jumpVelocity = 13.0   // upward launch speed
+let gravity = 30.0        // downward acceleration
 
 let world = (model, tts) =>
   Sprite.group([
@@ -28,13 +29,12 @@ let world = (model, tts) =>
   ])
   |> Sprite.nearest()
 // </editable>
-let gravity = 30.0        // downward acceleration
 
 // A jump launched at the edge covers runSpeed * (2*jumpVelocity/gravity)
 //   = 8 * (2*13/30) = 6.93 units horizontally at the same height it started.
 // The chasm is 6.0 wide (chasmHalf 3.0), so the DEFAULT jump clears it with
-// a small margin — but lowering jumpVelocity (or raising gravity) a little
-// makes the character fall short. That knife-edge is the whole point.
+// a small margin — but lowering jumpVelocity or runSpeed (or raising gravity)
+// a little makes the character fall short. That knife-edge is the whole point.
 
 // --- Level geometry (side view: XY plane, +X right, +Y up) ---
 let groundTop = 0.0       // y of the platform surface the character stands on

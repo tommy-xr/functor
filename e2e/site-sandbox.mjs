@@ -237,7 +237,7 @@ const playerFrame = (page) => {
   );
   check("landing hero player has the scrubber element", heroHasScrubber);
 
-  // The hero mini-sandbox: a live editor over just the jump tuning region.
+  // The hero mini-sandbox: a live editor over the whole tunables trio.
   await page.waitForFunction(
     () => window.__hero && window.__hero.region().includes("let jumpVelocity"),
     { timeout: 10000 }
@@ -256,7 +256,20 @@ const playerFrame = (page) => {
       statusRect.right > lastLineRect.left &&
       statusRect.top < lastLineRect.bottom &&
       statusRect.bottom > lastLineRect.top;
+    // The three tunables and their inviting lead comment are the panel's
+    // headline: they must sit fully inside the viewport at rest, never
+    // needing a scroll to be read.
+    const tunableLines = lines.filter((line) =>
+      /🔮|let runSpeed =|let jumpVelocity =|let gravity =/.test(line.textContent)
+    );
+    const tunablesVisible =
+      tunableLines.length === 4 &&
+      tunableLines.every((line) => {
+        const rect = line.getBoundingClientRect();
+        return rect.top >= viewport.top - 1 && rect.bottom <= viewport.bottom + 1;
+      });
     return {
+      tunablesVisible,
       verticallyVisible: lastLineRect.bottom <= viewport.bottom + 1,
       horizontallyVisible: scroller.scrollWidth <= scroller.clientWidth + 1,
       statusOverlapsLastLine,
@@ -266,11 +279,18 @@ const playerFrame = (page) => {
     "hero editor clearly labels a real world-building excerpt",
     excerptHeading.toLowerCase().includes("live excerpt") &&
       excerptHeading.includes("examples/mario/game.fun") &&
+      region.includes("let runSpeed") &&
       region.includes("let jumpVelocity") &&
+      region.includes("let gravity") &&
       region.includes("let world = (model, tts) =>") &&
       region.includes("Sprite.group") &&
       !region.includes("let init"),
     region.slice(0, 40)
+  );
+  check(
+    "hero editor shows the tunables trio uncropped at rest",
+    excerptLayout.tunablesVisible,
+    JSON.stringify(excerptLayout)
   );
   check(
     "hero editor shows every meaningful excerpt line without overflow",
@@ -327,24 +347,31 @@ const playerFrame = (page) => {
     )
   );
 
-  // Weakening the jump rebuilds the recorded future under the edited code.
-  // The anchor stays parked; only its extrapolated trajectory changes.
+  // Push an edited region and wait for the runtime to accept it (a fresh
+  // reload-ok marker) and the panel to report live again.
+  const applyHeroRegion = async (src) => {
+    const reloadsBefore = await heroPlayer.evaluate(
+      () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
+    );
+    await page.evaluate((s) => window.__hero.setRegion(s), src);
+    await heroPlayer.waitForFunction(
+      (before) =>
+        window.__scrub.events().filter((event) => event.kind === "reload-ok").length > before,
+      reloadsBefore,
+      { timeout: 8000 }
+    );
+    await page.waitForFunction(() => window.__hero.status().state === "live", null, {
+      timeout: 8000,
+    });
+    await sleep(700);
+  };
+
+  // Weakening the jump rebuilds the predicted (pink) future under the edited
+  // code. The anchor stays parked, so the recorded (cyan) past is unchanged;
+  // only the extrapolated trajectory ahead of it moves.
   const weakRegion = region.replace("let jumpVelocity = 13.0", "let jumpVelocity = 10.0");
-  const reloadsBeforeWeak = await heroPlayer.evaluate(
-    () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
-  );
   const rangeBeforeWeak = await heroPlayer.evaluate(() => Array.from(window.__scrub.range()));
-  await page.evaluate((s) => window.__hero.setRegion(s), weakRegion);
-  await heroPlayer.waitForFunction(
-    (before) =>
-      window.__scrub.events().filter((event) => event.kind === "reload-ok").length > before,
-    reloadsBeforeWeak,
-    { timeout: 8000 }
-  );
-  await page.waitForFunction(() => window.__hero.status().state === "live", null, {
-    timeout: 8000,
-  });
-  await sleep(700);
+  await applyHeroRegion(weakRegion);
   const weakJumpHash = await regionHash(heroPlayer);
   check(
     "editing jumpVelocity redraws the projected trajectory",
@@ -352,8 +379,18 @@ const playerFrame = (page) => {
     `${strongJumpHash} -> ${weakJumpHash}`
   );
 
+  // gravity is editable in the same region: it must move the projection too.
+  const heavyRegion = weakRegion.replace("let gravity = 30.0", "let gravity = 45.0");
+  await applyHeroRegion(heavyRegion);
+  const heavyJumpHash = await regionHash(heroPlayer);
+  check(
+    "editing gravity redraws the projected trajectory",
+    heavyJumpHash !== weakJumpHash,
+    `${weakJumpHash} -> ${heavyJumpHash}`
+  );
+
   // A broken edit (unbalanced paren): error surfaced, old preview keeps drawing.
-  await page.evaluate((s) => window.__hero.setRegion(s), `${weakRegion}\n(`);
+  await page.evaluate((s) => window.__hero.setRegion(s), `${heavyRegion}\n(`);
   await page.waitForFunction(() => window.__hero.status().state === "error", {
     timeout: 8000,
   });
@@ -361,25 +398,14 @@ const playerFrame = (page) => {
   const brokenJumpHash = await regionHash(heroPlayer);
   check(
     "hero broken edit keeps the last good projected trajectory",
-    brokenJumpHash === weakJumpHash,
-    `${weakJumpHash} -> ${brokenJumpHash}`
+    brokenJumpHash === heavyJumpHash,
+    `${heavyJumpHash} -> ${brokenJumpHash}`
   );
 
-  // Recover with the original jump. The deliberately paused timeline remains
-  // parked and retains the whole recorded script across both safe reloads.
-  const reloadsBeforeRecovery = await heroPlayer.evaluate(
-    () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
-  );
-  await page.evaluate((s) => window.__hero.setRegion(s), region);
-  await heroPlayer.waitForFunction(
-    (before) =>
-      window.__scrub.events().filter((event) => event.kind === "reload-ok").length > before,
-    reloadsBeforeRecovery,
-    { timeout: 8000 }
-  );
-  await page.waitForFunction(() => window.__hero.status().state === "live", null, {
-    timeout: 8000,
-  });
+  // Recover with the original tunables. The deliberately paused timeline
+  // remains parked and retains the whole recorded script across every safe
+  // reload.
+  await applyHeroRegion(region);
   const recovered = await heroPlayer.evaluate(() => ({
     paused: window.__scrub.paused(),
     frame: window.__scrub.frame(),

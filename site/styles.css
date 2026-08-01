@@ -304,7 +304,9 @@ a:hover {
    carries the site's shared synthwave theme. */
 .hero-editor {
   border-top: 1px solid var(--line);
-  height: 246px;
+  /* Tall enough for the whole excerpt — the three tunables and their lead
+     comment up top, the world composition below — with no line clipped. */
+  height: 284px;
   overflow: hidden;
   background: #161226;
   display: flex;
