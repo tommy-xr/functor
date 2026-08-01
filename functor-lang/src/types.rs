@@ -507,6 +507,9 @@ pub fn builtin_signature(b: Builtin) -> Type {
         // List.maximum : (List<Float>) => Option.t<Float> — partial like
         // `nth`/`head`/`last`/`find`: an empty list is `Option.None`.
         Builtin::ListMaximum => func(vec![List(Box::new(Float))], option(Float)),
+        // List.minimum : (List<Float>) => Option.t<Float> — the Option-shaped
+        // counterpart to `List.maximum`.
+        Builtin::ListMinimum => func(vec![List(Box::new(Float))], option(Float)),
         // List.length : (List<'a>) => Float
         Builtin::ListLength => func(vec![List(Box::new(Var(0)))], Float),
         // Subject-LAST. List.append : (List<'a>, List<'a>) => List<'a> — (other, list)
@@ -664,7 +667,12 @@ pub fn builtin_signature(b: Builtin) -> Type {
         | Builtin::MathMax
         | Builtin::MathPow => func(vec![Float, Float], Float),
         // Subject-LAST. Math.clamp : (Float, Float, Float) => Float — (low, high, n)
-        Builtin::MathClamp => func(vec![Float, Float, Float], Float),
+        // Math.lerp : (Float, Float, Float) => Float — (target, t, from),
+        // `Vec3.lerp`'s shape, unclamped
+        // Math.smoothstep : (Float, Float, Float) => Float — (edge0, edge1, x)
+        Builtin::MathClamp | Builtin::MathLerp | Builtin::MathSmoothstep => {
+            func(vec![Float, Float, Float], Float)
+        }
         // Math.pi : Float — a constant, not a function.
         Builtin::MathPi => Float,
         // Random.* — seeds are BRANDED: `Random.Seed` is the injected

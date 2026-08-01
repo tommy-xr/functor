@@ -924,7 +924,11 @@ fn option_returning_builtins_interop_with_the_option_module() {
                \x20   if List.head(xs) == Option.Some(10.0) then 100.0 else 0.0 in\n\
                \x20 let empty =\n\
                \x20   if List.head([]) == Option.None then 1000.0 else 0.0 in\n\
-               \x20 hit + miss + piped + same + empty\n";
+               \x20 let least =\n\
+               \x20   xs |> List.minimum |> Option.defaultValue(0.0) in\n\
+               \x20 let noLeast =\n\
+               \x20   [] |> List.minimum |> Option.defaultValue(5.0) in\n\
+               \x20 hit + miss + piped + same + empty + least + noLeast\n";
     let project = load("option-builtin-interop", &[("game.fun", src)]);
     let diags = project.check();
     assert!(diags.is_empty(), "Option-returning builtins should check: {diags:?}");
@@ -933,8 +937,9 @@ fn option_returning_builtins_interop_with_the_option_module() {
         .unwrap_or_else(|f| panic!("should run: {}", f.error.message));
     match record.outcome {
         // 20 (nth hit) + 1 (nth miss -> None) + 21 (find |> map) + 100
-        // (head == Option.Some(10)) + 1000 (empty head == Option.None).
-        RunOutcome::Main(Value::Number(n)) => assert_eq!(n, 1142.0),
+        // (head == Option.Some(10)) + 1000 (empty head == Option.None) + 10
+        // (minimum) + 5 (minimum of [] -> None -> the default).
+        RunOutcome::Main(Value::Number(n)) => assert_eq!(n, 1157.0),
         _ => panic!("expected a numeric main result"),
     }
 }

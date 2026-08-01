@@ -596,6 +596,31 @@ fn list_partial_accessors_return_option() {
     assert!(message.contains("must return a bool"), "unexpected: {message}");
 }
 
+/// `List.minimum` mirrors `List.maximum`: PARTIAL accessors, Option-shaped —
+/// the empty list is `Option.None` for both.
+#[test]
+fn list_minimum_returns_option() {
+    assert_eq!(
+        main_result("let main = () => List.minimum([3.0, 1.0, 2.0])"),
+        "Option.Some(1)"
+    );
+    assert_eq!(
+        main_result("let main = () => [3.0, 1.0, 2.0] |> List.minimum"),
+        "Option.Some(1)"
+    );
+    assert_eq!(
+        main_result("let main = () => List.minimum([-5.0, 0.0])"),
+        "Option.Some(-5)"
+    );
+    assert_eq!(main_result("let main = () => List.minimum([])"), "Option.None");
+    // Same element-type discipline as `List.maximum`.
+    let (message, _, _) = run_err("let main = () => List.minimum([\"a\"])");
+    assert!(message.contains("expects numbers"), "unexpected: {message}");
+    // The two siblings agree on the empty list too — both are `Option.None`
+    // (`maximum_of_empty_list_is_none` pins the rest of `List.maximum`).
+    assert_eq!(main_result("let main = () => List.maximum([])"), "Option.None");
+}
+
 /// `indexedMap` — the builtin that retires the O(n²) hand-rolled indexing.
 #[test]
 fn list_indexed_map_passes_the_index_first() {
@@ -873,6 +898,100 @@ let main = () => List.all(agree, [-2.0, -0.5, 0.0, 0.25, 1.0, 7.0])"
         main_result("let main = () => 5.0 |> Math.clamp(0.0, 1.0 / 0.0)"),
         "5"
     );
+}
+
+/// `Math.lerp(target, t, from)` is the UNCLAMPED interpolation
+/// `from + (target - from) * t`, in `Vec3.lerp`'s argument order.
+#[test]
+fn math_lerp_is_unclamped() {
+    assert_eq!(main_result("let main = () => Math.lerp(10.0, 0.5, 0.0)"), "5");
+    // Both endpoints are hit EXACTLY.
+    assert_eq!(main_result("let main = () => Math.lerp(8.0, 0.0, 2.0)"), "2");
+    assert_eq!(main_result("let main = () => Math.lerp(8.0, 1.0, 2.0)"), "8");
+    // …including the pairs where `from + (target - from) * 1.0` rounds off
+    // `target` (~9% of random pairs do). An ease that runs to completion must
+    // ARRIVE, so `t == 1` answers `target` itself rather than the formula.
+    assert_eq!(
+        main_result(
+            "let main = () =>\n\
+             \x20 Math.lerp(0.0 - 420.7814273366474, 1.0, 716.936918097359)\n\
+             \x20   == 0.0 - 420.7814273366474"
+        ),
+        "true"
+    );
+    // Unclamped: `t` outside [0, 1] extrapolates in both directions.
+    assert_eq!(main_result("let main = () => Math.lerp(10.0, 2.0, 0.0)"), "20");
+    assert_eq!(main_result("let main = () => Math.lerp(10.0, -1.0, 0.0)"), "-10");
+    // A descending pair interpolates just as well.
+    assert_eq!(main_result("let main = () => Math.lerp(0.0, 0.25, 10.0)"), "7.5");
+    // THE SUBJECT IS THE START VALUE, exactly as `pos |> Vec3.lerp(target, t)`
+    // threads the start vector — the scalar and vector forms pipe alike.
+    assert_eq!(
+        main_result("let main = () => 2.0 |> Math.lerp(8.0, 0.5)"),
+        "5"
+    );
+    let (message, _, _) = run_err("let main = () => Math.lerp(0.0, 1.0)(\"from\")");
+    assert!(message.contains("three numbers"), "unexpected: {message}");
+}
+
+/// `Math.smoothstep` is the standard clamped Hermite ramp, and any range that
+/// is not finite and ascending is a teaching error rather than a silent NaN.
+#[test]
+fn math_smoothstep_is_clamped_and_rejects_degenerate_edges() {
+    assert_eq!(
+        main_result("let main = () => Math.smoothstep(0.0, 1.0, 0.5)"),
+        "0.5"
+    );
+    // Clamped outside the edges — flat 0 below, flat 1 above.
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, 0.0)"), "0");
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, 1.0)"), "1");
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, -5.0)"), "0");
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, 9.0)"), "1");
+    // Non-unit edges rescale: 2.5 is the midpoint of [2, 3].
+    assert_eq!(
+        main_result("let main = () => Math.smoothstep(2.0, 3.0, 2.5)"),
+        "0.5"
+    );
+    // The ramp is the Hermite curve, not the linear one: at a quarter of the
+    // way in it is 3t² - 2t³ = 0.15625, well below 0.25.
+    assert_eq!(
+        main_result("let main = () => Math.smoothstep(0.0, 1.0, 0.25)"),
+        "0.15625"
+    );
+    // Symmetric about the midpoint.
+    assert_eq!(
+        main_result(
+            "let mirrors = (x: float): bool =>\n\
+             \x20 Math.abs(Math.smoothstep(0.0, 1.0, x)\n\
+             \x20   + Math.smoothstep(0.0, 1.0, 1.0 - x) - 1.0) < 0.0000001\n\
+             let main = () => List.all(mirrors, [0.0, 0.1, 0.3, 0.5, 0.9, 1.0])"
+        ),
+        "true"
+    );
+    assert_eq!(
+        main_result("let main = () => 0.5 |> Math.smoothstep(0.0, 1.0)"),
+        "0.5"
+    );
+    // A zero-width or inverted range would divide by zero (NaN / ±inf), so it
+    // is a teaching error — the `Math.clamp` rule. NaN edges route there too,
+    // as do INFINITE and merely overflow-wide ones: those pass `edge0 < edge1`
+    // yet still make the ramp answer NaN, so the guard demands a FINITE width.
+    for src in [
+        "let main = () => Math.smoothstep(1.0, 1.0, 1.0)",
+        "let main = () => Math.smoothstep(1.0, 0.0, 0.5)",
+        "let main = () => Math.smoothstep(0.0 / 0.0, 1.0, 0.5)",
+        "let main = () => Math.smoothstep(0.0, 0.0 / 0.0, 0.5)",
+        "let main = () => Math.smoothstep(0.0 - 1.0 / 0.0, 1.0, 0.5)",
+        "let main = () => Math.smoothstep(0.0, 1.0 / 0.0, 0.5)",
+        "let main = () =>\n\
+         \x20 Math.smoothstep(0.0 - Math.pow(10.0, 308.0), Math.pow(10.0, 308.0), 0.0)",
+    ] {
+        let (message, _, _) = run_err(src);
+        assert!(
+            message.contains("finite range with edge0 < edge1"),
+            "unexpected for {src}: {message}"
+        );
+    }
 }
 
 /// `Math.round` is HALF AWAY FROM ZERO, and symmetric about it.

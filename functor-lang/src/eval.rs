@@ -1793,6 +1793,34 @@ most 1000000 cells"
                 }
                 _ => err("List.maximum(list) expects one list".to_string()),
             },
+            // `List.minimum` is `List.maximum`'s sibling, Option-shaped like
+            // every partial accessor (`List.head`/`nth`/`find`): an empty
+            // list is `Option.None`, not an error.
+            //
+            // NaN follows `f64::min`, exactly like `List.maximum`'s `f64::max`:
+            // a NaN element is ignored while any real number is present.
+            Builtin::ListMinimum => match args.as_slice() {
+                [Value::List(items)] => {
+                    // O(n) scan: charge n (the List.maximum rule).
+                    self.charge(items.len() as u64, span)?;
+                    let mut best: Option<f64> = None;
+                    for item in items.iter() {
+                        match item {
+                            Value::Number(n) => {
+                                best = Some(best.map_or(*n, |b: f64| b.min(*n)));
+                            }
+                            other => {
+                                return err(format!(
+                                    "List.minimum expects numbers, got {}",
+                                    other.kind_name()
+                                ))
+                            }
+                        }
+                    }
+                    Ok(option_value(best.map(Value::Number)))
+                }
+                _ => err("List.minimum(list) expects one list".to_string()),
+            },
             // The iterative list helpers a game reaches for — hand-rolling
             // these recursively blows the eval-depth cap around n≈60, so they
             // loop in Rust and consume no evaluation depth (see MAX_EVAL_DEPTH).
@@ -2536,6 +2564,57 @@ most 1000000 cells"
                 )),
                 _ => err("Math.clamp(low, high, n) expects three numbers".to_string()),
             },
+            // `Math.lerp(target, t, from)` = `from + (target - from) * t` —
+            // UNCLAMPED, like `Vec3.lerp`: `t` outside [0, 1] extrapolates,
+            // which is what an overshooting ease or a spring wants. Clamp the
+            // parameter first (`t |> Math.clamp01 |> …`) for the bounded form.
+            //
+            // The argument order MIRRORS `Vec3.lerp(target, t, from)` exactly,
+            // so the subject is the START value and the two pipe identically:
+            // `x |> Math.lerp(target, t)` beside `pos |> Vec3.lerp(target, t)`.
+            // That costs `mix`/`std::lerp` familiarity and buys the thing that
+            // actually bites — carrying the vector habit to scalars can no
+            // longer typecheck clean while meaning something else.
+            Builtin::MathLerp => match args.as_slice() {
+                // `from + (target - from) * t`, the standard form — but it is
+                // exact only at `t == 0`: `from + (target - from)` rounds off
+                // `target` for ~9% of random float pairs. `t == 1` is therefore
+                // answered with `target` itself, so both endpoints land
+                // EXACTLY (the `std::lerp` rule) and an ease that runs to
+                // completion actually arrives.
+                [Value::Number(target), Value::Number(t), Value::Number(_)] if *t == 1.0 => {
+                    Ok(Value::Number(*target))
+                }
+                [Value::Number(target), Value::Number(t), Value::Number(from)] => {
+                    Ok(Value::Number(from + (target - from) * t))
+                }
+                _ => err("Math.lerp(target, t, from) expects three numbers".to_string()),
+            },
+            // The standard (GLSL/Hermite) smoothstep: 0 below `edge0`, 1 above
+            // `edge1`, and a smooth `3t² - 2t³` ramp between — CLAMPED, unlike
+            // `Math.lerp` (an easing curve that overshoots its own edges is
+            // never what a caller means).
+            //
+            // The range must be finite and ascending. A zero-width, inverted,
+            // or NaN range is the obvious caller bug, but an infinite (or
+            // merely astronomically wide) one is the same bug wearing a
+            // disguise: `edge1 - edge0` overflows, the division answers NaN or
+            // ±inf, and the "flat 0 / flat 1" contract quietly stops holding.
+            // Both are a teaching error, exactly as an inverted range is for
+            // `Math.clamp`.
+            Builtin::MathSmoothstep => match args.as_slice() {
+                [Value::Number(edge0), Value::Number(edge1), Value::Number(x)]
+                    if edge0 < edge1 && (edge1 - edge0).is_finite() =>
+                {
+                    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+                    Ok(Value::Number(t * t * (3.0 - 2.0 * t)))
+                }
+                [Value::Number(edge0), Value::Number(edge1), Value::Number(_)] => err(format!(
+                    "Math.smoothstep(edge0, edge1, x) needs a finite range with edge0 < edge1, \
+got edge0 {edge0} and edge1 {edge1}"
+                )),
+                _ => err("Math.smoothstep(edge0, edge1, x) expects three numbers".to_string()),
+            },
             // `Math.round` rounds HALF AWAY FROM ZERO (Rust's `f64::round`),
             // not to even: 0.5 -> 1, 2.5 -> 3, -0.5 -> -1, -2.5 -> -3. That
             // is the rule people predict when they round a score or a grid
@@ -3100,6 +3179,8 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::RandomRange
         | Builtin::TextReplace
         | Builtin::MathClamp
+        | Builtin::MathLerp
+        | Builtin::MathSmoothstep
         | Builtin::MapInsert => 3,
         Builtin::ListMap
         | Builtin::ListFilter
@@ -3131,6 +3212,7 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::MapMember => 2,
         Builtin::ListRange
         | Builtin::ListMaximum
+        | Builtin::ListMinimum
         | Builtin::ListLength
         | Builtin::ListFlatten
         | Builtin::ListReverse
@@ -3190,6 +3272,7 @@ pub enum Builtin {
     MathPow,
     MathPi,
     ListMaximum,
+    ListMinimum,
     ListLength,
     ListAppend,
     ListFlatten,
@@ -3232,6 +3315,8 @@ pub enum Builtin {
     TextTrim,
     MathClamp01,
     MathClamp,
+    MathLerp,
+    MathSmoothstep,
     MathTan,
     MathAsin,
     MathAcos,
@@ -3352,13 +3437,14 @@ pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
-pub const ALL_BUILTINS: [Builtin; 73] = [
+pub const ALL_BUILTINS: [Builtin; 76] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
     Builtin::ListRange,
     Builtin::ListGrid,
     Builtin::ListMaximum,
+    Builtin::ListMinimum,
     Builtin::ListLength,
     Builtin::ListAppend,
     Builtin::ListFlatten,
@@ -3412,6 +3498,8 @@ pub const ALL_BUILTINS: [Builtin; 73] = [
     Builtin::TextTrim,
     Builtin::MathClamp01,
     Builtin::MathClamp,
+    Builtin::MathLerp,
+    Builtin::MathSmoothstep,
     Builtin::MathTan,
     Builtin::MathAsin,
     Builtin::MathAcos,
@@ -3449,6 +3537,7 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.range" => Builtin::ListRange,
         "List.grid" => Builtin::ListGrid,
         "List.maximum" => Builtin::ListMaximum,
+        "List.minimum" => Builtin::ListMinimum,
         "List.length" => Builtin::ListLength,
         "List.append" => Builtin::ListAppend,
         "List.flatten" => Builtin::ListFlatten,
@@ -3491,6 +3580,8 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Text.trim" => Builtin::TextTrim,
         "Math.clamp01" => Builtin::MathClamp01,
         "Math.clamp" => Builtin::MathClamp,
+        "Math.lerp" => Builtin::MathLerp,
+        "Math.smoothstep" => Builtin::MathSmoothstep,
         "Math.tan" => Builtin::MathTan,
         "Math.asin" => Builtin::MathAsin,
         "Math.acos" => Builtin::MathAcos,
@@ -3529,6 +3620,7 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListRange => "List.range",
         Builtin::ListGrid => "List.grid",
         Builtin::ListMaximum => "List.maximum",
+        Builtin::ListMinimum => "List.minimum",
         Builtin::ListLength => "List.length",
         Builtin::ListAppend => "List.append",
         Builtin::ListFlatten => "List.flatten",
@@ -3571,6 +3663,8 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::TextTrim => "Text.trim",
         Builtin::MathClamp01 => "Math.clamp01",
         Builtin::MathClamp => "Math.clamp",
+        Builtin::MathLerp => "Math.lerp",
+        Builtin::MathSmoothstep => "Math.smoothstep",
         Builtin::MathTan => "Math.tan",
         Builtin::MathAsin => "Math.asin",
         Builtin::MathAcos => "Math.acos",
@@ -3743,6 +3837,7 @@ mod builtin_registry_tests {
                 | Builtin::ListRange
                 | Builtin::ListGrid
                 | Builtin::ListMaximum
+                | Builtin::ListMinimum
                 | Builtin::ListLength
                 | Builtin::ListAppend
                 | Builtin::ListFlatten
@@ -3782,6 +3877,8 @@ mod builtin_registry_tests {
                 | Builtin::MathPi
                 | Builtin::MathClamp01
                 | Builtin::MathClamp
+                | Builtin::MathLerp
+                | Builtin::MathSmoothstep
                 | Builtin::MathTan
                 | Builtin::MathAsin
                 | Builtin::MathAcos
@@ -3812,7 +3909,7 @@ mod builtin_registry_tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(ALL_BUILTINS.len(), 73, "ALL_BUILTINS must list every Builtin");
+        assert_eq!(ALL_BUILTINS.len(), 76, "ALL_BUILTINS must list every Builtin");
 
         // The length check alone would accept a DUPLICATE entry standing in
         // for a missing one.
