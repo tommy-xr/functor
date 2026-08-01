@@ -1303,8 +1303,12 @@ const mono = "'JetBrains Mono', 'Fira Code', ui-monospace, monospace";
 
 const intelTheme = EditorView.theme({
   ".cm-lintRange-error": { backgroundImage: wavyUnderline("#f2637f") },
-  // Hover: a small dark panel consistent with the editor chrome.
-  ".cm-tooltip.cm-tooltip-hover": {
+  // Hover: a small dark panel consistent with the editor chrome. Two shapes:
+  // the pointer hover renders our div inside CodeMirror's hover HOST
+  // (.cm-tooltip-hover), while the caret-summoned tooltip (Vim `gh`) goes
+  // through showTooltip, which stamps the cm-tooltip classes directly onto
+  // our .cm-hover-type div — no wrapper.
+  ".cm-tooltip.cm-tooltip-hover, .cm-tooltip.cm-hover-type": {
     backgroundColor: "#1e1833",
     border: "1px solid #2b2542",
     borderRadius: "5px",
