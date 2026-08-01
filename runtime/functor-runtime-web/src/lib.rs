@@ -1405,7 +1405,7 @@ async fn run_async() -> Result<(), JsValue> {
         const PAUSED_PREVIEW_REUSE_FRAMES: u32 = 30;
         const LIVE_PREVIEW_INTERVAL_MS: f32 = 100.0;
         let mut preview_cache: Option<(
-            (Option<u64>, u32, bool, u64, bool, bool, usize, u32),
+            (Option<u64>, u32, bool, u64, bool, bool, usize, u32, u64),
             functor_runtime_common::FramePreview,
         )> = None;
         let mut preview_refresh: u32 = 0;
@@ -1668,6 +1668,10 @@ async fn run_async() -> Result<(), JsValue> {
                     strobe_wanted,
                     preview_rate,
                     preview_window.to_bits(),
+                    // The BACKWARD side reads recorded history, so a branch or
+                    // a reload that rewrites the rings invalidates it even
+                    // when frame + program are unchanged.
+                    game.scene_timeline_generation(),
                 );
                 let cache_hit = preview_cache.as_ref().is_some_and(|(k, _)| {
                     if clock.is_paused() {
@@ -1681,6 +1685,7 @@ async fn run_async() -> Result<(), JsValue> {
                             && k.5 == key.5
                             && k.6 == key.6
                             && k.7 == key.7
+                            && k.8 == key.8
                     }
                 });
                 if cache_hit {
@@ -1714,6 +1719,13 @@ async fn run_async() -> Result<(), JsValue> {
                                 copies,
                                 ..Default::default()
                             }),
+                            // One SYMMETRIC window: `preview_window` seconds of
+                            // recorded past as well as projected future
+                            // (docs/time-travel.md T6e). The past side costs one
+                            // draw per division with no simulation, and shares
+                            // this cache — so live play redraws it on the same
+                            // ~10 Hz cadence as the forward sim, never per frame.
+                            backward: true,
                         },
                     );
                     if clock.is_paused() {

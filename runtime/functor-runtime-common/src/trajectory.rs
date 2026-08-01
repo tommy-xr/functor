@@ -31,6 +31,46 @@ use crate::{Camera2D, Frame, MaterialDescription, RecordedInput, Scene3D, SceneO
 const TRAIL_RADIUS_3D: f32 = 0.07;
 const TRAIL_REFERENCE_HEIGHT_2D: f32 = 13.5;
 
+/// The recorded PAST's color — cyan, matching the scrubber rail's accent
+/// (`#41d8e6`). See [`PreviewSide`].
+pub const PAST_COLOR: [f32; 3] = [0.25, 0.85, 1.0];
+
+/// The projected FUTURE's color — pink, matching the scrubber rail's future
+/// segment (`#e858b8`). See [`PreviewSide`].
+pub const FUTURE_COLOR: [f32; 3] = [0.906, 0.345, 0.722];
+
+/// How much of the DIRECTION's color a strobe copy keeps versus the mover's
+/// own (0 = the mover's color untouched, 1 = pure direction color).
+///
+/// Deliberately high. A strobe copy is real geometry in the mover's own
+/// material, so a light tint leaves past and future copies of the same object
+/// nearly identical — the two directions read as one muddy cloud, which is
+/// exactly the failure a UX prototype of this surfaced. At 0.8 the direction
+/// dominates and only a fifth of the source color survives, so a copy still
+/// hints at what it is a copy OF while being unambiguously past or future.
+pub const STROBE_TINT_WEIGHT: f32 = 0.8;
+
+/// Which side of the playhead a preview overlay describes — the recorded past
+/// or the projected future. The two sides render in different colors so a
+/// bidirectional preview reads as two directions rather than one cloud.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreviewSide {
+    /// Reconstructed from the recorder's rings — fact.
+    Past,
+    /// Forward-simulated — projection.
+    Future,
+}
+
+impl PreviewSide {
+    /// The side's flat mark color, and the color its strobe copies tint toward.
+    pub fn color(self) -> [f32; 3] {
+        match self {
+            PreviewSide::Past => PAST_COLOR,
+            PreviewSide::Future => FUTURE_COLOR,
+        }
+    }
+}
+
 /// The arrowhead outline in its own XY space, pointing along +X: tip, the two
 /// base corners, and a notched tail between them (a kite, wound CCW). Every
 /// mark shares these exact points and carries its placement in the transform,
@@ -354,12 +394,16 @@ enum TrailSpace {
     Sprite2D,
 }
 
-/// The emissive cyan wrapper every trail mark shares. The renderer applies a
+/// The flat emissive wrapper every trail mark shares, in its side's color
+/// ([`PreviewSide::color`]). The renderer applies a
 /// node's `xform` on `Group`/`Geometry` but NOT on `Material`, so placement
 /// goes on the enclosing Group and the mark's own shape on the leaves.
-fn trail_mark(marks: Vec<Scene3D>, place: Matrix4<f32>) -> Scene3D {
+fn trail_mark(marks: Vec<Scene3D>, place: Matrix4<f32>, color: [f32; 3]) -> Scene3D {
     let material = Scene3D {
-        obj: SceneObject::Material(MaterialDescription::emissive(0.25, 0.85, 1.0, 1.0), marks),
+        obj: SceneObject::Material(
+            MaterialDescription::emissive(color[0], color[1], color[2], 1.0),
+            marks,
+        ),
         xform: Matrix4::identity(),
     };
     Scene3D {
@@ -370,9 +414,9 @@ fn trail_mark(marks: Vec<Scene3D>, place: Matrix4<f32>) -> Scene3D {
 
 /// A single dim emissive marker at a world position — the direction-free
 /// fallback for a sample with no meaningful heading.
-fn trail_dot(p: Vector3<f32>, radius: f32) -> Scene3D {
+fn trail_dot(p: Vector3<f32>, radius: f32, color: [f32; 3]) -> Scene3D {
     let sphere = Scene3D::sphere().transform(Matrix4::from_scale(radius));
-    trail_mark(vec![sphere], Matrix4::from_translation(p))
+    trail_mark(vec![sphere], Matrix4::from_translation(p), color)
 }
 
 /// Rotation taking +X onto the unit vector `dir` by the SHORTEST arc. The
@@ -404,6 +448,7 @@ fn trail_arrow(
     dir: Vector3<f32>,
     radius: f32,
     space: TrailSpace,
+    color: [f32; 3],
 ) -> Option<Scene3D> {
     let head = Scene3D {
         obj: SceneObject::Geometry(Shape::ConvexPolygon {
@@ -437,6 +482,7 @@ fn trail_arrow(
     Some(trail_mark(
         heads,
         Matrix4::from_translation(p) * rotation * Matrix4::from_scale(radius * ARROW_SCALE),
+        color,
     ))
 }
 
@@ -473,7 +519,9 @@ fn trail_from_tracks(
     strobe: Option<&StrobeOptions>,
     radius: f32,
     space: TrailSpace,
+    side: PreviewSide,
 ) -> Option<Scene3D> {
+    let color = side.color();
     let mut marks = Vec::new();
     for track in tracks {
         // A pure in-place spinner has a track (for the strobe) but no path to
@@ -495,11 +543,28 @@ fn trail_from_tracks(
             if skip.contains(&i) {
                 continue;
             }
+            // Sample 0 is the ANCHOR, shared by both sides. The future side
+            // owns it; marking it on the past side too would stack two
+            // coplanar emissive marks in different colors on one spot
+            // (z-fighting), which is exactly where the eye is looking.
+            if i == 0 && side == PreviewSide::Past {
+                continue;
+            }
             let p = world_pos(w);
             marks.push(
                 heading_at(&track.worlds, i, radius)
-                    .and_then(|dir| trail_arrow(p, dir, radius, space))
-                    .unwrap_or_else(|| trail_dot(p, radius)),
+                    // Sample order runs AWAY from the anchor on both sides, so
+                    // a past track's samples are ordered backwards in time.
+                    // Negating there keeps every arrow pointing along the
+                    // actual direction of travel, so past and future read as
+                    // one continuous flow THROUGH the playhead instead of two
+                    // trails pointing away from each other.
+                    .map(|dir| match side {
+                        PreviewSide::Past => -dir,
+                        PreviewSide::Future => dir,
+                    })
+                    .and_then(|dir| trail_arrow(p, dir, radius, space, color))
+                    .unwrap_or_else(|| trail_dot(p, radius, color)),
             );
         }
     }
@@ -522,10 +587,12 @@ pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<
         None,
         TRAIL_RADIUS_3D,
         TrailSpace::Scene3D,
+        PreviewSide::Future,
     )
 }
 
 /// Scene-space strobe options.
+#[derive(Clone)]
 pub struct StrobeOptions {
     /// Strobe copies per mover across the window (evenly sampled from its track).
     pub copies: usize,
@@ -536,6 +603,22 @@ pub struct StrobeOptions {
     /// the next moment at 80% of the mover's own color and the window's end at
     /// 20%.
     pub fade: (f32, f32),
+    /// The DIRECTION tint: which side of the playhead these copies belong to,
+    /// and how strongly its color overrides the mover's own
+    /// ([`STROBE_TINT_WEIGHT`]). `None` leaves copies in the mover's own color
+    /// — the single-direction behavior.
+    pub tint: Option<([f32; 3], f32)>,
+}
+
+impl StrobeOptions {
+    /// This side's copies: same cadence and age-fade, tinted toward the side's
+    /// color so past and future copies of the SAME mover stay distinguishable.
+    fn for_side(&self, side: PreviewSide) -> StrobeOptions {
+        StrobeOptions {
+            tint: Some((side.color(), STROBE_TINT_WEIGHT)),
+            ..self.clone()
+        }
+    }
 }
 
 impl Default for StrobeOptions {
@@ -546,6 +629,7 @@ impl Default for StrobeOptions {
             // hosts whose scene has its own backdrop.
             fade_to: [0.1, 0.2, 0.3],
             fade: (0.8, 0.2),
+            tint: None,
         }
     }
 }
@@ -561,8 +645,21 @@ fn faded_material(
     material: Option<&MaterialDescription>,
     to: [f32; 3],
     k: f32,
+    tint: Option<([f32; 3], f32)>,
 ) -> Option<MaterialDescription> {
     let lerp = |c: Vector4<f32>| {
+        // The DIRECTION tint lands FIRST, so age-fading still runs from the
+        // copy's actual painted color toward the background. See
+        // [`STROBE_TINT_WEIGHT`] for why the tint has to dominate.
+        let c = match tint {
+            Some((t, w)) => vec4(
+                c.x + (t[0] - c.x) * w,
+                c.y + (t[1] - c.y) * w,
+                c.z + (t[2] - c.z) * w,
+                c.w,
+            ),
+            None => c,
+        };
         vec4(
             to[0] + (c.x - to[0]) * k,
             to[1] + (c.y - to[1]) * k,
@@ -611,8 +708,16 @@ fn faded_material(
 fn alpha_faded_material(
     material: Option<&MaterialDescription>,
     k: f32,
+    tint: Option<([f32; 3], f32)>,
 ) -> Option<MaterialDescription> {
     let fade = |mut color: Vector4<f32>| {
+        // Sprite copies fade by OPACITY, but they still have to say which
+        // direction they belong to — so the direction tint applies here too.
+        if let Some((t, w)) = tint {
+            color.x += (t[0] - color.x) * w;
+            color.y += (t[1] - color.y) * w;
+            color.z += (t[2] - color.z) * w;
+        }
         color.w *= k;
         color
     };
@@ -661,6 +766,7 @@ enum StrobeFade {
 /// One strobe copy: the mover's leaf at a future world pose, shaded by its
 /// (age-faded) material. Transforms go on a Group / the leaf itself — never on
 /// a Material node, which the renderer ignores (see [`trail_mark`]).
+#[allow(clippy::too_many_arguments)]
 fn strobe_copy(
     leaf: &SceneObject,
     material: Option<&MaterialDescription>,
@@ -668,14 +774,15 @@ fn strobe_copy(
     fade_to: [f32; 3],
     k: f32,
     fade: StrobeFade,
+    tint: Option<([f32; 3], f32)>,
 ) -> Scene3D {
     let leaf = Scene3D {
         obj: leaf.clone(),
         xform: Matrix4::identity(),
     };
     let material = match fade {
-        StrobeFade::Color => faded_material(material, fade_to, k),
-        StrobeFade::Alpha => alpha_faded_material(material, k),
+        StrobeFade::Color => faded_material(material, fade_to, k, tint),
+        StrobeFade::Alpha => alpha_faded_material(material, k, tint),
     };
     match material {
         Some(mat) => Scene3D {
@@ -728,6 +835,7 @@ pub fn strobe_overlay(tracks: &[MoverTrack], opts: &StrobeOptions) -> Option<Sce
                 opts.fade_to,
                 k,
                 StrobeFade::Color,
+                opts.tint,
             ));
         }
     }
@@ -763,6 +871,7 @@ fn sampled_strobe_overlay(
                 opts.fade_to,
                 strobe_age(idx, n_future, opts.fade),
                 fade,
+                opts.tint,
             ));
         }
     }
@@ -878,6 +987,10 @@ pub struct PreviewOptions {
     pub trail: bool,
     /// Emit the scene-space strobe?
     pub strobe: Option<StrobeOptions>,
+    /// Also emit the BACKWARD overlays — the recorded past, reconstructed from
+    /// the producer's history rings (docs/time-travel.md T6e). `window` is
+    /// SYMMETRIC: the same number of seconds back as forward.
+    pub backward: bool,
 }
 
 /// The overlays derived for one scene tree: either the frame's 3D scene or one
@@ -895,6 +1008,26 @@ pub type ScenePreview = SceneOverlays;
 impl SceneOverlays {
     fn is_empty(&self) -> bool {
         self.trail.is_none() && self.strobe.is_none()
+    }
+
+    /// Fold another side's overlays in, so one [`FramePreview`] carries both
+    /// directions. Same-kind overlays group together — each side already
+    /// carries its own color, so the merged tree needs no further distinction.
+    fn merge(&mut self, other: SceneOverlays) {
+        fn join(into: &mut Option<Scene3D>, add: Option<Scene3D>) {
+            let Some(add) = add else { return };
+            match into.take() {
+                Some(existing) => {
+                    *into = Some(Scene3D {
+                        obj: SceneObject::Group(vec![existing, add]),
+                        xform: Matrix4::identity(),
+                    })
+                }
+                None => *into = Some(add),
+            }
+        }
+        join(&mut self.trail, other.trail);
+        join(&mut self.strobe, other.strobe);
     }
 
     fn apply(&self, scene: &mut Scene3D) {
@@ -918,6 +1051,20 @@ pub struct FramePreview {
 }
 
 impl FramePreview {
+    /// Fold another side's preview in. Sprite layers merge positionally; a
+    /// side that derived a different layer count (a structural change inside
+    /// its window) contributes only its 3D overlays, matching how
+    /// [`Self::apply_all`] already refuses a mismatched layer list.
+    fn merge(&mut self, other: FramePreview) {
+        self.scene.merge(other.scene);
+        if self.sprite_layers.len() != other.sprite_layers.len() {
+            return;
+        }
+        for (layer, add) in self.sprite_layers.iter_mut().zip(other.sprite_layers) {
+            layer.merge(add);
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.scene.is_empty() && self.sprite_layers.iter().all(SceneOverlays::is_empty)
     }
@@ -938,6 +1085,7 @@ fn scene_overlays(
     scenes: &[&Scene3D],
     opts: &PreviewOptions,
     trail_radius: f32,
+    side: PreviewSide,
 ) -> SceneOverlays {
     let tracks = mover_tracks(scenes, opts.eps, opts.max_step);
     SceneOverlays {
@@ -948,6 +1096,7 @@ fn scene_overlays(
                 opts.strobe.as_ref(),
                 trail_radius,
                 TrailSpace::Scene3D,
+                side,
             )
         } else {
             None
@@ -955,7 +1104,7 @@ fn scene_overlays(
         strobe: opts
             .strobe
             .as_ref()
-            .and_then(|strobe| strobe_overlay(&tracks, strobe)),
+            .and_then(|strobe| strobe_overlay(&tracks, &strobe.for_side(side))),
     }
 }
 
@@ -963,6 +1112,7 @@ fn sprite_scene_overlays(
     scenes: &[&Scene3D],
     opts: &PreviewOptions,
     trail_radius: f32,
+    side: PreviewSide,
 ) -> SceneOverlays {
     let trail = if opts.trail {
         let tracks = mover_tracks(scenes, opts.eps, opts.max_step);
@@ -971,13 +1121,14 @@ fn sprite_scene_overlays(
             opts.strobe.as_ref(),
             trail_radius,
             TrailSpace::Sprite2D,
+            side,
         )
     } else {
         None
     };
     let strobe = opts.strobe.as_ref().and_then(|strobe| {
         let sampled = sampled_mover_tracks(scenes, opts.eps, opts.max_step);
-        sampled_strobe_overlay(&sampled, strobe, StrobeFade::Alpha)
+        sampled_strobe_overlay(&sampled, &strobe.for_side(side), StrobeFade::Alpha)
     });
     SceneOverlays {
         trail,
@@ -1010,15 +1161,24 @@ pub fn scene_preview(
     let futures = game.ghost_frames(divisions, dt, start_tts, script_inputs);
     let mut scenes: Vec<&Scene3D> = vec![anchor_scene];
     scenes.extend(futures.iter().map(|(frame, _)| &frame.scene));
-    scene_overlays(&scenes, opts, TRAIL_RADIUS_3D)
+    scene_overlays(&scenes, opts, TRAIL_RADIUS_3D, PreviewSide::Future)
 }
 
-fn preview_from_frames(anchor: &Frame, futures: &[&Frame], opts: &PreviewOptions) -> FramePreview {
-    let mut scenes = Vec::with_capacity(futures.len() + 1);
+/// One side's overlays: diff the anchor against `others` — the frames walking
+/// AWAY from the playhead on that side (future ghosts, or past reconstructions
+/// nearest-first) — and build whichever overlays `opts` asks for, in the
+/// side's color.
+fn side_overlays(
+    anchor: &Frame,
+    others: &[&Frame],
+    opts: &PreviewOptions,
+    side: PreviewSide,
+) -> FramePreview {
+    let mut scenes = Vec::with_capacity(others.len() + 1);
     scenes.push(&anchor.scene);
-    scenes.extend(futures.iter().map(|frame| &frame.scene));
+    scenes.extend(others.iter().map(|frame| &frame.scene));
 
-    let matching_futures: Vec<_> = futures
+    let matching_futures: Vec<_> = others
         .iter()
         .take_while(|frame| frame.sprite_layers.len() == anchor.sprite_layers.len())
         .copied()
@@ -1028,7 +1188,7 @@ fn preview_from_frames(anchor: &Frame, futures: &[&Frame], opts: &PreviewOptions
         .iter()
         .enumerate()
         .map(|(index, anchor_layer)| {
-            let mut scenes = Vec::with_capacity(futures.len() + 1);
+            let mut scenes = Vec::with_capacity(others.len() + 1);
             scenes.push(&anchor_layer.scene);
             for future in &matching_futures {
                 scenes.push(&future.sprite_layers[index].scene);
@@ -1037,12 +1197,13 @@ fn preview_from_frames(anchor: &Frame, futures: &[&Frame], opts: &PreviewOptions
                 &scenes,
                 opts,
                 sprite_trail_radius(&anchor_layer.camera),
+                side,
             )
         })
         .collect();
 
     FramePreview {
-        scene: scene_overlays(&scenes, opts, TRAIL_RADIUS_3D),
+        scene: scene_overlays(&scenes, opts, TRAIL_RADIUS_3D, side),
         sprite_layers,
     }
 }
@@ -1065,7 +1226,17 @@ pub fn frame_preview(
     let dt = opts.window / divisions as f32;
     let futures = game.ghost_frames(divisions, dt, start_tts, script_inputs);
     let future_frames: Vec<&Frame> = futures.iter().map(|(frame, _)| frame).collect();
-    preview_from_frames(anchor, &future_frames, opts)
+    let mut preview = side_overlays(anchor, &future_frames, opts, PreviewSide::Future);
+    if opts.backward {
+        // The same window, mirrored: `history_frames` reconstructs rather than
+        // simulates, and returns nearest-past-first — the same
+        // walking-away-from-the-anchor order the ghosts use, so the identical
+        // diff produces the backward tracks.
+        let past = game.history_frames(divisions, dt);
+        let past_frames: Vec<&Frame> = past.iter().map(|(frame, _)| frame).collect();
+        preview.merge(side_overlays(anchor, &past_frames, opts, PreviewSide::Past));
+    }
+    preview
 }
 
 #[cfg(test)]
@@ -1073,6 +1244,13 @@ mod tests {
     use super::*;
     use crate::{Camera, Camera2D, SpriteLayer, SpriteSampling, TextureDescription};
     use cgmath::vec3;
+
+    /// The FUTURE side's overlays for an explicit frame sequence — the shape
+    /// these tests were written against, before the preview grew a second
+    /// direction.
+    fn preview_from_frames(anchor: &Frame, futures: &[&Frame], opts: &PreviewOptions) -> FramePreview {
+        side_overlays(anchor, futures, opts, PreviewSide::Future)
+    }
 
     fn ball_at(x: f32, y: f32) -> Scene3D {
         Scene3D::sphere().transform(Matrix4::from_translation(vec3(x, y, 0.0)))
@@ -1148,6 +1326,7 @@ mod tests {
                 copies: 2,
                 ..Default::default()
             }),
+            backward: false,
         }
     }
 
@@ -1271,8 +1450,23 @@ mod tests {
             })
             .collect();
         assert_eq!(colors.len(), 2);
-        assert_eq!(colors[0].truncate(), vec3(0.0, 1.0, 0.0));
-        assert_eq!(colors[1].truncate(), vec3(0.0, 0.0, 1.0));
+        // Each copy still carries ITS OWN future frame's material — but tinted
+        // toward the side color, which dominates (`STROBE_TINT_WEIGHT`), so the
+        // direction is legible before the object is. The residual fraction of
+        // the source color is what keeps the green and blue copies distinct.
+        let tinted = |c: [f32; 3]| {
+            let w = STROBE_TINT_WEIGHT;
+            let f = FUTURE_COLOR;
+            vec3(
+                c[0] + (f[0] - c[0]) * w,
+                c[1] + (f[1] - c[1]) * w,
+                c[2] + (f[2] - c[2]) * w,
+            )
+        };
+        assert_eq!(colors[0].truncate(), tinted([0.0, 1.0, 0.0]));
+        assert_eq!(colors[1].truncate(), tinted([0.0, 0.0, 1.0]));
+        assert_ne!(colors[0].truncate(), colors[1].truncate());
+        // Alpha still carries the age fade, untouched by the tint.
         assert!((colors[0].w - 0.8).abs() < 1e-4);
         assert!((colors[1].w - 0.2).abs() < 1e-4);
     }
@@ -1286,7 +1480,7 @@ mod tests {
             sampling: SpriteSampling::Nearest,
         };
 
-        match alpha_faded_material(Some(&material), 0.25) {
+        match alpha_faded_material(Some(&material), 0.25, None) {
             Some(MaterialDescription::SpriteTexture {
                 color,
                 texture,
@@ -1651,6 +1845,7 @@ mod tests {
                 copies: 2,
                 fade_to: [0.0, 0.0, 0.0],
                 fade: (0.8, 0.2),
+                tint: None,
             },
         )
         .expect("a strobe");
@@ -1691,7 +1886,7 @@ mod tests {
             copies: 2,
             ..Default::default()
         };
-        let trail = trail_from_tracks(&tracks, Some(&opts), TRAIL_RADIUS_3D, TrailSpace::Scene3D).expect("a trail");
+        let trail = trail_from_tracks(&tracks, Some(&opts), TRAIL_RADIUS_3D, TrailSpace::Scene3D, PreviewSide::Future).expect("a trail");
         match trail.obj {
             SceneObject::Group(dots) => {
                 assert_eq!(dots.len(), 3, "anchor + the two non-copy samples")
@@ -1718,7 +1913,7 @@ mod tests {
         assert!(!tracks[0].translated);
         assert!(strobe_overlay(&tracks, &StrobeOptions::default()).is_some());
         assert!(
-            trail_from_tracks(&tracks, None, TRAIL_RADIUS_3D, TrailSpace::Scene3D).is_none(),
+            trail_from_tracks(&tracks, None, TRAIL_RADIUS_3D, TrailSpace::Scene3D, PreviewSide::Future).is_none(),
             "no dots for pure rotation"
         );
     }

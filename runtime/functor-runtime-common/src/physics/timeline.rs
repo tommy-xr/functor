@@ -200,6 +200,35 @@ where
     fn next_frame(&self) -> Option<Frame> {
         (!self.commands.is_empty()).then(|| self.base + self.commands.len() as u64)
     }
+
+    /// Restore recorded `frame` into `sim` WITHOUT borrowing the log mutably —
+    /// the read-only seek. `Timeline::seek` is the same operation behind the
+    /// trait's `&mut self`; the backward preview (docs/time-travel.md T6e)
+    /// needs it while only holding a shared borrow of the live driver, so it
+    /// can reconstruct recorded worlds into a throwaway world.
+    ///
+    /// Panics on a frame outside recorded history, exactly like
+    /// [`Timeline::seek`] — callers check [`Self::recorded_range`] first.
+    pub fn restore_into(&self, frame: Frame, sim: &mut S) {
+        let next = self.next_frame().expect("seek on an empty timeline");
+        assert!(
+            frame >= self.base && frame < next,
+            "seek({frame}) outside recorded history [{}, {})",
+            self.base,
+            next
+        );
+        // Restore the nearest keyframe at or before `frame`, then re-step with
+        // the recorded commands. Determinism makes this land bit-exact.
+        let (&kf, snapshot) = self
+            .keyframes
+            .range(..=frame)
+            .next_back()
+            .expect("no keyframe at or below a recorded frame (pruned?)");
+        sim.restore(snapshot);
+        for f in kf..frame {
+            sim.step(&self.commands[(f - self.base) as usize]);
+        }
+    }
 }
 
 impl<S: Simulatable> Timeline<S> for TimelineLog<S>
@@ -221,24 +250,7 @@ where
     }
 
     fn seek(&mut self, frame: Frame, sim: &mut S) {
-        let next = self.next_frame().expect("seek on an empty timeline");
-        assert!(
-            frame >= self.base && frame < next,
-            "seek({frame}) outside recorded history [{}, {})",
-            self.base,
-            next
-        );
-        // Restore the nearest keyframe at or before `frame`, then re-step with
-        // the recorded commands. Determinism makes this land bit-exact.
-        let (&kf, snapshot) = self
-            .keyframes
-            .range(..=frame)
-            .next_back()
-            .expect("no keyframe at or below a recorded frame (pruned?)");
-        sim.restore(snapshot);
-        for f in kf..frame {
-            sim.step(&self.commands[(f - self.base) as usize]);
-        }
+        self.restore_into(frame, sim);
     }
 
     fn commands_since(&self, frame: Frame) -> &[Vec<S::Command>] {

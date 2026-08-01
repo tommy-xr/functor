@@ -879,14 +879,21 @@ impl Scrubber {
                                         }
                                         rail = Some((slider.rect.left(), slider.rect.right()));
                                         if future_frames > 0 {
-                                            // The cyan future segment, painted
-                                            // ON the rail at track height
-                                            // (trail-cyan: it IS the preview's
-                                            // future). The handle's center
-                                            // travels an INSET range (≈ its
-                                            // half-size) inside the slider
-                                            // rect — map through that so the
-                                            // segment meets the handle.
+                                            // The preview's TWO segments,
+                                            // painted ON the rail at track
+                                            // height around the handle: pink
+                                            // ahead (the projected future),
+                                            // cyan behind (the recorded past) —
+                                            // the same two colors the trail
+                                            // marks use, so the rail and the
+                                            // scene agree on which direction is
+                                            // which. ONE symmetric window sizes
+                                            // both, and either end cap drags
+                                            // it. The handle's center travels
+                                            // an INSET range (≈ its half-size)
+                                            // inside the slider rect — map
+                                            // through that so the segments meet
+                                            // the handle.
                                             let y = slider.rect.center().y;
                                             let inset = slider.rect.height() * 0.5;
                                             let travel =
@@ -897,58 +904,124 @@ impl Scrubber {
                                                     + inset
                                                     + (frame - lo) as f32 / domain * travel
                                             };
-                                            // Start at the handle's RIGHT edge
-                                            // so the cyan never paints over the
-                                            // handle or the traversed track.
-                                            let x0 = x_of(f) + 5.0;
-                                            let x1 = x_of((f + future_frames).min(max)).max(x0);
-                                            ui.painter().rect_filled(
-                                                egui::Rect::from_min_max(
-                                                    egui::pos2(x0, y - 2.5),
-                                                    egui::pos2(x1, y + 2.5),
-                                                ),
-                                                2.0,
+                                            let band = |ui: &mut egui::Ui,
+                                                        x0: f32,
+                                                        x1: f32,
+                                                        color: egui::Color32| {
+                                                ui.painter().rect_filled(
+                                                    egui::Rect::from_min_max(
+                                                        egui::pos2(x0, y - 2.5),
+                                                        egui::pos2(x1, y + 2.5),
+                                                    ),
+                                                    2.0,
+                                                    color,
+                                                );
+                                            };
+                                            // A drag on either cap sets the ONE
+                                            // shared window, so both sides
+                                            // resize together. `sign` is -1 on
+                                            // the backward cap: dragging LEFT
+                                            // grows the window there.
+                                            let cap = |ui: &mut egui::Ui,
+                                                           x: f32,
+                                                           id: &'static str,
+                                                           sign: f32,
+                                                           color: egui::Color32,
+                                                           hot: egui::Color32| {
+                                                // Offset BELOW the track so it
+                                                // never fights the seek handle.
+                                                let rect = egui::Rect::from_min_max(
+                                                    egui::pos2(x - 4.0, y + 3.0),
+                                                    egui::pos2(x + 4.0, y + 11.0),
+                                                );
+                                                let resp = ui.interact(
+                                                    rect,
+                                                    ui.id().with(id),
+                                                    egui::Sense::drag(),
+                                                );
+                                                ui.painter().rect_filled(
+                                                    rect,
+                                                    1.5,
+                                                    if resp.hovered() || resp.dragged() {
+                                                        hot
+                                                    } else {
+                                                        color
+                                                    },
+                                                );
+                                                if resp.dragged() {
+                                                    let frames_per_px = domain / travel;
+                                                    let dw = sign
+                                                        * resp.drag_delta().x
+                                                        * frames_per_px
+                                                        / 60.0;
+                                                    let w = (state.preview_window + dw)
+                                                        .clamp(0.5, 5.0);
+                                                    if (w - state.preview_window).abs() > 1e-4 {
+                                                        return Some(
+                                                            ScrubberAction::SetPreviewWindow(w),
+                                                        );
+                                                    }
+                                                }
+                                                None
+                                            };
+                                            // Pink = future, cyan = past —
+                                            // the trail's own two colors.
+                                            let future_band =
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    232, 88, 184, 200,
+                                                );
+                                            let future_cap =
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    232, 88, 184, 230,
+                                                );
+                                            let future_hot =
+                                                egui::Color32::from_rgb(255, 208, 238);
+                                            let past_band =
                                                 egui::Color32::from_rgba_unmultiplied(
                                                     64, 217, 255, 200,
-                                                ),
-                                            );
-                                            // The segment's END CAP: a small
-                                            // grabber hanging under the window
-                                            // end — drag to resize the forward
-                                            // window in place (the only way to
-                                            // set it from the UI).
-                                            // Offset BELOW the track so it
-                                            // never fights the seek handle.
-                                            let cap = egui::Rect::from_min_max(
-                                                egui::pos2(x1 - 4.0, y + 3.0),
-                                                egui::pos2(x1 + 4.0, y + 11.0),
-                                            );
-                                            let cap_resp = ui.interact(
-                                                cap,
-                                                ui.id().with("preview_window_cap"),
-                                                egui::Sense::drag(),
-                                            );
-                                            let cap_color =
-                                                if cap_resp.hovered() || cap_resp.dragged() {
-                                                    egui::Color32::from_rgb(150, 236, 255)
-                                                } else {
-                                                    egui::Color32::from_rgba_unmultiplied(
-                                                        64, 217, 255, 230,
-                                                    )
-                                                };
-                                            ui.painter().rect_filled(cap, 1.5, cap_color);
-                                            if cap_resp.dragged() {
-                                                let frames_per_px = domain / travel;
-                                                let dw = cap_resp.drag_delta().x
-                                                    * frames_per_px
-                                                    / 60.0;
-                                                let w = (state.preview_window + dw)
-                                                    .clamp(0.5, 5.0);
-                                                if (w - state.preview_window).abs() > 1e-4 {
-                                                    action = Some(
-                                                        ScrubberAction::SetPreviewWindow(w),
-                                                    );
-                                                }
+                                                );
+                                            let past_cap =
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    64, 217, 255, 230,
+                                                );
+                                            let past_hot =
+                                                egui::Color32::from_rgb(150, 236, 255);
+                                            // Start at the handle's edges so
+                                            // neither band paints over the
+                                            // handle itself.
+                                            let x0 = x_of(f) + 5.0;
+                                            let x1 = x_of((f + future_frames).min(max)).max(x0);
+                                            band(ui, x0, x1, future_band);
+                                            // The backward band CLIPS at `lo`:
+                                            // there is no recorded history
+                                            // before the ring's floor, so the
+                                            // band is simply shorter there
+                                            // (the trail clips the same way).
+                                            let back_x1 = x_of(f) - 5.0;
+                                            let back_x0 = x_of(
+                                                f.saturating_sub(future_frames).max(lo),
+                                            )
+                                            .min(back_x1);
+                                            band(ui, back_x0, back_x1, past_band);
+                                            if let Some(a) = cap(
+                                                ui,
+                                                x1,
+                                                "preview_window_cap",
+                                                1.0,
+                                                future_cap,
+                                                future_hot,
+                                            ) {
+                                                action = Some(a);
+                                            }
+                                            if let Some(a) = cap(
+                                                ui,
+                                                back_x0,
+                                                "preview_window_cap_back",
+                                                -1.0,
+                                                past_cap,
+                                                past_hot,
+                                            ) {
+                                                action = Some(a);
                                             }
                                         }
                                     }
@@ -982,14 +1055,29 @@ impl Scrubber {
                                 .unwrap_or_else(|| strip.center().x);
                             let font = egui::FontId::monospace(UI_FONT_SIZE - 6.0);
                             let weak = ui.visuals().weak_text_color();
+                            // Same two colors as the rail's bands: cyan for
+                            // the recorded past, pink for the projected
+                            // future.
                             let cyan =
                                 egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
+                            let pink =
+                                egui::Color32::from_rgba_unmultiplied(232, 88, 184, 190);
                             let mut segments: Vec<(String, egui::Color32)> = Vec::new();
                             match state.range {
-                                Some((_, hi)) => {
+                                Some((lo, hi)) => {
+                                    if future_frames > 0 {
+                                        // The window is symmetric, but the PAST
+                                        // half clips at the oldest recorded
+                                        // frame — report what actually exists,
+                                        // matching where the rail's cyan band
+                                        // stops.
+                                        let past_frames = future_frames
+                                            .min(state.frame.saturating_sub(lo));
+                                        segments.push((format!("-{past_frames} "), cyan));
+                                    }
                                     segments.push((format!("{}", state.frame), weak));
                                     if future_frames > 0 {
-                                        segments.push((format!(" +{future_frames}"), cyan));
+                                        segments.push((format!(" +{future_frames}"), pink));
                                     }
                                     segments.push((format!(" / {hi}"), weak));
                                 }

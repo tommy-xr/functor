@@ -251,3 +251,74 @@ test("hover takes precedence over persistent marker selection", () => {
   state = reduceTimeline(state, { type: "event-hovered", id: null });
   assert.equal(deriveTimelineView(state).activeEvent.id, 1);
 });
+
+test("one window covers the same span on both sides of the playhead", () => {
+  let state = publish(createTimelineState({ enabled: true, seconds: 2 }), 300, 300, true);
+  state = reduceTimeline(state, { type: "seek-requested", frame: 200 });
+  const view = deriveTimelineView(state);
+  // 2s * 60fps = 120 frames each way, from the same `seconds`.
+  assert.equal(view.backwardFrames, view.previewFrames);
+  assert.equal(view.backwardStartFrame, 80);
+  assert.equal(view.previewEndFrame, 320);
+  assert.equal(view.backwardStartUnit, 80 / 300);
+  assert.equal(view.backwardClippedFrames, 0);
+});
+
+test("the backward window clips at the oldest recorded frame", () => {
+  // Recording starts at frame 100; the playhead sits 40 frames into it, so a
+  // 120-frame window can only show 40 and the other 80 are clipped.
+  let state = publish(createTimelineState({ enabled: true, seconds: 2 }), 300, 300, true, 100);
+  state = reduceTimeline(state, { type: "seek-requested", frame: 140 });
+  const view = deriveTimelineView(state);
+  assert.equal(view.backwardFrames, 120);
+  assert.equal(view.backwardStartFrame, 20, "the logical window stays full length");
+  assert.equal(view.visibleBackwardStartFrame, 100, "the drawn band stops at lo");
+  assert.equal(view.backwardClippedFrames, 80);
+});
+
+test("unavailable post-reload history leaves no backward window at all", () => {
+  // An unsafe reload strands the playhead with nothing recorded behind it.
+  let state = publish(createTimelineState({ enabled: true, seconds: 2 }), 300, 300, true);
+  state = publish(state, 300, 300, true, 300, 1);
+  const view = deriveTimelineView(state);
+  assert.equal(view.visibleBackwardStartFrame, 300, "the band collapses onto the playhead");
+  assert.equal(view.backwardStartUnit, view.playheadUnit);
+  assert.equal(view.backwardClippedFrames, 120, "the whole window is unavailable");
+});
+
+test("a disabled preview has no window on either side", () => {
+  const state = publish(createTimelineState({ enabled: false, seconds: 2 }), 300, 300, true);
+  const view = deriveTimelineView(state);
+  assert.equal(view.previewFrames, 0);
+  assert.equal(view.backwardFrames, 0);
+  assert.equal(view.backwardClippedFrames, 0);
+  assert.equal(view.backwardStartFrame, 300);
+});
+
+test("either endpoint grows the one shared window when dragged away from the playhead", () => {
+  const base = publish(createTimelineState({ enabled: true, seconds: 2 }), 300, 300, true);
+  // "Away from the playhead" is +x on the forward handle and -x on the
+  // backward one, so the scrubber applies the sign (`endpointKeydown(sign)` /
+  // `pastDrag.seconds - delta`) before dispatching. Model the two handles by
+  // their raw pointer deltas and the sign each applies, so this test fails if
+  // either sign flips.
+  const drag = (rawFrames, sign) =>
+    reduceTimeline(base, { type: "preview-delta-requested", frames: sign * rawFrames });
+  const forward = drag(60, 1);
+  const backward = drag(-60, -1);
+  assert.equal(forward.preview.seconds, 3, "forward handle dragged right grows the window");
+  assert.equal(backward.preview.seconds, 3, "backward handle dragged left grows it the same");
+
+  // Dragging either handle TOWARD the playhead shrinks it, symmetrically.
+  assert.equal(drag(-60, 1).preview.seconds, 1);
+  assert.equal(drag(60, -1).preview.seconds, 1);
+
+  const view = deriveTimelineView(backward);
+  assert.equal(view.previewFrames, 180);
+  assert.equal(view.backwardFrames, 180);
+  assert.equal(
+    view.previewEndFrame - view.selectedFrame,
+    view.selectedFrame - view.backwardStartFrame,
+    "one window, mirrored"
+  );
+});

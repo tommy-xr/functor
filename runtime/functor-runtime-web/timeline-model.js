@@ -218,6 +218,20 @@ export function deriveTimelineView(state) {
     state.viewport.lo,
     state.viewport.hi
   );
+  // The BACKWARD half of the same symmetric window (docs/time-travel.md T6e).
+  // Its floor is where recorded history actually STARTS — the later of the
+  // viewport's edge and the recorded range's `lo`, so the window stops at the
+  // striped post-reload region instead of pretending to cover it. With no
+  // recording available at all there is no past to show, so the floor collapses
+  // onto the playhead and the whole window reads as clipped.
+  const historyFloor = state.recordingAvailable
+    ? clamp(Math.max(state.viewport.lo, state.runtime.lo), state.viewport.lo, state.viewport.hi)
+    : selectedFrame;
+  const backwardStartFrame = selectedFrame - previewFrames;
+  const visibleBackwardStartFrame = clamp(backwardStartFrame, historyFloor, selectedFrame);
+  const backwardClippedFrames = previewFrames
+    ? Math.max(historyFloor - backwardStartFrame, 0)
+    : 0;
   const eventMarkers = clusterTimelineEvents(state.events, state.viewport);
   const recordedStartFrame = state.recordingAvailable
     ? clamp(state.runtime.lo, state.viewport.lo, state.viewport.hi)
@@ -259,6 +273,13 @@ export function deriveTimelineView(state) {
     visiblePreviewEndFrame,
     previewEndUnit: frameToUnit(visiblePreviewEndFrame, state.viewport),
     previewClippedFrames: Math.max(previewEndFrame - state.viewport.hi, 0),
+    // The backward side of the SAME window — one `seconds` drives both, so
+    // `backwardFrames === previewFrames` by construction.
+    backwardFrames: previewFrames,
+    backwardStartFrame,
+    visibleBackwardStartFrame,
+    backwardStartUnit: frameToUnit(visibleBackwardStartFrame, state.viewport),
+    backwardClippedFrames,
     eventMarkers,
     activeEvent,
     selectedEventId: state.selectedEventId,

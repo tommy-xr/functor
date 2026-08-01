@@ -94,6 +94,13 @@ const STYLE = `
 #scrub-recorded { fill: rgba(65, 216, 230, 0.30); }
 #scrub-played { fill: var(--sb-accent); opacity: 0.62; }
 #scrub-future { fill: var(--sb-future); opacity: 0.9; }
+/* The BACKWARD window is RECORDED FACT, not progress — so it reads as a
+   translucent pane with a bright edge rather than a solid filled bar like the
+   played track. Cyan, matching the past trail's marks. */
+#scrub-past {
+  fill: rgba(65, 216, 230, 0.20);
+  stroke: #8ff2fa; stroke-width: 1; stroke-opacity: 0.9;
+}
 .scrub-event { pointer-events: none; }
 .scrub-event.input { fill: #ffd166; fill-opacity: 0.75; }
 .scrub-event.reload { fill: #b994ff; }
@@ -111,8 +118,13 @@ const STYLE = `
 .scrub-handle:focus-visible { outline: 2px solid white; outline-offset: 2px; }
 #scrubber #scrub-playhead { background: var(--sb-accent); border-color: #b9f8ff; }
 #scrubber #scrub-preview-handle { background: var(--sb-future); border-color: #ffd0ee; }
+#scrubber #scrub-past-handle { background: var(--sb-accent); border-color: #b9f8ff; }
 #scrub-preview-handle.clipped { border-radius: 3px 0 0 3px !important; }
-#scrub-preview-handle.fully-clipped {
+/* Mirrored: the backward handle squares the LEFT corners when its window runs
+   past the oldest recorded frame. */
+#scrub-past-handle.clipped { border-radius: 0 3px 3px 0 !important; }
+#scrub-preview-handle.fully-clipped,
+#scrub-past-handle.fully-clipped {
   top: 0; z-index: 5; height: 12px;
 }
 #scrub-playhead.outside { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55); }
@@ -120,6 +132,12 @@ const STYLE = `
   position: absolute; right: 0; top: -5px; z-index: 4; display: none;
   padding: 2px 4px; border: 1px solid var(--sb-future); border-radius: 5px;
   color: #ffd0ee; background: rgba(30, 24, 51, 0.96); font-size: 9px;
+  pointer-events: none;
+}
+#scrub-underflow {
+  position: absolute; left: 0; top: -5px; z-index: 4; display: none;
+  padding: 2px 4px; border: 1px solid var(--sb-accent); border-radius: 5px;
+  color: #b9f8ff; background: rgba(30, 24, 51, 0.96); font-size: 9px;
   pointer-events: none;
 }
 #scrub-event-detail {
@@ -200,6 +218,7 @@ const HTML = `
       <rect id="scrub-unavailable-after" class="scrub-unavailable" x="1000" y="12" width="0" height="6" rx="3" aria-hidden="true" />
       <rect id="scrub-recorded" x="0" y="12" width="1000" height="6" rx="3" aria-hidden="true" />
       <rect id="scrub-played" x="0" y="12" width="0" height="6" rx="3" aria-hidden="true" />
+      <rect id="scrub-past" x="0" y="11" width="0" height="8" rx="3" aria-hidden="true" />
       <rect id="scrub-future" x="0" y="11" width="0" height="8" rx="3" aria-hidden="true" />
       <g id="scrub-ticks" aria-hidden="true"></g>
       <g id="scrub-events" aria-label="Recorded events"></g>
@@ -208,7 +227,10 @@ const HTML = `
       aria-label="Selected frame" aria-orientation="horizontal"></button>
     <button id="scrub-preview-handle" class="scrub-handle" role="slider"
       aria-label="Extrapolation endpoint" aria-orientation="horizontal"></button>
+    <button id="scrub-past-handle" class="scrub-handle" role="slider"
+      aria-label="History endpoint" aria-orientation="horizontal"></button>
     <span id="scrub-overflow"></span>
+    <span id="scrub-underflow"></span>
     <span id="scrub-event-detail" role="status"></span>
     <span id="scrub-label"><span id="scrub-count"></span></span>
     </span>
@@ -281,9 +303,12 @@ export function mountScrubber({ hidden = false } = {}) {
   const recorded = $("scrub-recorded");
   const played = $("scrub-played");
   const future = $("scrub-future");
+  const past = $("scrub-past");
   const playhead = $("scrub-playhead");
   const previewHandle = $("scrub-preview-handle");
   const overflow = $("scrub-overflow");
+  const pastHandle = $("scrub-past-handle");
+  const underflow = $("scrub-underflow");
   const eventDetail = $("scrub-event-detail");
   const eventLayer = $("scrub-events");
   const extrapolate = $("scrub-extrapolate");
@@ -540,6 +565,13 @@ export function mountScrubber({ hidden = false } = {}) {
     );
     future.setAttribute("x", String(current.playheadUnit * 1000));
     future.setAttribute("width", String(previewVisible ? futureWidth * 10 : 0));
+    // The BACKWARD half of the same window, mirrored about the playhead. Its
+    // left edge moves (it grows leftward and clips at the oldest recorded
+    // frame), so both `x` and `width` are driven.
+    const backwardPct = current.backwardStartUnit * 100;
+    const backwardWidth = Math.max(playheadPct - backwardPct, 0);
+    past.setAttribute("x", String(current.backwardStartUnit * 1000));
+    past.setAttribute("width", String(previewVisible ? backwardWidth * 10 : 0));
     previewHandle.style.left = `${previewPct}%`;
     previewHandle.style.display = previewVisible ? "block" : "none";
     previewHandle.classList.toggle("clipped", current.previewClippedFrames > 0);
@@ -554,6 +586,17 @@ export function mountScrubber({ hidden = false } = {}) {
 
     overflow.style.display = previewVisible && current.previewClippedFrames > 0 ? "block" : "none";
     overflow.textContent = `+${current.previewClippedFrames}`;
+
+    pastHandle.style.left = `${backwardPct}%`;
+    pastHandle.style.display = previewVisible ? "block" : "none";
+    pastHandle.classList.toggle("clipped", current.backwardClippedFrames > 0);
+    pastHandle.classList.toggle(
+      "fully-clipped",
+      previewVisible && current.backwardFrames > 0 && backwardPct >= playheadPct
+    );
+    underflow.style.display =
+      previewVisible && current.backwardClippedFrames > 0 ? "block" : "none";
+    underflow.textContent = `-${current.backwardClippedFrames}`;
 
     playhead.setAttribute("aria-valuemin", String(current.recorded.lo));
     playhead.setAttribute(
@@ -584,6 +627,24 @@ export function mountScrubber({ hidden = false } = {}) {
       "aria-valuetext",
       `${state.preview.seconds} seconds ahead` +
         (current.previewClippedFrames ? `, ${current.previewClippedFrames} frames clipped` : "")
+    );
+    // The backward handle's range runs the other way, so valuemin/valuemax
+    // mirror: the LARGEST window is the smallest frame.
+    pastHandle.setAttribute(
+      "aria-valuemin",
+      String(current.selectedFrame - Math.round(PREVIEW_SECONDS_MAX * TIMELINE_FPS))
+    );
+    pastHandle.setAttribute(
+      "aria-valuemax",
+      String(current.selectedFrame - Math.round(PREVIEW_SECONDS_MIN * TIMELINE_FPS))
+    );
+    pastHandle.setAttribute("aria-valuenow", String(current.backwardStartFrame));
+    pastHandle.setAttribute(
+      "aria-valuetext",
+      `${state.preview.seconds} seconds back` +
+        (current.backwardClippedFrames
+          ? `, ${current.backwardClippedFrames} frames unavailable`
+          : "")
     );
 
     label.innerHTML =
@@ -678,6 +739,35 @@ export function mountScrubber({ hidden = false } = {}) {
   previewHandle.addEventListener("pointercancel", endPreviewDrag);
   previewHandle.addEventListener("lostpointercapture", endPreviewDrag);
 
+  // The BACKWARD endpoint drags the SAME window — identical to the forward
+  // handle but for the sign: here dragging LEFT (away from the playhead) grows
+  // it. Both sides then resize together, because there is only one `seconds`.
+  let pastDrag = null;
+  pastHandle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    pastHandle.setPointerCapture(event.pointerId);
+    pastDrag = { x: event.clientX, seconds: state.preview.seconds };
+  });
+  pastHandle.addEventListener("pointermove", (event) => {
+    if (!pastDrag || !pastHandle.hasPointerCapture(event.pointerId)) return;
+    const current = view();
+    const width = rail.getBoundingClientRect().width;
+    const span = current ? current.viewport.hi - current.viewport.lo : 0;
+    if (width <= 0 || span <= 0) return;
+    const deltaFrames = ((event.clientX - pastDrag.x) / width) * span;
+    dispatch({
+      type: "preview-changed",
+      preview: { seconds: pastDrag.seconds - deltaFrames / TIMELINE_FPS },
+    });
+    pushConfig();
+  });
+  const endPastDrag = () => (pastDrag = null);
+  pastHandle.addEventListener("pointerup", endPastDrag);
+  pastHandle.addEventListener("pointercancel", endPastDrag);
+  pastHandle.addEventListener("lostpointercapture", endPastDrag);
+
   rail.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     if (event.target.closest(".scrub-handle")) return;
@@ -708,7 +798,11 @@ export function mountScrubber({ hidden = false } = {}) {
   };
   playhead.addEventListener("keydown", seekKey);
 
-  previewHandle.addEventListener("keydown", (event) => {
+  // Keyboard resize for an endpoint handle. `sign` is -1 on the BACKWARD
+  // handle, where "away from the playhead" is left — so on both handles an
+  // arrow pointing away from the playhead grows the shared window. Home/End
+  // are semantic (smallest/largest), so they do not mirror.
+  const endpointKeydown = (sign) => (event) => {
     const steps = event.shiftKey ? TIMELINE_FPS : Math.round(TIMELINE_FPS / 2);
     const deltas = {
       ArrowLeft: -steps,
@@ -726,12 +820,14 @@ export function mountScrubber({ hidden = false } = {}) {
       });
     } else if (event.key in deltas) {
       event.preventDefault();
-      dispatch({ type: "preview-delta-requested", frames: deltas[event.key] });
+      dispatch({ type: "preview-delta-requested", frames: sign * deltas[event.key] });
     } else {
       return;
     }
     pushConfig();
-  });
+  };
+  previewHandle.addEventListener("keydown", endpointKeydown(1));
+  pastHandle.addEventListener("keydown", endpointKeydown(-1));
 
   pause.addEventListener("click", () => functor_lang_scrub_toggle_pause());
   const queueDetachedToggle = () => {

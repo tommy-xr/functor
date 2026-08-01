@@ -1896,6 +1896,140 @@ pub fn ghost_frames(
     frames
 }
 
+/// Backward-trailing (docs/time-travel.md T6e): the shared producer body behind
+/// both shells' `GameProducer::history_frames`, and the mirror image of
+/// [`ghost_frames`]. Where the forward side SIMULATES a projection, this side
+/// simulates NOTHING — the past already happened, so it is *reconstructed* from
+/// the recorder's rings: seek back over a window of `divisions` divisions, each
+/// `dt` wide, from the selected frame, and `draw` each recorded model at ITS
+/// recorded `tts` — with that frame's RECORDED physics world restored into a
+/// throwaway world and scoped active for the draw, so `Physics.transformed` /
+/// `Physics.position` in `draw` render the poses the bodies actually had, not
+/// the live ones (the same `DryWorld` discipline `ghost_frames` uses for
+/// projected worlds).
+///
+/// Frames come back NEAREST-PAST-FIRST (`[t-1, t-2, …]`), so index 0 is
+/// adjacent to the anchor — the ordering [`crate::trajectory::frame_preview`]
+/// needs to diff a backward track against the live frame. Each is paired with
+/// the `FrameTime` it was drawn at (`dts = 0`: a still of the past).
+///
+/// The window is CLIPPED, never extrapolated: the walk stops at the ring's
+/// oldest recorded frame (`lo`), so a 5-second window over 1 second of history
+/// yields 1 second of trail. Frames whose `draw` errors, or that resolve to a
+/// frame already emitted (a window finer than the recording cadence), are
+/// skipped — so the result may be shorter than `divisions`.
+#[allow(clippy::too_many_arguments)]
+pub fn history_frames(
+    session: &Session,
+    names: &EntryNames,
+    recorder: &SceneRecorder,
+    physics: &SteppedPhysics,
+    has_physics: bool,
+    divisions: usize,
+    dt: f32,
+) -> Vec<(Frame, FrameTime)> {
+    let Some(anchor) = recorder.current_scene_frame() else {
+        return Vec::new();
+    };
+    let Some((lo, _hi)) = recorder.scene_frame_range() else {
+        return Vec::new();
+    };
+    let Some((_, anchor_tts, _)) = recorder.recorded_frame(anchor) else {
+        return Vec::new();
+    };
+
+    // Resolve each division boundary to the recorded frame whose `tts` is
+    // closest at or before it, walking back from the anchor. The rings are
+    // per-rendered-frame and `tts` is monotonic within a branch, so one
+    // continuous backward scan visits each frame at most once.
+    let mut picks: Vec<u64> = Vec::with_capacity(divisions);
+    let mut cursor = anchor;
+    for div in 1..=divisions {
+        let target = anchor_tts - (div as f64) * dt as f64;
+        // Walk back while the previous frame is still at or after the target,
+        // so we land on the newest frame whose tts <= target.
+        while cursor > lo {
+            let Some((_, tts, _)) = recorder.recorded_frame(cursor) else {
+                break;
+            };
+            if tts <= target {
+                break;
+            }
+            cursor -= 1;
+        }
+        // A division that resolves to a frame we already emitted (or to the
+        // anchor itself) adds a zero-length track segment; skip it.
+        if cursor == anchor || picks.last() == Some(&cursor) {
+            if cursor == lo {
+                break; // clipped at the ring's floor — nothing older exists
+            }
+            continue;
+        }
+        picks.push(cursor);
+        if cursor == lo {
+            break;
+        }
+    }
+
+    // One throwaway world reused across divisions (each restore overwrites
+    // it); the `DryWorld` guard removes it on every exit path. Built only when
+    // the game has physics AND something is actually restorable.
+    let physics_range = has_physics.then(|| physics.seekable_range()).flatten();
+    let draw_world =
+        physics_range.map(|_| DryWorld(physics::create_world([0.0, -9.81, 0.0])));
+
+    let mut frames = Vec::with_capacity(picks.len());
+    for pick in picks {
+        let Some((model, tts, world_frame)) = recorder.recorded_frame(pick) else {
+            continue;
+        };
+        let _world_scope = match (&draw_world, physics_range) {
+            (Some(dry), Some((flo, fhi))) => {
+                if world_frame < flo {
+                    // Pruned from the WORLD history even though the model ring
+                    // still has this frame (the two rings count different
+                    // units — rendered vs fixed frames — so they can disagree
+                    // near the floor). Drawing it anyway would resolve
+                    // `Physics.transformed` against the LIVE world and present
+                    // the CURRENT pose as recorded fact. Refuse instead: every
+                    // older pick is pruned too, so the window clips here — the
+                    // same exact-or-refused rule the coupled seek uses.
+                    break;
+                }
+                if world_frame > fhi {
+                    // Nothing stepped after this frame, so its end-of-frame
+                    // world IS the live world — no restore needed (the
+                    // `physics_seek_target` "already the live append" case).
+                    None
+                } else {
+                    physics
+                        .restore_recorded_into(world_frame, dry.0)
+                        .then(|| physics::ActiveWorldScope::enter(dry.0))
+                }
+            }
+            _ => None,
+        };
+        let args = vec![model.clone(), Value::Number(tts)];
+        // Resolve `draw` through the ROLE's entry names, exactly as
+        // `ghost_frames` does. A multi-entry project binds `clientDraw` /
+        // `serverDraw`, so a hardcoded "draw" would fail every call — and
+        // since a failed draw is deliberately skipped rather than fatal, the
+        // backward trail would silently come back EMPTY instead of erroring.
+        if let Ok(value) = session.call(names.draw, args, &mut FunctorHost) {
+            if let Some(frame) = frame_value(&value) {
+                frames.push((
+                    frame.clone(),
+                    FrameTime {
+                        dts: 0.0,
+                        tts: tts as f32,
+                    },
+                ));
+            }
+        }
+    }
+    frames
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -371,6 +371,72 @@ them with weights (K=2 at 0.5/0.5 from two branches). Forward-stepping and
 compositing remain independent — the forward-sim (`ghost_frames`) feeds the
 scene-space overlays directly.
 
+### Both directions at once — the backward trail (T6e)
+
+Extrapolation is **bidirectional**. With 🔮 on, the preview shows one
+**symmetric window**: the same number of seconds *behind* the playhead as ahead
+of it. The two halves are not the same kind of thing, and the UI says so:
+
+- **Forward is projection.** The future half is simulated by `ghost_frames`, and
+  it is a guess — right only as far as the replayed inputs and the current code
+  are.
+- **Backward is fact.** The past half is *reconstructed*, never simulated, by
+  `history_frames`: it seeks the recorder's rings, and re-`draw`s each recorded
+  model at its own recorded `tts` with that frame's recorded physics world
+  scoped active. Nothing is re-stepped, so the marks land exactly where the game
+  actually was — the same `DryWorld` discipline forward-ghosting uses for
+  projected worlds, restoring recorded snapshots instead of stepped ones.
+
+**Color carries the direction.** Past marks and strobe copies are **cyan**
+(the scrubber rail's accent), future ones **pink** (the rail's future segment) —
+so the scene and the timeline agree about which way is which. Trail arrowheads
+are flat emissive in the exact side color, and they are the *authoritative*
+direction signal.
+
+Strobe copies are only approximately those colors, because a copy keeps its
+source material: on a **textured** mover (notably 2D sprite copies, which fade by
+alpha) the side color lands as a colour *multiply* over the texture rather than a
+replacement, so the hue shifts toward the side instead of becoming it — an orange
+sprite reads olive in the past and red in the future. The two directions stay
+clearly distinguishable, which is the requirement, but don't expect exact cyan and
+pink there, and don't rely on the strobe alone to tell direction apart on a
+textured 2D game — that is what the arrows are for. Strobe copies are real geometry in the *mover's own*
+material, so the direction tint has to **dominate** — at a light tint, past and
+future copies of one object are indistinguishable and the two directions read as
+a single muddy cloud. The tint keeps only a small fraction of the source color
+(weight 0.8), enough to hint at what the copy is a copy of. Arrowheads on the
+past side point along the *direction of travel* (i.e. toward the playhead), so
+past and future read as one continuous flow through the present rather than two
+trails pointing away from each other.
+
+The backward window **clips, it does not extrapolate**: it stops at the oldest
+recorded frame, and at the striped region an unsafe reload left unavailable. A
+5-second window over 1 second of history simply shows 1 second, with the clipped
+frame count surfaced on the handle exactly as the forward side already does at
+the right edge.
+
+Both scrubbers grow a mirrored endpoint handle, and **either handle sets the one
+shared window** — drag one side and both resize. The seam is unchanged:
+`setPreview({ enabled, seconds, rate, mode })` still takes one `seconds`, now
+read as the per-side window.
+
+**Cost.** The past half runs one `draw` per division and never advances the
+*model* — but for a physics game it is not free: restoring a recorded world seeks
+the physics `TimelineLog`, which replays from the nearest keyframe, so a pick can
+re-step up to `KEYFRAME_INTERVAL - 1` fixed frames. Per division that is bounded
+and independent of how far back the window reaches, but it means the backward half
+can cost *more* than the forward half on a physics-heavy scene, not less.
+
+The policy that makes this fine is caching, not cheapness. Both directions share
+one cache keyed on the selected frame, window, rate, program revision, and timeline
+generation. **Paused scrubbing — the hot case — recomputes only when one of those
+actually changes**, so holding a paused frame costs nothing. Live play refreshes
+both directions together on the same ~10 Hz cadence, never per frame. If the
+backward half ever shows up in a profile, the fix is to restore once at the oldest
+pick and walk *forward* through the picks (re-stepping only between consecutive
+picks) instead of seeking each independently — deliberately not done here, since it
+trades real complexity for a cost the cache already hides.
+
 ## Deferred follow-ups: keep and reconstruct the old future
 
 Today's stripe after Resume has a specific meaning: the selected frame became a
