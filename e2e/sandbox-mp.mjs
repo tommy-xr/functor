@@ -141,6 +141,45 @@ try {
     const clientsControl = await page.inputValue("#client-count");
     check(clientsControl === "1", "the CLIENTS control counts clients only", clientsControl);
 
+    // Selecting a pane hands it the BROWSER keyboard, not just the chrome —
+    // the regression was "⌨ you" showing while WASD still landed in the host
+    // page until a second click inside the canvas. A REAL click matters:
+    // mousedown's default action re-points focus after the handler, which a
+    // synthetic dispatchEvent (no default action) can never catch.
+    await page.click(".mp-pane .mp-pane-hd");
+    await sleep(150);
+    const keyboardOwner = await page.evaluate(() => {
+      const active = document.activeElement;
+      const shell = document.querySelector(".mp-pane");
+      return { isPaneIframe: active === shell?.querySelector("iframe"), tag: active?.tagName };
+    });
+    check(
+      keyboardOwner.isPaneIframe,
+      "a real header click gives the pane the real keyboard (activeElement is its iframe)",
+      keyboardOwner.tag ?? "null"
+    );
+    // The picker survives a claimed keyboard: with the pane's iframe focused,
+    // `f` (typed INTO the pane's document) must still cycle the layout —
+    // the pane documents carry the same picker handler as the host window.
+    const viewBefore = await page.evaluate(
+      () => document.querySelector(".mp-grid")?.getAttribute("data-view") ?? null
+    );
+    await page.keyboard.press("f");
+    await sleep(200);
+    const viewAfter = await page.evaluate(
+      () => document.querySelector(".mp-grid")?.getAttribute("data-view") ?? null
+    );
+    check(
+      viewBefore !== null && viewAfter !== null && viewAfter !== viewBefore,
+      "picker keys still work while a pane owns the keyboard (f cycled the layout)",
+      `${viewBefore} -> ${viewAfter}`
+    );
+    // Reset the layout so the geometry checks below see the default.
+    if (viewAfter !== viewBefore) {
+      await page.evaluate(() => document.querySelector("#mp-view-tiled")?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      await sleep(200);
+    }
+
     // Grid with a LONE client: no peer to match, so it takes the whole row
     // rather than sitting beside an empty cell — the server strip below it.
     await page.click("#mp-view-grid");

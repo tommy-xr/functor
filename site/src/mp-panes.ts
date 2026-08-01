@@ -416,7 +416,16 @@ export function initMultiplayerPanes({
     // is selectable by click — but it never joins the KEYBOARD client cycle
     // (digits / `[` / `]`) and never claims "⌨ you": game input belongs to a
     // client, and the authority has no player to drive.
-    const select = () => focusPane(allPanes().indexOf(pane));
+    // preventDefault: mousedown's default action re-points focus at the
+    // nearest focusable ancestor (body) AFTER this handler runs, silently
+    // undoing the iframe.focus() — a synthetic dispatch never shows this.
+    // Only a CLIENT claims the keyboard; selecting the server (tabs mode
+    // needs it) is selection, not input.
+    const select = (event?: Event) => {
+      if (event?.target && (event.target as HTMLElement).closest?.(".mp-link-host")) return;
+      event?.preventDefault();
+      focusPane(allPanes().indexOf(pane), client);
+    };
     shell.querySelector(".mp-pane-hd")!.addEventListener("mousedown", select);
     tab.addEventListener("click", select);
     if (client) {
@@ -424,6 +433,7 @@ export function initMultiplayerPanes({
       panes.push(pane);
     }
     net.addPane(id, iframe, pane.scope.signal);
+    attachPickerKeys(pane);
     return pane;
   };
 
@@ -527,7 +537,12 @@ export function initMultiplayerPanes({
   // selection onto a different pane.
   let focusedPane: Pane | null = null;
   const focusedIndex = () => (focusedPane ? allPanes().indexOf(focusedPane) : 0);
-  function focusPane(index: number) {
+  // claimKeyboard: user-intent callers (header click, tab click, digits,
+  // `[` `]`) also hand the pane the BROWSER's keyboard — the chrome must
+  // never say "⌨ you" while keys still land in the host page (the bug: WASD
+  // only worked after a second click inside the canvas). Reconcile/boot
+  // callers pass false so loading a session never steals the editor's caret.
+  function focusPane(index: number, claimKeyboard = false) {
     const current = allPanes();
     const next = current[index] ?? current[0] ?? null;
     if (next !== focusedPane && focusedPane && seamOf(focusedPane.iframe)?.detached()) {
@@ -541,6 +556,7 @@ export function initMultiplayerPanes({
       const you = pane.shell.querySelector(".mp-you") as HTMLElement | null;
       if (you) you.hidden = !on;
     });
+    if (claimKeyboard && focusedPane) focusedPane.iframe.focus();
   }
   focusPane(0);
 
@@ -568,7 +584,15 @@ export function initMultiplayerPanes({
 
   // Digits jump panes, [ ] cycle, f toggles tiled/tabs — but never while the
   // caret is in an editor or input (digits are text there, no exceptions).
-  window.addEventListener("keydown", (event) => {
+  //
+  // Attached to the host window AND to every pane's contentDocument (same
+  // origin) — once a pane owns the real keyboard, its document is where
+  // these keys land, and the picker must keep working (not one-shot). The
+  // pane's GAME still receives the key too (we never stop propagation):
+  // a game that binds Num/bracket keys sees a spurious press when the user
+  // works the picker — accepted for now, resolved properly when host-routed
+  // input lands (coordinator arc, input inversion).
+  function pickerKeys(event: KeyboardEvent) {
     const target = event.target as HTMLElement;
     if (event.key === "Escape") {
       closePopovers();
@@ -581,18 +605,34 @@ export function initMultiplayerPanes({
     // it, which is what tabs mode needs to show it at all.)
     if (/^[1-9]$/.test(event.key)) {
       const index = Number(event.key) - 1;
-      if (index < panes.length) focusPane(index);
+      if (index < panes.length) focusPane(index, true);
     } else if (event.key === "[" || event.key === "]") {
       const delta = event.key === "]" ? 1 : -1;
       const from = focusedIndex();
       // From the server pane (which sits past the clients), the cycle re-enters
       // the client set at whichever end the direction implies.
-      if (from >= panes.length) focusPane(delta === 1 ? 0 : panes.length - 1);
-      else focusPane((from + delta + panes.length) % panes.length);
+      if (from >= panes.length) focusPane(delta === 1 ? 0 : panes.length - 1, true);
+      else focusPane((from + delta + panes.length) % panes.length, true);
     } else if (event.key === "f") {
       setView(VIEWS[(VIEWS.indexOf(grid.dataset.view as PaneView) + 1) % VIEWS.length]);
     }
-  }, { signal: moduleScope.signal });
+  }
+  window.addEventListener("keydown", pickerKeys, { signal: moduleScope.signal });
+  // Every pane's contentDocument gets the same picker (wired at creation;
+  // re-wired on every load since navigation replaces the document).
+  function attachPickerKeys(pane: Pane) {
+    const wire = () => {
+      try {
+        pane.iframe.contentDocument?.addEventListener("keydown", pickerKeys, {
+          signal: pane.scope.signal,
+        });
+      } catch {
+        // A cross-origin or torn-down document has no picker to serve.
+      }
+    };
+    wire();
+    pane.iframe.addEventListener("load", wire, { signal: pane.scope.signal });
+  }
 
   // ------------------------------------------------ tiled / grid / tabs view
   // Switching layout is a CLASS CHANGE ONLY — `data-view` on the one grid, and
