@@ -402,21 +402,29 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   defs/ctors/types → the enclosing FILE's top-level names → file-level
   `open`ed names → builtins/externals. The module's own names **shadow**
   same-named file-level ones (they are distinct canonical defs, not a
-  collision). Top-level code references module members qualified only.
+  collision) — including record types, so a bare literal inside the module
+  picks the module's own shape. Top-level code references module members
+  qualified only.
 - **`open` works on them**: `open Server` for a module declared in the same
   file, `open Game.Server` for a sibling's — same collision rules as any
-  `open`. A file's own inline module also shadows a same-named sibling FILE
-  in qualified position.
+  `open`, and (like any cross-file reference) an `open` of a sibling's
+  inline module is a dependency edge on the owning FILE.
 - **Ctor uniqueness is per module**, so `Server` and `Client` may each
   declare `Spawn`.
-- **Collisions are load errors** naming both sides: a module name colliding
-  with a top-level `let`/constructor/`type` in the same file (a module name
-  occupies both the value and type namespaces), with another inline module
-  in the same file, with a protected/bundled namespace (`module Scene` in
-  the entry), or with a sibling FILE whose canonical prefix would clash
-  (entry `module Server` + `server.fun` — both want `Server.*`). A
-  NON-entry file's inline module is prefixed, so `utils.fun`'s
-  `module Scene` (→ `Utils.Scene`) is fine.
+- **Collisions are load errors** naming both sides. A module name occupies
+  its file's value AND type namespaces, and it is reachable BARE inside its
+  own file, so it may not collide with:
+  - a top-level `let` / constructor / `type` in the same file,
+  - another inline module in the same file,
+  - a name an `open` brings in (`open Utils` exporting a `Server` next to a
+    `module Server`),
+  - a protected/bundled namespace — `module Scene` is refused in ANY file,
+    not just the entry, because it would silently steal every `Scene.cube`
+    in the declaring file,
+  - another FILE's module name (`module Server` + a `server.fun` sibling).
+
+  Two DIFFERENT files may each declare `module Grid`: those canonicalize
+  apart (`Utils.Grid` / `Helpers.Grid`) and neither shadows the other.
 - **Dependency edges are between FILES**: a sibling's `Game.Server.foo`
   records a dep on `Game`, so cycles are detected exactly as before.
 - **The entry contract is unchanged**: `init`/`tick`/`draw` are bare

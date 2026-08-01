@@ -1776,6 +1776,50 @@ fn inline_module_sees_the_files_top_level() {
     assert_eq!(number(&value), 6.0);
 }
 
+/// A module's own record type SHADOWS a same-named one at the file's top
+/// level, so a bare literal inside the module is not ambiguous.
+#[test]
+fn inline_module_record_type_shadows_the_files_own() {
+    let project = load(
+        "inline-record-shadow",
+        &[(
+            "game.fun",
+            // Identical SHAPES, so only scope precedence can disambiguate
+            // the bare literal in `Grid`.
+            "type Cell = { x: float }\n\
+             module Grid {\n\
+               type Cell = { x: float }\n\
+               let origin = { x: 0.0 }\n\
+             }\n\
+             let flat = { x: 1.0 }\n\
+             let main = () => Grid.origin.x + flat.x\n",
+        )],
+    );
+    let diags = project.check();
+    assert!(diags.is_empty(), "should check clean: {diags:?}");
+}
+
+/// An `open`ed name may not shadow one of this file's inline modules —
+/// otherwise `Server.step` would silently become field access on it.
+#[test]
+fn opened_name_colliding_with_an_inline_module_is_refused() {
+    let err = load_err(
+        "inline-vs-opened",
+        &[
+            (
+                "game.fun",
+                "open Utils\nmodule Server {\n  let step = 1.0\n}\nlet main = () => Server.step\n",
+            ),
+            ("utils.fun", "let Server = 9.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "game.fun:1:1: open Utils: `Server` collides with this module's own `Server` — qualify \
+uses as `Utils.Server` instead of opening"
+    );
+}
+
 /// `open Server` brings a LOCAL inline module's members in bare…
 #[test]
 fn open_of_a_local_inline_module() {
@@ -1814,6 +1858,48 @@ fn open_of_a_sibling_inline_module() {
     assert!(out
         .iter()
         .all(|r| matches!(r.outcome, functor_lang::ExpectOutcome::Pass)));
+}
+
+/// An `open` of an inline module obeys the ordinary open-collision rules —
+/// a name clashing with the opening module's own is a load error naming
+/// both sides.
+#[test]
+fn open_of_an_inline_module_collides_like_any_open() {
+    let err = load_err(
+        "inline-open-collision",
+        &[
+            (
+                "game.fun",
+                "module Server {\n  let cost = 2.0\n}\nlet main = () => Server.cost\n",
+            ),
+            ("utils.fun", "open Game.Server\nlet cost = 5.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "utils.fun:1:1: open Game.Server: `cost` collides with this module's own `cost` — \
+qualify uses as `Game.Server.cost` instead of opening"
+    );
+}
+
+/// …and it records a dependency on the OWNING FILE, so an `open` of an
+/// inline module can close a cycle exactly like any cross-file reference.
+#[test]
+fn open_of_an_inline_module_is_a_file_dependency() {
+    let err = load_err(
+        "inline-open-cycle",
+        &[
+            (
+                "game.fun",
+                "module Server {\n  let cost = Utils.tax\n}\nlet main = () => Server.cost\n",
+            ),
+            ("utils.fun", "open Game.Server\nlet tax = 1.0\n"),
+        ],
+    );
+    assert!(
+        err.contains("modules depend on each other in a cycle: Game → Utils → Game"),
+        "{err}"
+    );
 }
 
 /// A record type declared inside a module resolves for BARE literals there.
@@ -1867,14 +1953,48 @@ fn entry_inline_module_collides_with_a_sibling_file() {
     );
     assert_eq!(
         err,
-        "game.fun:1:1: `module Server` canonicalizes to `Server`, which is already the module \
-of server.fun — rename one"
+        "game.fun:1:1: `module Server` collides with the module of server.fun — rename one"
     );
 }
 
-/// …and likewise for a builtin/prelude namespace.
+/// The same clash in a NON-entry file: the inline module is reachable BARE
+/// inside its own file, so it would shadow the sibling there.
 #[test]
-fn entry_inline_module_collides_with_a_protected_namespace() {
+fn sibling_inline_module_collides_with_another_file() {
+    let err = load_err(
+        "inline-vs-file-sibling",
+        &[
+            ("game.fun", "let main = () => Utils.a\n"),
+            ("utils.fun", "module Server {\n  let x = 1.0\n}\nlet a = Server.x\n"),
+            ("server.fun", "let b = 2.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "utils.fun:1:1: `module Server` collides with the module of server.fun — rename one"
+    );
+}
+
+/// Two DIFFERENT files may each declare `module Grid` — those canonicalize
+/// apart (`Utils.Grid` / `Helpers.Grid`) and neither shadows the other.
+#[test]
+fn two_files_may_each_declare_the_same_inline_module_name() {
+    let value = run_main(
+        "inline-same-name-two-files",
+        &[
+            ("game.fun", "let main = () => Utils.a + Helpers.b\n"),
+            ("utils.fun", "module Grid {\n  let cell = 1.0\n}\nlet a = Grid.cell\n"),
+            ("helpers.fun", "module Grid {\n  let cell = 2.0\n}\nlet b = Grid.cell\n"),
+        ],
+    );
+    assert_eq!(number(&value), 3.0);
+}
+
+/// …and likewise for a builtin/prelude namespace — in ANY file, entry or
+/// not: `module Scene` is reachable bare inside its own file, so it would
+/// silently steal every `Scene.cube` there.
+#[test]
+fn inline_module_collides_with_a_protected_namespace() {
     let err = load_err(
         "inline-vs-protected",
         &[(
@@ -1886,19 +2006,17 @@ fn entry_inline_module_collides_with_a_protected_namespace() {
         err,
         "game.fun:1:1: `module Scene` collides with the built-in `Scene` namespace — rename it"
     );
-}
-
-/// A NON-entry file's inline module is prefixed, so the same name is fine.
-#[test]
-fn sibling_inline_module_may_reuse_a_protected_name() {
-    let value = run_main(
-        "inline-prefixed-ok",
+    let err = load_err(
+        "inline-vs-protected-sibling",
         &[
-            ("game.fun", "let main = () => Utils.Scene.a\n"),
-            ("utils.fun", "module Scene {\n  let a = 3.0\n}\n"),
+            ("game.fun", "let main = () => Utils.a\n"),
+            ("utils.fun", "module Math {\n  let pi = 3.0\n}\nlet a = Math.pi\n"),
         ],
     );
-    assert_eq!(number(&value), 3.0);
+    assert_eq!(
+        err,
+        "utils.fun:1:1: `module Math` collides with the built-in `Math` namespace — rename it"
+    );
 }
 
 /// A module name occupies the file's value AND type namespaces.

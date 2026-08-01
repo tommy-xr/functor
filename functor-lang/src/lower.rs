@@ -39,6 +39,15 @@
 //! module is a single ID space (as it is a single span space — see
 //! [`crate::lexer::lex`]).
 //!
+//! A file may also declare **inline** `module Name { … }` blocks (one level
+//! deep). They are namespaces within the file: their members canonicalize
+//! with one extra segment (`utils.fun` + `module Grid` → `Utils.Grid.cell`;
+//! the entry's stay bare → `Grid.cell`), their own names shadow the file's
+//! same-named ones, and they are reachable BARE inside the declaring file
+//! (`Grid.cell`) — which is why a project refuses an inline module name
+//! that collides with a builtin namespace, another file's module, an
+//! `open`ed name, or the file's own top-level names.
+//!
 //! ## Name resolution
 //!
 //! For an identifier `first(.rest)*` (the parser only builds multi-segment
@@ -58,10 +67,13 @@
 //!   time).
 //! - `first` names an `open`ed module's def or constructor → the qualified
 //!   [`ExprKind::Global`] / [`ExprKind::Ctor`].
-//! - `first` names a sibling module → resolve `rest[0]` against its exports
-//!   (def or constructor; an unknown member is an error); further segments
-//!   become field access. (Builtins like `List.map` cannot collide: module
-//!   names matching builtin/prelude namespaces are refused at project load.)
+//! - `first` names one of THIS file's inline `module` blocks, or the
+//!   leading segments name a sibling module (`Utils`, `Game.Server`) →
+//!   resolve the next segment against its exports (def or constructor; an
+//!   unknown member is an error); further segments become field access.
+//!   (Builtins like `List.map` cannot collide: module names — file *and*
+//!   inline — matching builtin/prelude namespaces are refused at project
+//!   load.)
 //! - Otherwise, a qualified name (`Text.toBullets`) → [`ExprKind::External`],
 //!   the builtin/host seam — and an unqualified name is an "unknown name"
 //!   error at the identifier's span (with a hint when it names a module).
@@ -137,7 +149,7 @@ pub(crate) fn exports_of(items: &[ast::Item]) -> Exports {
             // An expect binds nothing.
             ast::Item::Expect(_) => {}
             // An inline module's members belong to ITS namespace, not the
-            // file's — see [`inline_exports_of`].
+            // file's: the caller calls `exports_of` again on its own items.
             ast::Item::Module(_) => {}
         }
     }
@@ -173,6 +185,23 @@ pub(crate) fn lower_in_project(
     lower_module(program, Some(env), bases)
 }
 
+/// Which module `open <written>` in the file `file` names: one of that
+/// file's own inline `module` blocks (keyed `File.Written`) if it has one,
+/// otherwise the name as written (`Utils`, or a sibling's `Game.Server`).
+/// The result may still be absent from `modules` — the caller reports that.
+pub(crate) fn open_module_path(
+    file: &str,
+    written: &str,
+    modules: &HashMap<String, Exports>,
+) -> String {
+    let relative = format!("{file}.{written}");
+    if modules.contains_key(&relative) {
+        relative
+    } else {
+        written.to_string()
+    }
+}
+
 /// One namespace's declared names — a file's top level, or an inline
 /// `module` block's body.
 #[derive(Default)]
@@ -184,19 +213,6 @@ struct Names {
     /// teach the `Shape.Circle` mistake (constructors resolve bare);
     /// resolution itself never consults it.
     ctor_types: HashMap<String, String>,
-}
-
-impl From<Names> for Exports {
-    /// An inline `module` block's namespace as exports: it can hold no
-    /// interface signatures (bodyless `let`s are a `.fun` parse error).
-    fn from(names: Names) -> Exports {
-        Exports {
-            defs: names.globals,
-            ctors: names.ctors,
-            types: names.types,
-            signatures: HashSet::new(),
-        }
-    }
 }
 
 /// Pass 1 over one namespace's items: collect names so defs are mutually
@@ -333,8 +349,10 @@ fn lower_module(
                 span: decl.span,
             });
         }
-        let names = collect_names(&decl.items)?;
-        inline_names.insert(decl.name.clone(), Exports::from(names));
+        // `collect_names` is the DUPLICATE check; the namespace itself is
+        // read through the same `exports_of` the project keys it by.
+        collect_names(&decl.items)?;
+        inline_names.insert(decl.name.clone(), exports_of(&decl.items));
     }
 
     // Pass 1b: process `open`s, after the module's own names are known (an
@@ -370,13 +388,8 @@ project entry (this file is being lowered on its own)",
         // `open Server` may name one of THIS file's inline modules (keyed
         // `File.Server`); `open Utils` / `open Game.Server` name another
         // file's module or its inline module.
-        let relative = format!("{}.{}", env.name, decl.module);
-        let path = if env.modules.contains_key(&relative) {
-            relative
-        } else {
-            decl.module.clone()
-        };
-        let Some(exports) = env.modules.get(&path) else {
+        let module_path = open_module_path(env.name, &decl.module, env.modules);
+        let Some(exports) = env.modules.get(&module_path) else {
             return Err(LowerError {
                 message: format!(
                     "unknown module `{}` — modules are the sibling `.fun` files next to the \
@@ -387,11 +400,11 @@ entry, and the `module` blocks they declare",
             });
         };
         let span = decl.span;
-        let module_path = path;
-        if let Some(file) = module_path.split('.').next() {
-            if file != env.name {
-                deps.insert(file.to_string());
-            }
+        // The dependency edge is on the owning FILE (decision: edges are
+        // file-to-file), so `open Game.Server` deps on `Game`.
+        let file = module_path.split('.').next().unwrap_or(&module_path);
+        if file != env.name {
+            deps.insert(file.to_string());
         }
         // Value namespace: the opened module's defs, constructors, and
         // interface signatures.
@@ -414,14 +427,19 @@ entry, and the `module` blocks they declare",
             .collect();
         values.sort_by_key(|(name, _)| name.as_str().to_string());
         for (name, opened) in values {
-            if globals.contains(name) || ctors.contains_key(name) {
+            // An inline module name occupies this file's value AND type
+            // namespaces, so an opened name may not shadow it — otherwise
+            // `Server.step` would silently become field access on the
+            // imported `Server`.
+            if inline_names.contains_key(name) || globals.contains(name) || ctors.contains_key(name)
+            {
                 return Err(LowerError {
                     message: format!(
                         "open {}: `{name}` collides with this module's own `{name}` — qualify \
 uses as `{}.{name}` instead of opening",
                         module_path, module_path
                     ),
-                    span: span,
+                    span,
                 });
             }
             if let Some(prev) = open_values.get(name) {
@@ -434,7 +452,7 @@ uses as `{}.{name}` instead of opening",
                         prev.module(),
                         module_path
                     ),
-                    span: span,
+                    span,
                 });
             }
             open_values.insert(name.clone(), opened);
@@ -443,14 +461,14 @@ uses as `{}.{name}` instead of opening",
         let mut types: Vec<&String> = exports.types.iter().collect();
         types.sort();
         for name in types {
-            if type_names.contains(name) {
+            if inline_names.contains_key(name) || type_names.contains(name) {
                 return Err(LowerError {
                     message: format!(
                         "open {}: type `{name}` collides with this module's own `{name}` — \
 qualify uses as `{}.{name}` instead of opening",
                         module_path, module_path
                     ),
-                    span: span,
+                    span,
                 });
             }
             if let Some(prev) = open_types.get(name) {
@@ -460,7 +478,7 @@ qualify uses as `{}.{name}` instead of opening",
 qualify uses (`{prev}.{name}` / `{}.{name}`)",
                         module_path, module_path
                     ),
-                    span: span,
+                    span,
                 });
             }
             open_types.insert(name.clone(), module_path.clone());
@@ -748,10 +766,10 @@ impl Lowerer<'_> {
     /// how many segments it consumed. This file's own inline modules win
     /// over sibling modules (they are the nearer scope).
     fn resolve_module_prefix(&self, segments: &[&str]) -> Option<(ModuleKey, usize)> {
+        if segments.len() > 1 && self.local_modules.contains_key(segments[0]) {
+            return Some((ModuleKey::Local(segments[0].to_string()), 1));
+        }
         for len in (1..segments.len()).rev() {
-            if len == 1 && self.local_modules.contains_key(segments[0]) {
-                return Some((ModuleKey::Local(segments[0].to_string()), 1));
-            }
             let prefix = segments[..len].join(".");
             if self
                 .project

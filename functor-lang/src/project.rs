@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 
 use crate::ast;
 use crate::ir::Module;
-use crate::lower::{exports_of, lower_in_project, Exports, IdBases, ProjectEnv};
+use crate::lower::{
+    exports_of, lower_in_project, open_module_path, Exports, IdBases, ProjectEnv,
+};
 use crate::parser::{capitalize, parse_interface_with_base, parse_with_base};
 use crate::span::line_col;
 use crate::types::RecordLiteralScopes;
@@ -708,27 +710,25 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
             _ => None,
         }) {
             let (name, span) = (decl.name.as_str(), decl.span);
-            // The canonical prefix an inline module's members carry — the
-            // ENTRY file's stay bare, so `game.fun`'s `module Server` owns
-            // the whole `Server.*` namespace and cannot coexist with a
-            // `server.fun` (or a protected/bundled `Server`).
-            let canonical = if file.module == entry {
-                name.to_string()
-            } else {
-                format!("{}.{name}", file.module)
-            };
-            if PROTECTED_NAMESPACES.contains(&canonical.as_str()) {
+            // An inline module is reachable UNQUALIFIED inside its own file
+            // (`Server.step`), and resolves there before any sibling, so its
+            // bare name must not shadow a builtin/bundled namespace or
+            // another file's module — `module Scene` would silently steal
+            // every `Scene.cube` in the declaring file. (Two different files
+            // may each declare `module Grid`: those canonicalize apart, as
+            // `Utils.Grid` / `Helpers.Grid`, and neither shadows the other.)
+            if PROTECTED_NAMESPACES.contains(&name) {
                 return Err(render_span(
                     &files,
                     index,
                     span,
                     &format!(
-                        "`module {name}` collides with the built-in `{canonical}` namespace — \
+                        "`module {name}` collides with the built-in `{name}` namespace — \
 rename it"
                     ),
                 ));
             }
-            if let Some(other) = file_modules.get(canonical.as_str()) {
+            if let Some(other) = file_modules.get(name) {
                 let other = files
                     .iter()
                     .find(|f| f.module == *other)
@@ -738,8 +738,7 @@ rename it"
                     index,
                     span,
                     &format!(
-                        "`module {name}` canonicalizes to `{canonical}`, which is already the \
-module of {} — rename one",
+                        "`module {name}` collides with the module of {} — rename one",
                         other.path.display()
                     ),
                 ));
@@ -782,12 +781,7 @@ module of {} — rename one",
                 continue;
             };
             // `open Server` may name one of this file's inline modules.
-            let relative = format!("{}.{}", file.module, decl.module);
-            let path = if exports.contains_key(&relative) {
-                relative
-            } else {
-                decl.module.clone()
-            };
+            let path = open_module_path(&file.module, &decl.module, &exports);
             if let Some(opened) = exports.get(&path) {
                 visible.extend(opened.types.iter().map(|name| canon(&path, name)));
             }
@@ -804,8 +798,20 @@ module of {} — rename one",
                 continue;
             };
             let path = format!("{}.{}", file.module, decl.name);
-            let mut inner = visible.clone();
-            inner.extend(exports[&path].types.iter().map(|name| canon(&path, name)));
+            let own = &exports[&path].types;
+            // The module's own types SHADOW same-named enclosing ones (the
+            // lowering rule), so drop the shadowed candidates instead of
+            // leaving a bare literal ambiguous between `Cell` and
+            // `Grid.Cell`.
+            let mut inner: HashSet<String> = visible
+                .iter()
+                .filter(|name| {
+                    let last = name.rsplit('.').next().unwrap_or(name);
+                    !own.contains(last)
+                })
+                .cloned()
+                .collect();
+            inner.extend(own.iter().map(|name| canon(&path, name)));
             let inner_prefix = if prefix.is_empty() {
                 decl.name.clone()
             } else {

@@ -638,20 +638,26 @@ snapshots — no GPU, fully agent-verifiable.
       annotations, and constructor patterns, which lost their one-dot cap.
       Inside a module body, resolution is locals → the module's own names
       → the enclosing file's top level → file-level `open`s → builtins; a
-      module's names SHADOW same-named file-level ones. `open Server` (a
-      local module) and `open Game.Server` (a sibling's) both work.
+      module's names SHADOW same-named file-level ones, record types
+      included (so a bare literal there is not ambiguous). `open Server` (a
+      local module) and `open Game.Server` (a sibling's) both work, the
+      latter as a dependency edge on the owning FILE.
       Constructor uniqueness is per module, so two inline modules may each
-      declare `Spawn`. Load errors, naming both sides: a module name
-      colliding with a top-level `let`/ctor/`type` in the same file (module
-      names occupy the value AND type namespaces), with another inline
-      module in the file, with a protected/bundled namespace, or with a
-      sibling FILE whose canonical prefix would clash (entry `module
-      Server` + `server.fun`). Dependency edges stay between FILES, so
+      declare `Spawn`. Because a module name occupies its file's value AND
+      type namespaces and is reachable BARE inside that file, it is a load
+      error naming both sides for it to collide with a top-level
+      `let`/ctor/`type` in the same file, another inline module in the
+      file, a name an `open` brings in, a protected/bundled namespace (in
+      ANY file — `module Scene` would steal every `Scene.cube` in the
+      declaring file), or another FILE's module name. Two different files
+      may each declare `module Grid` (they canonicalize apart).
+      Dependency edges stay between FILES, so
       cycle detection is unchanged. The entry contract still reads bare
       top-level `init`/`tick`/`draw`. *Verify:* parser error tests, an
       `inline_modules` AST/IR/run golden triple, and project tests for
-      canonicalization, shadowing, opens, record-literal scopes, each
-      collision, file-level cycle attribution, and cross-reload rebind.
+      canonicalization, shadowing (values and record types), opens
+      (local + cross-file, collision + cycle), each collision, file-level
+      cycle attribution, and cross-reload rebind.
       Follow-ups: LSP completion/goto for inline modules, and a
       `functor.json` `entries` form that names them as roles.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
