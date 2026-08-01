@@ -1834,18 +1834,21 @@ if this position is deliberately untyped"
             self.unify(&got, expected, expr.span, what);
             return;
         }
-        match (&expr.kind, expected) {
-            // A bare number where a branded value belongs — the mistake the
-            // unit suffixes exist for, so name the literal in the fix.
-            (ExprKind::Number(value), Type::Variant(name, _) | Type::Record(name, _))
-                if self.unit_hint_for(name, *value).is_some() =>
-            {
-                let hint = self
-                    .unit_hint_for(name, *value)
-                    .expect("checked by the guard");
-                self.diag(expr.span, format!("{what}: expected {expected}, got float{hint}"));
+        // A bare number where a branded value belongs — the mistake the unit
+        // suffixes exist for, so name the literal the source wrote in the fix.
+        if let (ExprKind::Number(value), Type::Variant(name, _) | Type::Record(name, _)) =
+            (&expr.kind, expected)
+        {
+            if let Some(hint) = self.unit_hint_for(name, *value) {
+                self.diag(
+                    expr.span,
+                    format!("{what}: expected {expected}, got float{hint}"),
+                );
                 self.expr_types.insert(expr.id.raw(), Type::Float);
+                return;
             }
+        }
+        match (&expr.kind, expected) {
             (ExprKind::Record(fields), Type::Record(name, targs)) => {
                 let targs = targs.clone();
                 self.check_record_literal(fields, name, &targs, expr.span);
