@@ -83,7 +83,7 @@ use crate::ir::{
 };
 use crate::span::Span;
 use crate::CheckError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 #[derive(Clone, PartialEq)]
@@ -1138,8 +1138,10 @@ struct Checker<'s> {
     /// first (the innermost is the one whose arms are being checked). Purely
     /// a diagnostic side channel: it turns "`Y` is not a constructor of `B`"
     /// into the greedy-arm hint when `Y` belongs to an ENCLOSING match's
-    /// scrutinee — the nested-match-ate-the-following-arms mistake.
-    match_scrutinees: Vec<Type>,
+    /// scrutinee — the nested-match-ate-the-following-arms mistake. Each
+    /// entry is that match's scrutinee type plus the ctor names it already
+    /// has arms for (an arm it still has cannot have been stolen).
+    match_scrutinees: Vec<(Type, HashSet<String>)>,
 }
 
 /// An under-applied call's provenance: enough to say `` `shift` is applied to
@@ -2395,8 +2397,17 @@ missing {missing}. Did you forget an argument?"
         let mut list_tail_mins: Vec<usize> = Vec::new();
         let mut result: Option<Type> = None;
         // Enclosing-match context for the greedy-arm hint (see
-        // `match_scrutinees`); popped below, after the arms are checked.
-        self.match_scrutinees.push(scrutinee_ty.clone());
+        // `match_scrutinees`); popped below, after the arms are checked. The
+        // ctor names THIS match already has arms for come along: an arm it
+        // still has was not stolen from it. [BOTH engines — review]
+        let own_ctors: HashSet<String> = arms
+            .iter()
+            .filter_map(|arm| match &arm.pattern.kind {
+                PatternKind::Ctor { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        self.match_scrutinees.push((scrutinee_ty.clone(), own_ctors));
         for arm in arms {
             // Arms after a catch-all are unreachable at runtime — they are
             // still CHECKED (garbage draws diagnostics) but must not
@@ -2583,19 +2594,23 @@ a catch-all arm (`_` or a name)"
         }
     }
 
-    /// The greedy-arm hint for a ctor pattern that belongs to `type_name`
-    /// while the match it sits in scrutinizes something else. When an
-    /// ENCLOSING match's scrutinee IS `type_name`, the arm was almost
-    /// certainly meant for that outer match and was swallowed by a nested
-    /// `match` in the arm above it (arm bodies are full expressions). Empty
-    /// otherwise, so an ordinary wrong-constructor mistake reads unchanged.
-    fn greedy_arm_hint(&self, type_name: &str) -> String {
+    /// The greedy-arm hint for a ctor pattern `name` that belongs to
+    /// `type_name` while the match it sits in scrutinizes something else.
+    /// When an ENCLOSING match scrutinizes `type_name` and has NO arm for
+    /// `name`, the arm was almost certainly meant for that outer match and
+    /// was swallowed by a nested `match` in the arm above it (arm bodies are
+    /// full expressions). Empty otherwise — an ordinary wrong-constructor
+    /// mistake, including one inside a properly parenthesized inner match
+    /// whose outer already handles `name`, reads unchanged. [BOTH engines]
+    fn greedy_arm_hint(&self, name: &str, type_name: &str) -> String {
         // The LAST entry is the match being checked right now; only the ones
         // enclosing it can have had an arm stolen.
         let enclosing = self.match_scrutinees.split_last().map(|(_, rest)| rest);
-        let stolen = enclosing.is_some_and(|tys| {
-            tys.iter()
-                .any(|ty| matches!(self.zonk(ty), Type::Variant(name, _) if name == type_name))
+        let stolen = enclosing.is_some_and(|entries| {
+            entries.iter().any(|(ty, arm_ctors)| {
+                !arm_ctors.contains(name)
+                    && matches!(self.zonk(ty), Type::Variant(n, _) if n == type_name)
+            })
         });
         if stolen {
             format!(
@@ -2715,7 +2730,7 @@ value is {scrutinee} — it can never match",
                     let mut field_tys = field_tys;
                     match scrutinee {
                         Type::Variant(s, _) if *s != type_name => {
-                            let hint = self.greedy_arm_hint(&type_name);
+                            let hint = self.greedy_arm_hint(name, &type_name);
                             self.diag(
                                 pattern.span,
                                 format!("`{name}` is not a constructor of `{s}`{hint}"),

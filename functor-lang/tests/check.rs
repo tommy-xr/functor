@@ -932,6 +932,26 @@ fn nested_match_swallowing_arms_teaches_parenthesizing() {
     );
 }
 
+/// An already-parenthesized inner match whose OUTER match still has that
+/// arm swallowed nothing — it is an ordinary typo, and advising parens
+/// would be wrong. [BOTH engines — review]
+#[test]
+fn parenthesized_inner_match_gets_no_greedy_hint() {
+    let (message, _, _) = single_diag(
+        "type A = | X | Y\n\
+         type B = | P | Q\n\
+         let f = (a: A, b: B): string =>\n\
+         \x20 match a with\n\
+         \x20 | X =>\n\
+         \x20   (match b with\n\
+         \x20    | P => \"xp\"\n\
+         \x20    | Y => \"typo\"\n\
+         \x20    | Q => \"xq\")\n\
+         \x20 | Y => \"y\"\n",
+    );
+    assert_eq!(message, "`Y` is not a constructor of `B`");
+}
+
 /// …and an ordinary foreign constructor — including one inside a nested
 /// match that no enclosing scrutinee explains — keeps the bare message.
 #[test]

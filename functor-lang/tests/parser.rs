@@ -300,6 +300,17 @@ fn comparison_with_negation_still_parses() {
         "let f = (a) =>\n  let mut acc = 0.0 in\n  acc := a <-1.0;\n  acc"
     )
     .is_ok());
+    // …including where the comparison ends an assignment value SEVERAL
+    // levels down, so the `;` it stops at is the assignment's, not a
+    // mistyped `<-`'s. [BOTH engines — review]
+    assert!(functor_lang::parse(
+        "let f = (a) =>\n  let mut acc = 0.0 in\n  acc := let y = 1.0 in a <-y;\n  acc"
+    )
+    .is_ok());
+    assert!(functor_lang::parse(
+        "let f = (a) =>\n  let mut acc = 0.0 in\n  acc := if a > 0.0 then a <-1.0 else true;\n  acc"
+    )
+    .is_ok());
 }
 
 // --- Variant declarations + match (B5 part 1) ---
