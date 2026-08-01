@@ -147,7 +147,8 @@ fn qualified_ctor_is_first_class() {
             (
                 "game.fun",
                 "let main = () =>\n\
-                 [1.0, 2.0] |> List.map(Util.Wrapped) |> List.map(Util.unwrap) |> List.maximum\n",
+                 [1.0, 2.0] |> List.map(Util.Wrapped) |> List.map(Util.unwrap)\n\
+                 \x20  |> List.maximum |> Option.defaultValue(0.0)\n",
             ),
             (
                 "util.fun",

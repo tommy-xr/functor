@@ -1787,10 +1787,9 @@ most 1000000 cells"
                             }
                         }
                     }
-                    match best {
-                        Some(n) => Ok(Value::Number(n)),
-                        None => err("List.maximum of an empty list".to_string()),
-                    }
+                    // PARTIAL, like `nth`/`head`/`last`/`find`: an empty list
+                    // is `Option.None`, not an error.
+                    Ok(option_value(best.map(Value::Number)))
                 }
                 _ => err("List.maximum(list) expects one list".to_string()),
             },
@@ -1919,9 +1918,7 @@ most 1000000 cells"
             // `-1.0` / `9999.0` "nothing found" marker can hold an
             // `Option.None` instead, and the checker forces it to be handled.
             //
-            // (`List.maximum` predates `Option` and still ERRORS on an empty
-            // list; changing it would break existing games, so it keeps its
-            // behavior and every NEW partial builtin is Option-returning.)
+            // (`List.maximum` is the same shape — see its arm above.)
             //
             // Subject-LAST — `List.nth(index, list)`, so `xs |> List.nth(2)`.
             // An index outside the list is absence (`Option.None`); an index

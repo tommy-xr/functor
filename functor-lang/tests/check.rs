@@ -684,7 +684,7 @@ fn records_flow_gradually() {
 fn generic_builtin_slots_stay_unknown() {
     // List.map's result is List<Unknown>, which is compatible with the
     // List<float> that List.maximum expects (no generic instantiation).
-    assert_clean("let best = (xs: List<float>): float => List.maximum(List.map((x) => x, xs))");
+    assert_clean("let best = (xs: List<float>) => List.maximum(List.map((x) => x, xs))");
 }
 
 #[test]
@@ -2042,6 +2042,7 @@ fn partial_list_builtins_return_option() {
         "let a = List.last([1.0]) + 1.0",
         "let a = List.nth(0.0, [1.0]) + 1.0",
         "let a = List.find((v) => v > 0.0, [1.0]) + 1.0",
+        "let a = List.maximum([1.0]) + 1.0",
     ] {
         let (message, _, _) = single_diag(src);
         assert!(

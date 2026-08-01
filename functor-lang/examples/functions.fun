@@ -8,7 +8,9 @@ let average = (a, b) => (a + b) / 2.0
 
 let total = (p: Player): float => p.scores |> List.fold(add, 0.0)
 
-let bestTotal = (players: List<Player>): float =>
+// `List.maximum` is partial, so this answers `Option.t<float>` — an empty
+// roster is `Option.None` rather than an error.
+let bestTotal = (players: List<Player>) =>
   players |> List.map((p) => total(p)) |> List.maximum
 
 let isWinner = (p, cutoff) => cutoff < total(p)
