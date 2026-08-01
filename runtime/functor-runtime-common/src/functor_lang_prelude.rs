@@ -1477,6 +1477,15 @@ fn register_branded_constructors(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Time.millis", "Time.millis(n)", |n: f64| {
         FunctorLangDuration(n / 1000.0)
     });
+    reg.fn1("Time.micros", "Time.micros(n)", |n: f64| {
+        FunctorLangDuration(n / 1_000_000.0)
+    });
+    reg.fn1("Time.minutes", "Time.minutes(n)", |n: f64| {
+        FunctorLangDuration(n * 60.0)
+    });
+    reg.fn1("Time.hours", "Time.hours(n)", |n: f64| {
+        FunctorLangDuration(n * 3600.0)
+    });
     reg.fn3("Color.rgb", "Color.rgb(r, g, b)", |r: f64, g: f64, b: f64| {
         FunctorLangColor((r as f32, g as f32, b as f32))
     });
@@ -4046,7 +4055,7 @@ fn angle_of(value: &Value, what: &str, span: Span) -> Result<Angle, RunError> {
         Value::Number(_) => Err(RunError {
             message: format!(
                 "{what}: expected an Angle, got a bare number — say which unit: \
-Angle.degrees(…) or Angle.radians(…)"
+`90deg` / `1.5rad`, or Angle.degrees(…) / Angle.radians(…)"
             ),
             span,
         }),
@@ -4127,7 +4136,7 @@ fn duration_of(value: &Value, what: &str, span: Span) -> Result<f64, RunError> {
         Value::Number(_) => Err(RunError {
             message: format!(
                 "{what}: expected a Duration, got a bare number — say which unit: \
-Time.seconds(…) or Time.millis(…)"
+`0.5s` / `500ms`, or Time.seconds(…) / Time.millis(…)"
             ),
             span,
         }),
@@ -6812,7 +6821,7 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
         assert_eq!(
             failure.error.message,
             "Scene.rotateY: expected an Angle, got a bare number — say which unit: \
-Angle.degrees(…) or Angle.radians(…)"
+`90deg` / `1.5rad`, or Angle.degrees(…) / Angle.radians(…)"
         );
     }
 
@@ -7977,7 +7986,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
 Physics.box(4.0, 1.0, 2.0)) |> Physics.rotateY(1.57)"
             ),
             "Physics.rotateY: expected an Angle, got a bare number — say which unit: \
-Angle.degrees(…) or Angle.radians(…)"
+`90deg` / `1.5rad`, or Angle.degrees(…) / Angle.radians(…)"
         );
         assert_eq!(
             fail_message(
@@ -8684,6 +8693,29 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         assert!(fired(millis, 1.0, 1.4).is_empty());
     }
 
+    /// The whole `Time` family lands on the same canonical seconds — the
+    /// constructors the `s`/`ms`/`us`/`min`/`hr` literal suffixes call.
+    #[test]
+    fn every_time_constructor_is_canonical_seconds() {
+        let seconds = |src: &str| {
+            let value = eval(&format!("let main = () => {src}"));
+            match &value {
+                Value::HostData(data) => {
+                    data.as_any()
+                        .downcast_ref::<FunctorLangDuration>()
+                        .expect("a Duration")
+                        .0
+                }
+                other => panic!("expected a Duration, got {other}"),
+            }
+        };
+        assert_eq!(seconds("Time.seconds(0.5)"), 0.5);
+        assert_eq!(seconds("Time.millis(500.0)"), 0.5);
+        assert_eq!(seconds("Time.micros(250.0)"), 0.00025);
+        assert_eq!(seconds("Time.minutes(2.0)"), 120.0);
+        assert_eq!(seconds("Time.hours(1.5)"), 5400.0);
+    }
+
     /// Batches fire in declaration order; `Sub.none` fires nothing; the msg
     /// crosses back verbatim (here, a parameterful variant).
     #[test]
@@ -9358,7 +9390,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         assert_eq!(
             failure.error.message,
             "Sub.every: expected a Duration, got a bare number — say which unit: \
-Time.seconds(…) or Time.millis(…)"
+`0.5s` / `500ms`, or Time.seconds(…) / Time.millis(…)"
         );
     }
 

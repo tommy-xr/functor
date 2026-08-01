@@ -10,3 +10,20 @@ type t
 let seconds : (float) => t
 /// Construct a duration from milliseconds.
 let millis : (float) => t
+/// Construct a duration from microseconds.
+let micros : (float) => t
+/// Construct a duration from minutes.
+let minutes : (float) => t
+/// Construct a duration from hours.
+let hours : (float) => t
+
+/// Seconds as a literal suffix: `0.5s` is exactly `Time.seconds(0.5)`.
+unit s = Time.seconds
+/// Milliseconds as a literal suffix: `500ms` is exactly `Time.millis(500.0)`.
+unit ms = Time.millis
+/// Microseconds as a literal suffix: `250us` is exactly `Time.micros(250.0)`.
+unit us = Time.micros
+/// Minutes as a literal suffix: `2min` is exactly `Time.minutes(2.0)`.
+unit min = Time.minutes
+/// Hours as a literal suffix: `1hr` is exactly `Time.hours(1.0)`.
+unit hr = Time.hours

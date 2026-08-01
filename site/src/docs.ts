@@ -21,7 +21,9 @@ const KEYWORDS = new Set([
 const ATOMS = new Set(["true", "false"]);
 
 const CODE_TOKEN =
-  /^(?:\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|&&|\|\||[+\-*/<>=|])/;
+  // A number may carry a unit suffix touching its digits (`90deg`) — one
+  // token, as the lexer sees it.
+  /^(?:\d+(?:\.\d+)?[A-Za-z_]?[A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*|\|>|=>|:=|&&|\|\||[+\-*/<>=|])/;
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

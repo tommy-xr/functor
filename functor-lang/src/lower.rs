@@ -148,6 +148,9 @@ pub(crate) fn exports_of(items: &[ast::Item]) -> Exports {
             ast::Item::Open(_) => {}
             // An expect binds nothing.
             ast::Item::Expect(_) => {}
+            // A unit declares a literal SUFFIX, not a name — units are
+            // project-wide and collected separately (see `unit_decls`).
+            ast::Item::Unit(_) => {}
             // An inline module's members belong to ITS namespace, not the
             // file's: the caller calls `exports_of` again on its own items.
             ast::Item::Module(_) => {}
@@ -163,6 +166,70 @@ pub(crate) struct ProjectEnv<'a> {
     pub name: &'a str,
     pub entry: &'a str,
     pub modules: &'a HashMap<String, Exports>,
+    /// Every `unit` declared anywhere in the project, already resolved
+    /// against its DECLARING module (units are project-wide, like
+    /// constructors — see [`resolve_units`]).
+    pub units: &'a HashMap<String, UnitTarget>,
+}
+
+/// What a declared unit suffix expands to: the resolved callee a suffixed
+/// literal calls. Resolved once, in the declaring module's scope, and then
+/// used verbatim from every module.
+#[derive(Clone, Debug)]
+pub(crate) enum UnitTarget {
+    Global(String),
+    Ctor { name: String, arity: usize },
+    External(Vec<String>),
+}
+
+impl UnitTarget {
+    fn kind(&self) -> ExprKind {
+        match self {
+            UnitTarget::Global(name) => ExprKind::Global(name.clone()),
+            UnitTarget::Ctor { name, arity } => ExprKind::Ctor {
+                name: name.clone(),
+                arity: *arity,
+            },
+            UnitTarget::External(path) => ExprKind::External(path.clone()),
+        }
+    }
+}
+
+/// A module's `unit` declarations, in file order.
+pub(crate) fn unit_decls(items: &[ast::Item]) -> Vec<&ast::UnitDecl> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Unit(decl) => Some(decl),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Resolve one module's `unit` targets in ITS scope, so the whole project can
+/// share the result (a suffix means the same thing in every file). Runs
+/// before any module is lowered, because a use site may precede — or live in
+/// a different file from — the declaration.
+pub(crate) fn resolve_units(
+    items: &[ast::Item],
+    project: Option<&ProjectEnv>,
+) -> Result<Vec<(String, UnitTarget, Span)>, LowerError> {
+    let decls = unit_decls(items);
+    if decls.is_empty() {
+        return Ok(Vec::new());
+    }
+    // A throwaway lowerer: same name environment as the real pass, its own ID
+    // space (nothing it builds is kept).
+    let mut lowerer = prepare(items, project, IdBases::default())?;
+    let mut resolved = Vec::with_capacity(decls.len());
+    for decl in decls {
+        resolved.push((
+            decl.suffix.clone(),
+            lowerer.unit_target(decl)?,
+            decl.span,
+        ));
+    }
+    Ok(resolved)
 }
 
 /// Starting IDs for a module's lowering: a project threads these across its
@@ -232,6 +299,8 @@ fn collect_names(items: &[ast::Item]) -> Result<Names, LowerError> {
             ast::Item::Open(_) => {}
             // An expect declares no names.
             ast::Item::Expect(_) => {}
+            // A unit declares a suffix, not a name (no namespace collision).
+            ast::Item::Unit(_) => {}
             // Inline modules are their own namespaces, collected separately
             // (and checked against these names by the caller).
             ast::Item::Module(_) => {}
@@ -314,19 +383,92 @@ fn lower_module(
     project: Option<&ProjectEnv>,
     bases: IdBases,
 ) -> Result<(Module, IdBases, HashSet<String>), LowerError> {
+    let mut lowerer = prepare(&program.items, project, bases)?;
+    // Single-file lowering has no project to collect units from, so the
+    // file's own declarations are its whole unit table (a project resolves
+    // them across every module, before any file lowers — see
+    // `crate::project`).
+    if project.is_none() {
+        for (suffix, target, span) in resolve_units(&program.items, None)? {
+            if lowerer.units.insert(suffix.clone(), target).is_some() {
+                return Err(LowerError {
+                    message: format!("duplicate unit `{suffix}`"),
+                    span,
+                });
+            }
+        }
+    }
+    let mut out = Lowered {
+        next_def: bases.def,
+        types: Vec::new(),
+        defs: Vec::new(),
+        signatures: Vec::new(),
+        expects: Vec::new(),
+        units: Vec::new(),
+    };
+    for item in program.items {
+        match item {
+            // An inline module: lower its items in ITS namespace (its own
+            // names shadow the file's, and canonical names gain the extra
+            // segment).
+            ast::Item::Module(decl) => {
+                lowerer.inline = Some(decl.name);
+                for item in decl.items {
+                    lowerer.lower_item(item, &mut out)?;
+                }
+                lowerer.inline = None;
+            }
+            item => lowerer.lower_item(item, &mut out)?,
+        }
+    }
+    let Lowered {
+        next_def,
+        types,
+        defs,
+        signatures,
+        expects,
+        units,
+    } = out;
+    let bases = IdBases {
+        def: next_def,
+        binding: lowerer.next_binding,
+        expr: lowerer.next_expr,
+    };
+    Ok((
+        Module {
+            types,
+            defs,
+            signatures,
+            expects,
+            units,
+        },
+        bases,
+        lowerer.deps,
+    ))
+}
+
+/// Build the name environment a module lowers in: its own names, its inline
+/// `module` blocks, and its `open`s (pass 1 of [`lower_module`]). Shared with
+/// the unit pre-pass ([`resolve_units`]), which needs the same scope but
+/// none of the lowered output.
+fn prepare<'p>(
+    items: &[ast::Item],
+    project: Option<&'p ProjectEnv<'p>>,
+    bases: IdBases,
+) -> Result<Lowerer<'p>, LowerError> {
     let Names {
         globals,
         ctors,
         types: type_names,
         ctor_types,
-    } = collect_names(&program.items)?;
+    } = collect_names(items)?;
 
     // Pass 1a: the file's inline `module` blocks. Their names live in the
     // file's value AND type namespaces (so `Server.step` always resolves to
     // the module, never to field access on a `let Server`), and each block's
     // own names are collected the same way.
     let mut inline_names: HashMap<String, Exports> = HashMap::new();
-    for item in &program.items {
+    for item in items {
         let ast::Item::Module(decl) = item else {
             continue;
         };
@@ -362,7 +504,7 @@ fn lower_module(
     let mut open_values: HashMap<String, OpenedName> = HashMap::new();
     let mut open_types: HashMap<String, String> = HashMap::new();
     let mut deps: HashSet<String> = HashSet::new();
-    for item in &program.items {
+    for item in items {
         let ast::Item::Open(decl) = item else {
             continue;
         };
@@ -485,8 +627,7 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
         }
     }
 
-    // Pass 2: lower items in file order.
-    let mut lowerer = Lowerer {
+    Ok(Lowerer {
         globals,
         ctors,
         types: type_names,
@@ -494,57 +635,14 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
         local_modules: inline_names,
         inline: None,
         project,
+        units: project.map(|env| env.units.clone()).unwrap_or_default(),
         open_values,
         open_types,
         deps,
         scopes: Vec::new(),
         next_binding: bases.binding,
         next_expr: bases.expr,
-    };
-    let mut out = Lowered {
-        next_def: bases.def,
-        types: Vec::new(),
-        defs: Vec::new(),
-        signatures: Vec::new(),
-        expects: Vec::new(),
-    };
-    for item in program.items {
-        match item {
-            // An inline module: lower its items in ITS namespace (its own
-            // names shadow the file's, and canonical names gain the extra
-            // segment).
-            ast::Item::Module(decl) => {
-                lowerer.inline = Some(decl.name);
-                for item in decl.items {
-                    lowerer.lower_item(item, &mut out)?;
-                }
-                lowerer.inline = None;
-            }
-            item => lowerer.lower_item(item, &mut out)?,
-        }
-    }
-    let Lowered {
-        next_def,
-        types,
-        defs,
-        signatures,
-        expects,
-    } = out;
-    let bases = IdBases {
-        def: next_def,
-        binding: lowerer.next_binding,
-        expr: lowerer.next_expr,
-    };
-    Ok((
-        Module {
-            types,
-            defs,
-            signatures,
-            expects,
-        },
-        bases,
-        lowerer.deps,
-    ))
+    })
 }
 
 /// The IR a namespace's items lower into — one accumulator shared by the
@@ -555,6 +653,7 @@ struct Lowered {
     defs: Vec<Def>,
     signatures: Vec<Signature>,
     expects: Vec<ExpectDef>,
+    units: Vec<UnitDef>,
 }
 
 /// Which module a dotted reference's leading segments named.
@@ -617,6 +716,10 @@ struct Lowerer<'p> {
     inline: Option<String>,
     /// The project context, when lowering as part of one (B8 modules).
     project: Option<&'p ProjectEnv<'p>>,
+    /// Every declared unit suffix, already resolved (see [`UnitTarget`]).
+    /// Project-wide: a suffix declared in ANY module expands the same way
+    /// here.
+    units: HashMap<String, UnitTarget>,
     /// Names brought into scope by `open`s (collision-free by pass 1b).
     open_values: HashMap<String, OpenedName>,
     /// Type names brought into scope by `open`s: name → providing module.
@@ -781,6 +884,48 @@ impl Lowerer<'_> {
         None
     }
 
+    /// The teaching error for a literal whose suffix no `unit` declares.
+    fn unknown_unit(&self, suffix: &str) -> String {
+        let mut known: Vec<&str> = self.units.keys().map(String::as_str).collect();
+        known.sort_unstable();
+        if known.is_empty() {
+            format!(
+                "unknown unit `{suffix}` in `…{suffix}` — no units are declared; declare one \
+with `unit {suffix} = SomeFn` (a `(float) => 't` function), or write the call itself"
+            )
+        } else {
+            format!(
+                "unknown unit `{suffix}` in `…{suffix}` — declared units: {}",
+                known
+                    .iter()
+                    .map(|u| format!("`{u}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    }
+
+    /// Resolve a `unit` declaration's target in THIS module's scope — the
+    /// ordinary identifier rules, restricted to the three callable shapes.
+    /// (Item position has no locals, so this is exactly a top-level
+    /// reference.)
+    fn unit_target(&mut self, decl: &ast::UnitDecl) -> Result<UnitTarget, LowerError> {
+        let resolved = self.ident(decl.target.clone(), decl.target_span)?;
+        match resolved.kind {
+            ExprKind::Global(name) => Ok(UnitTarget::Global(name)),
+            ExprKind::Ctor { name, arity } => Ok(UnitTarget::Ctor { name, arity }),
+            ExprKind::External(path) => Ok(UnitTarget::External(path)),
+            _ => Err(LowerError {
+                message: format!(
+                    "`unit {}` needs a function or constructor name — `{}` is not one",
+                    decl.suffix,
+                    decl.target.join(".")
+                ),
+                span: decl.target_span,
+            }),
+        }
+    }
+
     /// Lower one item into `out`, in the current namespace.
     fn lower_item(&mut self, item: ast::Item, out: &mut Lowered) -> Result<(), LowerError> {
         match item {
@@ -818,6 +963,18 @@ impl Lowerer<'_> {
                 out.signatures.push(Signature {
                     name: self.self_qualify(&decl.name),
                     ty: self.canon_type(decl.ty)?,
+                    span: decl.span,
+                });
+            }
+            // A unit: no name, no DefId. Uses are already desugared to the
+            // plain call; the resolved target is kept only so the CHECKER can
+            // verify it really is a `(float) => 't` function (and teach the
+            // suffix in branded-value errors).
+            ast::Item::Unit(decl) => {
+                let target = self.ident(decl.target.clone(), decl.target_span)?;
+                out.units.push(UnitDef {
+                    suffix: decl.suffix,
+                    target,
                     span: decl.span,
                 });
             }
@@ -967,6 +1124,32 @@ impl Lowerer<'_> {
                 return Ok(piped);
             }
             ast::ExprKind::Number(n) => ExprKind::Number(n),
+            // `90deg` → exactly `Angle.degrees(90.0)`: the declared unit's
+            // target applied to the literal. Everything downstream (hover,
+            // inlay, the checker, the host's teaching errors) sees an
+            // ordinary call.
+            ast::ExprKind::NumberUnit { value, suffix } => {
+                let Some(target) = self.units.get(&suffix).cloned() else {
+                    return Err(LowerError {
+                        message: self.unknown_unit(&suffix),
+                        span,
+                    });
+                };
+                let callee = Expr {
+                    id: self.expr_id(),
+                    kind: target.kind(),
+                    span,
+                };
+                let arg = Expr {
+                    id: self.expr_id(),
+                    kind: ExprKind::Number(value),
+                    span,
+                };
+                ExprKind::Call {
+                    callee: Box::new(callee),
+                    args: vec![arg],
+                }
+            }
             ast::ExprKind::String(s) => ExprKind::String(s),
             ast::ExprKind::InterpolatedString(parts) => {
                 let mut lowered = Vec::with_capacity(parts.len());

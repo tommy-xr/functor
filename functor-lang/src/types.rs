@@ -784,6 +784,7 @@ fn check_impl(
         def_param_names: HashMap::new(),
         ctor_param_names: HashMap::new(),
         match_scrutinees: Vec::new(),
+        unit_hints: HashMap::new(),
     };
 
     // Record type names first (nominal references may be forward), then
@@ -915,6 +916,43 @@ fn check_impl(
         checker.globals.insert(def.name.clone(), ty);
     }
 
+    // Declared units, indexed by the branded type they build — available
+    // before any def is inferred, so every branded-value mismatch below can
+    // teach the suffix form. Derived from what is already known (a `.funi`
+    // signature's return type, or a constructor's owning type); the units
+    // themselves are TYPE-CHECKED after inference, once their targets have
+    // real types.
+    for unit in &module.units {
+        let (result, call) = match &unit.target.kind {
+            ExprKind::External(path) => {
+                let call = path.join(".");
+                match checker.signatures.get(&call).map(|s| s.ty.clone()) {
+                    Some(Type::Fn(_, ret)) => (Some(*ret), call),
+                    _ => (None, call),
+                }
+            }
+            ExprKind::Ctor { name, .. } => (
+                checker
+                    .ctors
+                    .get(name)
+                    .map(|(owner, params, _)| Type::Variant(owner.clone(), vec![Type::Unknown; *params])),
+                name.clone(),
+            ),
+            ExprKind::Global(name) => match checker.globals.get(name) {
+                Some(Type::Fn(_, ret)) => (Some((**ret).clone()), name.clone()),
+                _ => (None, name.clone()),
+            },
+            _ => (None, String::new()),
+        };
+        if let Some(Type::Variant(name, _) | Type::Record(name, _)) = result {
+            checker
+                .unit_hints
+                .entry(name)
+                .or_default()
+                .push((unit.suffix.clone(), call));
+        }
+    }
+
     // Infer in dependency order, one strongly-connected component at a
     // time: within a group (mutual recursion) uses are monomorphic — the
     // standard HM letrec rule — and each def GENERALIZES as its group
@@ -962,6 +1000,24 @@ fn check_impl(
             let scheme = checker.generalize(&ty);
             checker.schemes.insert(def.name.clone(), scheme);
         }
+    }
+
+    // `unit` declarations: the target must be exactly a `(float) => 't`
+    // function or constructor, since that is what a suffixed literal calls.
+    // Checked after inference, so a target defined in Functor Lang has its
+    // real type.
+    for unit in &module.units {
+        checker.annot_vars.clear();
+        checker.current_module = String::new();
+        let got = checker.infer(&unit.target);
+        let result = checker.fresh();
+        let want = Type::Fn(vec![Type::Float], Box::new(result));
+        checker.unify(
+            &got,
+            &want,
+            unit.target.span,
+            &format!("`unit {}`", unit.suffix),
+        );
     }
 
     // `expect` tests: each must be a bool. Checked after every def has
@@ -1152,6 +1208,11 @@ struct Checker<'s> {
     /// entry is that match's scrutinee type plus the ctor names it already
     /// has arms for (an arm it still has cannot have been stolen).
     match_scrutinees: Vec<(Type, HashSet<String>)>,
+    /// Declared units, indexed by the BRANDED TYPE they produce: `"Angle.t"`
+    /// → `[("deg", "Angle.degrees"), ("rad", "Angle.radians")]`. Purely a
+    /// diagnostic side channel — it turns "expected Angle.t, got float" into
+    /// a message that teaches both spellings.
+    unit_hints: HashMap<String, Vec<(String, String)>>,
 }
 
 /// An under-applied call's provenance: enough to say `` `shift` is applied to
@@ -1310,7 +1371,51 @@ impl Checker<'_> {
     /// expectation came from ("argument 2 of `f`", "return value", "list
     /// element") — the legible-error contract.
     fn mismatch(&mut self, expected: &Type, got: &Type, span: Span, what: &str) {
-        self.diag(span, format!("{what}: expected {expected}, got {got}"));
+        let hint = match (expected, got) {
+            (Type::Variant(name, _) | Type::Record(name, _), Type::Float) => self.unit_hint(name),
+            _ => String::new(),
+        };
+        self.diag(span, format!("{what}: expected {expected}, got {got}{hint}"));
+    }
+
+    /// The suffix half of a branded-value teaching error: how to build a
+    /// `name` value from a number, in both spellings. Empty when no `unit`
+    /// produces that type.
+    fn unit_hint(&self, name: &str) -> String {
+        let units = self.unit_hints.get(name).filter(|u| !u.is_empty());
+        let Some(units) = units else {
+            return String::new();
+        };
+        let (_, call) = &units[0];
+        let suffixes = units
+            .iter()
+            .map(|(suffix, _)| format!("`45{suffix}`"))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        format!(
+            " — `{name}` is a branded value: build one with `{call}(…)`, or write a \
+unit-suffixed literal ({suffixes})"
+        )
+    }
+
+    /// The same teaching error, for a NUMBER LITERAL in a branded position —
+    /// so the message can quote the value the source actually wrote
+    /// (`write 45deg or Angle.degrees(45.0)`).
+    fn unit_hint_for(&self, name: &str, value: f64) -> Option<String> {
+        let (suffix, call) = self.unit_hints.get(name)?.first()?;
+        let bare = if value.fract() == 0.0 && value.is_finite() {
+            format!("{}", value as i64)
+        } else {
+            format!("{value}")
+        };
+        let call_arg = if value.fract() == 0.0 && value.is_finite() {
+            format!("{bare}.0")
+        } else {
+            bare.clone()
+        };
+        Some(format!(
+            " — `{name}` is a branded value: write `{bare}{suffix}` or `{call}({call_arg})`"
+        ))
     }
 
     /// Enforce Map's deliberately bounded key domain when a direct builtin
@@ -1730,6 +1835,17 @@ if this position is deliberately untyped"
             return;
         }
         match (&expr.kind, expected) {
+            // A bare number where a branded value belongs — the mistake the
+            // unit suffixes exist for, so name the literal in the fix.
+            (ExprKind::Number(value), Type::Variant(name, _) | Type::Record(name, _))
+                if self.unit_hint_for(name, *value).is_some() =>
+            {
+                let hint = self
+                    .unit_hint_for(name, *value)
+                    .expect("checked by the guard");
+                self.diag(expr.span, format!("{what}: expected {expected}, got float{hint}"));
+                self.expr_types.insert(expr.id.raw(), Type::Float);
+            }
             (ExprKind::Record(fields), Type::Record(name, targs)) => {
                 let targs = targs.clone();
                 self.check_record_literal(fields, name, &targs, expr.span);

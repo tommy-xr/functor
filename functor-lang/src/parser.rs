@@ -231,8 +231,14 @@ impl Parser {
                 TokenKind::Ident(name) if name == "module" => {
                     items.push(Item::Module(self.module_decl()?))
                 }
+                // …and `unit` (a literal-suffix declaration). Contextual too:
+                // `unit` stays usable as an ordinary name.
+                TokenKind::Ident(name) if name == "unit" => {
+                    items.push(Item::Unit(self.unit_decl()?))
+                }
                 _ => {
-                    return self.error("`let`, `type`, `open`, `expect`, or `module` at top level")
+                    return self
+                        .error("`let`, `type`, `open`, `expect`, `unit`, or `module` at top level")
                 }
             }
         }
@@ -296,6 +302,51 @@ the top level of the file"
             items,
             span: kw.span.to(name_span),
             block: kw.span.to(close.span),
+        })
+    }
+
+    /// `unit deg = Angle.degrees` — a literal-suffix declaration. The target
+    /// is a possibly module-qualified NAME (never an arbitrary expression):
+    /// the function or constructor a suffixed literal calls.
+    fn unit_decl(&mut self) -> Result<UnitDecl, ParseError> {
+        let kw = self.bump();
+        let (suffix, suffix_span) = match self.peek_kind() {
+            TokenKind::Ident(name) => {
+                let name = name.clone();
+                (name, self.bump().span)
+            }
+            _ => {
+                return self
+                    .error("a unit suffix after `unit` (e.g. `unit deg = Angle.degrees`)")
+            }
+        };
+        // The suffix has to be able to follow digits: `90deg` must lex back to
+        // this same suffix. Identifiers always do, so only the `_`-led case
+        // needs teaching — it reads as a name, not a unit.
+        if suffix.starts_with('_') {
+            return Err(ParseError {
+                message: format!(
+                    "a unit suffix starts with a letter: `{suffix}` cannot follow a number"
+                ),
+                span: suffix_span,
+            });
+        }
+        self.expect(TokenKind::Eq, "`=` after the unit suffix")?;
+        let (mut segment, mut span) =
+            self.expect_ident("the name a unit literal calls (e.g. `Angle.degrees`)")?;
+        let mut target = vec![segment];
+        while self.peek_kind() == &TokenKind::Dot {
+            self.bump();
+            let (next, next_span) = self.expect_ident("a name after `.`")?;
+            segment = next;
+            span = span.to(next_span);
+            target.push(segment);
+        }
+        Ok(UnitDecl {
+            suffix,
+            target,
+            target_span: span,
+            span: kw.span.to(span),
         })
     }
 
@@ -1299,6 +1350,21 @@ and an `else` branch)",
     // Iterative (not recursive) so `----x` chains can't grow the stack past
     // the `expr` depth guard.
     fn unary(&mut self) -> Result<Expr, ParseError> {
+        // A minus directly on a UNIT LITERAL folds into the literal, as it
+        // does in number patterns: `-90deg` is `Angle.degrees(-90.0)`, not a
+        // negation of the branded value it would build (branded values have
+        // no arithmetic — see `docs/functor-lang-units.md`).
+        if self.peek_kind() == &TokenKind::Minus {
+            if let TokenKind::NumberUnit(value, suffix) = self.nth_kind(1) {
+                let (value, suffix) = (-*value, suffix.clone());
+                let minus = self.bump();
+                let literal = self.bump();
+                return Ok(Expr {
+                    kind: ExprKind::NumberUnit { value, suffix },
+                    span: minus.span.to(literal.span),
+                });
+            }
+        }
         let mut minus_spans = Vec::new();
         while self.peek_kind() == &TokenKind::Minus {
             minus_spans.push(self.bump().span);
@@ -1364,6 +1430,17 @@ and an `else` branch)",
                 self.bump();
                 Ok(Expr {
                     kind: ExprKind::Number(n),
+                    span,
+                })
+            }
+            // `90deg` — a unit-suffixed literal. Which units exist is a
+            // lowering question (see `ast::UnitDecl`); the parser only
+            // carries the spelling through.
+            TokenKind::NumberUnit(n, suffix) => {
+                let (value, suffix) = (*n, suffix.clone());
+                self.bump();
+                Ok(Expr {
+                    kind: ExprKind::NumberUnit { value, suffix },
                     span,
                 })
             }
