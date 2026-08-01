@@ -253,7 +253,8 @@ them, so a role that must also run in the browser stays on the prefix form);
 prefixed roles also run on wasm (`run wasm`/`build wasm` bake the prefix into the
 page's boot config; the site player takes `?prefix=<ident>`) — vr loads the unprefixed
 contract only. `examples/orbs` is the same-file reference: its `client` role is the
-file's plain top-level contract and its `server` role is a `module Server { … }` block.
+file's plain top-level contract and its `server` role is the `server` PREFIX — the form
+that also runs in the browser, which the sandbox's server pane needs.
 
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with

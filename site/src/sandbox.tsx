@@ -439,9 +439,15 @@ const loadExample = async (id: string) => {
   if (serverFile) {
     // Derived from the client's params, so every project setting the sample
     // declares (prefix, cursor, mouseCapture) reaches the server pane too —
-    // only the entry and the file ORDER differ.
+    // only the entry, the file ORDER, and the role prefix differ.
     const serverParams = new URLSearchParams(params);
     serverParams.set("game", serverFile);
+    // …except the role PREFIX, which is the one param the server owns: a
+    // same-file sample (orbs) has both roles in one entry, so the server pane
+    // differs from the client pane only by the prefix it resolves through, and
+    // inheriting the client's would boot the wrong contract.
+    serverParams.delete("prefix");
+    if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
     serverParams.delete("file");
     for (const file of [serverFile, ...files.filter((f) => f !== serverFile)]) {
       serverParams.append("file", file);

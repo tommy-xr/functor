@@ -686,10 +686,11 @@ snapshots — no GPU, fully agent-verifiable.
       old program instead of reporting every binding missing. Module roles
       are native-only for now (`run wasm`/`build wasm`/`run vr` refuse them,
       as vr already refuses prefixes) because those shells boot the
-      unprefixed contract. `examples/orbs` is the reference: its `client`
-      role is now the file's plain top-level contract (so the sandbox and
-      the docs teach the same `init`/`tick`/`draw`) and its `server` role is
-      a `module Server { … }` block. *Verify:* config-shape tests
+      unprefixed contract. `examples/orbs` is the same-file reference: its
+      `client` role is the file's plain top-level contract (so the sandbox
+      and the docs teach the same `init`/`tick`/`draw`) and its `server`
+      role stays on the PREFIX form, because the sandbox runs that role in
+      a browser pane. *Verify:* config-shape tests
       (module form, module+prefix refusal, non-string/non-Capitalized names,
       unknown keys), contract tests naming `Server.tick`, an unknown-block
       error test, a desktop load + hot-reload test for a module role, the
