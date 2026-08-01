@@ -32,7 +32,8 @@ The habits that break first, in one place. Each is expanded below.
   the first one included. Arm bodies are full expressions, so a nested
   `match` must be parenthesized.
 - **Nullary constructors take no parens** (`Point`, never `Point()`), and
-  constructors resolve bare — `Shape.Circle` is an unknown external.
+  constructors resolve bare — type-qualifying one (`Shape.Circle`) is a load
+  error telling you to write `Circle`.
 - **Local bindings are `let … in`** inside a body; top-level defs are
   mutually visible.
 - **File = module**: every sibling `.fun` in the entry's directory loads with
@@ -472,8 +473,10 @@ that's what `functor test` is for.
   builtin/prelude function therefore takes its "subject" (list, scene) LAST.
   Because `|>` is syntax, `x |> f(a)` lowers directly to the saturated `f(a, x)`
   (never a partial `f(a)`), so scene/list pipes allocate nothing.
-- **`:=` not `<-`** — `<-` is reserved for future do-block binds.
-  Assignment must be followed by `;` and a continuation expression.
+- **`:=` not `<-`** — `<-` is reserved for future do-block binds. Writing
+  `acc <- acc + 1.0;` is a parse error naming `:=` (it would otherwise lex as
+  the comparison `acc < (-acc + 1.0)`). Assignment must be followed by `;`
+  and a continuation expression.
 - **`mut` is non-capturable**: a lambda may not read or assign an enclosing
   `mut` binding (lowering error). Params, globals, and plain `let`s are
   immutable. No top-level `let mut`.
@@ -492,10 +495,15 @@ that's what `functor test` is for.
   non-finite numbers.
 - **Greedy match arms**: arm bodies are full expressions, so a nested
   `match` inside an arm consumes the following `|` arms as its own —
-  parenthesize the inner match (F#/OCaml convention). The leading `|` is
+  parenthesize the inner match (F#/OCaml convention). The checker catches
+  this: the swallowed arms report as `` `Y` is not a constructor of `B` ``
+  with a hint naming the enclosing match (beside the outer match's now
+  non-exhaustive error). The leading `|` is
   required before every arm and every variant alternative, first included.
 - **Constructors resolve bare and live in the VALUE namespace**: `Circle(2.0)`
-  works anywhere (`Shape.Circle` does NOT — it stays an unknown external),
+  works anywhere (`Shape.Circle` does NOT — TYPE-qualifying a constructor is
+  a load error pointing at the bare form; MODULE-qualifying one is fine,
+  `Utils.Circle`),
   which is why ctor names must be unique ACROSS all variant types in the
   module, and `let Circle = …` alongside a ctor `Circle` is a
   duplicate-definition error. An (uppercase) param may still shadow a ctor;

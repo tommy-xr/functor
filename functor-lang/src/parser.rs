@@ -623,11 +623,25 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             TokenKind::If => self.if_expr(),
             TokenKind::Ident(_) if self.nth_kind(1) == &TokenKind::ColonEq => self.assign(),
             _ => {
+                let start = self.pos;
                 let expr = self.pipeline();
                 // A stray `:=` after a non-name expression would otherwise
                 // surface as a baffling error at the enclosing context.
                 if expr.is_ok() && self.peek_kind() == &TokenKind::ColonEq {
                     self.error("nothing (assignment targets must be a bare `let mut` name)")
+                } else if expr.is_ok() && self.peek_kind() == &TokenKind::Semi {
+                    // `acc <- acc + 1.0;` lexes as the comparison
+                    // `acc < (-acc + 1.0)`, which parses fine and only dies at
+                    // the `;` — far from the mistake. Teach it here.
+                    match self.arrow_assign(start) {
+                        Some(span) => Err(ParseError {
+                            message: "assignment is `:=`, not `<-` (`<-` is reserved for future \
+do-binds)"
+                                .to_string(),
+                            span,
+                        }),
+                        None => expr,
+                    }
                 } else {
                     expr
                 }
@@ -635,6 +649,34 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
         };
         self.depth -= 1;
         result
+    }
+
+    /// Did the expression starting at `start` open with `name<-` — an F#-style
+    /// assignment? The lexer has no `<-` token, so it arrives as `<` then `-`
+    /// and the whole thing parses as a comparison against a negation; only the
+    /// caller's trailing `;` reveals that an assignment was meant. Both halves
+    /// of the tell are required, and the pair must be ADJACENT in the source,
+    /// so a real `a < -b` comparison (and `a <- b` with no `;` after it) is
+    /// untouched. Returns the `<-` span.
+    fn arrow_assign(&self, start: usize) -> Option<Span> {
+        // `acc := a <-1.0;` is a legitimate assignment whose VALUE happens to
+        // look like this — never teach `:=` at someone already writing it.
+        if start > 0 && self.tokens[start - 1].kind == TokenKind::ColonEq {
+            return None;
+        }
+        let name = self.tokens.get(start)?;
+        let lt = self.tokens.get(start + 1)?;
+        let minus = self.tokens.get(start + 2)?;
+        let adjacent = lt.span.end == minus.span.start;
+        if matches!(name.kind, TokenKind::Ident(_))
+            && lt.kind == TokenKind::Lt
+            && minus.kind == TokenKind::Minus
+            && adjacent
+        {
+            Some(lt.span.to(minus.span))
+        } else {
+            None
+        }
     }
 
     /// `let [mut] name = value in body` — expression-level binding.

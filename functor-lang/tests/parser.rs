@@ -275,6 +275,33 @@ fn assignment_to_field_is_a_targeted_error() {
     );
 }
 
+/// `acc <- acc + 1.0;` lexes as `acc < (-acc + 1.0)`, parses as a comparison,
+/// and used to die at the `;` with a top-level "expected `let`…" error far
+/// from the mistake. It teaches `:=` at the `<-` instead.
+#[test]
+fn arrow_assignment_teaches_colon_eq() {
+    let (message, line, col) =
+        parse_err("let f = (a) =>\n  let mut acc = a in\n  acc <- acc + 1.0;\n  acc");
+    assert!(
+        message.contains("assignment is `:=`, not `<-`"),
+        "got: {message}"
+    );
+    assert_eq!((line, col), (3, 7));
+}
+
+/// The teaching error must not eat a real comparison-with-negation, whether
+/// or not the source spaces it out — and `:=` assignments whose VALUE has
+/// that shape stay assignments.
+#[test]
+fn comparison_with_negation_still_parses() {
+    assert!(functor_lang::parse("let lt = (a, b) => a < -b").is_ok());
+    assert!(functor_lang::parse("let lt = (a, b) => a <-b").is_ok());
+    assert!(functor_lang::parse(
+        "let f = (a) =>\n  let mut acc = 0.0 in\n  acc := a <-1.0;\n  acc"
+    )
+    .is_ok());
+}
+
 // --- Variant declarations + match (B5 part 1) ---
 
 /// Both `type` bodies parse; the variant form allows nullary constructors

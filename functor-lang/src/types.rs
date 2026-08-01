@@ -774,6 +774,7 @@ fn check_impl(
         partials: HashMap::new(),
         def_param_names: HashMap::new(),
         ctor_param_names: HashMap::new(),
+        match_scrutinees: Vec::new(),
     };
 
     // Record type names first (nominal references may be forward), then
@@ -1133,6 +1134,12 @@ struct Checker<'s> {
     def_param_names: HashMap<String, Vec<String>>,
     /// Constructor name → its field names, in order (same purpose).
     ctor_param_names: HashMap<String, Vec<String>>,
+    /// Scrutinee types of the `match`es currently being checked, outermost
+    /// first (the innermost is the one whose arms are being checked). Purely
+    /// a diagnostic side channel: it turns "`Y` is not a constructor of `B`"
+    /// into the greedy-arm hint when `Y` belongs to an ENCLOSING match's
+    /// scrutinee — the nested-match-ate-the-following-arms mistake.
+    match_scrutinees: Vec<Type>,
 }
 
 /// An under-applied call's provenance: enough to say `` `shift` is applied to
@@ -2387,6 +2394,9 @@ missing {missing}. Did you forget an argument?"
         let mut list_exact: Vec<usize> = Vec::new();
         let mut list_tail_mins: Vec<usize> = Vec::new();
         let mut result: Option<Type> = None;
+        // Enclosing-match context for the greedy-arm hint (see
+        // `match_scrutinees`); popped below, after the arms are checked.
+        self.match_scrutinees.push(scrutinee_ty.clone());
         for arm in arms {
             // Arms after a catch-all are unreachable at runtime — they are
             // still CHECKED (garbage draws diagnostics) but must not
@@ -2435,6 +2445,7 @@ missing {missing}. Did you forget an argument?"
                 Some(prev) => self.join_arms(prev, body_ty, arm.body.span, "match arms"),
             });
         }
+        self.match_scrutinees.pop();
         // Exhaustiveness fires only where the scrutinee's type is known —
         // RE-ZONKED: the arms' patterns may have just SOLVED it (the
         // stale-zonk hole both engines found: an inferred-scrutinee match
@@ -2572,6 +2583,31 @@ a catch-all arm (`_` or a name)"
         }
     }
 
+    /// The greedy-arm hint for a ctor pattern that belongs to `type_name`
+    /// while the match it sits in scrutinizes something else. When an
+    /// ENCLOSING match's scrutinee IS `type_name`, the arm was almost
+    /// certainly meant for that outer match and was swallowed by a nested
+    /// `match` in the arm above it (arm bodies are full expressions). Empty
+    /// otherwise, so an ordinary wrong-constructor mistake reads unchanged.
+    fn greedy_arm_hint(&self, type_name: &str) -> String {
+        // The LAST entry is the match being checked right now; only the ones
+        // enclosing it can have had an arm stolen.
+        let enclosing = self.match_scrutinees.split_last().map(|(_, rest)| rest);
+        let stolen = enclosing.is_some_and(|tys| {
+            tys.iter()
+                .any(|ty| matches!(self.zonk(ty), Type::Variant(name, _) if name == type_name))
+        });
+        if stolen {
+            format!(
+                " — did you mean to parenthesize the inner `match`? arm bodies are full \
+expressions, so a nested `match` swallows the arms that follow it (this one reads as an arm of \
+the inner match, not of the `{type_name}` match around it)"
+            )
+        } else {
+            String::new()
+        }
+    }
+
     /// Check one pattern against the scrutinee's type and record its
     /// variables' binding types (a bare variable binds the scrutinee's type;
     /// constructor sub-patterns bind the declared field types).
@@ -2679,9 +2715,10 @@ value is {scrutinee} — it can never match",
                     let mut field_tys = field_tys;
                     match scrutinee {
                         Type::Variant(s, _) if *s != type_name => {
+                            let hint = self.greedy_arm_hint(&type_name);
                             self.diag(
                                 pattern.span,
-                                format!("`{name}` is not a constructor of `{s}`"),
+                                format!("`{name}` is not a constructor of `{s}`{hint}"),
                             );
                         }
                         Type::Variant(_, targs) => {
