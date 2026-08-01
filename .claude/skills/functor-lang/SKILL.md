@@ -657,7 +657,7 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   `(a) => a + 1.0`, and `(v) => v * v` (the scalar form's operands have
   DIFFERENT types, so one operand twice can only be float) do not.
 - **A brand with no implementation** keeps the old error, now naming what it
-  has: ```-` needs float operands, got Angle.t — `Angle.t` declares `*`, `+`, but
+  has: ```-` needs float operands, got Angle.t — `Angle.t` declares `+`, `*`, but
   not `-```. The interpreter says the same thing on the same inputs.
 - **Built-in operators (engine prelude only)**: `+`, `-`, and scalar `*` on
   BOTH `Angle.t` and `Time.t` (`Angle.add`/`sub`/`scale`, `Time.add`/`sub`/

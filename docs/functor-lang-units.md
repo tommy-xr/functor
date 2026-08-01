@@ -187,14 +187,15 @@ to be unconstrained, and a branded reading to be possible at all.
 > (default to float, and report the mismatch at the call site instead) was
 > rejected in the design. Every example in this repository typechecks
 > unchanged, so the practical blast radius is small, but existing user code with
-> fully unannotated numeric helpers needs one annotation each. `(a, b) => a + b` in a project that declares an operator for `+`
-is ambiguous and says so; `(a, b): float => a + b`, `(a) => a + 1.0`, and every
-`+` in a project with no operator declarations infer and run exactly as they
-did before. And a brand with no implementation for the operator keeps the old
-teaching error, now naming what the brand *does* declare:
+> fully unannotated numeric helpers needs one annotation each.
+
+Everything else infers and runs exactly as before: `(a, b): float => a + b`,
+`(a) => a + 1.0`, and every `+` in a project with no operator declarations. And
+a brand with no implementation for the operator keeps the old teaching error,
+now naming what the brand *does* declare:
 
 ```
-`-` needs float operands, got Angle.t — `Angle.t` declares `*`, `+`, but not `-`
+`-` needs float operands, got Angle.t — `Angle.t` declares `+`, `*`, but not `-`
 ```
 
 ### Runtime
@@ -203,10 +204,9 @@ Unlike a suffixed literal, an operator is **not** desugared at lowering — the
 operand types are not known there. So the interpreter dispatches too: an
 arithmetic node whose operands are not both numbers consults a table of the
 declared implementations, keyed by the operand's runtime tag (a variant's
-constructor, or an opaque host value's type name). The table is built once when
-a session loads, by applying each unit's own constructor to a probe value and
-reading the tag off the result — which works for every unit target shape
-without any type information.
+constructor, or an opaque host value's type name). It is built by applying each
+unit's own constructor to a probe value and reading the tag off the result —
+which works for every unit target shape without any type information.
 
 Two consequences worth stating:
 
