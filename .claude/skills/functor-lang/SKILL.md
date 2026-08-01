@@ -638,13 +638,67 @@ that's what `functor test` is for.
   fails at 42. Budget for the conservative number. The depth error names the
   cap value (128) and points at `List.fold`.
 
-## Standard library modules
+## Standard library (available everywhere, no host needed)
 
-`Option` and `Result` are bundled `.fun` modules available in every project and
-under the plain `functor-lang` CLI. They are ordinary, generic ADTs — match
-their qualified constructors directly, annotate with `Option.t<'value>` /
-`Result.t<'value, 'error>`, and use their helpers subject-last so pipelines
-read naturally:
+**Signatures live in the generated reference, not here.** Every module below is
+documented at its source with `//!` / `///` doc comments, and that is the source
+of truth for names, argument order, and per-function behavior:
+
+- `functor docs` prints the whole reference as Markdown to stdout
+  (`--format json`, `--output <path>`, `--check <path>`); `npm run generate:docs`
+  writes the local artifacts.
+- The sources are in-repo and readable directly: interfaces in
+  `functor-lang/stdlib/*.funi` (`list`, `map`, `text`, `math`, `random`,
+  `debug`) and bundled implementations in `functor-lang/stdlib/*.fun`
+  (`option`, `result`, `key`, `mouse`).
+- In VSCode, hover shows the same doc block and go-to-definition opens the
+  interface at the signature.
+
+| Module | What it is |
+| --- | --- |
+| `List` | immutable list operations — the ONLY iteration (there are no loops) |
+| `Map` | immutable keyed collections; keys are `bool`, FINITE `float`, or `string` |
+| `Text` | string building, formatting, inspection (there is no char type) |
+| `Math` | numeric functions and `Math.pi`; `Math.mod` / `Math.pow` stand in for `%` / `^` |
+| `Random` | pure seeded PRNG threaded through the model — no hidden global generator |
+| `Debug` | `Debug.log` — the one impure observability hatch, returns its value unchanged |
+| `Option` | `Option.Some` / `Option.None`, plus helpers — what every partial accessor answers with |
+| `Result` | `Result.Ok` / `Result.Error`, plus helpers |
+| `Key` / `Mouse` | the variant sets the `input` / `mouseButton` hooks receive (`Key.W`, `Key.Num0`, `Mouse.Left`) |
+
+One more module is bundled but is NOT part of that generated reference and has
+no `.funi`: **`Animator`** (engine hosts only) — documented in full below.
+
+What a signature can't tell you:
+
+- **Everything is subject-LAST**, so it threads through `|>`:
+  `xs |> List.map(fn)` == `List.map(fn, xs)`. Where a function takes another
+  argument that looks like a subject, the *pipe* position is the one in the
+  docs — `List.append(other, list)`, `List.zip(other, list)` (the PIPED list
+  fills the first tuple slot), `Text.contains(needle, s)`,
+  `Math.clamp(low, high, n)`, `Math.lerp(target, t, from)`.
+- **The builtin registry is CLOSED.** A builtin namespace (`List`, `Map`,
+  `Text`, `Math`, `Random`, `Debug`) owns exactly the members in the reference,
+  in every embedding, so anything else is a **check-time error** —
+  `functor-lang check` (and `functor build`) reject `List.tail` /
+  `Text.padLeft` with `` `List` has no builtin `tail` `` plus the nearest name
+  or the namespace's full member list. This is a hard error with no escape
+  hatch, and it gates hot-reload: a builtin typo in a DEAD branch fails
+  `build`/reload. Do NOT assume an F#/Elm stdlib function exists because it is
+  idiomatic there — `List` has no
+  `tail`/`partition`/`unzip`/`chunk`/`mapMaybe`/`sortWith`/`foldRight`, and
+  `Text` no `padLeft`/`startsWith`/`slice`. Build those from `List.fold` /
+  `List.filter` / `List.take` + `List.drop` / `Math.min` + `Math.max`.
+  (`Scene.*` and the rest of the engine prelude are host-provided, so under
+  plain `functor-lang check` — no host — they stay the gradual `Unknown` seam
+  and only resolve under the runner, where the prelude's `.funi` interfaces
+  make an unknown member a load error.)
+- **Always qualify `Option` / `Result` constructors.** Bare `Some` / `None` /
+  `Ok` / `Error` do NOT resolve (the loader says ``unknown name `Some` ``) —
+  they are `Option`'s and `Result`'s ctors, not entry-module names. Write
+  `Option.Some(x)`, `Option.None`, `Result.Ok(x)`, `Result.Error(e)` in both
+  expressions and patterns (or `open Option` first), and annotate with
+  `Option.t<'value>` / `Result.t<'value, 'error>`:
 
 ```functor
 let label =
@@ -658,34 +712,19 @@ let message = (result: Result.t<float, string>) =>
   | Result.Error(error) => error
 ```
 
-**Always qualify these constructors.** Bare `Some` / `None` / `Ok` / `Error`
-do NOT resolve (the loader says ``unknown name `Some` ``) — they are `Option`'s and
-`Result`'s ctors, not entry-module names, so write `Option.Some(x)`,
-`Option.None`, `Result.Ok(x)`, `Result.Error(e)` in both expressions and
-patterns (or `open Option` first).
+- **Absence is `Option.t`, uniformly.** Every partial accessor —
+  `List.nth` / `head` / `last` / `find` / `maximum` / `minimum` and `Map.get` —
+  answers `Option.t`, never a sentinel and never an error on an empty list. So
+  `xs |> List.maximum |> Option.defaultValue(0.0)` is the one-liner when you
+  want a fallback.
+- **Recursion is capped (128 eval levels)** — see "Semantics rules" above. Deep
+  iteration belongs in the iterative `List.*` builtins, which loop in the
+  interpreter and consume no evaluation depth.
 
-`Option.Some(value)` / `Option.None` ·
-`Option.map(fn, option)` · `Option.bind(fn, option)` ·
-`Option.defaultValue(fallback, option)` ·
-`Option.defaultWith(() => fallback, option)` (the callback runs only for
-`None`) · `Option.isSome(option)` · `Option.isNone(option)` ·
-`Option.filter(predicate, option)` · `Option.toList(option)`.
+### `Animator` (engine hosts only; not in the generated reference)
 
-`Option.t` is also what every PARTIAL builtin answers with, uniformly:
-`List.nth` / `List.head` / `List.last` / `List.find` / `List.maximum` and
-`Map.get`. None of them raise on absence — an empty list or a missing key is
-`Option.None`, so `xs |> List.maximum |> Option.defaultValue(0.0)` is the
-one-liner when you want a fallback.
-
-`Result.Ok(value)` / `Result.Error(error)` ·
-`Result.map(fn, result)` · `Result.mapError(fn, result)` ·
-`Result.bind(fn, result)` · `Result.defaultValue(fallback, result)` ·
-`Result.defaultWith(errorToValue, result)` (the callback receives the error
-and runs only for `Error`) · `Result.isOk(result)` ·
-`Result.isError(result)` · `Result.toOption(result)`.
-
-Engine-hosted projects also receive `Animator`, an ordinary bundled `.fun`
-module built on `Anim`. Its state is plain record data suitable for model
+`Animator` is an ordinary bundled `.fun` module built on `Anim`
+(`functor-prelude/stdlib/animator.fun`), available to engine-hosted projects. Its state is plain record data suitable for model
 storage, hot reload, and time travel:
 
 ```functor
@@ -710,805 +749,148 @@ restarts the fade; it does not snapshot the mid-blend pose.
 `examples/crossfade/animator.fun` should delete that sibling to use the bundled
 module, or rename it if it carries a customized implementation.
 
-## Builtins (the whole registry)
-
-All are **subject-LAST** (the collection/subject is the final arg), so they
-thread through `|>` (which appends): `list |> List.map(fn)` == `List.map(fn, list)`.
-
-`List.map(fn, list)` · `List.filter(fn, list)` · `List.fold(fn, init, list)`
-(callback is `(acc, x) => …`) · `List.range(n)` (`[0 … n-1]`) ·
-`List.grid(fn, rows, cols)` (→ `List<List<'a>>`; calls `fn(row, col)`, both
-0-based, per cell — the engine-loop form of a procedural heightmap, e.g.
-`Scene.heightmap(List.grid(height, r, c))`) ·
-`List.length(list)` (→ Float) · `List.isEmpty(list)` ·
-`List.reverse(list)` · `List.flatten(list)` (`List<List<'a>>` → `List<'a>`, one
-level) · `List.append(other, list)` (subject-LAST: `xs |> List.append(ys)` is
-`xs` followed by `ys`) · `List.any(fn, list)` / `List.all(fn, list)` (predicate
-first, list last — `xs |> List.any(pred)`; empty list is vacuously all-true /
-any-false) ·
-`List.nth(index, list)` / `List.head(list)` / `List.last(list)` /
-`List.find(fn, list)` / `List.maximum(list)` / `List.minimum(list)` — the PARTIAL accessors, each
-returning **`Option.t<'a>`** (`Option.Some(x)` / `Option.None`), never a
-sentinel and never an error on an empty list;
-`List.nth`'s index is 0-based and out of range is `Option.None`, but a
-FRACTIONAL index is an error (a caller bug, not an absence). `List.maximum` /
-`List.minimum` take `List<float>` and answer `Option.t<float>` (NaN elements
-are ignored unless every element is NaN). Match them, or
-collapse with `Option.defaultValue(fallback)`. ·
-`List.indexedMap(fn, list)` (like `map`, but `fn(index, element)` — index
-FIRST, 0-based) · `List.sortBy(fn, list)` (ascending by the Float the key
-returns; **stable**, and the key runs exactly once per element. **NaN keys
-sort LAST**, all tied with each other and independent of the NaN's sign —
-so the order is the same on every platform, which `f64::total_cmp` would
-NOT be, since `0.0 / 0.0` is `-NaN` on x86 and `+NaN` on ARM. `-0.0` and
-`0.0` are ties) ·
-`List.zip(other, list)` (→ `List<('a, 'b)>`; the PIPED list is the first
-tuple slot, and it truncates to the shorter side) ·
-`List.take(count, list)` / `List.drop(count, list)` (both SATURATE: past the
-end is the whole list / `[]`, and a negative count acts as 0) ·
-`List.sum(list)` (Floats; empty is `0.0`) ·
-`List.concatMap(fn, list)` (map then flatten one level; `fn` returns a list) ·
-`Map.empty()` → `Map<'key, 'value>` ·
-`Map.get(key, map)` → `Option.t<'value>` ·
-`Map.insert(key, value, map)` / `Map.remove(key, map)` → a new map ·
-`Map.member(key, map)` → `bool` ·
-`Map.values(map)` → `List<'value>` ·
-`Map.toList(map)` → `List<('key, 'value)>` ·
-`Map.fromList(entries)` → `Map<'key, 'value>` (the LAST tuple for a duplicate
-key wins). Maps are immutable plain data. Keys are bounded to `bool`, FINITE
-`float`, or `string`; inference keeps a map homogeneous in ordinary code,
-while a generic/`unknown` seam is checked again at runtime. `-0.0` and `0.0`
-are the SAME key; NaN and infinities are refused. Every map is stored in
-canonical key order: bool < float < string, then false < true / ascending
-numeric / lexicographic Unicode scalar-value string order (not locale-aware).
-Therefore `values`/`toList`,
-structural equality, display (`Map.fromList([…])`), native, and wasm all agree
-byte-for-byte. `get`/`member` are logarithmic; immutable `insert`/`remove`
-copy the ordered vector and are linear; `values`/`toList` are linear and
-`fromList` is O(n log n) ·
-`Text.concat(a, b)` · `Text.fromFloat(n)` ·
-`Text.fixed(n, decimals)` (fixed-decimal; `Text.fixed(42.0, 0.0)` = `"42"`, the
-`%d` shape) · `Text.toBullets(list)` · `Text.split(sep, s)` (→ `List<string>`;
-empty `sep` is an error; `Text.split(sep, "")` = `[""]`) · `Text.join(sep, list)`
-(strings only) · `Text.parseFloat(s)` (trims; unparseable → `0.0`, the F#
-`unwrap_or(0)` shape) ·
-`Text.length(s)` (→ Float) / `Text.chars(s)` (→ `List<string>` of
-one-character strings) — both count **Unicode scalar values**, not bytes and
-not grapheme clusters: `"日本"` is 2, but `"e" + combining acute` is 2 as
-well. There is no char type, hence one-character STRINGS.
-`Text.length(s)` == `List.length(Text.chars(s))`, always ·
-`Text.toUpper(s)` / `Text.toLower(s)` (Unicode-aware, so the length MAY
-change — `"ß"` uppercases to `"SS"`) · `Text.trim(s)` (both ends,
-whitespace) · `Text.contains(needle, s)` (subject-LAST:
-`s |> Text.contains("ab")`; the empty needle is in everything) ·
-`Text.replace(from, to, s)` (subject-LAST, replaces EVERY occurrence and
-never re-scans what it wrote; empty `from` is an error) ·
-`Math.clamp01(n)` · `Math.clamp(low, high, n)` (the GENERAL clamp,
-subject-LAST — `n |> Math.clamp(0.0, 10.0)`; `clamp01(n)` ==
-`clamp(0.0, 1.0, n)`; `low > high` is an error, not a silent swap) ·
-`Math.lerp(target, t, from)` (= `from + (target - from) * t`, and `t == 1`
-answers `target` itself so BOTH endpoints land exactly; **UNCLAMPED**, so `t`
-outside `[0, 1]` extrapolates — clamp the parameter first when you need the
-bounded form. Subject-LAST on the START value, **exactly `Vec3.lerp`'s shape**,
-so the scalar and the vector pipe identically:
-`x |> Math.lerp(target, t)` beside `pos |> Vec3.lerp(target, t)`. NOTE this is
-NOT `mix`/`std::lerp`'s `(a, b, t)` — the parameter sits in the MIDDLE) ·
-`Math.smoothstep(edge0, edge1, x)` (the standard Hermite ramp `3t² - 2t³`
-over the CLAMPED `t = (x - edge0) / (edge1 - edge0)`: flat `0` at/below
-`edge0`, flat `1` at/above `edge1`. The range must be FINITE and ascending —
-`edge0 >= edge1`, a NaN edge, and an infinite/overflow-wide one are all errors
-— the `Math.clamp` rule — rather than the silent NaN the formula would give) ·
-`Math.sin(n)` · `Math.cos(n)` · `Math.tan(n)` ·
-`Math.asin(n)` / `Math.acos(n)` (NaN outside `[-1, 1]` — they do NOT clamp,
-so a dot product nudged past 1.0 by float error needs
-`dot |> Math.clamp(-1.0, 1.0) |> Math.acos`) · `Math.atan(n)` ·
-`Math.round(n)` (**half AWAY FROM ZERO**, not banker's: `0.5`→`1`,
-`2.5`→`3`, `-2.5`→`-3`) · `Math.ceil(n)` ·
-`Math.log(n)` (NATURAL log, base e — the inverse of `Math.exp`) ·
-`Math.exp(n)` ·
-`Math.sign(n)` (`-1` / `0` / `1`; **0 at zero**, and NaN for NaN) ·
-`Math.sqrt(n)` · `Math.abs(n)` · `Math.floor(n)` · `Math.atan2(y, x)`
-(standard math arg order, y first) · `Math.mod(a, b)` (**Euclidean** — the
-result is always NON-NEGATIVE (in `[0, abs(b))`), so negatives wrap
-positively: `Math.mod(-1.0, 8.0)` == `7.0`, the wraparound games want;
-`b == 0.0` → NaN) ·
-`Math.min(a, b)` · `Math.max(a, b)` · `Math.pow(base, exp)` (`base ^ exp`) ·
-`Math.pi` (a constant `float` VALUE, not a call — write `Math.pi`, never
-`Math.pi()`) ·
-`Random.seed(n)` → `Seed` — make a seed. Seeds are **`Random.Seed`**, an
-abstract BRANDED type (annotate as `Random.Seed`): a bare number where a
-`Seed` is expected (`Random.step(42.0)`) and seed arithmetic (`seed + i`)
-are check-time errors. `Random.seed` hashes the float's BITS, so any finite
-float — `Random.seed(0.42)` from an `Effect.random` result as much as
-`Random.seed(42.0)` — is a valid, distinct starting point. At runtime a
-seed is still plain data (a number), so it snapshots, hot-reloads, and
-time-travels like any model field ·
-`Random.step(seed)` → `(value, nextSeed)` — pure seeded PRNG: `value` in
-`[0, 1)`, deterministic (same seed → same stream), no effect round-trip.
-Thread `nextSeed` (itself a `Seed`) through the model to advance the stream
-(`let (v, s2) = Random.step(model.seed) in …`). Seed the stream once at
-init via `Effect.random`/`Effect.now` + `Random.seed(r)` (or a fixed
-`Random.seed(42.0)` for a reproducible run). Because it's a builtin it also
-runs under plain `functor-lang run`. Distinct seeds give **decorrelated**
-streams with no short-prefix overlap (a splitmix64 avalanche over a Weyl
-counter — the fix for the sin-hash noise whose correlated streams were a
-visual bug) ·
-`Random.fork(i, seed)` → `Seed` — the seed of decorrelated child stream `i`
-(per-entity streams: `model.seed |> Random.fork(i)`; subject-LAST, any
-float index). The typed successor of the old `baseSeed + i` arithmetic ·
-`Random.range(lo, hi, seed)` → `(value, nextSeed)` is the one convenience:
-one draw rescaled into `[lo, hi)` (for `lo <= hi`) · `Debug.log(label, value)` —
-`(string, 'a) => 'a`: an Elm-style trace. Logs
-`label: <value>` (the value rendered exactly as `functor-lang run`/`trace` displays it —
-any type) and returns `value` **unchanged**, so it's pure to the program
-result and safe to drop into a pipe: `m.x |> Debug.log("x") |> clamp(0.0, 1.0)`
-logs then passes the value on. Label-FIRST / subject-LAST (thread-last), so it
-reads Elm-style standalone (`Debug.log("x", m.x)`) AND threads in a pipe. An
-impure observability escape hatch — it can't affect the
-model/sim (a game with vs without it is byte-identical). Under plain `functor-lang run`
-the line prints to stdout; under the runner it routes region-aware to the
-CLI's log stream (shown by default — no `-v`; `docs/cli-output.md`) — or the
-browser console on wasm. Not rate-limited: a `Debug.log` in `tick`/`draw` fires
-every frame (~60/s), so prefer an event path (`input`/`update`), or remove it
-when done.
-
-**The list above is the WHOLE registry, and it is CLOSED.** A builtin
-namespace (`List`, `Map`, `Text`, `Math`, `Random`, `Debug`) owns exactly these
-members in every embedding, so anything else is a **check-time error** —
-`functor-lang check` (and `functor build`) reject `List.tail` /
-`Text.padLeft` with `` `List` has no builtin `tail` `` plus the nearest name
-or the namespace's full member list. Do NOT assume an F#/Elm stdlib function
-exists just because it is idiomatic there: `List` still has no
-`tail`/`partition`/`unzip`/`chunk`/`mapMaybe`/`sortWith`/`foldRight`,
-and `Text` no `padLeft`/`startsWith`/`slice`. Build those from `List.fold` /
-`List.filter` / `List.take` + `List.drop` / `Math.min` + `Math.max`.
-(`Scene.*` and the
-rest of the engine prelude are host-provided, so under plain
-`functor-lang check` — no host — they stay the gradual `Unknown` seam and
-only resolve under the runner, where the prelude's `.funi` interfaces make an
-unknown member a load error.)
-
 ## Functor prelude (only under the engine host — `FunctorHost`)
 
 Available in runner-hosted Functor Lang (and tests via
-`functor_runtime_common::functor_lang_prelude`), NOT in plain `functor-lang run`:
+`functor_runtime_common::functor_lang_prelude`), NOT in plain
+`functor-lang run`.
+
+**Signatures live in the generated reference, not here.** Read them with
+`functor docs`, or open the interface sources directly —
+`functor-prelude/prelude/*.funi`, one file per generated module, each with `//!`
+module prose and `///` per-function docs. (VSCode's go-to-definition on
+`Scene.cube` opens a read-only materialized copy of that interface at the
+signature — edits belong in the repo file, not the copy.)
+
+The generated modules:
+
+| Module | What it is |
+| --- | --- |
+| `Scene` | 3D scene nodes: primitives, models, terrain, materials, transforms |
+| `Sprite` | pure 2D picture values: shapes, text, images, transforms |
+| `Camera3D` | 3D cameras (`lookAt`, `firstPerson`), clip planes, screen→world rays |
+| `Camera2D` | center-origin 2D camera: pan, zoom, screen→world |
+| `Frame` | what `draw` returns: 3D / lit / 2D frames, fog, skybox, clear color, render targets, 2D layers |
+| `Light` | ambient / directional / point / spot lights and shadow casting |
+| `Fog` | linear and exponential distance fog |
+| `Skybox` | six-face cubemaps |
+| `Color` | `Color.rgb` — the ONE color type across 3D, lighting, fog, and UI |
+| `Vec3` | branded 3D vectors and their arithmetic |
+| `Angle` | branded angles (`degrees` / `radians`) |
+| `Time` | branded durations (`seconds` / `millis`) |
+| `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator) |
+| `RenderTarget` | named offscreen targets for render-to-texture |
+| `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
+| `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
+| `Terrain` | finite asset-backed heightfield terrain shared by rendering and physics |
+| `Physics` | shapes, bodies, the `physics` hook's world, live reads, commands, raycasts, events |
+| `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
+| `Sub` | what `subscriptions` returns: timers, connections, asset progress, physics events |
+| `AudioScene` / `AudioSource` | what `soundScape` returns, and its keyed continuous voices |
+| `Ui` | the lightweight HUD `ui` hook: text, rows/columns, anchored panels, button/slider/textInput |
+| `Html` / `Attr` / `Style` | the `webview` hook: an Elm-style HTML tree, attributes/handlers, typed inline CSS |
+| `Input` | the types `sampledInput` receives: snapshot, mouse, XR poses, `point2`/`point3` |
+
+Two more namespaces resolve under the host but have no `.funi` and are NOT in
+the generated reference:
+
+| Namespace | What it is |
+| --- | --- |
+| `Net` | built-in message types for `Effect.httpGet`/`httpPost` and `Sub.connect`/`listen` — spelled out below |
+| `Assets` | the per-project module `functor import` generates: asset, clip, and joint constants |
+
+Terrain rendering is a camera-relative quadtree over a shared GPU grid (16-bit
+height sampling, skirts, bounded instanced grass) — one `Scene.terrain` node,
+not thousands of scene nodes.
+
+### The cross-cutting rules (what a signature won't tell you)
+
+**Branded values, never bare numbers or strings** — "the Angle rule". Every one
+of these is a VALUE you construct, and a bare number/string in its place is a
+teaching error at check or construction time:
 
 ```functor
-Scene.cube() / sphere() / cylinder() / quad() / plane()   // zero args, enforced
-Scene.model(Assets.shark)                                  // glTF by branded Asset VALUE
-                                                           //   (the generated manifest, or
-                                                           //   Asset.model(…) at a data
-                                                           //   boundary); missing file =
-                                                           //   logged error + empty fallback
-let world =
-  Terrain.heightmap(Assets.heightmap, 4000.0, 4000.0, -40.0, 420.0)
-  |> Terrain.maxPixelError(2.0)                            // finite XZ heightfield: Asset.Texture,
-  |> Terrain.layered(low, high, rock, snow, 340.0)         //   width, depth, min/max Y. Black maps
-  |> Terrain.textured(lowMap, highMap, rockMap, snowMap,   //   to min, white to max. `textured`
-       24.0)                                               //   dresses `layered`'s bands with
-  |> Terrain.grass(13.0, 520.0, 5.5, grassColor)           //   detail albedo (needs `layered`;
-                                                           //   tileSize in world units, sampled
-                                                           //   at two scales, fading to the band
-                                                           //   colors with distance). Modifiers are
-Scene.terrain(world)                                       //   descriptor-last; rendering uses a
-                                                           //   camera-relative quadtree, a shared
-                                                           //   GPU grid, 16-bit height sampling,
-                                                           //   skirts, and bounded instanced grass
-                                                           //   (not thousands of Scene nodes)
-terrain |> Terrain.color(color)                            // the plain single-color terrain
-                                                           //   material — an ALTERNATIVE to
-                                                           //   Terrain.layered, not a stage
-                                                           //   before it. The LAST of the two
-                                                           //   in the pipe wins (Terrain.color
-                                                           //   clears any layers), so chaining
-                                                           //   both just makes the earlier one
-                                                           //   dead. Pick one
-Asset.model("shark.glb") / Asset.texture("wood.png")       // typed asset locators, branded
-Asset.sound("boom.ogg")                                    //   per KIND (types Asset.Model /
-                                                           //   Asset.Texture / Asset.Sound)
-                                                           //   — the PERMANENT dynamic
-                                                           //   constructors; the generated
-                                                           //   manifest (functor import)
-                                                           //   calls the same ones. SINCE
-                                                           //   THE FLAG DAY (B.6): asset
-                                                           //   consumers take Asset VALUES
-                                                           //   ONLY — Scene.model takes
-                                                           //   Asset.Model, Effect.play/
-                                                           //   playAt/playThen and
-                                                           //   AudioSource.ambient/at take
-                                                           //   Asset.Sound (the AudioSource
-                                                           //   KEY stays a string); a bare
-                                                           //   path string is a CHECK error
-                                                           //   and a runtime teaching error
-                                                           //   pointing at the manifest.
-                                                           //   Texture materials accept
-                                                           //   Asset.Texture alongside a
-                                                           //   Texture.t VALUE (two brands,
-                                                           //   still gradually typed). A
-                                                           //   WRONG-kind asset (a sound
-                                                           //   into Scene.model) teaches
-                                                           //   the right constructor
-Assets.xbotClips.walk.name                                 // functor import also inspects model
-Assets.xbotJoints.mixamorig_Head                           //   names: typed clip records carry
-                                                           //   name/duration; typed joint records
-                                                           //   carry exact strings for Anim.rotate
-                                                           //   / Anim.mask. Arbitrary glTF names
-                                                           //   sanitize deterministically
-                                                           //   (`mixamorig:Head` →
-                                                           //   `mixamorig_Head`), with `_2`, `_3`,
-                                                           //   … suffixes for collisions
-asset |> Asset.whilePending(placeholder)                   // placeholder rendered WHILE the
-                                                           //   asset streams in (instead of
-                                                           //   the empty/checkerboard
-                                                           //   fallback). Subject-last:
-                                                           //   pipes. The placeholder is
-                                                           //   just another SAME-KIND asset,
-                                                           //   so it chains (a low-poly
-                                                           //   proxy can carry its own).
-                                                           //   Models + textures only —
-                                                           //   sounds decode at play time
-                                                           //   (no pending state; teaching
-                                                           //   error). A FAILED asset still
-                                                           //   shows the fallback: failure
-                                                           //   is not pending, and
-                                                           //   Sub.assets still reports it
-Scene.group([scene, …])
-Color.rgb(r, g, b)                                         // Color VALUES only (the
-                                                           //   Angle rule): every color
-                                                           //   parameter below takes one —
-                                                           //   never three bare floats
-Vec3.make(x, y, z)                                         // Vec3 VALUES only: every
-                                                           //   position/direction/velocity/
-                                                           //   gravity parameter below takes
-                                                           //   one. Reads (Physics.position,
-                                                           //   rayHit) still hand back plain
-                                                           //   {x, y, z} records
-Vec3.x(v) / Vec3.y(v) / Vec3.z(v)                          // read components back
-v |> Vec3.add(b)                                           // a + b
-v |> Vec3.sub(origin)                                      // "v minus origin" (subject LAST:
-                                                           //   Vec3.sub(b, a) == a - b)
-v |> Vec3.scale(k)                                         // negate with Vec3.scale(0.0 - 1.0)
-a |> Vec3.dot(b) / a |> Vec3.cross(b)                      // a · b (commutative) / a × b.
-                                                           //   Strafe axis is up × forward:
-                                                           //   up |> Vec3.cross(forward) = +X
-                                                           //   (forward +Z, up +Y)
-v |> Vec3.length() / v |> Vec3.normalize()                 // ZERO normalizes to ZERO, not NaN
-a |> Vec3.distance(b)                                      // |a - b|, symmetric
-from |> Vec3.lerp(target, t)                               // t=0 → from, t=1 → target; NOT
-                                                           //   clamped (it extrapolates)
-                                                           // Vec3 components are f32: accessors
-                                                           //   return ROUNDED values (compare
-                                                           //   with a tolerance), and an op that
-                                                           //   overflows the f32 range is an
-                                                           //   error, never a NaN
-scene |> Scene.color(color)                                // scene-last: pipes
-scene |> Scene.lit(color)                                  // diffuse+specular
-Texture.file("wood.png")                                   // a Texture.t from a path
-                                                           //   relative to the game dir
-                                                           //   (a STRING — Texture.file is
-                                                           //   not asset coercion, so it
-                                                           //   keeps its string)
-scene |> Scene.litTexture(tex)                             // textured lit / unlit-glow
-scene |> Scene.emissiveTexture(tex)                        //   materials. `tex` may be a
-                                                           //   Texture.t VALUE or an
-                                                           //   Asset.Texture — the signature
-                                                           //   is generic ('texture), so the
-                                                           //   kind check happens in the host;
-                                                           //   scene-last, so they pipe
-scene |> Scene.litNormalMapped(color, normalTex)           // + tangent-space
-                                                           //   normal map (a
-                                                           //   Texture value):
-                                                           //   bumps catch the
-                                                           //   lights/specular
-scene |> Scene.emissive(color)                             // unlit glow
-scene |> Scene.translate(v)
-scene |> Scene.rotateX(angle) / rotateY / rotateZ          // Angle VALUES only:
-Angle.degrees(60.0) / Angle.radians(1.57)                  //   never bare numbers
-scene |> Scene.scale(k)                                    // uniform
-scene |> Scene.scaleXYZ(x, y, z)                            // non-uniform (F#
-                                                           //   scaleX/Y/Z): a
-                                                           //   wide backdrop
-                                                           //   quad, or a
-                                                           //   heightmap sized
-                                                           //   in XZ with Y
-                                                           //   left at author
-                                                           //   scale
-scene |> Scene.animate(anim)                               // set the pose on the Model
-                                                           //   node(s) in the subtree;
-                                                           //   Anim VALUES only (the
-                                                           //   Angle rule — never a bare
-                                                           //   clip-name string). Without
-                                                           //   it a skinned model auto-
-                                                           //   plays its FIRST clip on
-                                                           //   the game clock
-Anim.clip("walk", playheadSeconds)                         // a named glTF clip at an
-                                                           //   EXPLICIT playhead (loops by
-                                                           //   the clip's duration;
-                                                           //   negative wraps backwards).
-                                                           //   The engine owns no
-                                                           //   animation clock — derive
-                                                           //   the playhead from tts /
-                                                           //   model state, so poses
-                                                           //   rewind/replay exactly. An
-                                                           //   unknown clip name warns
-                                                           //   once + renders the bind
-                                                           //   pose (`functor inspect`
-                                                           //   lists a model's clips)
-Anim.blend([(anim, weight), …])                            // weighted pose mix (lerp T/S,
-                                                           //   normalized quat mix for R).
-                                                           //   Weights normalize; non-
-                                                           //   positive entries drop;
-                                                           //   entries may nest blends
-Anim.rest()                                                // the bind pose — the base for
-                                                           //   purely programmatic posing
-                                                           //   (a model with no clips)
-Animator.start("idle", tts)                               // plain-data crossfade state;
-Animator.play("run", tts, state)                          //   records a transition
-Animator.pose(state, 0.5, tts)                            // smoothstep-derived Anim.t;
-                                                           //   bundled by engine hosts
-anim |> Anim.add(layerAnim, weight)                        // additive layer: the layer's
-                                                           //   delta-from-bind on top of
-                                                           //   anim (headShake over walk).
-                                                           //   Weight clamps to [0,1];
-                                                           //   applies only where the base
-                                                           //   has influence
-anim |> Anim.mask(["jointName", …])                        // restrict anim's influence to
-                                                           //   the named joints' SUBTREES;
-                                                           //   uncovered joints fall out
-                                                           //   (bind pose, or the other
-                                                           //   inputs of an enclosing
-                                                           //   blend). Unknown names warn
-                                                           //   once
-anim |> Anim.rotate("jointName", ax, ay, az)               // additive local XYZ rotation
-                                                           //   on ONE joint (head aim,
-                                                           //   finger curl) — Angle VALUES
-                                                           //   only; the joint counts as
-                                                           //   fully driven (masks BENEATH
-                                                           //   this node can't drop it; an
-                                                           //   enclosing mask still can)
-anim |> Anim.lookAt("jointName", target, maxAngle, weight)  // post-pass: aim the joint's local
-                                                           //   +Z axis at a MODEL-SPACE Vec3
-                                                           //   after the anim beneath it has
-                                                           //   settled (so blended/animated
-                                                           //   parents are included). maxAngle
-                                                           //   is an Angle in [0, 180°];
-                                                           //   weight clamps to [0,1]. The
-                                                           //   target is baked into the Anim
-                                                           //   value at draw time; Scene
-                                                           //   transforms are intentionally
-                                                           //   outside the solver, so invert
-                                                           //   them before constructing target
-Camera3D.lookAt(eye, target)                                 // two Vec3s; up=+Y, fov 45°
-Camera3D.firstPerson(eye, yaw, pitch, fov)                   // Vec3 eye; Angles for the rest
-                                                           //   On XR this is the authored
-                                                           //   reference center-eye rig:
-                                                           //   live head/eye deltas compose
-                                                           //   in its local basis. Position,
-                                                           //   orientation, near/far remain
-                                                           //   game-owned; OpenXR owns IPD
-                                                           //   and per-eye optical FOV
-Camera3D.toWorldRay(mouse, camera)                           // -> Option.t<{origin: Vec3.t,
-                                                           //     direction: Vec3.t}>; maps an
-                                                           //   Input.mouse's top-left logical
-                                                           //   position through the authored
-                                                           //   perspective. Direction is unit
-                                                           //   length; both fields feed
-                                                           //   Physics.cast/raycast directly.
-                                                           //   None outside the surface or for
-                                                           //   a degenerate camera. Position +
-                                                           //   extent share one coordinate
-                                                           //   space, so resize/DPR stay correct
-Camera3D.mapTrackedPose(camera, pose)                        // map rig-local Input.pose through
-                                                           //   the authored camera; returns
-                                                           //   world-space {position,forward,up}
-camera |> Camera3D.clip(0.5, 6000.0)                         // positive near/far, near < far;
-                                                           //   useful for world-scale terrain
-Camera2D.create(width, height)                             // center-origin, +X right, +Y up;
-                                                           //   width/height are visible world
-                                                           //   units at zoom 1; the renderer
-                                                           //   aspect-fits without stretching
-camera2d |> Camera2D.at(x, y)                              // pan the world-space view
-camera2d |> Camera2D.zoom(k)                               // positive zoom; larger = closer
-Camera2D.toWorld(mouse, camera2d)                          // Option.t<Input.point2>; maps the
-                                                           //   sampled logical mouse through
-                                                           //   aspect fit + pan/zoom; None in
-                                                           //   letterbox/pillarbox bars. The
-                                                           //   ideal half-open logical fit is
-                                                           //   DPR-invariant; raster rounding
-                                                           //   is renderer-only
-Sprite.blank()
-Sprite.rectangle(color, width, height) / Sprite.square(color, size)
-Sprite.circle(color, radius)                               // FILLED circle, centered like
-                                                           //   `square` — spans 2 * radius.
-                                                           //   A 32-gon under the hood (all
-                                                           //   circles share one cached mesh)
-Sprite.polygon(color, [{ x: 0.0, y: 0.0 }, …])              // FILLED convex polygon. Points are
-                                                           //   `Input.point2` records ({x, y} —
-                                                           //   the ONE shared point type; a
-                                                           //   second {x,y} record would make
-                                                           //   every bare point literal an
-                                                           //   ambiguous-record check error)
-                                                           //   and are used VERBATIM — a polygon
-                                                           //   is NOT re-centered, unlike every
-                                                           //   other primitive, so an outline
-                                                           //   computed in game logic lands
-                                                           //   where it was computed. Either
-                                                           //   winding works. NOT convex = a
-                                                           //   runtime ERROR (the fill is a
-                                                           //   triangle fan) — split it into
-                                                           //   convex pieces and Sprite.group
-                                                           //   them. That covers concave, a
-                                                           //   self-intersecting STAR (turns
-                                                           //   consistently but winds >once),
-                                                           //   <3 points, and all-collinear
-Sprite.line(color, thickness, from, to)                    // straight segment between two
-                                                           //   point2s, not re-centered.
-                                                           //   Thickness is exact at EVERY angle
-                                                           //   (it is applied in the segment's
-                                                           //   own frame). NO caps and NO joins:
-                                                           //   two lines meeting at an angle
-                                                           //   notch at the corner — a jointed
-                                                           //   polyline does not exist yet.
-                                                           //   Thickness is GEOMETRY, so scale()
-                                                           //   multiplies it and scaleXY() with
-                                                           //   unequal factors distorts it on a
-                                                           //   non-axis-aligned line. A zero-
-                                                           //   length line draws nothing
-Sprite.text(color, size, "SCORE")                          // text in the BUILT-IN font — no
-                                                           //   asset needed, on every target.
-                                                           //   `size` is the LINE HEIGHT in
-                                                           //   world units and, because the
-                                                           //   font is monospace, also the
-                                                           //   per-character advance. Centered
-                                                           //   on its own box like every other
-                                                           //   primitive. String LAST, so a
-                                                           //   formatted value pipes in:
-                                                           //   Text.fixed(m.score, 0.0)
-                                                           //     |> Sprite.text(cyan, 1.2)
-                                                           //   `\n` breaks lines at exactly one
-                                                           //   `size`, each line centered in the
-                                                           //   block. Printable ASCII only:
-                                                           //   other scalars (incl. combining
-                                                           //   marks) occupy their cell and draw
-                                                           //   NOTHING, so unsupported text
-                                                           //   leaves gaps instead of shifting
-                                                           //   the line. Glyphs sample like any
-                                                           //   sprite image, so |> Sprite.nearest()
-                                                           //   gives crisp pixels
-Sprite.measure(size, "SCORE")                              // -> { width, height } in world
-                                                           //   units, WITHOUT rendering (pure —
-                                                           //   testable under `functor test`).
-                                                           //   width = the widest line's;
-                                                           //   height = `size` per line, for
-                                                           //   EVERY string incl. "" — so
-                                                           //   stacking blocks by a measured
-                                                           //   height can never overlap them.
-                                                           //   Text is centered, so alignment is
-                                                           //   a half-width shift:
-                                                           //   |> Sprite.move(x + w * 0.5, y)
-                                                           //   puts the LEFT edge at x; negate
-                                                           //   for the right edge. Ask measure
-                                                           //   rather than assuming n * size —
-                                                           //   it is the seam a future
-                                                           //   proportional font changes
-Sprite.image(width, height, texture)                       // Asset.Texture only; the locator
-                                                           //   becomes plain sprite data
-Sprite.region(x, y, width, height)                         // whole source pixels from the
-                                                           //   image's top-left
-Sprite.imageRegion(width, height, region, texture)         // atlas section; display size stays
-                                                           //   in world units
-Sprite.group([sprite, …])                                  // painter order: later is above
-sprite |> Sprite.move(x, y) / moveX(x) / moveY(y)
-sprite |> Sprite.rotate(angle)                             // +angle is counter-clockwise
-sprite |> Sprite.scale(k) / scaleXY(x, y)
-sprite |> Sprite.fade(alpha) / tint(color)                 // multiply through the subtree
-sprite |> Sprite.nearest() / Sprite.linear()               // crisp pixel-art or smooth filtering;
-                                                           //   applies to every image in subtree
-                                                           // Sprite.t is deliberately PLAIN
-                                                           // DATA at runtime (private variants,
-                                                           // lists, numbers, strings), despite
-                                                           // its abstract interface type: it
-                                                           // compares, displays, snapshots, and
-                                                           // survives hot reload. Lowering to
-                                                           // Scene3D happens at Frame.create2D
-Light.ambient(color) / Light.point(pos, color, intensity, range)
-Light.directional(dir, color, intensity) |> Light.castShadows
-Light.spot(pos, dir, color, intensity, range, coneAngle)
-                                                           // cone from pos
-                                                           //   along dir;
-                                                           //   coneAngle is an
-                                                           //   Angle VALUE.
-                                                           //   |> Light.castShadows
-Frame.create(camera, scene)                                // what draw returns
-Frame.createLit(camera, scene, [light, …])                 // lit + shadowed
-Frame.create2D(camera2d, sprite)                           // a 2D-only frame
-frame |> Frame.with2D(camera2d, sprite)                    // layer 2D above a 3D/earlier 2D
-                                                           // frame; layers render in call order
-RenderTarget.named("id")                                   // offscreen texture, 512x512…
-RenderTarget.named("id") |> RenderTarget.sized(w, h)       // …unless sized. Declare ONCE,
-                                                           //   use the VALUE at both sites
-                                                           //   (never a bare string — the
-                                                           //   Angle rule for identity)
-frame |> Frame.withRenderTarget(target, targetFrame)       // writer: targetFrame (a full
-                                                           //   Frame.create/createLit) is
-                                                           //   rendered into the target
-                                                           //   before frame's main pass
-                                                           //   with its OWN lights — use
-                                                           //   createLit + castShadows for
-                                                           //   a lit/shadowed feed. A scene
-                                                           //   sampling its OWN target
-                                                           //   sees last frame's image
-scene |> Scene.screen(target)                              // reader: emissive screen
-                                                           //   showing the target; an
-                                                           //   undeclared id = magenta +
-                                                           //   one warning. A quad's front
-                                                           //   is +Z — rotate the monitor
-                                                           //   to face the viewer or the
-                                                           //   feed shows mirrored
-Fog.linear(near, far, color)                               // Fog VALUES only (the Angle
-Fog.exp(density, color)                                    //   rule); near >= 0, far >
-                                                           //   near, density > 0 enforced
-                                                           //   with teaching errors
-frame |> Frame.withFog(fog)                                // distance fog on all forward
-                                                           //   materials incl. emissive;
-                                                           //   the fog color is also the
-                                                           //   pass's clear color
-frame |> Frame.withClearColor(color)                       // explicit background clear color,
-                                                           //   overriding the fog-color
-                                                           //   default; paints the background
-                                                           //   only, not fog blending
-Skybox.files(px, nx, py, ny, pz, nz)                       // Skybox VALUES only: six face
-frame |> Frame.withSkybox(sky)                             //   paths (+X..-Z). Faces are
-                                                           //   fetched assets (not checked
-                                                           //   in) resolved from the game
-                                                           //   dir; while they load the
-                                                           //   clear color shows, a failed
-                                                           //   face = one warning + no sky.
-                                                           //   Fog never fogs the sky
-Time.seconds(1.0) / Time.millis(500.0)                     // Duration VALUES only
-Sub.every(duration, msg) / Sub.none() / Sub.batch([sub,…]) // what subscriptions returns
-Sub.assets(tagger)                                         // asset-loading progress: the tagger
-                                                           //   receives {loaded, total, failed}
-                                                           //   whenever the shell's snapshot
-                                                           //   CHANGES (incl. the initial state
-                                                           //   on frame one) — the loading-
-                                                           //   screen seam. The settled gate is
-                                                           //   total > 0.0 && loaded +
-                                                           //   List.length(failed) == total
-                                                           //   (failures never join loaded, and
-                                                           //   frame one can deliver 0/0);
-                                                           //   failed lists {path, error} per
-                                                           //   failed byte-load (decode
-                                                           //   fallbacks count as loaded).
-                                                           //   Fires from snapshot changes, not
-                                                           //   the time grid; requires `update`.
-                                                           //   examples/loading is the
-                                                           //   reference
-Effect.random(tagger) / Effect.now(tagger)                 // one-shots; tagger: (float) => Msg
-Sub.connect(url, tagger) / Sub.listen(addr, tagger)        // persistent connections; tagger: (Net.NetEvent) => Msg
-Effect.send(connId, text)                                  // send on an open connection
-Effect.sendMsg(connId, msg)                                // send a plain-data VALUE (usually a
-                                                           //   shared-module ADT variant); the
-                                                           //   other end receives it decoded as
-                                                           //   Net.Data(id, value) — no string
-                                                           //   codec. Lists, Maps, tuples,
-                                                           //   records, and variants cross
-                                                           //   structurally; functions/host values in
-                                                           //   the payload are teaching errors
-Effect.none() / Effect.batch([fx, …])                      //   random: [0,1); now: epoch secs
-Effect.httpGet(url, tagger)                                // HTTP one-shots; the tagger
-Effect.httpPost(url, body, tagger)                         //   receives a Net.HttpResponse:
-                                                           //   `| Net.Response(status, body)`
-                                                           //   for ANY completed request
-                                                           //   (check status yourself) or
-                                                           //   `| Net.Failure(error)` for a
-                                                           //   transport error. Both are
-                                                           //   declared on the built-in Net
-                                                           //   module — no declaration needed.
-                                                           //   Pending HTTP is reset by hot
-                                                           //   reload (an in-flight tagger
-                                                           //   would dangle)
-
-Effect.preload(asset)                                      // warm the asset cache ahead of
-Effect.preloadThen(asset, msg)                             //   draw referencing the asset —
-                                                           //   the imperative prefetch
-                                                           //   (declarative draw-references-
-                                                           //   it loading stays the default).
-                                                           //   Model/texture Asset VALUES
-                                                           //   only: sounds decode at play
-                                                           //   time (teaching error), bare
-                                                           //   strings teach toward Asset.*.
-                                                           //   preloadThen delivers msg (a
-                                                           //   VALUE, like playThen) through
-                                                           //   update when the load SETTLES —
-                                                           //   loaded or failed (Sub.assets'
-                                                           //   failed list says which).
-                                                           //   Preloads count in Sub.assets
-                                                           //   totals; works on wasm too
-                                                           //   (unlike playThen completion).
-                                                           //   examples/loading's SPACE flow
-                                                           //   is the reference
-Effect.play(sound)                                         // one-shot: fire-and-forget,
-Effect.playAt(sound, pos)                                  //   non-spatial / positioned
-Effect.playThen(sound, msg)                                // one-shot; delivers msg (a VALUE,
-                                                           //   not a tagger) through `update`
-                                                           //   when the sound FINISHES
-AudioSource.ambient(key, sound)                            // soundScape voice: non-spatial bed
-AudioSource.at(key, sound, pos)                            //   / positioned emitter (key =
-                                                           //   cross-frame identity)
-source |> AudioSource.gain(g)                              // source-last: linear gain (1.0=full)
-AudioScene.create([source, …]) / AudioScene.empty()       // what `soundScape` returns
-
-Ui.text("line") / Ui.textColor(color, "line")              // HUD text (monospace, 14pt)
-Ui.column([view, …]) / Ui.row([view, …])                   // stack top-to-bottom / left-to-right
-view |> Ui.panel(Ui.topLeft())                             // pin to a corner (view-LAST: pipes);
-Ui.topLeft() / topRight() / bottomLeft() / bottomRight()   //   Anchor VALUES (the Angle rule)
-Ui.center()                                                //   center anchor (menus): pins a
-                                                           //   panel to the middle of the screen
-Ui.button("label", msg)                                    // INTERACTIVE (docs/ui-interaction.md):
-                                                           //   a click delivers msg VERBATIM
-                                                           //   through `update` (the Sub.every
-                                                           //   message shape; requires update).
-                                                           //   Interactive widgets are numbered
-                                                           //   by SLOT in construction order —
-                                                           //   the debug server clicks them
-                                                           //   headlessly: POST /input
-                                                           //   {"type":"ui_event","slot":0,
-                                                           //    "kind":"Clicked"}. Like
-                                                           //   Sub.every's msg, the msg↔update
-                                                           //   type link is a runtime check.
-                                                           //   `examples/counter` is the
-                                                           //   reference
-Ui.slider(min, max, value, tagger)                         // INTERACTIVE controlled slider:
-                                                           //   shows the MODEL's value; a drag
-                                                           //   applies tagger to the new value
-                                                           //   (the Effect.now tagger shape) and
-                                                           //   the msg folds through `update`.
-                                                           //   max must exceed min; tagger must
-                                                           //   be a function/ctor. Headless:
-                                                           //   {"kind":{"SliderChanged":0.5}}
-Ui.textInput(value, tagger)                                // INTERACTIVE controlled single-line
-                                                           //   text input: shows the MODEL's
-                                                           //   text; each edit applies tagger to
-                                                           //   the new text. While a field is
-                                                           //   FOCUSED the game's `input` hook
-                                                           //   is suppressed (keys type into the
-                                                           //   field; Escape defocuses first,
-                                                           //   releases the cursor second). An
-                                                           //   `update` that transforms the text
-                                                           //   resets the cursor to the end.
-                                                           //   Headless:
-                                                           //   {"kind":{"TextChanged":"hi"}}
-                                                           //   `examples/ui` showcases every
-                                                           //   widget in one panel
-
-Html.text("…") / Html.style("css…")                        // the `webview` hook's vocabulary: an
-Html.element("tag", [attr, …], [node, …])                  //   Elm-style HTML tree styled with
-Html.div([attr, …], [node, …])                             //   REAL CSS (flexbox, gradients,
-Html.span(…) / Html.button(…) / Html.h1(…)                 //   :hover, transitions). Natively it
-Html.h2(…) / Html.p(…)                                     //   renders via blitz (Stylo + Taffy +
-Html.input([attr, …])                                      //   Parley) CPU-painted and composited
-                                                           //   over the frame; on wasm it is a
-                                                           //   REAL DOM overlay above the canvas.
-                                                           //   Html.style emits its CSS string
-                                                           //   verbatim in a <style> element;
-                                                           //   Html.text is escaped. Html.input
-                                                           //   is a void element (attrs only) —
-                                                           //   pair Attr.value + Attr.onInput.
-Attr.class("…") / Attr.style("…") / Attr.id("…")           // plain attributes; Attr.attr(name,
-Attr.value("…") / Attr.placeholder("…")                    //   value) for anything else
-Attr.attr("name", "value")
-Attr.styles([Style.widthPx(300.0), …])                     // TYPED inline styles: the Style list
-                                                           //   folds into ONE style="k: v; k: v"
-                                                           //   attribute at construction (the
-                                                           //   elm-css split: inline declarations
-                                                           //   typed; the cascade — selectors,
-                                                           //   :hover, keyframes — stays a string
-                                                           //   in Html.style)
-Style.flexRow() / Style.flexColumn()                       // display:flex + direction; a bare
-Style.gapPx(n)                                             //   string/number where a Style goes
-Style.justifyStart() / justifyCenter() / justifyEnd()      //   is a teaching error (the Angle
-Style.justifyBetween()                                     //   rule)
-Style.alignStart() / alignCenter() / alignEnd()
-Style.widthPx(n) / widthPct(n) / heightPx(n) / heightPct(n)
-Style.paddingPx(n) / Style.marginPx(n)                     // all sides
-Style.color(color) / Style.background(color)               // Color.t — the ONE color type across
-                                                           //   3D and UI, formatted rgb(r, g, b)
-Style.fontSizePx(n) / Style.bold() / Style.textCenter()
-Style.borderPx(n, color)                                   // solid border
-Style.roundedPx(n)                                         // border-radius
-Style.opacity(n)                                           // 0..1 (out of range errors)
-Style.raw("property", "value")                             // the escape hatch for the long tail
-                                                           //   of CSS; the property name is
-                                                           //   validated like Attr.attr
-Attr.onClick(msg)                                          // INTERACTIVE (the Ui.button shape):
-                                                           //   a click on the element (or a
-                                                           //   descendant — DOM bubbling)
-                                                           //   delivers msg VERBATIM through
-                                                           //   `update`. Handlers are numbered by
-                                                           //   SLOT in construction order across
-                                                           //   the whole webview tree; drive them
-                                                           //   headlessly via POST /input
-                                                           //   {"type":"webview_event","slot":0,
-                                                           //    "kind":"Clicked"}.
-Attr.onInput(tagger)                                       // INTERACTIVE (the Ui.textInput
-                                                           //   shape): each edit applies the
-                                                           //   tagger to the new text, on BOTH
-                                                           //   shells — clicking the input
-                                                           //   focuses it, keys then type into
-                                                           //   the field instead of the game's
-                                                           //   `input` hook (Escape defocuses
-                                                           //   first, releases the cursor
-                                                           //   second), and focus survives the
-                                                           //   per-edit re-render (caret resets
-                                                           //   to the end when an update
-                                                           //   transforms the text — the
-                                                           //   Ui.textInput rule). IME
-                                                           //   composition (CJK/dead keys) is
-                                                           //   native-deferred.
-                                                           //   `examples/webview` is the
-                                                           //   reference
-
-Physics.tag("name")                                        // BRANDED body identity (the
-                                                           //   RenderTarget rule): declare
-                                                           //   once, use the VALUE at every
-                                                           //   site. Check-time only — at
-                                                           //   runtime a tag IS its string
-                                                           //   (plain data; == with event
-                                                           //   tags works). A bare string
-                                                           //   where a tag goes is a check
-                                                           //   error
-Physics.box(w, h, d) / sphere(r) / capsule(halfH, r)       // -> Shape (box = FULL extents
-                                                           //   in the body's local axes)
-Physics.heightfield(terrainTag, world)                     // fixed body from the SAME Terrain.t;
-                                                           //   one collider capped at 1025²
-                                                           //   collision samples; supports translation
-                                                           //   via Physics.at only — pair with an
-                                                           //   unrotated, unscaled Scene.terrain;
-                                                           //   Physics.rotateX/Y/Z rejects it
-Physics.dynamic(tag, shape)                                // simulated body
-Physics.kinematic(tag, shape) / Physics.fixed(tag, shape)
-body |> Physics.at(v)                                      // body-last: pipes
-body |> Physics.rotateX(angle) / rotateY / rotateZ         // Angle VALUES; rotate about the body
-                                                           //   center. Outer pipe applies last
-                                                           //   in world space, like Scene
-body |> Physics.velocity(v)
-body |> Physics.mass(m) / Physics.friction(f) / Physics.restitution(r)
-body |> Physics.sensor                                     // overlap-only, no forces
-body |> Physics.upright                                    // lock rotation: the body
-                                                           //   translates but never tips.
-                                                           //   REQUIRED for a character
-                                                           //   capsule — otherwise a
-                                                           //   glancing contact spins it,
-                                                           //   and a tipped capsule breaks
-                                                           //   any fixed standing-height
-                                                           //   assumption. Off by default
-Physics.scene(gravity, [body, …])                          // what `physics` returns
-Physics.position(tag)                                      // {x, y, z} of the LIVE body
-Physics.linearVelocity(tag)                                // {x, y, z} velocity of the LIVE body
-                                                           //   (Physics.velocity is the BUILDER)
-Physics.cast(origin, dir, maxDist)                         // SYNCHRONOUS ray -> rayHit record,
-                                                           //   in place (no tagger, no update)
-Physics.castExcluding(tag, origin, dir, maxDist)           //   same, ignoring one body — the
-                                                           //   grounding probe (skip your own
-                                                           //   collider)
-scene |> Physics.transformed(tag)                          // scene at the body's live pose
-Physics.applyImpulse(tag, v)                               // -> Effect (fire-and-forget)
-Physics.applyForce(tag, v)                                 //   force lasts ONE stepped frame
-Physics.setVelocity(tag, v) / Physics.teleport(tag, v)
-Physics.setVelocityXZ(tag, x, z)                           // write ONLY the horizontal plane;
-                                                           //   the solver keeps y (the
-                                                           //   character-controller command)
-Physics.setVelocityY(tag, v)                                // write ONLY the vertical axis;
-                                                           //   a jump that keeps the run
-Physics.raycast(origin, dir, maxDist, tagger)              // -> Effect (QUERY): tagger gets
-                                                           //   {hit, x, y, z, nx, ny, nz,
-                                                           //    distance, tag} — hit: false
-                                                           //   (zeroed) for a miss
-Physics.events(tagger)                                     // -> Sub (from `subscriptions`):
-                                                           //   tagger gets {started, a, b,
-                                                           //   sensor} per contact begin/end
+Angle.degrees(60.0)  Time.seconds(0.5)  Color.rgb(1.0, 0.2, 0.2)
+Vec3.make(0.0, 1.0, 0.0)  Fog.linear(…)  Skybox.files(…)
+RenderTarget.named("id")  Physics.tag("player")  Asset.model(…)  Anim.clip(…)
 ```
+
+Declare the identity-shaped ones (`RenderTarget.named`, `Physics.tag`) ONCE as a
+top-level `let` and use that value at every site. `Scene.animate` takes an
+`Anim` value, never a bare clip-name string; `Sub.every` takes a `Time`, never
+`0.5`; `Style` values, not CSS strings, go into `Attr.styles`.
+
+**Everything pipes subject-last**, like the stdlib: `scene |> Scene.color(c)`,
+`body |> Physics.at(v)`, `sprite |> Sprite.move(x, y)`,
+`camera |> Camera3D.clip(near, far)`, `source |> AudioSource.gain(g)`,
+`view |> Ui.panel(Ui.topLeft())`, `terrain |> Terrain.grass(…)`. `Light.castShadows`
+is the exception in shape only (the light is its sole argument).
+
+**Transforms wrap in Group nodes: the outer call applies last in world space** —
+`s |> Scene.rotateY(r) |> Scene.translate(v)` rotates in place, then moves (the
+order the source reads). `Physics.rotateX/Y/Z` follows the same rule.
+
+**Zero-argument constructors take their parens** — `Scene.cube()`,
+`Sprite.blank()`, `Anim.rest()`, `Effect.none()`, `Map.empty()`,
+`Ui.topLeft()`. The arity is enforced.
+
+**Opaque vs. plain data.** Most engine values (`<Scene>`, `<Camera3D>`,
+`<Camera2D>`, `<Frame>`, `<Anim>`, `<Effect>`) are opaque: pass them around, but
+they cannot be inspected, compared, or serialized. `Sprite.t` is the deliberate
+exception — its abstract type hides a private plain-data picture tree, so sprite
+values DO support structural display/equality, snapshots, and hot reload
+(lowering to 3D happens at `Frame.create2D` / `Frame.with2D`).
+
+**`Vec3` in, records out.** Constructors take `Vec3` values, but the live reads
+hand back plain records: `Physics.position`/`linearVelocity` give `{x, y, z}`,
+`Physics.cast` gives the `rayHit` record, and `Input` carries `point2`/`point3`.
+`Input.point2` is the ONE shared 2D point type — `Sprite.polygon`/`line` take it
+directly, and a second `{x, y}` record type would make every bare point literal
+an ambiguous-record check error.
+
+**Assets are branded values, not paths** (the B.6 flag day) — `asset.funi` has
+the consumer list and the exceptions; what it can't tell you is where the
+values come from: `functor import` generates an `Assets` module of constants
+from the project's own files, and that (not `Asset.model(…)`, which is for data
+boundaries) is what a game should reference.
+`functor import` also generates typed clip and joint constants
+(`Assets.xbotClips.walk.name`, `Assets.xbotJoints.mixamorig_Head`), which turn a
+misspelled clip or joint from a silent bind pose into a check error; glTF names
+sanitize deterministically (`mixamorig:Head` → `mixamorig_Head`, with `_2`,
+`_3`, … for collisions).
+
+**The `Net` module is built in but not in the generated reference.** Its types
+need no declaration, and these are the variants to match:
+
+```functor
+| Net.Response(status, body)   // any completed httpGet/httpPost — check status yourself
+| Net.Failure(error)           // transport error
+| Net.Connected(id) | Net.Message(id, text) | Net.Disconnected(id) | Net.Error(id, message)
+| Net.Data(id, value)          // an Effect.sendMsg payload, decoded — its type is `unknown`
+```
+
+`Effect.sendMsg` crosses lists, maps, tuples, records, and variants
+structurally (usually a shared-module ADT), with no string codec; functions and
+opaque host values in the payload are teaching errors.
+
+**Interactive widgets are numbered by SLOT in construction order**, which is how
+they are driven headlessly through the debug server —
+`Ui.button`/`slider`/`textInput` via
+`POST /input {"type":"ui_event","slot":0,"kind":"Clicked"}` (also
+`{"kind":{"SliderChanged":0.5}}`, `{"kind":{"TextChanged":"hi"}}`), and
+`Attr.onClick`/`onInput` via `{"type":"webview_event","slot":0,…}` numbered
+across the whole webview tree. All of them require an `update` hook, and — like
+`Sub.every`'s message — the msg↔`update` type link is a runtime check.
+
+**Worked references:** `examples/hello` (models, camera, lights) ·
+`examples/counter` (Ui + update) · `examples/ui` (every widget) ·
+`examples/webview` (Html/Attr/Style) · `examples/loading` (`Sub.assets`,
+`Effect.preloadThen`) · `examples/physics` and `examples/physics-controller`
+(the `physics` hook) · `examples/orbs` and `examples/mp` (multi-role entries).
+Prose docs: `docs/ui-interaction.md` (widget interaction and headless driving),
+`docs/physics.md`, `docs/time-travel.md`.
+
+### Physics: reads, commands, and queries
 
 `Physics.position` / `Physics.linearVelocity` / `Physics.cast` /
 `Physics.castExcluding` / `Physics.transformed` read the live stepped world
@@ -1898,6 +1280,8 @@ The model shows live at the
 debug server's `GET /state`. **Hot reload is on by default**: saving the
 `.fun` file reloads it in ~1 frame with the model preserved (a broken edit
 keeps the old program running; an edited `init` takes effect on restart).
+PENDING EFFECTS are reset by a reload — an in-flight `Effect.httpGet` tagger
+would dangle, so its message never arrives.
 The time-travel history also survives the reload when every retained model is
 plain data (the usual constant-tweak case), so old frames are immediately
 rewindable under the new program. These are old data snapshots interpreted by
@@ -1956,7 +1340,7 @@ at genuinely-dynamic seams (host values, and the `unknown` annotation you
 write on purpose — an UNRECOGNIZED type name is an error, not a seam)
 and absorbs anything — but a BUILTIN namespace is not such a seam:
 its member set is closed, so `List.tail` / `Text.padLeft` are check errors, not
-`Unknown` (see "Builtins"). Function TYPES **do** annotate —
+`Unknown` (see "Standard library"). Function TYPES **do** annotate —
 `(f: (float) => float)`, `(f: ('a) => 'b)`, and the parenthesized
 return position `(): ((A) => B) =>` all parse and check (see the Syntax
 subset above); leaving higher-order params unannotated and letting
@@ -2008,5 +1392,24 @@ silent opt-out of checking.
 
 ## Keeping this skill honest
 
-This file must track the language. When a PR adds syntax/builtins/semantics
-(see `docs/functor-lang.md` Track B/C checkboxes), update this skill in the same PR.
+**The division of labor.** Module SURFACES — every name, signature, argument
+order, and per-function behavior, for both the standard library and the engine
+prelude — are owned by the doc comments on their sources
+(`functor-lang/stdlib/*.funi` and `*.fun`, `functor-prelude/prelude/*.funi`) and
+published by the generated reference (`functor docs`, `npm run generate:docs`).
+This SKILL owns what a signature cannot carry: syntax, semantics rules, the game
+contract, hot-reload behavior, the typechecking model, the verification loop,
+cross-module interactions, worked patterns, and the module inventories that say
+where to look.
+
+So when a PR changes the language or the prelude, in that same PR:
+
+- New or changed **members** → document them at the source (`///` on the
+  binding, `//!` on the module) so the generated reference picks them up.
+  `npm run check:docs` fails on an undocumented module, type, or signature.
+- A new **module** → add one inventory line here, and the docs at the source.
+- New **syntax/semantics/contract/gotcha** behavior (see `docs/functor-lang.md`
+  Track B/C checkboxes) → update this skill.
+- Do NOT re-list signatures here. If you catch this file restating something the
+  `.funi` prose already says, delete it here; if it says something the `.funi`
+  does not, move it there.

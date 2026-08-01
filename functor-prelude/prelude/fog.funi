@@ -1,9 +1,18 @@
 //! Distance fog attached to a frame with `Frame.withFog`.
+//!
+//! Fog applies to every forward material, emissive included, and its color
+//! also becomes the frame's clear color unless `Frame.withClearColor` says
+//! otherwise. A skybox is never fogged.
 
 /// An opaque fog description.
 type t
 
 /// Create linear fog between near and far distances.
+///
+/// `near` must be at least 0 and `far` must exceed `near`; anything else is a
+/// teaching error rather than a silently degenerate ramp.
 let linear : (float, float, Color.t) => t
 /// Create exponential fog with the given density.
+///
+/// The density must be positive.
 let exp : (float, Color.t) => t

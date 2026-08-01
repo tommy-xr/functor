@@ -1,7 +1,12 @@
 //! Lightweight game UI views returned by the optional `ui` hook.
 //!
 //! Compose text and widgets into rows or columns, then pin them to a screen
-//! anchor with `Ui.panel`.
+//! anchor with `Ui.panel`. Text is 14pt monospace.
+//!
+//! The interactive widgets (`button`, `slider`, `textInput`) deliver their
+//! messages through `update`, so a game using them must define that hook. They
+//! are CONTROLLED: a slider and a text input show the value the model holds,
+//! and an `update` that transforms it is what changes what is displayed.
 
 /// An opaque UI view.
 type view
@@ -29,8 +34,20 @@ let bottomRight : () => anchor
 /// Anchor a panel to the center of the screen.
 let center : () => anchor
 /// Create a button that delivers a message through `update` when clicked.
+///
+/// The message is delivered VERBATIM, like `Sub.every`'s — so the link between
+/// its type and `update`'s is a runtime check, not a static one.
 let button : (string, 'msg) => view
 /// Create a controlled slider from minimum, maximum, value, and tagger.
+///
+/// A drag applies the tagger to the new value and folds the resulting message
+/// through `update`. The maximum must exceed the minimum, and the tagger must
+/// be a function or constructor.
 let slider : (float, float, float, 'tagger) => view
 /// Create a controlled text input whose tagger receives edited text.
+///
+/// While a field is FOCUSED the game's `input` hook is suppressed, so keys
+/// type into the field instead of driving the game; Escape defocuses the field
+/// first and releases the cursor second. An `update` that transforms the text
+/// resets the caret to the end.
 let textInput : (string, 'tagger) => view

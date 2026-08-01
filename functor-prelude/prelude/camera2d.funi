@@ -12,6 +12,9 @@ let create : (float, float) => t
 /// Center a camera at the given world position; the camera is last for piping.
 let at : (float, float, t) => t
 /// Set a positive camera zoom; the camera is last for piping.
+///
+/// LARGER is closer: the zoom divides the visible world extent, so `2.0` shows
+/// half as much world at twice the size.
 let zoom : (float, t) => t
 
 /// Map a sampled mouse position through the camera's fitted viewport.

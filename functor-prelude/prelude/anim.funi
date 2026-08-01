@@ -9,12 +9,16 @@ type t
 /// Sample a named glTF clip at a playhead in seconds.
 ///
 /// The clip loops by its duration; negative playheads wrap backwards from the
-/// end.
+/// end. A name the model does not define warns once and renders the bind pose
+/// — `functor import`'s generated clip constants (`Assets.xbotClips.walk.name`)
+/// turn that into a check-time error instead.
 let clip : (string, float) => t
 
 /// Blend a list of `(animation, weight)` pairs.
 ///
 /// Weights are normalized and entries with non-positive weights are ignored.
+/// Translation and scale are interpolated linearly and rotation as a
+/// normalized quaternion mix. An entry may itself be a blend, so blends nest.
 let blend : (List<(t, float)>) => t
 
 /// Return the bind pose as a base for programmatic posing.
@@ -27,18 +31,27 @@ let rest : () => t
 let add : (t, float, t) => t
 
 /// Restrict a pose to the subtrees rooted at the named joints.
+///
+/// Joints the mask does not cover fall out of this pose entirely — they take
+/// the bind pose, or the other inputs of an enclosing blend. A joint name the
+/// model does not define warns once.
 let mask : (List<string>, t) => t
 
 /// Add a local XYZ Euler rotation to one joint.
 ///
-/// The joint is fully driven by this node; an enclosing mask can still exclude
-/// it.
+/// The joint counts as FULLY DRIVEN by this node, so a mask BENEATH it cannot
+/// drop the joint; an enclosing mask — one applied to this node's result —
+/// still can.
 let rotate : (string, Angle.t, Angle.t, Angle.t, t) => t
 
 /// Aim one joint's local +Z axis at a model-space target after evaluating the
 /// pose below it.
 ///
-/// `maxDeflection` limits the shortest correction from the evaluated pose and
+/// The target is baked into the animation value at draw time, and `Scene`
+/// transforms sit deliberately outside the solver — so a world-space aim point
+/// has to be inverted through the node's own transforms before it is passed
+/// here. `maxDeflection` limits the shortest correction from the evaluated pose and
 /// must be between 0 and 180 degrees. `weight` is clamped to `0..1`. The joint
-/// is fully driven by this node; an enclosing mask can still exclude it.
+/// is fully driven by this node, exactly as with `Anim.rotate`; an enclosing
+/// mask can still exclude it.
 let lookAt : (string, Vec3.t, Angle.t, float, t) => t

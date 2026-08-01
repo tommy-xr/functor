@@ -17,11 +17,21 @@ let connect : (string, (Net.NetEvent) => 'msg) => t
 let listen : (string, (Net.NetEvent) => 'msg) => t
 
 /// One asset byte-load failure.
+///
+/// Only a failed BYTE load lands here — an asset whose bytes arrived but did
+/// not decode counts as loaded (it renders its fallback).
 type AssetFailure = { path: string, error: string }
 /// A snapshot of loaded, total, and failed assets.
 ///
 /// All assets are settled when `total > 0` and
-/// `loaded + List.length(failed) == total`.
+/// `loaded + List.length(failed) == total`. Failures never join `loaded`, and
+/// frame one can legitimately deliver `0 / 0`, so a loading screen must gate on
+/// the whole expression rather than on `loaded == total`.
 type AssetProgress = { loaded: float, total: float, failed: List<AssetFailure> }
 /// Subscribe to asset-loading snapshots, including the initial state.
+///
+/// Delivery is driven by CHANGE, not by the time grid: the tagger fires
+/// whenever the shell's snapshot differs from the last one it delivered
+/// (including the first one on frame one), so this is not a per-frame poll.
+/// Like every subscription it requires an `update` hook.
 let assets : ((AssetProgress) => 'msg) => t

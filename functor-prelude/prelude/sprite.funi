@@ -107,6 +107,8 @@ let moveX : (float, t) => t
 /// Move a picture along Y; the picture is last for piping.
 let moveY : (float, t) => t
 /// Rotate a picture around its center; the picture is last for piping.
+///
+/// A positive angle rotates COUNTER-CLOCKWISE, matching the Y-up 2D camera.
 let rotate : (Angle.t, t) => t
 /// Scale a picture uniformly; the picture is last for piping.
 let scale : (float, t) => t
