@@ -42,9 +42,11 @@ export interface Example {
    */
   multiplayer?: boolean;
   /**
-   * The entry-point binding prefix of the role the sandbox plays (same-file
-   * entries, like examples/orbs's `client` role resolving
-   * clientInit/clientTick/…). Passed to the player as `?prefix=`.
+   * The entry-point binding prefix of the role the sandbox plays, for a
+   * same-file-entries sample whose role is declared as
+   * `{ "file": …, "prefix": "client" }` (resolving clientInit/clientTick/…).
+   * Passed to the player as `?prefix=`. The `{ "file": …, "module": … }`
+   * form is native-only, so a module role cannot be played here.
    */
   prefix?: string;
   /**
