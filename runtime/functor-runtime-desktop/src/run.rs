@@ -576,6 +576,14 @@ pub struct Args {
     #[arg(long, default_value = "")]
     entry_prefix: String,
 
+    /// The role's inline entry MODULE (same-file entries): resolve every
+    /// canonical entry binding as a member of that `module` block
+    /// (`Server` → `Server.init`/`Server.tick`/…). The CLI passes it for a
+    /// functor.json role declared as `{ "file": …, "module": … }`; it is the
+    /// preferred form, and mutually exclusive with `--entry-prefix`.
+    #[arg(long, default_value = "", conflicts_with = "entry_prefix")]
+    entry_module: String,
+
     /// Treat --game-path as a frame-recording JSON (a single serialized `Frame`
     /// or a JSON array of them — the exact format `GET /scene` emits) and replay
     /// it instead of loading a game dylib. A proof producer for the
@@ -1288,9 +1296,18 @@ pub fn run(args: Args) {
     let mut game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
     } else if args.functor_lang {
-        Box::new(functor_lang_game::FunctorLangGame::create_with_prefix(
+        let role = if args.entry_module.is_empty() {
+            functor_runtime_common::functor_lang_producer::EntryRole::Prefix(
+                args.entry_prefix.clone(),
+            )
+        } else {
+            functor_runtime_common::functor_lang_producer::EntryRole::Module(
+                args.entry_module.clone(),
+            )
+        };
+        Box::new(functor_lang_game::FunctorLangGame::create_for_role(
             game_path.as_str(),
-            &args.entry_prefix,
+            role,
         ))
     } else {
         // Functor Lang is the only game producer now (the F#/dylib path was removed in

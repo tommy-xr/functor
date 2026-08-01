@@ -40,7 +40,7 @@ use functor_runtime_common::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
-    journal_arm, journal_push, journal_swap, validate_contract, EntryNames, FrameCtx,
+    journal_arm, journal_push, journal_swap, validate_contract, EntryNames, EntryRole, FrameCtx,
     JournalEntry, Provenance, Reporter, SpanSource,
 };
 use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
@@ -62,8 +62,11 @@ fn replay_status(history_replay: Option<(usize, f64)>) -> String {
 
 pub struct FunctorLangGame {
     path: String,
-    /// The role's resolved entry-point names (same-file entries): built once
-    /// from the role's prefix at create time and reused by every reload —
+    /// How the role names its entry bindings (same-file entries): a binding
+    /// prefix or an inline `module` block. Kept because an inline-module role
+    /// re-resolves against every (re)loaded project.
+    role: EntryRole,
+    /// The role's resolved entry-point names, from the CURRENT program —
     /// every canonical lookup and contract error goes through it.
     names: EntryNames,
     /// Per-file mtimes of the WHOLE project (every sibling `.fun` — B8:
@@ -239,6 +242,9 @@ fn round1(x: f64) -> f64 {
 
 /// A successfully loaded, contract-validated game project.
 struct Loaded {
+    /// The role's binding names, resolved against THIS load (an inline-module
+    /// role's canonical path comes from the linked project).
+    names: EntryNames,
     sources: SourceMap,
     module: functor_lang::ir::Module,
     session: Session,
@@ -260,18 +266,18 @@ struct Loaded {
 /// every sibling `.fun` file — file = module). Errors come back as fully
 /// rendered strings (`path:line:col: message`) so `create` can exit loud with
 /// them and hot-reload can print-and-keep-running with the same text.
-fn load_game(path: &str, names: &EntryNames) -> Result<Loaded, String> {
-    load_project(path, None, names)
+fn load_game(path: &str, role: &EntryRole) -> Result<Loaded, String> {
+    load_project(path, None, role)
 }
 
 /// The source-shaped half of [`load_game`]: the pushed source stands in for
 /// the ENTRY file (the network reload path, `reload_source`); sibling
 /// modules still load from disk.
-fn load_source(path: &str, src: String, names: &EntryNames) -> Result<Loaded, String> {
-    load_project(path, Some(src), names)
+fn load_source(path: &str, src: String, role: &EntryRole) -> Result<Loaded, String> {
+    load_project(path, Some(src), role)
 }
 
-fn load_project(path: &str, entry_src: Option<String>, names: &EntryNames) -> Result<Loaded, String> {
+fn load_project(path: &str, entry_src: Option<String>, role: &EntryRole) -> Result<Loaded, String> {
     let entry = std::path::Path::new(path);
     // A pushed buffer (network reload) stands in for the entry file; siblings
     // still load from disk.
@@ -286,13 +292,13 @@ fn load_project(path: &str, entry_src: Option<String>, names: &EntryNames) -> Re
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project, names)
+    finish_load(path, project, role)
 }
 
 /// Load an exact in-memory project: entry first, then sibling modules. This
 /// is the desktop counterpart of the embedded/Quest producer's whole-project
 /// push and deliberately performs no filesystem reads.
-fn load_sources(files: &[(String, String)], names: &EntryNames) -> Result<Loaded, String> {
+fn load_sources(files: &[(String, String)], role: &EntryRole) -> Result<Loaded, String> {
     let path = files
         .first()
         .map(|(path, _)| path.as_str())
@@ -306,7 +312,7 @@ fn load_sources(files: &[(String, String)], names: &EntryNames) -> Result<Loaded
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
-    finish_load(path, project, names)
+    finish_load(path, project, role)
 }
 
 /// The project's OWN files out of a linked source map: bundled prelude and
@@ -334,8 +340,12 @@ fn project_sources_of(sources: &SourceMap) -> Vec<(String, String)> {
 fn finish_load(
     path: &str,
     project: functor_lang::project::Project,
-    names: &EntryNames,
+    role: &EntryRole,
 ) -> Result<Loaded, String> {
+    // An inline-module role resolves against the linked project, so a reload
+    // that renamed or deleted the block fails here — naming the block — rather
+    // than reporting its every entry binding as missing.
+    let names = role.resolve(path, &project)?;
     // Type diagnostics are advisory in the dev loop: print, keep going.
     for diag in project.check() {
         eprintln!(
@@ -355,8 +365,9 @@ fn finish_load(
     // arity, optional hooks well-shaped) is shared with the embedded producer
     // and the CLI's build gate — errors name the ROLE'S resolved bindings
     // (`serverTick`, not `tick`) via `names`.
-    let contract = validate_contract(path, &session, names)?;
+    let contract = validate_contract(path, &session, &names)?;
     Ok(Loaded {
+        names,
         sources,
         module,
         session,
@@ -400,24 +411,23 @@ fn project_stamp(path: &str) -> Vec<(PathBuf, SystemTime)> {
 
 impl FunctorLangGame {
     pub fn create(path: &str) -> FunctorLangGame {
-        Self::create_with_prefix(path, "")
+        Self::create_for_role(path, EntryRole::Prefix(String::new()))
     }
 
-    /// [`Self::create`] for a PREFIXED role (same-file entries): every
-    /// canonical entry binding resolves through `prefix` as camelCase
-    /// (`"server"` → `serverInit`/`serverTick`/…). An empty prefix is the
-    /// classic unprefixed contract.
-    pub fn create_with_prefix(path: &str, prefix: &str) -> FunctorLangGame {
+    /// [`Self::create`] for one same-file ROLE: either a binding prefix
+    /// (`"server"` → `serverInit`/`serverTick`/…, empty = the classic
+    /// unprefixed contract) or an inline `module Server { … }` block, whose
+    /// members ARE the role's contract (`Server.init`/`Server.tick`/…).
+    pub fn create_for_role(path: &str, role: EntryRole) -> FunctorLangGame {
         // Route Functor Lang `Debug.log` traces into the region-aware event stream (once
         // per process; survives hot-reload's Session rebuild — the sink is
         // installed on the process, not the Session). See functor_lang_prelude.
         functor_runtime_common::functor_lang_prelude::install_debug_log_sink();
-        let names = EntryNames::with_prefix(prefix);
         // Stat BEFORE reading: an edit that lands mid-load then compares
         // unequal on the next frame and triggers a reload, instead of being
         // silently absorbed into a stale session.
         let stamp = project_stamp(path);
-        let loaded = match load_game(path, &names) {
+        let loaded = match load_game(path, &role) {
             Ok(loaded) => loaded,
             Err(message) => {
                 eprintln!("error: {message}");
@@ -434,7 +444,8 @@ impl FunctorLangGame {
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
         FunctorLangGame {
             path: path.to_string(),
-            names,
+            role,
+            names: loaded.names,
             stamp,
             pushed_entry: None,
             pushed_project: None,
@@ -550,6 +561,7 @@ impl FunctorLangGame {
         journal_swap(); // discard any partial current-frame journal
         self.reporter
             .set_source(SpanSource::Project(loaded.sources));
+        self.names = loaded.names;
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
@@ -643,6 +655,7 @@ impl FunctorLangGame {
         journal_swap();
         self.reporter
             .set_source(SpanSource::Project(loaded.sources));
+        self.names = loaded.names;
         self.module = loaded.module;
         self.session = loaded.session;
         self.model = loaded.init;
@@ -755,8 +768,8 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let loaded = match &self.pushed_entry {
-            Some(src) => load_source(&self.path, src.clone(), &self.names),
-            None => load_game(&self.path, &self.names),
+            Some(src) => load_source(&self.path, src.clone(), &self.role),
+            None => load_game(&self.path, &self.role),
         };
         match loaded {
             Ok(loaded) => {
@@ -812,8 +825,8 @@ impl Game for FunctorLangGame {
             files
         });
         let loaded = match &pushed_project {
-            Some(files) => load_sources(files, &self.names),
-            None => load_source(&self.path, source.to_string(), &self.names),
+            Some(files) => load_sources(files, &self.role),
+            None => load_source(&self.path, source.to_string(), &self.role),
         }?;
         if let Some(files) = pushed_project {
             self.pushed_project = Some(files);
@@ -847,7 +860,7 @@ impl Game for FunctorLangGame {
         }
         let started = Instant::now();
         let stamp = project_stamp(&self.path);
-        let loaded = load_sources(files, &self.names)?;
+        let loaded = load_sources(files, &self.role)?;
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
         let (rebound, history_replay) = self.swap_in(loaded);
@@ -877,7 +890,7 @@ impl Game for FunctorLangGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = Instant::now();
-        let loaded = load_sources(files, &self.names)?;
+        let loaded = load_sources(files, &self.role)?;
         self.pushed_project = Some(files.to_vec());
         self.pushed_entry = None;
         self.reset_in(loaded);
@@ -1679,9 +1692,12 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp project dir");
         let path = dir.join("game.fun");
         std::fs::write(&path, src).expect("write temp game");
-        let err = load_game(path.to_str().expect("utf-8 temp path"), &EntryNames::UNPREFIXED)
-            .err()
-            .expect("load should fail");
+        let err = load_game(
+            path.to_str().expect("utf-8 temp path"),
+            &EntryRole::Prefix(String::new()),
+        )
+        .err()
+        .expect("load should fail");
         let _ = std::fs::remove_dir_all(&dir);
         err
     }
@@ -1722,6 +1738,69 @@ mod tests {
     }
 
     /// A pushed entry buffer survives a SIBLING-file reload: editing
+    /// A `{ "file": …, "module": "Server" }` role runs the BLOCK's members as
+    /// its contract, and keeps hot-reloading: the block is re-resolved against
+    /// each reloaded project (model preserved), while an edit that removes it
+    /// fails loudly and keeps the old program.
+    #[test]
+    fn a_module_role_loads_and_hot_reloads() {
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-module-role",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        let entry = dir.join("game.fun");
+        let role_src = |probe: f64| {
+            format!(
+                "{BASE}module Server {{\n\
+                 let init = {{ n: 7.0 }}\n\
+                 let tick = (m, dt, tts) => m\n\
+                 let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), \
+Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
+                 let probe = {probe}.0\n\
+                 }}\n"
+            )
+        };
+        std::fs::write(&entry, role_src(1.0)).expect("write entry");
+        let mut game = FunctorLangGame::create_for_role(
+            entry.to_str().expect("utf-8 path"),
+            EntryRole::Module("Server".to_string()),
+        );
+        // The role's contract is the block's, not the file's top level.
+        assert_eq!(game.names.tick, "Server.tick");
+        assert_eq!(game.model.to_string(), "{ n: 7 }");
+
+        // Edit: the model survives and the block re-resolves.
+        std::thread::sleep(std::time::Duration::from_millis(20)); // distinct mtime
+        std::fs::write(&entry, role_src(2.0)).expect("edit entry");
+        game.check_hot_reload(FrameTime { tts: 0.0, dts: 0.0 });
+        assert_eq!(
+            game.session
+                .global("Server.probe")
+                .expect("probe")
+                .to_string(),
+            "2",
+            "the edit must have landed"
+        );
+        assert_eq!(game.names.tick, "Server.tick");
+        assert_eq!(game.model.to_string(), "{ n: 7 }", "model preserved");
+
+        // Delete the block: the reload fails naming it, keeping the program.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&entry, BASE).expect("edit entry");
+        game.check_hot_reload(FrameTime { tts: 0.0, dts: 0.0 });
+        assert_eq!(
+            game.session
+                .global("Server.probe")
+                .expect("probe")
+                .to_string(),
+            "2",
+            "a role whose module vanished keeps the old program"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `config.fun` must reload around the pushed `game.fun`, and only an
     /// on-disk edit of the entry itself reverts to disk (last-write-wins,
     /// per file). [Codex Medium — B8 review]

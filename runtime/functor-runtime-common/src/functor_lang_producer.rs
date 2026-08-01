@@ -118,7 +118,7 @@ impl EntryNames {
         if prefix.is_empty() {
             return EntryNames::UNPREFIXED;
         }
-        let n = |base: &'static str| {
+        EntryNames::map(|base| {
             let mut name = String::with_capacity(prefix.len() + base.len());
             name.push_str(prefix);
             let mut chars = base.chars();
@@ -127,8 +127,24 @@ impl EntryNames {
                 name.push_str(chars.as_str());
             }
             intern(name)
-        };
+        })
+    }
+
+    /// The name-mapping rule for a role resolved inside an INLINE MODULE
+    /// (`{ "file": "game.fun", "module": "Server" }`): every entry binding is
+    /// a member of that block, so it resolves against the module's CANONICAL
+    /// path — `Server.init`, `Server.tick`, … The canonical path comes from
+    /// the linked project ([`EntryRole::resolve`]), never from the bare block
+    /// name.
+    pub fn in_module(path: &str) -> EntryNames {
+        EntryNames::map(|base| intern(format!("{path}.{base}")))
+    }
+
+    /// Build one role's names by mapping each canonical base — the single
+    /// place the 14-entry contract is enumerated.
+    fn map(resolve: impl Fn(&'static str) -> &'static str) -> EntryNames {
         let u = EntryNames::UNPREFIXED;
+        let n = resolve;
         EntryNames {
             init: n(u.init),
             tick: n(u.tick),
@@ -144,6 +160,62 @@ impl EntryNames {
             sound_scape: n(u.sound_scape),
             ui: n(u.ui),
             webview: n(u.webview),
+        }
+    }
+}
+
+/// How a functor.json role names its entry bindings — the declaration, before
+/// a project is linked. [`EntryRole::resolve`] turns it into the role's
+/// [`EntryNames`] against the loaded project, so an inline-module role is
+/// re-resolved on every (hot-)reload: an edit that renames or deletes the
+/// block fails loudly there instead of resolving stale names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EntryRole {
+    /// The classic contract, or a `{ "file": …, "prefix": "server" }` role:
+    /// camelCase-prefixed names (an empty prefix = the plain contract).
+    Prefix(String),
+    /// A `{ "file": …, "module": "Server" }` role: the entry bindings are
+    /// members of that inline `module` block in the role's own file.
+    Module(String),
+}
+
+impl EntryRole {
+    /// Resolve this role's binding names against the linked `project` whose
+    /// entry is the role's file. An inline-module role names a block of THAT
+    /// file; an unknown name is an error listing the blocks it does declare.
+    pub fn resolve(
+        &self,
+        path: &str,
+        project: &functor_lang::project::Project,
+    ) -> Result<EntryNames, String> {
+        match self {
+            EntryRole::Prefix(prefix) => Ok(EntryNames::with_prefix(prefix)),
+            EntryRole::Module(name) => {
+                let in_entry = || {
+                    project
+                        .inline_modules
+                        .iter()
+                        .filter(|module| module.file == project.entry)
+                };
+                match in_entry().find(|module| &module.name == name) {
+                    // The canonical path, not the bare block name: that is
+                    // what the lowerer keyed the block's members by.
+                    Some(module) => Ok(EntryNames::in_module(&module.path)),
+                    None => {
+                        let declared: Vec<&str> =
+                            in_entry().map(|module| module.name.as_str()).collect();
+                        let known = if declared.is_empty() {
+                            "it declares no inline modules".to_string()
+                        } else {
+                            format!("it declares: {}", declared.join(", "))
+                        };
+                        Err(format!(
+                            "{path} has no inline `module {name} {{ … }}` for this entry role — \
+{known}"
+                        ))
+                    }
+                }
+            }
         }
     }
 }
@@ -2088,6 +2160,49 @@ mod tests {
         // Interned: rebuilding the same prefix (every hot reload) reuses the
         // same leaked names instead of growing the table.
         assert!(std::ptr::eq(EntryNames::with_prefix("server").tick, names.tick));
+    }
+
+    /// The module form of the same rule: an inline-module role's bindings are
+    /// the block's members, under its CANONICAL path — and interned just as
+    /// the prefixed ones are, so hot reloads don't grow the table.
+    #[test]
+    fn entry_names_resolve_a_module_as_its_members() {
+        let names = EntryNames::in_module("Server");
+        assert_eq!(names.init, "Server.init");
+        assert_eq!(names.tick, "Server.tick");
+        assert_eq!(names.draw, "Server.draw");
+        assert_eq!(names.sampled_input, "Server.sampledInput");
+        assert_eq!(names.sound_scape, "Server.soundScape");
+        // A sibling file's block canonicalizes file-qualified.
+        assert_eq!(EntryNames::in_module("Utils.Grid").tick, "Utils.Grid.tick");
+        assert!(std::ptr::eq(EntryNames::in_module("Server").tick, names.tick));
+    }
+
+    /// A module role resolves against the LINKED project, so the canonical
+    /// path comes from the lowerer — and an unknown block is an error naming
+    /// the file's real ones, not a pile of missing bindings.
+    #[test]
+    fn a_module_role_resolves_against_the_projects_blocks() {
+        let src = "module Server {\n  let init = 0.0\n}\nmodule Client {\n  let init = 1.0\n}\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let names = EntryRole::Module("Server".to_string())
+            .resolve("game.fun", &project)
+            .expect("the block resolves");
+        assert_eq!(names.init, "Server.init");
+        let err = EntryRole::Module("Sever".to_string())
+            .resolve("game.fun", &project)
+            .expect_err("an unknown block is refused");
+        assert!(err.contains("game.fun"), "{err}");
+        assert!(err.contains("module Sever"), "{err}");
+        assert!(err.contains("it declares: Server, Client"), "{err}");
+        // A prefix role needs no project lookup.
+        assert_eq!(
+            EntryRole::Prefix("server".to_string())
+                .resolve("game.fun", &project)
+                .expect("a prefix always resolves"),
+            EntryNames::with_prefix("server")
+        );
     }
 
     #[test]
