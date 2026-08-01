@@ -85,6 +85,27 @@ try {
   );
   await failureContext.close();
 
+  // A phone-width strip must keep the keys toggle reachable: the mode segment
+  // yields (truncates) rather than pushing the control past the viewport.
+  const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const mobilePage = await mobileContext.newPage();
+  await mobilePage.goto(`${BASE}/sandbox.html`);
+  await mobilePage.waitForFunction(() => window.__sandbox);
+  await mobilePage.evaluate(() => window.__sandbox.setKeybindings("vim"));
+  await mobilePage.waitForFunction(
+    () => window.__sandbox.keybindings().mode === "vim" && !window.__sandbox.keybindings().loading
+  );
+  const mobileToggle = await mobilePage.locator("#editor-keybindings").boundingBox();
+  check(
+    "mobile strip keeps the keys toggle in the viewport beside the mode segment",
+    mobileToggle !== null &&
+      mobileToggle.x >= 0 &&
+      mobileToggle.x + mobileToggle.width <= 390 &&
+      (await mobilePage.locator("#statusbar .statusbar-vim").isVisible()),
+    JSON.stringify(mobileToggle)
+  );
+  await mobileContext.close();
+
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
   const requested = [];

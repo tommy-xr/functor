@@ -938,23 +938,29 @@ a:hover {
   color: var(--cyan);
 }
 
-/* The hero control doubles as the mode readout (`keys: vim · NORMAL`), so it
-   wears the same mode colors as the sandbox/IDE status segment. */
+/* The Vim mode colors — one block for both wearers: the sandbox/IDE status
+   segment and the hero control, which doubles as the mode readout
+   (`keys: vim · NORMAL`). Cyan NORMAL, green INSERT, pink VISUAL, red
+   REPLACE, each with a soft neon glow. */
+.statusbar-vim[data-vim-mode="normal"],
 .editor-keybindings-toggle[data-vim-mode="normal"] {
   color: var(--cyan);
   text-shadow: 0 0 9px rgba(65, 216, 230, 0.55);
 }
 
+.statusbar-vim[data-vim-mode="insert"],
 .editor-keybindings-toggle[data-vim-mode="insert"] {
   color: var(--green);
   text-shadow: 0 0 9px rgba(111, 220, 146, 0.55);
 }
 
+.statusbar-vim[data-vim-mode^="visual"],
 .editor-keybindings-toggle[data-vim-mode^="visual"] {
   color: var(--pink);
   text-shadow: 0 0 9px rgba(232, 88, 184, 0.55);
 }
 
+.statusbar-vim[data-vim-mode="replace"],
 .editor-keybindings-toggle[data-vim-mode="replace"] {
   color: var(--red);
   text-shadow: 0 0 9px rgba(242, 99, 127, 0.55);
@@ -2259,6 +2265,13 @@ a:hover {
   color: var(--text);
 }
 
+/* Inset, like the keys toggle — the strip clips overflow (it scrolls when
+   too narrow), which would swallow the UA's outset focus ring. */
+.statusbar-tab:focus-visible {
+  outline: 1px solid rgba(65, 216, 230, 0.65);
+  outline-offset: -2px;
+}
+
 .statusbar-tab.active {
   color: var(--cyan);
   box-shadow: inset 0 2px 0 var(--cyan);
@@ -2279,11 +2292,11 @@ a:hover {
   font-family: var(--font-mono);
   font-size: 0.72rem;
   letter-spacing: 0.06em;
-  /* --NORMAL-- must never wrap mid-word on narrow strips; the segment
-     truncates instead of pushing the tabs onto a second row. */
+  /* On a strip too narrow for everything, the readout yields — truncating
+     rather than wrapping or pushing the keys toggle off-screen. */
   white-space: nowrap;
   overflow: hidden;
-  flex-shrink: 0;
+  min-width: 0;
 }
 
 .statusbar-vim[hidden] {
@@ -2297,26 +2310,6 @@ a:hover {
   background: none;
   color: var(--text);
   font: inherit;
-}
-
-.statusbar-vim[data-vim-mode="normal"] {
-  color: var(--cyan);
-  text-shadow: 0 0 9px rgba(65, 216, 230, 0.55);
-}
-
-.statusbar-vim[data-vim-mode="insert"] {
-  color: var(--green);
-  text-shadow: 0 0 9px rgba(111, 220, 146, 0.55);
-}
-
-.statusbar-vim[data-vim-mode^="visual"] {
-  color: var(--pink);
-  text-shadow: 0 0 9px rgba(232, 88, 184, 0.55);
-}
-
-.statusbar-vim[data-vim-mode="replace"] {
-  color: var(--red);
-  text-shadow: 0 0 9px rgba(242, 99, 127, 0.55);
 }
 
 .statusbar-tab.has-problems {

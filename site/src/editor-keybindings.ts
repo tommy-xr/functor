@@ -50,17 +50,6 @@ interface EditorKeybindingsOptions {
 
 type VimModule = typeof import("@replit/codemirror-vim");
 type VimCM = NonNullable<ReturnType<VimModule["getCM"]>>;
-type VimEditor = {
-  state?: {
-    vim?: {
-      insertMode?: boolean;
-    };
-  };
-};
-
-/** The adapter's spelling for its own panel: "visual line" / "visual block". */
-const composeVimMode = (event: { mode: string; subMode?: string }): string =>
-  event.subMode ? `${event.mode} ${event.subMode === "linewise" ? "line" : "block"}` : event.mode;
 
 const STORAGE_KEY = "functor-editor-keybindings-v1";
 let vimModulePromise: Promise<VimModule> | null = null;
@@ -181,15 +170,19 @@ export const createEditorKeybindingsController = (
       const cm = module.getCM(target);
       if (cm) {
         activeVim = cm;
-        cm.on("vim-mode-change", (event: { mode: string; subMode?: string }) => {
+        // The adapter's own vim-mode-change handler runs first (registered in
+        // the plugin constructor) and leaves the composed spelling — "visual
+        // line" / "visual block" — on cm.state.vim.mode; read it rather than
+        // recompute it.
+        cm.on("vim-mode-change", (event: { mode: string }) => {
           if (activeVim !== cm) return;
           const snapshot = state.getSnapshot();
           if (snapshot.mode !== "vim") return;
-          state.set({ ...snapshot, vimMode: composeVimMode(event) });
+          state.set({ ...snapshot, vimMode: cm.state.vim?.mode ?? event.mode });
         });
         installStatusbar();
       }
-      state.set({ mode, loading: false, error: null, vimMode: "normal" });
+      state.set({ mode, loading: false, error: null, vimMode: cm ? "normal" : null });
       if (focus) target.focus();
     } catch (error) {
       if (request !== generation) return;
@@ -225,8 +218,8 @@ export const createEditorKeybindingsController = (
 };
 
 const inVimCommandMode = (view: EditorView): boolean => {
-  const editor = getVimEditor?.(view) as VimEditor | null | undefined;
-  return Boolean(editor?.state?.vim && !editor.state.vim.insertMode);
+  const editor = getVimEditor?.(view);
+  return Boolean(editor?.state.vim && !editor.state.vim.insertMode);
 };
 
 // The upstream adapter deliberately yields unhandled keys to later CodeMirror
