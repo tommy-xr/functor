@@ -59,6 +59,8 @@ interface HeroScrubSeam {
     rate?: number;
     mode?: number;
   }): void;
+  setAttention(attention: { extrapolate?: boolean }): void;
+  setReset(handler: (() => void) | null): void;
 }
 
 type HeroPlayerWindow = Window & { __scrub?: HeroScrubSeam };
@@ -170,6 +172,18 @@ let region = "";
 
 const fullProgram = () => prefix + region + suffix;
 
+// The frame the demo is parked on (two before takeoff), remembered so ↺ can
+// return to it after the visitor scrubs away. Code edits are the visitor's —
+// ↺ re-seeks the timeline, it never restores the source.
+let stagedAnchor: number | null = null;
+
+const reparkStagedMoment = () => {
+  const scrub = (frame.contentWindow as HeroPlayerWindow | null)?.__scrub;
+  if (!scrub || stagedAnchor === null) return;
+  if (!scrub.paused()) scrub.togglePause();
+  scrub.seek(stagedAnchor);
+};
+
 const seedJumpHistory = async (inputs: ScriptedInput[]) => {
   const player = frame.contentWindow as HeroPlayerWindow | null;
   const scrub = player?.__scrub;
@@ -236,6 +250,14 @@ const seedJumpHistory = async (inputs: ScriptedInput[]) => {
   const seekDeadline = performance.now() + 3000;
   while (performance.now() < seekDeadline && scrub.frame() !== anchor) await delay(16);
   if (scrub.frame() !== anchor) throw new Error("the platformer timeline did not reach the jump");
+  stagedAnchor = anchor;
+
+  // The hero's bar trades ⏭ (one frame forward, which reads as fast-forward
+  // here) for ↺, which re-parks THIS staged moment. The scrubber owns the
+  // button; the staging knowledge stays in this module.
+  scrub.setReset(reparkStagedMoment);
+  // …and points at 🔮 exactly once, at the moment the demo is ready for it.
+  scrub.setAttention({ extrapolate: true });
 };
 
 const maybeStageDemo = () => {

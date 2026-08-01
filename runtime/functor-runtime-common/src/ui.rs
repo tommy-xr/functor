@@ -835,21 +835,12 @@ impl Scrubber {
                                 {
                                     action = Some(ScrubberAction::TogglePause);
                                 }
-                                if state.camera_detachable {
-                                    let enabled =
-                                        state.camera_detached || !state.camera_catching_up;
-                                    let label = if state.camera_detached {
-                                        "Exit debug view"
-                                    } else {
-                                        "Debug camera"
-                                    };
-                                    let height = ui.spacing().interact_size.y;
-                                    let button = ui.add_enabled_ui(enabled, |ui| {
-                                        ui.add_sized([104.0, height], egui::Button::new(label))
-                                    });
-                                    if button.inner.clicked() {
-                                        action = Some(ScrubberAction::ToggleDetachedCamera);
-                                    }
+                                // Left of the rail is TRANSPORT, right of it is
+                                // ways to LOOK at the frame the transport
+                                // landed on (debug camera, extrapolation) —
+                                // the web scrubber's order, mirrored.
+                                if ui.button("Step >").clicked() {
+                                    action = Some(ScrubberAction::Step);
                                 }
                                 // The draggable timeline. When a preview is
                                 // on, the rail's DOMAIN includes the preview
@@ -1026,8 +1017,21 @@ impl Scrubber {
                                         }
                                     }
                                 }
-                                if ui.button("Step >").clicked() {
-                                    action = Some(ScrubberAction::Step);
+                                if state.camera_detachable {
+                                    let enabled =
+                                        state.camera_detached || !state.camera_catching_up;
+                                    let label = if state.camera_detached {
+                                        "Exit debug view"
+                                    } else {
+                                        "Debug camera"
+                                    };
+                                    let height = ui.spacing().interact_size.y;
+                                    let button = ui.add_enabled_ui(enabled, |ui| {
+                                        ui.add_sized([104.0, height], egui::Button::new(label))
+                                    });
+                                    if button.inner.clicked() {
+                                        action = Some(ScrubberAction::ToggleDetachedCamera);
+                                    }
                                 }
 
                                 // Future preview (docs/time-travel.md T6):

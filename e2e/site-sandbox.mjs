@@ -350,7 +350,79 @@ const playerFrame = (page) => {
     JSON.stringify(staged)
   );
 
+  // The bar's grammar: transport on the left of the rail, ways to LOOK at the
+  // parked frame on its right — 📷 immediately before 🔮. The hero also trades
+  // ⏭ (which reads as fast-forward here) for ↺, its re-park control.
+  const bar = await heroPlayer.evaluate(() => {
+    const camera = document.getElementById("scrub-camera");
+    const step = document.getElementById("scrub-step");
+    const reset = document.getElementById("scrub-reset");
+    return {
+      afterCamera: camera.nextElementSibling?.id,
+      cameraHidden: camera.hidden,
+      stepHidden: step.hidden,
+      resetHidden: reset.hidden,
+      resetGlyph: reset.textContent,
+      attention: document
+        .getElementById("scrub-extrapolate")
+        .classList.contains("attention"),
+    };
+  });
+  check(
+    "scrubber puts the debug camera immediately left of extrapolation",
+    !bar.cameraHidden && bar.afterCamera === "scrub-extrapolate",
+    JSON.stringify(bar)
+  );
+  check(
+    "hero bar offers ↺ reset instead of ⏭ step",
+    bar.stepHidden && !bar.resetHidden && bar.resetGlyph === "↺",
+    JSON.stringify(bar)
+  );
+  check("staged hero pulses attention on 🔮", bar.attention, JSON.stringify(bar));
+
+  // Game input against a paused clock says so instead of doing nothing — but
+  // only for keys that would have reached the game. A nudge on the timeline
+  // handle is chrome, not game input.
+  const pressInPlayer = (code, onPlayhead) =>
+    heroPlayer.evaluate(
+      ([keyCode, chrome]) => {
+        const target = chrome ? document.getElementById("scrub-playhead") : document.body;
+        target.dispatchEvent(new KeyboardEvent("keydown", { code: keyCode, bubbles: true }));
+        const raised = document.getElementById("scrub-toast").classList.contains("show");
+        // Release it: the host page delivers held keys to the game, and a
+        // press with no matching release would leave the character running.
+        target.dispatchEvent(new KeyboardEvent("keyup", { code: keyCode, bubbles: true }));
+        return raised;
+      },
+      [code, onPlayhead]
+    );
+  // Past the staging-silence window: the notice deliberately says nothing for
+  // 300ms after a pause EDGE, so the hero's own programmatic park never flashes
+  // it. Staging finished moments ago, so settle before pressing.
+  await sleep(400);
+  const toastOnChrome = await pressInPlayer("ArrowRight", true);
+  const toastOnGameKey = await pressInPlayer("ArrowRight", false);
+  check(
+    "paused game input raises the scrubber's paused notice",
+    !toastOnChrome && toastOnGameKey,
+    JSON.stringify({ toastOnChrome, toastOnGameKey })
+  );
+  await sleep(2000);
+  check(
+    "the paused notice dismisses itself",
+    !(await heroPlayer.evaluate(() =>
+      document.getElementById("scrub-toast").classList.contains("show")
+    ))
+  );
+
   await heroPlayer.evaluate(() => document.getElementById("scrub-extrapolate").click());
+  check(
+    "using 🔮 retires its attention pulse for good",
+    await heroPlayer.evaluate(() => {
+      window.__scrub.setAttention({ extrapolate: true });
+      return !document.getElementById("scrub-extrapolate").classList.contains("attention");
+    })
+  );
   await heroPlayer.waitForFunction(() => window.__scrub.model().preview.enabled, {
     timeout: 3000,
   });
@@ -477,6 +549,36 @@ const playerFrame = (page) => {
     "rejected hero input batches enqueue no partial key edges",
     !beforeRejectedBatch.accepted && afterRejectedBatch === beforeRejectedBatch.inputs,
     JSON.stringify({ beforeRejectedBatch, afterRejectedBatch })
+  );
+
+  // ↺ re-parks the demo after the visitor has scrubbed (and edited) away: it
+  // seeks back to the staged anchor, paused, over the live edited program.
+  const scrubbedAway = await heroPlayer.evaluate(() => {
+    const range = window.__scrub.range();
+    window.__scrub.seek(range[1]);
+    return range[1];
+  });
+  await heroPlayer.waitForFunction(
+    (end) => window.__scrub.frame() === end,
+    scrubbedAway,
+    { timeout: 8000 }
+  );
+  await heroPlayer.evaluate(() => document.getElementById("scrub-reset").click());
+  await heroPlayer
+    .waitForFunction(
+      (anchor) => window.__scrub.paused() && window.__scrub.frame() === anchor,
+      staged.frame,
+      { timeout: 8000 }
+    )
+    .catch(() => {});
+  const afterReset = await heroPlayer.evaluate(() => ({
+    frame: window.__scrub.frame(),
+    paused: window.__scrub.paused(),
+  }));
+  check(
+    "hero ↺ re-parks the staged moment after scrubbing away",
+    afterReset.paused && afterReset.frame === staged.frame,
+    JSON.stringify({ scrubbedAway, staged: staged.frame, afterReset })
   );
 
   await page.close();
