@@ -441,6 +441,8 @@ fn forgotten_argument_of_builtin() {
 // field — and the enriched message REPLACES the generic mismatch (one diag).
 #[test]
 fn forgotten_argument_of_constructor() {
+    // A constructor never reaches the partial discriminator: applying one with
+    // the wrong count is refused at the call itself.
     let (message, _, _) = single_diag(
         "type Pair = | MkPair(a: float, b: float)\n\
          let use = (x: float): float => x\n\
@@ -448,8 +450,8 @@ fn forgotten_argument_of_constructor() {
     );
     assert_eq!(
         message,
-        "`MkPair` is applied to 1 of 2 arguments here — missing `b: float`. \
-         Did you forget an argument?"
+        "`MkPair` takes 2 argument(s), got 1 — constructors apply fully; \
+         wrap it in a lambda to stage arguments (e.g. `(x) => MkPair(…, x)`)"
     );
 }
 
@@ -1064,8 +1066,8 @@ fn catch_all_var_binds_the_scrutinee_type() {
 }
 
 /// Construction checks like any call: declared field types are enforced on the
-/// supplied args, and (currying) a partially-applied constructor is a legal
-/// value rather than an arity error.
+/// supplied args — and, unlike a function call, the argument COUNT must be
+/// exact (constructors apply fully; see `ctor_application_demands_full_arity`).
 #[test]
 fn error_ctor_argument_type_and_partial() {
     let (message, _, _) = single_diag(&format!("{SHAPE}let x = () => Circle(\"s\")"));
@@ -1073,8 +1075,36 @@ fn error_ctor_argument_type_and_partial() {
         message,
         "argument 1 of `Circle`: expected float, got string"
     );
-    // `Rect(1.0)` on a 2-arg ctor is a legal partial `(float) => Shape`.
-    assert_clean(&format!("{SHAPE}let x = () => Rect(1.0)"));
+}
+
+/// Constructors apply FULLY: under-application at a call site is an immediate
+/// arity error (with the staging hint), over-application the same error
+/// without it, and the wrong count never cascades — the call still types as
+/// the variant it meant to build. A BARE constructor stays a first-class
+/// function value, and nullary constructors are untouched.
+#[test]
+fn ctor_application_demands_full_arity() {
+    let (message, _, _) = single_diag(&format!("{SHAPE}let x = () => Rect(1.0)"));
+    assert_eq!(
+        message,
+        "`Rect` takes 2 argument(s), got 1 — constructors apply fully; \
+         wrap it in a lambda to stage arguments (e.g. `(x) => Rect(…, x)`)"
+    );
+    let (message, _, _) = single_diag(&format!("{SHAPE}let x = () => Circle(1.0, 2.0)"));
+    assert_eq!(
+        message,
+        "`Circle` takes 1 argument(s), got 2 — constructors apply fully"
+    );
+    // The recovery keeps a wrong count to ONE diagnostic, not a cascade.
+    let (message, _, _) = single_diag(&format!("{SHAPE}let x = (): Shape => Rect(1.0)"));
+    assert!(message.starts_with("`Rect` takes 2 argument(s)"), "{message}");
+    // Staging on purpose is exactly what the hint says: a lambda.
+    assert_clean(&format!("{SHAPE}let mkTall = (h: float): Shape => Rect(2.0, h)"));
+    // Bare references stay first-class, and nullary ctors are unaffected.
+    assert_clean(&format!(
+        "{SHAPE}let xs = (rs: List<float>): List<Shape> => List.map(Circle, rs)\n\
+         let p: Shape = Point"
+    ));
 }
 
 /// Variant types are nominal in annotations, like records.

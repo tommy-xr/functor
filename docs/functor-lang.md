@@ -517,6 +517,24 @@ snapshots — no GPU, fully agent-verifiable.
       captures; bench A/B; `cargo test -p functor-lang` + `-p functor_runtime_common`
       green with the reviewed golden regens. Decision record:
       `docs/spikes/functor-lang-currying.md`.
+- [x] **Language: constructors apply fully** (2026-08-01) — the one carve-out
+      from call-site currying, and the currying migration's last sharp edge.
+      Applying a constructor with the wrong argument count is an immediate
+      error AT THE CALL (`` `Rect` takes 2 argument(s), got 1 — constructors
+      apply fully ``, with a lambda-staging hint when under-applied): at check
+      time (the checker knows every ctor's arity) and at run time for the
+      gradual seams it can't see through, one shared message. Previously
+      `Rect(1.0)` silently became a `<partial 1 more>` that travelled through
+      unconstrained model fields and failed far away (a `match` that matched
+      nothing, an `==` refusing functions); over-application already errored,
+      less clearly. OCaml/F# precedent. Functions are unchanged, and so is a
+      BARE constructor reference — still first-class for higher-order use
+      (`List.map(Circle, xs)`) — so only call-syntax under-application changes;
+      nullary ctors are untouched. A `Value::Partial` can therefore never name
+      a constructor, which deletes the rebinder's ctor-partial normalization.
+      *Verify (done):* check + run + rebind tests; repo-wide `.fun` sweep (no
+      deliberate partial ctor application existed); every example builds;
+      `frame_bench` at parity.
 - [x] **Language: `Debug.log` trace builtin** (2026-07-06; flipped label-first
       in the currying migration step 3). Core `functor_lang`-crate
       builtin `Debug.log(label, value) : (string, 'a) => 'a` — an Elm-style

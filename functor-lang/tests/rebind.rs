@@ -257,42 +257,39 @@ fn first_class_constructors_rebind_arity_and_make_snapshots_unsafe() {
     assert!(matches!(rebound, Value::Ctor { arity: 2, .. }));
 }
 
+/// A stored bare constructor whose edited declaration became nullary rebinds
+/// to the variant VALUE — the shape evaluation would now produce. (There is no
+/// partially-applied-constructor case to normalize: constructors apply fully,
+/// so a partial can never name one.)
 #[test]
-fn constructor_rebind_normalizes_nullary_and_saturated_values() {
+fn constructor_rebind_normalizes_a_nullary_edit() {
     let unary = module("type Slot = | Slot(value: float)\nlet main = () => Slot");
     let nullary = module("type Slot = | Slot\nlet main = () => Slot");
     let (rebound, report) = rebind_value(&main_value(&unary), &unary, &nullary);
     assert!(report.warnings.is_empty());
     assert!(matches!(rebound, Value::Variant { ref args, .. } if args.is_empty()));
-
-    let pair = module("type Pair = | Pair(left: float, right: float)\nlet main = () => Pair(1.0)");
-    let single = module("type Pair = | Pair(left: float)\nlet main = () => Pair(1.0)");
-    let (rebound, report) = rebind_value(&main_value(&pair), &pair, &single);
-    assert!(report.warnings.is_empty());
-    assert!(matches!(rebound, Value::Variant { ref args, .. } if args.len() == 1));
 }
 
+/// A constructor's arguments rebind like any stored data: a closure inside a
+/// SATURATED variant adopts the edited code.
 #[test]
-fn constructor_rebind_keeps_an_over_applied_partial_with_a_warning() {
-    let src = |body: &str, fields: &str| {
+fn constructor_arguments_rebind() {
+    let src = |body: &str| {
         format!(
-            "{APPLY}type Triple = | Triple(f: (float) => float, {fields})\n\
+            "{APPLY}type Holder = | Holder(f: (float) => float, n: float)\n\
              let behavior = (x) => {body}\n\
-             let main = () => Triple(behavior, 2.0)"
+             let main = () => Holder(behavior, 2.0)"
         )
     };
-    let triple = module(&src("x + 1.0", "b: float, c: float"));
-    let single = module(&src("x + 10.0", ""));
-    let stored = main_value(&triple);
-    let (rebound, report) = rebind_value(&stored, &triple, &single);
-    assert_eq!(report.rebound, 1, "applied closure should still rebind");
-    assert_eq!(report.warnings.len(), 1, "warnings: {:?}", report.warnings);
-    assert!(report.warnings[0].contains("2 applied argument(s)"));
-    let Value::Partial(partial) = rebound else {
-        panic!("expected retained partial")
+    let before = module(&src("x + 1.0"));
+    let after = module(&src("x + 10.0"));
+    let (rebound, report) = rebind_value(&main_value(&before), &before, &after);
+    assert_eq!(report.rebound, 1, "stored closure should rebind");
+    assert!(report.warnings.is_empty(), "warnings: {:?}", report.warnings);
+    let Value::Variant { args, .. } = rebound else {
+        panic!("expected a variant")
     };
-    assert!(matches!(partial.callee, Value::Ctor { arity: 3, .. }));
-    assert_eq!(num(&apply(&single, partial.applied[0].clone(), 1.0)), 11.0);
+    assert_eq!(num(&apply(&after, args[0].clone(), 1.0)), 11.0);
 }
 
 #[test]

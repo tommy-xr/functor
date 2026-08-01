@@ -190,6 +190,8 @@ fn rebind_ctor(
     }
 }
 
+/// A partial's callee is a closure or a builtin — constructors apply fully, so
+/// no partial can name one (see [`crate::eval`]). Both halves just rebind.
 fn rebind_partial(
     partial: &Rc<crate::value::Partial>,
     old: &ModuleIndex,
@@ -197,63 +199,11 @@ fn rebind_partial(
     report: &mut RebindReport,
 ) -> Value {
     let callee = walk(&partial.callee, old, new, report);
-
-    let constructor_fallback = if let Value::Ctor { name, arity } = &callee {
-        (partial.applied.len() > *arity).then(|| {
-            format!(
-                "stored partial constructor `{name}` has {} applied argument(s), but the edited constructor takes {arity}; keeping its old arity",
-                partial.applied.len()
-            )
-        })
-    } else if let (Value::Ctor { name, .. }, Value::Variant { ctor, args }) =
-        (&partial.callee, &callee)
-    {
-        (!args.is_empty() || !partial.applied.is_empty()).then(|| {
-            format!(
-                "stored partial constructor `{name}` has {} applied argument(s), but the edited constructor `{ctor}` is nullary; keeping its old arity",
-                partial.applied.len()
-            )
-        })
-    } else {
-        None
-    };
-
     let applied: Vec<Value> = partial
         .applied
         .iter()
         .map(|value| walk(value, old, new, report))
         .collect();
-
-    if let Some(warning) = constructor_fallback {
-        report.warnings.push(warning);
-        return Value::Partial(Rc::new(crate::value::Partial {
-            callee: partial.callee.clone(),
-            applied,
-        }));
-    }
-    if matches!(
-        (&partial.callee, &callee),
-        (Value::Ctor { .. }, Value::Variant { args, .. }) if args.is_empty()
-    ) {
-        return callee;
-    }
-
-    // Constructor arity is part of edited source. Normalize to the same value
-    // shape evaluation would have produced under the new declaration rather
-    // than manufacturing a zero-arity Ctor or a saturated Partial.
-    if let Value::Ctor { name, arity } = &callee {
-        return match applied.len().cmp(arity) {
-            std::cmp::Ordering::Less => {
-                Value::Partial(Rc::new(crate::value::Partial { callee, applied }))
-            }
-            std::cmp::Ordering::Equal => Value::Variant {
-                ctor: name.clone(),
-                args: Rc::new(applied),
-            },
-            std::cmp::Ordering::Greater => unreachable!("constructor shrink handled above"),
-        };
-    }
-
     Value::Partial(Rc::new(crate::value::Partial { callee, applied }))
 }
 
