@@ -150,6 +150,7 @@
         functor_lang_inspector_trace_gen,
         functor_lang_set_source,
         functor_lang_set_project,
+        functor_lang_net_deliver,
         functor_lang_viewer_detached,
         functor_lang_viewer_look,
         functor_lang_viewer_move,
@@ -220,6 +221,18 @@
         } else {
           console.warn(`[player] invalid ?prefix=${prefix} (not an identifier); booting the unprefixed contract`);
         }
+      }
+      // ?net=embedder: route the game's networking to the HOSTING page instead
+      // of opening browser WebSockets — the runtime posts
+      // `functor-net-commands` outward and takes `functor-net-deliver` back
+      // (see the message listener below). Must be set before init(); absent (or
+      // anything else, which warns) leaves the default WebSocket transport.
+      const net = params.get("net");
+      const embedderNet = net === "embedder";
+      if (embedderNet) {
+        window.__functorNetTransport = "embedder";
+      } else if (net !== null) {
+        console.warn(`[player] unknown ?net=${net}; using the default websocket transport`);
       }
       if (!inlineProject) {
         window.__functorLangGamePath = src
@@ -660,6 +673,7 @@
       };
 
       const pushQueue = [];
+      const netQueue = []; // embedder net events that arrived before the producer
       let booted = false; // inline: has the first valid project kicked off boot()?
       let wasmReady = false;
 
@@ -674,6 +688,19 @@
           if (wasmReady && functor_lang_is_running()) {
             window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
           }
+          return;
+        }
+        // Embedder networking: inbound events from the hosting page, handed
+        // straight to the runtime. Same-origin only (the panes are same-origin
+        // iframes) — this injects data the game treats as its network.
+        // Deliveries that beat the producer are QUEUED, not dropped, like the
+        // source pushes below: `Connected` is never retransmitted, so losing
+        // one leaves the game waiting forever on a connection it already has.
+        if (data.type === "functor-net-deliver") {
+          if (!embedderNet || event.origin !== window.location.origin) return;
+          const events = data.events ?? [];
+          if (wasmReady && functor_lang_is_running()) functor_lang_net_deliver(JSON.stringify(events));
+          else netQueue.push(...events);
           return;
         }
         if (data.type !== "functor-lang-set-source" && data.type !== "functor-lang-set-project") return;
@@ -718,6 +745,9 @@
           window.parent.postMessage({ type: "functor-lang-preview-ready" }, "*");
         }
         while (pushQueue.length) applyPush(pushQueue.shift());
+        if (netQueue.length) {
+          functor_lang_net_deliver(JSON.stringify(netQueue.splice(0)));
+        }
       };
 
       const boot = () => init().then(() => {
