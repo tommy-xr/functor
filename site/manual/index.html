@@ -27,7 +27,7 @@
     <div class="docs-layout">
       <nav class="docs-nav">
         <a href="#get-started">Get started</a>
-        <a href="#complete-game">A complete game</a>
+        <a href="#tutorial">Tutorial</a>
         <a href="#contract">The game contract</a>
         <a href="#debug-camera">The debug camera</a>
         <a href="#language">The language</a>
@@ -43,8 +43,8 @@
           Functor Lang is a deliberately small, F#-inspired language for game logic. It is
           <em>interpreted</em> — the source ships as text and runs natively, in the browser, and
           in the <a href="../sandbox.html">sandbox</a> — and it hot-reloads with your game's state
-          preserved. Every full program on this page has a <strong>▶ try it</strong> button that
-          opens it live in the sandbox.
+          preserved. Most full programs on this page carry a <strong>▶ try it</strong> button that
+          opens them live in the sandbox.
         </p>
         <p class="docs-callout">
           Need an exact signature? The <a href="../docs/">API reference</a> is generated from
@@ -75,16 +75,11 @@ npm run build:cli                    # builds the functor CLI + runtimes</pre>
 { "language": "functor-lang", "entry": "game.fun" }</pre>
 
           <h3>Your first run</h3>
-          <p>Here is the smallest interesting <code>game.fun</code> — a spinning cube:</p>
-          <pre class="functor-lang runnable">let init = {}
-let tick = (m, dt, tts) => m
-let draw = (m, tts: float) =>
-  Frame.create(
-    Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.cube()
-      |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8))
-      |> Scene.rotateY(Angle.radians(tts)))</pre>
-          <p>Run it:</p>
+          <p>
+            Take a <code>game.fun</code> from the <a href="#tutorial">tutorial</a> below — or
+            scaffold one with <code>functor -d . init</code>. With a manifest and a game in the
+            directory, these are the four commands you will use all day:
+          </p>
           <pre class="shell">functor -d . run native      # desktop window
 functor -d . run wasm        # serves it in the browser
 functor -d . develop         # hot-reload loop: save the file, see it in ~1 frame
@@ -98,16 +93,101 @@ functor -d . build           # typecheck (diagnostics are errors)</pre>
           </p>
         </section>
 
-        <section id="complete-game">
-          <h2>A complete game</h2>
+        <section id="tutorial">
+          <h2>Tutorial</h2>
           <p>
-            A game is Model–View–Update: <code>init</code> is the starting model,
-            <code>tick</code> steps it every frame, <code>draw</code> renders it, and messages
-            (from timers, effects) fold through <code>update</code>. This one pulses a sphere and
-            counts beats once a second:
+            Six steps, each a <strong>complete program</strong> — nothing is elided, and every one
+            runs as written. Press <strong>▶ try it</strong> to open a step in the sandbox, or
+            paste it into a <code>game.fun</code> and run it. Each step introduces one new idea;
+            each program is self-contained.
           </p>
-          <pre class="functor-lang runnable">// a pulsing sphere with a beat counter
-type Msg = | Beat
+
+          <h3>1 &middot; Hello world</h3>
+          <p>
+            The smallest program that puts something on the screen. Three bindings are all a game
+            ever requires: <code>init</code> (the starting model — a <em>value</em>),
+            <code>tick</code> (step it), and <code>draw</code> (describe a frame).
+            <code>Frame.create2D</code> plus a <code>Camera2D</code> gives you a flat,
+            center-origin world measured in your own units:
+          </p>
+          <pre class="functor-lang runnable">let init = {}
+
+let tick = (model, dt: float, tts: float) => model
+
+let draw = (model, tts: float) =>
+  Frame.create2D(
+    Camera2D.create(20.0, 12.0),
+    "HELLO, FUNCTOR" |> Sprite.text(Color.rgb(0.25, 0.85, 0.9), 1.0))</pre>
+          <p>
+            Nothing moves yet, because <code>tick</code> hands the model straight back and
+            <code>draw</code> ignores the clock.
+          </p>
+
+          <h3>2 &middot; A rotating cube</h3>
+          <p>
+            Now use the clock. <code>draw</code>'s second argument is <code>tts</code> — total
+            time in seconds — so a frame that rotates by <code>tts</code> animates without storing
+            anything. This is a 3D frame: <code>Frame.create</code> with a
+            <code>Camera3D</code> placed in the Y-up world.
+          </p>
+          <pre class="functor-lang runnable">let init = {}
+
+let tick = (model, dt: float, tts: float) => model
+
+let draw = (model, tts: float) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube()
+      |> Scene.emissive(Color.rgb(1.0, 0.2, 0.8))
+      |> Scene.rotateY(Angle.radians(tts)))</pre>
+          <p>
+            Angles are branded values — <code>Scene.rotateY(1.57)</code> is a teaching error, not
+            a rotation. Say <code>Angle.radians(1.57)</code> or <code>Angle.degrees(90.0)</code>.
+          </p>
+
+          <h3>3 &middot; Handle input</h3>
+          <p>
+            Motion that depends on the player has to live in the model.
+            <code>sampledInput</code> runs once immediately before every simulation step and hands
+            you a snapshot of what is <em>currently held</em> — so continuous movement needs no
+            key-state bookkeeping of your own. Store a direction, then integrate it in
+            <code>tick</code>. Hold <strong>A</strong> or <strong>D</strong> (click the preview
+            first so it has keyboard focus):
+          </p>
+          <pre class="functor-lang runnable">let init = { x: 0.0, dx: 0.0 }
+
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  let held = (k: Key.t) => snapshot.heldKeys |> List.any((key) => key == k) in
+  { model with
+      dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0) }
+
+let tick = (model, dt: float, tts: float) =>
+  { model with x: Math.clamp(-4.0, 4.0, model.x + model.dx * 6.0 * dt) }
+
+let draw = (model, tts: float) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube()
+      |> Scene.emissive(Color.rgb(0.2, 0.9, 1.0))
+      |> Scene.translate(Vec3.make(model.x, 0.0, 0.0)))</pre>
+          <p>
+            Multiplying by <code>dt</code> is what makes the speed a rate (6 units per second)
+            rather than a per-frame nudge. The snapshot also carries
+            <code>pressedKeys</code> / <code>releasedKeys</code> for one-shot actions — see
+            <a href="#contract">the game contract</a>, which also covers the event-shaped
+            <code>input</code> hook for when you want raw key events.
+          </p>
+
+          <h3>4 &middot; Messages and subscriptions</h3>
+          <p>
+            The full loop is Model–View–Update. Beyond <code>tick</code>, a game can receive
+            <strong>messages</strong> — your own variant values — which fold through
+            <code>update</code>. <code>subscriptions</code> declares where they come from;
+            <code>Sub.every</code> is a timer on a global time grid. This one pulses a sphere from
+            <code>tick</code> and counts beats once a second from a subscription, showing the
+            count in a HUD:
+          </p>
+          <pre class="functor-lang runnable">type Msg = | Beat
 
 let init = { spin: 0.0, beat: 0.0 }
 
@@ -120,6 +200,10 @@ let update = (model, msg) =>
 
 let subscriptions = (model) => Sub.every(Time.seconds(1.0), Beat)
 
+let ui = (model) =>
+  Ui.text(Text.concat("BEATS  ", Text.fixed(model.beat, 0.0)))
+    |> Ui.panel(Ui.topLeft())
+
 let draw = (model, tts: float) =>
   Frame.create(
     Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)),
@@ -127,38 +211,26 @@ let draw = (model, tts: float) =>
       |> Scene.emissive(Color.rgb(1.0, 0.3, 0.8))
       |> Scene.scale(1.0 + 0.2 * Math.sin(model.spin * 4.0)))</pre>
           <p>
-            Input is another pure function — slide the cube with A and D (click the preview
-            first so it has keyboard focus):
+            <code>subscriptions</code> requires <code>update</code>. Durations are branded like
+            Angles, so <code>Sub.every(1.0, Beat)</code> is an error — say
+            <code>Time.seconds(1.0)</code>. The <code>ui</code> hook is the screen-space HUD,
+            another pure function of the model.
           </p>
-          <pre class="functor-lang runnable">let init = { x: 0.0 }
 
-let input = (model, key, isDown) =>
-  match isDown with
-  | false => model
-  | true =>
-    (match key with
-     | Key.A => { model with x: model.x - 0.5 }
-     | Key.D => { model with x: model.x + 0.5 }
-     | _ => model)
-
-let tick = (model, dt, tts) => model
-
-let draw = (model, tts) =>
-  Frame.create(
-    Camera3D.lookAt(Vec3.make(0.0, 2.0, -8.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.cube()
-      |> Scene.emissive(Color.rgb(0.2, 0.9, 1.0))
-      |> Scene.translate(Vec3.make(model.x, 0.0, 0.0)))</pre>
+          <h3>5 &middot; Physics</h3>
           <p>
-            And physics is declarative — describe the bodies each frame; the runtime reconciles
-            and steps the world:
+            Physics is <em>declarative</em>: the optional <code>physics</code> hook describes the
+            bodies that should exist this frame, and the runtime reconciles them against the live
+            world and steps it. Bodies are matched across frames by their
+            <code>Physics.tag</code>, which is also how <code>draw</code> asks for a body's live
+            pose:
           </p>
           <pre class="functor-lang runnable">let init = {}
-let tick = (m, dt, tts) => m
+let tick = (model, dt: float, tts: float) => model
 
 let ballTag = Physics.tag("ball")
 
-let physics = (m) =>
+let physics = (model) =>
   Physics.scene(Vec3.make(0.0, -9.81, 0.0), [
     Physics.fixed(Physics.tag("ground"), Physics.box(20.0, 0.4, 20.0))
       |> Physics.at(Vec3.make(0.0, -0.2, 0.0)),
@@ -167,7 +239,7 @@ let physics = (m) =>
       |> Physics.restitution(0.8),
   ])
 
-let draw = (m, tts) =>
+let draw = (model, tts: float) =>
   Frame.createLit(
     Camera3D.lookAt(Vec3.make(0.0, 3.0, -8.0), Vec3.make(0.0, 1.0, 0.0)),
     Scene.group([
@@ -181,6 +253,121 @@ let draw = (m, tts) =>
       Light.ambient(Color.rgb(0.15, 0.15, 0.2)),
       Light.directional(Vec3.make(0.4, -1.0, 0.3), Color.rgb(1.0, 0.95, 0.9), 0.9) |> Light.castShadows,
     ])</pre>
+          <p>
+            Keep physics reads in <code>draw</code>: it runs after the step and sees this frame's
+            world, while <code>tick</code> sees the previous frame's.
+          </p>
+
+          <h3>6 &middot; Multiplayer: two roles in one file</h3>
+          <p>
+            A multiplayer game is two <strong>roles</strong> over one world. Functor lets both
+            roles live in a single file: <code>functor.json</code> declares
+            <code>entries</code> instead of one <code>entry</code>, and each role names a binding
+            <strong>prefix</strong>. The runner then resolves the canonical contract through that
+            prefix as camelCase — the <code>client</code> role reads
+            <code>clientInit</code> / <code>clientTick</code> / <code>clientDraw</code>, the
+            <code>server</code> role reads <code>serverInit</code> / <code>serverTick</code> /
+            <code>serverDraw</code> — so one edit hot-reloads both roles atomically.
+          </p>
+          <pre class="shell"># functor.json
+{
+  "language": "functor-lang",
+  "entries": {
+    "client": { "file": "game.fun", "prefix": "client" },
+    "server": { "file": "game.fun", "prefix": "server" }
+  }
+}</pre>
+          <p>
+            Everything above the role sections is <em>shared</em>: the protocol type both roles
+            agree on, and the authoritative rules written as pure functions. That sharing is the
+            point — one declaration of the protocol, so a typo on either side is a check-time
+            error.
+          </p>
+          <p class="docs-callout">
+            <strong>This step is the role structure, not the wire.</strong> To keep it runnable in
+            one process, the client below folds both seats' messages in locally — so what you get
+            is the <em>shape</em> a networked game has, with the transport left out. The real
+            transport is <code>Sub.connect</code> / <code>Sub.listen</code> and
+            <code>Effect.sendMsg</code>, whose events arrive as the built-in <code>Net</code>
+            module's variants;
+            <a href="https://github.com/tommy-xr/functor/tree/main/examples/mp"><code>examples/mp</code></a>
+            is a client and an authoritative server actually talking over it.
+          </p>
+          <pre class="functor-lang">// ===== PROTOCOL — what both roles agree on =====
+type Ship = { pid: float, x: float, dx: float }
+type Wire = | Steer(dx: float)
+
+// ===== SERVER — pure functions over the world =====
+let world0: List&lt;Ship> = [
+  { pid: 0.0, x: -4.0, dx: 0.0 },
+  { pid: 1.0, x: 4.0, dx: 0.0 }]
+
+// Identity is keyed by SENDER, never read out of the wire value — with a real
+// transport that is the connection the message arrived on.
+let recv = (senderPid: float, wire: Wire, ships: List&lt;Ship>): List&lt;Ship> =>
+  match wire with
+  | Steer(dx) =>
+    ships |> List.map((s) => if s.pid == senderPid then { s with dx: dx } else s)
+
+let step = (dt: float, ships: List&lt;Ship>): List&lt;Ship> =>
+  ships |> List.map((s) => { s with x: Math.clamp(-9.0, 9.0, s.x + s.dx * 7.0 * dt) })
+
+// A stand-in peer: one steering value per pid, so the seats never march in step.
+let botDx = (pid: float, tts: float): float => Math.sign(Math.sin(tts + pid * 2.0))
+
+// ===== RENDERING — shared by both roles =====
+let mine = () => Color.rgb(0.25, 0.85, 0.9)
+let theirs = () => Color.rgb(0.91, 0.35, 0.72)
+
+let render = (myPid: float, ships: List&lt;Ship>) =>
+  Frame.create2D(
+    Camera2D.create(24.0, 14.0),
+    Sprite.group(ships |> List.map((s) =>
+      Sprite.circle(if s.pid == myPid then mine() else theirs(), 1.0)
+        |> Sprite.move(s.x, 0.0))))
+
+// ===== CLIENT ROLE — clientInit / clientTick / clientDraw =====
+let clientInit = { myPid: 0.0, botPid: 1.0, ships: world0, dx: 0.0 }
+
+let clientSampledInput = (m, snapshot: Input.snapshot) =>
+  let held = (k: Key.t) => snapshot.heldKeys |> List.any((key) => key == k) in
+  { m with dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0) }
+
+let clientTick = (m, dt: float, tts: float) =>
+  { m with ships:
+      m.ships
+        |> recv(m.myPid, Steer(m.dx))
+        |> recv(m.botPid, Steer(botDx(m.botPid, tts)))
+        |> step(dt) }
+
+let clientDraw = (m, tts: float) => render(m.myPid, m.ships)
+
+// ===== SERVER ROLE — serverInit / serverTick / serverDraw =====
+let serverInit = clientInit
+
+let serverTick = (m, dt: float, tts: float) =>
+  { m with ships:
+      m.ships
+        |> recv(m.myPid, Steer(botDx(m.myPid, tts)))
+        |> recv(m.botPid, Steer(botDx(m.botPid, tts)))
+        |> step(dt) }
+
+let serverDraw = clientDraw</pre>
+          <p>
+            <code>--entry</code> picks the role, and <code>build</code> validates
+            <em>every</em> declared role's contract under its own prefixed names:
+          </p>
+          <pre class="shell">functor -d . build                      # checks both roles
+functor -d . run native --entry client  # you steer, with A and D
+functor -d . run native --entry server  # the same world, seen from the authority</pre>
+          <p class="docs-callout">
+            This is the one step with no <strong>▶ try it</strong> button — that path pastes a
+            program in and boots it against the <em>unprefixed</em> contract, which a
+            prefixed role by definition doesn't answer. The sandbox can still play a prefixed
+            role when it knows the prefix up front:
+            <a href="../sandbox.html?example=orbs">open Orbs in the sandbox</a> to see this same
+            one-file, two-role shape at full size, with an authoritative claim-resolution rule.
+          </p>
         </section>
 
         <section id="contract">
