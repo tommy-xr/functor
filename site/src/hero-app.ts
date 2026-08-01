@@ -1,8 +1,9 @@
-// The landing hero's live code panel: a small editor mounted over the
-// jumpVelocity region of examples/mario.fun. Behind the boot loader, the page
-// queues the checked-in jump.script at the browser runtime's fixed-step input
-// boundary, waits for its authoritative timeline markers, then pauses and seeks
-// just before takeoff. The visitor's first click on 🔮 reveals the jump.
+// The landing hero's live code panel: a small editor mounted over a real excerpt
+// of examples/mario/game.fun (jump tuning + the world-composition function).
+// Behind the boot loader, the page queues the checked-in jump.script at the
+// browser runtime's fixed-step input boundary, waits for its authoritative
+// timeline markers, then pauses and seeks just before takeoff. The visitor's
+// first click on 🔮 reveals the jump.
 //
 // This is the light sibling of sandbox.tsx: it reuses the same editor↔player
 // seam (player-bridge.ts) but a stripped editor (mini-editor.ts — no basicSetup
@@ -112,15 +113,13 @@ const parseJumpScript = (source: string): ScriptedInput[] => {
 };
 
 const frame = document.querySelector<HTMLIFrameElement>(".hero-scene")!;
-const mount = document.getElementById("hero-editor")!;
-const card = document.querySelector(".hero-card")!;
+const editorShell = document.getElementById("hero-editor")!;
+const mount = editorShell.querySelector<HTMLElement>("[data-hero-editor]")!;
 
-// A small, unobtrusive status dot pinned to the card corner: green when the
+// A small, unobtrusive status dot in the excerpt label: green when the
 // last edit is live, red on a broken edit (the old program keeps running).
 // The full message lives in its tooltip and the __hero.status() seam.
-const dot = document.createElement("div");
-dot.className = "hero-status";
-card.appendChild(dot);
+const dot = document.querySelector<HTMLElement>("[data-hero-status]")!;
 
 let statusState: HeroStatus = { state: "busy", message: "" };
 const setStatus = (state: HeroState, message = "") => {
@@ -131,7 +130,7 @@ const setStatus = (state: HeroState, message = "") => {
 
 // The boot loader (static markup in index.html) evaporates only once the card
 // has BOTH its pixels and its final shape: the player's ready handshake AND a
-// settled editor panel, which grows the card by its own 172px.
+// settled editor panel, which grows the card by its own fixed height.
 //
 // Both conditions, not just the player, because this module is now lazy. At
 // base it was eager, so the panel had always mounted (a same-origin fetch)
@@ -270,6 +269,9 @@ const bridge = new PlayerBridge(frame, {
 let editor: EditorView | null = null;
 
 const boot = async () => {
+  // Establish the card's final successful-path geometry behind the loader.
+  // A fetch/parse failure collapses this to a compact red error header below.
+  editorShell.hidden = false;
   try {
     const [sourceResponse, scriptResponse] = await Promise.all([
       fetch(HERO_URL),
@@ -303,7 +305,6 @@ const boot = async () => {
       suffix = "";
     }
 
-    mount.hidden = false;
     editor = createMiniEditor({
       parent: mount,
       doc: region,
@@ -313,6 +314,7 @@ const boot = async () => {
       },
     });
   } catch (err) {
+    editorShell.classList.add("is-error");
     setStatus("error", err instanceof Error ? err.message : String(err));
     demoSettled = true;
     return;
@@ -320,9 +322,8 @@ const boot = async () => {
 };
 
 // Settled means "the card will not change shape again", which every exit path
-// of boot() reaches — including its failures, where the panel simply never
-// appears. Finalizing here rather than at each `return` is what makes that
-// exhaustive.
+// of boot() reaches — including failures, where only the compact error header
+// remains. Finalizing here rather than at each `return` makes that exhaustive.
 void boot().finally(() => {
   editorSettled = true;
   maybeStageDemo();

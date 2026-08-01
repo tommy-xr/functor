@@ -16,9 +16,17 @@
 // --- Tunables (tweak these to change whether the jump clears the chasm) ---
 let runSpeed = 8.0        // horizontal speed while a direction is held
 // <editable>
-// Will the jump clear the chasm?
-// Click 🔮 to preview it, then try 12.0 and 13.0.
+// Tune the jump, then click 🔮 to preview it.
 let jumpVelocity = 13.0
+
+let world = (model, tts) =>
+  Sprite.group([
+    backdrop(),
+    platform(leftGroundX, leftGroundWidth),
+    platform(rightGroundX, rightGroundWidth),
+    character(model, tts),
+  ])
+  |> Sprite.nearest()
 // </editable>
 let gravity = 30.0        // downward acceleration
 
@@ -33,6 +41,10 @@ let groundTop = 0.0       // y of the platform surface the character stands on
 let chasmHalf = 3.0       // gap spans x in [-chasmHalf, chasmHalf] -> width 6.0
 let leftEdge = -11.0      // outer x of the left platform
 let rightEdge = 11.0      // outer x of the right platform
+let leftGroundWidth = -chasmHalf - leftEdge
+let leftGroundX = leftEdge + leftGroundWidth / 2.0
+let rightGroundWidth = rightEdge - chasmHalf
+let rightGroundX = chasmHalf + rightGroundWidth / 2.0
 let startX = -6.0         // character spawn (on the left platform)
 let fallLimit = -2.0      // fall past this (into the chasm) and respawn.
                           // Shallow on purpose: a weak jump that dips into the
@@ -175,16 +187,6 @@ let character = (model, tts) =>
   Sprite.imageRegion(1.6, 1.6, characterRegion(model, tts), Assets.hero_atlas)
     |> faceCharacter(model)
     |> Sprite.move(model.x, model.y + 0.8)
-
-let world = (model, tts) =>
-  Sprite.group([
-    backdrop(),
-    // Left platform: x in [leftEdge, -chasmHalf]; right: [chasmHalf, rightEdge].
-    platform((leftEdge - chasmHalf) / 2.0, -chasmHalf - leftEdge),
-    platform((rightEdge + chasmHalf) / 2.0, rightEdge - chasmHalf),
-    character(model, tts),
-  ])
-  |> Sprite.nearest()
 
 let draw = (model, tts) =>
   Frame.create2D(Camera2D.create(24.0, 13.5), world(model, tts))

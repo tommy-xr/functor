@@ -77,8 +77,22 @@
             title="live platformer with time-travel extrapolation rendered by functor"
             allow="pointer-lock"
           ></iframe>
-          <!-- The landing island mounts the jump-velocity editor here. -->
-          <div id="hero-editor" class="hero-editor" hidden></div>
+          <!-- The landing island mounts a real excerpt of the running game here. -->
+          <div
+            id="hero-editor"
+            class="hero-editor"
+            aria-label="Live excerpt from examples/mario/game.fun"
+            hidden
+          >
+            <div class="hero-editor-heading">
+              <span class="hero-editor-label">
+                <span class="hero-status" data-hero-status></span>
+                Live excerpt
+              </span>
+              <code>examples/mario/game.fun</code>
+            </div>
+            <div class="hero-editor-code" data-hero-editor></div>
+          </div>
         </div>
       </div>
     </section>

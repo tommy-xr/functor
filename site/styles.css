@@ -299,13 +299,66 @@ a:hover {
   background: #0d0221;
 }
 
-/* The live jump-tuning panel below the scene, inside the card. The mini-editor
+/* A visibly labeled excerpt of the real running game. The label prevents the
+   compact panel reading like a complete source file; the editor beneath it
    carries the site's shared synthwave theme. */
 .hero-editor {
   border-top: 1px solid var(--line);
-  height: 172px;
-  overflow: auto;
+  height: 246px;
+  overflow: hidden;
   background: #161226;
+  display: flex;
+  flex-direction: column;
+}
+
+.hero-editor-heading {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(73, 231, 255, 0.16);
+  background: rgba(13, 2, 33, 0.72);
+  color: var(--cyan);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.hero-editor-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.hero-editor-heading code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font: inherit;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.hero-editor-code {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.hero-editor.is-error {
+  height: auto;
+}
+
+.hero-editor.is-error .hero-editor-code {
+  display: none;
 }
 
 .hero-editor .cm-editor {
@@ -318,34 +371,29 @@ a:hover {
   line-height: 1.65;
 }
 
-/* A small status dot pinned to the card corner: green live / red on a broken
-   edit. The message lives in its tooltip (title) — calm, not a banner. */
+/* A small status dot in the excerpt label: green live / red on a broken edit.
+   The message lives in its tooltip (title) — calm, not a banner. */
 .hero-status {
-  position: absolute;
-  /* Bottom-left: the top edge belongs to the (top-docked) scrubber, and
-     bottom-right is the mouse-capture chip's corner. Purely an indicator, so it
-     never intercepts clicks. */
-  bottom: 10px;
-  left: 10px;
+  flex: 0 0 auto;
   pointer-events: none;
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: 999px;
-  background: var(--text-dim);
-  box-shadow: 0 0 0 4px rgba(15, 12, 29, 0.55);
-  z-index: 2;
+  color: var(--text-dim);
+  background: currentColor;
+  box-shadow: 0 0 7px currentColor;
 }
 
 .hero-status[data-state="live"] {
-  background: var(--green);
+  color: var(--green);
 }
 
 .hero-status[data-state="busy"] {
-  background: var(--amber);
+  color: var(--amber);
 }
 
 .hero-status[data-state="error"] {
-  background: var(--red);
+  color: var(--red);
 }
 
 /* Flourish (a): the gradient-clipped wordmark — the one big statement. */

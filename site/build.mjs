@@ -231,7 +231,11 @@ for (const example of EXAMPLES) {
     { source: example.source, output: exampleEntryPath(example.id) },
     ...(example.siblings ?? []),
   ];
-  for (const { source, output } of [...files, ...(example.assets ?? [])]) {
+  for (const { source, output } of [
+    ...files,
+    ...(example.assets ?? []),
+    ...(example.siteFiles ?? []),
+  ]) {
     const slash = output.lastIndexOf("/");
     if (slash >= 0) {
       await mkdir(`${dist}/${output.slice(0, slash)}`, { recursive: true });

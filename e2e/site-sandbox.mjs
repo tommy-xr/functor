@@ -243,10 +243,41 @@ const playerFrame = (page) => {
     { timeout: 10000 }
   );
   const region = await page.evaluate(() => window.__hero.region());
+  const excerptHeading = await page.locator(".hero-editor-heading").textContent();
+  const excerptLayout = await page.evaluate(() => {
+    const scroller = document.querySelector(".hero-editor .cm-scroller");
+    const viewport = document.querySelector(".hero-editor-code").getBoundingClientRect();
+    const lines = [...document.querySelectorAll(".hero-editor .cm-line")];
+    const lastLine = lines.findLast((line) => line.textContent.trim() !== "");
+    const lastLineRect = lastLine.getBoundingClientRect();
+    const statusRect = document.querySelector(".hero-status").getBoundingClientRect();
+    const statusOverlapsLastLine =
+      statusRect.left < lastLineRect.right &&
+      statusRect.right > lastLineRect.left &&
+      statusRect.top < lastLineRect.bottom &&
+      statusRect.bottom > lastLineRect.top;
+    return {
+      verticallyVisible: lastLineRect.bottom <= viewport.bottom + 1,
+      horizontallyVisible: scroller.scrollWidth <= scroller.clientWidth + 1,
+      statusOverlapsLastLine,
+    };
+  });
   check(
-    "hero editor shows only the jump region (not the whole file)",
-    region.includes("let jumpVelocity") && !region.includes("let init"),
+    "hero editor clearly labels a real world-building excerpt",
+    excerptHeading.toLowerCase().includes("live excerpt") &&
+      excerptHeading.includes("examples/mario/game.fun") &&
+      region.includes("let jumpVelocity") &&
+      region.includes("let world = (model, tts) =>") &&
+      region.includes("Sprite.group") &&
+      !region.includes("let init"),
     region.slice(0, 40)
+  );
+  check(
+    "hero editor shows every meaningful excerpt line without overflow",
+    excerptLayout.verticallyVisible &&
+      excerptLayout.horizontallyVisible &&
+      !excerptLayout.statusOverlapsLastLine,
+    JSON.stringify(excerptLayout)
   );
 
   // The loader has already driven the checked-in input script, paused, and
