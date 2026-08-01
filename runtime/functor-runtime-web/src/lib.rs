@@ -12,7 +12,9 @@ use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
-use functor_runtime_common::net::{ConnCommand, HttpMethod, NetCommand};
+use functor_runtime_common::net::{
+    parse_delivered_events, ConnCommand, DeliveredEvent, HttpMethod, NetCommand,
+};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
     RuntimeTexture, Texture2D, TextureData, TextureFormat, TextureOptions, PNG,
@@ -160,6 +162,54 @@ fn functor_lang_entry_prefix() -> String {
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_default()
+}
+
+/// Where the runtime's networking goes. Three routings exist: the in-process
+/// netsim (`sim::is_running()`, which short-circuits everything before this
+/// choice is even reached), real browser WebSockets, and the *embedder* — the
+/// page hosting this runtime.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NetTransport {
+    /// `window.__functorNetTransport` absent or `"websocket"`: open real sockets.
+    WebSocket,
+    /// `window.__functorNetTransport === "embedder"`: post the drained
+    /// [`ConnCommand`]s to the embedding page and take events back from it
+    /// through [`functor_lang_net_deliver`]. No socket is opened.
+    Embedder,
+}
+
+/// Read the boot global once (it selects a routing for the page's lifetime, so
+/// re-reading it per frame would only invite a mid-run flip). The CLI's dev
+/// index page deliberately does NOT set it — there is no coordinator behind
+/// `functor run wasm`, so it defaults to WebSocket there; the site's
+/// `player.html` sets it from `?net=embedder`.
+fn net_transport() -> NetTransport {
+    thread_local! {
+        static TRANSPORT: Cell<Option<NetTransport>> = const { Cell::new(None) };
+    }
+    TRANSPORT.with(|cached| {
+        if let Some(transport) = cached.get() {
+            return transport;
+        }
+        let value = js_sys::Reflect::get(&window(), &JsValue::from_str("__functorNetTransport"))
+            .ok()
+            .and_then(|v| v.as_string());
+        let transport = match value.as_deref() {
+            Some("embedder") => NetTransport::Embedder,
+            None | Some("websocket") => NetTransport::WebSocket,
+            Some(other) => {
+                web_sys::console::warn_1(
+                    &format!(
+                        "[net] unknown window.__functorNetTransport={other}; using websockets"
+                    )
+                    .into(),
+                );
+                NetTransport::WebSocket
+            }
+        };
+        cached.set(Some(transport));
+        transport
+    })
 }
 
 /// The project's full file list (entry FIRST, then siblings), as the CLI's Functor Lang
@@ -917,11 +967,16 @@ struct WsClient {
     next_id: u64,
 }
 
-/// Drain the game's queued connection commands and perform them with browser
-/// WebSockets; socket events are pushed back into the game from the handlers.
+/// Drain the game's queued connection commands and perform them: with browser
+/// WebSockets (socket events are pushed back into the game from the handlers),
+/// or — under [`NetTransport::Embedder`] — by handing them to the embedding page.
 fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>) {
     let json = game.net_drain_conn_commands();
     if json == "[]" {
+        return;
+    }
+    if net_transport() == NetTransport::Embedder {
+        post_conn_commands_to_embedder(&json);
         return;
     }
     let commands: Vec<ConnCommand> = match serde_json::from_str(&json) {
@@ -959,6 +1014,98 @@ fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>
             }
         }
     }
+}
+
+/// Embedder egress: hand the drained commands (verbatim, as the JSON array the
+/// producer serialized) to the hosting page as
+/// `{ type: "functor-net-commands", commands: [...] }`. Unlike the WebSocket
+/// path, `Listen` is NOT refused here — a browser can't bind a socket, but the
+/// embedder can honour a listen however it likes, so every command goes out.
+///
+/// A top-level page has no embedder to route to; warn once and drop, the way
+/// the WebSocket path warns about `Sub.listen`.
+///
+/// The commands go out with our OWN origin as the target, so egress and ingress
+/// (which only accepts same-origin deliveries) enforce the same boundary — the
+/// player is deliberately embeddable, and every `Send` payload and `Connect`
+/// URL is in here. [xreview]
+///
+/// Idempotency is the embedder's to keep: `Connect`/`Listen` are idempotent by
+/// key (see `net::connection`), and unlike `ws_connect` this path holds no
+/// connection table to dedupe against — a re-declare (every hot reload emits
+/// one) is forwarded verbatim.
+fn post_conn_commands_to_embedder(json: &str) {
+    let parent = window().parent().ok().flatten();
+    let Some(parent) = parent.filter(|p| p != &window()) else {
+        thread_local! {
+            static WARNED: Cell<bool> = const { Cell::new(false) };
+        }
+        if !WARNED.replace(true) {
+            web_sys::console::warn_1(
+                &"[net] embedder transport with no embedding page; net commands are dropped".into(),
+            );
+        }
+        return;
+    };
+    let commands = match js_sys::JSON::parse(json) {
+        Ok(value) => value,
+        Err(_) => {
+            web_sys::console::error_1(&"[net] bad conn commands json".into());
+            return;
+        }
+    };
+    let message = Object::new();
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("functor-net-commands"),
+    );
+    let _ = js_sys::Reflect::set(&message, &JsValue::from_str("commands"), &commands);
+    let origin = window().location().origin().unwrap_or_default();
+    let _ = parent.post_message(&message, &origin);
+}
+
+/// Embedder ingress: the counterpart of [`post_conn_commands_to_embedder`] —
+/// the embedding page delivers inbound network events as a JSON array (see
+/// [`DeliveredEvent`]), and each one lands on the live producer exactly as a
+/// socket handler's push would. Malformed JSON logs once and is dropped.
+///
+/// Only under [`NetTransport::Embedder`]: the transport gate belongs at the
+/// seam, not in one of its callers. Otherwise a page running real WebSockets
+/// could have events injected against a live socket's connection id (the id
+/// spaces are the same). [xreview]
+#[wasm_bindgen]
+pub fn functor_lang_net_deliver(events_json: &str) {
+    if net_transport() != NetTransport::Embedder {
+        web_sys::console::error_1(
+            &"[net] functor_lang_net_deliver requires window.__functorNetTransport = \"embedder\""
+                .into(),
+        );
+        return;
+    }
+    let events = match parse_delivered_events(events_json) {
+        Ok(events) => events,
+        Err(e) => {
+            web_sys::console::error_1(&format!("[net] bad net delivery: {e}").into());
+            return;
+        }
+    };
+    // One borrow for the whole batch: a mid-frame collision drops the delivery
+    // with a single log rather than one per event.
+    with_live_game(|g| {
+        for event in events {
+            match event {
+                DeliveredEvent::Connected { key, conn } => g.net_push_connected(key, conn),
+                DeliveredEvent::Message { key, conn, text } => {
+                    g.net_push_conn_message(key, conn, text)
+                }
+                DeliveredEvent::Disconnected { key, conn } => g.net_push_disconnected(key, conn),
+                DeliveredEvent::Error { key, conn, message } => {
+                    g.net_push_conn_error(key, conn, message)
+                }
+            }
+        }
+    });
 }
 
 fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {

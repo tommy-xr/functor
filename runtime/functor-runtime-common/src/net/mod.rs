@@ -10,11 +10,13 @@
 //! identical whether they run over a real network or the virtual one.
 
 mod connection;
+mod embedder;
 mod inbox;
 mod registry;
 mod virtual_net;
 
 pub use connection::*;
+pub use embedder::*;
 pub use inbox::*;
 pub use registry::*;
 pub use virtual_net::*;
