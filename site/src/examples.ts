@@ -34,6 +34,8 @@ export interface Example {
   siblings?: ExampleCopy[];
   /** Local binary assets the project's `Asset.*` locators resolve to. */
   assets?: ExampleCopy[];
+  /** Extra files copied into the static site, but not uploaded as game assets. */
+  siteFiles?: ExampleCopy[];
   /**
    * Marks a sample that declares a server entry point (the functor.json
    * `entries` shape, like examples/mp) or is otherwise structured for
@@ -175,6 +177,11 @@ export const EXAMPLES: Example[] = [
     assets: [
       { source: "examples/mario/ground.png", output: "ground.png" },
       { source: "examples/mario/hero-atlas.png", output: "hero-atlas.png" },
+    ],
+    siteFiles: [
+      // The landing hero replays this exact desktop verification drive behind
+      // its boot loader. It is site orchestration, not a runtime game asset.
+      { source: "examples/mario/jump.script", output: "examples/mario.jump.script" },
     ],
   },
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm

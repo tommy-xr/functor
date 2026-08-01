@@ -14,21 +14,45 @@
 //   Up / W / Space        — jump (only when grounded)
 
 // --- Tunables (tweak these to change whether the jump clears the chasm) ---
-let runSpeed = 8.0        // horizontal speed while a direction is held
-let jumpVelocity = 13.0   // upward launch speed on jump
+// <editable>
+// Tune the jump — speed, launch, gravity, gap — then click 🔮.
+let runSpeed = 8.0        // horizontal speed while held
+let jumpVelocity = 13.0   // upward launch speed
 let gravity = 30.0        // downward acceleration
+let chasmHalf = 3.0       // half the gap — widen it and see
+
+let world = (model, tts) =>
+  Sprite.group([
+    backdrop(),
+    platform(leftGroundX, leftGroundWidth),
+    platform(rightGroundX, rightGroundWidth),
+    character(model, tts),
+  ])
+  |> Sprite.nearest()
+// </editable>
 
 // A jump launched at the edge covers runSpeed * (2*jumpVelocity/gravity)
 //   = 8 * (2*13/30) = 6.93 units horizontally at the same height it started.
 // The chasm is 6.0 wide (chasmHalf 3.0), so the DEFAULT jump clears it with
-// a small margin — but lowering jumpVelocity (or raising gravity) a little
-// makes the character fall short. That knife-edge is the whole point.
+// a small margin — but lowering jumpVelocity or runSpeed (or raising gravity)
+// a little makes the character fall short. That knife-edge is the whole point.
 
 // --- Level geometry (side view: XY plane, +X right, +Y up) ---
+// The gap itself (chasmHalf) is a tunable above; it spans
+// x in [-chasmHalf, chasmHalf], so the default gap is 6.0 wide.
 let groundTop = 0.0       // y of the platform surface the character stands on
-let chasmHalf = 3.0       // gap spans x in [-chasmHalf, chasmHalf] -> width 6.0
 let leftEdge = -11.0      // outer x of the left platform
 let rightEdge = 11.0      // outer x of the right platform
+
+// Both platforms derive from the editable chasmHalf — the drawn ground AND
+// the ground the simulation collides with — so widening the gap can never
+// drift the picture out of step with the physics. (Top-level value bindings
+// evaluate in order, so these must follow the edges they read.)
+let leftGroundWidth = -chasmHalf - leftEdge
+let leftGroundX = leftEdge + leftGroundWidth / 2.0
+let rightGroundWidth = rightEdge - chasmHalf
+let rightGroundX = chasmHalf + rightGroundWidth / 2.0
+
 let startX = -6.0         // character spawn (on the left platform)
 let fallLimit = -2.0      // fall past this (into the chasm) and respawn.
                           // Shallow on purpose: a weak jump that dips into the
@@ -171,16 +195,6 @@ let character = (model, tts) =>
   Sprite.imageRegion(1.6, 1.6, characterRegion(model, tts), Assets.hero_atlas)
     |> faceCharacter(model)
     |> Sprite.move(model.x, model.y + 0.8)
-
-let world = (model, tts) =>
-  Sprite.group([
-    backdrop(),
-    // Left platform: x in [leftEdge, -chasmHalf]; right: [chasmHalf, rightEdge].
-    platform((leftEdge - chasmHalf) / 2.0, -chasmHalf - leftEdge),
-    platform((rightEdge + chasmHalf) / 2.0, rightEdge - chasmHalf),
-    character(model, tts),
-  ])
-  |> Sprite.nearest()
 
 let draw = (model, tts) =>
   Frame.create2D(Camera2D.create(24.0, 13.5), world(model, tts))

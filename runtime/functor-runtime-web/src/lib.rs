@@ -1595,6 +1595,21 @@ async fn run_async() -> Result<(), JsValue> {
             }
 
             for sub in &sub_frames {
+                // Scripted browser demos queue edges against authoritative
+                // fixed-step frames. Admit each edge immediately before its
+                // designated step, even when one rAF drains several steps.
+                let next_scene_frame = game
+                    .current_scene_frame()
+                    .map_or(0, |frame| frame.saturating_add(1));
+                if functor_lang_game::queue_scheduled_input_at(next_scene_frame) {
+                    functor_lang_game::drain_input(
+                        &mut **game,
+                        &mut input_snapshot,
+                        &mut input_edges,
+                        !suspended,
+                        recover_suppressed_releases(&clock),
+                    );
+                }
                 if game.samples_input() {
                     input_edges.apply_to(&mut input_snapshot);
                     game.sampled_input(&input_snapshot);
@@ -1647,8 +1662,12 @@ async fn run_async() -> Result<(), JsValue> {
             // trail/strobe overlays, from ONE shared forward-sim —
             // `frame_preview`, the same step the desktop shell runs. While live,
             // its anchor follows the newest frame; pausing freezes that anchor
-            // instead of enabling the preview. Script inputs are `None`: web has
-            // no --input-script.
+            // instead of enabling the preview. Script inputs are `None`: unlike
+            // the desktop shell's --input-script, the browser's scheduled edges
+            // (`queue_scheduled_input_at`) are a one-shot staging queue, not a
+            // whole-run script, so there is no future schedule to predict —
+            // anything still pending is drained before a pause can freeze an
+            // anchor ahead of it.
             // While a drag-into-the-future catch-up is draining, skip the
             // preview recompute (the anchor moves every frame — a full
             // forward-sim per frame would throttle the catch-up to a crawl);
