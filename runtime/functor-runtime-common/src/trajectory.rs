@@ -1030,14 +1030,133 @@ impl SceneOverlays {
         join(&mut self.strobe, other.strobe);
     }
 
-    fn apply(&self, scene: &mut Scene3D) {
-        if let Some(trail) = &self.trail {
-            overlay(scene, trail.clone());
-        }
-        if let Some(strobe) = &self.strobe {
-            overlay(scene, strobe.clone());
-        }
+    fn apply(&self, scene: &mut Scene3D, presence: f32) {
+        let mut add = |part: Option<&Scene3D>| {
+            let Some(part) = part else { return };
+            let mut part = part.clone();
+            // Exactly 1.0 must leave the overlay byte-identical to the
+            // pre-ramp tree (goldens, `--fixed-time` captures), so the walk
+            // only runs while the fade is actually in flight.
+            if presence < 1.0 {
+                scale_presence(&mut part, presence);
+            }
+            overlay(scene, part);
+        };
+        add(self.trail.as_ref());
+        add(self.strobe.as_ref());
     }
+}
+
+/// Multiply an overlay material's alpha by the presence ramp. Textures and
+/// normal maps ride along untouched — only the constant color's alpha moves. A
+/// bare [`MaterialDescription::Texture`] has no color channel, so (exactly as
+/// [`alpha_faded_material`] does) it becomes a white-tinted emissive texture,
+/// the only form that CAN carry an alpha.
+fn presence_scaled_material(material: &MaterialDescription, presence: f32) -> MaterialDescription {
+    let scale = |mut color: Vector4<f32>| {
+        color.w *= presence;
+        color
+    };
+    match material {
+        MaterialDescription::Color(color) => MaterialDescription::Color(scale(*color)),
+        MaterialDescription::Emissive { color, texture } => MaterialDescription::Emissive {
+            color: scale(*color),
+            texture: texture.clone(),
+        },
+        MaterialDescription::Lit {
+            color,
+            texture,
+            normal_map,
+        } => MaterialDescription::Lit {
+            color: scale(*color),
+            texture: texture.clone(),
+            normal_map: normal_map.clone(),
+        },
+        MaterialDescription::Texture(texture) => MaterialDescription::Emissive {
+            color: vec4(1.0, 1.0, 1.0, presence),
+            texture: Some(texture.clone()),
+        },
+        MaterialDescription::SpriteTexture {
+            color,
+            texture,
+            source_pixels,
+            sampling,
+        } => MaterialDescription::SpriteTexture {
+            color: scale(*color),
+            texture: texture.clone(),
+            source_pixels: *source_pixels,
+            sampling: *sampling,
+        },
+    }
+}
+
+/// Walk an overlay subtree and multiply every material's alpha by `presence`.
+///
+/// This is deliberately an APPLY-TIME transform on the per-frame clone, never a
+/// build-time one: both shells cache a BUILT [`FramePreview`] downstream of the
+/// forward sim, so folding presence into the builders would make every frame of
+/// the fade a cache miss and re-run `ghost_frames`/`history_frames`. Presence is
+/// therefore not part of [`PreviewOptions`] nor of either shell's cache key.
+///
+/// A leaf with no enclosing material — typically a `Model`, which carries its
+/// own internal glTF materials — cannot fade, exactly as it cannot age-fade
+/// today (see [`faded_material`]); it pops instead of easing.
+fn scale_presence(scene: &mut Scene3D, presence: f32) {
+    match &mut scene.obj {
+        SceneObject::Material(material, items) => {
+            *material = presence_scaled_material(material, presence);
+            for item in items {
+                scale_presence(item, presence);
+            }
+        }
+        SceneObject::Group(items) => {
+            for item in items {
+                scale_presence(item, presence);
+            }
+        }
+        SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+    }
+}
+
+/// How long the preview overlay takes to fade fully in or out when the
+/// extrapolation toggle (🔮) flips — short enough to feel immediate, long
+/// enough that the overlay arrives rather than pops.
+pub const PRESENCE_RAMP_SECONDS: f32 = 0.28;
+
+/// Advance the preview's linear presence PHASE toward `target` (1 = the preview
+/// selects something, 0 = it does not) by `dt` seconds, so a full fade takes
+/// [`PRESENCE_RAMP_SECONDS`] regardless of frame rate. The result is clamped to
+/// `[0, 1]` and never overshoots, so a hitch (or a `dt` longer than the ramp)
+/// lands exactly ON the target rather than past it.
+///
+/// The phase is linear; [`presence_ease`] shapes it into the alpha multiplier.
+/// Keeping the STATE linear is what makes the ramp symmetric — flipping the
+/// target mid-fade retraces the same curve backwards.
+pub fn presence_step(presence: f32, target: f32, dt: f32) -> f32 {
+    let presence = if presence.is_finite() {
+        presence.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let target = target.clamp(0.0, 1.0);
+    if !dt.is_finite() || dt <= 0.0 {
+        return presence;
+    }
+    let step = dt / PRESENCE_RAMP_SECONDS;
+    if target >= presence {
+        (presence + step).min(target)
+    } else {
+        (presence - step).max(target)
+    }
+}
+
+/// Smoothstep shaping of the linear phase — the alpha multiplier the overlay is
+/// actually drawn at. Ease-in-out, so the fade has no visible start/stop edge,
+/// and symmetric (`presence_ease(1 - p) == 1 - presence_ease(p)`), so fading out
+/// looks like fading in played backwards.
+pub fn presence_ease(phase: f32) -> f32 {
+    let p = phase.clamp(0.0, 1.0);
+    p * p * (3.0 - 2.0 * p)
 }
 
 /// A computed preview for the complete render frame. Sprite overlays use the
@@ -1069,14 +1188,30 @@ impl FramePreview {
         self.scene.is_empty() && self.sprite_layers.iter().all(SceneOverlays::is_empty)
     }
 
-    /// Add every requested scene-space overlay to a normal display frame.
+    /// Add every requested scene-space overlay to a normal display frame, at
+    /// full presence.
     pub fn apply_all(&self, frame: &mut Frame) {
-        self.scene.apply(&mut frame.scene);
+        self.apply_all_with_presence(frame, 1.0);
+    }
+
+    /// Add every requested scene-space overlay to a normal display frame, with
+    /// every overlay material's alpha multiplied by `presence` (0 = absent,
+    /// 1 = fully drawn — the presence ramp, see [`presence_step`]).
+    ///
+    /// At `presence <= 0` NOTHING is applied: an alpha-0 overlay would still
+    /// write depth and occlude the scene behind it, so a fully faded-out
+    /// preview has to be absent from the tree, not transparent in it.
+    pub fn apply_all_with_presence(&self, frame: &mut Frame, presence: f32) {
+        if !(presence > 0.0) {
+            return;
+        }
+        let presence = presence.min(1.0);
+        self.scene.apply(&mut frame.scene, presence);
         if frame.sprite_layers.len() != self.sprite_layers.len() {
             return;
         }
         for (layer, overlays) in frame.sprite_layers.iter_mut().zip(&self.sprite_layers) {
-            overlays.apply(&mut layer.scene);
+            overlays.apply(&mut layer.scene, presence);
         }
     }
 }
@@ -1938,5 +2073,222 @@ mod tests {
             SceneObject::Geometry(_) => {}
             other => panic!("expected a bare geometry copy, got {other:?}"),
         }
+    }
+
+    // ---- the presence ramp (the whole overlay's fade in / out) ----
+
+    /// Every material alpha in a scene, depth-first. `overlay` APPENDS, so a
+    /// frame's own materials always come first and the overlay's follow — which
+    /// is what lets the tests below separate them by index.
+    fn material_alphas(scene: &Scene3D, out: &mut Vec<f32>) {
+        match &scene.obj {
+            SceneObject::Material(material, items) => {
+                out.push(material.color_alpha().expect("a color-bearing material"));
+                for item in items {
+                    material_alphas(item, out);
+                }
+            }
+            SceneObject::Group(items) => {
+                for item in items {
+                    material_alphas(item, out);
+                }
+            }
+            SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+        }
+    }
+
+    /// One alpha list PER scene tree — the 3D scene, then each sprite layer.
+    /// Kept separate because each tree gets its own overlay appended, so "the
+    /// frame's own materials first" only holds within a tree.
+    fn frame_material_alphas(frame: &Frame) -> Vec<Vec<f32>> {
+        std::iter::once(&frame.scene)
+            .chain(frame.sprite_layers.iter().map(|layer| &layer.scene))
+            .map(|scene| {
+                let mut out = Vec::new();
+                material_alphas(scene, &mut out);
+                out
+            })
+            .collect()
+    }
+
+    /// A mover carrying its own material, beside a static — in BOTH the 3D
+    /// scene and one sprite layer, so one fixture exercises both overlay paths.
+    fn materialized_frame(x: f32) -> Frame {
+        let scene = |x: f32| Scene3D {
+            obj: SceneObject::Group(vec![
+                Scene3D {
+                    obj: SceneObject::Material(
+                        MaterialDescription::color(1.0, 0.0, 0.0, 1.0),
+                        vec![ball_at(x, 0.0)],
+                    ),
+                    xform: Matrix4::identity(),
+                },
+                ball_at(5.0, 0.0),
+            ]),
+            xform: Matrix4::identity(),
+        };
+        let mut rendered = Frame::new(Camera::default(), scene(x));
+        rendered.sprite_layers.push(SpriteLayer {
+            camera: Camera2D::new(24.0, 13.5),
+            scene: scene(x),
+        });
+        rendered
+    }
+
+    fn moving_preview() -> (Frame, FramePreview) {
+        let frames: Vec<Frame> = (0..=4).map(|i| materialized_frame(i as f32 * 0.5)).collect();
+        let futures: Vec<&Frame> = frames.iter().skip(1).collect();
+        let preview = preview_from_frames(&frames[0], &futures, &preview_options(true, true));
+        assert!(!preview.is_empty(), "the fixture must produce overlays");
+        (frames[0].clone(), preview)
+    }
+
+    #[test]
+    fn presence_step_is_monotone_clamped_and_completes_within_the_ramp() {
+        // Rising: never decreases, never leaves [0, 1], fully there after
+        // exactly one ramp.
+        let dt = PRESENCE_RAMP_SECONDS / 8.0;
+        let mut p = 0.0;
+        for _ in 0..8 {
+            let next = presence_step(p, 1.0, dt);
+            assert!(next >= p, "presence must not go backwards while rising");
+            assert!((0.0..=1.0).contains(&next), "presence escaped [0, 1]: {next}");
+            p = next;
+        }
+        assert!((p - 1.0).abs() < 1e-5, "one ramp must complete the fade in: {p}");
+
+        // Falling: the mirror image.
+        for _ in 0..8 {
+            let next = presence_step(p, 0.0, dt);
+            assert!(next <= p, "presence must not go forwards while falling");
+            assert!((0.0..=1.0).contains(&next), "presence escaped [0, 1]: {next}");
+            p = next;
+        }
+        assert!(p.abs() < 1e-5, "one ramp must complete the fade out: {p}");
+    }
+
+    #[test]
+    fn presence_step_is_robust_to_the_frame_delta() {
+        // Same wall-clock elapsed, very different frame rates → same presence.
+        let mut fast = 0.0;
+        for _ in 0..100 {
+            fast = presence_step(fast, 1.0, PRESENCE_RAMP_SECONDS / 200.0);
+        }
+        let slow = presence_step(0.0, 1.0, PRESENCE_RAMP_SECONDS / 2.0);
+        assert!((fast - slow).abs() < 1e-4, "{fast} vs {slow}");
+
+        // A hitch longer than the whole ramp lands exactly ON the target, never
+        // past it; a non-advancing or non-finite delta is a no-op.
+        assert_eq!(presence_step(0.0, 1.0, 10.0), 1.0);
+        assert_eq!(presence_step(1.0, 0.0, 10.0), 0.0);
+        assert_eq!(presence_step(0.4, 1.0, 0.0), 0.4);
+        assert_eq!(presence_step(0.4, 1.0, -1.0), 0.4);
+        assert_eq!(presence_step(0.4, 1.0, f32::NAN), 0.4);
+        // Out-of-range state is clamped rather than propagated.
+        assert_eq!(presence_step(5.0, 1.0, 0.01), 1.0);
+        assert_eq!(presence_step(-5.0, 0.0, 0.01), 0.0);
+    }
+
+    #[test]
+    fn presence_ease_is_pinned_at_the_ends_and_symmetric() {
+        assert_eq!(presence_ease(0.0), 0.0);
+        assert_eq!(presence_ease(1.0), 1.0);
+        assert_eq!(presence_ease(0.5), 0.5);
+        assert_eq!(presence_ease(-2.0), 0.0);
+        assert_eq!(presence_ease(2.0), 1.0);
+        for i in 0..=10 {
+            let p = i as f32 / 10.0;
+            // Fading out is fading in played backwards.
+            assert!(
+                (presence_ease(1.0 - p) - (1.0 - presence_ease(p))).abs() < 1e-6,
+                "asymmetric at {p}"
+            );
+            assert!(presence_ease(p) >= presence_ease((p - 0.1).max(0.0)));
+        }
+    }
+
+    #[test]
+    fn full_presence_leaves_the_overlay_untouched() {
+        let (anchor, preview) = moving_preview();
+
+        let mut explicit = anchor.clone();
+        preview.apply_all_with_presence(&mut explicit, 1.0);
+        let mut implicit = anchor.clone();
+        preview.apply_all(&mut implicit);
+
+        assert_eq!(
+            format!("{:?}", explicit.scene),
+            format!("{:?}", implicit.scene),
+            "presence 1.0 must be identical to the pre-ramp path (goldens/captures)"
+        );
+    }
+
+    #[test]
+    fn presence_scales_every_overlay_alpha_in_3d_and_sprite_layers() {
+        let (anchor, preview) = moving_preview();
+        let own = frame_material_alphas(&anchor);
+
+        let mut full = anchor.clone();
+        preview.apply_all_with_presence(&mut full, 1.0);
+        let full = frame_material_alphas(&full);
+
+        let mut half = anchor.clone();
+        preview.apply_all_with_presence(&mut half, 0.5);
+        let half = frame_material_alphas(&half);
+
+        assert_eq!(own.len(), 2, "the fixture has a 3D scene and one sprite layer");
+        assert_eq!(full.len(), own.len());
+        assert_eq!(half.len(), own.len());
+
+        for (tree, ((own, full), half)) in own.iter().zip(&full).zip(&half).enumerate() {
+            assert_eq!(full.len(), half.len());
+            assert!(
+                full.len() > own.len(),
+                "tree {tree}'s overlay must contribute materials to scale"
+            );
+            // The game's own materials come first and are never touched...
+            assert_eq!(&full[..own.len()], &own[..], "tree {tree}");
+            assert_eq!(&half[..own.len()], &own[..], "tree {tree}");
+            // ...and every overlay material — 3D marks and copies in tree 0,
+            // sprite ones in tree 1 — is exactly halved.
+            for (i, (one, halved)) in full[own.len()..].iter().zip(&half[own.len()..]).enumerate() {
+                assert!(
+                    (halved - one * 0.5).abs() < 1e-6,
+                    "tree {tree} overlay material {i}: {one} at presence 1.0 but {halved} at 0.5"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zero_presence_applies_nothing_at_all() {
+        let (anchor, preview) = moving_preview();
+        let before = format!("{:?}", anchor.scene);
+        let sprites_before: Vec<String> = anchor
+            .sprite_layers
+            .iter()
+            .map(|layer| format!("{:?}", layer.scene))
+            .collect();
+
+        let mut faded = anchor.clone();
+        preview.apply_all_with_presence(&mut faded, 0.0);
+
+        // NOT "transparent": ABSENT. An alpha-0 overlay would still write depth
+        // and occlude the scene behind it.
+        assert_eq!(format!("{:?}", faded.scene), before);
+        let sprites_after: Vec<String> = faded
+            .sprite_layers
+            .iter()
+            .map(|layer| format!("{:?}", layer.scene))
+            .collect();
+        assert_eq!(sprites_after, sprites_before);
+
+        // Negative / non-finite presence is treated the same way.
+        let mut negative = anchor.clone();
+        preview.apply_all_with_presence(&mut negative, -1.0);
+        assert_eq!(format!("{:?}", negative.scene), before);
+        let mut nan = anchor.clone();
+        preview.apply_all_with_presence(&mut nan, f32::NAN);
+        assert_eq!(format!("{:?}", nan.scene), before);
     }
 }

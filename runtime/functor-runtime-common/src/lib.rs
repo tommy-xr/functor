@@ -121,8 +121,9 @@ pub use scene3d::*;
 pub use sprite2d::{Camera2D, SpriteLayer};
 pub use terrain::{TerrainDescription, TerrainGeometry, TerrainGrass, TerrainLayers};
 pub use trajectory::{
-    frame_preview, interactive_preview, overlay, scene_preview, trajectory_trail, FramePreview,
-    InteractivePreview, PreviewMode, PreviewOptions, SceneOverlays, ScenePreview, StrobeOptions,
+    frame_preview, interactive_preview, overlay, presence_ease, presence_step, scene_preview,
+    trajectory_trail, FramePreview, InteractivePreview, PreviewMode, PreviewOptions, SceneOverlays,
+    ScenePreview, StrobeOptions, PRESENCE_RAMP_SECONDS,
 };
 pub use viewport::*;
 

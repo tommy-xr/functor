@@ -122,6 +122,13 @@ pub struct RenderContext<'a> {
     pub lights: &'a [Light],
     /// Which pass is rendering (forward vs. a depth-only shadow pass).
     pub render_pass: RenderPass,
+    /// Whether the ENCLOSING pass already has GL blending configured — the 2D
+    /// sprite pass (straight alpha over) and the transparent-debug pass
+    /// (constant alpha) both do. The ordinary 3D forward pass does not, so a
+    /// translucent material there has to switch blending on for its own
+    /// subtree and switch it back off after. This flag is what stops that
+    /// restore from clobbering a pass that wanted blending all along.
+    pub pass_blends: bool,
     /// The directional shadow map + light matrix, when shadows are active.
     /// `None` during the depth pass and when no light casts shadows.
     pub shadow: Option<ShadowUniforms>,

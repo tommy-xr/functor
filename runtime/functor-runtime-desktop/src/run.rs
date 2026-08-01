@@ -732,6 +732,15 @@ pub struct Args {
     #[arg(long)]
     strobe: bool,
 
+    /// PIN the preview overlay's presence (0.0 = fully faded out, 1.0 = fully
+    /// drawn), skipping the runtime's fade-in/out ease — the deterministic
+    /// escape hatch for capturing a mid-fade frame. A NEGATIVE value (the
+    /// default) means "no override": the runtime eases normally. The same
+    /// convention holds on the web seam (`window.__scrub.setPreview({ presence })`,
+    /// negative to resume easing).
+    #[arg(long, default_value_t = -1.0)]
+    preview_presence: f32,
+
     /// Start with the time-travel scrubber overlay visible (it is otherwise
     /// hidden until summoned with `~`). Useful for demos and captures of the
     /// scrubber itself. NOTE: with the overlay up, previews follow the
@@ -1546,6 +1555,24 @@ Escape releases while captured"
         // as the window resizes: total samples = rate × window).
         let mut preview_window: f32 = 2.0;
         let mut preview_rate: usize = 5;
+        // The PRESENCE RAMP: the overlay fades in and out over
+        // `PRESENCE_RAMP_SECONDS` instead of popping when the preview toggles.
+        //
+        // This is runtime-loop state on purpose. Presence is NOT part of
+        // `PreviewOptions` and NOT part of the cache key below — it multiplies
+        // the alpha of the CACHED preview's per-frame clone at apply time, so
+        // animating it never re-runs the forward sim, and the wanted-flags
+        // don't move during a fade so the cache stays warm.
+        let mut preview_presence: f32 = 0.0;
+        // What the preview last selected while it was ON. Fading OUT needs
+        // geometry after the toggle has already flipped the wanted-flags to
+        // false, so the last on-mode keeps driving the computation until
+        // presence reaches zero.
+        let mut preview_last_on: (bool, bool) = (false, false);
+        // An explicit `--preview-presence` PINS presence and skips the ease
+        // (deterministic mid-fade captures); negative = no override.
+        let preview_presence_override = (args.preview_presence >= 0.0)
+            .then(|| args.preview_presence.clamp(0.0, 1.0));
         // --trajectory/--strobe preview cache. The 32-division forward-sim is
         // the expensive part, and while PAUSED its anchor (scene frame + tts) is
         // frozen — so reuse the computed preview while the anchor key matches,
@@ -2477,6 +2504,33 @@ Escape again to quit"
             } else {
                 (args.trajectory, args.strobe)
             };
+            // Advance the presence ramp toward whether the preview selects
+            // anything, then keep DRIVING the last on-mode while it fades out —
+            // otherwise the toggle would take the geometry away in the same
+            // frame it started the fade.
+            //
+            // The ease runs on WALL-CLOCK delta, independent of `--fixed-time`
+            // (which pins the game's POSE, not real time). Captures stay
+            // reproducible because the ramp is 0.28s and `--capture-time`
+            // defaults to 2s — the fade is long over by the time the shot is
+            // taken. `--preview-presence` pins it outright for an exact
+            // mid-fade frame.
+            let preview_selects = trail_wanted || strobe_wanted;
+            if preview_selects {
+                preview_last_on = (trail_wanted, strobe_wanted);
+            }
+            preview_presence = functor_runtime_common::presence_step(
+                preview_presence,
+                if preview_selects { 1.0 } else { 0.0 },
+                real_delta,
+            );
+            let display_presence = preview_presence_override
+                .unwrap_or_else(|| functor_runtime_common::presence_ease(preview_presence));
+            let (trail_wanted, strobe_wanted) = if preview_selects {
+                (trail_wanted, strobe_wanted)
+            } else {
+                preview_last_on
+            };
             // Forward window/densities. The SIM samples fine (~20/s — the
             // trail's smooth-arc rate) while the preview rate governs STROBE COPIES
             // per second, so dots stay visible between copies and both hold
@@ -2497,6 +2551,7 @@ Escape again to quit"
             // moves every frame, so it would be a full forward-sim per frame
             // and throttle the drain to a crawl) — it snaps back in on arrival.
             let preview_active = (trail_wanted || strobe_wanted)
+                && display_presence > 0.0
                 && args.composite_demo == CompositeDemoArg::Off
                 && clock.pending_frames() == 0
                 && clock.pending_steps() == 0;
@@ -2695,7 +2750,7 @@ Escape again to quit"
             let display_frame = match &preview {
                 Some(p) if !p.is_empty() => {
                     let mut f = frame.clone();
-                    p.apply_all(&mut f);
+                    p.apply_all_with_presence(&mut f, display_presence);
                     Some(f)
                 }
                 _ => None,

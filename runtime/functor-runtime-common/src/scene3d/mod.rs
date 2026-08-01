@@ -1353,6 +1353,42 @@ named \"{name}\" — {hint}"
 
             SceneObject::Material(material_description, items) => {
                 let material = material_description.get(render_context, scene_context);
+                // The 3D forward pass is otherwise fully opaque — every shader
+                // already writes an alpha, but nothing blends it. A material
+                // whose constant color is translucent switches blending on for
+                // its own subtree and back off after.
+                //
+                // Only the runtime's own overlays reach this: the Functor Lang
+                // prelude cannot express a translucent 3D material (Color.rgb
+                // has no alpha channel), so `color_alpha() < 1` in the 3D pass
+                // means the extrapolation preview's presence ramp
+                // (`trajectory::scale_presence`) or its age fade. `pass_blends`
+                // covers the passes that already own the blend state (2D
+                // sprites, transparent debug) so the restore can't clobber them.
+                //
+                // KNOWN LIMITATION (Tier A): there is no depth prepass or
+                // back-to-front sort, so overlapping translucent overlay parts
+                // — a mark's crossed arrowheads and its sphere core — blend
+                // twice and read slightly denser where they overlap. The Tier B
+                // follow-up (a dedicated constant-alpha overlay pass, modeled
+                // on the transparent-debug recipe in `renderer.rs`) removes
+                // both that and the overlay's shadow-pass contribution.
+                let blend = !depth_pass
+                    && !render_context.pass_blends
+                    && material_description
+                        .color_alpha()
+                        .is_some_and(|alpha| alpha < 1.0);
+                if blend {
+                    unsafe {
+                        render_context.gl.enable(glow::BLEND);
+                        render_context.gl.blend_func_separate(
+                            glow::SRC_ALPHA,
+                            glow::ONE_MINUS_SRC_ALPHA,
+                            glow::ONE,
+                            glow::ONE_MINUS_SRC_ALPHA,
+                        );
+                    }
+                }
                 for item in items.into_iter() {
                     item.render(
                         &render_context,
@@ -1362,6 +1398,11 @@ named \"{name}\" — {hint}"
                         &view_matrix,
                         &material,
                     )
+                }
+                if blend {
+                    unsafe {
+                        render_context.gl.disable(glow::BLEND);
+                    }
                 }
             }
 

@@ -59,6 +59,8 @@ interface HeroScrubSeam {
     seconds?: number;
     rate?: number;
     mode?: number;
+    /** Pin the overlay's fade (0..1); negative resumes the runtime's easing. */
+    presence?: number;
   }): void;
   setAttention(attention: { extrapolate?: boolean }): void;
   setReset(handler: (() => void) | null): void;

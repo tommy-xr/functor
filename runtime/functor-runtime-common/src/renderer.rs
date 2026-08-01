@@ -262,6 +262,7 @@ target frame are ignored (depth 1 only)",
             None,
             None,
             None,
+            false,
         );
         render_sprite_layers(
             gl,
@@ -334,6 +335,7 @@ target frame are ignored (depth 1 only)",
         lod_view.map(|(_, _, projection_scale, _)| projection_scale),
         lod_view.map(|(_, _, _, viewport_height)| viewport_height),
         projection_matrix,
+        false,
     );
 
     render_sprite_layers(
@@ -421,6 +423,9 @@ fn render_sprite_layers(
             None,
             None,
             Some(&projection),
+            // The sprite pass already blends (straight alpha over) — a
+            // translucent sprite material must not switch that back off.
+            true,
         );
     }
 
@@ -571,6 +576,7 @@ pub fn render_composited_frames_with_view(
             None,
             None,
             None,
+            false,
         );
         render_sprite_layers(
             gl,
@@ -677,6 +683,9 @@ fn forward_pass(
     lod_projection_scale: Option<f32>,
     lod_viewport_height: Option<f32>,
     projection_matrix: Option<&Matrix4<f32>>,
+    // True when the CALLER has already enabled GL blending for this pass (the
+    // 2D sprite pass). See `RenderContext::pass_blends`.
+    caller_blends: bool,
 ) {
     let default_lod_projection = lod_camera.projection_matrix(aspect);
     let mut terrain_frusta = [Matrix4::from_scale(1.0); 2];
@@ -695,6 +704,9 @@ fn forward_pass(
         debug_render_mode,
         lights,
         render_pass: RenderPass::Forward,
+        // The transparent-debug pass owns the blend state for the whole scene
+        // (constant alpha); leave it alone there too.
+        pass_blends: caller_blends || debug_render_mode == DebugRenderMode::Transparent,
         shadow,
         fog,
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
