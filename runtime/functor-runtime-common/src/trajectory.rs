@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 
-use cgmath::{vec4, Deg, InnerSpace, Matrix4, Rad, SquareMatrix, Vector3, Vector4};
+use cgmath::{vec4, Deg, InnerSpace, Matrix4, Quaternion, Rad, SquareMatrix, Vector3, Vector4};
 
 use crate::protocol::GameProducer;
 use crate::{
@@ -36,17 +36,31 @@ use crate::{
 const TRAIL_RADIUS_3D: f32 = 0.07;
 const TRAIL_REFERENCE_HEIGHT_2D: f32 = 13.5;
 
-/// The arrowhead outline in its own XY space, pointing along +X: tip, then the
-/// two base corners. Every mark shares these exact points and carries its
-/// placement in the transform, so all of them draw from ONE cached polygon mesh
-/// (`PolygonMesh` keys on point count and skips re-upload when the points
-/// match).
-const ARROW_POINTS: [[f32; 2]; 3] = [[1.0, 0.0], [-0.5, 0.6], [-0.5, -0.6]];
+/// The arrowhead outline in its own XY space, pointing along +X: tip, the two
+/// base corners, and a notched tail between them (a kite, wound CCW). Every
+/// mark shares these exact points and carries its placement in the transform,
+/// so on the GPU they all resolve to ONE cached polygon mesh — `PolygonMesh`
+/// keys on POINT COUNT and skips the re-upload when the points already match.
+/// Scene-side each mark still allocates its own point `Vec`; that is fine here
+/// (preview-only, bounded by the sample count).
+///
+/// The point count is deliberately FOUR, not three. Sharing a cache slot only
+/// pays off while the points agree, and slot 3 is exactly where a user's own
+/// `Sprite.polygon` triangle would land — alternating draws would then each
+/// re-upload via `buffer_sub_data`. A kite cannot collide with user triangles.
+const ARROW_POINTS: [[f32; 2]; 4] = [[1.0, 0.0], [-0.4, 0.6], [-0.8, 0.0], [-0.4, -0.6]];
 
-/// World size of one arrowhead per unit of trail radius: an arrow 1.5 units
-/// long in [`ARROW_POINTS`] space becomes ~3.3 radii long and ~2.6 wide, about
+/// World size of one arrowhead per unit of trail radius: an arrow 1.8 units
+/// long in [`ARROW_POINTS`] space becomes ~4.0 radii long and ~2.6 wide, about
 /// the visual weight of the sphere it replaces.
 const ARROW_SCALE: f32 = 2.2;
+
+/// Radius of the mark's sphere core, in the arrow's own (already-scaled) frame.
+/// Both flat heads CONTAIN the direction of travel, so a mark heading straight
+/// at or away from the camera collapses to a pair of hairline crosses. The
+/// core is the floor on that: an edge-on mark degrades to a dot — what the
+/// trail drew before arrows — instead of disappearing.
+const ARROW_CORE: f32 = 0.35;
 
 /// Minimum local displacement, as a fraction of the mark radius, for a heading
 /// to be meaningful. Below it the mover is effectively stationary at this
@@ -366,28 +380,36 @@ fn trail_dot(p: Vector3<f32>, radius: f32) -> Scene3D {
     trail_mark(vec![sphere], Matrix4::from_translation(p))
 }
 
-/// Rotation taking +X onto the unit vector `dir`, with an arbitrary (but
-/// stable) roll: the arrowhead is symmetric about its axis, so only the axis
-/// matters. The helper axis avoids the degenerate cross product when `dir` is
-/// near +Y.
+/// Rotation taking +X onto the unit vector `dir` by the SHORTEST arc. The
+/// arrowhead is symmetric about its axis, so only the axis is load-bearing —
+/// but the roll must not jump: picking a transverse basis from a helper axis
+/// chosen by a threshold on `dir` makes the crossed heads snap through 90° as
+/// a smooth heading crosses that threshold. The shortest arc varies
+/// continuously everywhere except the antiparallel pole, where `from_arc`
+/// takes the explicit fallback axis (any unit vector perpendicular to +X).
 fn heading_rotation(dir: Vector3<f32>) -> Matrix4<f32> {
-    let helper = if dir.y.abs() < 0.9 {
-        Vector3::new(0.0, 1.0, 0.0)
-    } else {
-        Vector3::new(0.0, 0.0, 1.0)
-    };
-    let x = dir;
-    let z = x.cross(helper).normalize();
-    let y = z.cross(x);
-    Matrix4::from_cols(x.extend(0.0), y.extend(0.0), z.extend(0.0), vec4(0.0, 0.0, 0.0, 1.0))
+    Matrix4::from(Quaternion::from_arc(
+        Vector3::unit_x(),
+        dir,
+        Some(Vector3::unit_z()),
+    ))
 }
 
 /// A marker pointing along `dir` (which the caller has established is longer
 /// than the heading threshold). In 3D the arrowhead is two flat heads crossed
-/// at 90° about the direction of travel, so it reads as an arrow from any
-/// camera angle instead of vanishing edge-on; a sprite layer is viewed from one
-/// fixed side, so one flat head in the XY plane is exactly right there.
-fn trail_arrow(p: Vector3<f32>, dir: Vector3<f32>, radius: f32, space: TrailSpace) -> Scene3D {
+/// at 90° about the direction of travel plus a sphere core, so it reads as an
+/// arrow from most angles and as a dot edge-on rather than vanishing; a sprite
+/// layer is viewed from one fixed side, so one flat head in the XY plane is
+/// exactly right there and needs no core.
+///
+/// `None` when this space cannot orient the mark from `dir` — see the
+/// `Sprite2D` arm — leaving the caller to draw the direction-free dot.
+fn trail_arrow(
+    p: Vector3<f32>,
+    dir: Vector3<f32>,
+    radius: f32,
+    space: TrailSpace,
+) -> Option<Scene3D> {
     let head = Scene3D {
         obj: SceneObject::Geometry(Shape::ConvexPolygon {
             points: ARROW_POINTS.to_vec(),
@@ -399,32 +421,48 @@ fn trail_arrow(p: Vector3<f32>, dir: Vector3<f32>, radius: f32, space: TrailSpac
             vec![
                 head.clone(),
                 head.transform(Matrix4::from_angle_x(Deg(90.0))),
+                Scene3D::sphere().transform(Matrix4::from_scale(ARROW_CORE)),
             ],
             heading_rotation(dir.normalize()),
         ),
         // Motion is in the layer's XY plane; spin the head about Z so it always
-        // faces the 2D camera.
-        TrailSpace::Sprite2D => (
-            vec![head],
-            Matrix4::from_angle_z(Rad(dir.y.atan2(dir.x))),
-        ),
+        // faces the 2D camera. Only x/y orient that spin, so the IN-PLANE
+        // displacement is what has to clear the threshold: a (currently
+        // unreachable — sprite lowering pins z = 0) mostly-z displacement would
+        // pass a 3D-magnitude gate and then leave `atan2(~0, ~0)` pointing +X
+        // arbitrarily. Guard the invariant rather than rely on the lowering.
+        TrailSpace::Sprite2D => {
+            let planar = dir.truncate();
+            if planar.magnitude() <= radius * HEADING_EPS_RADII {
+                return None;
+            }
+            (vec![head], Matrix4::from_angle_z(Rad(planar.y.atan2(planar.x))))
+        }
     };
-    trail_mark(
+    Some(trail_mark(
         heads,
         Matrix4::from_translation(p) * rotation * Matrix4::from_scale(radius * ARROW_SCALE),
-    )
+    ))
 }
 
 /// The local direction of travel at sample `i`: the segment between its
 /// neighbors (central difference) where both exist, and the one-sided segment
 /// at each end of the track. `None` when the displacement is too small to be a
 /// heading — see [`HEADING_EPS_RADII`].
+///
+/// The threshold is compared PER STEP, not against the raw segment. An
+/// interior sample spans two steps while the endpoints span one, so testing
+/// both against the same epsilon would apply a 2x stricter rule at the ends —
+/// a track moving at just under 2x the threshold would draw dot endpoints
+/// around arrow interiors. Dividing by the span makes the mark form depend
+/// only on the SPEED, so it is consistent along a constant-velocity track.
 fn heading_at(worlds: &[Matrix4<f32>], i: usize, radius: f32) -> Option<Vector3<f32>> {
-    let before = if i > 0 { &worlds[i - 1] } else { &worlds[i] };
-    let after = worlds.get(i + 1).unwrap_or(&worlds[i]);
-    let dir = world_pos(after) - world_pos(before);
+    let lo = i.saturating_sub(1);
+    let hi = (i + 1).min(worlds.len() - 1);
+    let dir = world_pos(&worlds[hi]) - world_pos(&worlds[lo]);
+    let steps = (hi - lo).max(1) as f32;
     let eps = radius * HEADING_EPS_RADII;
-    (dir.magnitude() > eps).then_some(dir)
+    (dir.magnitude() / steps > eps).then_some(dir)
 }
 
 /// The 1-based future-sample index the strobe's `c`-th copy stands on, for a
@@ -463,10 +501,11 @@ fn trail_from_tracks(
                 continue;
             }
             let p = world_pos(w);
-            marks.push(match heading_at(&track.worlds, i, radius) {
-                Some(dir) => trail_arrow(p, dir, radius, space),
-                None => trail_dot(p, radius),
-            });
+            marks.push(
+                heading_at(&track.worlds, i, radius)
+                    .and_then(|dir| trail_arrow(p, dir, radius, space))
+                    .unwrap_or_else(|| trail_dot(p, radius)),
+            );
         }
     }
     if marks.is_empty() {
@@ -1459,15 +1498,19 @@ mod tests {
         assert_eq!(along_x_marks.len(), 4);
         for mark in &along_x_marks {
             assert_close(mark_heading(mark), vec3(1.0, 0.0, 0.0));
+            let shapes = mark_shapes(mark);
             assert_eq!(
-                mark_shapes(mark).len(),
-                2,
-                "a 3D arrowhead is two crossed heads"
+                shapes.len(),
+                3,
+                "a 3D mark is two crossed heads plus the sphere core"
             );
-            assert!(matches!(
-                mark_shapes(mark)[0],
-                Shape::ConvexPolygon { .. }
-            ));
+            assert!(matches!(shapes[0], Shape::ConvexPolygon { .. }));
+            assert!(matches!(shapes[1], Shape::ConvexPolygon { .. }));
+            assert!(
+                matches!(shapes[2], Shape::Sphere),
+                "the core keeps an edge-on mark visible, got {:?}",
+                shapes[2]
+            );
         }
 
         let along_z = |z: f32| Scene3D {
@@ -1534,6 +1577,98 @@ mod tests {
                 1,
                 "a sprite mark is one flat arrowhead"
             );
+        }
+    }
+
+    #[test]
+    fn a_falling_track_points_straight_down() {
+        // The branch the physics preview leans on: gravity pulls movers along
+        // -Y, and every mark on the fall must point that way.
+        let frames: Vec<Scene3D> = (0..=3).map(|i| frame(0.0, -(i as f32))).collect();
+        let refs: Vec<&Scene3D> = frames.iter().collect();
+        let trail = trajectory_trail(&refs, 0.05, 3.0).expect("a trail");
+        for mark in marks(&trail) {
+            assert_close(mark_heading(&mark), vec3(0.0, -1.0, 0.0));
+        }
+    }
+
+    // Every mark of a constant-velocity track moving `step` per sample, as
+    // "is it an arrow?" flags. The mover epsilon is well below the heading
+    // threshold here so the track still counts as moving at speeds that do
+    // NOT earn a heading — the band this test is about.
+    fn mark_forms_at_speed(step: f32) -> Vec<bool> {
+        let frames: Vec<Scene3D> = (0..=3).map(|i| frame(i as f32 * step, 0.0)).collect();
+        let refs: Vec<&Scene3D> = frames.iter().collect();
+        let trail = trajectory_trail(&refs, 0.001, 3.0).expect("a trail");
+        marks(&trail)
+            .iter()
+            .map(|m| matches!(mark_shapes(m)[0], Shape::ConvexPolygon { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn constant_velocity_gives_one_mark_form_across_the_whole_track() {
+        // The threshold is per STEP, so a constant-velocity track is all
+        // arrows or all dots — never dot ends around arrow interiors. An
+        // interior sample spans two steps and the endpoints one, so a
+        // raw-segment comparison would flip form exactly in this band: just
+        // under the per-step threshold, where the two-step interior still
+        // clears it.
+        let eps = TRAIL_RADIUS_3D * HEADING_EPS_RADII;
+        let slow = mark_forms_at_speed(eps * 0.75);
+        assert_eq!(
+            slow,
+            vec![false; 4],
+            "below the per-step threshold every mark is a dot"
+        );
+        let fast = mark_forms_at_speed(eps * 1.25);
+        assert_eq!(
+            fast,
+            vec![true; 4],
+            "above the per-step threshold every mark is an arrow"
+        );
+    }
+
+    #[test]
+    fn the_marks_basis_varies_continuously_with_the_heading() {
+        // The transverse basis (and so the crossed heads' roll) must not snap
+        // as a heading sweeps past any particular elevation — a helper-axis
+        // switch at |dir.y| = 0.9 used to spin the mark ~90 degrees there.
+        let basis = |y: f32| {
+            let dir = vec3((1.0f32 - y * y).sqrt(), y, 0.0).normalize();
+            heading_rotation(dir)
+        };
+        for &y in &[0.88, 0.89, 0.90, 0.91, 0.92] {
+            let a = basis(y);
+            let b = basis(y + 0.005);
+            for (col_a, col_b) in [(a.y, b.y), (a.z, b.z)] {
+                let delta = (col_a.truncate() - col_b.truncate()).magnitude();
+                assert!(
+                    delta < 0.1,
+                    "basis jumped by {delta} between y = {y} and y = {}",
+                    y + 0.005
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sprite_marks_follow_leftward_motion() {
+        // Negative dx must point the mark along -X, not fold onto +X.
+        let sprite_at = |x: f32| {
+            let mut rendered = Frame::new(Camera::default(), Scene3D::cube());
+            rendered.sprite_layers.push(SpriteLayer {
+                camera: Camera2D::new(24.0, 13.5),
+                scene: frame(x, 0.0),
+            });
+            rendered
+        };
+        let frames: Vec<Frame> = (0..=2).map(|i| sprite_at(-(i as f32))).collect();
+        let futures: Vec<&Frame> = frames.iter().skip(1).collect();
+        let preview = preview_from_frames(&frames[0], &futures, &preview_options(true, false));
+        let trail = preview.sprite_layers[0].trail.as_ref().expect("a trail");
+        for mark in marks(trail) {
+            assert_close(mark_heading(&mark), vec3(-1.0, 0.0, 0.0));
         }
     }
 
