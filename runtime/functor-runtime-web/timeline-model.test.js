@@ -295,31 +295,30 @@ test("a disabled preview has no window on either side", () => {
   assert.equal(view.backwardStartFrame, 300);
 });
 
-test("dragging either endpoint resizes the one shared window", () => {
+test("either endpoint grows the one shared window when dragged away from the playhead", () => {
   const base = publish(createTimelineState({ enabled: true, seconds: 2 }), 300, 300, true);
-  // The forward handle drags right by 60 frames (+1s); the backward handle
-  // drags LEFT by 60, which its handler negates into the same +1s. Both land
-  // on the same symmetric window.
-  const forward = reduceTimeline(base, { type: "preview-delta-requested", frames: 60 });
-  const backward = reduceTimeline(base, { type: "preview-delta-requested", frames: 60 });
-  assert.equal(forward.preview.seconds, 3);
-  assert.equal(backward.preview.seconds, 3);
+  // "Away from the playhead" is +x on the forward handle and -x on the
+  // backward one, so the scrubber applies the sign (`endpointKeydown(sign)` /
+  // `pastDrag.seconds - delta`) before dispatching. Model the two handles by
+  // their raw pointer deltas and the sign each applies, so this test fails if
+  // either sign flips.
+  const drag = (rawFrames, sign) =>
+    reduceTimeline(base, { type: "preview-delta-requested", frames: sign * rawFrames });
+  const forward = drag(60, 1);
+  const backward = drag(-60, -1);
+  assert.equal(forward.preview.seconds, 3, "forward handle dragged right grows the window");
+  assert.equal(backward.preview.seconds, 3, "backward handle dragged left grows it the same");
+
+  // Dragging either handle TOWARD the playhead shrinks it, symmetrically.
+  assert.equal(drag(-60, 1).preview.seconds, 1);
+  assert.equal(drag(60, -1).preview.seconds, 1);
+
   const view = deriveTimelineView(backward);
   assert.equal(view.previewFrames, 180);
   assert.equal(view.backwardFrames, 180);
   assert.equal(
     view.previewEndFrame - view.selectedFrame,
-    view.selectedFrame - view.backwardStartFrame
+    view.selectedFrame - view.backwardStartFrame,
+    "one window, mirrored"
   );
-});
-
-test("an absolute backward endpoint sets the window from its distance to the playhead", () => {
-  let state = publish(createTimelineState({ enabled: true, seconds: 2 }), 300, 300, true);
-  state = reduceTimeline(state, { type: "seek-requested", frame: 200 });
-  // Dropping the backward handle on frame 140 means a 1s window each way.
-  state = reduceTimeline(state, { type: "preview-start-requested", frame: 140 });
-  assert.equal(state.preview.seconds, 1);
-  const view = deriveTimelineView(state);
-  assert.equal(view.backwardStartFrame, 140);
-  assert.equal(view.previewEndFrame, 260);
 });

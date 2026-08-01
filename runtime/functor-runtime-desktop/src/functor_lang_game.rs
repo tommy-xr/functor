@@ -3230,6 +3230,21 @@ mod tests {
             "the oldest reconstructed frame is the ring floor: {oldest} vs {lo_tts}"
         );
 
+        // A window FINER than the recording cadence (dt below one rendered
+        // frame) must not emit the same frame twice: divisions that resolve to
+        // an already-emitted frame are skipped, so the marks stay spread over
+        // distinct recorded moments instead of stacking.
+        let dense = game.history_frames(16, SUB_DT / 4.0);
+        let mut seen: Vec<f32> = dense.iter().map(|(_, ft)| ft.tts).collect();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "no duplicate frames: {seen:?}");
+        assert!(
+            dense.len() < 16,
+            "a sub-frame window dedupes down: {} frames",
+            dense.len()
+        );
+
         // Reconstruction is READ-ONLY: the live world and live frame are
         // exactly as they were.
         assert_eq!(

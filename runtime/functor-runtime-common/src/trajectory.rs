@@ -543,6 +543,13 @@ fn trail_from_tracks(
             if skip.contains(&i) {
                 continue;
             }
+            // Sample 0 is the ANCHOR, shared by both sides. The future side
+            // owns it; marking it on the past side too would stack two
+            // coplanar emissive marks in different colors on one spot
+            // (z-fighting), which is exactly where the eye is looking.
+            if i == 0 && side == PreviewSide::Past {
+                continue;
+            }
             let p = world_pos(w);
             marks.push(
                 heading_at(&track.worlds, i, radius)
@@ -1167,12 +1174,11 @@ fn side_overlays(
     opts: &PreviewOptions,
     side: PreviewSide,
 ) -> FramePreview {
-    let futures = others;
-    let mut scenes = Vec::with_capacity(futures.len() + 1);
+    let mut scenes = Vec::with_capacity(others.len() + 1);
     scenes.push(&anchor.scene);
-    scenes.extend(futures.iter().map(|frame| &frame.scene));
+    scenes.extend(others.iter().map(|frame| &frame.scene));
 
-    let matching_futures: Vec<_> = futures
+    let matching_futures: Vec<_> = others
         .iter()
         .take_while(|frame| frame.sprite_layers.len() == anchor.sprite_layers.len())
         .copied()
@@ -1182,7 +1188,7 @@ fn side_overlays(
         .iter()
         .enumerate()
         .map(|(index, anchor_layer)| {
-            let mut scenes = Vec::with_capacity(futures.len() + 1);
+            let mut scenes = Vec::with_capacity(others.len() + 1);
             scenes.push(&anchor_layer.scene);
             for future in &matching_futures {
                 scenes.push(&future.sprite_layers[index].scene);

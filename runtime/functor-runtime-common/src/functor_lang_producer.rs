@@ -1972,19 +1972,40 @@ pub fn history_frames(
     // One throwaway world reused across divisions (each restore overwrites
     // it); the `DryWorld` guard removes it on every exit path. Built only when
     // the game has physics AND something is actually restorable.
-    let draw_world = (has_physics && physics.seekable_range().is_some())
-        .then(|| DryWorld(physics::create_world([0.0, -9.81, 0.0])));
+    let physics_range = has_physics.then(|| physics.seekable_range()).flatten();
+    let draw_world =
+        physics_range.map(|_| DryWorld(physics::create_world([0.0, -9.81, 0.0])));
 
     let mut frames = Vec::with_capacity(picks.len());
     for pick in picks {
         let Some((model, tts, world_frame)) = recorder.recorded_frame(pick) else {
             continue;
         };
-        let _world_scope = match &draw_world {
-            Some(dry) => physics
-                .restore_recorded_into(world_frame, dry.0)
-                .then(|| physics::ActiveWorldScope::enter(dry.0)),
-            None => None,
+        let _world_scope = match (&draw_world, physics_range) {
+            (Some(dry), Some((flo, fhi))) => {
+                if world_frame < flo {
+                    // Pruned from the WORLD history even though the model ring
+                    // still has this frame (the two rings count different
+                    // units — rendered vs fixed frames — so they can disagree
+                    // near the floor). Drawing it anyway would resolve
+                    // `Physics.transformed` against the LIVE world and present
+                    // the CURRENT pose as recorded fact. Refuse instead: every
+                    // older pick is pruned too, so the window clips here — the
+                    // same exact-or-refused rule the coupled seek uses.
+                    break;
+                }
+                if world_frame > fhi {
+                    // Nothing stepped after this frame, so its end-of-frame
+                    // world IS the live world — no restore needed (the
+                    // `physics_seek_target` "already the live append" case).
+                    None
+                } else {
+                    physics
+                        .restore_recorded_into(world_frame, dry.0)
+                        .then(|| physics::ActiveWorldScope::enter(dry.0))
+                }
+            }
+            _ => None,
         };
         let args = vec![model.clone(), Value::Number(tts)];
         // A draw error or non-Frame return for a division is skipped, not fatal.

@@ -178,18 +178,6 @@ export function reduceTimeline(state, action) {
       };
     }
 
-    // The BACKWARD endpoint's absolute mirror: the window is symmetric, so a
-    // start frame BEHIND the playhead sets the same `seconds` its forward twin
-    // would (docs/time-travel.md T6e).
-    case "preview-start-requested": {
-      if (state.selectedFrame === null || !Number.isFinite(action.frame)) return state;
-      const seconds = (state.selectedFrame - action.frame) / TIMELINE_FPS;
-      return {
-        ...state,
-        preview: normalizePreviewConfig({ seconds }, state.preview),
-      };
-    }
-
     case "preview-delta-requested": {
       if (!Number.isFinite(action.frames)) return state;
       const seconds = state.preview.seconds + action.frames / TIMELINE_FPS;

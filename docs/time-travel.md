@@ -390,7 +390,17 @@ of it. The two halves are not the same kind of thing, and the UI says so:
 **Color carries the direction.** Past marks and strobe copies are **cyan**
 (the scrubber rail's accent), future ones **pink** (the rail's future segment) —
 so the scene and the timeline agree about which way is which. Trail arrowheads
-take the flat side color. Strobe copies are real geometry in the *mover's own*
+are flat emissive in the exact side color, and they are the *authoritative*
+direction signal.
+
+Strobe copies are only approximately those colors, because a copy keeps its
+source material: on a **textured** mover (notably 2D sprite copies, which fade by
+alpha) the side color lands as a colour *multiply* over the texture rather than a
+replacement, so the hue shifts toward the side instead of becoming it — an orange
+sprite reads olive in the past and red in the future. The two directions stay
+clearly distinguishable, which is the requirement, but don't expect exact cyan and
+pink there, and don't rely on the strobe alone to tell direction apart on a
+textured 2D game — that is what the arrows are for. Strobe copies are real geometry in the *mover's own*
 material, so the direction tint has to **dominate** — at a light tint, past and
 future copies of one object are indistinguishable and the two directions read as
 a single muddy cloud. The tint keeps only a small fraction of the source color
@@ -410,12 +420,22 @@ shared window** — drag one side and both resize. The seam is unchanged:
 `setPreview({ enabled, seconds, rate, mode })` still takes one `seconds`, now
 read as the per-side window.
 
-**Cost.** The past half is one `draw` per division with no simulation, so it is
-strictly cheaper than the forward half. It shares the forward side's cache, keyed
-on the selected frame, window, rate, program revision, and timeline generation —
-so a paused scrub (the hot case) recomputes only when something actually changes,
-and live play refreshes both directions together on the same ~10 Hz cadence, never
-per frame.
+**Cost.** The past half runs one `draw` per division and never advances the
+*model* — but for a physics game it is not free: restoring a recorded world seeks
+the physics `TimelineLog`, which replays from the nearest keyframe, so a pick can
+re-step up to `KEYFRAME_INTERVAL - 1` fixed frames. Per division that is bounded
+and independent of how far back the window reaches, but it means the backward half
+can cost *more* than the forward half on a physics-heavy scene, not less.
+
+The policy that makes this fine is caching, not cheapness. Both directions share
+one cache keyed on the selected frame, window, rate, program revision, and timeline
+generation. **Paused scrubbing — the hot case — recomputes only when one of those
+actually changes**, so holding a paused frame costs nothing. Live play refreshes
+both directions together on the same ~10 Hz cadence, never per frame. If the
+backward half ever shows up in a profile, the fix is to restore once at the oldest
+pick and walk *forward* through the picks (re-stepping only between consecutive
+picks) instead of seeking each independently — deliberately not done here, since it
+trades real complexity for a cost the cache already hides.
 
 ## Deferred follow-ups: keep and reconstruct the old future
 
