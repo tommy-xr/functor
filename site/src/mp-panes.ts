@@ -155,6 +155,14 @@ interface Pane {
   frameLabels: HTMLElement[];
   dots: HTMLElement[];
   conn: HTMLElement;
+  /** The link indicator's two halves. The DOT survives every header clip (it
+   * is the pane's whole connection state at a glance); the WORD goes with the
+   * rest of the prose when the header is a thumbnail's. */
+  connDot: HTMLElement;
+  connText: HTMLElement;
+  /** This pane's frame readout on the network status strip, while that strip
+   * exists (rebuilt whenever the pane set changes). */
+  stripFrame: HTMLElement | null;
   errStrip: HTMLElement;
 }
 
@@ -166,6 +174,13 @@ export interface MultiplayerPanesOptions {
   setPill: (state: PaneState, text: string, detail: string) => void;
   /** The current editor buffer, so a mirror added mid-session catches up. */
   getSource: () => string;
+  /**
+   * Ask the PAGE for a client count — the "+" tile's one job. It routes through
+   * the host rather than calling `setCount` directly so that the spatial
+   * affordance and the CLIENTS dropdown are the same path: the same clamp, the
+   * same `#clients=` hash write, the same control re-render.
+   */
+  requestCount: (n: number) => void;
 }
 
 export interface MultiplayerPanes {
@@ -236,6 +251,7 @@ export function initMultiplayerPanes({
   statusBar,
   setPill,
   getSource,
+  requestCount,
 }: MultiplayerPanesOptions): MultiplayerPanes {
   const previewPane = frame.closest(".preview-pane") as HTMLElement;
   previewPane.classList.add("mp");
@@ -269,7 +285,7 @@ export function initMultiplayerPanes({
     <span class="mp-viewseg" role="group" aria-label="Pane layout">
       <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every pane in one row (f cycles)">⊞ tiled</button>
       <button id="mp-view-grid" aria-pressed="false" title="Grid: clients in two columns over the server strip (f cycles)">▦ grid</button>
-      <button id="mp-view-network" aria-pressed="false" title="Network: the server as the hub, with live packet flow along each link (f cycles)">◈ network</button>
+      <button id="mp-view-network" aria-pressed="false">◈ network</button>
       <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one pane full-size (f cycles)">▤ tabs</button>
     </span>`;
 
@@ -312,24 +328,62 @@ export function initMultiplayerPanes({
   grid.className = "mp-grid";
   grid.dataset.view = "tiled";
 
-  // The stage holds the grid plus the surfaces the NETWORK view adds: the
-  // legend above it, and (mounted by the graph itself) the wire and chip
-  // layers around it. They are siblings of the grid, never children of it —
-  // the grid's cells are exactly the panes, and another child would shift the
-  // `:nth-child` rules the grid and network views lay out with.
+  // The "+" tile (Addendum 5a.7): the SPATIAL way to add a client, sitting
+  // where the client it would create is about to appear — the CLIENTS dropdown
+  // stays the numeric one, and both go through the same host call. It is a real
+  // <button>, so it is tab-reachable and answers to Enter/Space for free; it is
+  // a grid child so it takes a cell in tiled/grid, and CSS hides it in tabs
+  // (which has its own "+" tab) and in network. NETWORK gets no ghost spoke: a
+  // wire is measured between two panes that are actually talking, and drawing
+  // one to a card that is not a participant would be the one lie this view
+  // cannot afford.
+  const addTile = document.createElement("button");
+  addTile.type = "button";
+  addTile.className = "mp-add-tile";
+  addTile.title = "Add a client";
+  addTile.innerHTML = `<span class="mp-add-plus" aria-hidden="true">+</span>
+    <span class="mp-add-label">add a client</span>`;
+  grid.appendChild(addTile);
+
+  const addTab = document.createElement("button");
+  addTab.type = "button";
+  addTab.className = "mp-tab add";
+  addTab.title = "Add a client";
+  addTab.textContent = "+";
+  addTab.setAttribute("aria-label", "Add a client");
+  tabsStrip.appendChild(addTab);
+
+  // The stage holds the grid plus the layers the NETWORK view adds (mounted by
+  // the graph itself: the wires under the cards, the chips over them). They are
+  // siblings of the grid, never children of it — the grid's cells are the panes
+  // and the "+" tile, and another child would shift the `:nth-child` rules the
+  // grid and network views lay out with.
   const stage = document.createElement("div");
   stage.className = "mp-stage";
   stage.dataset.view = "tiled";
-  const legend = document.createElement("div");
-  legend.className = "mp-legend";
-  // Two legends, one per motion preference — under `reduce` nothing flies, so
-  // a legend about dot shapes would describe something that is not on screen.
-  legend.innerHTML = `
-    <span class="motion"><i class="mp-sw up"></i><b>intent</b> — client → server</span>
-    <span class="motion"><i class="mp-sw down"></i><b>authority</b> — server → client</span>
-    <span class="motion mp-legend-note">dot size = payload bytes · dots are sampled traffic, not one per packet</span>
-    <span class="still mp-legend-note">reduced motion: each link shows its packet count instead of moving dots</span>`;
-  stage.append(legend, grid);
+  stage.append(grid);
+
+  // The NETWORK view's status strip (Addendum 5a.3), homed in the status bar's
+  // view slot: the packet legend, plus the pane readouts the headers drop when
+  // they clip to thumbnail width. A thumbnail header has room for WHO and
+  // WHETHER IT IS LINKED and nothing else, so the frame counters live here —
+  // one place, aligned, instead of spilling out of four narrow headers.
+  const viewStrip = statusBar.viewStrip;
+  viewStrip.hidden = true;
+  viewStrip.innerHTML = `
+    <span class="mp-vs-legend">
+      <span class="motion"><span class="mp-vs-inks"></span><b>intent</b> — client → server</span>
+      <span class="motion"><i class="mp-sw down"></i><b>authority</b> — server → client</span>
+      <span class="motion mp-vs-note">one dot per link per direction per frame · size = bytes carried</span>
+      <span class="still mp-vs-note">reduced motion: each link shows its packet count instead of moving dots</span>
+    </span>
+    <span class="mp-vs-panes" title="Each pane's OWN frame count, which is boot-relative — a late-joined client counts from 0. The rail above counts the reference clock."></span>`;
+  const stripPanes = viewStrip.querySelector(".mp-vs-panes") as HTMLElement;
+  // The intent swatch is one dot PER CLIENT, in that client's ink: "color
+  // carries identity" is the rule the dots follow, and a single swatch would
+  // have to pick one player's color to stand for all of them — which is the
+  // cyan-means-player-1 confusion 5a.1 retired the cyan square for.
+  const stripInks = viewStrip.querySelector(".mp-vs-inks") as HTMLElement;
 
   previewPane.prepend(chrono, debugDrawer, tabsStrip);
   previewPane.appendChild(stage);
@@ -410,7 +464,7 @@ export function initMultiplayerPanes({
         }
         <span class="mp-hd-r">
           ${client ? `<span class="mp-you" hidden>⌨ you</span>` : ""}
-          <span class="mp-conn" hidden></span>
+          <span class="mp-conn" hidden><b class="mp-conn-d"></b><span class="mp-conn-t"></span></span>
           <span class="mp-pf"><b>#f</b> <span class="mp-pf-n">—</span></span>
           <span class="mp-st" data-state="busy"></span>
         </span>
@@ -418,12 +472,12 @@ export function initMultiplayerPanes({
       <div class="mp-pane-body"></div>
       <div class="mp-pane-err" hidden></div>`;
     shell.querySelector(".mp-pane-body")!.appendChild(iframe);
-    // A client tile is INSERTED BEFORE the server's, never appended after it:
-    // re-appending a mounted node is a remove + insert, and that reloads an
-    // iframe — the same invariant that keeps pane 1 in place would be broken
-    // for the authority, wiping the world every time the count changed.
-    const before = client && serverPane ? serverPane.pane : null;
-    grid.insertBefore(shell, before?.shell ?? null);
+    // A client tile is INSERTED BEFORE the "+" tile (and so before the server's
+    // card, which follows it), never appended after them: re-appending a
+    // mounted node is a remove + insert, and that reloads an iframe — the same
+    // invariant that keeps pane 1 in place would be broken for the authority,
+    // wiping the world every time the count changed.
+    grid.insertBefore(shell, client ? addTile : null);
 
     const tab = document.createElement("button");
     tab.className = client ? "mp-tab" : "mp-tab server";
@@ -431,7 +485,9 @@ export function initMultiplayerPanes({
     tab.innerHTML = `${client ? `<span class="mp-digit">${index + 1}</span> client` : "SERVER"}
       <span class="mp-pf"><b>#f</b> <span class="mp-pf-n">—</span></span>
       <span class="mp-st" data-state="busy"></span>`;
-    tabsStrip.insertBefore(tab, before?.tab ?? null);
+    // Same rule in the tab strip, with the "+" tab pinned last: a client's tab
+    // goes before the server's, and both go before the "+".
+    tabsStrip.insertBefore(tab, (client && serverPane?.pane.tab) || addTab);
 
     const pane: Pane = {
       role,
@@ -452,6 +508,9 @@ export function initMultiplayerPanes({
         tab.querySelector(".mp-st") as HTMLElement,
       ],
       conn: shell.querySelector(".mp-conn") as HTMLElement,
+      connDot: shell.querySelector(".mp-conn-d") as HTMLElement,
+      connText: shell.querySelector(".mp-conn-t") as HTMLElement,
+      stripFrame: null,
       errStrip: shell.querySelector(".mp-pane-err") as HTMLElement,
     };
 
@@ -694,12 +753,83 @@ export function initMultiplayerPanes({
   // `f` skips it, so the cycle never stalls on a view it cannot enter.
   const viewAvailable = (view: PaneView) => view !== "network" || serverPane !== null;
 
+  // FLIP (Addendum 5a.4), by hand and deliberately NOT react-spring: the panes
+  // live OUTSIDE React because a re-parented iframe reloads and wipes its model
+  // (the e2e's document-lifetime markers exist to catch exactly that), so the
+  // animation has to be one that never touches the tree. FLIP is that
+  // animation: measure First, let the class change decide Last, then Invert the
+  // delta as a transform on the SAME node and Play it back to none. Nothing is
+  // created, moved, or re-parented — a switch mid-flight simply re-measures
+  // from wherever the cards currently are.
+  const SWITCH_MS = 420;
+  /** Overshoot-free but spring-paced: quick off the mark, long settle. */
+  const SWITCH_EASING = "cubic-bezier(0.22, 1, 0.3, 1)";
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  /** Views in flight — while any is, the wires re-measure every frame, since a
+   * transform moves a card's box without resizing anything. */
+  let animating = 0;
+  /** Our own FLIP per node, so an interrupted switch cancels exactly what it
+   * started (a pane also carries CSS transitions we must not touch). */
+  const inFlight = new Map<HTMLElement, Animation>();
+
+  const flipViews = (apply: () => void) => {
+    const nodes = [...allPanes().map((pane) => pane.shell), addTile];
+    // Reduced motion: the layout still changes, it just arrives instantly.
+    if (reduceMotion.matches) {
+      apply();
+      return;
+    }
+    // FIRST is measured WITH any running transform — a switch mid-flight has to
+    // start from where the card visibly is. OUR previous animation on that node
+    // is then cancelled before LAST is measured, or the destination box would be
+    // read through a transform still being applied (its `finished` rejection is
+    // caught below, and `animating` still settles in the `finally`). Only ours:
+    // `getAnimations()` would also return the pane's CSS focus transitions.
+    const first = nodes.map((node) => node.getBoundingClientRect());
+    for (const node of nodes) inFlight.get(node)?.cancel();
+    apply();
+    nodes.forEach((node, index) => {
+      const from = first[index];
+      const to = node.getBoundingClientRect();
+      if (from.width === 0 || to.width === 0) return;
+      const dx = from.left - to.left;
+      const dy = from.top - to.top;
+      const sx = from.width / to.width;
+      const sy = from.height / to.height;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) {
+        return;
+      }
+      const animation = node.animate(
+        [
+          { transformOrigin: "0 0", transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+          { transformOrigin: "0 0", transform: "none" },
+        ],
+        { duration: SWITCH_MS, easing: SWITCH_EASING }
+      );
+      animating += 1;
+      inFlight.set(node, animation);
+      animation.finished
+        .catch(() => {})
+        .finally(() => {
+          animating -= 1;
+          if (inFlight.get(node) === animation) inFlight.delete(node);
+          if (animating === 0 && grid.dataset.view === "network") graph.relayout();
+        });
+    });
+  };
+
   const setView = (view: PaneView, force = false) => {
     if (allPanes().length === 1 && !force) return;
     if (!viewAvailable(view)) return;
-    grid.dataset.view = view;
-    stage.dataset.view = view;
-    tabsStrip.hidden = view !== "tabs";
+    if (view === grid.dataset.view) return;
+    flipViews(() => {
+      grid.dataset.view = view;
+      stage.dataset.view = view;
+      tabsStrip.hidden = view !== "tabs";
+      // The strip's LEGEND is network-only (nothing flies in the other views);
+      // its pane readouts are not — see updateChrome.
+      viewStrip.dataset.view = view;
+    });
     for (const candidate of VIEWS) {
       $btn(`mp-view-${candidate}`).setAttribute("aria-pressed", String(view === candidate));
     }
@@ -721,16 +851,65 @@ export function initMultiplayerPanes({
     // differently.
     grid.dataset.clients = String(panes.length);
     for (const view of VIEWS) $btn(`mp-view-${view}`).disabled = single;
+    // The network button's tooltip is written here and nowhere else — it says
+    // either what the view is or why it is unavailable.
     const network = $btn("mp-view-network");
     if (!single) network.disabled = !viewAvailable("network");
     network.title = viewAvailable("network")
       ? "Network: the server as the hub, with live packet flow along each link (f cycles)"
       : "Network needs an authority — this example declares no server role, so there is no hub to arrange the clients around";
+    // The "+" affordances: hidden at MAX_CLIENTS (there is nothing to add), and
+    // hidden in the single-pane layout, which drops every other piece of
+    // multiplayer chrome with it.
+    // The strip carries the pane readouts in EVERY multi-pane view, not just
+    // network: the headers clip by their own width (a tiled row of four is
+    // thumbnails too), so the frame counters need a home wherever that happens.
+    // Only the packet legend is network-scoped, via `data-view` above.
+    viewStrip.hidden = single;
+    const canAdd = !single && panes.length < MAX_CLIENTS;
+    addTile.hidden = !canAdd;
+    addTab.hidden = !canAdd;
+    // Grid's cell rules need both of these as data, not as structure: a hidden
+    // tile is still a child, so `:last-child` cannot answer "is the bottom row
+    // closed" any more.
+    grid.dataset.seat = canAdd ? "open" : "full";
+    grid.dataset.server = serverPane ? "yes" : "no";
     if (single) setView("tiled", true);
     // An example that dropped its server pane cannot stay in the hub view.
     else if (grid.dataset.view === "network" && !viewAvailable("network")) setView("tiled");
     else if (grid.dataset.view === "network") graph.relayout();
+    rebuildStrip();
   };
+
+  // The network strip's pane readouts, rebuilt whenever the pane set changes.
+  // Each row is the identity the clipped header keeps (digit / SERVER) plus the
+  // frame counter it drops; the paint loop writes the numbers.
+  function rebuildStrip() {
+    stripInks.replaceChildren(
+      ...panes.map((pane) => {
+        const ink = document.createElement("i");
+        ink.className = "mp-sw up";
+        ink.style.setProperty("--pc", pane.color);
+        return ink;
+      })
+    );
+    stripPanes.replaceChildren(
+      ...allPanes().map((pane) => {
+        const row = document.createElement("span");
+        row.className = `mp-vs-pane${pane.role === "server" ? " server" : ""}`;
+        row.style.setProperty("--pc", pane.color);
+        row.innerHTML =
+          `${pane.role === "server" ? `<i class="mp-vs-who">SRV</i>` : `<i class="mp-digit">${panes.indexOf(pane) + 1}</i>`}` +
+          `<b>#f</b> <span class="mp-pf-n">—</span>`;
+        pane.stripFrame = row.querySelector(".mp-pf-n") as HTMLElement;
+        return row;
+      })
+    );
+  }
+
+  const requestAnotherClient = () => requestCount(panes.length + 1);
+  addTile.addEventListener("click", requestAnotherClient);
+  addTab.addEventListener("click", requestAnotherClient);
 
   // Live client-count change: grow or shrink the mirror set in place. Pane 1
   // is untouched, so its model (and the editor session) survive.
@@ -1347,17 +1526,18 @@ export function initMultiplayerPanes({
       for (const label of pane.frameLabels) {
         if (label.textContent !== text) label.textContent = text;
       }
+      // The same number the header drops when it clips (see the strip's note).
+      if (pane.stripFrame && pane.stripFrame.textContent !== text) {
+        pane.stripFrame.textContent = text;
+      }
       pane.conn.hidden = !links;
       if (!links) continue;
       const count = links.get(pane.id) ?? 0;
       const linked =
-        count > 0
-          ? pane.role === "server"
-            ? `● ${count} linked`
-            : "● linked"
-          : "○ waiting";
-      if (pane.conn.textContent !== linked) {
-        pane.conn.textContent = linked;
+        count > 0 ? (pane.role === "server" ? `${count} linked` : "linked") : "waiting";
+      if (pane.connText.textContent !== linked) {
+        pane.connDot.textContent = count > 0 ? "●" : "○";
+        pane.connText.textContent = linked;
         pane.conn.dataset.linked = String(count > 0);
         pane.conn.title =
           count > 0
@@ -1373,6 +1553,11 @@ export function initMultiplayerPanes({
   let raf = 0;
   const tickLoop = () => {
     paint();
+    // A FLIP transform moves a card's box without resizing anything, so the
+    // ResizeObserver the graph normally re-measures from never fires: while a
+    // view switch is in flight, re-measure every frame and the wires fly with
+    // the cards.
+    if (animating > 0 && grid.dataset.view === "network") graph.relayout();
     // One loop for the whole preview column: the network graph advances its
     // packets here rather than running a second rAF beside this one.
     graph.step();
@@ -1424,6 +1609,8 @@ export function initMultiplayerPanes({
     count: () => panes.length,
     destroy() {
       cancelAnimationFrame(raf);
+      viewStrip.hidden = true;
+      viewStrip.replaceChildren();
       graph.destroy();
       net.destroy();
       moduleScope.abort();

@@ -10,9 +10,11 @@
 //
 // Two rules from the addendum are load-bearing here:
 //
-//   1. SHAPE carries direction, COLOR carries identity. client → server is a
-//      small filled circle in that client's player color (intent); server →
-//      client is a chunky hollow rounded-rect in cyan (authority).
+//   1. COLOR carries identity, SIZE carries payload (Addendum 5a.1 — the
+//      hollow-cyan-square authority packet is retired). Both directions are
+//      circles: client → server is the client's player color, sized by payload;
+//      server → client is the server's slate (--scrub-server) in a TIGHT size
+//      range, so the per-frame snapshot stream never dominates the picture.
 //   2. PACE is a measurement. See FLIGHT_MS.
 //
 // The wire log (click an edge → a pinned, scrub-locked panel) is the NEXT PR.
@@ -37,18 +39,29 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  */
 const FLIGHT_MS = 600;
 
-/** Concurrent dots, hard cap. Oldest is dropped first, so a busy session sheds
- * packets instead of growing the DOM without bound. */
-const MAX_DOTS = 40;
+/**
+ * Concurrent dots, hard cap. Oldest is dropped first, so a runaway session sheds
+ * packets instead of growing the DOM without bound.
+ *
+ * Sized for the honest steady state rather than for looks: with one dot per
+ * edge per direction per frame (see the batching in `step`), a 60Hz session
+ * keeps `FLIGHT_MS / 16.7 ≈ 36` dots in the air per edge per direction, so
+ * MAX_CLIENTS × 2 directions ≈ 216 at the busiest. A cap below that is not a
+ * safety valve, it is a visual bug: every dot is evicted mid-wire and the
+ * stream never reaches the far end.
+ */
+const MAX_DOTS = 260;
 
 /**
- * Minimum gap between two spawned dots on the same edge in the same direction —
- * ~10/s each way. The mp example broadcasts a snapshot per client per frame, so
- * a 60Hz session routes far more packets than a person can see or a browser
- * should animate. The view SAMPLES the feed rather than dropping frames, and
- * the legend says so: these dots are traffic, not a 1:1 packet count.
+ * Payload bytes at which a dot reaches its largest size, per direction.
+ *
+ * INTENT is a keypress-sized message, so it saturates early and its range is
+ * wide — a snapshot-sized intent should look heavy. AUTHORITY is a whole world
+ * snapshot every frame, so it saturates late and its range is tight
+ * (Addendum 5a.1): the stream is constant, and a constant stream of big dots
+ * is the thing that drowned the view out.
  */
-const SPAWN_GAP_MS = 100;
+const FULL_BYTES: Record<Direction, number> = { up: 128, down: 512 };
 
 /**
  * Buffered packets awaiting the next frame, hard cap. rAF is throttled (or
@@ -106,7 +119,6 @@ interface Edge {
   chipLabel: HTMLElement;
   chipCount: HTMLElement;
   length: number;
-  lastSpawn: Record<Direction, number>;
   count: number;
 }
 
@@ -176,7 +188,6 @@ export function initNetworkGraph({
       chipLabel: chip.querySelector("b")!,
       chipCount: chip.querySelector("i")!,
       length: 0,
-      lastSpawn: { up: 0, down: 0 },
       count: 0,
     };
     edges.set(node.id, edge);
@@ -294,27 +305,16 @@ export function initNetworkGraph({
     }
   };
 
-  const spawn = (edge: Edge, dir: Direction, size: number, now: number) => {
-    // Dot size scales MILDLY with the payload: a snapshot should read as
-    // heavier than a keypress without a 96-byte packet becoming a balloon.
-    const weight = Math.min(1, size / 128);
-    let el: SVGElement;
-    if (dir === "up") {
-      const circle = document.createElementNS(SVG_NS, "circle");
-      circle.setAttribute("r", (2.6 + weight * 2).toFixed(2));
-      circle.style.color = edge.node.color;
-      el = circle;
-    } else {
-      const width = 11 + weight * 6;
-      const height = 8 + weight * 2;
-      const rect = document.createElementNS(SVG_NS, "rect");
-      rect.setAttribute("x", (-width / 2).toFixed(2));
-      rect.setAttribute("y", (-height / 2).toFixed(2));
-      rect.setAttribute("width", width.toFixed(2));
-      rect.setAttribute("height", height.toFixed(2));
-      rect.setAttribute("rx", "2");
-      el = rect;
-    }
+  const spawn = (edge: Edge, dir: Direction, bytes: number, now: number) => {
+    // Both directions are circles; size scales MILDLY with the bytes the dot
+    // carries, over a range that differs by direction (FULL_BYTES). The
+    // client's own ink rides on `color` for intent; authority takes the
+    // server's slate from the stylesheet, since every authority packet on
+    // every wire comes from the one pane.
+    const weight = Math.min(1, bytes / FULL_BYTES[dir]);
+    const el = document.createElementNS(SVG_NS, "circle");
+    el.setAttribute("r", (dir === "up" ? 2.6 + weight * 2 : 2 + weight * 0.8).toFixed(2));
+    if (dir === "up") el.style.color = edge.node.color;
     el.setAttribute("class", `mp-packet ${dir}`);
     if (dots.length >= MAX_DOTS) {
       const oldest = dots.shift();
@@ -329,6 +329,14 @@ export function initNetworkGraph({
     const now = performance.now();
     const seen = inbox;
     inbox = [];
+    // BATCHED PER FRAME (Addendum 5a.5, retiring the old time sampling): one
+    // dot per edge per direction per frame that carried traffic, sized by the
+    // bytes that frame carried. A 60Hz session broadcasts a snapshot per client
+    // per frame, so a dot per packet is a swarm and a time sample is a lie
+    // about the rate; a dot per frame is exactly what the wire did, at the rate
+    // the screen can show. (Traffic keyed to the TIMELINE — replaying the
+    // scrubbed window's packets — arrives with the wire-log PR.)
+    const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number }>();
     for (const packet of seen) {
       // Lifecycle events (connected/disconnected) are not traffic — the pane
       // headers already say who is linked. Dots are payload.
@@ -340,10 +348,12 @@ export function initNetworkGraph({
       // Reduced motion: no flying dots at all. The edge keeps a static packet
       // COUNT badge instead, so the traffic is still legible without animation.
       if (reduceMotion.matches) continue;
-      if (now - edge.lastSpawn[dir] < SPAWN_GAP_MS) continue;
-      edge.lastSpawn[dir] = now;
-      spawn(edge, dir, packet.size, now);
+      const key = `${edge.node.id}|${dir}`;
+      const carried = batched.get(key);
+      if (carried) carried.bytes += packet.size;
+      else batched.set(key, { edge, dir, bytes: packet.size });
     }
+    for (const { edge, dir, bytes } of batched.values()) spawn(edge, dir, bytes, now);
     // The preference can flip while the view is open; whatever is still in the
     // air stops immediately rather than finishing its flight.
     if (reduceMotion.matches && dots.length > 0) clearDots();

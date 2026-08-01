@@ -85,6 +85,12 @@ const installProbe = (page) =>
     window.__mpProbe = {
       roles: () => shells().map((s) => s.role),
       headers: () => shells().map((s) => s.header),
+      // The link indicator, read as STATE rather than as prose: the dot is what
+      // survives when a thumbnail header clips the word off (see headerParts).
+      links: () =>
+        [...document.querySelectorAll(".mp-pane .mp-conn")].map(
+          (conn) => `${conn.hidden ? "hidden" : conn.dataset.linked}:${conn.title.slice(0, 20)}`
+        ),
       pill: () => document.getElementById("status").textContent.trim(),
       pauseAll: () => document.getElementById("mp-pause").click(),
       layout: () => ({
@@ -107,10 +113,53 @@ const installProbe = (page) =>
           dots: document.querySelectorAll(".mp-packet").length,
           up: document.querySelectorAll(".mp-packet.up").length,
           down: document.querySelectorAll(".mp-packet.down").length,
-          legend: getComputedStyle(document.querySelector(".mp-legend")).display,
+          // The legend + demoted pane readouts now live on the status bar's
+          // view strip: the legend only in network, the readouts in every
+          // multi-pane view (the headers clip by their own width).
+          legend: getComputedStyle(document.querySelector(".mp-vs-legend")).display,
+          stripShown: !document.querySelector(".statusbar-view").hidden,
+          strip: document.querySelector(".mp-vs-panes").innerText.replace(/\s+/g, " ").trim(),
           networkDisabled: document.getElementById("mp-view-network").disabled,
           networkTitle: document.getElementById("mp-view-network").title,
         };
+      },
+      // What a pane header still shows at its current width: the priority clip
+      // keeps identity + link state and drops the frame counter first.
+      headerParts: (index) => {
+        const shell = [...document.querySelectorAll(".mp-pane")][index];
+        const shown = (selector) => {
+          const node = shell.querySelector(selector);
+          return !!node && getComputedStyle(node).display !== "none";
+        };
+        return {
+          width: Math.round(shell.getBoundingClientRect().width),
+          digit: shown(".mp-digit"),
+          dot: shown(".mp-conn-d"),
+          word: shown(".mp-conn-t"),
+          frame: shown(".mp-pf"),
+        };
+      },
+      // The "+" affordances (tile in tiled/grid, tab in tabs).
+      addTile: () => {
+        const tile = document.querySelector(".mp-add-tile");
+        return {
+          present: !!tile,
+          hidden: !tile || tile.hidden,
+          display: tile ? getComputedStyle(tile).display : "none",
+          tag: tile?.tagName,
+          tabDisplay: getComputedStyle(document.querySelector(".mp-tab.add")).display,
+        };
+      },
+      clickAddTile: () => document.querySelector(".mp-add-tile").click(),
+      // Click a view button and read back, IN THE SAME TASK, how many pane
+      // cards are mid-animation — the FLIP has to have started before the
+      // browser has painted anything.
+      switchAndCountAnimations: (id) => {
+        document.getElementById(id).click();
+        return [...document.querySelectorAll(".mp-pane")].reduce(
+          (total, shell) => total + shell.getAnimations().length,
+          0
+        );
       },
       // Laid-out geometry per pane, plus the server's resolved grid placement.
       boxes: () =>
@@ -208,15 +257,52 @@ try {
       await sleep(200);
     }
 
-    // Grid with a LONE client: no peer to match, so it takes the whole row
-    // rather than sitting beside an empty cell — the server strip below it.
-    await page.click("#mp-view-grid");
-    await sleep(400);
-    const [client, server] = await page.evaluate(() => window.__mpProbe.boxes());
+    // The "+" tile: the spatial way to add a client, same path as the dropdown.
+    const tile = await page.evaluate(() => window.__mpProbe.addTile());
     check(
-      Math.abs(client.w - server.w) < 2 && server.y >= client.y + client.h && server.h < client.h,
-      "grid with one client stacks it full-width over the server strip",
-      JSON.stringify([client, server])
+      tile.present && !tile.hidden && tile.display !== "none" && tile.tag === "BUTTON",
+      "a + tile sits after the client panes, as a real button",
+      JSON.stringify(tile)
+    );
+    await page.evaluate(() => window.__mpProbe.clickAddTile());
+    await sleep(2500);
+    const afterAdd = await page.evaluate(() => ({
+      roles: window.__mpProbe.roles(),
+      hash: window.location.hash,
+      control: document.getElementById("client-count").value,
+    }));
+    check(
+      afterAdd.roles.join(", ") === "client 1, client 2, server" &&
+        afterAdd.control === "2" &&
+        afterAdd.hash.includes("clients=2"),
+      "clicking + adds a client through the same path as the CLIENTS dropdown",
+      JSON.stringify(afterAdd)
+    );
+    await page.selectOption("#client-count", "3");
+    await sleep(2500);
+    const atMax = await page.evaluate(() => window.__mpProbe.addTile());
+    check(atMax.hidden, "the + tile is hidden at MAX_CLIENTS", JSON.stringify(atMax));
+    await page.selectOption("#client-count", "1");
+    await sleep(1500);
+
+    // Grid with a LONE client: the open seat takes the cell beside it (at the
+    // size the new client will be), with the server strip below both.
+    await page.click("#mp-view-grid");
+    await sleep(700);
+    const [client, server] = await page.evaluate(() => window.__mpProbe.boxes());
+    const seat = await page.evaluate(() => {
+      const box = document.querySelector(".mp-add-tile").getBoundingClientRect();
+      return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width) };
+    });
+    check(
+      seat.x > client.x &&
+        Math.abs(seat.w - client.w) < 2 &&
+        Math.abs(seat.y - client.y) < 2 &&
+        server.w > client.w * 1.8 &&
+        server.y >= client.y + client.h &&
+        server.h < client.h,
+      "grid puts the open seat beside the lone client, over the server strip",
+      JSON.stringify([client, seat, server])
     );
     await page.close();
   }
@@ -242,14 +328,18 @@ try {
     // The link indicator: every pane linked through the coordinator.
     const linked = await page
       .waitForFunction(
-        () => window.__mpProbe.headers().every((h) => h.includes("linked")),
+        () => window.__mpProbe.links().every((state) => state.startsWith("true")),
         null,
         { timeout: 20000 }
       )
       .then(() => true)
       .catch(() => false);
     const headers = await page.evaluate(() => window.__mpProbe.headers());
-    check(linked, "every pane header shows its coordinator link state", headers.join(" | "));
+    check(
+      linked,
+      "every pane header shows its coordinator link state",
+      (await page.evaluate(() => window.__mpProbe.links())).join(" | ")
+    );
     check(
       headers[2].startsWith("SERVER") && !headers[2].includes("⇅"),
       "the server pane is labelled SERVER in its chrome and carries no link chip",
@@ -408,6 +498,31 @@ try {
       "no pane's iframe was reloaded by the switch back to tiled"
     );
 
+    // FLIP: the switch ANIMATES the pane cards (Web Animations on the same
+    // nodes — never a re-parent), and the document-lifetime markers have to
+    // survive an animated switch exactly as they survive an instant one.
+    const running = await page.evaluate(() =>
+      window.__mpProbe.switchAndCountAnimations("mp-view-network")
+    );
+    check(running > 0, "switching view animates the pane cards in place (FLIP)", `${running} animations`);
+    check(
+      await page.evaluate(() => window.__mpProbe.allAlive()),
+      "no pane's iframe was reloaded mid-transition"
+    );
+    await sleep(700);
+    check(
+      await page.evaluate(
+        () =>
+          window.__mpProbe.allAlive() &&
+          [...document.querySelectorAll(".mp-pane")].every(
+            (shell) => getComputedStyle(shell).transform === "none"
+          )
+      ),
+      "the transition settles with every pane still alive and untransformed"
+    );
+    await page.click("#mp-view-tiled");
+    await sleep(700);
+
     // `f` cycles the four layouts in the segmented control's order.
     const cycled = [];
     for (let i = 0; i < 4; i++) {
@@ -471,9 +586,9 @@ try {
     check(
       c1.x + c1.w <= server.x + 2 &&
         c2.x >= server.x + server.w - 2 &&
-        server.h > c1.h &&
-        server.w > c1.w,
-      "the server is the hub between its two clients, and the biggest card",
+        server.h < c1.h &&
+        server.w < c1.w,
+      "the server is a compact hub between its two clients — the smallest card",
       JSON.stringify([c1, server, c2].map((b) => [b.role, b.x, b.y, b.w, b.h]))
     );
 
@@ -488,7 +603,20 @@ try {
       "each edge carries its client's link chip mid-wire",
       graph.chips.join(" | ")
     );
-    check(graph.legend === "flex", "the packet legend shows in network mode", graph.legend);
+    check(
+      graph.legend === "flex" && /1\s*#f/.test(graph.strip) && /SRV\s*#f/.test(graph.strip),
+      "the network status strip carries the legend and every pane's frame",
+      `${graph.legend} — "${graph.strip}"`
+    );
+
+    // Header priority at thumbnail width: identity + link state survive, the
+    // frame counter (now on the strip) is the first thing dropped.
+    const header = await page.evaluate(() => window.__mpProbe.headerParts(0));
+    check(
+      header.digit && header.dot && !header.frame,
+      "a thumbnail pane header keeps its digit and link dot, drops the frame counter",
+      JSON.stringify(header)
+    );
 
     // Packets: the coordinator's live feed, sampled onto the wires. Both
     // directions must appear — the shapes are what carry direction.
@@ -508,7 +636,7 @@ try {
       `up=${flight.up} down=${flight.down}`
     );
     check(
-      flight.dots <= 40,
+      flight.dots <= 260,
       "concurrent dots stay under the cap",
       String(flight.dots)
     );
@@ -525,6 +653,13 @@ try {
       parked.dots === 0 && parked.legend === "none",
       "leaving network clears the dots and hides the legend",
       `${parked.dots} dots, legend ${parked.legend}`
+    );
+    // ...but the pane readouts stay: TILED at four cells clips its headers too,
+    // so the frame counters still need somewhere to live.
+    check(
+      parked.stripShown && /1\s*#f/.test(parked.strip),
+      "the pane readouts stay on the strip outside the network view",
+      `shown=${parked.stripShown} "${parked.strip}"`
     );
 
     // Three clients: two flanking the hub, the third parked below it.
