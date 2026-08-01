@@ -407,7 +407,8 @@ functor -d . run native --entry server  # the same world, seen from the authorit
             <code>"mouseCapture":false</code> in <code>functor.json</code> to disable that path,
             or <code>"cursor":"visible"</code> for absolute pointer input (which also disables
             capture). A program with no captured mouse hooks shows no capture control at all.
-            Native capture starts on a non-UI click and <code>Escape</code> releases it.
+            Native capture starts on a non-UI click and <code>Escape</code> releases it, and a
+            held button is swept released when the window loses focus.
             Manifest-less site IDE and inline-sandbox sessions use
             <code>?mouseCapture=false</code> or <code>?cursor=visible</code> on the page URL.
           </p>
@@ -822,21 +823,47 @@ functor docs --format json         # the machine-readable shape</pre>
 
         <section id="sharp-edges">
           <h2>Sharp edges</h2>
+          <p>
+            Four things that bite hard enough to be worth knowing before you meet them. The rest
+            of the language's surprises are explained where they come up, above.
+          </p>
           <ul>
-            <li><code>x |> f(a)</code> is <code>f(a, x)</code> — pipelines <em>append</em> (thread-last).</li>
-            <li>Assignment is <code>:=</code> (not <code>&lt;-</code>) and must be followed by <code>;</code> and a continuation.</li>
-            <li><code>if</code> is an expression: both branches are required, and chains use <code>else if</code> rather than <code>elif</code>.</li>
-            <li>Captured game mouse input defaults on when captured hooks exist. <code>"mouseCapture":false</code> opts out; <code>"cursor":"visible"</code> selects absolute pointer input instead. Held buttons are force-released on focus loss.</li>
-            <li>Angles, Durations, and render targets are branded <em>values</em> — <code>Sub.every(0.5, …)</code> and <code>Scene.rotateY(1.57)</code> are errors. Angles and durations also take literal suffixes: <code>90deg</code>, <code>1.57rad</code>, <code>0.5s</code>, <code>500ms</code> — the suffix must touch the digits, and <code>unit px = Px</code> declares one for your own brand.</li>
-            <li>Constructor names are global to the file's value namespace; nullary constructors never take parens. Module variants are the exception — <code>Option.Some</code>, never bare <code>Some</code>.</li>
-            <li>Piping into <code>Text.concat</code> <em>prepends</em>: <code>s |> Text.concat(p)</code> is <code>p</code> then <code>s</code>. And <code>Text.fixed(n, decimals)</code> takes its number first, so it can't be piped on.</li>
-            <li><code>Math</code> is only what the <a href="../docs/#api-math">reference</a> lists — there is still no <code>sinh</code> or <code>hypot</code>. <code>Math.round</code> goes half <em>away from zero</em>, not to even.</li>
-            <li><code>Math.mod</code> is Euclidean — <code>Math.mod(-1.0, 8.0)</code> is <code>7.0</code>, not <code>-1.0</code>.</li>
-            <li><code>Math.pi</code> is a value, not a call.</li>
-            <li>The primitives take no size arguments — a box is <code>Scene.cube() |> Scene.scaleXYZ(w, h, d)</code>.</li>
-            <li>Key repeats arrive as <code>isDown = true</code> — latch for rising edges.</li>
-            <li>Physics reads belong in <code>draw</code>; in <code>tick</code> you see last frame's world.</li>
-            <li>Engine values (<code>&lt;Scene></code>, <code>&lt;Frame></code>, …) are opaque: pass them around, don't compare or inspect them.</li>
+            <li>
+              <strong>Physics reads are one step behind everywhere except <code>draw</code>.</strong>
+              A read (<code>Physics.position</code>, <code>linearVelocity</code>,
+              <code>transformed</code>) answers the <em>last stepped</em> world in every entry
+              point — including inside the <code>physics</code> hook — while <code>draw</code>
+              sees the freshly stepped one. The world is primed from <code>init</code>, so
+              first-frame reads answer the declared poses rather than erroring, and a hook that
+              throws keeps the previous declaration (reported once) instead of stopping the
+              simulation. The one genuine gap: <code>Physics.cast</code> misses against a
+              primed-but-never-stepped world, so a ray query needs one step to have run.
+            </li>
+            <li>
+              <strong>Under-applying a constructor is silent.</strong> Constructors curry, so a
+              dropped argument is not an arity error at the call — <code>Rect(1.0)</code> is a
+              partial value (it displays as <code>&lt;partial 1 more&gt;</code>) that flows on
+              through your model and quietly renders or compares wrong. The checker catches it
+              wherever the types are pinned down; in unannotated code it reaches run time, so a
+              variant behaving inexplicably is worth grepping for a missing argument.
+            </li>
+            <li>
+              <strong>Identities are branded values, not bare numbers or strings.</strong>
+              <code>Scene.rotateY(1.57)</code> and <code>Sub.every(0.5, …)</code> are
+              <em>check-time</em> errors, not rotations and timers: say
+              <code>Angle.radians(1.57)</code> and <code>Time.seconds(0.5)</code> — or use the
+              literal suffixes, <code>90deg</code>, <code>1.57rad</code>, <code>0.5s</code>,
+              <code>500ms</code> (the suffix must touch the digits, and
+              <code>unit px = Px</code> declares one for your own brand). The same goes for
+              render targets and physics tags — declare the value once and use it at every site.
+            </li>
+            <li>
+              <strong>Engine values are opaque.</strong> <code>&lt;Scene></code>,
+              <code>&lt;Frame></code>, <code>&lt;Camera3D></code> and friends can be passed around
+              and composed, but not inspected or serialized, and <code>==</code> on one is a
+              runtime error — compare the numbers you derived instead.
+              (<code>Sprite.t</code> is the deliberate exception: it is plain data underneath.)
+            </li>
           </ul>
           <p class="docs-footnote">
             This manual covers the supported language surface and the engine's core workflows.
