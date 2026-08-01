@@ -2,6 +2,16 @@
 //!
 //! Shapes and bodies are values, body attributes pipe naturally, and stable
 //! branded tags connect declarations, reads, commands, and collision events.
+//!
+//! The hook DECLARES the world each frame and the runtime reconciles that
+//! declaration against the live one. A tag is cross-frame identity: the same
+//! tag is the same body, and a body is dropped by no longer declaring it.
+//! Re-declaring an unchanged body leaves the simulation alone, while changing
+//! its declared position or rotation drives that field — a dynamic or fixed
+//! body teleports immediately, and a kinematic body takes the new pose as its
+//! next-step target, so it carries velocity into contacts. Reading a tag the
+//! hook does not declare is a runtime error rather than an empty answer, so
+//! read only what you declare. Like the model, the world survives hot reload.
 
 /// An opaque collision shape.
 type shape

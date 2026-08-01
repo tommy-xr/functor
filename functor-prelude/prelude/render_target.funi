@@ -1,4 +1,10 @@
 //! Named off-screen render targets for render-to-texture effects.
+//!
+//! Declare a target ONCE and use that value at both sites — the
+//! `Frame.withRenderTarget` writer and the `Scene.screen` reader — rather
+//! than repeating a bare string, exactly as `Angle` and `Physics.tag` brand
+//! their own identities. A scene that samples the very target it is being
+//! rendered into shows the PREVIOUS frame's image.
 
 /// An opaque render target identity and size.
 type t

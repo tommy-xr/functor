@@ -2,6 +2,14 @@
 //!
 //! Constructors produce immutable scene values. Most modifiers take the scene
 //! last so a node can be built as a readable pipeline.
+//!
+//! Coordinates are Y-up and right-handed: +Y is up, +X is right, and the
+//! ground is the XZ plane.
+//!
+//! Transforms wrap outward, so the OUTER call applies last in world space —
+//! `s |> Scene.rotateY(r) |> Scene.translate(v)` rotates in place and then
+//! moves, which is the order the source reads. The primitives take no size
+//! arguments, so a box is `Scene.cube() |> Scene.scaleXYZ(w, h, d)`.
 
 /// An opaque scene node.
 type t

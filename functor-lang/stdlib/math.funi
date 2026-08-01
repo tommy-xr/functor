@@ -8,6 +8,13 @@
 //! Two behaviors differ from the usual defaults and are worth knowing: `mod`
 //! is EUCLIDEAN (its result is never negative) and `round` goes half AWAY FROM
 //! ZERO (not banker's rounding).
+//!
+//! Unlike the collections, most of `Math` reads as ordinary notation rather
+//! than as a pipeline: the two-argument functions (`pow`, `atan2`, `mod`,
+//! `min`, `max`) take their NUMBER FIRST, so piping into one feeds the wrong
+//! slot. `clamp`, `clamp01`, `lerp`, and `smoothstep` are the deliberate
+//! exceptions — their bounds are configuration and their number is the
+//! subject, so they thread last and pipe.
 
 /// The ratio of a circle's circumference to its diameter — a constant VALUE,
 /// not a function, so it is written `Math.pi` with no parentheses.

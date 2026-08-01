@@ -8,6 +8,12 @@ type t
 /// Subscribe to no events.
 let none : () => t
 /// Deliver a message at the requested interval.
+///
+/// The timer is STATELESS: it fires when an integer multiple of its period
+/// lies in the interval this frame covers, measured on the global time grid.
+/// So a long frame that spans several boundaries fires ONCE (missed
+/// boundaries collapse rather than queueing up), and timers keep their
+/// phase across a hot reload.
 let every : (Time.t, 'msg) => t
 /// Combine subscriptions.
 let batch : (List<t>) => t

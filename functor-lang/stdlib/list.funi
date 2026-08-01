@@ -31,7 +31,8 @@ let fold : (('b, 'a) => 'b, 'b, List<'a>) => 'b
 let concatMap : (('a) => List<'b>, List<'a>) => List<'b>
 
 /// `[0, 1, … n - 1]`. A non-positive `n` gives the empty list; a count that
-/// is not finite, or above one million, is an error.
+/// is not finite, or above one million, is an error. A fractional count
+/// truncates toward zero, so `List.range(3.7)` is `[0, 1, 2]`.
 let range : (float) => List<float>
 
 /// Build a `rows` x `cols` grid by calling `fn(row, col)` for every cell, both
