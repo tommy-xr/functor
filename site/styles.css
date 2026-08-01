@@ -1605,7 +1605,7 @@ a:hover {
 .api-nav-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 10px;
 }
 
 .api-nav-group-label {
@@ -1614,6 +1614,23 @@ a:hover {
   font-size: 0.58rem;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+/* Categories are the second level of the nav: a hairline ties each topic's
+   modules together without a second uppercase shout. */
+.api-nav-category {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.api-nav-category-label {
+  color: var(--text-dim);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
 }
 
 .api-intro {
@@ -1765,7 +1782,9 @@ a:hover {
 .api-module[hidden],
 .api-item[hidden],
 .api-group-divider[hidden],
+.api-category-divider[hidden],
 .api-nav-group[hidden],
+.api-nav-category[hidden],
 .api-nav a[hidden] {
   display: none;
 }
@@ -1796,6 +1815,48 @@ a:hover {
   margin: 6px 0 0;
   color: var(--text-dim);
   font-size: 0.8rem;
+}
+
+/* And within a half, a category names the topic the next few modules share —
+   quieter than the group, marked by a short cyan tick rather than color. */
+.api-category-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 40px 0 18px;
+}
+
+.api-group-divider + .api-category-divider {
+  margin-top: 26px;
+}
+
+.api-category-divider::after {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+  content: "";
+}
+
+.api-category-divider h2 {
+  /* `.docs-main h2` gives every heading a rule above it; the divider draws its
+     own, so this one resets that. */
+  margin: 0;
+  padding-top: 0;
+  border-top: 0;
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.api-category-divider h2::before {
+  display: inline-block;
+  width: 14px;
+  margin-right: 10px;
+  border-top: 2px solid var(--cyan);
+  content: "";
+  vertical-align: middle;
 }
 
 .api-module > h2 {
@@ -1935,17 +1996,27 @@ a:hover {
     padding-bottom: 6px;
   }
 
-  /* On narrow screens the nav is one scrolling chip row, so each group
-     inlines its label with its own chips instead of stacking. */
-  .api-nav-group {
+  /* On narrow screens the nav is one scrolling chip row, so each group and
+     category inlines its label with its own chips instead of stacking. */
+  .api-nav-group,
+  .api-nav-category {
     flex: 0 0 auto;
     flex-direction: row;
     align-items: center;
     gap: 8px;
   }
 
-  .api-nav-group-label {
+  .api-nav-category {
+    padding-left: 8px;
+  }
+
+  .api-nav-group-label,
+  .api-nav-category-label {
     flex: 0 0 auto;
+  }
+
+  .api-category-divider {
+    margin: 30px 0 14px;
   }
 
   .api-nav a {

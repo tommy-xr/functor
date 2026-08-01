@@ -48,11 +48,15 @@ const item = (entry) => {
   ].join("\n");
 };
 
+// A category label repeats across groups (both halves have an "Input"), so
+// everything the filter keys on is the group-qualified pair, not the label.
+const categoryKey = (module) => `${module.group ?? "engine"}:${module.category ?? ""}`;
+
 const module_ = (module) => {
   const id = slug(module.name);
   const entries = `${module.items.length} ${module.items.length === 1 ? "entry" : "entries"}`;
   return [
-    `<section class="api-module" id="${escapeAttr(id)}" data-group="${escapeAttr(module.group ?? "engine")}" data-search="${escapeAttr(`${module.name} ${module.docs}`.toLowerCase())}">`,
+    `<section class="api-module" id="${escapeAttr(id)}" data-group="${escapeAttr(module.group ?? "engine")}" data-category="${escapeAttr(categoryKey(module))}" data-search="${escapeAttr(`${module.name} ${module.docs}`.toLowerCase())}">`,
     `<h2><span>${escapeText(module.name)}</span><span class="api-module-count">${entries}</span></h2>`,
     prose(module.docs),
     `<div class="api-items">`,
@@ -68,21 +72,36 @@ const navLink = (module) =>
   `<a href="#${escapeAttr(slug(module.name))}" data-module="${escapeAttr(module.name.toLowerCase())}">${escapeText(module.name)}</a>`;
 
 // The nav is grouped so the two halves of the API — what the game runner
-// provides, and what the language itself ships — are visibly distinct. Each
-// group is one element so the search filter can hide a whole empty group.
+// provides, and what the language itself ships — are visibly distinct, and
+// each group is subdivided by category so a 37-module list reads as a handful
+// of topics. Both levels are single elements so the search filter can hide a
+// whole empty category, and a whole empty group.
 const navGroups = (modules) => {
   const groups = [];
   for (const module of modules) {
     const group = module.group ?? "engine";
-    if (groups.at(-1)?.group !== group) groups.push({ group, modules: [] });
-    groups.at(-1).modules.push(module);
+    if (groups.at(-1)?.group !== group) groups.push({ group, categories: [] });
+    const categories = groups.at(-1).categories;
+    const key = categoryKey(module);
+    if (categories.at(-1)?.key !== key)
+      categories.push({ key, label: module.category ?? "", modules: [] });
+    categories.at(-1).modules.push(module);
   }
   return groups
     .map((entry) =>
       [
         `<div class="api-nav-group" data-group="${escapeAttr(entry.group)}">`,
         `<div class="api-nav-group-label">${escapeText(GROUP_LABELS[entry.group] ?? entry.group)}</div>`,
-        entry.modules.map(navLink).join("\n"),
+        entry.categories
+          .map((category) =>
+            [
+              `<div class="api-nav-category" data-group="${escapeAttr(entry.group)}" data-category="${escapeAttr(category.key)}">`,
+              `<div class="api-nav-category-label">${escapeText(category.label)}</div>`,
+              category.modules.map(navLink).join("\n"),
+              `</div>`,
+            ].join("\n"),
+          )
+          .join("\n"),
         `</div>`,
       ].join("\n"),
     )
@@ -106,14 +125,29 @@ const divider = (group) =>
     `</div>`,
   ].join("\n");
 
+// Inside a group, each category announces itself the same way — one level
+// quieter, and hidden by the filter when its last module goes.
+const categoryHeading = (module) =>
+  [
+    `<div class="api-category-divider" data-group="${escapeAttr(module.group ?? "engine")}" data-category="${escapeAttr(categoryKey(module))}">`,
+    `<h2>${escapeText(module.category ?? "")}</h2>`,
+    `</div>`,
+  ].join("\n");
+
 const sections = (modules) => {
   const out = [];
   let group;
+  let category;
   for (const module of modules) {
     const moduleGroup = module.group ?? "engine";
     if (moduleGroup !== group) {
       group = moduleGroup;
+      category = undefined;
       out.push(divider(group));
+    }
+    if (categoryKey(module) !== category) {
+      category = categoryKey(module);
+      out.push(categoryHeading(module));
     }
     out.push(module_(module));
   }

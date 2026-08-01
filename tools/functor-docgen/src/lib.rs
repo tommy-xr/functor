@@ -5,6 +5,10 @@
 //! The two are the same extraction — module `//!` prose, then a `///` block
 //! above each type or value — over different sources, and they stay separate
 //! only in the rendered output, as the [`ApiGroup`] each module carries.
+//!
+//! Within a group, modules are further sorted into categories ("Scene &
+//! rendering", "Collections", …) by [`CATEGORIES`] — the one place the
+//! reference's shape is declared.
 
 use functor_lang::ast::{ExprKind, Item, TypeName};
 use functor_lang::project::stdlib_documentation_modules;
@@ -26,9 +30,63 @@ pub struct ApiReference {
 pub struct ApiModule {
     pub name: String,
     pub group: ApiGroup,
+    /// The category heading this module renders under, within its group.
+    pub category: String,
     pub docs: Option<String>,
     pub items: Vec<ApiItem>,
 }
+
+/// The reference's shape, declared ONCE: every documented module, in the order
+/// it renders, under the group and category it belongs to.
+///
+/// This is the only place a module's category is stated, and it is
+/// drift-proof in both directions — [`generate`] fails if an entry here names
+/// a module that is not documented, if it claims the wrong group, or if a
+/// documented module has no entry at all. A new prelude or standard-library
+/// module therefore cannot land uncategorized.
+const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
+    (
+        ApiGroup::Engine,
+        "Scene & rendering",
+        &[
+            "Scene",
+            "Frame",
+            "Camera3D",
+            "Camera2D",
+            "Sprite",
+            "Light",
+            "Skybox",
+            "Texture",
+            "Fog",
+            "RenderTarget",
+        ],
+    ),
+    (
+        ApiGroup::Engine,
+        "Math & geometry",
+        &["Vec3", "Angle", "Color"],
+    ),
+    (
+        ApiGroup::Engine,
+        "Simulation",
+        &["Physics", "Anim", "Terrain", "Time"],
+    ),
+    (ApiGroup::Engine, "Input", &["Input"]),
+    (ApiGroup::Engine, "Effects & messaging", &["Effect", "Sub"]),
+    (ApiGroup::Engine, "Audio", &["AudioScene", "AudioSource"]),
+    (ApiGroup::Engine, "UI", &["Ui", "Html", "Attr", "Style"]),
+    (ApiGroup::Engine, "Assets", &["Asset"]),
+    (ApiGroup::Stdlib, "Collections", &["List", "Map"]),
+    (ApiGroup::Stdlib, "Text", &["Text"]),
+    (
+        ApiGroup::Stdlib,
+        "Numbers & randomness",
+        &["Math", "Random"],
+    ),
+    (ApiGroup::Stdlib, "Fallibility", &["Option", "Result"]),
+    (ApiGroup::Stdlib, "Input", &["Key", "Mouse"]),
+    (ApiGroup::Stdlib, "Diagnostics", &["Debug"]),
+];
 
 /// Which half of the API a module belongs to. Engine modules exist only under
 /// a game runner; standard-library modules ship with the language and are
@@ -177,22 +235,93 @@ pub fn generate() -> Result<ApiReference, GenerateError> {
         }
     }
     Ok(ApiReference {
-        schema_version: 2,
-        modules,
+        schema_version: 3,
+        modules: categorize(modules, CATEGORIES)?,
     })
 }
 
+/// Sort the documented modules into [`CATEGORIES`] order, stamping each with
+/// its category.
+///
+/// Both directions are errors, so the table and the sources cannot drift: a
+/// table entry naming a module that is not documented (or documented in the
+/// other group), and a documented module with no table entry at all.
+fn categorize(
+    mut modules: Vec<ApiModule>,
+    categories: &[(ApiGroup, &str, &[&str])],
+) -> Result<Vec<ApiModule>, GenerateError> {
+    let mut ordered = Vec::with_capacity(modules.len());
+    for (group, category, names) in categories {
+        for name in *names {
+            // Removed as it is placed, so listing a module twice in the table
+            // reports as "not documented" on the second mention rather than
+            // duplicating it into the page.
+            let Some(index) = modules.iter().position(|module| module.name == *name) else {
+                return Err(categorization_error(
+                    name,
+                    format!(
+                        "`{name}` is listed under \"{category}\" but no such module is \
+                         documented — fix or remove its entry in CATEGORIES \
+                         (tools/functor-docgen)"
+                    ),
+                ));
+            };
+            if modules[index].group != *group {
+                return Err(categorization_error(
+                    name,
+                    format!(
+                        "`{name}` is listed under \"{category}\" as {group:?}, but it is \
+                         documented as {:?} — fix its entry in CATEGORIES \
+                         (tools/functor-docgen)",
+                        modules[index].group
+                    ),
+                ));
+            }
+            let mut module = modules.remove(index);
+            module.category = (*category).to_string();
+            ordered.push(module);
+        }
+    }
+    if let Some(module) = modules.first() {
+        return Err(categorization_error(
+            &module.name,
+            format!(
+                "`{}` has no category — add it to CATEGORIES (tools/functor-docgen) so it \
+                 renders under a heading",
+                module.name
+            ),
+        ));
+    }
+    Ok(ordered)
+}
+
+fn categorization_error(module: &str, message: String) -> GenerateError {
+    GenerateError {
+        module: module.to_string(),
+        extension: "funi",
+        line: 1,
+        col: 1,
+        message,
+    }
+}
+
 /// Generate a reference from `(module name, .funi source)` pairs — the
-/// interface-only shape, used by tests.
+/// interface-only shape, used by tests. The synthetic modules are not part of
+/// the real inventory, so they all render under one category.
 pub fn generate_from_modules(
     modules: impl IntoIterator<Item = (String, String)>,
 ) -> Result<ApiReference, GenerateError> {
     let modules = modules
         .into_iter()
-        .map(|(name, source)| extract_module(name, source, ApiGroup::Engine, Parse::Interface))
+        .map(|(name, source)| {
+            extract_module(name, source, ApiGroup::Engine, Parse::Interface).map(|mut module| {
+                module.category = "Reference".to_string();
+                module
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ApiReference {
-        schema_version: 2,
+        schema_version: 3,
         modules,
     })
 }
@@ -248,16 +377,24 @@ pub fn render_markdown(reference: &ApiReference) -> String {
          the host runtime's `.funi` prelude and the language's own standard library.\n",
     );
     let mut group = None;
+    let mut category = None;
     for module in &reference.modules {
         if group != Some(module.group) {
             group = Some(module.group);
+            category = None;
             out.push_str("\n## ");
             out.push_str(module.group.title());
             out.push_str("\n\n");
             out.push_str(module.group.summary());
             out.push('\n');
         }
-        out.push_str("\n### ");
+        if category.is_none_or(|current| current != module.category.as_str()) {
+            category = Some(module.category.as_str());
+            out.push_str("\n### ");
+            out.push_str(&module.category);
+            out.push('\n');
+        }
+        out.push_str("\n#### ");
         out.push_str(&module.name);
         out.push('\n');
         if let Some(docs) = &module.docs {
@@ -266,7 +403,7 @@ pub fn render_markdown(reference: &ApiReference) -> String {
             out.push('\n');
         }
         for item in &module.items {
-            out.push_str("\n#### `");
+            out.push_str("\n##### `");
             out.push_str(&item.qualified_name);
             out.push_str("`\n\n```functor\n");
             out.push_str(&item.declaration);
@@ -339,6 +476,8 @@ fn extract_module(
     Ok(ApiModule {
         name,
         group,
+        // Stamped by `categorize` once the whole inventory is known.
+        category: String::new(),
         docs: module_doc(&source),
         items,
     })
@@ -453,8 +592,8 @@ mod tests {
         assert_eq!(module.items[1].docs.as_deref(), Some("Make one."));
 
         let markdown = render_markdown(&reference);
-        assert!(markdown.contains("### Widget"));
-        assert!(markdown.contains("#### `Widget.make`"));
+        assert!(markdown.contains("#### Widget"));
+        assert!(markdown.contains("##### `Widget.make`"));
     }
 
     /// Both halves of the embedded API are complete and fully documented. The
@@ -507,9 +646,75 @@ mod tests {
         assert_eq!(
             stdlib,
             [
-                "List", "Map", "Text", "Math", "Random", "Debug", "Option", "Result", "Key",
-                "Mouse"
+                "List", "Map", "Text", "Math", "Random", "Option", "Result", "Key", "Mouse",
+                "Debug"
             ]
+        );
+    }
+
+    /// Every module renders under a category, categories stay contiguous
+    /// within their group, and the taxonomy is the one in `CATEGORIES`.
+    #[test]
+    fn every_module_lands_in_a_category() {
+        let reference = generate().unwrap();
+        assert!(
+            reference
+                .modules
+                .iter()
+                .all(|module| !module.category.is_empty()),
+            "every module carries a category"
+        );
+
+        let mut seen: Vec<(ApiGroup, &str)> = Vec::new();
+        for module in &reference.modules {
+            let key = (module.group, module.category.as_str());
+            if seen.last() != Some(&key) {
+                assert!(
+                    !seen.contains(&key),
+                    "{key:?} is split across the page — categories must be contiguous"
+                );
+                seen.push(key);
+            }
+        }
+        assert_eq!(
+            seen,
+            super::CATEGORIES
+                .iter()
+                .map(|(group, category, _)| (*group, *category))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A module the taxonomy does not mention is a hard generation error, so
+    /// a new module cannot silently land uncategorized.
+    #[test]
+    fn an_uncategorized_module_fails_generation() {
+        let widget = super::extract_module(
+            "Widget".to_string(),
+            "//! Widgets.\n/// An opaque widget.\ntype t\n".to_string(),
+            ApiGroup::Engine,
+            super::Parse::Interface,
+        )
+        .unwrap();
+        let error = super::categorize(vec![widget], &[]).expect_err("Widget has no category");
+        assert!(
+            error.to_string().contains("`Widget` has no category"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// And the table cannot outlive its modules either: a category naming a
+    /// module that is no longer documented fails just as loudly.
+    #[test]
+    fn a_category_naming_a_missing_module_fails_generation() {
+        let error = super::categorize(
+            Vec::new(),
+            &[(ApiGroup::Engine, "Scene & rendering", &["Scene"])],
+        )
+        .expect_err("Scene is not documented");
+        assert!(
+            error.to_string().contains("no such module is documented"),
+            "unexpected error: {error}"
         );
     }
 

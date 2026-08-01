@@ -196,7 +196,10 @@ standard library (`functor-lang/stdlib/`, rendered as its own group) — and rec
 gitignored local Markdown + JSON artifacts; it does not build the GL-linked CLI or
 the wasm runtime. The check command validates both renderers without requiring
 generated files to exist. Generation and checking fails if a module, type, or
-signature lacks explicit `//!` / `///` public documentation:
+signature lacks explicit `//!` / `///` public documentation — or if a module is
+missing from `CATEGORIES` in `tools/functor-docgen`, the one table that says
+which category ("Scene & rendering", "Collections", …) each module renders
+under, so a new module cannot land uncategorized:
 
 ```sh
 npm run generate:docs
