@@ -751,7 +751,7 @@ fn prelude_gives_host_calls_real_types() {
     let response = server.recv();
     assert_eq!(
         response["result"]["contents"]["value"],
-        "```functor\nScene.cube : () => Scene.t\n```\n\nPrimitive geometry.",
+        "```functor\nScene.cube : () => Scene.t\n```\n\nCreate a unit cube centered at the origin.",
         "prelude hover carries the .funi doc block: {response}"
     );
 
