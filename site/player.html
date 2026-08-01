@@ -210,12 +210,26 @@
         requested && !requested.startsWith("/") && !requested.includes(":")
           ? requested
           : "examples/hero.fun";
-      // ?prefix=<ident>: the role's entry-point binding prefix (same-file
-      // entries) — the runtime resolves clientInit/clientTick/… through it.
-      // Identifier or absent; anything else warns and boots unprefixed (the
-      // scrubber param's fail-visible style).
+      // The role this page plays (same-file entries), in one of two forms —
+      // ?module=<Ident>, the role's inline entry MODULE (the runtime resolves
+      // Server.init/Server.tick/… as that block's members; capitalized
+      // identifier), or ?prefix=<ident>, the role's entry-point binding prefix
+      // (clientInit/clientTick/… through it). Absent or malformed boots the
+      // unprefixed contract with a warning (the scrubber param's fail-visible
+      // style). The two are mutually exclusive — a role declares one form, so
+      // both together is a caller bug: warn, and the module wins.
+      const entryModule = params.get("module");
       const prefix = params.get("prefix");
-      if (prefix !== null) {
+      if (entryModule !== null) {
+        if (/^[A-Z][A-Za-z0-9_]*$/.test(entryModule)) {
+          window.__functorLangEntryModule = entryModule;
+        } else {
+          console.warn(`[player] invalid ?module=${entryModule} (not a capitalized identifier); booting the unprefixed contract`);
+        }
+        if (prefix !== null) {
+          console.warn(`[player] ?module= and ?prefix= are mutually exclusive; ignoring ?prefix=${prefix}`);
+        }
+      } else if (prefix !== null) {
         if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(prefix)) {
           window.__functorLangEntryPrefix = prefix;
         } else {

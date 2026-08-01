@@ -45,10 +45,16 @@ export interface Example {
    * The entry-point binding prefix of the role the sandbox plays, for a
    * same-file-entries sample whose role is declared as
    * `{ "file": …, "prefix": "client" }` (resolving clientInit/clientTick/…).
-   * Passed to the player as `?prefix=`. The `{ "file": …, "module": … }`
-   * form is native-only, so a module role cannot be played here.
+   * Passed to the player as `?prefix=`. Mutually exclusive with `module`.
    */
   prefix?: string;
+  /**
+   * The inline entry MODULE of the role the sandbox plays, for a
+   * same-file-entries sample whose role is declared as
+   * `{ "file": …, "module": "Client" }` (resolving Client.init/Client.tick/…).
+   * Passed to the player as `?module=`. Mutually exclusive with `prefix`.
+   */
+  module?: string;
   /**
    * The sample's SERVER role, as a dist path in its own file list. The pane
    * grid mounts a server pane for every example that declares one — booted
@@ -59,8 +65,13 @@ export interface Example {
    * The file must ALSO appear in `siblings`: that is what copies it into the
    * built site and puts it in the fetched project file list. Naming a file
    * here that nothing copies would 404 the server pane.
+   *
+   * `module` is the server ROLE's inline entry module when both roles live in
+   * one file (`{ "file": …, "module": "Server" }`): the server pane derives
+   * its params from the client's, so its role must be stated here rather than
+   * inherited.
    */
-  server?: { file: string };
+  server?: { file: string; module?: string };
 }
 
 /**

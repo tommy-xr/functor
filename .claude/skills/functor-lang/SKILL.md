@@ -236,11 +236,11 @@ a binding **prefix** — `"server": { "file": "game.fun", "prefix": "server" }`
 (`serverInit`/`serverTick`/…). A role declares at most one of the two.
 `examples/orbs` is the same-file reference: its `client` role is the file's
 plain top-level contract and its `server` role is a `module Server { … }`
-block. Module roles are **native-only** for now (`run wasm`/`build wasm`/
-`run vr` refuse them, like vr already refuses prefixes), so a role that must
-also run in the browser stays on the prefix form until the web runtime learns
-the module one; prefixed roles run on native and wasm (`run wasm`/`build wasm` bake the prefix into the page's
-boot config; the site player takes `?prefix=<ident>`). `entry` and `entries`
+block. **Both forms run on native and wasm**: `run wasm`/`build wasm` bake the
+role into the served/exported page's boot config (`window.__functorLangEntryModule`
+/ `…EntryPrefix`; the site player takes `?module=<Ident>` or `?prefix=<ident>`,
+one of the two). Only **vr** still refuses a role — its device push path boots
+the APK's embedded producer with the unprefixed contract. `entry` and `entries`
 together are refused.
 
 ```functor
@@ -440,7 +440,7 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   plain entry. A functor.json ROLE may opt into a block instead —
   `"server": { "file": "game.fun", "module": "Server" }` resolves
   `Server.init`/`Server.tick`/… (see `entries` above); `examples/orbs` is the
-  reference, and the role is native-only for now.
+  reference. Such a role runs on native and wasm; only vr still refuses it.
 - **Hot reload**: canonical names are the rebind identity, so an inline
   module's closures rebind normally — but MOVING a def into (or out of) a
   module renames it (`step` → `Server.step`), which the rebinder treats

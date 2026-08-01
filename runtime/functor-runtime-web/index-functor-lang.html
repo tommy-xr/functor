@@ -117,6 +117,12 @@
       // unprefixed contract. Substituted by the CLI like the entry above.
       window.__functorLangEntryPrefix = "__FUNCTOR_LANG_ENTRY_PREFIX__";
 
+      // The role's inline entry MODULE (same-file entries): the runtime
+      // resolves `Server.init`/`Server.tick`/… as that block's members. Empty
+      // = no module role. Mutually exclusive with the prefix above (the CLI's
+      // config refuses a role declaring both).
+      window.__functorLangEntryModule = "__FUNCTOR_LANG_ENTRY_MODULE__";
+
       // Captured game mouse input defaults on. A project can opt out with
       // mouseCapture: false; programs without captured mouse hooks never show
       // capture chrome. The debug camera owns its input independently.
