@@ -481,11 +481,17 @@ open Widget                                              // …or open, bringing
 - Prelude interface documentation uses `//!` for the module overview and `///`
   directly above a type/signature for its public API prose. Plain `//` remains
   an ordinary comment and still appears in user-code hover for backwards
-  compatibility. `functor docs` renders the embedded prelude as Markdown or
-  JSON; in the repository, `npm run generate:docs` recreates the gitignored
-  local reference artifacts and `npm run check:docs` validates both renderers.
-  Both repository scripts reject a prelude module, type, or signature without
-  explicit public documentation.
+  compatibility. `functor docs` renders the embedded API as Markdown or
+  JSON — the engine prelude AND the language standard library (`List`, `Map`,
+  `Text`, `Math`, `Random`, `Debug`, `Option`, `Result`, `Key`, `Mouse`,
+  documented in `functor-lang/stdlib/`), as two groups; in the repository,
+  `npm run generate:docs` recreates the gitignored local reference artifacts
+  and `npm run check:docs` validates both renderers. Both repository scripts
+  reject a module, type, or signature without explicit public documentation.
+  The builtin namespaces have no Functor Lang source of their own, so their
+  `.funi` documentation files are pinned to `builtin_signature` by a drift
+  test — a builtin added or retyped without a documentation update fails
+  `cargo test -p functor-lang`.
 
 ## Inline tests (`expect`)
 

@@ -1599,7 +1599,21 @@ a:hover {
 .api-nav > div:last-child {
   display: flex;
   flex-direction: column;
+  gap: 16px;
+}
+
+.api-nav-group {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
+}
+
+.api-nav-group-label {
+  color: var(--text-dim);
+  font-family: var(--font-display);
+  font-size: 0.58rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .api-intro {
@@ -1750,8 +1764,38 @@ a:hover {
 
 .api-module[hidden],
 .api-item[hidden],
+.api-group-divider[hidden],
+.api-nav-group[hidden],
 .api-nav a[hidden] {
   display: none;
+}
+
+/* The reference has two halves — what the runner provides, and what the
+   language ships. This announces the boundary while scrolling; the module
+   headings below it stay the page's real structure. */
+.api-group-divider {
+  margin: 46px 0 26px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.api-group-divider:first-child {
+  margin-top: 0;
+}
+
+.api-group-divider h2 {
+  margin: 0;
+  color: var(--cyan);
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.api-group-divider p {
+  max-width: 68ch;
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 0.8rem;
 }
 
 .api-module > h2 {
@@ -1889,6 +1933,19 @@ a:hover {
     gap: 8px;
     overflow-x: auto;
     padding-bottom: 6px;
+  }
+
+  /* On narrow screens the nav is one scrolling chip row, so each group
+     inlines its label with its own chips instead of stacking. */
+  .api-nav-group {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .api-nav-group-label {
+    flex: 0 0 auto;
   }
 
   .api-nav a {

@@ -1,0 +1,98 @@
+//! Numeric functions and constants.
+//!
+//! Functor Lang has one number type (`float`, an f64) and a deliberately small
+//! operator set: `Math.mod` stands in for `%` and `Math.pow` for `^`.
+//! Arithmetic is IEEE throughout, so `1.0 / 0.0` is infinity and NaN compares
+//! false against everything, itself included.
+//!
+//! Two behaviors differ from the usual defaults and are worth knowing: `mod`
+//! is EUCLIDEAN (its result is never negative) and `round` goes half AWAY FROM
+//! ZERO (not banker's rounding).
+
+/// The ratio of a circle's circumference to its diameter — a constant VALUE,
+/// not a function, so it is written `Math.pi` with no parentheses.
+let pi : float
+
+/// The sine of an angle in radians.
+let sin : (float) => float
+
+/// The cosine of an angle in radians.
+let cos : (float) => float
+
+/// The tangent of an angle in radians.
+let tan : (float) => float
+
+/// The arcsine, in radians. NaN outside `[-1, 1]`: it does NOT clamp, so a dot
+/// product nudged past 1.0 by float error needs an explicit
+/// `|> Math.clamp(-1.0, 1.0)` first.
+let asin : (float) => float
+
+/// The arccosine, in radians. NaN outside `[-1, 1]`, exactly like `asin`.
+let acos : (float) => float
+
+/// The arctangent, in radians.
+let atan : (float) => float
+
+/// The angle in radians from the positive x-axis to the point `(x, y)`, using
+/// the standard mathematical argument order with `y` FIRST.
+let atan2 : (float, float) => float
+
+/// The non-negative square root.
+let sqrt : (float) => float
+
+/// `base` raised to `exp` — the language has no `^` operator.
+let pow : (float, float) => float
+
+/// The natural logarithm, base e — the inverse of `Math.exp`.
+let log : (float) => float
+
+/// e raised to the given power.
+let exp : (float) => float
+
+/// The magnitude, without sign.
+let abs : (float) => float
+
+/// `-1`, `0`, or `1` — and exactly `0` AT zero, so it is not a two-way branch.
+/// NaN answers NaN.
+let sign : (float) => float
+
+/// The largest whole number that is not greater than `n`.
+let floor : (float) => float
+
+/// The smallest whole number that is not less than `n`.
+let ceil : (float) => float
+
+/// The nearest whole number, rounding halves AWAY FROM ZERO rather than to
+/// even: `0.5` rounds to `1`, `2.5` to `3`, and `-2.5` to `-3`.
+let round : (float) => float
+
+/// The EUCLIDEAN remainder: the result always lands in `[0, abs(b))`, so
+/// negatives wrap positively — `Math.mod(-1.0, 8.0)` is `7.0`, the wraparound
+/// games want. A zero divisor answers NaN.
+let mod : (float, float) => float
+
+/// The smaller of two numbers.
+let min : (float, float) => float
+
+/// The larger of two numbers.
+let max : (float, float) => float
+
+/// `n` confined to `[low, high]`, subject-last so it pipes:
+/// `n |> Math.clamp(0.0, 10.0)`. A `low` greater than `high` is an error, not
+/// a silent swap.
+let clamp : (float, float, float) => float
+
+/// `n` confined to `[0, 1]` — the same as `Math.clamp(0.0, 1.0, n)`.
+let clamp01 : (float) => float
+
+/// Linear interpolation from `from` toward `target` by `t` (unclamped):
+/// `from + (target - from) * t`, and `t = 1.0` answers `target` exactly.
+/// Mirrors `Vec3.lerp(target, t, from)` — the pipe subject is the start
+/// value, so `x |> Math.lerp(target, t)` works like its vector sibling.
+/// (Deliberately NOT GLSL's `mix(a, b, t)` order.)
+let lerp : (float, float, float) => float
+
+/// Hermite smoothstep of `x` across `[edge0, edge1]`, clamped to `[0, 1]`.
+/// The edges must be a finite ascending range (`edge0 < edge1`, both finite
+/// and not overflow-wide) — anything else is an error, never a silent NaN.
+let smoothstep : (float, float, float) => float

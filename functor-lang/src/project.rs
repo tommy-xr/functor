@@ -253,11 +253,7 @@ const NET_MODULE_SRC: &str = "type NetEvent =\n\
 /// ([`crate::eval::Builtin`]); these signatures both type them (the checker
 /// prefers a signature over a builtin scheme) and keep the qualified names
 /// resolving now that a `Random` module exists.
-const RANDOM_MODULE_SRC: &str = "type Seed\n\
-     let seed : (float) => Seed\n\
-     let step : (Seed) => (float, Seed)\n\
-     let range : (float, float, Seed) => (float, Seed)\n\
-     let fork : (float, Seed) => Seed\n";
+const RANDOM_MODULE_SRC: &str = include_str!("../stdlib/random.funi");
 
 /// The built-in `Key` module (injected beside `Net` in [`link`]): the variant
 /// the `input` hook's `key` parameter carries — `Key.W`, `Key.Up`,
@@ -267,12 +263,7 @@ const RANDOM_MODULE_SRC: &str = "type Seed\n\
 /// filtered before dispatch and deliberately has no constructor here. Keep in
 /// sync with the `Key` enum in `functor_runtime_common::input` (the digit row
 /// is `Num0`..`Num9` — constructor names must be identifiers).
-const KEY_MODULE_SRC: &str = "type t =\n\
-     | A | B | C | D | E | F | G | H | I | J | K | L | M\n\
-     | N | O | P | Q | R | S | T | U | V | W | X | Y | Z\n\
-     | Up | Down | Left | Right\n\
-     | Space | Enter | Escape\n\
-     | Num0 | Num1 | Num2 | Num3 | Num4 | Num5 | Num6 | Num7 | Num8 | Num9\n";
+const KEY_MODULE_SRC: &str = include_str!("../stdlib/key.fun");
 
 /// The built-in `Mouse` module (the mouse twin of `Key`): the variant the
 /// `mouseButton` hook's `button` parameter carries — `Mouse.Left`,
@@ -282,11 +273,25 @@ const KEY_MODULE_SRC: &str = "type t =\n\
 /// `Unknown` is filtered before dispatch and deliberately has no constructor
 /// here. Keep in sync with the `MouseButton` enum in
 /// `functor_runtime_common::input`.
-const MOUSE_MODULE_SRC: &str = "type t =\n\
-     | Left | Right | Middle\n";
+const MOUSE_MODULE_SRC: &str = include_str!("../stdlib/mouse.fun");
 
 const OPTION_MODULE_SRC: &str = include_str!("../stdlib/option.fun");
 const RESULT_MODULE_SRC: &str = include_str!("../stdlib/result.fun");
+
+/// Documentation-only interfaces for the namespaces the INTERPRETER
+/// implements in Rust ([`crate::eval::Builtin`]) rather than in Functor Lang
+/// source. They are never linked into a project — the builtin registry
+/// already resolves and types those calls — but they give the API-reference
+/// generator the same `//!` / `///` prose surface every other module has.
+///
+/// Their signatures are pinned to [`crate::types::builtin_signature`] by a
+/// drift test (`builtin_documentation_matches_the_registry`), so a builtin
+/// added, removed, or retyped without updating these files fails the build.
+const LIST_DOC_SRC: &str = include_str!("../stdlib/list.funi");
+const MAP_DOC_SRC: &str = include_str!("../stdlib/map.funi");
+const TEXT_DOC_SRC: &str = include_str!("../stdlib/text.funi");
+const MATH_DOC_SRC: &str = include_str!("../stdlib/math.funi");
+const DEBUG_DOC_SRC: &str = include_str!("../stdlib/debug.funi");
 
 /// Language-owned modules available in every embedding, including the plain
 /// `functor-lang` CLI. Keeping them in the same descriptor shape as host
@@ -299,6 +304,75 @@ fn core_modules() -> Vec<BundledModule> {
         BundledModule::builtin("Mouse", MOUSE_MODULE_SRC, BundledModuleKind::Implementation),
         BundledModule::implementation("Option", OPTION_MODULE_SRC),
         BundledModule::implementation("Result", RESULT_MODULE_SRC),
+    ]
+}
+
+/// One standard-library module as the API-reference generator sees it.
+///
+/// Deliberately NOT a [`BundledModule`]: half of these are documentation-only
+/// interfaces for Rust builtins, and linking one would shadow the builtin
+/// registry with externals nothing implements. This type cannot be handed to a
+/// loader at all.
+pub struct DocumentationModule {
+    name: &'static str,
+    source: &'static str,
+    /// Bodyless `.funi` signatures, versus executable `.fun` code whose
+    /// signatures come from its own annotations.
+    interface: bool,
+}
+
+impl DocumentationModule {
+    /// Module name used by qualified access (`List`, `Option`, …).
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The documented source text.
+    pub fn source(&self) -> &'static str {
+        self.source
+    }
+
+    /// Whether the source is a bodyless `.funi` interface.
+    pub fn is_interface(&self) -> bool {
+        self.interface
+    }
+}
+
+/// The Functor Lang standard library as documentation sources, in reference
+/// order — what `functor docs` renders beside the engine prelude.
+///
+/// Two kinds of module appear here, and the difference is invisible to a game:
+///
+/// - the namespaces the interpreter implements in Rust (`List`, `Map`,
+///   `Text`, `Math`, `Random`, `Debug`), documented by the `.funi` sources
+///   above — `Random`'s is the very module [`core_modules`] injects, and the
+///   rest are documentation-only interfaces pinned to the builtin registry by
+///   a drift test;
+/// - the modules written in Functor Lang and linked into every project
+///   (`Option`, `Result`, `Key`, `Mouse`), documented from the exact source
+///   that runs, so those cannot drift at all.
+pub fn stdlib_documentation_modules() -> Vec<DocumentationModule> {
+    let interface = |name, source| DocumentationModule {
+        name,
+        source,
+        interface: true,
+    };
+    let implementation = |name, source| DocumentationModule {
+        name,
+        source,
+        interface: false,
+    };
+    vec![
+        interface("List", LIST_DOC_SRC),
+        interface("Map", MAP_DOC_SRC),
+        interface("Text", TEXT_DOC_SRC),
+        interface("Math", MATH_DOC_SRC),
+        interface("Random", RANDOM_MODULE_SRC),
+        interface("Debug", DEBUG_DOC_SRC),
+        implementation("Option", OPTION_MODULE_SRC),
+        implementation("Result", RESULT_MODULE_SRC),
+        implementation("Key", KEY_MODULE_SRC),
+        implementation("Mouse", MOUSE_MODULE_SRC),
     ]
 }
 

@@ -1,0 +1,46 @@
+//! Pure, seeded pseudo-random numbers.
+//!
+//! There is no hidden global generator: a draw takes a seed and hands back the
+//! NEXT seed alongside its value, so randomness is an ordinary part of the
+//! model. Thread the next seed through and a run is exactly reproducible —
+//! which is what makes rewind, replay, and hot reload work.
+//!
+//! Seed a stream once, at `init`: a fixed `Random.seed(42.0)` for a
+//! reproducible run, or `Effect.random` / `Effect.now` for a different stream
+//! each session. Distinct seeds produce DECORRELATED streams that share no
+//! prefix, so per-entity streams do not visibly rhyme with each other.
+
+/// An opaque PRNG seed.
+///
+/// The brand keeps seeds out of arithmetic: a bare number where a `Seed` is
+/// expected, or `seed + 1.0` to derive a sibling stream, is a check-time error
+/// — use `Random.fork` instead. At runtime a seed is still plain data, so it
+/// snapshots, hot-reloads, and time-travels like any other model field.
+type Seed
+
+/// Make a seed from any finite number.
+///
+/// The number's BITS are hashed, so fractional seeds are as usable as whole
+/// ones — `Random.seed(0.42)` from an `Effect.random` result names a distinct
+/// starting point just as `Random.seed(42.0)` does.
+let seed : (float) => Seed
+
+/// Draw the next value, as `(value, nextSeed)` with `value` in `[0, 1)`.
+///
+/// The same seed always yields the same pair. Bind both halves and carry the
+/// next seed forward — `let (v, next) = Random.step(model.seed) in …` —
+/// otherwise the stream never advances.
+let step : (Seed) => (float, Seed)
+
+/// Draw one value rescaled into `[lo, hi)`, as `(value, nextSeed)` — one
+/// `step` draw, interpolated between the bounds.
+///
+/// Only finiteness is checked, so the bounds are yours to get right: reversed
+/// ones simply interpolate the other way (landing in `(hi, lo]`), and equal
+/// ones always answer that value.
+let range : (float, float, Seed) => (float, Seed)
+
+/// The seed of decorrelated child stream `i` — the typed replacement for
+/// deriving sibling streams by arithmetic. Subject-last, so per-entity streams
+/// read as `model.seed |> Random.fork(i)`, and any number may name a stream.
+let fork : (float, Seed) => Seed

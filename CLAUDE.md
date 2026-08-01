@@ -190,12 +190,13 @@ window — feels like a hang), and rapier physics steps are similarly far off re
 The wasm bundle is unaffected either way: `wasm-pack build` is release by default, so
 `run wasm` and the site always ship optimized wasm.
 
-**Generate the API reference.** The lightweight generator reads the exact `.funi`
-prelude embedded in Functor and recreates gitignored local Markdown + JSON artifacts;
-it does not build the GL-linked CLI or the wasm runtime. The check command validates
-both renderers without requiring generated files to exist. Generation and checking
-fails if a prelude module, type, or signature lacks explicit `//!` / `///` public
-documentation:
+**Generate the API reference.** The lightweight generator reads the exact Functor
+Lang sources embedded in Functor — the engine's `.funi` prelude AND the language
+standard library (`functor-lang/stdlib/`, rendered as its own group) — and recreates
+gitignored local Markdown + JSON artifacts; it does not build the GL-linked CLI or
+the wasm runtime. The check command validates both renderers without requiring
+generated files to exist. Generation and checking fails if a module, type, or
+signature lacks explicit `//!` / `///` public documentation:
 
 ```sh
 npm run generate:docs
