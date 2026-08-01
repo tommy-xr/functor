@@ -5,7 +5,9 @@
 import { useSyncExternalStore } from "react";
 import { RuntimeTargetPanel } from "./RuntimeTargetPanel.js";
 import { StatusPill } from "./StatusPill.js";
+import { EditorKeybindingsButton } from "./EditorKeybindingsButton.js";
 import type { PillState } from "./StatusPill.js";
+import type { EditorKeybindingsController } from "../editor-keybindings.js";
 import type { RuntimeTargetCore } from "../runtime-target-core.js";
 import type { Store } from "../store.js";
 
@@ -32,6 +34,7 @@ export interface SandboxControlsProps {
   pill: Store<PillState>;
   clients: Store<ClientsState>;
   runtimeTarget: RuntimeTargetCore;
+  editorKeybindings: EditorKeybindingsController;
   onSelect: (value: string) => void;
   onReset: () => void;
   onClients: (count: number) => void;
@@ -42,6 +45,7 @@ export const SandboxControls = ({
   pill,
   clients,
   runtimeTarget,
+  editorKeybindings,
   onSelect,
   onReset,
   onClients,
@@ -85,6 +89,7 @@ export const SandboxControls = ({
       <button id="reset" type="button" title="Reload the example (resets the model)" onClick={onReset}>
         ↺ reset
       </button>
+      <EditorKeybindingsButton controller={editorKeybindings} />
       <div id="runtime-target" className="runtime-target-host">
         <RuntimeTargetPanel core={runtimeTarget} />
       </div>

@@ -247,11 +247,12 @@
 
     <!-- The hero island (the mini-editor + the player bridge) is dynamic-imported
          by assets/hero.js so it never blocks this page's first paint. The
-         preload restores parser-time DISCOVERY of it, so deferring it costs no
-         round-trip: the fetch starts here, in parallel, and the module still
-         executes only after the shell has painted. build.mjs fails the build if
-         this href stops naming the emitted chunk. -->
+         preloads restore parser-time DISCOVERY of it and its static CodeMirror
+         chunk, so deferring it costs no serial round-trip: both fetch in
+         parallel, while the module still executes only after the shell has
+         painted. build.mjs fails if either href stops naming its output. -->
     <link rel="modulepreload" href="assets/hero-hero-app.js" />
+    <link rel="modulepreload" href="assets/hero-chunk.js" />
     <script type="module" src="assets/hero.js"></script>
     <script type="module" src="assets/features.js"></script>
   </body>

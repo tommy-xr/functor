@@ -35,6 +35,13 @@
         <button id="restart" type="button" title="Reload the preview with a fresh model">
           ↻ restart
         </button>
+        <button
+          id="editor-keybindings"
+          class="editor-keybindings-toggle"
+          type="button"
+          aria-pressed="false"
+          title="Enable Vim keybindings"
+        >vim keys</button>
         <div id="runtime-target"></div>
         <span id="status" class="status-pill" data-state="busy">◌ loading…</span>
       </div>
@@ -93,6 +100,9 @@
 
     <div id="statusbar"></div>
 
+    <!-- Splitting keeps the opt-in Vim adapter lazy. Preload the editor's
+         static CodeMirror chunk so that split does not add a serial RTT. -->
+    <link rel="modulepreload" href="assets/ide-chunk.js" />
     <script type="module" src="assets/ide.js"></script>
   </body>
 </html>

@@ -130,5 +130,8 @@ jobs:
       - name: Run IDE page browser tests
         run: npm run test:ide-page
 
+      - name: Run editor keybindings browser tests
+        run: npm run test:editor-keybindings
+
       - name: Run browser runtime-target tests
         run: npm run test:runtime-target

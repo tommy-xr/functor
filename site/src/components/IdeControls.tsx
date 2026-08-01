@@ -5,18 +5,27 @@
 
 import { RuntimeTargetPanel } from "./RuntimeTargetPanel.js";
 import { StatusPill } from "./StatusPill.js";
+import { EditorKeybindingsButton } from "./EditorKeybindingsButton.js";
 import type { PillState } from "./StatusPill.js";
+import type { EditorKeybindingsController } from "../editor-keybindings.js";
 import type { RuntimeTargetCore } from "../runtime-target-core.js";
 import type { Store } from "../store.js";
 
 export interface IdeControlsProps {
   pill: Store<PillState>;
   runtimeTarget: RuntimeTargetCore;
+  editorKeybindings: EditorKeybindingsController;
   onDownload: () => void;
   onRestart: () => void;
 }
 
-export const IdeControls = ({ pill, runtimeTarget, onDownload, onRestart }: IdeControlsProps) => (
+export const IdeControls = ({
+  pill,
+  runtimeTarget,
+  editorKeybindings,
+  onDownload,
+  onRestart,
+}: IdeControlsProps) => (
   <>
     <button id="download" type="button" title="Download the project as a .zip" onClick={onDownload}>
       ↓ project.zip
@@ -29,6 +38,7 @@ export const IdeControls = ({ pill, runtimeTarget, onDownload, onRestart }: IdeC
     >
       ↻ restart
     </button>
+    <EditorKeybindingsButton controller={editorKeybindings} />
     <div id="runtime-target" className="runtime-target-host">
       <RuntimeTargetPanel core={runtimeTarget} />
     </div>
