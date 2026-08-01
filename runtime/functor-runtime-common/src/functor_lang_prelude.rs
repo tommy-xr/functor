@@ -5496,6 +5496,39 @@ mod tests {
             .clone()
     }
 
+    // Drift guard: the branded-value teaching errors name unit SUFFIXES
+    // (`90deg`, `0.5s`), but the suffixes themselves are declared in the
+    // `.funi` prelude, which this crate cannot read at runtime. Pin the two
+    // together so renaming or dropping a `unit` fails here instead of leaving
+    // a message that teaches a suffix nobody can write.
+    #[test]
+    fn prelude_units_match_the_teaching_errors() {
+        use std::collections::BTreeSet;
+        let mut suffixes: BTreeSet<String> = BTreeSet::new();
+        for (module, src) in functor_prelude::modules() {
+            let program = functor_lang::parse_interface(&src)
+                .unwrap_or_else(|e| panic!("prelude module `{module}` must parse: {}", e.message));
+            for item in &program.items {
+                if let functor_lang::ast::Item::Unit(decl) = item {
+                    assert!(
+                        suffixes.insert(decl.suffix.clone()),
+                        "unit `{}` is declared more than once in the prelude",
+                        decl.suffix
+                    );
+                }
+            }
+        }
+        let expected: BTreeSet<String> = ["deg", "rad", "s", "ms", "us", "min", "hr"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            suffixes, expected,
+            "the prelude's unit suffixes changed — update the Angle/Duration teaching errors \
+in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list together"
+        );
+    }
+
     // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`
     // signatures and the registered externals. Every `.funi` `val`/`let`
     // signature must name a real host external, AND every host external must

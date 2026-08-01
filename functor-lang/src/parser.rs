@@ -293,6 +293,17 @@ the top level of the file"
                         span: self.peek().span,
                     })
                 }
+                // Units are project-wide, so an inline module is never their
+                // scope — declare them at the file's top level.
+                TokenKind::Ident(kw) if kw == "unit" => {
+                    return Err(ParseError {
+                        message: format!(
+                            "`unit` inside `module {name}` is not supported — units are \
+project-wide, so declare them at the top level of the file"
+                        ),
+                        span: self.peek().span,
+                    })
+                }
                 _ => return self.error("`let`, `type`, `expect`, or `}` inside a module"),
             }
         }

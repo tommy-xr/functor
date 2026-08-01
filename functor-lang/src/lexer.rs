@@ -347,7 +347,18 @@ fn lex_with_interpolation_depth(
                     while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                         i += 1;
                     }
-                    TokenKind::NumberUnit(n, src[suffix_start..i].to_string())
+                    let suffix = &src[suffix_start..i];
+                    // A KEYWORD abutting a number is not a unit: `1else 2` has
+                    // always lexed as `1` then `else`, and a keyword could
+                    // never be declared as a suffix anyway (`unit else = …`
+                    // does not parse). Give the digits back and let the
+                    // keyword lex on its own.
+                    if keyword(suffix).is_some() {
+                        i = suffix_start;
+                        TokenKind::Number(n)
+                    } else {
+                        TokenKind::NumberUnit(n, suffix.to_string())
+                    }
                 } else {
                     TokenKind::Number(n)
                 }
@@ -356,21 +367,8 @@ fn lex_with_interpolation_depth(
                 while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                     i += 1;
                 }
-                match &src[start..i] {
-                    "let" => TokenKind::Let,
-                    "type" => TokenKind::Type,
-                    "true" => TokenKind::True,
-                    "false" => TokenKind::False,
-                    "mut" => TokenKind::Mut,
-                    "with" => TokenKind::With,
-                    "in" => TokenKind::In,
-                    "match" => TokenKind::Match,
-                    "if" => TokenKind::If,
-                    "then" => TokenKind::Then,
-                    "else" => TokenKind::Else,
-                    "not" => TokenKind::Not,
-                    name => TokenKind::Ident(name.to_string()),
-                }
+                let word = &src[start..i];
+                keyword(word).unwrap_or_else(|| TokenKind::Ident(word.to_string()))
             }
             _ => {
                 let c = src[i..].chars().next().expect("lex is on a char boundary");
@@ -390,6 +388,27 @@ fn lex_with_interpolation_depth(
         span: Span::new(base + src.len(), base + src.len()),
     });
     Ok(tokens)
+}
+
+/// The reserved word `word` spells, if any. The one list — used both when an
+/// identifier is lexed and when deciding that a numeric literal's trailing
+/// word is a keyword rather than a unit suffix.
+fn keyword(word: &str) -> Option<TokenKind> {
+    Some(match word {
+        "let" => TokenKind::Let,
+        "type" => TokenKind::Type,
+        "true" => TokenKind::True,
+        "false" => TokenKind::False,
+        "mut" => TokenKind::Mut,
+        "with" => TokenKind::With,
+        "in" => TokenKind::In,
+        "match" => TokenKind::Match,
+        "if" => TokenKind::If,
+        "then" => TokenKind::Then,
+        "else" => TokenKind::Else,
+        "not" => TokenKind::Not,
+        _ => return None,
+    })
 }
 
 /// Lex a string literal starting at its opening quote. Escapes: `\"`, `\\`,

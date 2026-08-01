@@ -173,10 +173,21 @@ pub(crate) struct ProjectEnv<'a> {
 }
 
 /// What a declared unit suffix expands to: the resolved callee a suffixed
-/// literal calls. Resolved once, in the declaring module's scope, and then
-/// used verbatim from every module.
+/// literal calls, plus the module that OWNS it. Resolved once, in the
+/// declaring module's scope, and then used verbatim from every module — so
+/// the owner travels with it, because a use site's dependency edge is on the
+/// target's module, not on whoever declared the unit.
 #[derive(Clone, Debug)]
-pub(crate) enum UnitTarget {
+pub(crate) struct UnitTarget {
+    kind: UnitKind,
+    /// The module path providing the target (`"Utils"`, `"Angle"`, or the
+    /// declaring module itself). A use site records this as a dependency,
+    /// exactly as writing the call by hand would.
+    owner: String,
+}
+
+#[derive(Clone, Debug)]
+enum UnitKind {
     Global(String),
     Ctor { name: String, arity: usize },
     External(Vec<String>),
@@ -184,13 +195,13 @@ pub(crate) enum UnitTarget {
 
 impl UnitTarget {
     fn kind(&self) -> ExprKind {
-        match self {
-            UnitTarget::Global(name) => ExprKind::Global(name.clone()),
-            UnitTarget::Ctor { name, arity } => ExprKind::Ctor {
+        match &self.kind {
+            UnitKind::Global(name) => ExprKind::Global(name.clone()),
+            UnitKind::Ctor { name, arity } => ExprKind::Ctor {
                 name: name.clone(),
                 arity: *arity,
             },
-            UnitTarget::External(path) => ExprKind::External(path.clone()),
+            UnitKind::External(path) => ExprKind::External(path.clone()),
         }
     }
 }
@@ -389,10 +400,15 @@ fn lower_module(
     // them across every module, before any file lowers — see
     // `crate::project`).
     if project.is_none() {
-        for (suffix, target, span) in resolve_units(&program.items, None)? {
+        for decl in unit_decls(&program.items) {
+            let (suffix, span) = (decl.suffix.clone(), decl.span);
+            let target = lowerer.unit_target(decl)?;
             if lowerer.units.insert(suffix.clone(), target).is_some() {
                 return Err(LowerError {
-                    message: format!("duplicate unit `{suffix}`"),
+                    message: format!(
+                        "duplicate unit `{suffix}` — it is already declared in this file (units \
+are project-wide, like constructors)"
+                    ),
                     span,
                 });
             }
@@ -886,6 +902,11 @@ impl Lowerer<'_> {
 
     /// The teaching error for a literal whose suffix no `unit` declares.
     fn unknown_unit(&self, suffix: &str) -> String {
+        // `1_000` is a digit separator, not a unit — say so rather than
+        // reporting the separator as an undeclared suffix.
+        if suffix.starts_with('_') {
+            return "numeric literals have no digit separators — write `1000`".to_string();
+        }
         let mut known: Vec<&str> = self.units.keys().map(String::as_str).collect();
         known.sort_unstable();
         if known.is_empty() {
@@ -910,20 +931,43 @@ with `unit {suffix} = SomeFn` (a `(float) => 't` function), or write the call it
     /// (Item position has no locals, so this is exactly a top-level
     /// reference.)
     fn unit_target(&mut self, decl: &ast::UnitDecl) -> Result<UnitTarget, LowerError> {
+        // `ident` records a dependency when the target lives in ANOTHER
+        // module; that module is the owner a use site must depend on. A
+        // target in the declaring module records none, so the owner is this
+        // module itself.
+        let before: HashSet<String> = self.deps.clone();
         let resolved = self.ident(decl.target.clone(), decl.target_span)?;
-        match resolved.kind {
-            ExprKind::Global(name) => Ok(UnitTarget::Global(name)),
-            ExprKind::Ctor { name, arity } => Ok(UnitTarget::Ctor { name, arity }),
-            ExprKind::External(path) => Ok(UnitTarget::External(path)),
-            _ => Err(LowerError {
-                message: format!(
-                    "`unit {}` needs a function or constructor name — `{}` is not one",
-                    decl.suffix,
-                    decl.target.join(".")
-                ),
-                span: decl.target_span,
-            }),
-        }
+        let owner = self
+            .deps
+            .difference(&before)
+            .next()
+            .cloned()
+            .or_else(|| self.current_path())
+            .unwrap_or_default();
+        let kind = match resolved.kind {
+            ExprKind::Global(name) => UnitKind::Global(name),
+            ExprKind::Ctor { name, arity } => UnitKind::Ctor { name, arity },
+            // An external's own path names its module (`Angle.degrees`), which
+            // may be a bundled interface rather than a project file.
+            ExprKind::External(path) => {
+                let module = path.first().cloned().unwrap_or_default();
+                return Ok(UnitTarget {
+                    kind: UnitKind::External(path),
+                    owner: module,
+                });
+            }
+            _ => {
+                return Err(LowerError {
+                    message: format!(
+                        "`unit {}` needs a function or constructor name — `{}` is not one",
+                        decl.suffix,
+                        decl.target.join(".")
+                    ),
+                    span: decl.target_span,
+                })
+            }
+        };
+        Ok(UnitTarget { kind, owner })
     }
 
     /// Lower one item into `out`, in the current namespace.
@@ -1135,15 +1179,28 @@ with `unit {suffix} = SomeFn` (a `(float) => 't` function), or write the call it
                         span,
                     });
                 };
+                // The literal calls another module's function, so it carries
+                // that module's dependency edge — exactly as writing the call
+                // by hand would (evaluation order and cycle detection both
+                // depend on it).
+                self.dep(&target.owner);
+                // Split the literal's span between its halves — the digits
+                // ARE the argument and the suffix IS the call — so hovering
+                // `90deg` reports `Angle.degrees : (float) => Angle.t` on the
+                // suffix and `float` on the number, instead of three nodes
+                // fighting over one span. (Suffixes are ASCII, so subtracting
+                // its byte length stays on a char boundary.)
+                let digits = Span::new(span.start, span.end.saturating_sub(suffix.len()));
+                let suffix_span = Span::new(digits.end, span.end);
                 let callee = Expr {
                     id: self.expr_id(),
                     kind: target.kind(),
-                    span,
+                    span: suffix_span,
                 };
                 let arg = Expr {
                     id: self.expr_id(),
                     kind: ExprKind::Number(value),
-                    span,
+                    span: digits,
                 };
                 ExprKind::Call {
                     callee: Box::new(callee),

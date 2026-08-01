@@ -35,8 +35,8 @@ use std::path::{Path, PathBuf};
 use crate::ast;
 use crate::ir::Module;
 use crate::lower::{
-    exports_of, lower_in_project, open_module_path, resolve_units, Exports, IdBases, ProjectEnv,
-    UnitTarget,
+    exports_of, lower_in_project, open_module_path, resolve_units, unit_decls, Exports, IdBases,
+    ProjectEnv, UnitTarget,
 };
 use crate::parser::{capitalize, parse_interface_with_base, parse_with_base};
 use crate::span::line_col;
@@ -866,8 +866,29 @@ rename it"
     // resolve every module's `unit` declarations — each in its own scope —
     // before any file lowers: a suffixed literal may precede, or live in a
     // different file from, its declaration. A suffix may be declared once.
+    // Duplicate suffixes are caught FIRST, on names alone: a redeclaration
+    // should report as a duplicate even when the second declaration's target
+    // is also broken.
+    let mut declared_in: HashMap<&str, usize> = HashMap::new();
+    for (index, program) in programs.iter().enumerate() {
+        for decl in unit_decls(&program.items) {
+            if let Some(&previous) = declared_in.get(decl.suffix.as_str()) {
+                return Err(render_span(
+                    &files,
+                    index,
+                    decl.span,
+                    &format!(
+                        "duplicate unit `{}` — it is already declared in {} (units are \
+project-wide, like constructors)",
+                        decl.suffix,
+                        files[previous].path.display()
+                    ),
+                ));
+            }
+            declared_in.insert(&decl.suffix, index);
+        }
+    }
     let mut units: HashMap<String, UnitTarget> = HashMap::new();
-    let mut unit_origin: HashMap<String, usize> = HashMap::new();
     for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
         let env = ProjectEnv {
             name: &file.module,
@@ -877,24 +898,10 @@ rename it"
         };
         let resolved = resolve_units(&program.items, Some(&env))
             .map_err(|e| render_span(&files, index, e.span, &e.message))?;
-        for (suffix, target, span) in resolved {
-            if let Some(&previous) = unit_origin.get(&suffix) {
-                return Err(render_span(
-                    &files,
-                    index,
-                    span,
-                    &format!(
-                        "duplicate unit `{suffix}` — it is already declared in {} (units are \
-project-wide, like constructors)",
-                        files[previous].path.display()
-                    ),
-                ));
-            }
-            unit_origin.insert(suffix.clone(), index);
+        for (suffix, target, _) in resolved {
             units.insert(suffix, target);
         }
     }
-    let units = units;
 
     // Lower each file with the project environment, threading ID bases so
     // the merged module is one ID space. Collect dependency edges.

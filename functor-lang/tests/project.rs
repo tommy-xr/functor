@@ -2098,3 +2098,57 @@ fn stored_closure_from_an_inline_module_rebinds_across_reload() {
         .expect("apply");
     assert_eq!(number(&result), 21.0);
 }
+
+// ── Units across files ───────────────────────────────────────────────────
+
+/// A `unit` declared in one module, used in another: the suffixed literal is
+/// the cross-module call, dependency edge included — so the target module's
+/// globals evaluate FIRST, exactly as writing `Helper.scale(16.0)` by hand
+/// would. (Without the edge, a top-level initializer using the literal died
+/// with "global `Helper.scale` used before its definition".)
+#[test]
+fn a_unit_literal_carries_its_targets_dependency_edge() {
+    let value = run_main(
+        "unit-cross-file",
+        &[
+            ("game.fun", "let width = 16px\nlet main = () => width\n"),
+            (
+                "helper.fun",
+                "unit px = scale\nlet factor = 2.0\nlet scale = (n) => n * factor\n",
+            ),
+        ],
+    );
+    assert_eq!(number(&value), 32.0);
+}
+
+/// The same for a constructor target declared in a sibling: the literal
+/// builds that module's variant, with its canonical tag.
+#[test]
+fn a_unit_literal_builds_a_siblings_constructor() {
+    let value = run_main(
+        "unit-cross-file-ctor",
+        &[
+            ("game.fun", "let main = () => 16px\n"),
+            ("helper.fun", "type Px = | Px(value: float)\nunit px = Px\n"),
+        ],
+    );
+    assert_eq!(value.to_string(), "Helper.Px(16)");
+}
+
+/// A suffix may be declared once per PROJECT — the second declaration names
+/// the file that already has it, even when its own target is broken.
+#[test]
+fn a_duplicate_unit_across_files_names_both() {
+    let message = load_err(
+        "unit-duplicate-cross-file",
+        &[
+            (
+                "game.fun",
+                "type Px = | Px(value: float)\nunit px = Px\nlet main = () => 1.0\n",
+            ),
+            ("helper.fun", "unit px = Nope\n"),
+        ],
+    );
+    assert!(message.contains("duplicate unit `px`"), "{message}");
+    assert!(message.contains("game.fun"), "{message}");
+}

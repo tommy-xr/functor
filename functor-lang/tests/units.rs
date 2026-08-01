@@ -332,6 +332,48 @@ fn unary_minus_negates_a_suffixed_literal_argument() {
     assert_eq!(main_result(src), "-2.5");
 }
 
+/// The desugared call splits the literal's span between its halves, so the
+/// editor teaches instead of showing three nodes fighting over one span:
+/// the digits hover as `float`, the suffix as the function it calls.
+#[test]
+fn hovering_a_suffixed_literal_shows_both_halves() {
+    let src = "type Px = | Px(value: float)\nunit px = Px\nlet width = 16px\n";
+    let program = functor_lang::parse(src).expect("parses");
+    let module = functor_lang::lower(program).expect("lowers");
+    let (_diags, types) = functor_lang::check_with_types(&module);
+    let literal = src.find("16px").expect("the literal");
+    let hover = |offset: usize| {
+        functor_lang::hover::hover_text(&module, &types, offset).map(|(_, text)| text)
+    };
+    assert_eq!(hover(literal).as_deref(), Some("float"), "the digits");
+    assert_eq!(
+        hover(literal + 2).as_deref(),
+        Some("Px : (float) => Px"),
+        "the suffix"
+    );
+}
+
+/// A keyword touching a number is NOT a unit: `1else 2` lexes as it always
+/// has. (A keyword could never be declared as a suffix anyway.)
+#[test]
+fn a_keyword_touching_a_number_is_not_a_suffix() {
+    let tokens = lex("1else", 0).expect("lexes");
+    assert_eq!(tokens[0].kind, TokenKind::Number(1.0));
+    assert_eq!(tokens[1].kind, TokenKind::Else);
+    let src = "let pick = (c: bool): float => if c then 1else 2.0\n";
+    assert!(functor_lang::parse(src).is_ok(), "`1else 2.0` still parses");
+}
+
+/// `1_000` is a digit-separator attempt, not a unit — say so.
+#[test]
+fn a_digit_separator_is_taught_not_reported_as_a_unit() {
+    let message = lower_err("let a = 1_000\n");
+    assert!(
+        message.contains("no digit separators"),
+        "{message}"
+    );
+}
+
 /// A plain function target works too — nothing about units is brand-specific.
 #[test]
 fn a_plain_function_target_works() {
