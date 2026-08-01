@@ -1055,14 +1055,29 @@ impl Scrubber {
                                 .unwrap_or_else(|| strip.center().x);
                             let font = egui::FontId::monospace(UI_FONT_SIZE - 6.0);
                             let weak = ui.visuals().weak_text_color();
+                            // Same two colors as the rail's bands: cyan for
+                            // the recorded past, pink for the projected
+                            // future.
                             let cyan =
                                 egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
+                            let pink =
+                                egui::Color32::from_rgba_unmultiplied(232, 88, 184, 190);
                             let mut segments: Vec<(String, egui::Color32)> = Vec::new();
                             match state.range {
-                                Some((_, hi)) => {
+                                Some((lo, hi)) => {
+                                    if future_frames > 0 {
+                                        // The window is symmetric, but the PAST
+                                        // half clips at the oldest recorded
+                                        // frame — report what actually exists,
+                                        // matching where the rail's cyan band
+                                        // stops.
+                                        let past_frames = future_frames
+                                            .min(state.frame.saturating_sub(lo));
+                                        segments.push((format!("-{past_frames} "), cyan));
+                                    }
                                     segments.push((format!("{}", state.frame), weak));
                                     if future_frames > 0 {
-                                        segments.push((format!(" +{future_frames}"), cyan));
+                                        segments.push((format!(" +{future_frames}"), pink));
                                     }
                                     segments.push((format!(" / {hi}"), weak));
                                 }
