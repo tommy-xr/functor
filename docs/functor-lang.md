@@ -658,7 +658,6 @@ snapshots — no GPU, fully agent-verifiable.
       canonicalization, shadowing (values and record types), opens
       (local + cross-file, collision + cycle), each collision, file-level
       cycle attribution, and cross-reload rebind.
-      Follow-ups: a `functor.json` `entries` form that names them as roles.
       **Part 7 — module-aware editor tooling — done:** the cursor's
       namespace is now span-based (the `module` block it sits in, from the
       project's `inline_modules` index), so bare completion inside a block
@@ -673,6 +672,29 @@ snapshots — no GPU, fully agent-verifiable.
       grammar highlights the `module` keyword. *Verify:* completion,
       goto, hover, codelens, inlay, and docs unit tests, plus an
       end-to-end LSP test for in-block completion scope + folding.
+      **Part 8 — `entries` roles resolve from inline modules — done:** a
+      functor.json role may point at a block in its file —
+      `"server": { "file": "game.fun", "module": "Server" }` — and its
+      entry contract IS that block's members (`Server.init`/`Server.tick`/…).
+      This is the PREFERRED same-file form; the `prefix` form (Part of the
+      same-file entries work) keeps working as the transitional one, and a
+      role declaring both is a config error. The role's names resolve
+      against the LINKED project's `inline_modules` index, so the canonical
+      path comes from the lowerer and an unknown block is a load/build error
+      naming the role, the file, and the blocks it does declare — re-resolved
+      on every hot reload, so deleting the block fails loudly and keeps the
+      old program instead of reporting every binding missing. Module roles
+      are native-only for now (`run wasm`/`build wasm`/`run vr` refuse them,
+      as vr already refuses prefixes) because those shells boot the
+      unprefixed contract. `examples/orbs` is the reference: its `client`
+      role is now the file's plain top-level contract (so the sandbox and
+      the docs teach the same `init`/`tick`/`draw`) and its `server` role is
+      a `module Server { … }` block. *Verify:* config-shape tests
+      (module form, module+prefix refusal, non-string/non-Capitalized names,
+      unknown keys), contract tests naming `Server.tick`, an unknown-block
+      error test, a desktop load + hot-reload test for a module role, the
+      example sweep over both orbs roles, and headless captures of both
+      roles.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values

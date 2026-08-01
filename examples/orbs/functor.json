@@ -1,7 +1,7 @@
 {
   "language": "functor-lang",
   "entries": {
-    "client": { "file": "game.fun", "prefix": "client" },
-    "server": { "file": "game.fun", "prefix": "server" }
+    "client": "game.fun",
+    "server": { "file": "game.fun", "module": "Server" }
   }
 }

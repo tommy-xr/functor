@@ -224,16 +224,24 @@ SAME directory of sibling modules; `functor --entry <name>` picks one
 bindings are the bare `init`/`tick`/`draw` roots; the other entry is just a
 qualified sibling module), so roles share code — `examples/mp`'s client and
 server share a `protocol.fun` wire codec — without drifting. A role may also
-be an object pointing at a **shared file** with a binding prefix —
-`"server": { "file": "game.fun", "prefix": "server" }` — resolving every
-canonical entry binding through the prefix as camelCase
-(`serverInit`/`serverTick`/`serverDraw`/…; empty/absent prefix = the plain
-names), so two roles live in ONE file and hot-reload atomically.
-`examples/orbs` is the same-file reference (both roles prefixed). Prefixed
-roles run on native and wasm (`run wasm`/`build wasm` bake the prefix into
-the page's boot config; the site player takes `?prefix=<ident>`); vr still
-loads the unprefixed contract only. `entry` and `entries` together are
-refused.
+be an object pointing at a **shared file**, so two roles live in ONE file and
+hot-reload atomically. The preferred form on native names an **inline module**
+—
+`"server": { "file": "game.fun", "module": "Server" }` — whose members ARE
+that role's contract (`Server.init`/`Server.tick`/`Server.draw`/…, resolved
+against the block's canonical path; an unknown block name is a load/build
+error listing the blocks the file does declare). The transitional form names
+a binding **prefix** — `"server": { "file": "game.fun", "prefix": "server" }`
+— resolving every canonical entry binding through the prefix as camelCase
+(`serverInit`/`serverTick`/…). A role declares at most one of the two.
+`examples/orbs` is the same-file reference: its `client` role is the file's
+plain top-level contract and its `server` role is a `module Server { … }`
+block. Module roles are **native-only** for now (`run wasm`/`build wasm`/
+`run vr` refuse them, like vr already refuses prefixes), so a role that must
+also run in the browser stays on the prefix form until the web runtime learns
+the module one; prefixed roles run on native and wasm (`run wasm`/`build wasm` bake the prefix into the page's
+boot config; the site player takes `?prefix=<ident>`). `entry` and `entries`
+together are refused.
 
 ```functor
 // utils.fun                                  // → module Utils
@@ -427,8 +435,12 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   apart (`Utils.Grid` / `Helpers.Grid`) and neither shadows the other.
 - **Dependency edges are between FILES**: a sibling's `Game.Server.foo`
   records a dep on `Game`, so cycles are detected exactly as before.
-- **The entry contract is unchanged**: `init`/`tick`/`draw` are bare
-  top-level lookups. `module Main { let tick = … }` does NOT satisfy it.
+- **The default entry contract is unchanged**: `init`/`tick`/`draw` are bare
+  top-level lookups, so `module Main { let tick = … }` does NOT satisfy a
+  plain entry. A functor.json ROLE may opt into a block instead —
+  `"server": { "file": "game.fun", "module": "Server" }` resolves
+  `Server.init`/`Server.tick`/… (see `entries` above); `examples/orbs` is the
+  reference, and the role is native-only for now.
 - **Hot reload**: canonical names are the rebind identity, so an inline
   module's closures rebind normally — but MOVING a def into (or out of) a
   module renames it (`step` → `Server.step`), which the rebinder treats

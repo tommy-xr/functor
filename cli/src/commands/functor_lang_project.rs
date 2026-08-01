@@ -39,6 +39,16 @@ pub struct FunctorLangProject {
     /// contract. Declared per role as `{ "file": "game.fun", "prefix":
     /// "server" }` so two roles can share one file.
     pub prefix: String,
+    /// The role's inline entry MODULE (same-file entries): the role's entry
+    /// bindings are that `module` block's members (`"Server"` →
+    /// `Server.init`/`Server.tick`/…). Declared per role as `{ "file":
+    /// "game.fun", "module": "Server" }` — the PREFERRED same-file form
+    /// (`prefix` is the transitional one, and the two are mutually
+    /// exclusive). Empty = not a module role.
+    pub module: String,
+    /// The role's name in `entries` (`server`), or empty for a project with a
+    /// single `entry` — config errors name the role.
+    pub role: String,
     /// Whether physical relative mouse input is captured and routed to the game.
     pub mouse_capture: bool,
     /// Whether the shell exposes an absolute pointer to the game.
@@ -168,11 +178,15 @@ because capture is now the default",
         // capture unless the manifest explicitly asks for the contradictory
         // combination above.
         let mouse_capture = requested_mouse_capture.unwrap_or(cursor != CursorPolicy::Visible);
-        let project = |entry: String, prefix: String| FunctorLangProject {
-            entry,
-            prefix,
-            mouse_capture,
-            cursor,
+        let project = |role: &str, entry: String, prefix: String, module: String| {
+            FunctorLangProject {
+                entry,
+                prefix,
+                module,
+                role: role.to_string(),
+                mouse_capture,
+                cursor,
+            }
         };
         match &self.entries {
             FunctorLangEntries::Conflicting => Err(Error::other(
@@ -180,10 +194,10 @@ because capture is now the default",
             )),
             FunctorLangEntries::Malformed => Err(Error::other(
                 "functor.json `entries` must be a map of name → .fun path (or \
-{ \"file\": …, \"prefix\": … }) — e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"}",
+{ \"file\": …, \"module\": … }) — e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"}",
             )),
             FunctorLangEntries::Single(entry) => match requested {
-                None => Ok(project(entry.clone(), String::new())),
+                None => Ok(project("", entry.clone(), String::new(), String::new())),
                 Some(name) => Err(Error::other(format!(
                     "--entry {name}: this project has a single `entry` — `--entry` picks from \
 an `entries` map in functor.json"
@@ -197,7 +211,8 @@ an `entries` map in functor.json"
                         .join(", ")
                 };
                 let pick = |name: &str, value: &serde_json::Value| {
-                    pick_entry(name, value).map(|(entry, prefix)| project(entry, prefix))
+                    pick_entry(name, value)
+                        .map(|(entry, prefix, module)| project(name, entry, prefix, module))
                 };
                 match requested {
                     Some(name) => match map.iter().find(|(k, _)| k == name) {
@@ -247,23 +262,28 @@ name → .fun path (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"
     }
 }
 
-/// Resolve one `entries` value: the classic string form (`"client.fun"`) or
-/// the object form (`{ "file": "game.fun", "prefix": "server" }` — same-file
-/// entries, where the role's entry bindings resolve through the prefix as
-/// camelCase: `serverInit`/`serverTick`/…). Malformed shapes get teaching
-/// errors naming the exact fix. Returns the `(entry, prefix)` pair; the
-/// caller folds in the project-wide settings.
-fn pick_entry(name: &str, value: &serde_json::Value) -> Result<(String, String), Error> {
+/// Resolve one `entries` value: the classic string form (`"client.fun"`), or
+/// the object form for same-file entries — `{ "file": "game.fun", "module":
+/// "Server" }`, whose entry bindings ARE that inline module's members
+/// (`Server.init`/`Server.tick`/…), and the transitional `{ "file":
+/// "game.fun", "prefix": "server" }`, which resolves them through the prefix
+/// as camelCase (`serverInit`/`serverTick`/…). The two name bindings
+/// differently, so a role declares at most one. Malformed shapes get teaching
+/// errors naming the exact fix. Returns the `(entry, prefix, module)` triple;
+/// the caller folds in the project-wide settings.
+fn pick_entry(name: &str, value: &serde_json::Value) -> Result<(String, String, String), Error> {
     match value {
         serde_json::Value::String(entry) if !entry.is_empty() => {
-            Ok((entry.clone(), String::new()))
+            Ok((entry.clone(), String::new(), String::new()))
         }
         serde_json::Value::Object(map) => {
-            if let Some(unknown) = map.keys().find(|k| k.as_str() != "file" && k.as_str() != "prefix")
+            if let Some(unknown) = map
+                .keys()
+                .find(|k| !matches!(k.as_str(), "file" | "prefix" | "module"))
             {
                 return Err(Error::other(format!(
                     "functor.json entry `{name}`: unknown key \"{unknown}\" — the object form \
-takes \"file\" and an optional \"prefix\""
+takes \"file\" and one of \"module\" / \"prefix\""
                 )));
             }
             let entry = match map.get("file") {
@@ -271,7 +291,8 @@ takes \"file\" and an optional \"prefix\""
                 _ => {
                     return Err(Error::other(format!(
                         "functor.json entry `{name}`: the object form needs a \"file\" — \
-{{ \"file\": \"game.fun\", \"prefix\": \"{name}\" }}"
+{{ \"file\": \"game.fun\", \"module\": \"{}\" }}",
+                        capitalized(name)
                     )))
                 }
             };
@@ -302,12 +323,60 @@ camelCase binding prefix (e.g. \"server\" resolves serverInit/serverTick/…)"
 (it becomes the binding prefix: `{prefix}Init`, `{prefix}Tick`, …)"
                 )));
             }
-            Ok((entry, prefix))
+            let module = match map.get("module") {
+                None | Some(serde_json::Value::Null) => String::new(),
+                Some(serde_json::Value::String(module)) => module.clone(),
+                Some(_) => {
+                    return Err(Error::other(format!(
+                        "functor.json entry `{name}`: \"module\" must be a string — the inline \
+module holding this role's entry bindings (e.g. \"Server\" resolves Server.init/Server.tick/…)"
+                    )))
+                }
+            };
+            // The two same-file forms name bindings differently, so a role
+            // declaring both is ambiguous — refused like `entry` + `entries`.
+            if !module.is_empty() && !prefix.is_empty() {
+                return Err(Error::other(format!(
+                    "functor.json entry `{name}`: keep one of \"module\" and \"prefix\" — \
+\"module\" resolves {module}.init/{module}.tick/…, \"prefix\" resolves \
+{prefix}Init/{prefix}Tick/…"
+                )));
+            }
+            // A module role names a `module Server { … }` block, so it must be
+            // spelled like one — refuse `"my server"` (or a lowercase name,
+            // which the parser rejects at the declaration) here, not as a
+            // baffling missing-block error later.
+            let mut chars = module.chars();
+            let valid = match chars.next() {
+                None => true,
+                Some(first) => {
+                    first.is_ascii_uppercase()
+                        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+                }
+            };
+            if !valid {
+                return Err(Error::other(format!(
+                    "functor.json entry `{name}`: \"module\" must be a Capitalized inline \
+module name (it is the block's own name: `module {module} {{ … }}`)"
+                )));
+            }
+            Ok((entry, prefix, module))
         }
         _ => Err(Error::other(format!(
             "functor.json entry `{name}` must be a path to a .fun file, or \
-{{ \"file\": \"game.fun\", \"prefix\": \"{name}\" }} for a same-file role"
+{{ \"file\": \"game.fun\", \"module\": \"{}\" }} for a same-file role",
+            capitalized(name)
         ))),
+    }
+}
+
+/// A role name spelled as an inline module name (`server` → `Server`) — used
+/// only to make the config errors' suggestions concrete.
+fn capitalized(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }
 
@@ -449,12 +518,26 @@ impl FunctorLangProject {
         Ok(project)
     }
 
+    /// This role's binding-name scheme, as the runtimes' shared resolver
+    /// takes it: an inline `module` block (the preferred same-file form) or a
+    /// binding prefix. The config refuses both at once, so the choice is
+    /// unambiguous here.
+    fn entry_role(&self) -> functor_runtime_common::functor_lang_producer::EntryRole {
+        use functor_runtime_common::functor_lang_producer::EntryRole;
+        if self.module.is_empty() {
+            EntryRole::Prefix(self.prefix.clone())
+        } else {
+            EntryRole::Module(self.module.clone())
+        }
+    }
+
     /// `build`'s per-role contract gate (same-file entries): load a Session
     /// under the ENGINE prelude from the project [`Self::build`] already
     /// typechecked, and validate THIS role's entry-point contract — its
-    /// (possibly prefixed) names at their required arities. A project
-    /// declaring a server role whose `serverTick` is missing or misarityed
-    /// fails here with an error naming `serverTick`, instead of at launch.
+    /// resolved names (prefixed, or the inline module's members) at their
+    /// required arities. A project declaring a server role whose `serverTick`
+    /// / `Server.tick` is missing or misarityed fails here with an error
+    /// naming that binding, instead of at launch.
     /// The validation body is the exact one the runtimes use at load
     /// (`functor_runtime_common::functor_lang_producer::validate_contract`).
     pub fn check_contract(
@@ -462,7 +545,15 @@ impl FunctorLangProject {
         project: &functor_lang::project::Project,
     ) -> Result<(), Error> {
         use functor_runtime_common::functor_lang_prelude::FunctorHost;
-        use functor_runtime_common::functor_lang_producer::{validate_contract, EntryNames};
+        use functor_runtime_common::functor_lang_producer::validate_contract;
+        // A module role resolves against the linked project (the block's
+        // CANONICAL path); an unknown block is a build error naming the role.
+        let names = self.entry_role().resolve(&self.entry, project).map_err(|e| {
+            Error::other(match self.role.as_str() {
+                "" => e,
+                role => format!("functor.json entry `{role}`: {e}"),
+            })
+        })?;
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .map_err(|f| {
                 Error::other(format!(
@@ -471,7 +562,6 @@ impl FunctorLangProject {
                     project.sources.render(f.error.span.start, &f.error.message)
                 ))
             })?;
-        let names = EntryNames::with_prefix(&self.prefix);
         validate_contract(&self.entry, &session, &names)
             .map(|_| ())
             .map_err(Error::other)
@@ -558,6 +648,24 @@ impl FunctorLangProject {
                 self.prefix
             )));
         }
+        // An inline-module role is native-only for now: the wasm host page and
+        // the device push path both boot their embedded producer with the
+        // unprefixed contract, so running it there would silently play the
+        // wrong role. (Native passes --entry-module.) The test is "not
+        // native", so a future environment is refused until it is taught the
+        // form, rather than silently booting the wrong role.
+        if !self.module.is_empty() && !matches!(environment, Environment::Native) {
+            return Err(Error::other(format!(
+                "entry module `{}` is not supported on {} yet — run this role with \
+`run native` (the other shells load the unprefixed contract)",
+                self.module,
+                match environment {
+                    Environment::Vr => "vr",
+                    Environment::Wasm => "wasm",
+                    Environment::Native => unreachable!("guarded above"),
+                }
+            )));
+        }
         if matches!(environment, Environment::Vr) {
             if !runner_args.is_empty() {
                 emit(Event::Warning {
@@ -611,6 +719,12 @@ impl FunctorLangProject {
             // resolves `serverInit`/`serverTick`/… through it.
             argv.push("--entry-prefix".to_string());
             argv.push(self.prefix.clone());
+        }
+        if !self.module.is_empty() {
+            // The role's inline entry module (same-file entries): the runtime
+            // resolves `Server.init`/`Server.tick`/… as its members.
+            argv.push("--entry-module".to_string());
+            argv.push(self.module.clone());
         }
         if self.mouse_capture {
             argv.push("--mouse-capture".to_string());
@@ -886,6 +1000,16 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         #[cfg(feature = "web")]
         {
             self.entry_path(working_directory)?;
+            // Same restriction as `run wasm`: the exported page boots the web
+            // runtime's unprefixed contract, so a module role would ship as
+            // the wrong role.
+            if !self.module.is_empty() {
+                return Err(Error::other(format!(
+                    "entry module `{}` is not supported on wasm yet — `build native` this role \
+(the wasm bundle loads the unprefixed contract)",
+                    self.module
+                )));
+            }
             // Same constraint as `run wasm`: the bundle carries the project
             // directory, so the entry must live inside it.
             if entry_escapes_project(&self.entry) {
@@ -1512,7 +1636,7 @@ mod tests {
     use super::entry_escapes_project;
     use super::{
         manifest_mouse_capture, nth_line, project_asset_files, resolve_debug_args, CursorPolicy,
-        FunctorLangConfig, FunctorLangEntries,
+        FunctorLangConfig, FunctorLangEntries, FunctorLangProject,
     };
 
     fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
@@ -1845,6 +1969,76 @@ mod tests {
     }
 
     #[test]
+    fn an_object_entry_resolves_file_and_module() {
+        let config = named_json(&[
+            ("client", serde_json::json!("game.fun")),
+            (
+                "server",
+                serde_json::json!({ "file": "game.fun", "module": "Server" }),
+            ),
+        ]);
+        let client = config.select(Some("client")).unwrap();
+        assert_eq!(
+            (client.entry.as_str(), client.module.as_str()),
+            ("game.fun", "")
+        );
+        let server = config.select(Some("server")).unwrap();
+        assert_eq!(
+            (
+                server.entry.as_str(),
+                server.module.as_str(),
+                server.prefix.as_str(),
+                server.role.as_str()
+            ),
+            ("game.fun", "Server", "", "server")
+        );
+    }
+
+    /// The two same-file forms name bindings differently, so one role cannot
+    /// declare both (the `entry` + `entries` rule, one level down).
+    #[test]
+    fn a_role_declaring_both_module_and_prefix_is_refused() {
+        let config = named_json(&[(
+            "server",
+            serde_json::json!({ "file": "game.fun", "module": "Server", "prefix": "server" }),
+        )]);
+        let err = config.select(Some("server")).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("keep one of \"module\" and \"prefix\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_non_string_module_is_refused() {
+        let config = named_json(&[(
+            "server",
+            serde_json::json!({ "file": "game.fun", "module": 3 }),
+        )]);
+        let err = config.select(Some("server")).unwrap_err();
+        assert!(err.to_string().contains("must be a string"), "{err}");
+    }
+
+    /// An inline module's name is Capitalized (the parser refuses anything
+    /// else at the declaration), so the config refuses it too — up front,
+    /// instead of as a missing-block error at load.
+    #[test]
+    fn a_non_module_shaped_name_is_refused() {
+        for name in ["server", "my Server"] {
+            let config = named_json(&[(
+                "server",
+                serde_json::json!({ "file": "game.fun", "module": name }),
+            )]);
+            let err = config.select(Some("server")).unwrap_err();
+            assert!(
+                err.to_string().contains("Capitalized inline module name"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unknown_object_key_is_refused() {
         let config = named_json(&[(
             "server",
@@ -1882,6 +2076,80 @@ mod tests {
         };
         let err = config.select(None).unwrap_err();
         assert!(err.to_string().contains("must be a path"), "{err}");
+    }
+
+    /// Load a one-file project in a scratch dir — the input `build`'s
+    /// contract gate takes.
+    fn loaded_project(tag: &str, src: &str) -> (String, functor_lang::project::Project) {
+        let root = std::env::temp_dir().join(format!(
+            "functor-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("game.fun"), src).unwrap();
+        let project = functor_lang::project::load_with_bundled_modules(
+            &root.join("game.fun"),
+            &std::collections::HashMap::new(),
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("the scratch project loads: {}", e.message));
+        (root.to_string_lossy().into_owned(), project)
+    }
+
+    const MODULE_ROLE_SRC: &str = "let init = { n: 0.0 }\n\
+let tick = (m, dt, tts) => m\n\
+let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 5.0), \
+Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
+module Server {\n\
+  let init = { n: 1.0 }\n\
+  let tick = (m, dt, tts) => { n: m.n + dt }\n\
+  let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 5.0), \
+Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
+}\n";
+
+    fn module_role(name: &str) -> FunctorLangProject {
+        named_json(&[(
+            "server",
+            serde_json::json!({ "file": "game.fun", "module": name }),
+        )])
+        .select(Some("server"))
+        .unwrap()
+    }
+
+    /// A module role's contract is the BLOCK's members: the same file whose
+    /// top level satisfies the plain contract also satisfies `Server.*`.
+    #[test]
+    fn a_module_role_validates_its_blocks_contract() {
+        let (_, project) = loaded_project("module-role", MODULE_ROLE_SRC);
+        module_role("Server").check_contract(&project).unwrap();
+    }
+
+    /// …and a missing binding is reported as the RESOLVED name, so the error
+    /// points at the block, not at a top-level `tick` that exists.
+    #[test]
+    fn a_module_role_names_its_missing_binding() {
+        let src = MODULE_ROLE_SRC.replace("let tick = (m, dt, tts) => { n: m.n + dt }\n", "");
+        let (_, project) = loaded_project("module-role-missing", &src);
+        let err = module_role("Server")
+            .check_contract(&project)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Server.tick"), "{err}");
+    }
+
+    /// An unknown block name names the role and lists what the file declares.
+    #[test]
+    fn an_unknown_role_module_lists_the_files_blocks() {
+        let (_, project) = loaded_project("module-role-unknown", MODULE_ROLE_SRC);
+        let err = module_role("Sever")
+            .check_contract(&project)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("functor.json entry `server`"), "{err}");
+        assert!(err.contains("module Sever"), "{err}");
+        assert!(err.contains("it declares: Server"), "{err}");
     }
 
     #[test]
