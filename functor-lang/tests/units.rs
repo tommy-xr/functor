@@ -690,6 +690,28 @@ fn the_interpreter_dispatches_on_a_branded_operand() {
     );
 }
 
+/// The unchecked path refuses a duplicate declaration too, rather than
+/// silently picking whichever came last. [xreview: Medium]
+#[test]
+fn the_interpreter_refuses_a_duplicate_declaration() {
+    let src = "type Px = | Px(value: float)\n\
+               unit px = Px\n\
+               unit em = Px\n\
+               let add = (a: Px, b: Px): Px => a\n\
+               unit px (+) = add\n\
+               unit em (+) = add\n";
+    let program = functor_lang::parse(src).expect("parses");
+    let module = functor_lang::lower(program).expect("lowers");
+    let failure = functor_lang::run(&module, Tracing::Off)
+        .err()
+        .expect("`+` is declared twice for one brand");
+    assert!(
+        failure.error.message.contains("duplicate operator"),
+        "{}",
+        failure.error.message
+    );
+}
+
 /// …and a brand with no implementation for the operator errors at runtime
 /// with the same teaching the checker gives.
 #[test]
