@@ -16,9 +16,11 @@ const filterReference = (): void => {
   const query = search.value.trim().toLowerCase();
   let visibleItems = 0;
   let visibleModules = 0;
-  // Modules still showing per group ("engine" / "stdlib"), so a group's
-  // divider and nav block disappear along with its last module.
+  // Modules still showing per group ("engine" / "stdlib") and per category
+  // (group-qualified, e.g. "stdlib:Input"), so a heading and its nav block
+  // disappear along with the last module under it.
   const perGroup = new Map<string, number>();
+  const perCategory = new Map<string, number>();
 
   for (const section of referenceRoot.querySelectorAll<HTMLElement>(".api-module")) {
     const moduleMatches = query && section.dataset.search!.includes(query);
@@ -38,6 +40,8 @@ const filterReference = (): void => {
       visibleItems += moduleItems;
       const group = section.dataset.group ?? "engine";
       perGroup.set(group, (perGroup.get(group) ?? 0) + 1);
+      const category = section.dataset.category ?? "";
+      perCategory.set(category, (perCategory.get(category) ?? 0) + 1);
     }
   }
 
@@ -45,6 +49,12 @@ const filterReference = (): void => {
     ".api-group-divider, .api-nav-group"
   )) {
     element.hidden = (perGroup.get(element.dataset.group ?? "engine") ?? 0) === 0;
+  }
+
+  for (const element of document.querySelectorAll<HTMLElement>(
+    ".api-category-divider, .api-nav-category"
+  )) {
+    element.hidden = (perCategory.get(element.dataset.category ?? "") ?? 0) === 0;
   }
 
   results.textContent = query

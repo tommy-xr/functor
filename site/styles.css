@@ -1609,14 +1609,33 @@ a:hover {
 .api-nav-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 10px;
 }
 
 .api-nav-group-label {
-  color: var(--text-dim);
+  color: rgba(65, 216, 230, 0.78);
   font-family: var(--font-display);
   font-size: 0.58rem;
   letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Categories are the second level of the nav, in the same color language as
+   the content dividers — cyan names a group, pink names a category — muted so
+   the column stays quiet. The hairline ties each topic's modules together. */
+.api-nav-category {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.api-nav-category-label {
+  color: rgba(232, 88, 184, 0.72);
+  font-family: var(--font-display);
+  font-size: 0.54rem;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
@@ -1769,7 +1788,9 @@ a:hover {
 .api-module[hidden],
 .api-item[hidden],
 .api-group-divider[hidden],
+.api-category-divider[hidden],
 .api-nav-group[hidden],
+.api-nav-category[hidden],
 .api-nav a[hidden] {
   display: none;
 }
@@ -1800,6 +1821,48 @@ a:hover {
   margin: 6px 0 0;
   color: var(--text-dim);
   font-size: 0.8rem;
+}
+
+/* And within a half, a category names the topic the next few modules share —
+   one level down from the group, encoded by color role: cyan names a group,
+   pink names a category. The rule fades out from the label's own pink. */
+.api-category-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 44px 0 16px;
+}
+
+.api-group-divider + .api-category-divider {
+  margin-top: 26px;
+}
+
+.api-category-divider::after {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(232, 88, 184, 0.35), var(--line) 30%);
+  content: "";
+}
+
+.api-category-divider h2 {
+  /* `.docs-main h2` gives every heading a rule above it; the divider draws its
+     own, so this one resets that. */
+  margin: 0;
+  padding-top: 0;
+  border-top: 0;
+  color: var(--pink);
+  font-family: var(--font-display);
+  font-size: 0.64rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+/* The first module under a category belongs to it, so it drops the separating
+   rule `.docs-main h2` gives every other module heading. */
+.api-category-divider + .api-module > h2 {
+  margin-top: 22px;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .api-module > h2 {
@@ -1939,17 +2002,27 @@ a:hover {
     padding-bottom: 6px;
   }
 
-  /* On narrow screens the nav is one scrolling chip row, so each group
-     inlines its label with its own chips instead of stacking. */
-  .api-nav-group {
+  /* On narrow screens the nav is one scrolling chip row, so each group and
+     category inlines its label with its own chips instead of stacking. */
+  .api-nav-group,
+  .api-nav-category {
     flex: 0 0 auto;
     flex-direction: row;
     align-items: center;
     gap: 8px;
   }
 
-  .api-nav-group-label {
+  .api-nav-category {
+    padding-left: 8px;
+  }
+
+  .api-nav-group-label,
+  .api-nav-category-label {
     flex: 0 0 auto;
+  }
+
+  .api-category-divider {
+    margin: 30px 0 14px;
   }
 
   .api-nav a {
