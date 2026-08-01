@@ -970,14 +970,14 @@ fn service_debug_request(
             let _ = resp.send(game.reload_source(&source));
         }
         debug_server::DebugRequest::ReloadProject(files, role, resp) => {
-            let _ = resp.send(functor_runtime_common::protocol::push_with_role(
+            let _ = resp.send(functor_runtime_common::protocol::reload_with_role(
                 game,
                 role,
                 |game| game.reload_project(&files),
             ));
         }
         debug_server::DebugRequest::LoadProject(files, role, resp) => {
-            let result = functor_runtime_common::protocol::push_with_role(game, role, |game| {
+            let result = functor_runtime_common::protocol::load_with_role(game, role, |game| {
                 game.load_project(&files)
             });
             if result.is_ok() {

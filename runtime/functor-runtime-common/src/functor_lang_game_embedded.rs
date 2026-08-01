@@ -646,6 +646,10 @@ impl GameProducer for FunctorLangEmbeddedGame {
         Some(std::mem::replace(&mut self.role, role))
     }
 
+    fn entry_role(&self) -> Option<EntryRole> {
+        Some(self.role.clone())
+    }
+
     fn reload_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
         // The multi-file push path: the pusher owns the WHOLE file set, so —
         // unlike `reload_source`, which swaps the entry and keeps the
@@ -1428,7 +1432,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         // `POST /load-project?module=Server`. The pushed file has NO top-level
         // contract, so reaching a loaded state at all proves the role resolved.
         let files = |probe: f64| vec![("game.fun".to_string(), role_src(probe))];
-        crate::protocol::push_with_role(
+        crate::protocol::load_with_role(
             &mut game,
             Some(EntryRole::Module("Server".to_string())),
             |game| game.load_project(&files(1.0)),
@@ -1438,7 +1442,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert!(game.state_debug().contains("n: 7"), "{}", game.state_debug());
 
         // A re-push re-resolves the same role and preserves the model.
-        crate::protocol::push_with_role(
+        crate::protocol::reload_with_role(
             &mut game,
             Some(EntryRole::Module("Server".to_string())),
             |game| game.reload_project(&files(2.0)),
@@ -1454,7 +1458,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
 
         // A push that DELETES the block fails loudly naming it; the old
         // program AND its role keep running, so the next good push works.
-        let err = crate::protocol::push_with_role(
+        let err = crate::protocol::reload_with_role(
             &mut game,
             Some(EntryRole::Module("Server".to_string())),
             |game| game.reload_project(&[("game.fun".to_string(), "let unrelated = 1.0\n".into())]),
@@ -1467,11 +1471,32 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             "2",
             "the old program keeps running"
         );
-        crate::protocol::push_with_role(&mut game, None, |game| {
+        crate::protocol::reload_with_role(&mut game, None, |game| {
             game.reload_project(&files(3.0))
         })
         .expect("a role-less push runs the role already in force");
         assert_eq!(game.names.tick, "Server.tick");
+
+        // A DIFFERENT role on the model-preserving route is refused: adopting
+        // it would hand Server's model to the plain contract's `tick`. The
+        // error names the route that does start a new game.
+        let err = crate::protocol::reload_with_role(
+            &mut game,
+            Some(EntryRole::Prefix(String::new())),
+            |game| game.reload_project(&files(4.0)),
+        )
+        .expect_err("a role CHANGE is not a model-preserving reload");
+        assert!(err.contains("/load-project"), "{err}");
+        assert_eq!(game.names.tick, "Server.tick", "the role is untouched");
+
+        // The same change IS a load — a new game, its model from `init`.
+        crate::protocol::load_with_role(
+            &mut game,
+            Some(EntryRole::Prefix(String::new())),
+            |game| game.load_project(&[("boot.fun".to_string(), BOOT.to_string())]),
+        )
+        .expect("a role change loads as a new game");
+        assert_eq!(game.names.tick, "tick");
     }
 
     /// A prefixed role's EFFECTS must fold through the role's own update

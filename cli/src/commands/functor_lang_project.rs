@@ -308,16 +308,9 @@ camelCase binding prefix (e.g. \"server\" resolves serverInit/serverTick/…)"
             };
             // A prefix concatenates into binding NAMES, so it must itself be a
             // valid identifier — refuse `"my server"` here, not as a baffling
-            // "has no top-level `let my serverInit`" later.
-            let mut chars = prefix.chars();
-            let valid = match chars.next() {
-                None => true,
-                Some(first) => {
-                    (first.is_ascii_alphabetic() || first == '_')
-                        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-                }
-            };
-            if !valid {
+            // "has no top-level `let my serverInit`" later. The rule is the
+            // shared one every role carrier validates with.
+            if !functor_runtime_common::functor_lang_producer::EntryRole::is_valid_prefix(&prefix) {
                 return Err(Error::other(format!(
                     "functor.json entry `{name}`: \"prefix\" must be a valid identifier \
 (it becomes the binding prefix: `{prefix}Init`, `{prefix}Tick`, …)"
@@ -346,15 +339,7 @@ module holding this role's entry bindings (e.g. \"Server\" resolves Server.init/
             // spelled like one — refuse `"my server"` (or a lowercase name,
             // which the parser rejects at the declaration) here, not as a
             // baffling missing-block error later.
-            let mut chars = module.chars();
-            let valid = match chars.next() {
-                None => true,
-                Some(first) => {
-                    first.is_ascii_uppercase()
-                        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-                }
-            };
-            if !valid {
+            if !functor_runtime_common::functor_lang_producer::EntryRole::is_valid_module(&module) {
                 return Err(Error::other(format!(
                     "functor.json entry `{name}`: \"module\" must be a Capitalized inline \
 module name (it is the block's own name: `module {module} {{ … }}`)"
@@ -835,6 +820,26 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             )));
         }
 
+        // The tool APK installs separately from this CLI, so a headset can be
+        // running an older build — and a pre-v9 runtime IGNORES the role query
+        // and boots the unprefixed contract, i.e. silently the wrong game. A
+        // declared role therefore requires a runtime that speaks the form; the
+        // plain contract runs on any of them.
+        use functor_runtime_common::functor_lang_producer::EntryRole;
+        if !matches!(&role, EntryRole::Prefix(prefix) if prefix.is_empty()) {
+            let version = probe_protocol_version(&addr);
+            if version.is_some_and(|version| version < ENTRY_ROLE_PROTOCOL_VERSION) {
+                return Err(Error::other(format!(
+                    "the headset's functor runtime is too old for an entry role (it speaks debug \
+protocol v{}, and roles need v{ENTRY_ROLE_PROTOCOL_VERSION}) — it would ignore the role and boot \
+the unprefixed contract. Reinstall the tool APK (npm run build:oculus:apk && adb install -r \
+target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run native` / \
+`run wasm`.",
+                    version.unwrap_or(0)
+                )));
+            }
+        }
+
         let mut attempted_assets = project_asset_files(project_root)?;
         let report = sync_project_assets(&addr, &attempted_assets, None)?;
         let mut observed_assets = attempted_assets.clone();
@@ -851,7 +856,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         let files = read_project_json(&entry_path)?;
         let mut attempted = None;
         for _ in 0..20 {
-            match post_load_project(&addr, &files, &role) {
+            match post_project(&addr, "/load-project", &files, &role) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = Some(files.clone());
@@ -937,7 +942,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             if current == attempted {
                 continue;
             }
-            match post_reload_project(&addr, &current, &role) {
+            match post_project(&addr, "/reload-project", &current, &role) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
@@ -1197,6 +1202,11 @@ const VR_PACKAGE: &str = "dev.functor.runner";
 const VR_COMPONENT: &str = "dev.functor.runner/android.app.NativeActivity";
 /// Its device-loopback push port (`adb forward` bridges it to this machine).
 const VR_PORT: u16 = 8123;
+
+/// The debug protocol version that added the project push's entry-role query.
+/// Older device runtimes ignore it, so a declared role must not be pushed to
+/// one — see the check in `run_vr`.
+const ENTRY_ROLE_PROTOCOL_VERSION: u64 = 9;
 
 /// Run one adb command to completion; stdout on success, a rendered error
 /// (including the "adb isn't installed" case) otherwise.
@@ -1504,32 +1514,22 @@ fn read_project_json(entry_path: &Path) -> Result<String, Error> {
     serde_json::to_string(&files).map_err(Error::other)
 }
 
-/// POST the whole project file set (the `read_project_json` body) to the
-/// runtime's `/reload-project`, DECLARING this entry's same-file role in the
+/// POST the whole project file set (the `read_project_json` body) to one of
+/// the runtime's project routes, DECLARING this entry's same-file role in the
 /// query string. A device session takes its role from the push (no command
 /// line reaches it), and every push re-declares it, so the plain contract
 /// travels as an explicit empty prefix rather than as silence.
-fn post_reload_project(
+///
+/// `/load-project` starts a new game, taking its model from `init`;
+/// `/reload-project` (the watch loop's route) preserves that live model.
+fn post_project(
     addr: &str,
+    route: &str,
     files_json: &str,
     role: &functor_runtime_common::functor_lang_producer::EntryRole,
 ) -> Result<(u16, String), Error> {
     let path = format!(
-        "/reload-project{}",
-        functor_runtime_common::debug_protocol::encode_entry_role_query(role)
-    );
-    http_post(addr, &path, "application/json", files_json)
-}
-
-/// Load the first pushed project as a new game, taking its model from `init`.
-/// Later watch-loop edits use `/reload-project` and preserve that model.
-fn post_load_project(
-    addr: &str,
-    files_json: &str,
-    role: &functor_runtime_common::functor_lang_producer::EntryRole,
-) -> Result<(u16, String), Error> {
-    let path = format!(
-        "/load-project{}",
+        "{route}{}",
         functor_runtime_common::debug_protocol::encode_entry_role_query(role)
     );
     http_post(addr, &path, "application/json", files_json)
@@ -1540,6 +1540,31 @@ fn post_load_project(
 /// keeps the read side trivial (read to EOF, split headers off).
 fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
     http_post(addr, "/reload-source", "text/plain", source)
+}
+
+/// The debug protocol version a runtime reports at `GET /`, or `None` when the
+/// endpoint is unreachable or answers something unexpected.
+fn probe_protocol_version(addr: &str) -> Option<u64> {
+    use std::io::{Read, Write};
+    use std::net::ToSocketAddrs;
+    let timeout = std::time::Duration::from_secs(5);
+    let sockaddr = addr.to_socket_addrs().ok()?.next()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&sockaddr, timeout).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
+    write!(
+        stream,
+        "GET / HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).ok()?;
+    let response = String::from_utf8_lossy(&response);
+    let (_, body) = response.split_once("\r\n\r\n")?;
+    serde_json::from_str::<serde_json::Value>(body.trim())
+        .ok()?
+        .get("protocol_version")?
+        .as_u64()
 }
 
 fn http_post(
@@ -1622,7 +1647,6 @@ mod tests {
         manifest_mouse_capture, nth_line, project_asset_files, resolve_debug_args, CursorPolicy,
         FunctorLangConfig, FunctorLangEntries, FunctorLangProject,
     };
-    use crate::Environment;
 
     fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();

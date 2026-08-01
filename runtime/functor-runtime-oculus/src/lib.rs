@@ -759,14 +759,14 @@ tracking); use the desktop runtime's --headless/--debug-port path"
             let _ = response.send(game.reload_source(&source));
         }
         DebugRequest::ReloadProject(files, role, response) => {
-            let _ = response.send(functor_runtime_common::protocol::push_with_role(
+            let _ = response.send(functor_runtime_common::protocol::reload_with_role(
                 game,
                 role,
                 |game| game.reload_project(&files),
             ));
         }
         DebugRequest::LoadProject(files, role, response) => {
-            let result = functor_runtime_common::protocol::push_with_role(game, role, |game| {
+            let result = functor_runtime_common::protocol::load_with_role(game, role, |game| {
                 game.load_project(&files)
             });
             if result.is_ok() {

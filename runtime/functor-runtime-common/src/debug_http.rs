@@ -878,9 +878,14 @@ Content-Length: {}\r\n\r\n{body}",
             "{response}"
         );
 
-        // An unknown query key is ignored, not fatal (forward tolerance).
-        let (role, _) = push("?module=Server&futureFlag=1");
-        assert_eq!(role, Some(Some(EntryRole::Module("Server".into()))));
+        // A typo'd key is a 400, not a silent "declared nothing" that would
+        // keep the running contract while reporting success.
+        let (role, response) = push("?moduel=Server");
+        assert_eq!(role, None, "an unknown role key never loads");
+        assert!(
+            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
+            "{response}"
+        );
     }
 
     /// A clock command the runtime cannot honor must be a LOUD 409, not a `200

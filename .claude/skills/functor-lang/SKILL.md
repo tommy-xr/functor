@@ -456,7 +456,10 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   plain entry. A functor.json ROLE may opt into a block instead —
   `"server": { "file": "game.fun", "module": "Server" }` resolves
   `Server.init`/`Server.tick`/… (see `entries` above). Such a role runs on
-  native and wasm; only vr still refuses it.
+  every shell — on vr it rides the device push's query string
+  (`?module=Server`), which needs a tool APK speaking debug protocol v9 or
+  newer (`run vr` refuses an older one rather than letting it boot the
+  unprefixed contract).
 - **The shadowing trap when a role moves into a block.** A block's own names
   shadow the file's, so `module Client { let init = init }` is
   **self-referential**, not an alias of a top-level `init` — you get

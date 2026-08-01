@@ -50,8 +50,9 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// of `POST /load-project` / `POST /reload-project` (`?module=Server` or
 /// `?prefix=server`; see [`encode_entry_role_query`]). Tolerant in both
 /// directions: a pre-v9 runtime ignores the query and boots the unprefixed
-/// contract, and a v9 runtime treats a push with no role query as "the role
-/// already in force stands".
+/// contract (so `functor run vr` refuses to push a role to one), and a v9
+/// runtime treats a push with no role query as "the role already in force
+/// stands".
 pub const DEBUG_PROTOCOL_VERSION: u32 = 9;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -351,9 +352,17 @@ pub fn encode_entry_role_query(role: &crate::functor_lang_producer::EntryRole) -
 /// Decode [`encode_entry_role_query`]'s query string (the part AFTER `?`).
 ///
 /// `Ok(None)` means the push declared no role at all — the runtime keeps the
-/// role it is already running. An unknown query key is ignored (forward
-/// tolerance); a malformed or doubly-declared role is an error, because
-/// silently booting the wrong contract is worse than a 400.
+/// role it is already running.
+///
+/// Everything else about the query is REFUSED rather than interpreted
+/// loosely: an unknown key (so `?moduel=Client` is a 400 instead of a typo
+/// that silently keeps the previous contract), a key declared twice, both
+/// forms at once, and any name the other role carriers would reject — the
+/// validation is literally theirs ([`EntryRole::is_valid_module`] /
+/// [`EntryRole::is_valid_prefix`]), so this seam cannot boot a role
+/// functor.json or the web page would refuse. Silently running the wrong
+/// contract is the failure this query exists to prevent, and it is worse
+/// than a 400.
 pub fn parse_entry_role_query(
     query: &str,
 ) -> Result<Option<crate::functor_lang_producer::EntryRole>, String> {
@@ -365,7 +374,11 @@ pub fn parse_entry_role_query(
         let slot = match key {
             "module" => &mut module,
             "prefix" => &mut prefix,
-            _ => continue,
+            _ => {
+                return Err(format!(
+                    "unknown entry-role key `{key}` — this push declares `module` or `prefix`"
+                ))
+            }
         };
         if slot.is_some() {
             return Err(format!("the push declares `{key}` more than once"));
@@ -377,13 +390,21 @@ pub fn parse_entry_role_query(
         if value.len() > MAX_ENTRY_ROLE_NAME_BYTES {
             return Err(format!("entry {key} is too long"));
         }
-        if let Some(bad) = value
-            .chars()
-            .find(|c| !c.is_ascii_alphanumeric() && *c != '_')
-        {
-            return Err(format!(
-                "entry {key} `{value}` is not an identifier (at `{bad}`)"
-            ));
+        let valid = match key {
+            "module" => EntryRole::is_valid_module(value),
+            _ => EntryRole::is_valid_prefix(value),
+        };
+        if !valid {
+            return Err(match key {
+                "module" => format!(
+                    "entry module `{value}` must be a Capitalized inline module name \
+(it is the block's own name: `module {value} {{ … }}`)"
+                ),
+                _ => format!(
+                    "entry prefix `{value}` must be a valid identifier \
+(it becomes the binding prefix: `{value}Init`, `{value}Tick`, …)"
+                ),
+            });
         }
     }
     match (module, prefix) {
@@ -557,6 +578,22 @@ mod tests {
         assert!(parse_entry_role_query("prefix=a.b").is_err());
         assert!(parse_entry_role_query("module=A&module=B").is_err());
         assert!(parse_entry_role_query(&format!("module={}", "A".repeat(200))).is_err());
+        // The SAME rules the other role carriers apply: a module names a
+        // Capitalized block, a prefix is an identifier. A name one seam
+        // accepts and another refuses is how a role boots the wrong contract.
+        assert!(parse_entry_role_query("module=server").is_err());
+        assert!(parse_entry_role_query("prefix=9server").is_err());
+        // A typo'd key is refused too — treating it as "declared nothing"
+        // would silently keep the previous contract with a 200.
+        assert!(parse_entry_role_query("moduel=Client").is_err());
+        // The SAME rules the other role carriers apply: a module names a
+        // Capitalized block, a prefix is an identifier. A name one seam
+        // accepts and another refuses is how a role boots the wrong contract.
+        assert!(parse_entry_role_query("module=server").is_err());
+        assert!(parse_entry_role_query("prefix=9server").is_err());
+        // A typo'd key is refused too — treating it as "declared nothing"
+        // would silently keep the previous contract with a 200.
+        assert!(parse_entry_role_query("moduel=Client").is_err());
         // Both declared but only one non-empty is unambiguous, not a conflict.
         assert_eq!(
             parse_entry_role_query("module=Server&prefix="),

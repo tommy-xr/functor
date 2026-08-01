@@ -159,7 +159,8 @@ pub trait GameProducer {
 
     /// Adopt the same-file entry ROLE a project push declared, returning the
     /// role it replaced so a rejected push can put it back (see
-    /// [`push_with_role`], which both shells route their project pushes
+    /// [`load_with_role`] / [`reload_with_role`], which both shells route their
+    /// project pushes
     /// through). `None` — the default — is the honest answer for a producer
     /// with no role concept: the push's declaration is inapplicable, not
     /// merely equal to what was already there.
@@ -174,6 +175,13 @@ pub trait GameProducer {
         &mut self,
         _role: crate::functor_lang_producer::EntryRole,
     ) -> Option<crate::functor_lang_producer::EntryRole> {
+        None
+    }
+
+    /// The same-file entry role this producer is CURRENTLY running, if it has
+    /// the concept. `reload_with_role` reads it to refuse a role change on the
+    /// model-preserving push.
+    fn entry_role(&self) -> Option<crate::functor_lang_producer::EntryRole> {
         None
     }
 
@@ -476,19 +484,76 @@ pub trait GameProducer {
     fn quit(&mut self);
 }
 
-/// Perform a project push under the same-file entry role that push DECLARED.
+/// `POST /load-project` under the same-file entry role that push DECLARED —
+/// a NEW game, so it may name any role.
 ///
 /// `role` is `None` when the push declared none (an older CLI, `functor push`,
 /// the MCP tools): the role already in force stands. A rejected push restores
 /// the previous role, so the live program and the role that produced it stay
 /// in agreement — the next role-less push still runs the role in force rather
 /// than a role the runtime never managed to load.
-pub fn push_with_role(
+pub fn load_with_role(
     game: &mut dyn GameProducer,
     role: Option<crate::functor_lang_producer::EntryRole>,
     load: impl FnOnce(&mut dyn GameProducer) -> Result<String, String>,
 ) -> Result<String, String> {
-    let previous = role.and_then(|role| game.set_entry_role(role));
+    with_role(game, role, load)
+}
+
+/// `POST /reload-project` under the declared role — the model-PRESERVING
+/// push, so it may only re-declare the role already running.
+///
+/// Adopting a different role here would hand the old role's model to the new
+/// role's `tick`, which is a different game wearing the previous one's state.
+/// That is a `/load-project`, and the error says so.
+pub fn reload_with_role(
+    game: &mut dyn GameProducer,
+    role: Option<crate::functor_lang_producer::EntryRole>,
+    reload: impl FnOnce(&mut dyn GameProducer) -> Result<String, String>,
+) -> Result<String, String> {
+    if let Some(role) = &role {
+        if let Some(current) = game.entry_role() {
+            if &current != role {
+                return Err(format!(
+                    "this push declares {}, but the running program is {} — a role change \
+starts a different game, so push it to /load-project (its model comes from that role's `init`)",
+                    describe_role(role),
+                    describe_role(&current)
+                ));
+            }
+        }
+    }
+    with_role(game, role, reload)
+}
+
+fn describe_role(role: &crate::functor_lang_producer::EntryRole) -> String {
+    use crate::functor_lang_producer::EntryRole;
+    match role {
+        EntryRole::Module(name) => format!("entry module `{name}`"),
+        EntryRole::Prefix(prefix) if prefix.is_empty() => "the unprefixed contract".to_string(),
+        EntryRole::Prefix(prefix) => format!("entry prefix `{prefix}`"),
+    }
+}
+
+fn with_role(
+    game: &mut dyn GameProducer,
+    role: Option<crate::functor_lang_producer::EntryRole>,
+    load: impl FnOnce(&mut dyn GameProducer) -> Result<String, String>,
+) -> Result<String, String> {
+    let previous = match role {
+        None => None,
+        Some(role) => match game.set_entry_role(role) {
+            Some(previous) => Some(previous),
+            // A producer with no role concept cannot honor the declaration.
+            // Refusing beats loading SOMETHING under the wrong contract.
+            None => {
+                return Err(
+                    "this producer cannot boot a same-file entry role (not an .fun game)"
+                        .to_string(),
+                )
+            }
+        },
+    };
     let result = load(game);
     if result.is_err() {
         if let Some(previous) = previous {
