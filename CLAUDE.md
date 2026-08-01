@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Functor is a functional toolkit for building 3D games in **Functor Lang** — Functor's own interpreted,
+Functor is a functional toolkit for building games in **Functor Lang** — Functor's own interpreted,
 F#-inspired game-logic language (roadmap and design: `docs/functor-lang.md`; syntax/semantics source of
 truth: the **`functor-lang` skill**, `.claude/skills/functor-lang/`). You write a game as a `.fun`
 file. There is **no transpile or compile step for game logic**: the Rust runtime *interprets* the

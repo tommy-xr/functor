@@ -437,6 +437,46 @@ pick and walk *forward* through the picks (re-stepping only between consecutive
 picks) instead of seeking each independently — deliberately not done here, since it
 trades real complexity for a cost the cache already hides.
 
+### The bar's grammar, and what a host page may say through it
+
+The bar reads left to right as **transport, then ways to look**. Left of the rail
+are the controls that move time (⏸ and ⏭); right of it are the two that change
+how you see the frame time landed on — 📷 (the debug camera) and 🔮
+(extrapolation). All three bars over the seam order it that way — the web
+scrubber, the native egui one, and the sandbox's own chrono bar — so every
+surface teaches the same layout.
+
+Two affordances answer moments the bar previously left silent:
+
+- **Paused input says so.** Pressing a game key against a paused clock used to do
+  nothing at all, which reads as a broken page rather than a stopped one. The web
+  bar raises a transient notice — *"Paused — ⏸ resume · 🔮 preview"* — naming the
+  two controls that *do* respond. It is a scrubber-level `keydown` listener, not a
+  runtime change, and it mirrors the host page's own delivery rule: a key counts
+  only when it would have reached the game, so the bar's own chrome (arrow nudges
+  on a handle, Enter on a button), focused text fields, the webview overlay, and
+  shell-owned debug-camera navigation raise nothing. A pause that began under
+  300 ms ago is silent too, so a host staging a moment programmatically doesn't
+  flash it.
+- **A host may point at 🔮 once.** `__scrub.setAttention({ extrapolate: true })`
+  breathes a soft glow on the button (a static ring under
+  `prefers-reduced-motion`). It retires permanently the first time 🔮 is used —
+  an invitation, not a nag. The landing hero enables it at exactly one moment:
+  when its staged pre-jump frame is parked and waiting for that click.
+
+**Reset is a host action, not a scrubber feature.** `__scrub.setReset(handler)`
+swaps ⏭ for ↺ and calls the handler; passing `null` restores ⏭. The scrubber
+owns the button, never the meaning of "reset" — on the landing hero the handler
+re-parks *that* demo's staged anchor (pause, then seek), which is knowledge only
+the host has. It re-seeks the timeline and never touches the visitor's edits, so
+↺ works the same over an edited or a broken program. The recorded ring is
+bounded, so after a long resumed run the anchor is simply gone and `seek` would
+clamp silently onto an arbitrary late frame; the hero checks the recorded range
+first and re-records the jump when the anchor has aged out. The click latches
+while that is in flight, since a second pause toggle would leave the demo
+running. The sandbox and IDE pass no
+handler and keep ⏭ unchanged.
+
 ## Deferred follow-ups: keep and reconstruct the old future
 
 Today's stripe after Resume has a specific meaning: the selected frame became a

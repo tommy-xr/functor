@@ -265,7 +265,6 @@ export function initMultiplayerPanes({
   chrono.className = "mp-chrono";
   chrono.innerHTML = `
     <button class="mp-sbtn" id="mp-pause" title="Pause / resume every client">⏸</button>
-    <button class="mp-sbtn" id="mp-camera" title="Open the focused debug camera" hidden>📷</button>
     <button class="mp-sbtn" id="mp-step" title="Step every client one frame">⏭</button>
     <span class="mp-rail" id="mp-rail" title="Drag to seek every client">
       <span class="mp-track"></span>
@@ -285,6 +284,9 @@ export function initMultiplayerPanes({
       <span class="mp-evt-tip" id="mp-evt-tip" role="status"></span>
       <span class="mp-rail-label"><b>#f</b> <span id="mp-frame">—</span></span>
     </span>
+    <!-- Right of the rail: the two ways to LOOK at the parked frame — the
+         scrubber's own grammar, so both bars read the same. -->
+    <button class="mp-sbtn" id="mp-camera" title="Open the focused debug camera" hidden>📷</button>
     <button class="mp-sbtn" id="mp-extrap" title="Extrapolate: speculatively simulate forward from the parked frame">🔮</button>
     <span class="mp-viewseg" role="group" aria-label="Pane layout">
       <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every pane in one row (f cycles)">⊞ tiled</button>

@@ -350,7 +350,91 @@ const playerFrame = (page) => {
     JSON.stringify(staged)
   );
 
+  // The bar's grammar: transport on the left of the rail, ways to LOOK at the
+  // parked frame on its right — 📷 immediately before 🔮. The hero also trades
+  // ⏭ (which reads as fast-forward here) for ↺, its re-park control.
+  const bar = await heroPlayer.evaluate(() => {
+    const camera = document.getElementById("scrub-camera");
+    const step = document.getElementById("scrub-step");
+    const reset = document.getElementById("scrub-reset");
+    return {
+      afterCamera: camera.nextElementSibling?.id,
+      cameraHidden: camera.hidden,
+      stepHidden: step.hidden,
+      resetHidden: reset.hidden,
+      resetGlyph: reset.textContent,
+      attention: document
+        .getElementById("scrub-extrapolate")
+        .classList.contains("attention"),
+    };
+  });
+  check(
+    "scrubber puts the debug camera immediately left of extrapolation",
+    !bar.cameraHidden && bar.afterCamera === "scrub-extrapolate",
+    JSON.stringify(bar)
+  );
+  check(
+    "hero bar offers ↺ reset instead of ⏭ step",
+    bar.stepHidden && !bar.resetHidden && bar.resetGlyph === "↺",
+    JSON.stringify(bar)
+  );
+  check("staged hero pulses attention on 🔮", bar.attention, JSON.stringify(bar));
+
+  // Game input against a paused clock says so instead of doing nothing — but
+  // only for keys that would have reached the game. A nudge on the timeline
+  // handle is chrome, not game input.
+  const pressInPlayer = (code, onPlayhead, repeat = false) =>
+    heroPlayer.evaluate(
+      ([keyCode, chrome, held]) => {
+        const target = chrome ? document.getElementById("scrub-playhead") : document.body;
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", { code: keyCode, bubbles: true, repeat: held })
+        );
+        const raised = document.getElementById("scrub-toast").classList.contains("show");
+        // Release it: the host page delivers held keys to the game, and a
+        // press with no matching release would leave the character running.
+        target.dispatchEvent(new KeyboardEvent("keyup", { code: keyCode, bubbles: true }));
+        return raised;
+      },
+      [code, onPlayhead, repeat]
+    );
+  // Past the staging-silence window: the notice deliberately says nothing for
+  // 300ms after a pause EDGE, so the hero's own programmatic park never flashes
+  // it. Staging finished moments ago, so settle before pressing.
+  await sleep(400);
+  const toastOnChrome = await pressInPlayer("ArrowRight", true);
+  const toastOnGameKey = await pressInPlayer("ArrowRight", false);
+  check(
+    "paused game input raises the scrubber's paused notice",
+    !toastOnChrome && toastOnGameKey,
+    JSON.stringify({ toastOnChrome, toastOnGameKey })
+  );
+  await sleep(2000);
+  check(
+    "the paused notice dismisses itself",
+    !(await heroPlayer.evaluate(() =>
+      document.getElementById("scrub-toast").classList.contains("show")
+    ))
+  );
+  // Auto-repeat is one held press, not a stream: it must not re-arm the notice
+  // (which would pin it open while the key is down). A letter also counts —
+  // the host router delivers every letter and digit, not just WASD/arrows.
+  const toastOnRepeat = await pressInPlayer("KeyQ", false, true);
+  const toastOnLetter = await pressInPlayer("KeyQ", false);
+  check(
+    "the paused notice ignores auto-repeat but covers any game key",
+    !toastOnRepeat && toastOnLetter,
+    JSON.stringify({ toastOnRepeat, toastOnLetter })
+  );
+
   await heroPlayer.evaluate(() => document.getElementById("scrub-extrapolate").click());
+  check(
+    "using 🔮 retires its attention pulse for good",
+    await heroPlayer.evaluate(() => {
+      window.__scrub.setAttention({ extrapolate: true });
+      return !document.getElementById("scrub-extrapolate").classList.contains("attention");
+    })
+  );
   await heroPlayer.waitForFunction(() => window.__scrub.model().preview.enabled, {
     timeout: 3000,
   });
@@ -477,6 +561,77 @@ const playerFrame = (page) => {
     "rejected hero input batches enqueue no partial key edges",
     !beforeRejectedBatch.accepted && afterRejectedBatch === beforeRejectedBatch.inputs,
     JSON.stringify({ beforeRejectedBatch, afterRejectedBatch })
+  );
+
+  // ↺ re-parks the demo after the visitor has scrubbed (and edited) away: it
+  // seeks back to the staged anchor, paused, over the live edited program.
+  const scrubbedAway = await heroPlayer.evaluate(() => {
+    const range = window.__scrub.range();
+    window.__scrub.seek(range[1]);
+    return range[1];
+  });
+  await heroPlayer.waitForFunction(
+    (end) => window.__scrub.frame() === end,
+    scrubbedAway,
+    { timeout: 8000 }
+  );
+  await heroPlayer.evaluate(() => document.getElementById("scrub-reset").click());
+  await heroPlayer
+    .waitForFunction(
+      (anchor) => window.__scrub.paused() && window.__scrub.frame() === anchor,
+      staged.frame,
+      { timeout: 8000 }
+    )
+    .catch(() => {});
+  const afterReset = await heroPlayer.evaluate(() => ({
+    frame: window.__scrub.frame(),
+    paused: window.__scrub.paused(),
+  }));
+  check(
+    "hero ↺ re-parks the staged moment after scrubbing away",
+    afterReset.paused && afterReset.frame === staged.frame,
+    JSON.stringify({ scrubbedAway, staged: staged.frame, afterReset })
+  );
+
+  // The visitor's other path: RESUME, let it run, then ↺. Reset must land
+  // paused two frames before a real takeoff — the staged anchor while it is
+  // still recorded, a freshly re-recorded one once the ring has dropped it.
+  // Either way the demo is parked and ready for 🔮, never on a stray frame.
+  await heroPlayer.evaluate(() => window.__scrub.togglePause());
+  await heroPlayer.waitForFunction(() => !window.__scrub.paused(), { timeout: 8000 });
+  await sleep(2500);
+  await heroPlayer.evaluate(() => document.getElementById("scrub-reset").click());
+  await heroPlayer
+    .waitForFunction(
+      () => {
+        if (!window.__scrub.paused()) return false;
+        const range = window.__scrub.range();
+        const jumps = window.__scrub
+          .events()
+          .filter((event) => event.label === "Up down" && event.frame >= range[0]);
+        return jumps.some((jump) => window.__scrub.frame() === Math.max(0, jump.frame - 2));
+      },
+      null,
+      { timeout: 30000 }
+    )
+    .catch(() => {});
+  const afterRunReset = await heroPlayer.evaluate(() => {
+    const range = Array.from(window.__scrub.range());
+    return {
+      frame: window.__scrub.frame(),
+      paused: window.__scrub.paused(),
+      range,
+      jumps: window.__scrub
+        .events()
+        .filter((event) => event.label === "Up down" && event.frame >= range[0])
+        .map((event) => event.frame),
+    };
+  });
+  check(
+    "hero ↺ re-parks before a recorded takeoff after the demo has run",
+    afterRunReset.paused &&
+      afterRunReset.jumps.some((jump) => afterRunReset.frame === Math.max(0, jump - 2)),
+    JSON.stringify(afterRunReset)
   );
 
   await page.close();
@@ -764,6 +919,18 @@ for (const example of examples) {
     })
   );
   check("chrono bar exposes two keyboard-focusable slider handles", customHandles);
+  // Same grammar as the in-frame scrubber: transport left of the rail, the
+  // two ways to LOOK at the parked frame right of it.
+  const chronoOrder = await page.evaluate(() => {
+    const ids = [...document.querySelectorAll(".mp-chrono > button")].map((b) => b.id);
+    return { ids, afterCamera: document.getElementById("mp-camera").nextElementSibling?.id };
+  });
+  check(
+    "chrono bar orders the debug camera immediately left of extrapolation",
+    chronoOrder.afterCamera === "mp-extrap" &&
+      chronoOrder.ids.indexOf("mp-step") < chronoOrder.ids.indexOf("mp-camera"),
+    JSON.stringify(chronoOrder)
+  );
   const handleColors = await page.evaluate(() => ({
     playhead: getComputedStyle(document.getElementById("mp-playhead")).backgroundColor,
     preview: getComputedStyle(document.getElementById("mp-preview-handle")).backgroundColor,

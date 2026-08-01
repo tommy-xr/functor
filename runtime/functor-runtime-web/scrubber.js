@@ -16,6 +16,7 @@ import {
   functor_lang_scrub_set_preview_config,
   functor_lang_timeline_events,
   functor_lang_timeline_events_gen,
+  functor_lang_ui_wants_keyboard,
   functor_lang_viewer_detached,
   functor_lang_viewer_detached_generation,
   functor_lang_viewer_authored_frustum,
@@ -86,7 +87,7 @@ const STYLE = `
   position: relative; flex: 1; min-width: 80px; height: 30px; cursor: ew-resize;
   touch-action: none; user-select: none;
   /* The handles overhang the rail ends by half their width; reserve that so a
-     fully-out playhead never crowds the step / extrapolate buttons. */
+     fully-out playhead never crowds the buttons flanking the rail. */
   margin: 0 7px;
 }
 #scrub-timeline { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
@@ -161,6 +162,39 @@ const STYLE = `
   border-color: var(--sb-future);
   box-shadow: 0 0 0 1px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.4);
 }
+/* Attention: the host page (the landing hero) points here once, at the moment
+   the demo is staged. A slow breath rather than a blink — it should read as
+   "this is the next thing", not as an alarm. Cleared for good on first use. */
+#scrub-extrapolate.attention {
+  border-color: var(--sb-future);
+  animation: scrub-attention 2s ease-in-out infinite;
+}
+@keyframes scrub-attention {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(232, 88, 184, 0.35), 0 0 0 rgba(232, 88, 184, 0); }
+  50% { box-shadow: 0 0 0 1px var(--sb-future), 0 0 14px 2px rgba(232, 88, 184, 0.45); }
+}
+#scrub-toast {
+  /* Docked under the bar's right edge: the frame label sits centered under the
+     rail and event details hang below the marker, so this corner is free. */
+  position: absolute; z-index: 12; top: calc(100% + 6px); right: 12px;
+  display: none; padding: 5px 9px; border: 1px solid var(--sb-accent);
+  border-radius: 6px; color: var(--sb-text); background: rgba(30, 24, 51, 0.98);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45); font-size: 10px; line-height: 1.3;
+  white-space: nowrap; pointer-events: none;
+}
+#scrub-toast.show { display: block; animation: scrub-toast-in 0.16s ease-out; }
+@keyframes scrub-toast-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* A steady ring carries the same "look here" without motion. */
+  #scrub-extrapolate.attention {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.35);
+  }
+  #scrub-toast.show { animation: none; }
+}
 #scrub-camera.on {
   border-color: var(--sb-accent);
   box-shadow: 0 0 0 1px var(--sb-accent), 0 2px 10px rgba(65, 216, 230, 0.35);
@@ -202,8 +236,8 @@ const STYLE = `
 const HTML = `
   <div id="scrub-main">
     <button id="scrub-pause" title="Pause / resume">⏸</button>
-    <button id="scrub-camera" title="Open the debug camera" hidden>📷</button>
     <button id="scrub-step" title="Step one frame forward">⏭</button>
+    <button id="scrub-reset" title="Reset the demo" hidden>↺</button>
     <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
     <svg id="scrub-timeline" viewBox="0 0 1000 30" preserveAspectRatio="none"
       role="group" aria-label="Timeline event markers">
@@ -235,8 +269,14 @@ const HTML = `
     <span id="scrub-event-detail" role="status"></span>
     <span id="scrub-label"><span id="scrub-count"></span></span>
     </span>
+    <!-- Left of the rail = transport (⏸ ⏭/↺); right of it = ways to LOOK at
+         the frame the transport landed on (📷 the scene, 🔮 its future). -->
+    <button id="scrub-camera" title="Open the debug camera" hidden>📷</button>
     <button id="scrub-extrapolate" title="Extrapolate the game into the future">🔮</button>
   </div>
+  <!-- ▶, not ⏸: the notice only ever shows while paused, and the transport
+       button reads ▶ then. It must name the glyph actually on the bar. -->
+  <span id="scrub-toast" role="status" aria-live="polite">Paused — ▶ resume · 🔮 preview</span>
   <section id="scrub-debug" aria-label="Debug Camera controls">
     <span id="scrub-debug-title">Debug Camera</span>
     <label>View
@@ -298,6 +338,8 @@ export function mountScrubber({ hidden = false } = {}) {
   const pause = $("scrub-pause");
   const camera = $("scrub-camera");
   const step = $("scrub-step");
+  const reset = $("scrub-reset");
+  const toast = $("scrub-toast");
   const label = $("scrub-count");
   const unavailable = $("scrub-unavailable");
   const unavailableAfter = $("scrub-unavailable-after");
@@ -344,6 +386,15 @@ export function mountScrubber({ hidden = false } = {}) {
   let pendingDetachedGeneration = null;
   let pendingPointerLock = false;
   let raf = 0;
+  // Host-supplied "re-park the demo" action. When set, it REPLACES ⏭ with ↺:
+  // the staging knowledge lives with the host (the landing hero), never here.
+  let resetAction = null;
+  // The 🔮 attention pulse is a one-shot invitation: once the button has been
+  // used (or the host withdraws it), it never pulses again for this mount.
+  let attentionDismissed = false;
+  let wasPaused = false;
+  let pausedAt = 0;
+  let toastTimer = 0;
   const markerNodes = new Map();
 
   const dispatch = (action) => {
@@ -871,11 +922,67 @@ export function mountScrubber({ hidden = false } = {}) {
       refused();
     }
   });
+  const dismissAttention = () => {
+    attentionDismissed = true;
+    extrapolate.classList.remove("attention");
+  };
+
   step.addEventListener("click", () => functor_lang_scrub_step());
+  reset.addEventListener("click", () => {
+    if (resetAction) resetAction();
+  });
   extrapolate.addEventListener("click", () => {
+    dismissAttention();
     dispatch({ type: "preview-changed", preview: { enabled: !state.preview.enabled } });
     pushPreview();
   });
+
+  // Game input while the clock is paused does nothing, which reads as a broken
+  // page. Say so, once, next to the two controls that DO respond.
+  //
+  // The hook is the scrubber's own window listener rather than a runtime
+  // change, and it mirrors the host page's own delivery rule: a key only counts
+  // when it would have reached the game. So it skips the bar's own chrome
+  // (arrow nudges on the handles, Enter/Space on a button), any focused text
+  // field or the webview overlay that swallows keys first, modifier chords, and
+  // shell-owned debug-camera navigation. Keys landing on the canvas remain.
+  // The host page's `keyCode(e.code)` surface: every letter, every digit
+  // (top row and numpad), the arrows, Space and Enter. Escape is left out on
+  // purpose — the browser and the shell own it (pointer-lock exit, field
+  // blur), so it is not a key the visitor aimed at the game.
+  const GAME_KEY = /^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|Arrow(Up|Down|Left|Right)|Space|Enter)$/;
+  // The host page's shell-owned debug-camera movement keys.
+  const DEBUG_KEYS = /^Key[WASDQE]$/;
+  const CHROME = "input, textarea, select, button, [contenteditable], #webview";
+  const showPausedToast = () => {
+    toast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove("show"), 1600);
+  };
+  const onPausedGameKey = (event) => {
+    if (!GAME_KEY.test(event.code)) return;
+    // Auto-repeat is dropped by the host's key router too, so a held key is
+    // ONE press — and re-arming the dismiss timer on every repeat would pin
+    // the notice open for as long as the key is down.
+    if (event.repeat) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target instanceof Element && (el.contains(target) || target.closest(CHROME))) return;
+    // A focused in-game text field (Ui.textInput) lives on the CANVAS, so no
+    // DOM check can see it: the keystroke reaches the field, not the paused
+    // clock, and the notice would be a lie.
+    // The debug camera only takes its OWN movement keys; everything else still
+    // falls through to the game, so bailing on any detached state would go
+    // silent exactly where the notice is wanted.
+    if (ownsDetachedInput() && DEBUG_KEYS.test(event.code)) return;
+    const current = view();
+    if (!current || !current.paused) return;
+    // Staging a moment programmatically (the landing hero) pauses and then
+    // keeps working; don't flash a toast at input the visitor didn't send.
+    if (performance.now() - pausedAt < 300) return;
+    showPausedToast();
+  };
+  if (!hidden) window.addEventListener("keydown", onPausedGameKey);
   debugMode.addEventListener("change", () =>
     functor_lang_viewer_set_mode(Number(debugMode.value))
   );
@@ -939,6 +1046,24 @@ export function mountScrubber({ hidden = false } = {}) {
       if (reset) functor_lang_viewer_reset();
     },
     step: () => functor_lang_scrub_step(),
+    // Swap ⏭ for ↺ and route it back to the host. Passing null (or a
+    // non-function) restores the plain step button.
+    setReset: (handler) => {
+      resetAction = typeof handler === "function" ? handler : null;
+      step.hidden = resetAction !== null;
+      reset.hidden = resetAction === null;
+    },
+    // Point the visitor at 🔮 once. Any explicit call with a falsy
+    // `extrapolate` — like the button's own first use — retires the pulse.
+    setAttention: ({ extrapolate: wantAttention } = {}) => {
+      if (wantAttention === undefined) return;
+      if (!wantAttention) {
+        dismissAttention();
+        return;
+      }
+      if (attentionDismissed) return;
+      extrapolate.classList.add("attention");
+    },
     model: () => state,
     view,
     events: () => state.events,
@@ -986,6 +1111,14 @@ export function mountScrubber({ hidden = false } = {}) {
   window.__scrub = seam;
 
   const update = () => {
+    // One read per frame, shared with the snapshot below: it also timestamps
+    // the pause EDGE, which the paused-input toast uses to stay quiet while a
+    // host stages a moment.
+    const pausedNow = functor_lang_scrub_paused();
+    if (pausedNow !== wasPaused) {
+      wasPaused = pausedNow;
+      if (pausedNow) pausedAt = performance.now();
+    }
     const nextDetached = functor_lang_viewer_detached();
     const detachedGeneration = functor_lang_viewer_detached_generation();
     if (
@@ -1037,7 +1170,7 @@ export function mountScrubber({ hidden = false } = {}) {
         frame: functor_lang_scene_frame(),
         lo: range[0],
         hi: range[1],
-        paused: functor_lang_scrub_paused(),
+        paused: pausedNow,
         generation: functor_lang_scene_generation(),
       };
       const snapshotKey =
@@ -1048,8 +1181,7 @@ export function mountScrubber({ hidden = false } = {}) {
         dispatch({ type: "runtime-published", snapshot });
       }
     } else {
-      const paused = functor_lang_scrub_paused();
-      if (paused && state.runtime) {
+      if (pausedNow && state.runtime) {
         if (!hidden) el.style.display = "flex";
         if (state.recordingAvailable) dispatch({ type: "recording-cleared" });
       } else if (!hidden) {
@@ -1064,6 +1196,8 @@ export function mountScrubber({ hidden = false } = {}) {
   return {
     destroy() {
       cancelAnimationFrame(raf);
+      clearTimeout(toastTimer);
+      window.removeEventListener("keydown", onPausedGameKey);
       el.remove();
       document.documentElement.style.removeProperty("--functor-scrubber-h");
       if (window.__scrub === seam) delete window.__scrub;
