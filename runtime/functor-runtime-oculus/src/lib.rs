@@ -758,11 +758,17 @@ tracking); use the desktop runtime's --headless/--debug-port path"
         DebugRequest::ReloadSource(source, response) => {
             let _ = response.send(game.reload_source(&source));
         }
-        DebugRequest::ReloadProject(files, response) => {
-            let _ = response.send(game.reload_project(&files));
+        DebugRequest::ReloadProject(files, role, response) => {
+            let _ = response.send(functor_runtime_common::protocol::push_with_role(
+                game,
+                role,
+                |game| game.reload_project(&files),
+            ));
         }
-        DebugRequest::LoadProject(files, response) => {
-            let result = game.load_project(&files);
+        DebugRequest::LoadProject(files, role, response) => {
+            let result = functor_runtime_common::protocol::push_with_role(game, role, |game| {
+                game.load_project(&files)
+            });
             if result.is_ok() {
                 clock.restart();
                 debug.frame_count = 0;

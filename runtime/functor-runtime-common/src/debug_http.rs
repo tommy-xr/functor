@@ -118,7 +118,9 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path_with_query = parts.next().unwrap_or("");
-    let path = path_with_query.split('?').next().unwrap_or("");
+    let (path, query) = path_with_query
+        .split_once('?')
+        .unwrap_or((path_with_query, ""));
 
     let mut content_length = None;
     let mut origin = None;
@@ -511,10 +513,19 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                         return Some(());
                     }
                 };
+                // The push may DECLARE its same-file entry role in the query
+                // string; no query means the running role stands.
+                let role = match debug_protocol::parse_entry_role_query(query) {
+                    Ok(role) => role,
+                    Err(error) => {
+                        respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                        return Some(());
+                    }
+                };
                 if path == "/load-project" {
-                    DebugRequest::LoadProject(files, resp_tx)
+                    DebugRequest::LoadProject(files, role, resp_tx)
                 } else {
-                    DebugRequest::ReloadProject(files, resp_tx)
+                    DebugRequest::ReloadProject(files, role, resp_tx)
                 }
             } else {
                 let source = match String::from_utf8(body) {
@@ -721,7 +732,8 @@ mod tests {
         let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
 
         match rx.recv().unwrap() {
-            DebugRequest::ReloadProject(files, response) => {
+            DebugRequest::ReloadProject(files, role, response) => {
+                assert_eq!(role, None);
                 assert_eq!(files, vec![("game.fun".into(), "let init = 1".into())]);
                 response.send(Ok("reloaded project".into())).unwrap();
             }
@@ -795,8 +807,9 @@ mod tests {
         let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
 
         match rx.recv().unwrap() {
-            DebugRequest::LoadProject(files, response) => {
+            DebugRequest::LoadProject(files, role, response) => {
                 assert_eq!(files, vec![("game.fun".into(), "let init = 1".into())]);
+                assert_eq!(role, None, "no query = the running role stands");
                 response.send(Ok("loaded project".into())).unwrap();
             }
             _ => panic!("expected new project load request"),
@@ -806,6 +819,68 @@ mod tests {
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("loaded project"));
+    }
+
+    /// A project push may DECLARE its same-file entry role in the query
+    /// string — how a device session (which has no command line) learns which
+    /// contract to boot. A malformed declaration is a 400, not a silently
+    /// wrong contract.
+    #[test]
+    fn a_project_push_carries_the_entry_role_it_declares() {
+        use crate::functor_lang_producer::EntryRole;
+        let push = |query: &str| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let body = r#"[["game.fun","let init = 1"]]"#;
+            let request = format!(
+                "POST /reload-project{query} HTTP/1.1\r\nHost: localhost\r\n\
+Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let client = connect(&listener, request);
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            let role = match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(DebugRequest::ReloadProject(_, role, response)) => {
+                    response.send(Ok("reloaded".into())).unwrap();
+                    Some(role)
+                }
+                Ok(_) => panic!("expected a project reload"),
+                // A rejected query never reaches the runtime loop.
+                Err(_) => None,
+            };
+            server.join().unwrap();
+            (role, client.join().unwrap())
+        };
+
+        let (role, response) = push("?module=Server");
+        assert_eq!(role, Some(Some(EntryRole::Module("Server".into()))));
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+
+        let (role, _) = push("?prefix=server");
+        assert_eq!(role, Some(Some(EntryRole::Prefix("server".into()))));
+
+        // The plain contract declares itself explicitly, so a live role can be
+        // switched back off — unlike silence, which keeps the running role.
+        let (role, _) = push("?prefix=");
+        assert_eq!(role, Some(Some(EntryRole::Prefix(String::new()))));
+
+        let (role, response) = push("?module=Server&prefix=server");
+        assert_eq!(role, None, "a doubly-declared role never loads");
+        assert!(
+            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
+            "{response}"
+        );
+
+        let (role, response) = push("?module=Ser%20ver");
+        assert_eq!(role, None, "a non-identifier role never loads");
+        assert!(
+            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
+            "{response}"
+        );
+
+        // An unknown query key is ignored, not fatal (forward tolerance).
+        let (role, _) = push("?module=Server&futureFlag=1");
+        assert_eq!(role, Some(Some(EntryRole::Module("Server".into()))));
     }
 
     /// A clock command the runtime cannot honor must be a LOUD 409, not a `200

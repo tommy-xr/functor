@@ -157,6 +157,26 @@ pub trait GameProducer {
         Err("this producer does not support project loading (not an .fun game)".to_string())
     }
 
+    /// Adopt the same-file entry ROLE a project push declared, returning the
+    /// role it replaced so a rejected push can put it back (see
+    /// [`push_with_role`], which both shells route their project pushes
+    /// through). `None` — the default — is the honest answer for a producer
+    /// with no role concept: the push's declaration is inapplicable, not
+    /// merely equal to what was already there.
+    ///
+    /// A wire-driven session (the Quest APK under `functor run vr`) learns its
+    /// role from the push rather than a command line, and a re-push may change
+    /// it. Adopting it here, before the load, keeps the producers' invariant
+    /// that the role is re-RESOLVED against each pushed program: an edit that
+    /// renames or deletes the `module Server { … }` block fails loudly naming
+    /// the block, and the old program keeps running.
+    fn set_entry_role(
+        &mut self,
+        _role: crate::functor_lang_producer::EntryRole,
+    ) -> Option<crate::functor_lang_producer::EntryRole> {
+        None
+    }
+
     /// The `.fun` sources the program is CURRENTLY running — `(path, source)`
     /// pairs, the entry first, project files only (no bundled prelude
     /// modules). The read half of the push routes above, serving
@@ -454,6 +474,28 @@ pub trait GameProducer {
     fn preload_push_settled(&mut self, _token: u64) {}
 
     fn quit(&mut self);
+}
+
+/// Perform a project push under the same-file entry role that push DECLARED.
+///
+/// `role` is `None` when the push declared none (an older CLI, `functor push`,
+/// the MCP tools): the role already in force stands. A rejected push restores
+/// the previous role, so the live program and the role that produced it stay
+/// in agreement — the next role-less push still runs the role in force rather
+/// than a role the runtime never managed to load.
+pub fn push_with_role(
+    game: &mut dyn GameProducer,
+    role: Option<crate::functor_lang_producer::EntryRole>,
+    load: impl FnOnce(&mut dyn GameProducer) -> Result<String, String>,
+) -> Result<String, String> {
+    let previous = role.and_then(|role| game.set_entry_role(role));
+    let result = load(game);
+    if result.is_err() {
+        if let Some(previous) = previous {
+            game.set_entry_role(previous);
+        }
+    }
+    result
 }
 
 #[cfg(test)]

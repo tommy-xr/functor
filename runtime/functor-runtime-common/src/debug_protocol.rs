@@ -45,7 +45,14 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 8 added `POST /time {"type":"cancel"}` so an external driver can abort a
 /// queued batch without leaving clock work behind.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 8;
+///
+/// 9 lets a project push DECLARE its same-file entry role in the query string
+/// of `POST /load-project` / `POST /reload-project` (`?module=Server` or
+/// `?prefix=server`; see [`encode_entry_role_query`]). Tolerant in both
+/// directions: a pre-v9 runtime ignores the query and boots the unprefixed
+/// contract, and a v9 runtime treats a push with no role query as "the role
+/// already in force stands".
+pub const DEBUG_PROTOCOL_VERSION: u32 = 9;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -129,12 +136,12 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/reload-project",
-        description: "swap the whole project from a JSON array of [path, source] pairs (entry first), model preserved — 400 with the load error on a broken push",
+        description: "swap the whole project from a JSON array of [path, source] pairs (entry first), model preserved — 400 with the load error on a broken push; ?module=Server / ?prefix=server declares the same-file entry role",
     },
     DebugRoute {
         method: "POST",
         path: "/load-project",
-        description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push",
+        description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push; ?module=Server / ?prefix=server declares the same-file entry role",
     },
     DebugRoute {
         method: "GET",
@@ -317,6 +324,80 @@ pub enum CaptureError {
 /// A whole-project push: `(path, source)` pairs with the entry first.
 pub type ProjectSources = Vec<(String, String)>;
 
+/// Maximum length of a role name in the project-push query string. Role names
+/// are Functor Lang identifiers; this only exists so a hostile query cannot
+/// make the runtime allocate.
+const MAX_ENTRY_ROLE_NAME_BYTES: usize = 128;
+
+/// Encode a project push's same-file entry ROLE as the query string of
+/// `POST /load-project` / `POST /reload-project` — `"?module=Server"` or
+/// `"?prefix=server"`, the two forms every other role carrier transports
+/// ([`EntryRole::from_parts`](crate::functor_lang_producer::EntryRole::from_parts)).
+///
+/// The role is a *declaration*, so the plain contract encodes explicitly as
+/// `"?prefix="`: a pusher that always declares can switch a live session back
+/// to the unprefixed contract, while a pusher that declares nothing (an older
+/// CLI, `functor push`, the MCP tools) sends no query and leaves the running
+/// role alone. Role names are identifiers, so nothing here needs escaping —
+/// [`parse_entry_role_query`] rejects anything else rather than mangling it.
+pub fn encode_entry_role_query(role: &crate::functor_lang_producer::EntryRole) -> String {
+    use crate::functor_lang_producer::EntryRole;
+    match role {
+        EntryRole::Module(name) => format!("?module={name}"),
+        EntryRole::Prefix(prefix) => format!("?prefix={prefix}"),
+    }
+}
+
+/// Decode [`encode_entry_role_query`]'s query string (the part AFTER `?`).
+///
+/// `Ok(None)` means the push declared no role at all — the runtime keeps the
+/// role it is already running. An unknown query key is ignored (forward
+/// tolerance); a malformed or doubly-declared role is an error, because
+/// silently booting the wrong contract is worse than a 400.
+pub fn parse_entry_role_query(
+    query: &str,
+) -> Result<Option<crate::functor_lang_producer::EntryRole>, String> {
+    use crate::functor_lang_producer::EntryRole;
+    let mut module: Option<&str> = None;
+    let mut prefix: Option<&str> = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let slot = match key {
+            "module" => &mut module,
+            "prefix" => &mut prefix,
+            _ => continue,
+        };
+        if slot.is_some() {
+            return Err(format!("the push declares `{key}` more than once"));
+        }
+        *slot = Some(value);
+    }
+    for (key, value) in [("module", module), ("prefix", prefix)] {
+        let Some(value) = value else { continue };
+        if value.len() > MAX_ENTRY_ROLE_NAME_BYTES {
+            return Err(format!("entry {key} is too long"));
+        }
+        if let Some(bad) = value
+            .chars()
+            .find(|c| !c.is_ascii_alphanumeric() && *c != '_')
+        {
+            return Err(format!(
+                "entry {key} `{value}` is not an identifier (at `{bad}`)"
+            ));
+        }
+    }
+    match (module, prefix) {
+        (None, None) => Ok(None),
+        (Some(module), Some(prefix)) if !module.is_empty() && !prefix.is_empty() => Err(format!(
+            "the push declares both an entry module `{module}` and an entry prefix `{prefix}`"
+        )),
+        (module, prefix) => Ok(Some(EntryRole::from_parts(
+            module.unwrap_or(""),
+            prefix.unwrap_or(""),
+        ))),
+    }
+}
+
 /// One project-relative asset uploaded by `POST /reload-asset`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectAsset {
@@ -412,8 +493,18 @@ pub enum DebugRequest {
     /// compiled dylib) — reported as 501 rather than an empty project.
     Project(Sender<Option<ProjectSources>>),
     ReloadSource(String, Sender<Result<String, String>>),
-    ReloadProject(ProjectSources, Sender<Result<String, String>>),
-    LoadProject(ProjectSources, Sender<Result<String, String>>),
+    /// The pushed file set plus the same-file entry role the push DECLARED
+    /// (`None` = it declared none, so the running role stands).
+    ReloadProject(
+        ProjectSources,
+        Option<crate::functor_lang_producer::EntryRole>,
+        Sender<Result<String, String>>,
+    ),
+    LoadProject(
+        ProjectSources,
+        Option<crate::functor_lang_producer::EntryRole>,
+        Sender<Result<String, String>>,
+    ),
     ReloadAsset(ProjectAsset, Sender<Result<String, String>>),
     SyncAssets(ProjectAssetPaths, Sender<Result<String, String>>),
     Rewind(u64, Sender<Result<String, String>>),
@@ -427,6 +518,53 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::*;
+
+    /// The role a project push declares round-trips through its query string,
+    /// and — the point of encoding it at all — the two forms stay DISTINCT
+    /// while an absent declaration stays distinguishable from the plain
+    /// contract's explicit one.
+    #[test]
+    fn a_pushed_entry_role_round_trips_through_the_query_string() {
+        use crate::functor_lang_producer::EntryRole;
+        for role in [
+            EntryRole::Module("Server".to_string()),
+            EntryRole::Prefix("server".to_string()),
+            EntryRole::Prefix(String::new()),
+        ] {
+            let query = encode_entry_role_query(&role);
+            assert_eq!(
+                parse_entry_role_query(query.trim_start_matches('?')),
+                Ok(Some(role.clone())),
+                "{query}"
+            );
+        }
+        // Declaring nothing is NOT declaring the plain contract: a runtime
+        // that hears nothing keeps the role it is already running.
+        assert_eq!(parse_entry_role_query(""), Ok(None));
+        assert_eq!(
+            parse_entry_role_query("prefix="),
+            Ok(Some(EntryRole::Prefix(String::new())))
+        );
+    }
+
+    /// A role that cannot be honored exactly must be REFUSED, never coerced:
+    /// silently booting the wrong contract is the failure this whole query
+    /// exists to prevent.
+    #[test]
+    fn a_malformed_pushed_role_is_refused_rather_than_coerced() {
+        assert!(parse_entry_role_query("module=Server&prefix=server").is_err());
+        assert!(parse_entry_role_query("module=My%20Server").is_err());
+        assert!(parse_entry_role_query("prefix=a.b").is_err());
+        assert!(parse_entry_role_query("module=A&module=B").is_err());
+        assert!(parse_entry_role_query(&format!("module={}", "A".repeat(200))).is_err());
+        // Both declared but only one non-empty is unambiguous, not a conflict.
+        assert_eq!(
+            parse_entry_role_query("module=Server&prefix="),
+            Ok(Some(crate::functor_lang_producer::EntryRole::Module(
+                "Server".to_string()
+            )))
+        );
+    }
 
     #[test]
     fn runtime_state_json_preserves_desktop_shape_and_reports_views() {
@@ -683,6 +821,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 8);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 9);
     }
 }

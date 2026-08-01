@@ -625,32 +625,6 @@ impl FunctorLangProject {
         Ok(())
     }
 
-    /// Can this shell boot this role? Native takes either same-file form
-    /// (`--entry-prefix` / `--entry-module`) and wasm bakes either into the
-    /// served page's boot config, but the vr device push path still boots the
-    /// APK's embedded producer with the unprefixed contract — so running a
-    /// role there would silently play the WRONG role. The test names the
-    /// shells that DO support the forms, so a future environment is refused
-    /// until it is taught them. The config refuses a role declaring both
-    /// forms, so at most one is ever named here.
-    fn check_role_supported(&self, environment: &Environment) -> Result<(), Error> {
-        use functor_runtime_common::functor_lang_producer::EntryRole;
-        match environment {
-            Environment::Native | Environment::Wasm => return Ok(()),
-            Environment::Vr => {}
-        }
-        let shell = environment.as_str();
-        let (form, name) = match self.entry_role() {
-            EntryRole::Prefix(prefix) if prefix.is_empty() => return Ok(()),
-            EntryRole::Prefix(prefix) => ("prefix", prefix),
-            EntryRole::Module(module) => ("module", module),
-        };
-        Err(Error::other(format!(
-            "entry {form} `{name}` is not supported on {shell} yet — run this role with \
-`run native` or `run wasm` (the vr shell loads the unprefixed contract)"
-        )))
-    }
-
     /// Spawn the runner on the entry (`run` and `develop` — hot reload is
     /// built into the producer, so there is no separate watch loop).
     pub async fn run(
@@ -661,7 +635,6 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
-        self.check_role_supported(environment)?;
         if matches!(environment, Environment::Vr) {
             if !runner_args.is_empty() {
                 emit(Event::Warning {
@@ -822,6 +795,10 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
     async fn run_vr(&self, working_directory: &str) -> Result<(), Error> {
         let entry_path = self.entry_path(working_directory)?;
         let project_root = Path::new(working_directory);
+        // The device has no command line: every push DECLARES this entry's
+        // same-file role, so the APK's producer resolves the same contract
+        // `run native` and `run wasm` do (and re-resolves it on each re-push).
+        let role = self.entry_role();
         let serial = adb_device().await?;
         adb_require_runtime(&serial).await?;
         // `am start` on the running singleTask activity is a no-op resume —
@@ -874,7 +851,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         let files = read_project_json(&entry_path)?;
         let mut attempted = None;
         for _ in 0..20 {
-            match post_load_project(&addr, &files) {
+            match post_load_project(&addr, &files, &role) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = Some(files.clone());
@@ -960,7 +937,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             if current == attempted {
                 continue;
             }
-            match post_reload_project(&addr, &current) {
+            match post_reload_project(&addr, &current, &role) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
@@ -1528,15 +1505,34 @@ fn read_project_json(entry_path: &Path) -> Result<String, Error> {
 }
 
 /// POST the whole project file set (the `read_project_json` body) to the
-/// runtime's `/reload-project`.
-fn post_reload_project(addr: &str, files_json: &str) -> Result<(u16, String), Error> {
-    http_post(addr, "/reload-project", "application/json", files_json)
+/// runtime's `/reload-project`, DECLARING this entry's same-file role in the
+/// query string. A device session takes its role from the push (no command
+/// line reaches it), and every push re-declares it, so the plain contract
+/// travels as an explicit empty prefix rather than as silence.
+fn post_reload_project(
+    addr: &str,
+    files_json: &str,
+    role: &functor_runtime_common::functor_lang_producer::EntryRole,
+) -> Result<(u16, String), Error> {
+    let path = format!(
+        "/reload-project{}",
+        functor_runtime_common::debug_protocol::encode_entry_role_query(role)
+    );
+    http_post(addr, &path, "application/json", files_json)
 }
 
 /// Load the first pushed project as a new game, taking its model from `init`.
 /// Later watch-loop edits use `/reload-project` and preserve that model.
-fn post_load_project(addr: &str, files_json: &str) -> Result<(u16, String), Error> {
-    http_post(addr, "/load-project", "application/json", files_json)
+fn post_load_project(
+    addr: &str,
+    files_json: &str,
+    role: &functor_runtime_common::functor_lang_producer::EntryRole,
+) -> Result<(u16, String), Error> {
+    let path = format!(
+        "/load-project{}",
+        functor_runtime_common::debug_protocol::encode_entry_role_query(role)
+    );
+    http_post(addr, &path, "application/json", files_json)
 }
 
 /// Minimal HTTP POST over std::net — one dependency-free request to the
@@ -1957,12 +1953,17 @@ mod tests {
         assert!(err.to_string().contains("valid identifier"), "{err}");
     }
 
-    /// The shells that can boot a same-file ROLE. Both forms run on native
-    /// and wasm (the page's boot config carries the module now); vr still
-    /// boots the unprefixed contract, so a role is refused there with a
-    /// teaching error naming the form.
+    /// Every shell boots either same-file ROLE now. Native and wasm take it
+    /// from a command line / the page's boot config; vr has neither, so the
+    /// device push DECLARES it — this pins the query string `run vr` appends
+    /// to `/load-project` and `/reload-project` for each form, including the
+    /// plain contract's explicit empty prefix (silence would mean "keep the
+    /// role already in force", which cannot switch a live session back).
     #[test]
-    fn a_role_runs_on_native_and_wasm_but_not_vr() {
+    fn every_role_form_declares_itself_on_the_vr_push() {
+        use functor_runtime_common::debug_protocol::{
+            encode_entry_role_query, parse_entry_role_query,
+        };
         let config = named_json(&[
             (
                 "client",
@@ -1974,23 +1975,21 @@ mod tests {
             ),
             ("plain", serde_json::json!("game.fun")),
         ]);
-        for role in ["client", "legacy"] {
-            let project = config.select(Some(role)).unwrap();
-            for env in [Environment::Native, Environment::Wasm] {
-                assert!(
-                    project.check_role_supported(&env).is_ok(),
-                    "`{role}` must boot on {env:?}"
-                );
-            }
-            let err = project
-                .check_role_supported(&Environment::Vr)
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains("not supported on vr yet"), "{err}");
+        for (role, expected) in [
+            ("client", "?module=Client"),
+            ("legacy", "?prefix=legacy"),
+            ("plain", "?prefix="),
+        ] {
+            let declared = config.select(Some(role)).unwrap().entry_role();
+            let query = encode_entry_role_query(&declared);
+            assert_eq!(query, expected, "`{role}` push query");
+            // What the device parses back is the role the CLI resolved.
+            assert_eq!(
+                parse_entry_role_query(query.trim_start_matches('?')).unwrap(),
+                Some(declared),
+                "`{role}` round trip"
+            );
         }
-        // A role with neither form is the plain contract — every shell boots it.
-        let plain = config.select(Some("plain")).unwrap();
-        assert!(plain.check_role_supported(&Environment::Vr).is_ok());
     }
 
     #[test]

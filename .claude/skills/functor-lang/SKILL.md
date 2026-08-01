@@ -250,13 +250,14 @@ shared bare above them, so one buffer hot-reloads both roles atomically (its
 sandbox client and server panes boot the same source at `?module=Client` /
 `?module=Server`). `examples/mp` is the roles-as-FILES reference — the shape
 to reach for once roles outgrow one buffer or want independent deploy units.
-**Both forms run on native and
-wasm**: `run wasm`/`build wasm` bake the
+**Both forms run on every shell.**
+`run wasm`/`build wasm` bake the
 role into the served/exported page's boot config (`window.__functorLangEntryModule`
 / `…EntryPrefix`; the site player takes `?module=<Ident>` or `?prefix=<ident>`,
-one of the two). Only **vr** still refuses a role — its device push path boots
-the APK's embedded producer with the unprefixed contract. `entry` and `entries`
-together are refused.
+one of the two). On **vr** the role rides each device push as a query string
+(`POST /load-project?module=Server` / `?prefix=server`), so the APK's embedded
+producer re-resolves it on every re-push exactly as native re-resolves it on
+every save. `entry` and `entries` together are refused.
 
 ```functor
 // utils.fun                                  // → module Utils
