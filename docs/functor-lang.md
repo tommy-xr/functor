@@ -707,18 +707,35 @@ snapshots — no GPU, fully agent-verifiable.
       naming the role, the file, and the blocks it does declare — re-resolved
       on every hot reload, so deleting the block fails loudly and keeps the
       old program instead of reporting every binding missing. Module roles
-      are native-only for now (`run wasm`/`build wasm`/`run vr` refuse them,
-      as vr already refuses prefixes) because those shells boot the
-      unprefixed contract. `examples/orbs` is the same-file reference: its
-      `client` role is the file's plain top-level contract (so the sandbox
-      and the docs teach the same `init`/`tick`/`draw`) and its `server`
-      role stays on the PREFIX form, because the sandbox runs that role in
-      a browser pane. *Verify:* config-shape tests
+      landed native-only here; Part 9 lifted that to wasm. `examples/orbs`
+      is the same-file reference: its `client` role is the file's plain
+      top-level contract (so the sandbox and the docs teach the same
+      `init`/`tick`/`draw`) and its `server` role stays on the PREFIX form,
+      the one its sandbox server pane shipped with. *Verify:* config-shape tests
       (module form, module+prefix refusal, non-string/non-Capitalized names,
       unknown keys), contract tests naming `Server.tick`, an unknown-block
       error test, a desktop load + hot-reload test for a module role, the
       example sweep over both orbs roles, and headless captures of both
       roles.
+      **Part 9 — module roles on the embedded/wasm producer — done:** the
+      embedded producer (`functor_lang_game_embedded.rs`, the web and device
+      shells) takes the same `EntryRole` the desktop one does and re-resolves
+      it on every (re)load, so a module role hot-reloads through the push
+      seam exactly as it does natively. The web runtime reads the role from
+      the page's boot config — `window.__functorLangEntryModule` beside the
+      existing `…EntryPrefix`, mutually exclusive — which `run wasm` and
+      `build wasm` bake into the served/exported index page, and the site
+      player takes as `?module=<Ident>` (capitalized identifier; anything
+      else warns and boots the unprefixed contract). `run wasm` and
+      `build wasm` no longer refuse a module role; **vr still does**, because
+      its device push path boots the APK's embedded producer with the
+      unprefixed contract and teaching it the form needs a protocol +
+      on-device change. *Verify:* embedded-producer tests (a module role's
+      contract is the block's, a push re-resolves it with the model
+      preserved, a push deleting the block keeps the old program, an unknown
+      block lists the file's blocks), CLI tests for the lifted guards and the
+      page's baked boot config, and a headless `run wasm` browser smoke of a
+      `module Server` role.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values

@@ -31,8 +31,8 @@ use crate::functor_lang_prelude::{
     EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
-    journal_arm, journal_swap, validate_contract, EntryNames, FrameCtx, JournalEntry, Reporter,
-    SpanSource,
+    journal_arm, journal_swap, validate_contract, EntryNames, EntryRole, FrameCtx, JournalEntry,
+    Reporter, SpanSource,
 };
 use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
@@ -85,8 +85,11 @@ impl ProducerPlatform for NativePlatform {
 
 pub struct FunctorLangEmbeddedGame {
     path: String,
-    /// The role's resolved entry-point names (same-file entries): built once
-    /// from the role's prefix at create time and reused by every reload —
+    /// How the role names its entry bindings (same-file entries): a binding
+    /// prefix or an inline `module` block. Kept because an inline-module role
+    /// re-resolves against every (re)loaded project.
+    role: EntryRole,
+    /// The role's resolved entry-point names, from the CURRENT program —
     /// every canonical lookup and contract error goes through it.
     names: EntryNames,
     /// The project's source files (entry FIRST, then siblings) as
@@ -208,6 +211,9 @@ pub struct FunctorLangEmbeddedGame {
 /// A successfully loaded, contract-validated game module (the desktop
 /// producer's `Loaded`, verbatim minus the file-shaped fields).
 struct Loaded {
+    /// The role's binding names, resolved against THIS load (an inline-module
+    /// role's canonical path comes from the linked project).
+    names: EntryNames,
     sources: SourceMap,
     module: functor_lang::ir::Module,
     session: Session,
@@ -230,7 +236,7 @@ struct Loaded {
 /// is every project file as `(path, source)`, the ENTRY first, then siblings
 /// (`file = module`, so `pieces.fun` is module `Pieces`). Errors come back as
 /// fully rendered strings (`path:line:col: message`).
-fn load_source(sources: &[(String, String)], names: &EntryNames) -> Result<Loaded, String> {
+fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded, String> {
     let path = sources
         .first()
         .map(|(p, _)| p.clone())
@@ -246,6 +252,10 @@ fn load_source(sources: &[(String, String)], names: &EntryNames) -> Result<Loade
         &functor_prelude::bundled_modules(),
     )
     .map_err(|e| format!("cannot load {}", e.render()))?;
+    // An inline-module role resolves against the linked project, so a reload
+    // that renamed or deleted the block fails here — naming the block — rather
+    // than reporting its every entry binding as missing.
+    let names = role.resolve(&path, &project)?;
     let module = project.module;
     let source_map = project.sources;
     // Type diagnostics are advisory in the dev loop: warn, keep going
@@ -266,8 +276,9 @@ fn load_source(sources: &[(String, String)], names: &EntryNames) -> Result<Loade
     // arity, optional hooks well-shaped) is shared with the desktop producer
     // and the CLI's build gate — errors name the ROLE'S resolved bindings
     // (`serverTick`, not `tick`) via `names`.
-    let contract = validate_contract(&path, &session, names)?;
+    let contract = validate_contract(&path, &session, &names)?;
     Ok(Loaded {
+        names,
         sources: source_map,
         module,
         session,
@@ -293,27 +304,27 @@ impl FunctorLangEmbeddedGame {
         sources: Vec<(String, String)>,
         platform: Box<dyn ProducerPlatform>,
     ) -> Result<FunctorLangEmbeddedGame, String> {
-        Self::create_with_prefix(sources, "", platform)
+        Self::create_for_role(sources, EntryRole::Prefix(String::new()), platform)
     }
 
-    /// [`Self::create`] for a PREFIXED role (same-file entries): every
-    /// canonical entry binding resolves through `prefix` as camelCase
-    /// (`"server"` → `serverInit`/`serverTick`/…). An empty prefix is the
-    /// classic unprefixed contract.
-    pub fn create_with_prefix(
+    /// [`Self::create`] for one same-file ROLE: either a binding prefix
+    /// (`"server"` → `serverInit`/`serverTick`/…, empty = the classic
+    /// unprefixed contract) or an inline `module Server { … }` block, whose
+    /// members ARE the role's contract (`Server.init`/`Server.tick`/…). The
+    /// role is kept, so every (re)load re-resolves it against that program.
+    pub fn create_for_role(
         sources: Vec<(String, String)>,
-        prefix: &str,
+        role: EntryRole,
         platform: Box<dyn ProducerPlatform>,
     ) -> Result<FunctorLangEmbeddedGame, String> {
         // Install the shell's diagnostics sinks BEFORE the first load so load
         // errors surface (native: the `log` sink; web: console/event bridge).
         platform.install_sinks();
-        let names = EntryNames::with_prefix(prefix);
         let path = sources
             .first()
             .map(|(p, _)| p.clone())
             .unwrap_or_else(|| "game.fun".to_string());
-        let loaded = load_source(&sources, &names)?;
+        let loaded = load_source(&sources, &role)?;
         log::info!("[functor-lang] loaded {path}");
         // Arm the paused-inspector journal on this thread: from now on every
         // live model-updating call is journaled (a cheap Rc-clone push).
@@ -329,7 +340,8 @@ impl FunctorLangEmbeddedGame {
             source_hashes,
             sources,
             path,
-            names,
+            role,
+            names: loaded.names,
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
@@ -408,6 +420,7 @@ impl FunctorLangEmbeddedGame {
         journal_swap(); // discard any partial current-frame journal
         self.reporter
             .set_source(SpanSource::Project(loaded.sources));
+        self.names = loaded.names;
         self.module = loaded.module;
         self.session = loaded.session;
         self.has_input = loaded.has_input;
@@ -507,6 +520,7 @@ impl FunctorLangEmbeddedGame {
         journal_swap();
         self.reporter
             .set_source(SpanSource::Project(loaded.sources));
+        self.names = loaded.names;
         self.module = loaded.module;
         self.session = loaded.session;
         self.model = loaded.init;
@@ -610,7 +624,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
         } else {
             sources.push((self.path.clone(), source.to_string()));
         }
-        let loaded = load_source(&sources, &self.names)?;
+        let loaded = load_source(&sources, &self.role)?;
         self.sources = sources;
         let (rebound, history_replay) = self.swap_in(loaded);
         let stored = if rebound > 0 {
@@ -637,7 +651,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files, &self.names)?;
+        let loaded = load_source(files, &self.role)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         let (rebound, history_replay) = self.swap_in(loaded);
@@ -663,7 +677,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
             return Err("a pushed project needs at least the entry file".to_string());
         }
         let started = now_ms();
-        let loaded = load_source(files, &self.names)?;
+        let loaded = load_source(files, &self.role)?;
         self.sources = files.to_vec();
         self.path = files[0].0.clone();
         self.reset_in(loaded);
@@ -1257,9 +1271,9 @@ let draw = (model, tts) =>
             .replace("let init", "let serverInit")
             .replace("let tick", "let serverTick")
             .replace("let draw", "let serverDraw");
-        let mut game = FunctorLangEmbeddedGame::create_with_prefix(
+        let mut game = FunctorLangEmbeddedGame::create_for_role(
             vec![("game.fun".to_string(), server_boot)],
-            "server",
+            EntryRole::Prefix("server".to_string()),
             Box::new(NativePlatform),
         )
         .expect("prefixed role loads");
@@ -1284,15 +1298,101 @@ let draw = (model, tts) =>
 
         // An UNPREFIXED program under the server role misses the contract —
         // and the error teaches the resolved name it looked for.
-        let err = match FunctorLangEmbeddedGame::create_with_prefix(
+        let err = match FunctorLangEmbeddedGame::create_for_role(
             vec![("game.fun".to_string(), BOOT.to_string())],
-            "server",
+            EntryRole::Prefix("server".to_string()),
             Box::new(NativePlatform),
         ) {
             Err(err) => err,
             Ok(_) => panic!("unprefixed bindings don't satisfy a prefixed role"),
         };
         assert!(err.contains("serverInit"), "{err}");
+    }
+
+    /// A `{ "file": …, "module": "Server" }` role runs the BLOCK's members as
+    /// its contract on the EMBEDDED producer too (the web/device shells), and
+    /// keeps re-resolving them on every pushed reload: an edit inside the
+    /// block lands with the model preserved, while a push that removes the
+    /// block fails loudly — naming it — and keeps the old program.
+    #[test]
+    fn a_module_role_resolves_and_hot_reloads_on_a_push() {
+        let role_src = |probe: f64| {
+            format!(
+                "{BOOT}module Server {{\n\
+                 let init = {{ n: 7.0 }}\n\
+                 let tick = (m, dt, tts) => m\n\
+                 let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), \
+Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
+                 let probe = {probe}.0\n\
+                 }}\n"
+            )
+        };
+        let mut game = FunctorLangEmbeddedGame::create_for_role(
+            vec![("game.fun".to_string(), role_src(1.0))],
+            EntryRole::Module("Server".to_string()),
+            Box::new(NativePlatform),
+        )
+        .expect("module role loads");
+        // The role's contract is the block's, not the file's top level: the
+        // file's own `init` is `{ spin: 0.0 }`.
+        assert_eq!(game.names.tick, "Server.tick");
+        assert!(
+            game.state_debug().contains("n: 7"),
+            "the block's init is the role's model: {}",
+            game.state_debug()
+        );
+        let ft = frame_time(0.016, 0.016);
+        game.tick(ft.clone());
+        let _ = game.render(ft);
+
+        // A push re-resolves the block: the edit lands, the model survives.
+        game.reload_source(&role_src(2.0)).expect("push reloads");
+        assert_eq!(game.names.tick, "Server.tick");
+        assert_eq!(
+            game.session
+                .global("Server.probe")
+                .expect("probe")
+                .to_string(),
+            "2",
+            "the edit must have landed"
+        );
+        assert!(game.state_debug().contains("n: 7"), "model preserved");
+
+        // Deleting the block fails the reload naming it, keeping the program.
+        let err = game
+            .reload_source(BOOT)
+            .expect_err("a role whose module vanished cannot load");
+        assert!(
+            err.contains("module Server"),
+            "the error names the block: {err}"
+        );
+        assert_eq!(
+            game.session
+                .global("Server.probe")
+                .expect("probe")
+                .to_string(),
+            "2",
+            "the old program keeps running"
+        );
+    }
+
+    /// An unknown role module is a load error naming the role's file and the
+    /// blocks it DOES declare — the resolver's teaching error, reaching the
+    /// embedded shells' boot path.
+    #[test]
+    fn an_unknown_role_module_lists_the_files_blocks() {
+        let source = format!("{BOOT}module Server {{ let probe = 1.0 }}\n");
+        let err = FunctorLangEmbeddedGame::create_for_role(
+            vec![("game.fun".to_string(), source)],
+            EntryRole::Module("Sever".to_string()),
+            Box::new(NativePlatform),
+        )
+        .err()
+        .expect("an unknown block cannot boot");
+        assert!(
+            err.contains("no inline `module Sever") && err.contains("it declares: Server"),
+            "{err}"
+        );
     }
 
     /// A prefixed role's EFFECTS must fold through the role's own update
@@ -1310,9 +1410,9 @@ let serverTick = (m, dt, tts) =>\n\
   ({ m with ticks: m.ticks + dt }, Effect.now((t) => GotTime(t)))\n\
 let serverDraw = (m, tts) =>\n\
   Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
-        let mut game = FunctorLangEmbeddedGame::create_with_prefix(
+        let mut game = FunctorLangEmbeddedGame::create_for_role(
             vec![("game.fun".to_string(), source.to_string())],
-            "server",
+            EntryRole::Prefix("server".to_string()),
             Box::new(NativePlatform),
         )
         .expect("prefixed role loads");

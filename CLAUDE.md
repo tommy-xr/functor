@@ -248,6 +248,7 @@ error listing the file's blocks). The transitional form names a binding **prefix
 `"server": {"file": "game.fun", "prefix": "server"}` — resolving every canonical entry
 binding through the prefix as camelCase (`serverInit`/`serverTick`/…); a role declares at
 most one of the two. `build` validates every declared role's contract with its resolved
+<<<<<<< HEAD
 names. Module roles are native-only for now (`run wasm`/`build wasm`/`run vr` refuse
 them, so a role that must also run in the browser stays on the prefix form);
 prefixed roles also run on wasm (`run wasm`/`build wasm` bake the prefix into the
@@ -255,6 +256,14 @@ page's boot config; the site player takes `?prefix=<ident>`) — vr loads the un
 contract only. `examples/orbs` is the same-file reference: its `client` role is the
 file's plain top-level contract and its `server` role is the `server` PREFIX — the form
 that also runs in the browser, which the sandbox's server pane needs.
+=======
+names. Both forms run on native and wasm — `run wasm`/`build wasm` bake the role into the
+served/exported page's boot config, and the site player takes `?module=<Ident>` or
+`?prefix=<ident>`. Only `run vr` refuses a role (the device push path boots the APK's
+embedded producer with the unprefixed contract). `examples/orbs` is the same-file
+reference: its `client` role is the file's plain top-level contract and its `server` role
+is a `module Server { … }` block.
+>>>>>>> 8333093 (feat(web): module entry roles on the embedded producer)
 
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with

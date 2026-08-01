@@ -47,10 +47,16 @@ export interface Example {
    * The entry-point binding prefix of the role the sandbox plays, for a
    * same-file-entries sample whose role is declared as
    * `{ "file": …, "prefix": "client" }` (resolving clientInit/clientTick/…).
-   * Passed to the player as `?prefix=`. The `{ "file": …, "module": … }`
-   * form is native-only, so a module role cannot be played here.
+   * Passed to the player as `?prefix=`. Mutually exclusive with `module`.
    */
   prefix?: string;
+  /**
+   * The inline entry MODULE of the role the sandbox plays, for a
+   * same-file-entries sample whose role is declared as
+   * `{ "file": …, "module": "Client" }` (resolving Client.init/Client.tick/…).
+   * Passed to the player as `?module=`. Mutually exclusive with `prefix`.
+   */
+  module?: string;
   /**
    * The sample's SERVER role, as a dist path in its own file list. The pane
    * grid mounts a server pane for every example that declares one — booted
@@ -61,12 +67,16 @@ export interface Example {
    * The file must ALSO appear in `siblings` — that is what copies it into the
    * built site and puts it in the fetched project file list; naming a file
    * here that nothing copies would 404 the server pane — UNLESS it is the
-   * example's own entry, which is copied and listed already. A same-file
-   * sample says so by naming that entry and the `prefix` its server role
-   * resolves through (orbs: `serverInit`/`serverTick`/…), which the server
-   * pane's `?prefix=` carries.
+   * example's own entry, which is copied and listed already.
+   *
+   * The server pane derives its params from the client's, so the server
+   * ROLE must be stated here rather than inherited: `prefix` when the role
+   * resolves prefixed bindings in a shared file (orbs: `serverInit`/…,
+   * carried as `?prefix=`), or `module` when it is an inline entry module
+   * (`{ "file": …, "module": "Server" }`, carried as `?module=`). At most
+   * one of the two.
    */
-  server?: { file: string; prefix?: string };
+  server?: { file: string; module?: string; prefix?: string };
 }
 
 /**

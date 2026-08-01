@@ -627,6 +627,32 @@ impl FunctorLangProject {
         Ok(())
     }
 
+    /// Can this shell boot this role? Native takes either same-file form
+    /// (`--entry-prefix` / `--entry-module`) and wasm bakes either into the
+    /// served page's boot config, but the vr device push path still boots the
+    /// APK's embedded producer with the unprefixed contract — so running a
+    /// role there would silently play the WRONG role. The test names the
+    /// shells that DO support the forms, so a future environment is refused
+    /// until it is taught them. The config refuses a role declaring both
+    /// forms, so at most one is ever named here.
+    fn check_role_supported(&self, environment: &Environment) -> Result<(), Error> {
+        let shell = match environment {
+            Environment::Native | Environment::Wasm => return Ok(()),
+            Environment::Vr => "vr",
+        };
+        let (form, name) = if !self.module.is_empty() {
+            ("module", self.module.as_str())
+        } else if !self.prefix.is_empty() {
+            ("prefix", self.prefix.as_str())
+        } else {
+            return Ok(());
+        };
+        Err(Error::other(format!(
+            "entry {form} `{name}` is not supported on {shell} yet — run this role with \
+`run native` or `run wasm` (the vr shell loads the unprefixed contract)"
+        )))
+    }
+
     /// Spawn the runner on the entry (`run` and `develop` — hot reload is
     /// built into the producer, so there is no separate watch loop).
     pub async fn run(
@@ -637,35 +663,7 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
-        // A prefixed role can't run on VR yet: the device push path boots the
-        // APK's embedded producer with the unprefixed contract, so running it
-        // would silently play the wrong role. (Native passes --entry-prefix;
-        // wasm bakes the prefix into the served page's boot config.)
-        if !self.prefix.is_empty() && matches!(environment, Environment::Vr) {
-            return Err(Error::other(format!(
-                "entry prefix `{}` is not supported on vr yet — run this role with \
-`run native` or `run wasm` (the vr shell loads the unprefixed contract)",
-                self.prefix
-            )));
-        }
-        // An inline-module role is native-only for now: the wasm host page and
-        // the device push path both boot their embedded producer with the
-        // unprefixed contract, so running it there would silently play the
-        // wrong role. (Native passes --entry-module.) The test is "not
-        // native", so a future environment is refused until it is taught the
-        // form, rather than silently booting the wrong role.
-        if !self.module.is_empty() && !matches!(environment, Environment::Native) {
-            return Err(Error::other(format!(
-                "entry module `{}` is not supported on {} yet — run this role with \
-`run native` (the other shells load the unprefixed contract)",
-                self.module,
-                match environment {
-                    Environment::Vr => "vr",
-                    Environment::Wasm => "wasm",
-                    Environment::Native => unreachable!("guarded above"),
-                }
-            )));
-        }
+        self.check_role_supported(environment)?;
         if matches!(environment, Environment::Vr) {
             if !runner_args.is_empty() {
                 emit(Event::Warning {
@@ -1000,16 +998,6 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         #[cfg(feature = "web")]
         {
             self.entry_path(working_directory)?;
-            // Same restriction as `run wasm`: the exported page boots the web
-            // runtime's unprefixed contract, so a module role would ship as
-            // the wrong role.
-            if !self.module.is_empty() {
-                return Err(Error::other(format!(
-                    "entry module `{}` is not supported on wasm yet — `build native` this role \
-(the wasm bundle loads the unprefixed contract)",
-                    self.module
-                )));
-            }
             // Same constraint as `run wasm`: the bundle carries the project
             // directory, so the entry must live inside it.
             if entry_escapes_project(&self.entry) {
@@ -1025,6 +1013,7 @@ relative path inside it (got {})",
                 self.mouse_capture,
                 self.cursor.as_str(),
                 &self.prefix,
+                &self.module,
             )?;
             for name in &export.shadowed {
                 emit(Event::Warning {
@@ -1123,6 +1112,7 @@ relative path inside it (got {})",
                 self.mouse_capture,
                 self.cursor.as_str(),
                 &self.prefix,
+                &self.module,
             );
             if no_open {
                 emit(Event::Info {
@@ -1638,6 +1628,7 @@ mod tests {
         manifest_mouse_capture, nth_line, project_asset_files, resolve_debug_args, CursorPolicy,
         FunctorLangConfig, FunctorLangEntries, FunctorLangProject,
     };
+    use crate::Environment;
 
     fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -1966,6 +1957,42 @@ mod tests {
         )]);
         let err = config.select(Some("server")).unwrap_err();
         assert!(err.to_string().contains("valid identifier"), "{err}");
+    }
+
+    /// The shells that can boot a same-file ROLE. Both forms run on native
+    /// and wasm (the page's boot config carries the module now); vr still
+    /// boots the unprefixed contract, so a role is refused there with a
+    /// teaching error naming the form.
+    #[test]
+    fn a_role_runs_on_native_and_wasm_but_not_vr() {
+        let config = named_json(&[
+            (
+                "client",
+                serde_json::json!({ "file": "game.fun", "module": "Client" }),
+            ),
+            (
+                "legacy",
+                serde_json::json!({ "file": "game.fun", "prefix": "legacy" }),
+            ),
+            ("plain", serde_json::json!("game.fun")),
+        ]);
+        for role in ["client", "legacy"] {
+            let project = config.select(Some(role)).unwrap();
+            for env in [Environment::Native, Environment::Wasm] {
+                assert!(
+                    project.check_role_supported(&env).is_ok(),
+                    "`{role}` must boot on {env:?}"
+                );
+            }
+            let err = project
+                .check_role_supported(&Environment::Vr)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("not supported on vr yet"), "{err}");
+        }
+        // A role with neither form is the plain contract — every shell boots it.
+        let plain = config.select(Some("plain")).unwrap();
+        assert!(plain.check_role_supported(&Environment::Vr).is_ok());
     }
 
     #[test]

@@ -40,6 +40,10 @@ fn script_safe(json: String) -> String {
 /// - `"__FUNCTOR_LANG_ENTRY_PREFIX__"` becomes a JSON string literal →
 ///   `window.__functorLangEntryPrefix`, the role's binding prefix (same-file
 ///   entries; empty = the classic unprefixed contract).
+/// - `"__FUNCTOR_LANG_ENTRY_MODULE__"` becomes a JSON string literal →
+///   `window.__functorLangEntryModule`, the role's inline entry module
+///   (same-file entries; empty = no module role). The config refuses a role
+///   declaring both, so at most one of the two is ever non-empty.
 ///
 /// All substitutions are valid JS for any path (quotes/backslashes included).
 pub(crate) fn render_functor_lang_index(
@@ -48,6 +52,7 @@ pub(crate) fn render_functor_lang_index(
     mouse_capture: bool,
     cursor: &str,
     prefix: &str,
+    module: &str,
 ) -> String {
     let entry_literal =
         script_safe(serde_json::to_string(entry).expect("a string always serializes"));
@@ -59,12 +64,15 @@ pub(crate) fn render_functor_lang_index(
         script_safe(serde_json::to_string(cursor).expect("a string always serializes"));
     let prefix_literal =
         script_safe(serde_json::to_string(prefix).expect("a string always serializes"));
+    let module_literal =
+        script_safe(serde_json::to_string(module).expect("a string always serializes"));
     INDEX_FUNCTOR_LANG_HTML
         .replace("\"__FUNCTOR_LANG_ENTRY__\"", &entry_literal)
         .replace("\"__FUNCTOR_LANG_PROJECT_FILES__\"", &files_literal)
         .replace("\"__FUNCTOR_MOUSE_CAPTURE__\"", &mouse_capture_literal)
         .replace("\"__FUNCTOR_CURSOR_POLICY__\"", &cursor_literal)
         .replace("\"__FUNCTOR_LANG_ENTRY_PREFIX__\"", &prefix_literal)
+        .replace("\"__FUNCTOR_LANG_ENTRY_MODULE__\"", &module_literal)
 }
 
 /// The project's file list as URLs relative to the served directory (entry
@@ -101,11 +109,13 @@ impl WasmDevServer {
         mouse_capture: bool,
         cursor: &str,
         prefix: &str,
+        module: &str,
     ) -> Result<(), io::Error> {
         let files = project_file_urls(working_directory, entry);
         Self::serve(
             working_directory,
-            render_functor_lang_index(entry, &files, mouse_capture, cursor, prefix).into_bytes(),
+            render_functor_lang_index(entry, &files, mouse_capture, cursor, prefix, module)
+                .into_bytes(),
         )
         .await
     }
@@ -195,6 +205,7 @@ mod tests {
             true,
             "captured",
             "",
+            "",
         );
         assert!(html.contains("window.__functorLangGamePath = \"game.fun\""));
         assert!(html.contains("const gameMouseCapture = true"));
@@ -214,6 +225,7 @@ mod tests {
             false,
             "visible",
             "",
+            "",
         );
         assert!(html.contains("(["));
         assert!(html.contains("\"game.fun\",\"pieces.fun\""));
@@ -228,6 +240,7 @@ mod tests {
             &["game.fun".to_string()],
             false,
             "visible",
+            "",
             "",
         );
         for expected in [
@@ -274,6 +287,7 @@ mod tests {
             true,
             "captured",
             "",
+            "",
         );
         assert!(html.contains("we\\\"ird\\\\name.fun"));
     }
@@ -285,6 +299,7 @@ mod tests {
             &["bad</script>.fun".to_string()],
             true,
             "captured",
+            "",
             "",
         );
         assert!(html.contains("bad<\\/script>.fun"));
@@ -300,15 +315,35 @@ mod tests {
             true,
             "captured",
             "server",
+            "",
         );
         assert!(html.contains("window.__functorLangEntryPrefix = \"server\""));
         assert!(!html.contains("__FUNCTOR_LANG_ENTRY_PREFIX__"));
     }
 
+    /// The role's inline entry MODULE reaches the page: the web producer reads
+    /// `window.__functorLangEntryModule` to resolve `Server.init`/`Server.tick`/….
+    #[test]
+    fn substitutes_the_entry_module() {
+        let html = render_functor_lang_index(
+            "game.fun",
+            &["game.fun".to_string()],
+            true,
+            "captured",
+            "",
+            "Server",
+        );
+        assert!(html.contains("window.__functorLangEntryModule = \"Server\""));
+        assert!(!html.contains("__FUNCTOR_LANG_ENTRY_MODULE__"));
+        // The two forms are mutually exclusive: a module role's page carries
+        // no prefix.
+        assert!(html.contains("window.__functorLangEntryPrefix = \"\""));
+    }
+
     #[test]
     fn substitutes_the_mouse_capture_boolean() {
         let html =
-            render_functor_lang_index("game.fun", &["game.fun".to_string()], false, "captured", "");
+            render_functor_lang_index("game.fun", &["game.fun".to_string()], false, "captured", "", "");
         assert!(html.contains("const gameMouseCapture = false"));
         assert!(!html.contains("__FUNCTOR_MOUSE_CAPTURE__"));
     }
