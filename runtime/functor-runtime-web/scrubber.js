@@ -68,17 +68,17 @@ const STYLE = `
 #scrub-main {
   display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
 }
-#scrubber button, #scrub-adv > summary {
+#scrubber button {
   font: 14px/1 var(--sb-font); color: var(--sb-text); cursor: pointer;
   background: rgba(65, 216, 230, 0.10); border: 1px solid var(--sb-line);
   border-radius: 6px; padding: 6px 9px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
   transition: box-shadow 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
 }
-#scrubber button:hover, #scrub-adv > summary:hover {
+#scrubber button:hover {
   border-color: var(--sb-accent); box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
   transform: translateY(-1px);
 }
-#scrubber button:active, #scrub-adv > summary:active {
+#scrubber button:active {
   transform: translateY(0); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 #scrub-rail {
@@ -168,32 +168,16 @@ const STYLE = `
 #scrub-debug input[type="checkbox"] { accent-color: var(--sb-accent); }
 #scrub-debug-fov { width: 110px; }
 #scrub-debug-lens { color: var(--sb-text); min-width: 42px; }
-#scrub-adv { position: relative; }
-#scrub-adv > summary { list-style: none; user-select: none; }
-#scrub-adv > summary::-webkit-details-marker { display: none; }
-#scrub-adv[open] > summary { border-color: var(--sb-accent); }
-#scrub-adv-pop {
-  position: absolute; top: calc(100% + 10px); right: 0; z-index: 11;
-  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
-  background: var(--sb-bg); border-radius: 8px; border: 1px solid var(--sb-line);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5); white-space: nowrap;
-}
-#scrub-adv-pop label { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
-#scrub-adv-pop select, #scrub-adv-pop input[type="number"] {
-  font: 12px/1 var(--sb-font); color: var(--sb-text); background: rgba(65, 216, 230, 0.10);
-  border: 1px solid var(--sb-line); border-radius: 5px; padding: 4px 5px;
-}
-#scrub-adv-pop input[type="number"] { width: 46px; }
 @media (max-width: 520px) {
   #scrubber { padding: 7px 8px 17px; }
   #scrub-main { gap: 6px; }
   #scrub-debug { gap: 8px; }
-  #scrubber button, #scrub-adv > summary { padding: 6px 7px; }
+  #scrubber button { padding: 6px 7px; }
   #scrub-rail { min-width: 48px; }
 }
 @media (max-width: 380px) {
   #scrub-main { gap: 4px; }
-  #scrubber button, #scrub-adv > summary { padding: 6px 5px; font-size: 13px; }
+  #scrubber button { padding: 6px 5px; font-size: 13px; }
 }`;
 
 const HTML = `
@@ -229,19 +213,6 @@ const HTML = `
     <span id="scrub-label"><span id="scrub-count"></span></span>
     </span>
     <button id="scrub-extrapolate" title="Extrapolate the game into the future">🔮</button>
-    <details id="scrub-adv">
-      <summary title="Extrapolation settings">⚙</summary>
-      <div id="scrub-adv-pop">
-        <label>show
-          <select id="scrub-mode">
-            <option value="1">trail</option><option value="2">strobe</option>
-            <option value="3" selected>both</option><option value="4">ghost</option>
-          </select>
-        </label>
-        <label>window <input id="scrub-win" type="number" step="0.5" min="0.5" max="5" value="2" />s</label>
-        <label>rate <input id="scrub-rate" type="number" min="1" max="30" value="5" />/s</label>
-      </div>
-    </details>
   </div>
   <section id="scrub-debug" aria-label="Debug Camera controls">
     <span id="scrub-debug-title">Debug Camera</span>
@@ -316,9 +287,6 @@ export function mountScrubber({ hidden = false } = {}) {
   const eventDetail = $("scrub-event-detail");
   const eventLayer = $("scrub-events");
   const extrapolate = $("scrub-extrapolate");
-  const mode = $("scrub-mode");
-  const win = $("scrub-win");
-  const rate = $("scrub-rate");
   const debugMode = $("scrub-debug-mode");
   const debugPan2d = $("scrub-debug-pan2d");
   const debugFov = $("scrub-debug-fov");
@@ -332,6 +300,12 @@ export function mountScrubber({ hidden = false } = {}) {
   const debugFrustumLabel = $("scrub-debug-frustum-label");
   const debugGameUi = $("scrub-debug-game-ui");
   const debugReset = $("scrub-debug-reset");
+
+  // The preview family pushed to the renderer (1 trail / 2 strobe / 3 both;
+  // any other index is Off — `PreviewMode::from_index` owns that mapping, so
+  // this only forwards the wire value). Seam-only config with no chrome, so it
+  // is NOT part of the reducer's state.
+  let previewMode = 3;
 
   let state = createTimelineState();
   let pendingSeek = null;
@@ -365,14 +339,10 @@ export function mountScrubber({ hidden = false } = {}) {
     zoom2d: functor_lang_viewer_zoom_2d(),
   });
   const pushPreview = () =>
-    functor_lang_scrub_set_preview(state.preview.enabled ? Number(mode.value) : 0);
+    functor_lang_scrub_set_preview(state.preview.enabled ? previewMode : 0);
   const pushConfig = () => {
     const config = canonicalConfig();
     functor_lang_scrub_set_preview_config(config.seconds, config.rate);
-  };
-  const syncInputs = () => {
-    win.value = String(state.preview.seconds);
-    rate.value = String(state.preview.rate);
   };
 
   const requestSeek = (frame) => {
@@ -701,7 +671,6 @@ export function mountScrubber({ hidden = false } = {}) {
       type: "preview-changed",
       preview: { seconds: previewDrag.seconds + deltaFrames / TIMELINE_FPS },
     });
-    syncInputs();
     pushConfig();
   });
   const endPreviewDrag = () => (previewDrag = null);
@@ -761,7 +730,6 @@ export function mountScrubber({ hidden = false } = {}) {
     } else {
       return;
     }
-    syncInputs();
     pushConfig();
   });
 
@@ -811,19 +779,6 @@ export function mountScrubber({ hidden = false } = {}) {
     dispatch({ type: "preview-changed", preview: { enabled: !state.preview.enabled } });
     pushPreview();
   });
-  mode.addEventListener("change", pushPreview);
-
-  const updateConfigFromInputs = () => {
-    const seconds = win.valueAsNumber;
-    const nextRate = rate.valueAsNumber;
-    if (!win.validity.valid || !rate.validity.valid) return;
-    dispatch({ type: "preview-changed", preview: { seconds, rate: nextRate } });
-    pushConfig();
-  };
-  win.addEventListener("input", updateConfigFromInputs);
-  rate.addEventListener("input", updateConfigFromInputs);
-  win.addEventListener("change", syncInputs);
-  rate.addEventListener("change", syncInputs);
   debugMode.addEventListener("change", () =>
     functor_lang_viewer_set_mode(Number(debugMode.value))
   );
@@ -845,7 +800,6 @@ export function mountScrubber({ hidden = false } = {}) {
   );
   debugReset.addEventListener("click", () => functor_lang_viewer_reset());
 
-  syncInputs();
   pushPreview();
   pushConfig();
 
@@ -893,17 +847,14 @@ export function mountScrubber({ hidden = false } = {}) {
     events: () => state.events,
     selectEvent: (id) => dispatch({ type: "event-selected", id }),
     // Accepts the timeline-model preview fields plus `mode` (1 trail /
-    // 2 strobe / 3 both / 4 ghost) — the ghost-mode select isn't part of the
-    // reducer's state, so hosts driving a hidden mount set it through here.
-    setPreview: ({ mode: previewMode, ...preview }) => {
-      // Only accept a mode the select actually offers — assigning an unknown
-      // value would blank the select and push mode 0 (renderer off) while the
-      // model still says enabled.
-      if (previewMode !== undefined && mode.querySelector(`option[value="${previewMode}"]`)) {
-        mode.value = String(previewMode);
+    // 2 strobe / 3 both; any other index is Off, per `PreviewMode::from_index`).
+    // The mode has no chrome — it is seam-only config — so it lives beside the
+    // reducer's state, not in it.
+    setPreview: ({ mode: nextMode, ...preview }) => {
+      if (nextMode !== undefined && Number.isFinite(Number(nextMode))) {
+        previewMode = Number(nextMode);
       }
       dispatch({ type: "preview-changed", preview });
-      syncInputs();
       pushPreview();
       pushConfig();
     },

@@ -315,14 +315,22 @@ there: two models, one pure `draw`, one blend.
 
 ### Trajectory preview — forward-ghosting (Inventing on Principle)
 
-Tweak a constant, see the whole future at once. Rather than a per-object trail,
-this is **chronophotography**: from the paused snapshot, step the whole scene
-forward over a window (start with ~2s / 10 divisions) and composite the divisions
-into one image, each at `1/divisions` weight. Static geometry averages to itself
-(solid); anything moving smears into a faint strobe of its own future positions.
-It needs **no new scene-description API** — you call the existing `draw` on each
-stepped state — and it captures *all* motion, not one hand-picked entity, so it
-works for any scene under a fixed camera.
+Tweak a constant, see the whole future at once. From the paused snapshot, step
+the whole scene forward over a window (~2s by default) and show every division at
+once: a **trail** of direction-of-travel arrowheads per mover, and/or
+**chronophotography** — real-geometry copies of each mover at its future poses,
+faded by age. It needs **no new scene-description API** — you call the existing
+`draw` on each stepped state — and it derives every mover from the rendered
+scene rather than one hand-picked entity. What it depicts is *transform* motion
+across matching scene nodes: non-geometry change (animated lighting, materials)
+and camera movement are outside it.
+
+A screen-space variant (composite N whole frames at `1/N` weight, so static
+geometry averages to itself and movers smear) was the original prototype. It was
+removed: it pinned every copy at `1/N` opacity, capped divisions at the
+compositor's 8 targets, and froze the camera — the scene-space overlays below
+read better at every window, and the debug camera covers the "see the future from
+elsewhere" case it was uniquely good at.
 
 The scene-diff trail/strobe modes follow the same rule for both render families:
 they traverse `Frame.scene` and every anchor `Frame.sprite_layers` scene, then
@@ -332,27 +340,16 @@ truncates every 2D track rather than cross-wiring it; same-count layer reorderin
 remains a positional-identity limitation until layers have stable ids. Sprite
 copies use each future frame's art/material and fade by alpha, while marker size
 scales with the anchor camera's visible world height. These overlays stay in the
-anchor `Camera2D`'s world coordinates. Use the full-frame ghost compositor when
-future camera movement itself should be visible.
+anchor `Camera2D`'s world coordinates, so future *camera* movement is not itself
+depicted — detach the debug camera to watch the projection from elsewhere.
 
-Two implementation points decide whether it looks right:
+One implementation point decides whether it looks right:
 
-- **Composite in screen space, not the depth buffer.** Render each division to its
-  own offscreen target (normal depth-testing *within* a division), then **average**
-  the targets. Averaging is what makes static=solid / moving=faint fall out of the
-  math — no per-object opacity logic, and it sidesteps the order-dependent garbage
-  of alpha-blending N depth-tested scenes into one buffer. A **progressive
-  running-average** (step one division per real frame, blend into an accumulator at
-  `1/(k+1)`) keeps per-frame cost at ~1 extra render, needs only two targets, and
-  *builds up* over the window — then holds until something changes. (The engine's
-  double-buffered `RenderTargetBuffers` + a fullscreen composite quad, modelled on
-  `draw_skybox`, is nearly all the machinery.)
 - **Replay recorded inputs, freeze the camera.** Forward-stepping replays the
   frame-indexed input log (see "The event log") for frames it has, then coasts;
   all divisions render with the *paused* camera so only world motion smears, not
-  the view. If the future switches between pure 2D and 3D/mixed rendering, or
-  changes a pure-2D layer count, the preview stops at that boundary rather than
-  applying an incompatible pinned view to later frames. After a safe hot reload,
+  the view. If the future changes a pure-2D layer count, the preview truncates
+  every track at that boundary rather than cross-wiring it. After a safe hot reload,
   an input-only model game with complete
   retained history first replays from the edited program's `init` to rebuild the
   complete retained timeline and adopt the selected frame; otherwise that
@@ -364,16 +361,15 @@ Two implementation points decide whether it looks right:
   control is deferred so authors can preview that branch without first resuming.
 
 The "tweak a constant" half rides existing hot-reload: swap the `.fun` with the
-model preserved, re-run the window, the ghost redraws — so you can tweak a jump
+model preserved, re-run the window, the preview redraws — so you can tweak a jump
 impulse until the arc clears a chasm and *see* it clear before you resume. This is
 the single most compelling demo in the set and it is within reach.
 
-**Fork+overlay and forward-ghosting are the same engine primitive** — a
-screen-space compositor that renders K scenes to K offscreen targets and averages
-them with weights. Fork+overlay is K=2 at (0.5, 0.5) from two branches; ghosting
-is K=N at `1/N` from one branch stepped forward. Build the compositor once and
-both land; the old polyline/trail primitive becomes an optional later "precise
-single-path read," not a prerequisite.
+The screen-space compositor that the removed presentation used still ships for
+**fork+overlay** (T5): it renders K scenes to K offscreen targets and averages
+them with weights (K=2 at 0.5/0.5 from two branches). Forward-stepping and
+compositing remain independent — the forward-sim (`ghost_frames`) feeds the
+scene-space overlays directly.
 
 ## Deferred follow-ups: keep and reconstruct the old future
 
@@ -444,8 +440,8 @@ the project's "design for agent verifiability" rule.
 | **T2. Pointer/click input plumbing** | Feed real pointer `RawInput` to egui (desktop); DOM mouse for the web scrubber. `.interactable(false)` dropped for the scrubber panel. | **Shipped** (#226) |
 | **T3. Scrubber overlay** | Draggable timeline (non-destructive scrub + branch-on-resume) + Pause/Step. **Desktop:** egui-in-canvas, `~` console toggle (hidden by default). **Web:** custom DOM/SVG timeline with two accessible handles, a frozen paused viewport, and input/reload markers. Game-owned mouse capture defaults on when captured hooks exist (`"mouseCapture": false` opts out). Independently, every project has a runtime-owned debug view while playing or paused: FPS/orbit for 3D/mixed frames, pan/zoom for pure 2D, plus a capability-filtered contextual drawer for transparent/normal/tangent materials, physics, authored-frustum, FOV, and game-UI diagnostics. Debug navigation never mutates game state/history or replaces the authored culling/portal camera. | **Shipped** (#226 + follow-ups) |
 | **T4. Interactive Functor Lang `View`** | `View` gains an action-carrying node (`Button { label, onClick }`, storable Functor Lang closure); egui hit-tests and dispatches back into `update`. Independent of the scrubber (which is shell-owned) — a general game-UI capability. | Not started |
-| **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; a **screen-space compositor** (new fullscreen average pass at the tail of `render_frame`, reusing the double-buffered `RenderTargetBuffers`) renders each scene to its own target and averages them (K=2, weights 0.5/0.5). Shares its whole implementation with T6. | Not started |
-| **T6. Forward-ghosting (trajectory preview)** | A frame-indexed **input log** in the recorder (plain data, survives reload) + a headless deterministic forward-step (replay inputs, suppress effects) + the T5 compositor at K=N, `1/N` weights; wire to hot-reload for the tweak-a-constant loop; slider once T4 lands. The *Inventing on Principle* demo — no trail primitive needed. | Not started |
+| **T5. Fork + overlay** | Keep-the-branch instead of truncate; hold two model+world states; a **screen-space compositor** (new fullscreen average pass at the tail of `render_frame`, reusing the double-buffered `RenderTargetBuffers`) renders each scene to its own target and averages them (K=2, weights 0.5/0.5). | Not started |
+| **T6. Forward-ghosting (trajectory preview)** | A frame-indexed **input log** in the recorder (plain data, survives reload) + a headless deterministic forward-step (replay inputs, suppress effects) + scene-space trail/strobe overlays derived by diffing the stepped frames; wire to hot-reload for the tweak-a-constant loop. The *Inventing on Principle* demo. (The screen-space `1/N` compositor presentation was prototyped and then removed in favor of the scene-space overlays.) | Not started |
 | **T7. Event timeline** | Record inputs *and* effects as one plain-data event log keyed by frame (inputs in / effects out); render them as markers on the scrubber; use the log to suppress-on-replay. Web now renders recorded inputs and reload boundaries; effect/coeffect markers and a unified cross-shell protocol remain. | **In progress** |
 | **T8. Coeffect record/replay** | Record & replay effect *responses* (http/ws) so a recorded window re-runs faithfully. Pure replay is positional/exact; replay-under-a-tweak needs identity-matching + a visible **divergence marker** when a changed model asks for an un-recorded response (never fire live). | Later |
 

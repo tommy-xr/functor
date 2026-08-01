@@ -4,7 +4,7 @@
 //
 // The preview column becomes:
 //
-//   ┌ chrono bar ─ ⏸ ⏭ ═══rail═══╪══ 🔮 ⚙ | ⊞ tiled ▤ tabs ┐   (game side only —
+//   ┌ chrono bar ─ ⏸ ⏭ ═══rail═══╪══ 🔮 | ⊞ tiled ▤ tabs ┐   (game side only —
 //   ├ pane grid ──────────────────────────────────────────────┤    the editor keeps
 //   │  ╔ 1 client · cyan  ⇅ Wi-Fi ▾   #f 841 ● ╗  ┌ 2 client ┐│    its full height)
 //   │  ║             iframe                    ║  │  iframe   ││
@@ -74,7 +74,7 @@ interface ScrubSeam {
     enabled?: boolean;
     seconds?: number;
     rate?: number;
-    /** 1 trail / 2 strobe / 3 both / 4 ghost (scrubber.js seam extension). */
+    /** 1 trail / 2 strobe / 3 both (scrubber.js seam extension). */
     mode?: number;
   }): void;
 }
@@ -234,19 +234,6 @@ export function initMultiplayerPanes({
       <span class="mp-rail-label"><b>#f</b> <span id="mp-frame">—</span></span>
     </span>
     <button class="mp-sbtn" id="mp-extrap" title="Extrapolate: speculatively simulate forward from the parked frame">🔮</button>
-    <details class="mp-adv" id="mp-adv">
-      <summary title="Extrapolation settings">⚙</summary>
-      <div class="mp-adv-pop">
-        <label>show
-          <select id="mp-adv-mode">
-            <option value="1">trail</option><option value="2">strobe</option>
-            <option value="3" selected>both</option><option value="4">ghost</option>
-          </select>
-        </label>
-        <label>window <input id="mp-adv-win" type="number" step="0.5" min="0.5" max="5" value="2" />s</label>
-        <label>rate <input id="mp-adv-rate" type="number" min="1" max="30" value="5" />/s</label>
-      </div>
-    </details>
     <span class="mp-viewseg" role="group" aria-label="Pane layout">
       <button id="mp-view-tiled" aria-pressed="true" title="Tiled: every client visible">⊞ tiled</button>
       <button id="mp-view-tabs" aria-pressed="false" title="Tabs: one client full-size (f)">▤ tabs</button>
@@ -452,13 +439,12 @@ export function initMultiplayerPanes({
   }
   focusPane(0);
 
-  // Every transient surface (link menus, the ⚙ popover) dismisses together —
-  // popovers behave modally without blocking the page.
+  // Every transient surface (the link menus) dismisses together — popovers
+  // behave modally without blocking the page.
   const closePopovers = () => {
     for (const menu of document.querySelectorAll<HTMLElement>(".mp-link-menu")) {
       menu.hidden = true;
     }
-    (chrono.querySelector("#mp-adv") as HTMLDetailsElement).open = false;
   };
 
   const moduleScope = new AbortController();
@@ -526,7 +512,6 @@ export function initMultiplayerPanes({
     // speculatively re-simulating with no way to stop it.
     if (panes.length === 1 && target > 1) {
       for (const seam of seams()) seam.setPreview({ enabled: false });
-      (chrono.querySelector("#mp-adv") as HTMLDetailsElement).open = false;
     }
     while (panes.length < target) addMirror(true);
     while (panes.length > target) removeMirror();
@@ -798,23 +783,6 @@ export function initMultiplayerPanes({
     for (const seam of seams()) seam.setPreview({ enabled });
   });
 
-  // ⚙ advanced — everything goes through the seam (the panes' scrubber DOM is
-  // never attached, so there is nothing to reach into cross-frame).
-  const advWin = chrono.querySelector("#mp-adv-win") as HTMLInputElement;
-  const advRate = chrono.querySelector("#mp-adv-rate") as HTMLInputElement;
-  const advMode = chrono.querySelector("#mp-adv-mode") as HTMLSelectElement;
-  const pushAdv = () => {
-    if (!advWin.validity.valid || !advRate.validity.valid) return;
-    for (const seam of seams()) {
-      seam.setPreview({ seconds: advWin.valueAsNumber, rate: advRate.valueAsNumber });
-    }
-  };
-  advWin.addEventListener("input", pushAdv);
-  advRate.addEventListener("input", pushAdv);
-  advMode.addEventListener("change", () => {
-    for (const seam of seams()) seam.setPreview({ mode: Number(advMode.value) });
-  });
-
   // The pink preview handle: drag (or arrow keys) to stretch the window.
   const previewHandle = $("mp-preview-handle");
   let previewDrag: { x: number; seconds: number } | null = null;
@@ -834,8 +802,6 @@ export function initMultiplayerPanes({
     for (const seam of seams()) {
       seam.setPreview({ seconds: previewDrag.seconds + deltaFrames / 60 });
     }
-    const settled = primarySeam()?.model().preview.seconds;
-    if (settled !== undefined) advWin.value = String(settled);
   });
   const endPreviewDrag = () => {
     previewDrag = null;
@@ -849,7 +815,6 @@ export function initMultiplayerPanes({
       event.stopPropagation();
       const seconds = event.key === "Home" ? 0.5 : 5;
       for (const seam of seams()) seam.setPreview({ seconds });
-      advWin.value = String(seconds);
       return;
     }
     const step = event.shiftKey ? 1 : 0.5;
@@ -863,8 +828,6 @@ export function initMultiplayerPanes({
     event.stopPropagation();
     const seconds = (primarySeam()?.model().preview.seconds ?? 2) + delta;
     for (const seam of seams()) seam.setPreview({ seconds });
-    const settled = primarySeam()?.model().preview.seconds;
-    if (settled !== undefined) advWin.value = String(settled);
   });
   const tip = $("mp-evt-tip");
   const showTip = (unit: number, text: string) => {
@@ -928,27 +891,12 @@ export function initMultiplayerPanes({
   const ticksHost = $("mp-ticks");
   let markerKey = "";
   let lastLabel = "";
-  // The host owns the ⚙ configuration: a freshly navigated player boots with
-  // the seam defaults (2s / 5 / both), which would silently diverge from the
-  // values the inputs display — push them whenever the primary seam changes.
-  let lastPrimaryWindow: Window | null = null;
   const paint = () => {
     // Reconcile against the pane that initiated the request even while the
     // focused pane is loading. Navigation/removal makes that old seam unable
     // to acknowledge, so treat it as a refusal instead of stalling the bar.
     reconcilePendingCamera();
     const primary = primarySeam();
-    const primaryWindow = panes[focused]?.iframe.contentWindow ?? null;
-    if (primary && primaryWindow !== lastPrimaryWindow) {
-      lastPrimaryWindow = primaryWindow;
-      if (advWin.validity.valid && advRate.validity.valid) {
-        primary.setPreview({
-          seconds: advWin.valueAsNumber,
-          rate: advRate.valueAsNumber,
-          mode: Number(advMode.value),
-        });
-      }
-    }
     const current = primary?.view();
     if (!primary?.detached()) debugDrawer.hidden = true;
     chrono.classList.toggle("dormant", !current);

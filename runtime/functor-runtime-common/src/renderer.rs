@@ -446,22 +446,22 @@ fn render_sprite_layers(
 
 /// Render K `Frame`s into K offscreen targets and composite them onto the bound
 /// framebuffer as a weighted average — the screen-space compositor (T5, the
-/// shared foundation for fork+overlay and forward-ghosting, docs/time-travel.md).
+/// foundation for fork+overlay, docs/time-travel.md).
 ///
 /// Each frame renders through the same shadow + forward path as a normal frame
 /// AT ITS OWN paired [`FrameTime`], into its own full-viewport-sized RGBA8
 /// target (keyed `__composite_{i}`, reused across frames), then
 /// `SceneContext::draw_composite` sums them in-shader. Per-frame time is what
 /// lets render-time animation (the skinned-skeleton pose, sampled from the
-/// render pass's `tts`) advance across a ghost strobe instead of freezing every
-/// division at the paused pose. The composite lands in the default framebuffer
+/// render pass's `tts`) advance across the composite instead of freezing every
+/// input at one pose. The composite lands in the default framebuffer
 /// *after* the forward work and before any UI overlay, so it shows up in
 /// `--capture-frame` PNGs.
 ///
 /// Inputs beyond `MAX_COMPOSITE` are dropped; `weights` is truncated/normalized
 /// to the retained count (so equal weights average). Nested render targets inside
 /// an input frame are ignored — the compositor renders each frame's main scene
-/// only (fork/ghost frames are plain scenes).
+/// only (fork frames are plain scenes).
 pub fn render_composited_frames(
     gl: &glow::Context,
     shader_version: &str,

@@ -701,20 +701,19 @@ pub struct ScrubberState {
     pub camera_fov_degrees: Option<f32>,
     pub camera_zoom_2d: Option<f32>,
     pub debug_presentation: crate::viewer::DebugPresentation,
-    /// The bar's single future-preview switch (docs/time-travel.md T6/T6d):
-    /// "extrapolate" on/off. What it SHOWS when on is `preview_mode`,
-    /// configured in the ⚙ popover. Interactive companion to the
-    /// `--trajectory`/`--strobe`/`--ghost` launch flags.
+    /// The bar's single future-preview switch (docs/time-travel.md T6):
+    /// "extrapolate" on/off. What it SHOWS when on is `preview_mode`, which
+    /// only the seam/CLI configure. Interactive companion to the
+    /// `--trajectory`/`--strobe` launch flags.
     pub extrapolate: bool,
     /// The preview family shown while extrapolating (never `Off` here — the
-    /// checkbox is the off switch): trail / strobe / both / ghost.
+    /// checkbox is the off switch): trail / strobe / both.
     pub preview_mode: crate::trajectory::PreviewMode,
     /// The forward window in seconds, shared by every preview mode; also sizes
     /// the timeline's translucent future segment.
     pub preview_window: f32,
     /// Forward samples PER SECOND — density stays constant as the window is
-    /// resized (total samples = rate × window, clamped; the ghost compositor
-    /// further clamps to its 8-target cap at use).
+    /// resized (total samples = rate × window, clamped).
     pub preview_rate: usize,
 }
 
@@ -737,11 +736,12 @@ pub enum ScrubberAction {
     Step,
     /// Toggle the bar's "extrapolate" switch.
     SetExtrapolate(bool),
-    /// Set the preview family shown while extrapolating (the ⚙ popover).
+    /// Set the preview family shown while extrapolating (seam/CLI only).
     SetPreviewMode(crate::trajectory::PreviewMode),
-    /// Set the preview's forward window in seconds (the ⚙ popover).
+    /// Set the preview's forward window in seconds (the rail's endpoint
+    /// handle, the seam, or the CLI).
     SetPreviewWindow(f32),
-    /// Set the preview's forward samples per second (the ⚙ popover).
+    /// Set the preview's forward samples per second (seam/CLI only).
     SetPreviewRate(usize),
 }
 
@@ -915,8 +915,8 @@ impl Scrubber {
                                             // The segment's END CAP: a small
                                             // grabber hanging under the window
                                             // end — drag to resize the forward
-                                            // window in place (the ⚙ slider's
-                                            // direct-manipulation twin).
+                                            // window in place (the only way to
+                                            // set it from the UI).
                                             // Offset BELOW the track so it
                                             // never fights the seek handle.
                                             let cap = egui::Rect::from_min_max(
@@ -957,60 +957,15 @@ impl Scrubber {
                                     action = Some(ScrubberAction::Step);
                                 }
 
-                                // Future preview (docs/time-travel.md T6/T6d):
-                                // ONE switch on the bar; the mode /
-                                // window / rate knobs live in the ⚙ popover.
+                                // Future preview (docs/time-travel.md T6):
+                                // ONE switch on the bar. The window is set by
+                                // dragging the rail's extrapolation endpoint;
+                                // mode and rate are seam-only knobs.
                                 ui.separator();
                                 let mut on = state.extrapolate;
                                 if ui.checkbox(&mut on, "extrapolate").changed() {
                                     action = Some(ScrubberAction::SetExtrapolate(on));
                                 }
-                                ui.menu_button("⚙", |ui| {
-                                    ui.label("show");
-                                    ui.horizontal(|ui| {
-                                        use crate::trajectory::PreviewMode as PM;
-                                        for mode in [PM::Trail, PM::Strobe, PM::Both, PM::Ghost]
-                                        {
-                                            if ui
-                                                .selectable_label(
-                                                    state.preview_mode == mode,
-                                                    mode.label(),
-                                                )
-                                                .clicked()
-                                            {
-                                                action =
-                                                    Some(ScrubberAction::SetPreviewMode(mode));
-                                            }
-                                        }
-                                    });
-                                    ui.label("forward window");
-                                    let mut window = state.preview_window;
-                                    if ui
-                                        .add(egui::Slider::new(&mut window, 0.5..=5.0).suffix("s"))
-                                        .changed()
-                                    {
-                                        action = Some(ScrubberAction::SetPreviewWindow(window));
-                                    }
-                                    ui.label("rate");
-                                    let mut rate = state.preview_rate.clamp(1, 30);
-                                    if ui
-                                        .add(
-                                            egui::DragValue::new(&mut rate)
-                                                .range(1..=30)
-                                                .suffix("/s"),
-                                        )
-                                        .changed()
-                                    {
-                                        action = Some(ScrubberAction::SetPreviewRate(rate));
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "strobe copies per second — the trail samples\nfiner; ghost composites ≤8 total",
-                                        )
-                                        .weak()
-                                        .size(10.0),
-                                    );
-                                });
                             });
                             // The frame counter: tiny, faded, PAINTED just
                             // under the timeline rail and centered on IT (not

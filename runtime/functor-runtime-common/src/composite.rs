@@ -1,12 +1,12 @@
 //! Screen-space compositor (docs/time-travel.md T5).
 //!
-//! The shared foundation for fork+overlay (K=2 at 0.5/0.5) and forward-ghosting
-//! (K=N at 1/N): render K pure `Frame`s into K offscreen targets, then composite
-//! them onto the backbuffer as a weighted average. The average is done
-//! **in-shader** (sample the K textures, sum with per-texture weight) rather than
-//! via GL blend state — the 3D path keeps blending off, and an exact in-shader
-//! sum makes "static geometry averages to itself (solid), motion smears (faint)"
-//! fall straight out of the math.
+//! The foundation for fork+overlay (K=2 at 0.5/0.5): render K pure `Frame`s into
+//! K offscreen targets, then composite them onto the backbuffer as a weighted
+//! average. The average is done **in-shader** (sample the K textures, sum with
+//! per-texture weight) rather than via GL blend state — the 3D path keeps
+//! blending off, and an exact in-shader sum makes "geometry shared by every
+//! input averages to itself (solid), anything differing goes faint" fall
+//! straight out of the math.
 //!
 //! The GL side lives in `SceneContext::draw_composite`; the per-frame
 //! orchestration in `renderer::render_composited_frames`. This module owns the

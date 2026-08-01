@@ -2499,7 +2499,7 @@ a:hover {
     0 14px 36px rgba(0, 0, 0, 0.38);
   position: relative;
   /* Above the pane grid (pane headers are z-index 6 for their link menus), so
-     the ⚙ popover and event tooltip never clip under the window chrome. */
+     the debug drawer and event tooltip never clip under the window chrome. */
   z-index: 12;
 }
 
@@ -3106,7 +3106,7 @@ a:hover {
   box-shadow: none;
 }
 
-/* ---- restored scrubber polish: handles, tooltip, overflow chip, ⚙ ---- */
+/* ---- restored scrubber polish: handles, tooltip, overflow chip ---- */
 
 /* Breathing room between the rail (whose playhead overhangs its right edge
    when fully caught up) and the 🔮 button. */
@@ -3152,8 +3152,7 @@ a:hover {
    speculative re-simulations — not v1); multiplayer gets tiled/tabs in that
    slot, and with one client the view toggle is meaningless. Hidden, not
    disabled (design-multiplayer-ide-frontend.md §1). */
-.preview-pane.mp:not([data-count="1"]) #mp-extrap,
-.preview-pane.mp:not([data-count="1"]) .mp-adv {
+.preview-pane.mp:not([data-count="1"]) #mp-extrap {
   display: none;
 }
 
@@ -3276,84 +3275,3 @@ a:hover {
   pointer-events: none;
 }
 
-.mp-adv {
-  position: relative;
-}
-
-.mp-adv > summary {
-  list-style: none;
-  user-select: none;
-  font: 13px/1 var(--font-mono);
-  color: var(--text);
-  cursor: pointer;
-  background: rgba(65, 216, 230, 0.1);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 5px 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-}
-
-.mp-adv > summary::-webkit-details-marker {
-  display: none;
-}
-
-.mp-adv > summary:hover,
-.mp-adv[open] > summary {
-  border-color: var(--cyan);
-}
-
-.mp-adv-pop {
-  position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  background: rgba(30, 24, 51, 0.98);
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.mp-adv-pop label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  justify-content: space-between;
-}
-
-.mp-adv-pop select,
-.mp-adv-pop input[type="number"] {
-  font: 12px/1 var(--font-mono);
-  color: var(--text);
-  background: rgba(65, 216, 230, 0.1);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 4px 5px;
-}
-
-.mp-adv-pop select {
-  appearance: none;
-  -webkit-appearance: none;
-  padding-right: 20px;
-  cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%239b94b3'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 7px center;
-}
-
-.mp-adv-pop input[type="number"] {
-  width: 46px;
-  appearance: textfield;
-  -moz-appearance: textfield;
-}
-
-.mp-adv-pop input[type="number"]::-webkit-inner-spin-button,
-.mp-adv-pop input[type="number"]::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}

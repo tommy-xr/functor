@@ -276,7 +276,7 @@ The scripted transition also appears once in `mouse.pressed` or
 `mouse.released` on that frame's sampled snapshot.
 
 A `Mouse.* up` with no preceding press is a **parse error**, not a silently
-dropped line: live playback would suppress it while the `--ghost` forward-step
+dropped line: live playback would suppress it while the forward-step trajectory
 preview would replay it, so a stray release is rejected rather than allowed to
 make the preview and the real run disagree.
 

@@ -6,12 +6,9 @@
 //! - a **trail** of arrowheads tracing each mover's path, each pointing along
 //!   the local direction of travel (the clean-lines view), and
 //! - a **scene-space strobe**: real-geometry copies of each mover at its future
-//!   poses, color- or alpha-faded by age (the chronophotography view). Unlike the
-//!   screen-space `--ghost` compositor — which averages N whole frames, pinning
-//!   every ghost copy at 1/N opacity — copies here use the normal render path:
-//!   independently faded, with no division cap, while the camera stays live.
-//!   (The compositor remains the right tool for non-geometry motion such as
-//!   animated lighting, which no geometry copy can represent.)
+//!   poses, color- or alpha-faded by age (the chronophotography view). Copies
+//!   use the normal render path: independently faded, with no division cap,
+//!   while the camera stays live.
 //!
 //! The point is that this needs NO game cooperation: the runtime derives
 //! everything purely from what `draw` already renders. It diffs the rendered
@@ -29,9 +26,7 @@ use std::collections::BTreeMap;
 use cgmath::{vec4, Deg, InnerSpace, Matrix4, Quaternion, Rad, SquareMatrix, Vector3, Vector4};
 
 use crate::protocol::GameProducer;
-use crate::{
-    Camera2D, Frame, MaterialDescription, RecordedInput, Scene3D, SceneObject, Shape, SpriteLayer,
-};
+use crate::{Camera2D, Frame, MaterialDescription, RecordedInput, Scene3D, SceneObject, Shape};
 
 const TRAIL_RADIUS_3D: f32 = 0.07;
 const TRAIL_REFERENCE_HEIGHT_2D: f32 = 13.5;
@@ -532,9 +527,9 @@ pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<
 
 /// Scene-space strobe options.
 pub struct StrobeOptions {
-    /// Ghost copies per mover across the window (evenly sampled from its track).
+    /// Strobe copies per mover across the window (evenly sampled from its track).
     pub copies: usize,
-    /// The color ghosts fade toward with age — pick the scene's background so
+    /// The color copies fade toward with age — pick the scene's background so
     /// far-future copies read as receding into it.
     pub fade_to: [f32; 3],
     /// Color retention at (nearest, farthest) future — e.g. `(0.8, 0.2)` draws
@@ -797,13 +792,11 @@ pub fn overlay(scene: &mut Scene3D, trail: Scene3D) {
     };
 }
 
-/// The interactive future-preview mode — what the scrubber's selector (and the
-/// `--trajectory`/`--strobe`/`--ghost` launch flags, which seed it) ask the
-/// shell to overlay. One selector covers both preview families: the scene-diff
-/// overlays (trail / strobe / both — geometry on the normal render path) and
-/// `Ghost`, the screen-space compositor strobe (the only mode that can depict
-/// non-geometry motion such as animated lighting). Shared by both shells so
-/// the wire encoding and cycle order match.
+/// The interactive future-preview mode — what the scrubber (and the
+/// `--trajectory`/`--strobe` launch flags, which seed it) ask the shell to
+/// overlay: scene-diff overlays (trail / strobe / both) drawn as geometry on
+/// the normal render path. Shared by both shells so the wire encoding and
+/// cycle order match.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PreviewMode {
     #[default]
@@ -811,7 +804,6 @@ pub enum PreviewMode {
     Trail,
     Strobe,
     Both,
-    Ghost,
 }
 
 impl PreviewMode {
@@ -820,10 +812,6 @@ impl PreviewMode {
     }
     pub fn wants_strobe(self) -> bool {
         matches!(self, PreviewMode::Strobe | PreviewMode::Both)
-    }
-    /// The screen-space compositor strobe (docs/time-travel.md T6d).
-    pub fn wants_ghost(self) -> bool {
-        matches!(self, PreviewMode::Ghost)
     }
     /// Any mode that forward-simulates (i.e. everything but `Off`) — the
     /// timeline's future pseudo-bar shows exactly when this is true.
@@ -836,17 +824,16 @@ impl PreviewMode {
             PreviewMode::Trail => "trail",
             PreviewMode::Strobe => "strobe",
             PreviewMode::Both => "both",
-            PreviewMode::Ghost => "ghost",
         }
     }
-    /// Stable wire encoding for the wasm scrubber bridge (the DOM `<select>`
-    /// values); anything unknown is `Off`.
+    /// Stable wire encoding for the wasm scrubber bridge (`window.__scrub`'s
+    /// `setPreview({ mode })`); anything unknown is `Off`. Index 4 was the
+    /// removed screen-space ghost compositor and now falls through to `Off`.
     pub fn from_index(i: u32) -> PreviewMode {
         match i {
             1 => PreviewMode::Trail,
             2 => PreviewMode::Strobe,
             3 => PreviewMode::Both,
-            4 => PreviewMode::Ghost,
             _ => PreviewMode::Off,
         }
     }
@@ -860,7 +847,6 @@ impl PreviewMode {
 pub struct InteractivePreview {
     pub trail: bool,
     pub strobe: bool,
-    pub ghost: bool,
 }
 
 pub fn interactive_preview(
@@ -874,7 +860,6 @@ pub fn interactive_preview(
     InteractivePreview {
         trail: mode.wants_trail(),
         strobe: mode.wants_strobe(),
-        ghost: mode.wants_ghost(),
     }
 }
 
@@ -912,14 +897,12 @@ impl SceneOverlays {
         self.trail.is_none() && self.strobe.is_none()
     }
 
-    fn apply(&self, scene: &mut Scene3D, include_strobe: bool) {
+    fn apply(&self, scene: &mut Scene3D) {
         if let Some(trail) = &self.trail {
             overlay(scene, trail.clone());
         }
-        if include_strobe {
-            if let Some(strobe) = &self.strobe {
-                overlay(scene, strobe.clone());
-            }
+        if let Some(strobe) = &self.strobe {
+            overlay(scene, strobe.clone());
         }
     }
 }
@@ -927,13 +910,11 @@ impl SceneOverlays {
 /// A computed preview for the complete render frame. Sprite overlays use the
 /// anchor frame's layer order and camera. A future layer-count change truncates
 /// every layer conservatively; same-count reordering remains a positional-
-/// identity limitation until sprite layers have stable ids. Full-frame ghosting
-/// is still the mode that depicts future camera changes.
+/// identity limitation until sprite layers have stable ids.
 #[derive(Clone, Default)]
 pub struct FramePreview {
     pub scene: SceneOverlays,
     pub sprite_layers: Vec<SceneOverlays>,
-    sprite_cameras: Vec<Camera2D>,
 }
 
 impl FramePreview {
@@ -941,61 +922,14 @@ impl FramePreview {
         self.scene.is_empty() && self.sprite_layers.iter().all(SceneOverlays::is_empty)
     }
 
-    /// Add only trails to `frame`. The screen-space ghost compositor
-    /// uses this so trails remain solid across every averaged future frame.
-    /// Sprite trails get their own layer with the anchor camera, preventing a
-    /// panning future camera from smearing the marker path.
-    pub fn apply_trails(&self, frame: &mut Frame) -> bool {
-        self.scene.apply(&mut frame.scene, false);
-        if frame.sprite_layers.len() != self.sprite_layers.len() {
-            return false;
-        }
-        for index in (0..self.sprite_layers.len()).rev() {
-            if let Some(trail) = &self.sprite_layers[index].trail {
-                frame.sprite_layers.insert(
-                    index + 1,
-                    SpriteLayer {
-                        camera: self.sprite_cameras[index].clone(),
-                        scene: trail.clone(),
-                    },
-                );
-            }
-        }
-        true
-    }
-
-    /// Expand one debug-camera override per authored sprite layer to match the
-    /// trail layers inserted by [`Self::apply_trails`]. Each trail shares its
-    /// source layer's observer camera; later authored layers keep their index.
-    pub fn trail_camera_overrides(&self, cameras: &[Camera2D]) -> Vec<Camera2D> {
-        if cameras.len() != self.sprite_layers.len() {
-            return cameras.to_vec();
-        }
-        let mut expanded = Vec::with_capacity(
-            cameras.len()
-                + self
-                    .sprite_layers
-                    .iter()
-                    .filter(|overlays| overlays.trail.is_some())
-                    .count(),
-        );
-        for (camera, overlays) in cameras.iter().zip(&self.sprite_layers) {
-            expanded.push(camera.clone());
-            if overlays.trail.is_some() {
-                expanded.push(camera.clone());
-            }
-        }
-        expanded
-    }
-
     /// Add every requested scene-space overlay to a normal display frame.
     pub fn apply_all(&self, frame: &mut Frame) {
-        self.scene.apply(&mut frame.scene, true);
+        self.scene.apply(&mut frame.scene);
         if frame.sprite_layers.len() != self.sprite_layers.len() {
             return;
         }
         for (layer, overlays) in frame.sprite_layers.iter_mut().zip(&self.sprite_layers) {
-            overlays.apply(&mut layer.scene, true);
+            overlays.apply(&mut layer.scene);
         }
     }
 }
@@ -1110,11 +1044,6 @@ fn preview_from_frames(anchor: &Frame, futures: &[&Frame], opts: &PreviewOptions
     FramePreview {
         scene: scene_overlays(&scenes, opts, TRAIL_RADIUS_3D),
         sprite_layers,
-        sprite_cameras: anchor
-            .sprite_layers
-            .iter()
-            .map(|layer| layer.camera.clone())
-            .collect(),
     }
 }
 
@@ -1156,15 +1085,13 @@ mod tests {
             InteractivePreview {
                 trail: true,
                 strobe: true,
-                ghost: false,
             }
         );
         assert_eq!(
-            interactive_preview(PreviewMode::Ghost, true, false),
+            interactive_preview(PreviewMode::Trail, true, false),
             InteractivePreview {
-                trail: false,
+                trail: true,
                 strobe: false,
-                ghost: true,
             }
         );
         assert_eq!(
@@ -1273,57 +1200,7 @@ mod tests {
 
         assert!(
             preview.is_empty(),
-            "scene-space overlays use the anchor Camera2D; full-frame ghosting depicts camera motion"
-        );
-    }
-
-    #[test]
-    fn ghosted_sprite_trails_keep_the_anchor_camera() {
-        let mut anchor = rendered_frame_with_sprite(0.0, 0.0);
-        anchor.sprite_layers.push(SpriteLayer {
-            camera: Camera2D::new(24.0, 13.5).with_center(20.0, 0.0),
-            scene: frame(8.0, 0.0),
-        });
-        let mut future = rendered_frame_with_sprite(0.5, 5.0);
-        future.sprite_layers.push(anchor.sprite_layers[1].clone());
-        let preview = preview_from_frames(&anchor, &[&future], &preview_options(true, false));
-        let mut ghost = future.clone();
-
-        assert!(preview.apply_trails(&mut ghost));
-
-        assert_eq!(ghost.sprite_layers.len(), 3);
-        assert_eq!(
-            ghost.sprite_layers[1].camera, anchor.sprite_layers[0].camera,
-            "the added trail layer must not inherit the future camera"
-        );
-        assert_eq!(
-            ghost.sprite_layers[2].camera, future.sprite_layers[1].camera,
-            "the trail stays below the later HUD/foreground layer"
-        );
-        let debug_cameras = [
-            anchor.sprite_layers[0]
-                .camera
-                .clone()
-                .with_center(-4.0, 3.0),
-            anchor.sprite_layers[1]
-                .camera
-                .clone()
-                .with_center(16.0, 3.0),
-        ];
-        let expanded = preview.trail_camera_overrides(&debug_cameras);
-        assert_eq!(expanded.len(), 3);
-        assert_eq!(expanded[0], debug_cameras[0]);
-        assert_eq!(expanded[1], debug_cameras[0]);
-        assert_eq!(expanded[2], debug_cameras[1]);
-
-        let mut mismatched = ghost.clone();
-        mismatched.sprite_layers.push(SpriteLayer {
-            camera: Camera2D::new(8.0, 4.5),
-            scene: frame(0.0, 0.0),
-        });
-        assert!(
-            !preview.apply_trails(&mut mismatched),
-            "a heterogeneous ghost reports that its debug-camera indices cannot be expanded"
+            "scene-space overlays use the anchor Camera2D, so camera motion alone moves nothing"
         );
     }
 

@@ -479,12 +479,12 @@ pub enum ScrubControl {
         frame: u64,
         request_id: u32,
     },
-    /// Future-preview mode (docs/time-travel.md T6/T6d), pushed by the DOM
-    /// preview `<select>` (PreviewMode wire index: 0 off / 1 trail / 2 strobe /
-    /// 3 both / 4 ghost). The frame loop owns the preview state.
+    /// Future-preview mode (docs/time-travel.md T6), pushed by the
+    /// `window.__scrub` seam (PreviewMode wire index: 0 off / 1 trail /
+    /// 2 strobe / 3 both). The frame loop owns the preview state.
     SetPreview(u32),
-    /// The ⚙ popover's shared forward window (seconds) + samples-per-second
-    /// rate, pushed by the DOM inputs on change.
+    /// The shared forward window (seconds) + samples-per-second rate, pushed by
+    /// the rail's endpoint handle and the `window.__scrub` seam.
     SetPreviewConfig {
         window: f32,
         rate: usize,
@@ -1018,16 +1018,16 @@ pub fn functor_lang_scrub_step() {
     push_scrub(ScrubControl::Step);
 }
 
-/// Page → runtime: set the future-preview mode (the DOM preview `<select>`;
-/// 0 off / 1 trail / 2 strobe / 3 both / 4 ghost — `PreviewMode::from_index`).
+/// Page → runtime: set the future-preview mode (the `window.__scrub` seam;
+/// 0 off / 1 trail / 2 strobe / 3 both — `PreviewMode::from_index`).
 #[wasm_bindgen]
 pub fn functor_lang_scrub_set_preview(mode: u32) {
     push_scrub(ScrubControl::SetPreview(mode));
 }
 
 /// Page → runtime: set the preview's shared forward window (seconds) and
-/// samples-per-second rate (the ⚙ popover; JS owns the inputs and pushes on
-/// change).
+/// samples-per-second rate (pushed by the rail's endpoint handle and the
+/// `window.__scrub` seam).
 #[wasm_bindgen]
 pub fn functor_lang_scrub_set_preview_config(window: f32, rate: usize) {
     push_scrub(ScrubControl::SetPreviewConfig { window, rate });
