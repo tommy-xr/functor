@@ -1,4 +1,4 @@
-// platformer — a pure-model 2D sprite platformer (walk, jump, gravity) with a
+// A pure-model 2D sprite platformer (walk, jump, gravity) with a
 // CHASM: two ground platforms with a visible gap between them. Inspired by
 // Elm's classic platformer demo. Everything the simulation needs lives IN the
 // model, and there is deliberately NO `physics` hook — the whole state

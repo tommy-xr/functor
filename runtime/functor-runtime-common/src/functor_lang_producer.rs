@@ -1956,7 +1956,7 @@ pub fn materialize_counterfactual_history(
 /// [`FrameTime`] it was drawn at (`dts = 0`: a still of the future), for the
 /// shell to composite — each at its own time, so render-time animation (the
 /// skinned-skeleton pose) advances through the strobe. To keep velocity-integrated
-/// motion (platformer's jump) faithful, each division is advanced in FINE
+/// motion (the platformer's jump) faithful, each division is advanced in FINE
 /// `sub_dt = 1/60` sub-steps (`steps_per_division ≈ dt / sub_dt`) and sampled
 /// only at the boundary, so the strobe still has `divisions` frames but each is
 /// accurate integration. Division `div` draws at

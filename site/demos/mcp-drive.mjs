@@ -9,8 +9,8 @@
 //
 // The loop it shows is the documented one: launch_game → pause → get_state →
 // send_input → step → capture_frame. It is reproducible by construction: the
-// clock is pinned to an explicit tts (so even the walk-cycle phase the hero draws
-// from it is fixed), every step advances a fixed dts, and the two values that
+// clock is pinned to an explicit tts (so even the hero's walk-cycle phase, which
+// is derived from it, is fixed), every step advances a fixed dts, and the two values that
 // could not be reproduced — the launch `port` and the `frame` counter, which
 // count from wherever the game got to before it was paused — are the two the
 // transcript does not show. Everything shown is the server's own answer,
@@ -313,8 +313,8 @@ try {
   // --- 2. Pause: the clock is the agent's now --------------------------------
   await caption("Pin the clock — <b>pause</b>. Nothing advances unless the agent asks.");
   // An explicit tts, rather than "wherever it happens to be": the clock is then
-  // the same on every capture, and so is the walk animation phase the hero draws
-  // from it.
+  // the same on every capture, and so is the hero's walk animation phase, which
+  // is derived from it.
   const paused = await call("pause", { session, tts: 0 });
   await res(String(paused.json));
   await stage(`session ${session} — paused`, true);

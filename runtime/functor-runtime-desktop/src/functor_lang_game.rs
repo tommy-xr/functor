@@ -998,7 +998,7 @@ impl Game for FunctorLangGame {
     /// window of `divisions` divisions, each `dt` wide, from `start_tts` (a dry
     /// run over throwaway state — the live producer is untouched), then `draw`
     /// each stepped model at its division-boundary time and return the frames for
-    /// the shell to composite. To keep velocity-integrated motion (platformer's jump)
+    /// the shell to composite. To keep velocity-integrated motion (the platformer's jump)
     /// faithful, each division is advanced in FINE `sub_dt = 1/60` sub-steps
     /// (`steps_per_division ≈ dt / sub_dt`) and sampled only at the boundary, so
     /// the strobe still has `divisions` frames but each is accurate integration.
