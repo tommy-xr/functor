@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn substitutes_the_mouse_capture_boolean() {
         let html =
-            render_functor_lang_index("game.fun", &["game.fun".to_string()], false, "captured");
+            render_functor_lang_index("game.fun", &["game.fun".to_string()], false, "captured", "");
         assert!(html.contains("const gameMouseCapture = false"));
         assert!(!html.contains("__FUNCTOR_MOUSE_CAPTURE__"));
     }

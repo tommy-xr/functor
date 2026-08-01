@@ -2213,6 +2213,7 @@ mod tests {
 
         let stepped = forward_step_scene(
             &session,
+            &EntryNames::UNPREFIXED,
             &Value::Number(0.0),
             false,
             false,
