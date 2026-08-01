@@ -38,6 +38,17 @@ export interface StatusBar {
   setProblems: (items: Problem[]) => void;
   appendOutput: (level: ConsoleLevel, text: string, frame?: number | null) => void;
   setExecutions: (items: Execution[]) => void;
+  /**
+   * A slot on the status strip for whichever surface is currently open — the
+   * pane grid's NETWORK legend and its demoted pane readouts today.
+   *
+   * It is an ELEMENT rather than store state on purpose: its owner (mp-panes)
+   * is imperative DOM outside the React islands and repaints per frame, and
+   * routing a 60Hz frame counter through the store would re-render the whole
+   * bar — output list included — once per frame. React mounts this node and
+   * never looks inside it.
+   */
+  viewStrip: HTMLElement;
 }
 
 /** One rendered output row. `time` is stamped at append, not at flush. */
@@ -74,6 +85,8 @@ export const outputPreamble = (frame: number | null, time: string): string =>
 export const createStatusBarStore = (): StatusBarStore => {
   let snapshot: StatusBarSnapshot = { problems: [], output: [], executions: [] };
   const listeners = new Set<() => void>();
+  const viewStrip = document.createElement("div");
+  viewStrip.className = "statusbar-view";
 
   const emit = (next: StatusBarSnapshot): void => {
     snapshot = next;
@@ -97,6 +110,7 @@ export const createStatusBarStore = (): StatusBarStore => {
   };
 
   return {
+    viewStrip,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => {

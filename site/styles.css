@@ -2965,6 +2965,28 @@ a:hover {
   grid-auto-rows: minmax(0, 1fr);
 }
 
+/* TILED is one row, and says so: a flex row rather than auto-fit columns, which
+   wrapped into a second row as soon as a fourth cell existed (three clients and
+   an authority, or two and the open seat) — the one thing "tiled" promises not
+   to do. The seat rides the end of the row as a slim rail instead of taking a
+   pane's worth of it. */
+.mp-grid[data-view="tiled"] {
+  display: flex;
+}
+
+.mp-grid[data-view="tiled"] > * {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.mp-grid[data-view="tiled"] .mp-add-tile {
+  flex: 0 0 clamp(44px, 5%, 68px);
+}
+
+.mp-grid[data-view="tiled"] .mp-add-label {
+  display: none;
+}
+
 .mp-grid[data-view="tabs"] {
   grid-template-columns: 1fr;
   padding-top: 0;
@@ -3005,13 +3027,18 @@ a:hover {
   grid-row: span 2;
 }
 
-.mp-grid[data-view="grid"][data-clients="1"] .mp-pane:not(.server) {
+/* A lone client stretches only when nothing else wants the cell beside it. An
+   OPEN SEAT (the "+" tile) is not a hole — it is the picture of what pressing
+   it does — so with the seat showing, the client sits beside it at the size its
+   new peer will be. */
+.mp-grid[data-view="grid"][data-clients="1"][data-seat="full"] .mp-pane:not(.server) {
   grid-column: 1 / -1;
 }
 
-/* Nothing follows this client — no peer beside it and no server strip below,
-   since a server pane would be the last child instead. */
-.mp-grid[data-view="grid"] .mp-pane:last-child:nth-child(odd) {
+/* Three clients and no authority: nothing closes the bottom row (no server
+   strip, and the seat is full at MAX_CLIENTS), so the odd last client stretches
+   rather than leaving a whole empty quadrant. */
+.mp-grid[data-view="grid"][data-clients="3"][data-server="no"] .mp-pane:nth-child(3) {
   grid-column: 1 / -1;
 }
 
@@ -3020,11 +3047,334 @@ a:hover {
   grid-row: span 1;
 }
 
+/* ---- network view: the compact hub, the clients around it ----
+
+   design-multiplayer-ide-frontend.md, Addendum 5 + 5a.2. Grid and tiled answer
+   "what is each pane running"; NETWORK answers "who is talking to whom" — so
+   the authority moves to the middle of the stage and the players sit around it,
+   with a measured wire per link (mp-network.ts) drawn behind the cards.
+
+   The SERVER IS THE SMALLEST WINDOW here, inverting v1. The gameplay is on the
+   clients, and a hub that outsized them spent the stage on a pane nobody
+   watches; what says "hub" is that every wire ends at it, not its acreage. So
+   the authority is a compact NODE — it opts out of its cell's stretch and takes
+   a clamped size instead — and the clients keep the real estate.
+
+   The arrangement is a fixed eight-row track set, so a card's placement is a
+   span rather than a computed position — the same class-change-only rule the
+   other views follow, and the wires re-measure from wherever the cards land.
+
+     1 client  · the spoke on the left, the hub far right, a long wire between.
+     2 clients · left and right, full height, with the hub in the channel
+                 between them and parked ABOVE their centreline, so the two
+                 wires leave at different angles instead of forming one
+                 straight line drawn through the hub.
+     3 clients · the same two flanking cards, the third parked below the hub in
+                 the middle channel — the channel its wire runs down.
+
+   Client 1 holds column 1, rows 1–8, at EVERY count: adding or dropping a
+   client never moves the pane you are playing in. */
+
+.mp-grid[data-view="network"] {
+  /* The middle track is a channel, not a pane slot: it holds the hub (which is
+     smaller than the track) and the wires that cross it. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.52fr) minmax(0, 1fr);
+  grid-template-rows: repeat(8, minmax(0, 1fr));
+  gap: 8px 44px;
+  padding: 12px 18px;
+}
+
+.mp-grid[data-view="network"] .mp-pane:not(.server):nth-child(1) {
+  grid-column: 1;
+  grid-row: 1 / span 8;
+}
+
+.mp-grid[data-view="network"] .mp-pane:not(.server):nth-child(2) {
+  grid-column: 3;
+  grid-row: 1 / span 8;
+}
+
+.mp-grid[data-view="network"] .mp-pane:not(.server):nth-child(3) {
+  grid-column: 2;
+  grid-row: 5 / span 4;
+}
+
+/* The hub: a compact node parked in the upper middle. `justify-self`/
+   `align-self` are what make it smaller than its cell — the clamp then keeps
+   it a node at any stage size rather than a scaled-down window. */
+.mp-grid[data-view="network"] .mp-pane.server {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  justify-self: center;
+  align-self: center;
+  width: clamp(128px, 100%, 232px);
+  height: clamp(92px, 100%, 176px);
+}
+
+/* A lone client has no second flank, so the hub crosses to the far column and
+   the wire gets the whole stage to run across. */
+.mp-grid[data-view="network"][data-clients="1"] .mp-pane.server {
+  grid-column: 3;
+}
+
+/* ---- the stage: the grid, its legend, and the wire layer under the cards ---- */
+
+.mp-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* The containing block the wire layer measures against. */
+  position: relative;
+}
+
+.mp-stage .mp-grid {
+  /* The grid keeps its own flex sizing now that the stage is the flex item. */
+  flex: 1;
+  min-height: 0;
+}
+
+/* Two layers, one on each side of the grid in the DOM. The WIRES sit before it
+   so the pane cards (which are positioned) paint over them — wires run behind
+   the windows, like the mockup. The CHIPS sit after it, because a label buried
+   under a card is a label you cannot read. Both share the stage's box, so one
+   measurement places both. */
+.mp-net-layer,
+.mp-net-chips {
+  display: none;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mp-stage[data-view="network"] .mp-net-layer,
+.mp-stage[data-view="network"] .mp-net-chips {
+  display: block;
+}
+
+.mp-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* The wire itself: the client's own ink, kept quiet. It is context — the
+   packets moving along it are the thing to watch. */
+.mp-wire {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  opacity: 0.42;
+}
+
+/* COLOR says who, SIZE says how much (Addendum 5a.1). Both directions are
+   circles: intent is the client's own player color, lit like the player's other
+   chrome; authority is the server's slate, a smaller and quieter dot, because
+   it arrives every frame on every wire and a bright badge sixty times a second
+   is not information — it is weather. (The retired hollow-cyan square also read
+   as player 1, whose color IS cyan.) */
+.mp-packet.up {
+  fill: currentColor;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.mp-packet.down {
+  fill: var(--scrub-server);
+  filter: drop-shadow(0 0 3px rgba(139, 131, 173, 0.75));
+}
+
+/* The mid-edge chip: this client's CONFIGURED link profile. It is a label, not
+   a measurement — the coordinator's links are still perfect. */
+.mp-edge-chip {
+  position: absolute;
+  /* The layer is click-through; the chip is not, so its title (the note that
+     the profile is configured, not measured) is reachable on hover. */
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  font: 9.5px/1 var(--font-mono);
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  background: rgba(15, 12, 29, 0.92);
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+
+.mp-edge-chip b {
+  font-weight: 400;
+  color: var(--text);
+}
+
+/* The packet counter rides the chip, and only under reduced motion — see the
+   dots' note below. */
+.mp-edge-chip i {
+  display: none;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reduced motion: NOTHING flies. mp-network.ts stops spawning dots entirely
+   and each edge shows a static packet count instead, so the traffic is still
+   legible — a number that ticks up rather than a movement to track. */
+@media (prefers-reduced-motion: reduce) {
+  .mp-edge-chip i {
+    display: inline;
+    color: var(--cyan);
+  }
+}
+
+/* ---- the network status strip (Addendum 5a.3) ----
+
+   The legend, and the readouts the pane headers drop when they clip to
+   thumbnail width, ride the STATUS BAR rather than the stage: the stage is the
+   topology, and a caption band above it was pushing the cards down and still
+   spilling out of the headers. The bar already is the page's line of ambient
+   state, so the view's own state belongs on it — scoped to the view, gone the
+   moment you leave it. */
+
+.statusbar-view-host {
+  margin-left: auto;
+  min-width: 0;
+}
+
+.statusbar-view {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 18px;
+  min-width: 0;
+  padding: 4px 4px 4px 12px;
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.statusbar-view[hidden] {
+  display: none;
+}
+
+/* The packet legend describes dots that only fly in the NETWORK view; the pane
+   readouts beside it are carried in every multi-pane view (see mp-panes.ts). */
+.statusbar-view:not([data-view="network"]) .mp-vs-legend {
+  display: none;
+}
+
+.mp-vs-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mp-vs-legend b {
+  font-weight: 400;
+  color: var(--text);
+}
+
+.mp-vs-note {
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mp-sw {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 999px;
+  margin-right: 7px;
+}
+
+/* One intent swatch per live client, each in that client's ink (mp-panes.ts). */
+.mp-vs-inks {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 7px;
+  vertical-align: middle;
+}
+
+.mp-sw.up {
+  --pc: var(--scrub-p1);
+  width: 8px;
+  height: 8px;
+  margin: 0;
+  background: var(--pc);
+  box-shadow: 0 0 6px var(--pc);
+}
+
+/* The authority swatch is the authority dot: smaller, slate, unlit. */
+.mp-sw.down {
+  width: 5px;
+  height: 5px;
+  background: var(--scrub-server);
+  box-shadow: 0 0 4px rgba(139, 131, 173, 0.7);
+}
+
+/* The demoted header details: one row per pane, in pane order. */
+.mp-vs-panes {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+}
+
+.mp-vs-pane {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mp-vs-pane b {
+  font-weight: 400;
+  opacity: 0.62;
+}
+
+.mp-vs-pane .mp-digit {
+  font-style: normal;
+}
+
+.mp-vs-who {
+  font-style: normal;
+  letter-spacing: 0.12em;
+  color: var(--scrub-server);
+}
+
+/* One legend per motion preference (see the pane module): the dot legend only
+   under motion, the counts note only under reduce. */
+.statusbar-view .still {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusbar-view .motion {
+    display: none;
+  }
+
+  .statusbar-view .still {
+    display: inline;
+  }
+}
+
 /* ---- pane shell ---- */
 
 .mp-pane {
   --pc: var(--cyan);
   position: relative;
+  /* The header clips against the PANE's width, not the viewport's — a pane is
+     a thumbnail at three-up on a wide screen and full width at one-up on a
+     narrow one. See the header's priority rules. */
+  container: mp-pane / inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -3123,7 +3473,51 @@ a:hover {
   display: inline-flex;
   align-items: center;
   gap: 9px;
+  min-width: 0;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- header priority: what survives a thumbnail (Addendum 5a.3) ----
+
+   A pane header is a sentence about one pane, and at network-view widths there
+   is not room for the sentence. Rather than let it spill (it cannot clip: the
+   link menu drops OUT of this header), the header sheds it in priority order,
+   least load-bearing first:
+
+     1. the frame counter — a number that changes 60×/s, and the one the
+        status strip now carries for every pane at once;
+     2. the prose — the role word, the "authority" caption, "⌨ you" (the focus
+        glow already says which pane holds the keyboard), and the word beside
+        the link dot;
+     3. the link chip, which truncates rather than disappearing.
+
+   What NEVER goes: the DIGIT (which pane this is) and the CONNECTION DOT
+   (whether it is talking) — identity and liveness, the two things you look at
+   a thumbnail's header for at all. */
+
+@container mp-pane (max-width: 330px) {
+  .mp-pf {
+    display: none;
+  }
+}
+
+@container mp-pane (max-width: 250px) {
+  /* The SERVER keeps its word: it carries no digit, so the label is the whole
+     of its identity — the one piece of prose that is load-bearing. */
+  .mp-pane:not(.server) .mp-role,
+  .mp-authority,
+  .mp-you,
+  .mp-conn-t {
+    display: none;
+  }
+}
+
+.mp-conn-d {
+  font-weight: 400;
+}
+
+.mp-conn-t {
+  margin-left: 4px;
 }
 
 .mp-you {
@@ -3355,10 +3749,122 @@ a:hover {
   .preview-pane.mp .mp-grid {
     grid-template-columns: 1fr;
   }
+
+  /* Tiled's flex row becomes a flex column — the same stack the grid views
+     collapse to, with the seat as a short band at the end of it. */
+  .preview-pane.mp .mp-grid[data-view="tiled"] {
+    flex-direction: column;
+  }
+
+  /* Network has no room for a hub flanked by spokes in one narrow column, so
+     it collapses to the same stack — the clients over the authority, in DOM
+     order. The wires re-measure and run vertically down the chain, so the
+     topology still reads; only the geometry changes. */
+  .preview-pane.mp .mp-grid[data-view="network"] {
+    grid-template-rows: none;
+    grid-auto-rows: minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .preview-pane.mp .mp-grid[data-view="network"] .mp-pane {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  /* The hub keeps its full width in a one-column stack (a centred node in a
+     list reads as a broken cell) but stays the SHORT card — still the smallest
+     window, still the thing the wires run to. */
+  .preview-pane.mp .mp-grid[data-view="network"] .mp-pane.server {
+    justify-self: stretch;
+    width: auto;
+    height: clamp(76px, 62%, 132px);
+  }
+}
+
+/* ---- the "+" tile: add a client where the client will appear ----
+
+   Addendum 5a.7. The CLIENTS dropdown is the numeric control; this is the
+   spatial one — an empty seat at the table, drawn as the dashed outline of the
+   pane it would become. It sits in the cell after the last client, so the
+   layout answers "what happens if I press this" before the tooltip does.
+   Hidden at MAX_CLIENTS, and in TABS (which has its own "+" tab) and NETWORK
+   (a topology of real participants only — see mp-panes.ts). */
+
+.mp-add-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  cursor: pointer;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--cyan) 22%, rgba(43, 37, 66, 0.9));
+  border-radius: 5px;
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+
+.mp-add-tile:hover,
+.mp-add-tile:focus-visible {
+  color: var(--cyan);
+  border-color: color-mix(in srgb, var(--cyan) 55%, transparent);
+  background: rgba(65, 216, 230, 0.05);
+}
+
+.mp-add-plus {
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 300;
+  opacity: 0.8;
+}
+
+/* In GRID the seat is exactly the cell the next client will take — except when
+   it would be alone on its row, where it becomes a short full-width band
+   instead of a cell beside a hole. */
+.mp-grid[data-view="grid"] .mp-add-tile {
+  grid-row: span 2;
+}
+
+.mp-grid[data-view="grid"][data-clients="2"] .mp-add-tile {
+  grid-column: 1 / -1;
+  grid-row: span 1;
+  /* A band, not a cell: it opts out of the row's stretch so an empty seat
+     never outweighs the panes that are actually running. */
+  align-self: center;
+  height: clamp(64px, 100%, 116px);
+}
+
+.mp-grid[data-view="tabs"] .mp-add-tile,
+.mp-grid[data-view="network"] .mp-add-tile {
+  display: none;
+}
+
+/* The tab-strip twin: the same action, at the size the tab strip allows. */
+.mp-tab.add {
+  --pc: var(--cyan);
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 12px;
+  filter: none;
+  background: transparent;
+  border-style: dashed;
+}
+
+.mp-tab.add:hover {
+  color: var(--cyan);
+  border-color: color-mix(in srgb, var(--cyan) 55%, transparent);
 }
 
 /* `hidden` must win over the display rules above. */
 .mp-tabs[hidden],
+.mp-add-tile[hidden],
+.mp-tab.add[hidden],
 .mp-link-menu[hidden] {
   display: none;
 }

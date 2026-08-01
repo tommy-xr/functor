@@ -24,6 +24,11 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
   const { problems, output, executions } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [open, setOpen] = useState<TabName | null>(null);
   const outputList = useRef<HTMLDivElement>(null);
+  // The view-scoped strip (`store.viewStrip`): a node an imperative surface
+  // fills — today the pane grid's NETWORK legend and pane readouts. React
+  // mounts it and never renders into it, so its owner can repaint per frame
+  // without touching this component. See status-bar-store's note.
+  const viewHost = useRef<HTMLDivElement>(null);
   // Stick to the bottom only if the user is already there (don't yank the
   // scroll out from under them mid-read). Measured HERE, during the render
   // that carries new lines: the DOM still holds the previous ones, so this is
@@ -53,6 +58,12 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
     const list = outputList.current;
     if (list && open === "output") list.scrollTop = list.scrollHeight;
   }, [open]);
+
+  // `replaceChildren`, not `appendChild`: React does not manage this node, so a
+  // swapped store would otherwise leave the previous strip mounted beside it.
+  useLayoutEffect(() => {
+    viewHost.current?.replaceChildren(store.viewStrip);
+  }, [store]);
 
   const panel = (name: TabName) => ({
     className: `statusbar-list ${name}-list`,
@@ -120,6 +131,7 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
         {tab("problems", problemsLabel(problems.length, errors), errors > 0 ? " has-problems" : "")}
         {tab("output", "output")}
         {tab("executions", executions.length ? `⏸ ${executions.length} executions` : "executions")}
+        <div className="statusbar-view-host" ref={viewHost} />
       </div>
     </>
   );
