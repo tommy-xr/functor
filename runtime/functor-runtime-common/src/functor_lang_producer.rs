@@ -135,16 +135,17 @@ impl EntryNames {
     /// a member of that block, so it resolves against the module's CANONICAL
     /// path — `Server.init`, `Server.tick`, … The canonical path comes from
     /// the linked project ([`EntryRole::resolve`]), never from the bare block
-    /// name.
+    /// name. Today a role's file IS its project's entry, whose blocks
+    /// canonicalize bare, so `path` is one segment; taking it from the
+    /// lowerer is what keeps that an implementation detail.
     pub fn in_module(path: &str) -> EntryNames {
         EntryNames::map(|base| intern(format!("{path}.{base}")))
     }
 
     /// Build one role's names by mapping each canonical base — the single
     /// place the 14-entry contract is enumerated.
-    fn map(resolve: impl Fn(&'static str) -> &'static str) -> EntryNames {
+    fn map(n: impl Fn(&'static str) -> &'static str) -> EntryNames {
         let u = EntryNames::UNPREFIXED;
-        let n = resolve;
         EntryNames {
             init: n(u.init),
             tick: n(u.tick),

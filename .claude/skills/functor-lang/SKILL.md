@@ -225,7 +225,8 @@ bindings are the bare `init`/`tick`/`draw` roots; the other entry is just a
 qualified sibling module), so roles share code — `examples/mp`'s client and
 server share a `protocol.fun` wire codec — without drifting. A role may also
 be an object pointing at a **shared file**, so two roles live in ONE file and
-hot-reload atomically. The preferred form names an **inline module** —
+hot-reload atomically. The preferred form on native names an **inline module**
+—
 `"server": { "file": "game.fun", "module": "Server" }` — whose members ARE
 that role's contract (`Server.init`/`Server.tick`/`Server.draw`/…, resolved
 against the block's canonical path; an unknown block name is a load/build
@@ -236,8 +237,9 @@ a binding **prefix** — `"server": { "file": "game.fun", "prefix": "server" }`
 `examples/orbs` is the same-file reference: its `client` role is the file's
 plain top-level contract and its `server` role is a `module Server { … }`
 block. Module roles are **native-only** for now (`run wasm`/`build wasm`/
-`run vr` refuse them, like vr already refuses prefixes); prefixed roles run
-on native and wasm (`run wasm`/`build wasm` bake the prefix into the page's
+`run vr` refuse them, like vr already refuses prefixes), so a role that must
+also run in the browser stays on the prefix form until the web runtime learns
+the module one; prefixed roles run on native and wasm (`run wasm`/`build wasm` bake the prefix into the page's
 boot config; the site player takes `?prefix=<ident>`). `entry` and `entries`
 together are refused.
 

@@ -241,7 +241,7 @@ directory of sibling modules (file = module). `--entry <name>` picks the role
 `functor -d examples/mp run native --entry server`. `examples/mp` is the reference —
 client + authoritative server over a shared `protocol.fun`. A role may also be an
 object pointing at a **shared file**, so two roles live in ONE file and an edit
-hot-reloads both atomically. The preferred form names an **inline module** —
+hot-reloads both atomically. The preferred form on native names an **inline module** —
 `"server": {"file": "game.fun", "module": "Server"}` — whose members are that role's
 contract (`Server.init`/`Server.tick`/`Server.draw`/…; an unknown block is a load/build
 error listing the file's blocks). The transitional form names a binding **prefix** —
@@ -249,7 +249,8 @@ error listing the file's blocks). The transitional form names a binding **prefix
 binding through the prefix as camelCase (`serverInit`/`serverTick`/…); a role declares at
 most one of the two. `build` validates every declared role's contract with its resolved
 names. Module roles are native-only for now (`run wasm`/`build wasm`/`run vr` refuse
-them); prefixed roles also run on wasm (`run wasm`/`build wasm` bake the prefix into the
+them, so a role that must also run in the browser stays on the prefix form);
+prefixed roles also run on wasm (`run wasm`/`build wasm` bake the prefix into the
 page's boot config; the site player takes `?prefix=<ident>`) — vr loads the unprefixed
 contract only. `examples/orbs` is the same-file reference: its `client` role is the
 file's plain top-level contract and its `server` role is a `module Server { … }` block.

@@ -1737,7 +1737,6 @@ mod tests {
         );
     }
 
-    /// A pushed entry buffer survives a SIBLING-file reload: editing
     /// A `{ "file": …, "module": "Server" }` role runs the BLOCK's members as
     /// its contract, and keeps hot-reloading: the block is re-resolved against
     /// each reloaded project (model preserved), while an edit that removes it
@@ -1801,6 +1800,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A pushed entry buffer survives a SIBLING-file reload: editing
     /// `config.fun` must reload around the pushed `game.fun`, and only an
     /// on-disk edit of the entry itself reverts to disk (last-write-wins,
     /// per file). [Codex Medium — B8 review]

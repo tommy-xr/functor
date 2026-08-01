@@ -170,16 +170,17 @@ let orbFree = () => Color.rgb(0.85, 0.88, 0.95)   // unclaimed: dim white glow
 let wallColor = () => Color.rgb(0.3, 0.35, 0.55)
 let bg = () => Color.rgb(0.02, 0.025, 0.06)
 
-// The starting model: two seats joined through the handshake. Both roles
-// start from it (the `Server` block calls it too), so it is a FUNCTION —
-// `init` is a value, and a value can only be spent once.
-let newGame = () =>
+// The starting model both roles begin from: two seats joined through the
+// handshake. `init` aliases it rather than owning it (like `draw`/`board`
+// below), so the `Server` block can start from the same model without
+// shadowing itself.
+let initialGame =
   let (w1, meWelcome) = join(newWorld()) in
   let (w2, botWelcome) = join(w1) in
   { myPid: welcomePid(meWelcome), botPid: welcomePid(botWelcome),
     world: w2, intent: coast }
 
-let init = newGame()
+let init = initialGame
 
 // Held LEVELS, read once per tick — exactly what a transport forwards as a Steer.
 let sampledInput = (m, snap: Input.snapshot) =>
@@ -265,7 +266,7 @@ let draw = board
 // step, the renderer) is visible in here bare.
 
 module Server {
-  let init = newGame()
+  let init = initialGame
 
   let tick = (m, dt: float, tts: float) =>
     let steer = (pid: float, w: World): World =>

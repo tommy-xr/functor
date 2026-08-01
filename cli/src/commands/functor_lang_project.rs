@@ -651,15 +651,18 @@ impl FunctorLangProject {
         // An inline-module role is native-only for now: the wasm host page and
         // the device push path both boot their embedded producer with the
         // unprefixed contract, so running it there would silently play the
-        // wrong role. (Native passes --entry-module.)
-        if !self.module.is_empty() && matches!(environment, Environment::Vr | Environment::Wasm) {
+        // wrong role. (Native passes --entry-module.) The test is "not
+        // native", so a future environment is refused until it is taught the
+        // form, rather than silently booting the wrong role.
+        if !self.module.is_empty() && !matches!(environment, Environment::Native) {
             return Err(Error::other(format!(
                 "entry module `{}` is not supported on {} yet — run this role with \
-`run native` (that shell loads the unprefixed contract)",
+`run native` (the other shells load the unprefixed contract)",
                 self.module,
                 match environment {
                     Environment::Vr => "vr",
-                    _ => "wasm",
+                    Environment::Wasm => "wasm",
+                    Environment::Native => unreachable!("guarded above"),
                 }
             )));
         }
