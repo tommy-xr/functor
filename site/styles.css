@@ -950,6 +950,74 @@ a:hover {
   color: var(--cyan);
 }
 
+/* Editor configuration reads as state, not as a header action. Sandbox and
+   IDE place this near the right edge of their status strip — the always-
+   present view host before it carries the right-pushing auto margin. */
+.editor-keybindings-toggle {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  line-height: inherit;
+  padding: 4px 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.editor-keybindings-toggle:hover,
+.editor-keybindings-toggle:focus-visible {
+  color: var(--text);
+}
+
+.editor-keybindings-toggle:focus-visible {
+  outline: 1px solid rgba(65, 216, 230, 0.65);
+  outline-offset: -2px;
+}
+
+.editor-keybindings-toggle[aria-pressed="true"] {
+  color: var(--cyan);
+}
+
+/* The Vim mode block — airline-style: the segment's BACKGROUND takes the
+   mode's color (cyan NORMAL, green INSERT, pink VISUAL, red REPLACE) with
+   dark ink and a soft neon glow bleeding into the strip. */
+.statusbar-vim[data-vim-mode] {
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.statusbar-vim[data-vim-mode="normal"] {
+  background: var(--cyan);
+  box-shadow: 0 0 10px rgba(65, 216, 230, 0.5);
+}
+
+.statusbar-vim[data-vim-mode="insert"] {
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(111, 220, 146, 0.5);
+}
+
+.statusbar-vim[data-vim-mode^="visual"] {
+  background: var(--pink);
+  box-shadow: 0 0 10px rgba(232, 88, 184, 0.5);
+}
+
+.statusbar-vim[data-vim-mode="replace"] {
+  background: var(--red);
+  box-shadow: 0 0 10px rgba(242, 99, 127, 0.5);
+}
+
+.editor-keybindings-toggle[aria-busy="true"] {
+  cursor: progress;
+}
+
+.editor-keybindings-toggle[aria-disabled="true"] {
+  opacity: 0.72;
+  cursor: default;
+}
+
 .status-pill {
   font-family: var(--font-mono);
   font-weight: 600;
@@ -2196,6 +2264,9 @@ a:hover {
   display: flex;
   gap: 2px;
   padding: 0 8px;
+  /* The Vim mode segment can push a narrow strip past its width; scroll the
+     strip rather than wrapping tabs onto a second row. */
+  overflow-x: auto;
 }
 
 .statusbar-tab {
@@ -2207,6 +2278,7 @@ a:hover {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   padding: 4px 10px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -2214,9 +2286,82 @@ a:hover {
   color: var(--text);
 }
 
+/* Inset, like the keys toggle — the strip clips overflow (it scrolls when
+   too narrow), which would swallow the UA's outset focus ring. */
+.statusbar-tab:focus-visible {
+  outline: 1px solid rgba(65, 216, 230, 0.65);
+  outline-offset: -2px;
+}
+
 .statusbar-tab.active {
   color: var(--cyan);
   box-shadow: inset 0 2px 0 var(--cyan);
+}
+
+/* The Vim mode block, pinned to the strip's right corner — the last child,
+   after the vim toggle (whose auto margin pushes the pair right). The
+   adapter renders into it imperatively: the clickable --MODE-- readout,
+   pending keys, and the `:` / `/` command input. The per-mode background
+   blocks live with the `.statusbar-vim[data-vim-mode]` rules above. */
+.statusbar-vim {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 40%;
+  padding: 0 10px;
+  /* Cancel the strip's right padding: the mode block sits truly flush with
+     the strip's corner, like a real airline segment. */
+  margin-right: -8px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  /* On a strip too narrow for everything, the readout yields — truncating
+     rather than wrapping or pushing the vim toggle off-screen. */
+  white-space: nowrap;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.statusbar-vim[hidden] {
+  display: none;
+}
+
+/* The adapter still renders into the host — pending keys and the `:` / `/`
+   dialog input stay — but its own `--MODE--` button and flex spacer are
+   hidden: the segment's React label carries the mode without the hyphens.
+   Both adapter spans are identified by their inline styles (cursor:pointer
+   on the click-to-Esc button, flex:1 on the spacer); dialogs are divs and
+   the pending-keys span is unstyled, so neither is caught. Coupled to the
+   pinned @replit/codemirror-vim internals on purpose. */
+.statusbar-vim-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.statusbar-vim-host > span[style*="cursor"],
+.statusbar-vim-host > span[style*="flex"] {
+  display: none;
+}
+
+/* While a `:` / `/` dialog occupies the host, the dialog IS the readout —
+   drop the mode label instead of stacking NORMAL next to the command line. */
+.statusbar-vim:has(.statusbar-vim-host > div) > .statusbar-vim-mode {
+  display: none;
+}
+
+.statusbar-vim input {
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  /* Inherit the mode block's dark ink — the `:` dialog sits on a colored
+     background. */
+  color: inherit;
+  font: inherit;
 }
 
 .statusbar-tab.has-problems {
@@ -2226,6 +2371,14 @@ a:hover {
 .statusbar-tab.has-problems.active {
   color: var(--red);
   box-shadow: inset 0 2px 0 var(--red);
+}
+
+@media (pointer: coarse) {
+  .statusbar-strip .editor-keybindings-toggle {
+    min-height: 28px;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
 }
 
 .statusbar-panel {

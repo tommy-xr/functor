@@ -77,6 +77,9 @@
 
     <div id="statusbar"></div>
 
+    <!-- Splitting keeps the opt-in Vim adapter lazy. Preload the editor's
+         static CodeMirror chunk so that split does not add a serial RTT. -->
+    <link rel="modulepreload" href="assets/sandbox-chunk.js" />
     <script type="module" src="assets/sandbox.js"></script>
   </body>
 </html>

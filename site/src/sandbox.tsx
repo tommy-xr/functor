@@ -14,8 +14,12 @@ import { createRoot } from "react-dom/client";
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
 import { StateEffect } from "@codemirror/state";
-import { indentWithTab } from "@codemirror/commands";
 import { startCompletion, acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
+import {
+  createEditorKeybindingsController,
+  editorIndentWithTab,
+} from "./editor-keybindings.js";
+import type { EditorKeybindings, EditorKeybindingsState } from "./editor-keybindings.js";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 import {
   setupLangIntel,
@@ -51,6 +55,8 @@ interface SandboxSeam {
   getSource: () => string;
   triggerComplete(source: string, cursor: number): void;
   acceptCompletion: () => boolean;
+  keybindings: () => EditorKeybindingsState;
+  setKeybindings: (mode: EditorKeybindings) => Promise<void>;
 }
 
 // The language-analysis seam, shared in NAME (not shape) with the IDE's — each
@@ -241,12 +247,14 @@ const runtimeTarget = createRuntimeTargetCore({
 // exactly what the fresh iframe is about to fetch, so pushing it back would
 // be a redundant reload (and would mislabel a fresh load as a hot reload).
 let programmaticEdit = false;
+const editorKeybindings = createEditorKeybindingsController();
 
 const view = new EditorView({
   parent: document.getElementById("editor")!,
   extensions: [
+    editorKeybindings.extension,
     basicSetup,
-    keymap.of([indentWithTab]),
+    keymap.of([editorIndentWithTab]),
     functorLangLanguage,
     synthwaveEditorTheme,
     EditorView.updateListener.of((update) => {
@@ -258,6 +266,7 @@ const view = new EditorView({
     }),
   ],
 });
+editorKeybindings.attach(view);
 
 // Live type diagnostics: load the analysis wasm lazily and, once ready, append
 // the CodeMirror linter to the already-constructed editor. Degrades silently —
@@ -491,7 +500,9 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
 );
 const statusBarHost = document.getElementById("statusbar")!;
 statusBarHost.className = "statusbar";
-createRoot(statusBarHost).render(<StatusBar store={statusBar} />);
+createRoot(statusBarHost).render(
+  <StatusBar store={statusBar} editorKeybindings={editorKeybindings} />
+);
 
 if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initialExample);
 
@@ -510,6 +521,8 @@ if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initialExample);
     return { state, text, message: detail };
   },
   runtimeTarget: () => runtimeTarget.state(),
+  keybindings: () => editorKeybindings.state.getSnapshot(),
+  setKeybindings: (mode) => editorKeybindings.setMode(mode),
   getSource: () => view.state.doc.toString(),
   // Replace the buffer, place the cursor, and open the completion popup
   // (explicit trigger). Guarded so it does NOT push to the runtime — completion

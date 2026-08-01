@@ -8,19 +8,55 @@
 // are untouched — including keeping all three lists MOUNTED and toggled with
 // `display`, exactly as before.
 
-import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { outputPreamble } from "../status-bar-store.js";
 import type { StatusBarStore } from "../status-bar-store.js";
+import { EditorKeybindingsButton } from "./EditorKeybindingsButton.js";
+import type { EditorKeybindingsController } from "../editor-keybindings.js";
 
 /** Which panel a tab opens; also the tab's `data-tab`. */
 type TabName = "problems" | "output" | "executions";
+
+// The Vim adapter renders its --MODE-- readout, pending keys, and `:`/`/`
+// command input into this segment (imperatively — React never writes children
+// here). Mode names color the segment via data-vim-mode. Its own component so
+// mode keystrokes re-render one empty span, not the panel lists.
+const VimSegment = ({ controller }: { controller: EditorKeybindingsController }) => {
+  const { vimMode } = useSyncExternalStore(
+    controller.state.subscribe,
+    controller.state.getSnapshot
+  );
+  const host = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    controller.setStatusbarHost(host.current);
+    return () => controller.setStatusbarHost(null);
+  }, [controller]);
+  return (
+    <span
+      className="statusbar-vim"
+      data-vim-mode={vimMode ?? undefined}
+      hidden={vimMode === null}
+    >
+      {/* Our own label — plain NORMAL, no --hyphens--. The adapter's own
+          hyphenated mode button inside the host is hidden in CSS. */}
+      <span className="statusbar-vim-mode">{vimMode?.toUpperCase()}</span>
+      <span ref={host} className="statusbar-vim-host" />
+    </span>
+  );
+};
 
 const problemsLabel = (count: number, errors: number): string =>
   count === 0
     ? "✓ 0 problems"
     : `${errors > 0 ? "✖" : "⚠"} ${count} problem${count === 1 ? "" : "s"}`;
 
-export const StatusBar = ({ store }: { store: StatusBarStore }) => {
+export const StatusBar = ({
+  store,
+  editorKeybindings,
+}: {
+  store: StatusBarStore;
+  editorKeybindings: EditorKeybindingsController;
+}) => {
   const { problems, output, executions } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [open, setOpen] = useState<TabName | null>(null);
   const outputList = useRef<HTMLDivElement>(null);
@@ -132,6 +168,8 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
         {tab("output", "output")}
         {tab("executions", executions.length ? `⏸ ${executions.length} executions` : "executions")}
         <div className="statusbar-view-host" ref={viewHost} />
+        <EditorKeybindingsButton controller={editorKeybindings} />
+        <VimSegment controller={editorKeybindings} />
       </div>
     </>
   );

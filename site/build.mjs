@@ -282,14 +282,109 @@ await esbuild.build({
   // `src/docs.js` would silently win. Name the file that actually exists. The
   // OUTPUT basenames are unchanged either way (esbuild always emits `.js`).
   entryPoints: [
-    `${site}src/sandbox.tsx`,
-    `${site}src/ide.tsx`,
+    `${site}src/demo-editor.ts`,
     `${site}src/docs.ts`,
     `${site}src/api-docs.ts`,
-    `${site}src/demo-editor.ts`,
     `${site}src/features.ts`,
   ],
 });
+
+// Vim keybindings are opt-in, and their adapter is large enough that the
+// standard editor must not pay for it. Build each editor as its own tiny split
+// graph: the page entry + its normal CodeMirror chunk load immediately, while
+// @replit/codemirror-vim remains a dynamic chunk fetched only after opt-in.
+// Separate builds keep sandbox/IDE from hoisting their shared CodeMirror
+// code into cross-page chunks (each page still deploys as an independent unit),
+// and the per-entry chunk prefix prevents output-name collisions.
+const editorBuilds = [
+  ["sandbox", `${site}src/sandbox.tsx`, "sandbox.html"],
+  ["ide", `${site}src/ide.tsx`, "ide.html"],
+];
+
+const VIM_ADAPTER = "node_modules/@replit/codemirror-vim";
+
+const assertLazyVim = (result, label) => {
+  const outputs = Object.entries(result.metafile.outputs);
+  const vimOutput = outputs.find(([, meta]) =>
+    meta.entryPoint?.includes(`${VIM_ADAPTER}/dist/index.js`)
+  );
+  if (!vimOutput) {
+    console.error(`editor build did not emit a lazy Vim chunk for ${label}`);
+    process.exit(1);
+  }
+  const leak = outputs
+    .filter(([output]) => output !== vimOutput[0])
+    .find(([, meta]) =>
+      Object.keys(meta.inputs).some((input) => input.includes(VIM_ADAPTER))
+    );
+  if (leak) {
+    console.error(`Vim adapter leaked out of its lazy chunk into ${leak[0]}`);
+    process.exit(1);
+  }
+};
+
+const assertPreloaded = async (
+  result,
+  htmlName,
+  entryOutputName,
+  deferredRoots = []
+) => {
+  const outputs = new Map(
+    Object.entries(result.metafile.outputs).map(([output, meta]) => [
+      output.split("/").pop(),
+      meta,
+    ])
+  );
+  const html = await readFile(`${dist}/${htmlName}`, "utf8");
+  const preloaded = new Set(
+    [...html.matchAll(/<link rel="modulepreload" href="assets\/([^"]+)"/g)].map(
+      (match) => match[1]
+    )
+  );
+  const required = new Set(deferredRoots);
+  const visited = new Set();
+  const visitStaticGraph = (outputName) => {
+    if (visited.has(outputName)) return;
+    const output = outputs.get(outputName);
+    if (!output) {
+      console.error(`${htmlName} references missing build output ${outputName}`);
+      process.exit(1);
+    }
+    visited.add(outputName);
+    for (const imported of output.imports) {
+      if (imported.kind === "import-statement" && !imported.external) {
+        const importedName = imported.path.split("/").pop();
+        required.add(importedName);
+        visitStaticGraph(importedName);
+      }
+    }
+  };
+  visitStaticGraph(entryOutputName);
+  for (const root of deferredRoots) visitStaticGraph(root);
+  required.delete(entryOutputName); // the page's module script already fetches it
+
+  const missing = [...required].filter((name) => !preloaded.has(name));
+  const stale = [...preloaded].filter((name) => !required.has(name));
+  if (missing.length || stale.length) {
+    console.error(
+      `${htmlName} modulepreloads are incomplete: missing ${JSON.stringify(missing)}, ` +
+        `unexpected ${JSON.stringify(stale)}`
+    );
+    process.exit(1);
+  }
+};
+
+for (const [name, entry, htmlName] of editorBuilds) {
+  const result = await esbuild.build({
+    ...bundle,
+    entryPoints: [entry],
+    splitting: true,
+    chunkNames: `${name}-[name]`,
+    metafile: true,
+  });
+  assertLazyVim(result, name);
+  await assertPreloaded(result, htmlName, `${name}.js`);
+}
 
 // The hero is built SEPARATELY, with code splitting on, because it is the only
 // entry whose weight is deferred: src/hero.ts is a ~170-byte eager loader that
@@ -297,13 +392,9 @@ await esbuild.build({
 // output file when `splitting` is enabled (otherwise it inlines the imported
 // module back into the entry and the landing page pays for it up front again).
 //
-// A separate call rather than `splitting: true` on the build above: splitting
-// hoists code shared BETWEEN entry points into common chunks, which would
-// rewrite sandbox.js / ide.js / demo-editor.js into multi-file loads for no
-// benefit on those pages. One extra esbuild call keeps the blast radius at
-// exactly the hero. `chunkNames` is namespaced for the same reason — the two
-// calls share an outdir, so a chunk must not be able to collide with another
-// call's entry output.
+// A separate call from the editor builds keeps the landing island independent;
+// `chunkNames` is namespaced for the same reason — every split build shares an
+// outdir, so their chunks must not be able to collide.
 //
 // The chunk name is deliberately UNHASHED, like every other output here. A
 // hash would make the (unhashed, therefore cacheable-stale) hero.js point at a
@@ -318,21 +409,17 @@ const heroBuild = await esbuild.build({
   chunkNames: "hero-[name]",
   metafile: true,
 });
-
-// index.html preloads the island by name, which is the only reason the split
-// costs no extra round-trip. Nothing else ties the two together, so assert it:
-// a rename here would otherwise just stop preloading, silently and invisibly.
-const heroOutputs = Object.keys(heroBuild.metafile.outputs).map((p) => p.split("/").pop());
-const landing = await readFile(`${dist}/index.html`, "utf8");
-const preloaded = [...landing.matchAll(/<link rel="modulepreload" href="assets\/([^"]+)"/g)].map(
-  (m) => m[1]
-);
-if (preloaded.length !== 1 || !heroOutputs.includes(preloaded[0])) {
-  console.error(
-    `index.html preloads ${JSON.stringify(preloaded)}, but the hero build emitted ` +
-      `${JSON.stringify(heroOutputs)} — update the <link rel="modulepreload"> href`
-  );
+// No assertLazyVim here: Vim keybindings are a sandbox/IDE feature — the hero
+// mini-editor has no opt-in, so the adapter must not be in its graph at all.
+// metafile.inputs is the whole resolved graph, so even a fully tree-shaken
+// import cannot slip through.
+if (Object.keys(heroBuild.metafile.inputs).some((input) => input.includes(VIM_ADAPTER))) {
+  console.error("the hero build must not include the Vim adapter");
   process.exit(1);
 }
+
+// The landing page preloads the deferred island so the tiny loader shell adds
+// no serial discovery hop before the editor payload.
+await assertPreloaded(heroBuild, "index.html", "hero.js", ["hero-hero-app.js"]);
 
 console.log(`site built at ${dist}`);

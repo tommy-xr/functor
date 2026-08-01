@@ -26,8 +26,9 @@ import {
   WidgetType,
   gutter,
   hoverTooltip,
+  showTooltip,
 } from "@codemirror/view";
-import type { DecorationSet, ViewUpdate } from "@codemirror/view";
+import type { DecorationSet, Tooltip, ViewUpdate } from "@codemirror/view";
 import { RangeSet, StateEffect, StateField } from "@codemirror/state";
 import type { EditorState, Extension, Range, Text } from "@codemirror/state";
 import type { CompletionContext } from "@codemirror/autocomplete";
@@ -294,8 +295,10 @@ const toDiagnostics = (view: EditorView): Diagnostic[] => {
 
 // --- Hover types --------------------------------------------------------------
 // Ask the wasm for the type under the cursor (UTF-16 offset == CodeMirror pos)
-// and render it monospace in a small calm-theme tooltip.
-const hoverTypes = hoverTooltip((view, pos) => {
+// and render it monospace in a small calm-theme tooltip. One source serves two
+// triggers: the pointer (hoverTooltip below) and Vim's `gh` at the caret
+// (showHoverAtCursor).
+const hoverSourceAt = (view: EditorView, pos: number): Tooltip | null => {
   if (!hoverFn) return null;
   // The live value first (the paused inspector's inline-vs-hover policy:
   // previews render inline, the FULL value lives here). ALL recorded sites
@@ -360,7 +363,33 @@ const hoverTypes = hoverTooltip((view, pos) => {
       return { dom };
     },
   };
+};
+
+const hoverTypes = hoverTooltip(hoverSourceAt);
+
+// --- Keyboard hover (Vim `gh`) -------------------------------------------------
+// The same tooltip, summoned at the caret instead of the pointer. It clears on
+// any edit or cursor motion, so ordinary Vim navigation dismisses it.
+const setCursorHover = StateEffect.define<Tooltip | null>();
+
+const cursorHover = StateField.define<Tooltip | null>({
+  create: () => null,
+  update(value, tr) {
+    if (value && (tr.docChanged || tr.selection)) value = null;
+    for (const effect of tr.effects) if (effect.is(setCursorHover)) value = effect.value;
+    return value;
+  },
+  provide: (field) => showTooltip.from(field),
 });
+
+/** Show the type/live-value tooltip at the main cursor (Vim's `gh`). */
+export const showHoverAtCursor = (view: EditorView): boolean => {
+  const tooltip = hoverSourceAt(view, view.state.selection.main.head);
+  view.dispatch({
+    effects: setCursorHover.of(tooltip ? { ...tooltip, above: true } : null),
+  });
+  return tooltip !== null;
+};
 
 // --- Autocomplete -------------------------------------------------------------
 // A CodeMirror completion source backed by the wasm's scope-aware `complete`.
@@ -1418,6 +1447,7 @@ export const setupLangIntel = async (): Promise<Extension[]> => {
   return [
     linter(toDiagnostics, { delay: 300, needsRefresh: contextChanged }),
     hoverTypes,
+    cursorHover,
     decorationField,
     liveField,
     coverageField,

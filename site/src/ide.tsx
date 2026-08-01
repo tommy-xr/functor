@@ -15,9 +15,13 @@
 import { createRoot } from "react-dom/client";
 import { basicSetup } from "codemirror";
 import { EditorView, keymap } from "@codemirror/view";
-import { indentWithTab } from "@codemirror/commands";
 import { acceptCompletion, closeCompletion, startCompletion } from "@codemirror/autocomplete";
 import { StateEffect } from "@codemirror/state";
+import {
+  createEditorKeybindingsController,
+  editorIndentWithTab,
+} from "./editor-keybindings.js";
+import type { EditorKeybindings, EditorKeybindingsState } from "./editor-keybindings.js";
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 import {
   setupLangIntel,
@@ -77,6 +81,8 @@ interface IdeSeam {
   runtimeTarget: () => RuntimeTargetState;
   triggerComplete(source: string, cursor: number): void;
   acceptCompletion: () => boolean;
+  keybindings: () => EditorKeybindingsState;
+  setKeybindings: (mode: EditorKeybindings) => Promise<void>;
 }
 
 /** The readiness seam, shared in NAME (not shape) with the sandbox's. */
@@ -227,12 +233,14 @@ const dismissBootLoader = () =>
 // ---------------------------------------------------------------- editor
 
 let programmaticEdit = false;
+const editorKeybindings = createEditorKeybindingsController();
 
 const view = new EditorView({
   parent: els.editorHost,
   extensions: [
+    editorKeybindings.extension,
     basicSetup,
-    keymap.of([indentWithTab]),
+    keymap.of([editorIndentWithTab]),
     functorLangLanguage,
     synthwaveEditorTheme,
     EditorView.updateListener.of((update) => {
@@ -245,6 +253,7 @@ const view = new EditorView({
     }),
   ],
 });
+editorKeybindings.attach(view);
 
 // Live language intelligence (diagnostics/hover/completion/inlays), shared
 // with the sandbox but project-aware here: the context provider hands the
@@ -483,7 +492,9 @@ createRoot(document.querySelector(".file-pane")!).render(
 createRoot(document.querySelector(".editor-tab")!).render(<ActiveFileTab store={fileList} />);
 const statusBarHost = document.getElementById("statusbar")!;
 statusBarHost.className = "statusbar";
-createRoot(statusBarHost).render(<StatusBar store={statusBar} />);
+createRoot(statusBarHost).render(
+  <StatusBar store={statusBar} editorKeybindings={editorKeybindings} />
+);
 
 publishFiles();
 setDoc(activeFile()!.source);
@@ -517,6 +528,8 @@ els.player.src = playerUrl();
     return { state, text, message: detail };
   },
   runtimeTarget: () => runtimeTarget.state(),
+  keybindings: () => editorKeybindings.state.getSnapshot(),
+  setKeybindings: (mode) => editorKeybindings.setMode(mode),
   // Replace the active buffer, place the cursor, and open the completion popup
   // (explicit trigger) — the sandbox's seam, minus any push (programmaticEdit
   // suppresses the mirror-and-push listener).

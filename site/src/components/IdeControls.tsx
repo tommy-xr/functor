@@ -16,7 +16,12 @@ export interface IdeControlsProps {
   onRestart: () => void;
 }
 
-export const IdeControls = ({ pill, runtimeTarget, onDownload, onRestart }: IdeControlsProps) => (
+export const IdeControls = ({
+  pill,
+  runtimeTarget,
+  onDownload,
+  onRestart,
+}: IdeControlsProps) => (
   <>
     <button id="download" type="button" title="Download the project as a .zip" onClick={onDownload}>
       ↓ project.zip
