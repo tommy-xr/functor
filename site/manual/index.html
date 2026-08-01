@@ -845,16 +845,6 @@ functor docs --format json         # the machine-readable shape</pre>
               primed-but-never-stepped world, so a ray query needs one step to have run.
             </li>
             <li>
-              <strong>Under-applying a constructor is silent at the mistake.</strong> Constructors
-              curry, so a dropped argument is not an arity error at the call —
-              <code>Rect(1.0)</code> is a legal partial value that displays as
-              <code>&lt;partial 1 more&gt;</code>. Inference catches it as soon as its type is
-              pinned down, but while it sits in an otherwise unconstrained model field it travels,
-              and the complaint arrives far from the cause: a <code>match</code> that reports
-              nothing matched <code>&lt;partial 1 more&gt;</code>, or an <code>==</code> refusing
-              to compare functions. Read either as "somebody forgot an argument".
-            </li>
-            <li>
               <strong>Identities are branded values, not bare numbers or strings.</strong>
               <code>Scene.rotateY(1.57)</code> and <code>Sub.every(0.5, …)</code> are
               <em>check-time</em> errors, not rotations and timers: say
