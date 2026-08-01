@@ -595,7 +595,8 @@ let span = (a, b) =>
           <p>
             <code>mut</code> is local-only: no top-level <code>let mut</code>, and a lambda may
             not capture an enclosing <code>mut</code> slot. Params, globals, and plain
-            <code>let</code>s are immutable.
+            <code>let</code>s are immutable. Assignment is <code>:=</code> — F#'s
+            <code>&lt;-</code> is not an alias for it.
           </p>
 
           <h3>Operators and equality</h3>
@@ -801,7 +802,10 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
             It is <em>generated</em> from the exact Functor Lang sources embedded in the engine —
             the prelude's <code>.funi</code> interfaces and the standard library's own — so a
             signature there is the signature your build checks against, never a copy that drifted.
-            The same text is available offline from the CLI:
+            Each module's list is also <strong>exhaustive</strong>: if a function is not there it
+            does not exist, and calling it is a check-time error (there is no <code>Math.sinh</code>
+            or <code>Math.hypot</code>, however idiomatic they are elsewhere). The same text is
+            available offline from the CLI:
           </p>
           <pre class="shell">functor docs                       # Markdown to stdout
 functor docs --format json         # the machine-readable shape</pre>
@@ -824,8 +828,9 @@ functor docs --format json         # the machine-readable shape</pre>
         <section id="sharp-edges">
           <h2>Sharp edges</h2>
           <p>
-            Four things that bite hard enough to be worth knowing before you meet them. The rest
-            of the language's surprises are explained where they come up, above.
+            The few things that bite hard enough to be worth knowing before you meet them. Every
+            other surprise is explained where it comes up — inline above, or in the
+            <a href="../docs/">API reference</a>.
           </p>
           <ul>
             <li>
@@ -840,12 +845,14 @@ functor docs --format json         # the machine-readable shape</pre>
               primed-but-never-stepped world, so a ray query needs one step to have run.
             </li>
             <li>
-              <strong>Under-applying a constructor is silent.</strong> Constructors curry, so a
-              dropped argument is not an arity error at the call — <code>Rect(1.0)</code> is a
-              partial value (it displays as <code>&lt;partial 1 more&gt;</code>) that flows on
-              through your model and quietly renders or compares wrong. The checker catches it
-              wherever the types are pinned down; in unannotated code it reaches run time, so a
-              variant behaving inexplicably is worth grepping for a missing argument.
+              <strong>Under-applying a constructor is silent at the mistake.</strong> Constructors
+              curry, so a dropped argument is not an arity error at the call —
+              <code>Rect(1.0)</code> is a legal partial value that displays as
+              <code>&lt;partial 1 more&gt;</code>. Inference catches it as soon as its type is
+              pinned down, but while it sits in an otherwise unconstrained model field it travels,
+              and the complaint arrives far from the cause: a <code>match</code> that reports
+              nothing matched <code>&lt;partial 1 more&gt;</code>, or an <code>==</code> refusing
+              to compare functions. Read either as "somebody forgot an argument".
             </li>
             <li>
               <strong>Identities are branded values, not bare numbers or strings.</strong>
@@ -860,8 +867,9 @@ functor docs --format json         # the machine-readable shape</pre>
             <li>
               <strong>Engine values are opaque.</strong> <code>&lt;Scene></code>,
               <code>&lt;Frame></code>, <code>&lt;Camera3D></code> and friends can be passed around
-              and composed, but not inspected or serialized, and <code>==</code> on one is a
-              runtime error — compare the numbers you derived instead.
+              and composed, but not taken apart, and <code>==</code> on one is a
+              <em>runtime</em> error (the checker does not catch it) — compare the numbers you
+              derived instead.
               (<code>Sprite.t</code> is the deliberate exception: it is plain data underneath.)
             </li>
           </ul>
