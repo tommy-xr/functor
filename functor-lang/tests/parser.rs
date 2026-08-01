@@ -78,6 +78,11 @@ fn golden_strings() {
     check_golden("strings");
 }
 
+#[test]
+fn golden_inline_modules() {
+    check_golden("inline_modules");
+}
+
 /// Parse a deliberately broken input; return the error's (message, line, col).
 fn parse_err(src: &str) -> (String, usize, usize) {
     let err = functor_lang::parse(src).expect_err("input should fail to parse");
@@ -349,6 +354,68 @@ fn error_lowercase_constructor_name() {
             1,
             16
         )
+    );
+}
+
+// ── Inline `module` declarations ─────────────────────────────────────────
+
+#[test]
+fn error_nested_module() {
+    assert_eq!(
+        parse_err("module A {\n  module B {\n    let x = 1.0\n  }\n}"),
+        (
+            "nested modules are not supported yet — declare `module` blocks at the top level \
+of the file"
+                .to_string(),
+            2,
+            3
+        )
+    );
+}
+
+#[test]
+fn error_open_inside_a_module() {
+    assert_eq!(
+        parse_err("module A {\n  open Utils\n}"),
+        (
+            "`open` inside `module A` is not supported yet — move it to the top level of the \
+file"
+                .to_string(),
+            2,
+            3
+        )
+    );
+}
+
+#[test]
+fn error_lowercase_module_name() {
+    assert_eq!(
+        parse_err("module server {\n  let x = 1.0\n}"),
+        ("module names are capitalized: `module Server`".to_string(), 1, 8)
+    );
+}
+
+#[test]
+fn error_module_needs_a_brace() {
+    assert_eq!(
+        parse_err("module A\nlet x = 1.0\n"),
+        (
+            "expected `{` after the module name, found `let`".to_string(),
+            2,
+            1
+        )
+    );
+}
+
+/// A `.funi` declares signatures; there are no inline modules there.
+#[test]
+fn error_module_in_an_interface_file() {
+    let err = functor_lang::parse_interface("module A {\n  let x : float\n}\n")
+        .expect_err("interface should reject `module`");
+    assert_eq!(
+        err.message,
+        "interface files (.funi) declare signatures — inline `module` declarations belong in a \
+`.fun` file"
     );
 }
 

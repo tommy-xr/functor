@@ -39,6 +39,15 @@
 //! module is a single ID space (as it is a single span space — see
 //! [`crate::lexer::lex`]).
 //!
+//! A file may also declare **inline** `module Name { … }` blocks (one level
+//! deep). They are namespaces within the file: their members canonicalize
+//! with one extra segment (`utils.fun` + `module Grid` → `Utils.Grid.cell`;
+//! the entry's stay bare → `Grid.cell`), their own names shadow the file's
+//! same-named ones, and they are reachable BARE inside the declaring file
+//! (`Grid.cell`) — which is why a project refuses an inline module name
+//! that collides with a builtin namespace, another file's module, an
+//! `open`ed name, or the file's own top-level names.
+//!
 //! ## Name resolution
 //!
 //! For an identifier `first(.rest)*` (the parser only builds multi-segment
@@ -58,10 +67,13 @@
 //!   time).
 //! - `first` names an `open`ed module's def or constructor → the qualified
 //!   [`ExprKind::Global`] / [`ExprKind::Ctor`].
-//! - `first` names a sibling module → resolve `rest[0]` against its exports
-//!   (def or constructor; an unknown member is an error); further segments
-//!   become field access. (Builtins like `List.map` cannot collide: module
-//!   names matching builtin/prelude namespaces are refused at project load.)
+//! - `first` names one of THIS file's inline `module` blocks, or the
+//!   leading segments name a sibling module (`Utils`, `Game.Server`) →
+//!   resolve the next segment against its exports (def or constructor; an
+//!   unknown member is an error); further segments become field access.
+//!   (Builtins like `List.map` cannot collide: module names — file *and*
+//!   inline — matching builtin/prelude namespaces are refused at project
+//!   load.)
 //! - Otherwise, a qualified name (`Text.toBullets`) → [`ExprKind::External`],
 //!   the builtin/host seam — and an unqualified name is an "unknown name"
 //!   error at the identifier's span (with a hint when it names a module).
@@ -113,9 +125,9 @@ pub(crate) struct Exports {
     pub signatures: HashSet<String>,
 }
 
-pub(crate) fn exports_of(program: &ast::Program) -> Exports {
+pub(crate) fn exports_of(items: &[ast::Item]) -> Exports {
     let mut exports = Exports::default();
-    for item in &program.items {
+    for item in items {
         match item {
             ast::Item::Let(decl) => {
                 exports.defs.insert(decl.name.clone());
@@ -136,6 +148,9 @@ pub(crate) fn exports_of(program: &ast::Program) -> Exports {
             ast::Item::Open(_) => {}
             // An expect binds nothing.
             ast::Item::Expect(_) => {}
+            // An inline module's members belong to ITS namespace, not the
+            // file's: the caller calls `exports_of` again on its own items.
+            ast::Item::Module(_) => {}
         }
     }
     exports
@@ -170,25 +185,56 @@ pub(crate) fn lower_in_project(
     lower_module(program, Some(env), bases)
 }
 
-fn lower_module(
-    program: ast::Program,
-    project: Option<&ProjectEnv>,
-    bases: IdBases,
-) -> Result<(Module, IdBases, HashSet<String>), LowerError> {
-    // Pass 1: collect top-level names so defs are mutually visible (see
-    // module docs) and duplicates fail loud. Types and values are separate
-    // namespaces; constructors join the VALUE namespace (they resolve bare),
-    // so they must not collide with `let`s or with each other — across
-    // variant types too.
-    let mut globals = HashSet::new();
-    let mut ctors: HashMap<String, usize> = HashMap::new();
-    let mut ctor_types: HashMap<String, String> = HashMap::new();
-    let mut type_names = HashSet::new();
-    for item in &program.items {
+/// Which module `open <written>` in the file `file` names: one of that
+/// file's own inline `module` blocks (keyed `File.Written`) if it has one,
+/// otherwise the name as written (`Utils`, or a sibling's `Game.Server`).
+/// The result may still be absent from `modules` — the caller reports that.
+pub(crate) fn open_module_path(
+    file: &str,
+    written: &str,
+    modules: &HashMap<String, Exports>,
+) -> String {
+    let relative = format!("{file}.{written}");
+    if modules.contains_key(&relative) {
+        relative
+    } else {
+        written.to_string()
+    }
+}
+
+/// One namespace's declared names — a file's top level, or an inline
+/// `module` block's body.
+#[derive(Default)]
+struct Names {
+    globals: HashSet<String>,
+    ctors: HashMap<String, usize>,
+    types: HashSet<String>,
+    /// Constructors → the variant type that declares them. Only used to
+    /// teach the `Shape.Circle` mistake (constructors resolve bare);
+    /// resolution itself never consults it.
+    ctor_types: HashMap<String, String>,
+}
+
+/// Pass 1 over one namespace's items: collect names so defs are mutually
+/// visible (see module docs) and duplicates fail loud. Types and values are
+/// separate namespaces; constructors join the VALUE namespace (they resolve
+/// bare), so they must not collide with `let`s or with each other — across
+/// variant types too.
+fn collect_names(items: &[ast::Item]) -> Result<Names, LowerError> {
+    let Names {
+        mut globals,
+        mut ctors,
+        types: mut type_names,
+        mut ctor_types,
+    } = Names::default();
+    for item in items {
         match item {
             ast::Item::Open(_) => {}
             // An expect declares no names.
             ast::Item::Expect(_) => {}
+            // Inline modules are their own namespaces, collected separately
+            // (and checked against these names by the caller).
+            ast::Item::Module(_) => {}
             // A signature shares the value namespace with `let`s for DUPLICATE
             // DETECTION only — it is never lowered to a `Global` (references
             // stay `External`; `.funi` files have no value expressions, so
@@ -255,6 +301,59 @@ namespace)",
             }
         }
     }
+    Ok(Names {
+        globals,
+        ctors,
+        types: type_names,
+        ctor_types,
+    })
+}
+
+fn lower_module(
+    program: ast::Program,
+    project: Option<&ProjectEnv>,
+    bases: IdBases,
+) -> Result<(Module, IdBases, HashSet<String>), LowerError> {
+    let Names {
+        globals,
+        ctors,
+        types: type_names,
+        ctor_types,
+    } = collect_names(&program.items)?;
+
+    // Pass 1a: the file's inline `module` blocks. Their names live in the
+    // file's value AND type namespaces (so `Server.step` always resolves to
+    // the module, never to field access on a `let Server`), and each block's
+    // own names are collected the same way.
+    let mut inline_names: HashMap<String, Exports> = HashMap::new();
+    for item in &program.items {
+        let ast::Item::Module(decl) = item else {
+            continue;
+        };
+        if globals.contains(&decl.name)
+            || ctors.contains_key(&decl.name)
+            || type_names.contains(&decl.name)
+        {
+            return Err(LowerError {
+                message: format!(
+                    "`module {}` collides with the top-level `{}` in the same file — rename one \
+(a module name occupies both the value and type namespaces)",
+                    decl.name, decl.name
+                ),
+                span: decl.span,
+            });
+        }
+        if inline_names.contains_key(&decl.name) {
+            return Err(LowerError {
+                message: format!("duplicate module `{}` in this file", decl.name),
+                span: decl.span,
+            });
+        }
+        // `collect_names` is the DUPLICATE check; the namespace itself is
+        // read through the same `exports_of` the project keys it by.
+        collect_names(&decl.items)?;
+        inline_names.insert(decl.name.clone(), exports_of(&decl.items));
+    }
 
     // Pass 1b: process `open`s, after the module's own names are known (an
     // `open` may precede or follow the definitions it collides with).
@@ -286,45 +385,61 @@ project entry (this file is being lowered on its own)",
                 span: decl.span,
             });
         }
-        let Some(exports) = env.modules.get(&decl.module) else {
+        // `open Server` may name one of THIS file's inline modules (keyed
+        // `File.Server`); `open Utils` / `open Game.Server` name another
+        // file's module or its inline module.
+        let module_path = open_module_path(env.name, &decl.module, env.modules);
+        let Some(exports) = env.modules.get(&module_path) else {
             return Err(LowerError {
                 message: format!(
-                    "unknown module `{}` — modules are the sibling `.fun` files next to the entry",
+                    "unknown module `{}` — modules are the sibling `.fun` files next to the \
+entry, and the `module` blocks they declare",
                     decl.module
                 ),
                 span: decl.span,
             });
         };
-        deps.insert(decl.module.clone());
+        let span = decl.span;
+        // The dependency edge is on the owning FILE (decision: edges are
+        // file-to-file), so `open Game.Server` deps on `Game`.
+        let file = module_path.split('.').next().unwrap_or(&module_path);
+        if file != env.name {
+            deps.insert(file.to_string());
+        }
         // Value namespace: the opened module's defs, constructors, and
         // interface signatures.
         let mut values: Vec<(&String, OpenedName)> = exports
             .defs
             .iter()
-            .map(|d| (d, OpenedName::Def(decl.module.clone())))
+            .map(|d| (d, OpenedName::Def(module_path.clone())))
             .chain(
                 exports
                     .ctors
                     .iter()
-                    .map(|(c, a)| (c, OpenedName::Ctor(decl.module.clone(), *a))),
+                    .map(|(c, a)| (c, OpenedName::Ctor(module_path.clone(), *a))),
             )
             .chain(
                 exports
                     .signatures
                     .iter()
-                    .map(|s| (s, OpenedName::Signature(decl.module.clone()))),
+                    .map(|s| (s, OpenedName::Signature(module_path.clone()))),
             )
             .collect();
         values.sort_by_key(|(name, _)| name.as_str().to_string());
         for (name, opened) in values {
-            if globals.contains(name) || ctors.contains_key(name) {
+            // An inline module name occupies this file's value AND type
+            // namespaces, so an opened name may not shadow it — otherwise
+            // `Server.step` would silently become field access on the
+            // imported `Server`.
+            if inline_names.contains_key(name) || globals.contains(name) || ctors.contains_key(name)
+            {
                 return Err(LowerError {
                     message: format!(
                         "open {}: `{name}` collides with this module's own `{name}` — qualify \
 uses as `{}.{name}` instead of opening",
-                        decl.module, decl.module
+                        module_path, module_path
                     ),
-                    span: decl.span,
+                    span,
                 });
             }
             if let Some(prev) = open_values.get(name) {
@@ -332,12 +447,12 @@ uses as `{}.{name}` instead of opening",
                     message: format!(
                         "open {}: `{name}` is already in scope from `open {}` — qualify uses \
 (`{}.{name}` / `{}.{name}`)",
-                        decl.module,
+                        module_path,
                         prev.module(),
                         prev.module(),
-                        decl.module
+                        module_path
                     ),
-                    span: decl.span,
+                    span,
                 });
             }
             open_values.insert(name.clone(), opened);
@@ -346,14 +461,14 @@ uses as `{}.{name}` instead of opening",
         let mut types: Vec<&String> = exports.types.iter().collect();
         types.sort();
         for name in types {
-            if type_names.contains(name) {
+            if inline_names.contains_key(name) || type_names.contains(name) {
                 return Err(LowerError {
                     message: format!(
                         "open {}: type `{name}` collides with this module's own `{name}` — \
 qualify uses as `{}.{name}` instead of opening",
-                        decl.module, decl.module
+                        module_path, module_path
                     ),
-                    span: decl.span,
+                    span,
                 });
             }
             if let Some(prev) = open_types.get(name) {
@@ -361,12 +476,12 @@ qualify uses as `{}.{name}` instead of opening",
                     message: format!(
                         "open {}: type `{name}` is already in scope from `open {prev}` — \
 qualify uses (`{prev}.{name}` / `{}.{name}`)",
-                        decl.module, decl.module
+                        module_path, module_path
                     ),
-                    span: decl.span,
+                    span,
                 });
             }
-            open_types.insert(name.clone(), decl.module.clone());
+            open_types.insert(name.clone(), module_path.clone());
         }
     }
 
@@ -376,6 +491,8 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
         ctors,
         types: type_names,
         ctor_types,
+        local_modules: inline_names,
+        inline: None,
         project,
         open_values,
         open_types,
@@ -384,63 +501,35 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
         next_binding: bases.binding,
         next_expr: bases.expr,
     };
-    let mut next_def = bases.def;
-    let mut types = Vec::new();
-    let mut defs = Vec::new();
-    let mut signatures = Vec::new();
-    let mut expects = Vec::new();
+    let mut out = Lowered {
+        next_def: bases.def,
+        types: Vec::new(),
+        defs: Vec::new(),
+        signatures: Vec::new(),
+        expects: Vec::new(),
+    };
     for item in program.items {
         match item {
-            // Opens were consumed in pass 1b; they leave no IR (and no
-            // DefId — a file without opens numbers exactly as before).
-            ast::Item::Open(_) => {}
-            ast::Item::Type(decl) => {
-                let id = DefId(next_def);
-                next_def += 1;
-                types.push(TypeDef {
-                    params: decl.params.clone(),
-                    id,
-                    name: lowerer.self_qualify(&decl.name),
-                    body: lowerer.canon_type_body(decl.body)?,
-                    span: decl.span,
-                });
+            // An inline module: lower its items in ITS namespace (its own
+            // names shadow the file's, and canonical names gain the extra
+            // segment).
+            ast::Item::Module(decl) => {
+                lowerer.inline = Some(decl.name);
+                for item in decl.items {
+                    lowerer.lower_item(item, &mut out)?;
+                }
+                lowerer.inline = None;
             }
-            ast::Item::Let(decl) => {
-                let id = DefId(next_def);
-                next_def += 1;
-                defs.push(Def {
-                    id,
-                    name: lowerer.self_qualify(&decl.name),
-                    ty: decl.ty.map(|ty| lowerer.canon_type(ty)).transpose()?,
-                    value: lowerer.expr(decl.value)?,
-                    span: decl.span,
-                });
-            }
-            // An interface signature: no body, no DefId. Canonicalize its name
-            // and type (which may reference this module's — or another's —
-            // types) so the checker can type externals against it.
-            ast::Item::Sig(decl) => {
-                signatures.push(Signature {
-                    name: lowerer.self_qualify(&decl.name),
-                    ty: lowerer.canon_type(decl.ty)?,
-                    span: decl.span,
-                });
-            }
-            // An expect: no name, no DefId — its expression lowers like a
-            // def body (globals resolve canonically), kept in its own list
-            // so session loading never evaluates it.
-            ast::Item::Expect(decl) => {
-                expects.push(ExpectDef {
-                    module: match lowerer.project {
-                        Some(env) if env.name != env.entry => env.name.to_string(),
-                        _ => String::new(),
-                    },
-                    expr: lowerer.expr(decl.expr)?,
-                    span: decl.span,
-                });
-            }
+            item => lowerer.lower_item(item, &mut out)?,
         }
     }
+    let Lowered {
+        next_def,
+        types,
+        defs,
+        signatures,
+        expects,
+    } = out;
     let bases = IdBases {
         def: next_def,
         binding: lowerer.next_binding,
@@ -456,6 +545,34 @@ qualify uses (`{prev}.{name}` / `{}.{name}`)",
         bases,
         lowerer.deps,
     ))
+}
+
+/// The IR a namespace's items lower into — one accumulator shared by the
+/// file's top level and each inline `module` block.
+struct Lowered {
+    next_def: u32,
+    types: Vec<TypeDef>,
+    defs: Vec<Def>,
+    signatures: Vec<Signature>,
+    expects: Vec<ExpectDef>,
+}
+
+/// Which module a dotted reference's leading segments named.
+enum ModuleKey {
+    /// An inline `module` block in the file being lowered — reachable
+    /// unqualified (`Server.step`), and resolved BEFORE sibling files.
+    Local(String),
+    /// Another module in the project: a file, or one of ITS inline modules
+    /// (`Utils`, `Game.Server`). Keyed as [`ProjectEnv::modules`] keys it.
+    Project(String),
+}
+
+impl ModuleKey {
+    /// How the module is named in diagnostics.
+    fn label(&self) -> &str {
+        let (ModuleKey::Local(name) | ModuleKey::Project(name)) = self;
+        name
+    }
 }
 
 /// A name an `open` brought into scope: which module provides it, and (for
@@ -490,6 +607,14 @@ struct Lowerer<'p> {
     /// Only used to teach the `Shape.Circle` mistake (constructors resolve
     /// bare); resolution itself never consults it.
     ctor_types: HashMap<String, String>,
+    /// This file's inline `module` blocks, by name. Qualified references
+    /// (`Server.step`) resolve here BEFORE sibling files, so a file's own
+    /// module shadows a same-named sibling.
+    local_modules: HashMap<String, Exports>,
+    /// The inline `module` block being lowered, if any. Its names are
+    /// searched BEFORE the file's own (`globals`/`ctors`/`types`) and
+    /// canonicalize with the extra module segment.
+    inline: Option<String>,
     /// The project context, when lowering as part of one (B8 modules).
     project: Option<&'p ProjectEnv<'p>>,
     /// Names brought into scope by `open`s (collision-free by pass 1b).
@@ -528,28 +653,192 @@ impl Lowerer<'_> {
         id
     }
 
-    /// Canonicalize `member` of `module`: `M.member`, except the ENTRY
-    /// module's members stay bare (see the module docs).
+    /// Canonicalize `member` of module path `module`: `M.member` (or
+    /// `M.Inline.member`), except the ENTRY module's members stay bare — so
+    /// the entry's `module Server` yields `Server.member` (see the module
+    /// docs).
     fn qualify(&self, module: &str, member: &str) -> String {
-        match self.project {
-            Some(env) if module != env.entry => format!("{module}.{member}"),
-            _ => member.to_string(),
+        let prefix = self.canonical_prefix(module);
+        if prefix.is_empty() {
+            member.to_string()
+        } else {
+            format!("{prefix}.{member}")
         }
     }
 
-    /// Canonicalize one of this module's own members.
+    /// The canonical prefix a module path's members carry: `""` for the entry
+    /// file's top level, `"Server"` for the entry's `module Server`,
+    /// `"Utils"` / `"Utils.Grid"` for a sibling and its inline module.
+    fn canonical_prefix(&self, module: &str) -> String {
+        let Some(env) = self.project else {
+            return module.to_string();
+        };
+        if module == env.entry {
+            String::new()
+        } else if let Some(inline) = module
+            .strip_prefix(env.entry)
+            .and_then(|rest| rest.strip_prefix('.'))
+        {
+            inline.to_string()
+        } else {
+            module.to_string()
+        }
+    }
+
+    /// The canonical prefix of the namespace being lowered — the file's
+    /// module, or `File.Inline` inside a `module` block. `None` outside a
+    /// project (single-file lowering).
+    fn current_path(&self) -> Option<String> {
+        let env = self.project?;
+        Some(match &self.inline {
+            Some(name) => format!("{}.{name}", env.name),
+            None => env.name.to_string(),
+        })
+    }
+
+    /// Canonicalize one of the CURRENT namespace's own members.
     fn self_qualify(&self, member: &str) -> String {
+        match self.current_path() {
+            Some(path) => self.qualify(&path, member),
+            // Outside a project an inline module still namespaces its members.
+            None => match &self.inline {
+                Some(name) => format!("{name}.{member}"),
+                None => member.to_string(),
+            },
+        }
+    }
+
+    /// This file's inline `module` block currently being lowered, if any.
+    fn inline_exports(&self) -> Option<&Exports> {
+        self.local_modules.get(self.inline.as_deref()?)
+    }
+
+    /// Canonicalize `member` of an already-resolved module reference.
+    fn qualify_key(&self, key: &ModuleKey, member: &str) -> String {
+        match key {
+            ModuleKey::Local(name) => match self.project {
+                Some(env) => self.qualify(&format!("{}.{name}", env.name), member),
+                None => format!("{name}.{member}"),
+            },
+            ModuleKey::Project(path) => self.qualify(path, member),
+        }
+    }
+
+    /// The exports of an already-resolved module reference.
+    fn exports_of_key(&self, key: &ModuleKey) -> &Exports {
+        match key {
+            ModuleKey::Local(name) => &self.local_modules[name],
+            ModuleKey::Project(path) => self
+                .project
+                .and_then(|env| env.modules.get(path))
+                .expect("resolved module path"),
+        }
+    }
+
+    /// Record the dependency edge a resolved reference implies (a local
+    /// inline module is in this very file, so it implies none).
+    fn dep_key(&mut self, key: &ModuleKey) {
+        if let ModuleKey::Project(path) = key {
+            let path = path.clone();
+            self.dep(&path);
+        }
+    }
+
+    /// Canonicalize one of the enclosing FILE's top-level members (visible
+    /// bare from inside an inline module).
+    fn file_qualify(&self, member: &str) -> String {
         match self.project {
             Some(env) => self.qualify(env.name, member),
             None => member.to_string(),
         }
     }
 
-    /// Record a cross-module reference (the project dependency edge).
+    /// Record a cross-module reference (the project dependency edge). Edges
+    /// are between FILES, so an inline module path normalizes to its owner.
     fn dep(&mut self, module: &str) {
-        if self.project.is_some_and(|env| env.name != module) {
-            self.deps.insert(module.to_string());
+        let file = module.split('.').next().unwrap_or(module);
+        if self.project.is_some_and(|env| env.name != file) {
+            self.deps.insert(file.to_string());
         }
+    }
+
+    /// The longest module a dotted reference's leading segments name, and
+    /// how many segments it consumed. This file's own inline modules win
+    /// over sibling modules (they are the nearer scope).
+    fn resolve_module_prefix(&self, segments: &[&str]) -> Option<(ModuleKey, usize)> {
+        if segments.len() > 1 && self.local_modules.contains_key(segments[0]) {
+            return Some((ModuleKey::Local(segments[0].to_string()), 1));
+        }
+        for len in (1..segments.len()).rev() {
+            let prefix = segments[..len].join(".");
+            if self
+                .project
+                .is_some_and(|env| env.modules.contains_key(&prefix))
+            {
+                return Some((ModuleKey::Project(prefix), len));
+            }
+        }
+        None
+    }
+
+    /// Lower one item into `out`, in the current namespace.
+    fn lower_item(&mut self, item: ast::Item, out: &mut Lowered) -> Result<(), LowerError> {
+        match item {
+            // Opens were consumed in pass 1b; they leave no IR (and no
+            // DefId — a file without opens numbers exactly as before).
+            ast::Item::Open(_) => {}
+            // Pass 2 peels inline modules off before calling this.
+            ast::Item::Module(_) => unreachable!("nested modules are refused by the parser"),
+            ast::Item::Type(decl) => {
+                let id = DefId(out.next_def);
+                out.next_def += 1;
+                out.types.push(TypeDef {
+                    params: decl.params.clone(),
+                    id,
+                    name: self.self_qualify(&decl.name),
+                    body: self.canon_type_body(decl.body)?,
+                    span: decl.span,
+                });
+            }
+            ast::Item::Let(decl) => {
+                let id = DefId(out.next_def);
+                out.next_def += 1;
+                out.defs.push(Def {
+                    id,
+                    name: self.self_qualify(&decl.name),
+                    ty: decl.ty.map(|ty| self.canon_type(ty)).transpose()?,
+                    value: self.expr(decl.value)?,
+                    span: decl.span,
+                });
+            }
+            // An interface signature: no body, no DefId. Canonicalize its name
+            // and type (which may reference this module's — or another's —
+            // types) so the checker can type externals against it.
+            ast::Item::Sig(decl) => {
+                out.signatures.push(Signature {
+                    name: self.self_qualify(&decl.name),
+                    ty: self.canon_type(decl.ty)?,
+                    span: decl.span,
+                });
+            }
+            // An expect: no name, no DefId — its expression lowers like a
+            // def body (globals resolve canonically), kept in its own list
+            // so session loading never evaluates it.
+            ast::Item::Expect(decl) => {
+                // The owning namespace's canonical prefix (empty for the
+                // entry file's top level), matching a def's name prefix.
+                let module = self
+                    .current_path()
+                    .map(|path| self.canonical_prefix(&path))
+                    .unwrap_or_default();
+                out.expects.push(ExpectDef {
+                    module,
+                    expr: self.expr(decl.expr)?,
+                    span: decl.span,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Canonicalize a type annotation (see the module docs): this module's
@@ -563,23 +852,29 @@ impl Lowerer<'_> {
             .into_iter()
             .map(|arg| self.canon_type(arg))
             .collect::<Result<Vec<_>, _>>()?;
-        let name = if let Some((module, member)) = ty.name.split_once('.') {
-            match self.project.and_then(|env| env.modules.get(module)) {
-                Some(exports) => {
-                    if !exports.types.contains(member) {
+        let name = if ty.name.contains('.') {
+            let segments: Vec<&str> = ty.name.split('.').collect();
+            match self.resolve_module_prefix(&segments) {
+                Some((key, consumed)) => {
+                    let member = segments[consumed..].join(".");
+                    if !self.exports_of_key(&key).types.contains(&member) {
                         return Err(LowerError {
-                            message: format!("module `{module}` has no type `{member}`"),
+                            message: format!("module `{}` has no type `{member}`", key.label()),
                             span: ty.span,
                         });
                     }
-                    let module = module.to_string();
-                    self.dep(&module);
-                    self.qualify(&module, member)
+                    self.dep_key(&key);
+                    self.qualify_key(&key, &member)
                 }
                 None => ty.name,
             }
-        } else if self.types.contains(&ty.name) {
+        } else if self
+            .inline_exports()
+            .is_some_and(|ns| ns.types.contains(&ty.name))
+        {
             self.self_qualify(&ty.name)
+        } else if self.types.contains(&ty.name) {
+            self.file_qualify(&ty.name)
         } else if let Some(module) = self.open_types.get(&ty.name).cloned() {
             self.dep(&module);
             self.qualify(&module, &ty.name)
@@ -964,25 +1259,33 @@ impl Lowerer<'_> {
         name: &str,
         span: Span,
     ) -> Result<(String, usize), LowerError> {
-        if let Some((module, member)) = name.split_once('.') {
-            let Some(exports) = self.project.and_then(|env| env.modules.get(module)) else {
+        if name.contains('.') {
+            let segments: Vec<&str> = name.split('.').collect();
+            let Some((key, consumed)) = self.resolve_module_prefix(&segments) else {
                 return Err(LowerError {
-                    message: format!("unknown module `{module}` in pattern `{name}`"),
+                    message: format!("unknown module `{}` in pattern `{name}`", segments[0]),
                     span,
                 });
             };
-            let Some(&arity) = exports.ctors.get(member) else {
+            let member = segments[consumed..].join(".");
+            let Some(&arity) = self.exports_of_key(&key).ctors.get(&member) else {
                 return Err(LowerError {
-                    message: format!("module `{module}` has no constructor `{member}`"),
+                    message: format!("module `{}` has no constructor `{member}`", key.label()),
                     span,
                 });
             };
-            let module = module.to_string();
-            self.dep(&module);
-            return Ok((self.qualify(&module, member), arity));
+            self.dep_key(&key);
+            return Ok((self.qualify_key(&key, &member), arity));
+        }
+        if let Some(arity) = self
+            .inline_exports()
+            .and_then(|ns| ns.ctors.get(name))
+            .copied()
+        {
+            return Ok((self.self_qualify(name), arity));
         }
         if let Some(&arity) = self.ctors.get(name) {
-            return Ok((self.self_qualify(name), arity));
+            return Ok((self.file_qualify(name), arity));
         }
         if let Some(OpenedName::Ctor(module, arity)) = self.open_values.get(name).cloned() {
             self.dep(&module);
@@ -1117,11 +1420,25 @@ impl Lowerer<'_> {
                     name: first.clone(),
                 })
             }
-        } else if self.globals.contains(first) {
+        } else if self
+            .inline_exports()
+            .is_some_and(|ns| ns.defs.contains(first))
+        {
             Some(ExprKind::Global(self.self_qualify(first)))
-        } else if let Some(&arity) = self.ctors.get(first) {
+        } else if let Some(arity) = self
+            .inline_exports()
+            .and_then(|ns| ns.ctors.get(first))
+            .copied()
+        {
             Some(ExprKind::Ctor {
                 name: self.self_qualify(first),
+                arity,
+            })
+        } else if self.globals.contains(first) {
+            Some(ExprKind::Global(self.file_qualify(first)))
+        } else if let Some(&arity) = self.ctors.get(first) {
+            Some(ExprKind::Ctor {
+                name: self.file_qualify(first),
                 arity,
             })
         } else if let Some(opened) = self.open_values.get(first).cloned() {
@@ -1145,43 +1462,45 @@ impl Lowerer<'_> {
         } else {
             None
         };
+        // The longest module path the leading segments name, if any (used
+        // only when nothing bound `first`).
+        let module_ref = if base.is_none() {
+            let borrowed: Vec<&str> = segments.iter().map(String::as_str).collect();
+            self.resolve_module_prefix(&borrowed)
+        } else {
+            None
+        };
         let (kind, consumed) = match base {
             Some(kind) => (kind, 1),
-            // A module-qualified reference: `Utils.clamp` / `Utils.Circle`.
+            // A module-qualified reference: `Utils.clamp` / `Utils.Circle` /
+            // `Game.Server.step` (a sibling file's inline module).
             // (Module names never collide with builtin namespaces like
             // `List` — the project refuses them at load — so trying modules
             // before the External seam is unambiguous.)
-            None if segments.len() > 1
-                && self
-                    .project
-                    .is_some_and(|env| env.modules.contains_key(first)) =>
-            {
-                let module = first.clone();
-                let member = &segments[1];
-                let exports = self
-                    .project
-                    .and_then(|env| env.modules.get(&module))
-                    .expect("checked above");
-                let kind = if exports.defs.contains(member) {
-                    ExprKind::Global(self.qualify(&module, member))
-                } else if let Some(&arity) = exports.ctors.get(member) {
+            None if module_ref.is_some() => {
+                let (key, consumed) = module_ref.expect("checked above");
+                let member = segments[consumed].clone();
+                let exports = self.exports_of_key(&key);
+                let kind = if exports.defs.contains(&member) {
+                    ExprKind::Global(self.qualify_key(&key, &member))
+                } else if let Some(&arity) = exports.ctors.get(&member) {
                     ExprKind::Ctor {
-                        name: self.qualify(&module, member),
+                        name: self.qualify_key(&key, &member),
                         arity,
                     }
-                } else if exports.signatures.contains(member) {
+                } else if exports.signatures.contains(&member) {
                     // An interface (`.funi`) signature: keep it EXTERNAL so the
                     // host resolves the value at runtime (like an unknown
                     // qualified name) — the checker types it from the signature.
-                    ExprKind::External(vec![module.clone(), member.clone()])
+                    ExprKind::External(vec![key.label().to_string(), member.clone()])
                 } else {
                     return Err(LowerError {
-                        message: format!("module `{module}` has no `{member}`"),
+                        message: format!("module `{}` has no `{member}`", key.label()),
                         span,
                     });
                 };
-                self.dep(&module);
-                (kind, 2)
+                self.dep_key(&key);
+                (kind, consumed + 1)
             }
             None if segments.len() > 1 => {
                 // `Shape.Circle(2.0)` — TYPE-qualifying a constructor. It is

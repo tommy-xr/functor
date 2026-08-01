@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 
 use crate::ast;
 use crate::ir::Module;
-use crate::lower::{exports_of, lower_in_project, Exports, IdBases, ProjectEnv};
+use crate::lower::{
+    exports_of, lower_in_project, open_module_path, Exports, IdBases, ProjectEnv,
+};
 use crate::parser::{capitalize, parse_interface_with_base, parse_with_base};
 use crate::span::line_col;
 use crate::types::RecordLiteralScopes;
@@ -697,11 +699,54 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     }
 
     // Every module's exports, for cross-module resolution during lowering.
-    let exports: HashMap<String, Exports> = files
-        .iter()
-        .zip(&programs)
-        .map(|(file, program)| (file.module.clone(), exports_of(program)))
-        .collect();
+    // Inline `module` blocks are keyed by their full path (`Utils.Grid`);
+    // a file's own top-level exports never include them.
+    let mut exports: HashMap<String, Exports> = HashMap::new();
+    let file_modules: HashSet<&str> = files.iter().map(|f| f.module.as_str()).collect();
+    for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
+        exports.insert(file.module.clone(), exports_of(&program.items));
+        for decl in program.items.iter().filter_map(|item| match item {
+            ast::Item::Module(decl) => Some(decl),
+            _ => None,
+        }) {
+            let (name, span) = (decl.name.as_str(), decl.span);
+            // An inline module is reachable UNQUALIFIED inside its own file
+            // (`Server.step`), and resolves there before any sibling, so its
+            // bare name must not shadow a builtin/bundled namespace or
+            // another file's module — `module Scene` would silently steal
+            // every `Scene.cube` in the declaring file. (Two different files
+            // may each declare `module Grid`: those canonicalize apart, as
+            // `Utils.Grid` / `Helpers.Grid`, and neither shadows the other.)
+            if PROTECTED_NAMESPACES.contains(&name) {
+                return Err(render_span(
+                    &files,
+                    index,
+                    span,
+                    &format!(
+                        "`module {name}` collides with the built-in `{name}` namespace — \
+rename it"
+                    ),
+                ));
+            }
+            if let Some(other) = file_modules.get(name) {
+                let other = files
+                    .iter()
+                    .find(|f| f.module == *other)
+                    .expect("module name came from files");
+                return Err(render_span(
+                    &files,
+                    index,
+                    span,
+                    &format!(
+                        "`module {name}` collides with the module of {} — rename one",
+                        other.path.display()
+                    ),
+                ));
+            }
+            exports.insert(format!("{}.{name}", file.module), exports_of(&decl.items));
+        }
+    }
+    let exports = exports;
 
     // Lower each file with the project environment, threading ID bases so
     // the merged module is one ID space. Collect dependency edges.
@@ -712,9 +757,16 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     for (index, (file, program)) in files.iter().zip(programs).enumerate() {
         // Record-literal visibility for this module: its own types plus its
         // `open`ed modules' (by canonical name — the entry's are bare).
+        // Mirrors `lower::Lowerer::qualify`: the entry file's members stay
+        // bare, so its inline modules keep only their own segment.
         let canon = |module: &str, name: &str| {
             if module == entry {
                 name.to_string()
+            } else if let Some(inline) = module
+                .strip_prefix(entry.as_str())
+                .and_then(|rest| rest.strip_prefix('.'))
+            {
+                format!("{inline}.{name}")
             } else {
                 format!("{module}.{name}")
             }
@@ -728,8 +780,10 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
             let ast::Item::Open(decl) = item else {
                 continue;
             };
-            if let Some(opened) = exports.get(&decl.module) {
-                visible.extend(opened.types.iter().map(|name| canon(&decl.module, name)));
+            // `open Server` may name one of this file's inline modules.
+            let path = open_module_path(&file.module, &decl.module, &exports);
+            if let Some(opened) = exports.get(&path) {
+                visible.extend(opened.types.iter().map(|name| canon(&path, name)));
             }
         }
         let prefix = if file.module == entry {
@@ -737,6 +791,34 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         } else {
             file.module.clone()
         };
+        // An inline module sees its own record types PLUS the file's (and
+        // the file's `open`ed ones) — the lowering scope rule.
+        for item in &program.items {
+            let ast::Item::Module(decl) = item else {
+                continue;
+            };
+            let path = format!("{}.{}", file.module, decl.name);
+            let own = &exports[&path].types;
+            // The module's own types SHADOW same-named enclosing ones (the
+            // lowering rule), so drop the shadowed candidates instead of
+            // leaving a bare literal ambiguous between `Cell` and
+            // `Grid.Cell`.
+            let mut inner: HashSet<String> = visible
+                .iter()
+                .filter(|name| {
+                    let last = name.rsplit('.').next().unwrap_or(name);
+                    !own.contains(last)
+                })
+                .cloned()
+                .collect();
+            inner.extend(own.iter().map(|name| canon(&path, name)));
+            let inner_prefix = if prefix.is_empty() {
+                decl.name.clone()
+            } else {
+                format!("{prefix}.{}", decl.name)
+            };
+            scopes.by_module.insert(inner_prefix, inner);
+        }
         scopes.by_module.insert(prefix, visible);
 
         let env = ProjectEnv {

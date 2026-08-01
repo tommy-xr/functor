@@ -351,7 +351,7 @@ fn open_unknown_module_is_an_error() {
     assert_eq!(
         err,
         "game.fun:1:1: unknown module `Nowhere` — modules are the sibling `.fun` files next to \
-the entry"
+the entry, and the `module` blocks they declare"
     );
 }
 
@@ -1667,4 +1667,429 @@ fn valid_sibling_loads_beside_a_skipped_temp_file() {
         ],
     );
     assert_eq!(number(&value), 42.0);
+}
+
+// ── Inline `module` declarations ─────────────────────────────────────────
+
+/// The multiplayer shape: one file declaring `module Server` / `module
+/// Client` over shared top-level types, cross-referenced from a sibling as
+/// `Game.Server.*`. Both inline modules declare a `Spawn` constructor —
+/// uniqueness is per MODULE, not per file.
+const MP_ENTRY: &str = "\
+type World = { tick: float }\n\
+module Server {\n\
+  type Cmd = | Spawn(id: float) | Despawn(id: float)\n\
+  let step = (c: Cmd, w: World): World =>\n\
+    match c with\n\
+    | Spawn(id) => { tick: w.tick + id }\n\
+    | Despawn(_) => { tick: w.tick - 1.0 }\n\
+}\n\
+module Client {\n\
+  type Cmd = | Spawn(id: float)\n\
+  let describe = (w: World): float => w.tick\n\
+}\n\
+let start: World = { tick: 1.0 }\n\
+let main = () => Client.describe(Server.step(Server.Spawn(4.0), start))\n";
+
+// The sibling reaches the entry's inline modules as `Game.Server.*` — in
+// expressions, type annotations, and constructor patterns.
+const MP_SIBLING: &str = "\
+let label = (c: Game.Server.Cmd): float =>\n\
+  match c with\n\
+  | Game.Server.Spawn(id) => id\n\
+  | Game.Server.Despawn(_) => 0.0\n\
+let round = (w: Game.World): float =>\n\
+  Game.Client.describe(Game.Server.step(Game.Server.Spawn(4.0), w))\n\
+expect label(Game.Server.Spawn(3.0)) == 3.0\n\
+expect round({ tick: 1.0 }) == 5.0\n";
+
+#[test]
+fn inline_modules_cross_reference_between_files() {
+    let files = [("game.fun", MP_ENTRY), ("utils.fun", MP_SIBLING)];
+    let project = load("inline-mp", &files);
+    let diags = project.check();
+    assert!(diags.is_empty(), "should check clean: {diags:?}");
+    assert_eq!(number(&run_main("inline-mp-run", &files)), 5.0);
+    // The sibling's own cross-module calls actually evaluate.
+    let out = functor_lang::run_expects(&project.module, &mut functor_lang::NoHost)
+        .unwrap_or_else(|f| panic!("defs should load: {}", f.error.message));
+    assert_eq!(out.len(), 2);
+    assert!(out
+        .iter()
+        .all(|r| matches!(r.outcome, functor_lang::ExpectOutcome::Pass)));
+}
+
+/// The ENTRY file's inline modules canonicalize bare (`Server.step`), like
+/// its own top-level defs; a sibling's gain the file prefix.
+#[test]
+fn inline_module_members_canonicalize_under_their_file() {
+    let project = load(
+        "inline-canon",
+        &[
+            (
+                "game.fun",
+                "module Server {\n  let step = 1.0\n}\n\
+                 let main = () => Server.step + Utils.Grid.cell\n",
+            ),
+            ("utils.fun", "module Grid {\n  let cell = 2.0\n}\n"),
+        ],
+    );
+    let names: Vec<&str> = project.module.defs.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"Server.step"), "{names:?}");
+    assert!(names.contains(&"Utils.Grid.cell"), "{names:?}");
+}
+
+/// A module's own names shadow the enclosing file's same-named ones — they
+/// are distinct canonical defs, not a collision.
+#[test]
+fn inline_module_names_shadow_the_files_own() {
+    let value = run_main(
+        "inline-shadow",
+        &[(
+            "game.fun",
+            "let width = 1.0\n\
+             module Grid {\n\
+               let width = 10.0\n\
+               let inner = () => width\n\
+             }\n\
+             let main = () => Grid.inner() + width\n",
+        )],
+    );
+    assert_eq!(number(&value), 11.0);
+}
+
+/// …and the file's names stay visible bare from inside a module when the
+/// module does not redeclare them.
+#[test]
+fn inline_module_sees_the_files_top_level() {
+    let value = run_main(
+        "inline-outer",
+        &[(
+            "game.fun",
+            "let base = 3.0\n\
+             module Grid {\n\
+               let doubled = () => base * 2.0\n\
+             }\n\
+             let main = () => Grid.doubled()\n",
+        )],
+    );
+    assert_eq!(number(&value), 6.0);
+}
+
+/// A module's own record type SHADOWS a same-named one at the file's top
+/// level, so a bare literal inside the module is not ambiguous.
+#[test]
+fn inline_module_record_type_shadows_the_files_own() {
+    let project = load(
+        "inline-record-shadow",
+        &[(
+            "game.fun",
+            // Identical SHAPES, so only scope precedence can disambiguate
+            // the bare literal in `Grid`.
+            "type Cell = { x: float }\n\
+             module Grid {\n\
+               type Cell = { x: float }\n\
+               let origin = { x: 0.0 }\n\
+             }\n\
+             let flat = { x: 1.0 }\n\
+             let main = () => Grid.origin.x + flat.x\n",
+        )],
+    );
+    let diags = project.check();
+    assert!(diags.is_empty(), "should check clean: {diags:?}");
+}
+
+/// An `open`ed name may not shadow one of this file's inline modules —
+/// otherwise `Server.step` would silently become field access on it.
+#[test]
+fn opened_name_colliding_with_an_inline_module_is_refused() {
+    let err = load_err(
+        "inline-vs-opened",
+        &[
+            (
+                "game.fun",
+                "open Utils\nmodule Server {\n  let step = 1.0\n}\nlet main = () => Server.step\n",
+            ),
+            ("utils.fun", "let Server = 9.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "game.fun:1:1: open Utils: `Server` collides with this module's own `Server` — qualify \
+uses as `Utils.Server` instead of opening"
+    );
+}
+
+/// `open Server` brings a LOCAL inline module's members in bare…
+#[test]
+fn open_of_a_local_inline_module() {
+    let value = run_main(
+        "inline-open-local",
+        &[(
+            "game.fun",
+            "open Grid\nmodule Grid {\n  let cell = 7.0\n}\nlet main = () => cell\n",
+        )],
+    );
+    assert_eq!(number(&value), 7.0);
+}
+
+/// …and `open Game.Server` does the same across files (types included).
+#[test]
+fn open_of_a_sibling_inline_module() {
+    let files = [
+        (
+            "game.fun",
+            "module Server {\n  type Cmd = | Spawn(id: float)\n  let cost = 2.0\n}\n\
+             let main = () => Server.cost\n",
+        ),
+        (
+            "utils.fun",
+            "open Game.Server\n\
+             let size = (c: Cmd): float =>\n  match c with\n  | Spawn(id) => id\n\
+             let price = size(Spawn(5.0)) + cost\n\
+             expect price == 7.0\n",
+        ),
+    ];
+    let project = load("inline-open-cross", &files);
+    assert!(project.check().is_empty(), "{:?}", project.check());
+    let out = functor_lang::run_expects(&project.module, &mut functor_lang::NoHost)
+        .unwrap_or_else(|f| panic!("defs should load: {}", f.error.message));
+    assert_eq!(out.len(), 1);
+    assert!(out
+        .iter()
+        .all(|r| matches!(r.outcome, functor_lang::ExpectOutcome::Pass)));
+}
+
+/// An `open` of an inline module obeys the ordinary open-collision rules —
+/// a name clashing with the opening module's own is a load error naming
+/// both sides.
+#[test]
+fn open_of_an_inline_module_collides_like_any_open() {
+    let err = load_err(
+        "inline-open-collision",
+        &[
+            (
+                "game.fun",
+                "module Server {\n  let cost = 2.0\n}\nlet main = () => Server.cost\n",
+            ),
+            ("utils.fun", "open Game.Server\nlet cost = 5.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "utils.fun:1:1: open Game.Server: `cost` collides with this module's own `cost` — \
+qualify uses as `Game.Server.cost` instead of opening"
+    );
+}
+
+/// …and it records a dependency on the OWNING FILE, so an `open` of an
+/// inline module can close a cycle exactly like any cross-file reference.
+#[test]
+fn open_of_an_inline_module_is_a_file_dependency() {
+    let err = load_err(
+        "inline-open-cycle",
+        &[
+            (
+                "game.fun",
+                "module Server {\n  let cost = Utils.tax\n}\nlet main = () => Server.cost\n",
+            ),
+            ("utils.fun", "open Game.Server\nlet tax = 1.0\n"),
+        ],
+    );
+    assert!(
+        err.contains("modules depend on each other in a cycle: Game → Utils → Game"),
+        "{err}"
+    );
+}
+
+/// A record type declared inside a module resolves for BARE literals there.
+#[test]
+fn inline_module_record_literals_resolve() {
+    let project = load(
+        "inline-record",
+        &[(
+            "game.fun",
+            "module Grid {\n  type Cell = { x: float }\n  let origin: Cell = { x: 0.0 }\n}\n\
+             let main = () => Grid.origin.x\n",
+        )],
+    );
+    let diags = project.check();
+    assert!(diags.is_empty(), "should check clean: {diags:?}");
+}
+
+/// A reference to `Game.Server.foo` is a dependency on the FILE `Game`, so
+/// it participates in cycle detection like any cross-file reference.
+#[test]
+fn inline_module_references_are_file_dependencies() {
+    let err = load_err(
+        "inline-cycle",
+        &[
+            (
+                "game.fun",
+                "module Server {\n  let a = Utils.b\n}\nlet main = () => Server.a\n",
+            ),
+            ("utils.fun", "let b = Game.Server.a\n"),
+        ],
+    );
+    assert!(
+        err.contains("modules depend on each other in a cycle: Game → Utils → Game"),
+        "{err}"
+    );
+}
+
+/// The entry's `module Server` owns the whole `Server.*` canonical
+/// namespace, so a `server.fun` sibling cannot coexist with it.
+#[test]
+fn entry_inline_module_collides_with_a_sibling_file() {
+    let err = load_err(
+        "inline-vs-file",
+        &[
+            (
+                "game.fun",
+                "module Server {\n  let a = 1.0\n}\nlet main = () => Server.a\n",
+            ),
+            ("server.fun", "let b = 2.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "game.fun:1:1: `module Server` collides with the module of server.fun — rename one"
+    );
+}
+
+/// The same clash in a NON-entry file: the inline module is reachable BARE
+/// inside its own file, so it would shadow the sibling there.
+#[test]
+fn sibling_inline_module_collides_with_another_file() {
+    let err = load_err(
+        "inline-vs-file-sibling",
+        &[
+            ("game.fun", "let main = () => Utils.a\n"),
+            ("utils.fun", "module Server {\n  let x = 1.0\n}\nlet a = Server.x\n"),
+            ("server.fun", "let b = 2.0\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "utils.fun:1:1: `module Server` collides with the module of server.fun — rename one"
+    );
+}
+
+/// Two DIFFERENT files may each declare `module Grid` — those canonicalize
+/// apart (`Utils.Grid` / `Helpers.Grid`) and neither shadows the other.
+#[test]
+fn two_files_may_each_declare_the_same_inline_module_name() {
+    let value = run_main(
+        "inline-same-name-two-files",
+        &[
+            ("game.fun", "let main = () => Utils.a + Helpers.b\n"),
+            ("utils.fun", "module Grid {\n  let cell = 1.0\n}\nlet a = Grid.cell\n"),
+            ("helpers.fun", "module Grid {\n  let cell = 2.0\n}\nlet b = Grid.cell\n"),
+        ],
+    );
+    assert_eq!(number(&value), 3.0);
+}
+
+/// …and likewise for a builtin/prelude namespace — in ANY file, entry or
+/// not: `module Scene` is reachable bare inside its own file, so it would
+/// silently steal every `Scene.cube` there.
+#[test]
+fn inline_module_collides_with_a_protected_namespace() {
+    let err = load_err(
+        "inline-vs-protected",
+        &[(
+            "game.fun",
+            "module Scene {\n  let a = 1.0\n}\nlet main = () => Scene.a\n",
+        )],
+    );
+    assert_eq!(
+        err,
+        "game.fun:1:1: `module Scene` collides with the built-in `Scene` namespace — rename it"
+    );
+    let err = load_err(
+        "inline-vs-protected-sibling",
+        &[
+            ("game.fun", "let main = () => Utils.a\n"),
+            ("utils.fun", "module Math {\n  let pi = 3.0\n}\nlet a = Math.pi\n"),
+        ],
+    );
+    assert_eq!(
+        err,
+        "utils.fun:1:1: `module Math` collides with the built-in `Math` namespace — rename it"
+    );
+}
+
+/// A module name occupies the file's value AND type namespaces.
+#[test]
+fn inline_module_collides_with_a_top_level_definition() {
+    let err = load_err(
+        "inline-vs-let",
+        &[(
+            "game.fun",
+            "let Server = 1.0\nmodule Server {\n  let a = 2.0\n}\nlet main = () => Server.a\n",
+        )],
+    );
+    assert_eq!(
+        err,
+        "game.fun:2:1: `module Server` collides with the top-level `Server` in the same file — \
+rename one (a module name occupies both the value and type namespaces)"
+    );
+}
+
+#[test]
+fn duplicate_inline_module_in_one_file() {
+    let err = load_err(
+        "inline-dup",
+        &[(
+            "game.fun",
+            "module A {\n  let x = 1.0\n}\nmodule A {\n  let y = 2.0\n}\nlet main = () => A.x\n",
+        )],
+    );
+    assert_eq!(err, "game.fun:4:1: duplicate module `A` in this file");
+}
+
+#[test]
+fn unknown_member_of_an_inline_module_is_a_load_error() {
+    let err = load_err(
+        "inline-unknown",
+        &[(
+            "game.fun",
+            "module A {\n  let x = 1.0\n}\nlet main = () => A.nope\n",
+        )],
+    );
+    assert_eq!(err, "game.fun:4:18: module `A` has no `nope`");
+}
+
+/// Canonical names are the rebind identity, so a closure defined in an
+/// inline module rebinds across a reload like any other def.
+#[test]
+fn stored_closure_from_an_inline_module_rebinds_across_reload() {
+    let source = |body: &str| {
+        format!(
+            "module Server {{\n  let make = (k) => (x) => {body}\n}}\n\
+             let main = () => Server.make(2.0)\n"
+        )
+    };
+    let old_src = source("x + k");
+    let old = load("inline-rebind-old", &[("game.fun", old_src.as_str())]);
+    let record = functor_lang::run(&old.module, Tracing::Off)
+        .unwrap_or_else(|f| panic!("v1 runs: {}", f.error.message));
+    let RunOutcome::Main(closure) = record.outcome else {
+        panic!("expected a closure");
+    };
+    let new_src = source("x + k * 10.0");
+    let new = load("inline-rebind-new", &[("game.fun", new_src.as_str())]);
+    let session = functor_lang::Session::load(&new.module, &mut functor_lang::NoHost)
+        .unwrap_or_else(|f| panic!("v2 session: {}", f.error.message));
+    let (rebound, report) = functor_lang::rebind_value(&closure, &old.module, &new.module);
+    assert_eq!(report.rebound, 1, "warnings: {:?}", report.warnings);
+    let result = session
+        .apply(
+            rebound,
+            vec![Value::Number(1.0)],
+            "make",
+            &mut functor_lang::NoHost,
+        )
+        .expect("apply");
+    assert_eq!(number(&result), 21.0);
 }

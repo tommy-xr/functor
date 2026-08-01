@@ -298,6 +298,11 @@ fn golden_run_strings() {
     check_golden("strings", "run");
 }
 
+#[test]
+fn golden_run_inline_modules() {
+    check_golden("inline_modules", "run");
+}
+
 // One trace golden pins the full enter/exit format; the other examples'
 // traces exercise no additional formatting.
 #[test]

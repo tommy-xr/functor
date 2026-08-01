@@ -917,10 +917,11 @@ fn check_impl(
             let def = &module.defs[i];
             checker.annot_vars.clear();
             // The def's module, from its canonical name ("Utils.foo" →
-            // "Utils"; bare → the entry) — scopes bare record literals.
+            // "Utils"; "Utils.Grid.cell" → "Utils.Grid", an inline module;
+            // bare → the entry) — scopes bare record literals.
             checker.current_module = def
                 .name
-                .split_once('.')
+                .rsplit_once('.')
                 .map(|(module, _)| module.to_string())
                 .unwrap_or_default();
             let placeholder = checker

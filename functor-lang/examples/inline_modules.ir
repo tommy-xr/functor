@@ -1,0 +1,435 @@
+Module {
+    types: [
+        TypeDef {
+            id: d0,
+            name: "World",
+            params: [],
+            body: Record(
+                [
+                    FieldTy {
+                        name: "tick",
+                        ty: TypeName {
+                            name: "float",
+                            args: [],
+                            span: 88..93,
+                        },
+                        span: 82..93,
+                    },
+                ],
+            ),
+            span: 67..95,
+        },
+        TypeDef {
+            id: d1,
+            name: "Server.Cmd",
+            params: [],
+            body: Variants(
+                [
+                    VariantDecl {
+                        name: "Server.Spawn",
+                        fields: [
+                            FieldTy {
+                                name: "id",
+                                ty: TypeName {
+                                    name: "float",
+                                    args: [],
+                                    span: 142..147,
+                                },
+                                span: 138..147,
+                            },
+                        ],
+                        span: 132..148,
+                    },
+                    VariantDecl {
+                        name: "Server.Despawn",
+                        fields: [
+                            FieldTy {
+                                name: "id",
+                                ty: TypeName {
+                                    name: "float",
+                                    args: [],
+                                    span: 167..172,
+                                },
+                                span: 163..172,
+                            },
+                        ],
+                        span: 155..173,
+                    },
+                ],
+            ),
+            span: 115..173,
+        },
+        TypeDef {
+            id: d3,
+            name: "Client.Cmd",
+            params: [],
+            body: Variants(
+                [
+                    VariantDecl {
+                        name: "Client.Spawn",
+                        fields: [
+                            FieldTy {
+                                name: "id",
+                                ty: TypeName {
+                                    name: "float",
+                                    args: [],
+                                    span: 511..516,
+                                },
+                                span: 507..516,
+                            },
+                        ],
+                        span: 501..517,
+                    },
+                ],
+            ),
+            span: 488..517,
+        },
+    ],
+    defs: [
+        Def {
+            id: d2,
+            name: "Server.step",
+            ty: None,
+            value: Expr {
+                id: e12,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b0,
+                            name: "w",
+                            ty: Some(
+                                TypeName {
+                                    name: "World",
+                                    args: [],
+                                    span: 266..271,
+                                },
+                            ),
+                            span: 263..271,
+                        },
+                        Param {
+                            binding: b1,
+                            name: "c",
+                            ty: Some(
+                                TypeName {
+                                    name: "Server.Cmd",
+                                    args: [],
+                                    span: 276..279,
+                                },
+                            ),
+                            span: 273..279,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "World",
+                            args: [],
+                            span: 282..287,
+                        },
+                    ),
+                    body: Expr {
+                        id: e11,
+                        kind: Match {
+                            scrutinee: Expr {
+                                id: e0,
+                                kind: Local {
+                                    binding: b1,
+                                    name: "c",
+                                },
+                                span: 301..302,
+                            },
+                            arms: [
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Ctor {
+                                            name: "Server.Spawn",
+                                            args: [
+                                                Pattern {
+                                                    kind: Var {
+                                                        binding: b2,
+                                                        name: "id",
+                                                    },
+                                                    span: 320..322,
+                                                },
+                                            ],
+                                        },
+                                        span: 314..323,
+                                    },
+                                    body: Expr {
+                                        id: e5,
+                                        kind: Record(
+                                            [
+                                                Field {
+                                                    name: "tick",
+                                                    value: Expr {
+                                                        id: e4,
+                                                        kind: Binary {
+                                                            op: Add,
+                                                            lhs: Expr {
+                                                                id: e2,
+                                                                kind: FieldAccess {
+                                                                    object: Expr {
+                                                                        id: e1,
+                                                                        kind: Local {
+                                                                            binding: b0,
+                                                                            name: "w",
+                                                                        },
+                                                                        span: 335..336,
+                                                                    },
+                                                                    field: "tick",
+                                                                },
+                                                                span: 335..341,
+                                                            },
+                                                            rhs: Expr {
+                                                                id: e3,
+                                                                kind: Local {
+                                                                    binding: b2,
+                                                                    name: "id",
+                                                                },
+                                                                span: 344..346,
+                                                            },
+                                                        },
+                                                        span: 335..346,
+                                                    },
+                                                    span: 329..346,
+                                                },
+                                            ],
+                                        ),
+                                        span: 327..348,
+                                    },
+                                    span: 312..348,
+                                },
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: Ctor {
+                                            name: "Server.Despawn",
+                                            args: [
+                                                Pattern {
+                                                    kind: Wildcard,
+                                                    span: 363..364,
+                                                },
+                                            ],
+                                        },
+                                        span: 355..365,
+                                    },
+                                    body: Expr {
+                                        id: e10,
+                                        kind: Record(
+                                            [
+                                                Field {
+                                                    name: "tick",
+                                                    value: Expr {
+                                                        id: e9,
+                                                        kind: Binary {
+                                                            op: Sub,
+                                                            lhs: Expr {
+                                                                id: e7,
+                                                                kind: FieldAccess {
+                                                                    object: Expr {
+                                                                        id: e6,
+                                                                        kind: Local {
+                                                                            binding: b0,
+                                                                            name: "w",
+                                                                        },
+                                                                        span: 377..378,
+                                                                    },
+                                                                    field: "tick",
+                                                                },
+                                                                span: 377..383,
+                                                            },
+                                                            rhs: Expr {
+                                                                id: e8,
+                                                                kind: Number(
+                                                                    1.0,
+                                                                ),
+                                                                span: 386..389,
+                                                            },
+                                                        },
+                                                        span: 377..389,
+                                                    },
+                                                    span: 371..389,
+                                                },
+                                            ],
+                                        ),
+                                        span: 369..391,
+                                    },
+                                    span: 353..391,
+                                },
+                            ],
+                        },
+                        span: 295..391,
+                    },
+                },
+                span: 262..391,
+            },
+            span: 251..391,
+        },
+        Def {
+            id: d4,
+            name: "Client.describe",
+            ty: None,
+            value: Expr {
+                id: e16,
+                kind: Lambda {
+                    params: [
+                        Param {
+                            binding: b3,
+                            name: "w",
+                            ty: Some(
+                                TypeName {
+                                    name: "World",
+                                    args: [],
+                                    span: 540..545,
+                                },
+                            ),
+                            span: 537..545,
+                        },
+                    ],
+                    ret: Some(
+                        TypeName {
+                            name: "string",
+                            args: [],
+                            span: 548..554,
+                        },
+                    ),
+                    body: Expr {
+                        id: e15,
+                        kind: InterpolatedString(
+                            [
+                                Text(
+                                    "tick ",
+                                ),
+                                Expr(
+                                    Expr {
+                                        id: e14,
+                                        kind: FieldAccess {
+                                            object: Expr {
+                                                id: e13,
+                                                kind: Local {
+                                                    binding: b3,
+                                                    name: "w",
+                                                },
+                                                span: 566..567,
+                                            },
+                                            field: "tick",
+                                        },
+                                        span: 566..572,
+                                    },
+                                ),
+                            ],
+                        ),
+                        span: 558..574,
+                    },
+                },
+                span: 536..574,
+            },
+            span: 521..574,
+        },
+        Def {
+            id: d5,
+            name: "start",
+            ty: Some(
+                TypeName {
+                    name: "World",
+                    args: [],
+                    span: 589..594,
+                },
+            ),
+            value: Expr {
+                id: e18,
+                kind: Record(
+                    [
+                        Field {
+                            name: "tick",
+                            value: Expr {
+                                id: e17,
+                                kind: Number(
+                                    0.0,
+                                ),
+                                span: 605..608,
+                            },
+                            span: 599..608,
+                        },
+                    ],
+                ),
+                span: 597..610,
+            },
+            span: 578..610,
+        },
+        Def {
+            id: d6,
+            name: "main",
+            ty: None,
+            value: Expr {
+                id: e27,
+                kind: Lambda {
+                    params: [],
+                    ret: None,
+                    body: Expr {
+                        id: e26,
+                        kind: Call {
+                            callee: Expr {
+                                id: e19,
+                                kind: Global(
+                                    "Client.describe",
+                                ),
+                                span: 629..644,
+                            },
+                            args: [
+                                Expr {
+                                    id: e25,
+                                    kind: Call {
+                                        callee: Expr {
+                                            id: e20,
+                                            kind: Global(
+                                                "Server.step",
+                                            ),
+                                            span: 645..656,
+                                        },
+                                        args: [
+                                            Expr {
+                                                id: e21,
+                                                kind: Global(
+                                                    "start",
+                                                ),
+                                                span: 657..662,
+                                            },
+                                            Expr {
+                                                id: e24,
+                                                kind: Call {
+                                                    callee: Expr {
+                                                        id: e22,
+                                                        kind: Ctor {
+                                                            name: "Server.Spawn",
+                                                            arity: 1,
+                                                        },
+                                                        span: 664..676,
+                                                    },
+                                                    args: [
+                                                        Expr {
+                                                            id: e23,
+                                                            kind: Number(
+                                                                4.0,
+                                                            ),
+                                                            span: 677..680,
+                                                        },
+                                                    ],
+                                                },
+                                                span: 664..681,
+                                            },
+                                        ],
+                                    },
+                                    span: 645..682,
+                                },
+                            ],
+                        },
+                        span: 629..683,
+                    },
+                },
+                span: 623..683,
+            },
+            span: 612..683,
+        },
+    ],
+    signatures: [],
+    expects: [],
+}
