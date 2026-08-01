@@ -3160,7 +3160,7 @@ mod tests {
              \x20 Physics.fixed(\"ground\", Physics.box(10.0, 0.4, 10.0)) |> Physics.at(Vec3.make(0.0, -0.2, 0.0)),\n\
              \x20 Physics.dynamic(\"ball\", Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, 4.0, 0.0))])\n\
              let draw = (m, tts) => Frame.create(\n\
-               Camera.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(tts, 0.0, 0.0)),\n\
+               Camera3D.lookAt(Vec3.make(tts, 2.0, -6.0), Vec3.make(tts, 0.0, 0.0)),\n\
                Scene.sphere() |> Physics.transformed(\"ball\"))\n",
         )
         .expect("write game");
