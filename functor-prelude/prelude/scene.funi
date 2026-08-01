@@ -20,7 +20,7 @@ let cube : () => t
 let sphere : () => t
 /// Create a unit cylinder aligned to the Y axis.
 let cylinder : () => t
-/// Create a unit quad in the XY plane.
+/// Create a unit quad in the XY plane, facing `+Z`.
 let quad : () => t
 /// Create a unit plane in the XZ ground plane.
 let plane : () => t
@@ -41,7 +41,8 @@ let group : (List<t>) => t
 
 /// Apply an unlit solid color; the scene is last for piping.
 let color : (Color.t, t) => t
-/// Apply a lit solid-color material; the scene is last for piping.
+/// Apply a lit solid-color material; the scene is last for piping. It needs
+/// lights to be visible — under a plain `Frame.create` it renders black.
 let lit : (Color.t, t) => t
 /// Apply an emissive solid-color material; the scene is last for piping.
 let emissive : (Color.t, t) => t

@@ -91,10 +91,12 @@ let take : (float, List<'a>) => List<'a>
 /// truncates, like `take`.
 let drop : (float, List<'a>) => List<'a>
 
-/// Whether ANY element satisfies the predicate. The empty list is `false`.
+/// Whether ANY element satisfies the predicate, short-circuiting at the first
+/// one that does. The empty list is `false`.
 let any : (('a) => bool, List<'a>) => bool
 
-/// Whether EVERY element satisfies the predicate. The empty list is `true`.
+/// Whether EVERY element satisfies the predicate, short-circuiting at the
+/// first one that does not. The empty list is `true`.
 let all : (('a) => bool, List<'a>) => bool
 
 /// The element at a 0-based `index`, or `Option.None` when the index is out of
@@ -109,5 +111,5 @@ let head : (List<'a>) => Option.t<'a>
 let last : (List<'a>) => Option.t<'a>
 
 /// The first element satisfying the predicate, or `Option.None` when none
-/// does.
+/// does. It stops at that first match rather than scanning the whole list.
 let find : (('a) => bool, List<'a>) => Option.t<'a>

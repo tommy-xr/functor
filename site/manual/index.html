@@ -61,12 +61,9 @@
           opens them live in the sandbox.
         </p>
         <p class="docs-callout">
-          Need an exact signature? The <a href="../docs/">API reference</a> is generated from the
-          Functor Lang sources embedded in the engine, so it covers <em>both</em> halves of the
-          API — the engine prelude (<code>Scene</code>, <code>Physics</code>, <code>Ui</code>,
-          <code>Input</code>, …) and the language's own standard library (<code>Math</code>,
-          <code>List</code>, <code>Text</code>, <code>Option</code>, …). This manual teaches the
-          shape of a game; the reference answers "what exactly does this take?"
+          Need an exact signature? This manual teaches the shape of a game; the generated
+          <a href="../docs/">API reference</a> answers "what exactly does this take?" — see
+          <a href="#api">Looking things up</a>.
         </p>
 
         <section id="get-started">
@@ -807,10 +804,13 @@ connect_game { "url": "http://127.0.0.1:8123" }</pre>
           <pre class="shell">functor docs                       # Markdown to stdout
 functor docs --format json         # the machine-readable shape</pre>
           <p>
-            Two conventions carry across the whole surface and are worth holding in mind while you
-            read it. Functions take their <strong>subject last</strong> so they thread through
-            <code>|&gt;</code> (see <a href="#language">Pipelines</a>), and identities that matter
-            are <strong>branded values</strong> rather than bare numbers or strings —
+            Two conventions carry across most of the surface and are worth holding in mind while
+            you read it. The collection, container, and scene functions take their
+            <strong>subject last</strong> so they thread through <code>|&gt;</code> (see
+            <a href="#language">Pipelines</a>) — the numeric and formatting helpers instead read
+            as ordinary notation and take their number first,
+            <code>Text.fixed(hp, 0.0)</code>. And identities that matter are
+            <strong>branded values</strong> rather than bare numbers or strings —
             <code>Angle.degrees(60.0)</code>, <code>Time.seconds(0.5)</code>,
             <code>Physics.tag("ball")</code>, <code>RenderTarget.named("feed")</code> — so a
             mixed-up unit is a check-time error instead of a puzzling frame.

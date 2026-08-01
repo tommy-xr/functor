@@ -18,7 +18,8 @@
 let concat : (string, string) => string
 
 /// A number rendered in Functor Lang's canonical display form — the same text
-/// string interpolation produces.
+/// string interpolation produces. That is the shortest round-tripping form, so
+/// `1.0` renders as `"1"`; use `Text.fixed` when a HUD needs a stable width.
 let fromFloat : (float) => string
 
 /// A number rendered with exactly `decimals` digits after the point.
@@ -36,7 +37,8 @@ let toBullets : (List<string>) => string
 /// gives `[""]`; an empty separator is an error.
 let split : (string, string) => List<string>
 
-/// Join the strings with `sep` between them.
+/// Join the strings with `sep` between them. An empty separator is fine here —
+/// unlike `Text.split` — and simply concatenates.
 let join : (string, List<string>) => string
 
 /// Parse a number, ignoring surrounding whitespace. Unparseable text answers

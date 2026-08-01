@@ -10,11 +10,12 @@
 //! ZERO (not banker's rounding).
 //!
 //! Unlike the collections, most of `Math` reads as ordinary notation rather
-//! than as a pipeline: the two-argument functions (`pow`, `atan2`, `mod`,
-//! `min`, `max`) take their NUMBER FIRST, so piping into one feeds the wrong
-//! slot. `clamp`, `clamp01`, `lerp`, and `smoothstep` are the deliberate
-//! exceptions — their bounds are configuration and their number is the
-//! subject, so they thread last and pipe.
+//! than as a pipeline: `pow`, `atan2`, `mod`, `min`, and `max` take their
+//! NUMBER FIRST, so for the order-sensitive ones (`pow`, `atan2`, `mod`)
+//! piping feeds the wrong slot. `clamp`, `clamp01`, `lerp`, and `smoothstep`
+//! are the deliberate subject-last exceptions — their bounds and parameters
+//! are configuration and their number is the subject, so they pipe:
+//! `n |> Math.clamp(0.0, 10.0)`.
 
 /// The ratio of a circle's circumference to its diameter — a constant VALUE,
 /// not a function, so it is written `Math.pi` with no parentheses.
