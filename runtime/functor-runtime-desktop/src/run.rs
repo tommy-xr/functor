@@ -722,8 +722,9 @@ pub struct Args {
     ghost_divisions: usize,
 
     /// Scene-diff trajectory preview (docs/time-travel.md T6, scene-diff
-    /// variant): forward-simulate the model and draw a clean dotted trail
-    /// tracing ONLY the scene nodes that move — derived by the runtime from
+    /// variant): forward-simulate the model and draw a clean trail of
+    /// direction-of-travel arrowheads tracing ONLY the scene nodes that move
+    /// — derived by the runtime from
     /// `draw`, with no game logic. Unlike --ghost's whole-scene strobe, static
     /// geometry contributes nothing. Capturable under --fixed-time.
     #[arg(long)]
