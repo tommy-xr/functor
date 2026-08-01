@@ -36,8 +36,9 @@ export interface Example {
   assets?: ExampleCopy[];
   /**
    * Marks a sample that declares a server entry point (the functor.json
-   * `entries` shape — `examples/mp` across files, `examples/orbs` in one) —
-   * the sandbox shows its CLIENTS control only for those.
+   * `entries` shape, like examples/mp) or is otherwise structured for
+   * multiple clients (like examples/orbs) — the sandbox shows its CLIENTS
+   * control only for those.
    */
   multiplayer?: boolean;
   /**
@@ -61,10 +62,16 @@ export interface Example {
    * net coordinator routes the client panes' traffic to it. The editable
    * `source` stays the CLIENT entry.
    *
-   * The file must ALSO be in the example's copied file list — either the
-   * entry itself (`exampleEntryPath(id)`, when both roles share ONE file) or
-   * a `siblings` entry. Naming a file here that nothing copies would 404 the
-   * server pane.
+   * The file must ALSO appear in `siblings`: that is what copies it into the
+   * built site and puts it in the fetched project file list. Naming a file
+   * here that nothing copies would 404 the server pane.
+   *
+   * Naming the example's own ENTRY here (a same-file sample serving both roles
+   * from one buffer) resolves and boots fine, but the pane grid is not ready
+   * for it: editor pushes reach only the client mirrors (see mp-panes.ts's
+   * server-pane block), so one edit would reload half the roles — and the
+   * `authority` label plus the NETWORK wires assert a coordinator link that a
+   * transport-less sample does not have. See `examples/orbs`.
    *
    * `module` is the server ROLE's inline entry module when both roles live in
    * one file (`{ "file": …, "module": "Server" }`): the server pane derives
@@ -155,17 +162,18 @@ export const EXAMPLES: Example[] = [
     label: "Orbs (multiplayer)",
     source: "examples/orbs/game.fun",
     multiplayer: true,
-    // Both roles are inline modules in the ONE editable buffer, so the client
-    // panes boot `module Client` and the server pane re-enters the SAME file
-    // at `module Server` — no sibling copy needed, since the entry copy is
-    // already in the fetched file list.
+    // Both roles are inline modules of the ONE editable buffer, so the
+    // sandbox plays the client one by name: `?module=Client`.
     //
-    // Orbs hosts its world IN-PROCESS (no transport yet), so its panes are
-    // independent sims: the server pane shows the authoritative board, but
-    // the NETWORK view's wires carry no packets until orbs adopts the
-    // transport. mp is the sample with real coordinator traffic.
+    // No `server` pane, deliberately. The declaration resolves (the entry is
+    // already in the fetched file list, so `{ file: exampleEntryPath("orbs"),
+    // module: "Server" }` boots), but orbs hosts its world IN-PROCESS — there
+    // is no transport yet — so the pane grid would label an unconnected sim
+    // `authority` and draw latency-chipped NETWORK wires carrying no packets.
+    // Editor pushes also reach only the client mirrors, so one edit to this
+    // shared buffer would reload half its roles. Both want site work; revisit
+    // when orbs adopts the transport.
     module: "Client",
-    server: { file: exampleEntryPath("orbs"), module: "Server" },
   },
   // The client/server sample: two ROLES over a shared typed protocol, run
   // end-to-end in the pane grid — the client panes and a server pane, wired to

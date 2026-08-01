@@ -4,7 +4,8 @@
 // claim it: it takes your color, and your score is the orbs you own. A full
 // board deals a fresh round. The client HOSTS the authoritative world
 // in-process — when the multiplayer transport lands, the SERVER section moves
-// behind the wire (a functor.json `entries` role, see examples/mp) unchanged.
+// behind the wire (see examples/mp) unchanged. Both roles are already
+// `entries` roles, as inline modules of this one file (see THE ROLES below).
 
 // ==========================  PROTOCOL  ================================
 // What both roles agree on — with a real transport, exactly what

@@ -19,8 +19,8 @@
 //   5. the GRID layout puts the clients in two columns with the server as a
 //      full-width strip below them — and switching layout reloads no pane;
 //   6. switching to a single-role example removes the server pane again;
-//   7. the ONE-FILE shape (examples/orbs) mounts the same grid, with the two
-//      panes differing only in which inline module they boot.
+//   7. the ONE-FILE shape (examples/orbs) plays its role by name — every
+//      client pane boots `?module=Client` and reaches live.
 //
 // Run manually (needs the web-runtime wasm bundle):
 //
@@ -822,46 +822,46 @@ try {
     await page.close();
   }
 
-  // --- 6. ORBS: both roles out of ONE file, as inline modules. ----------------
-  // examples/mp proves the pane grid over roles-as-FILES. Orbs is the other
-  // canonical shape — one buffer, `module Client` and `module Server` — so the
-  // server pane re-enters the SAME dist file at a different module. That the
-  // panes differ ONLY in `module=` is the whole claim; if the client's role
-  // leaked, or the server's were inherited, both would boot the same half.
+  // --- 6. ORBS: a ROLE the sandbox plays by name. -----------------------------
+  // examples/mp is the roles-as-FILES shape; orbs is the one-file one, both of
+  // its roles inline modules of the editable buffer. Nothing at that file's top
+  // level answers a plain entry, so booting it at all takes `?module=Client` —
+  // which makes "reaches live and keeps ticking" the real assertion here: a
+  // dropped or misspelled role would boot the unprefixed contract and fail to
+  // load. Orbs declares no `server` (see examples.ts), so the grid stays
+  // client-only.
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    await page.goto(`${BASE}/sandbox.html?example=orbs`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });
     await installProbe(page);
-    const mounted = await page
-      .waitForFunction(() => window.__mpProbe.roles().length === 2, null, { timeout: 15000 })
+    const grew = await page
+      .waitForFunction(() => window.__mpProbe.roles().length === 2, null, { timeout: 20000 })
       .then(() => true)
       .catch(() => false);
-    check(
-      mounted,
-      "a one-file sample mounts a server pane too",
-      (await page.evaluate(() => window.__mpProbe.roles())).join(", ")
-    );
+    const roles = await page.evaluate(() => window.__mpProbe.roles());
+    check(grew && !roles.includes("server"), "a one-file sample stays client-only", roles.join(", "));
     const srcs = (await page.evaluate(() => window.__mpProbe.srcs())).map(
       (src) => new URLSearchParams(src.split("?")[1])
     );
     check(
-      srcs.length === 2 && srcs[0].get("game") === srcs[1].get("game"),
-      "both roles boot the very same file",
-      srcs.map((p) => p.get("game")).join(" vs ")
+      srcs.length === 2 && srcs.every((p) => p.get("module") === "Client"),
+      "every client pane boots the sample's inline CLIENT module",
+      srcs.map((p) => `${p.get("game")}?module=${p.get("module")}`).join(" | ")
     );
+    const ran = await page
+      .waitForFunction(() => window.__mpProbe.pill().includes("2 running"), null, {
+        timeout: 20000,
+      })
+      .then(() => true)
+      .catch(() => false);
     check(
-      srcs[0]?.get("module") === "Client" && srcs[1]?.get("module") === "Server",
-      "the panes differ only in which inline module they boot",
-      srcs.map((p) => p.get("module")).join(" / ")
+      ran,
+      "both panes reach live on the module role",
+      await page.evaluate(() => window.__mpProbe.pill())
     );
-    // A `?module=` the runtime cannot resolve boots the plain contract and
-    // never reaches `live`, so a live pill over both panes IS the proof both
-    // blocks answered their contract in the browser.
-    const pill = await page.evaluate(() => window.__mpProbe.pill());
-    check(pill.includes("1+1"), "the pill counts the client and its authority", pill);
     await page.close();
   }
 } finally {

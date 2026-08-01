@@ -719,16 +719,19 @@ snapshots — no GPU, fully agent-verifiable.
       modules of one file and nothing at its top level answers a plain entry;
       the protocol, the world step and the renderer stay shared bare at the
       file's top level, and one edit hot-reloads both roles. The sandbox plays
-      it as `?module=Client` and mounts a SERVER pane on the very same buffer
-      at `?module=Server`. `examples/mp` deliberately stays the
+      it as `?module=Client`. (It does NOT get a server pane: the pane grid
+      pushes editor edits only to the client mirrors and labels the pane
+      `authority` over coordinator wires, neither of which a transport-less
+      one-buffer sample can honor — a follow-up for when orbs adopts the
+      transport.) `examples/mp` deliberately stays the
       roles-as-separate-FILES reference (`client.fun` + `server.fun` over a
       shared `protocol.fun`), so the two shipped multiplayer samples document
       the two shapes side by side. *Verify:* the example sweep now validates
       every declared role's CONTRACT (not just its typecheck), so a role whose
       block loses a binding fails `cargo test`; plus `build`/`test`/`build
       wasm` on orbs, headless native captures of both roles compared against
-      the pre-migration renders, and the site sandbox e2e over the client and
-      server panes.
+      the pre-migration renders, and a sandbox e2e asserting every orbs pane
+      boots `?module=Client` and reaches live.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values
