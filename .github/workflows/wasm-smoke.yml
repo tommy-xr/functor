@@ -105,6 +105,13 @@ jobs:
       - name: Run net-coordinator e2e
         run: npm run test:net-coordinator
 
+      # The same session as the PRODUCT: pick the client/server sample in the
+      # sandbox and get a server pane plus N client panes in the pane grid.
+      # The suite above proves the routing substrate on a bare fixture; this
+      # one proves the sandbox actually wires it up.
+      - name: Run sandbox multiplayer e2e
+        run: npm run test:sandbox-mp
+
       # Remote (URL) asset loading in the browser: builds a wasm bundle that
       # loads a good URL and a 404 URL from a localhost CORS server and asserts
       # the real fetches (200 / 404) + graceful fallback. Hermetic — no network.

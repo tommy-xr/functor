@@ -203,6 +203,21 @@ export class NetCoordinator {
     return this.log;
   }
 
+  /**
+   * How many live connections each pane holds. The coordinator is the only
+   * place that knows who is actually talking to whom, so this is what a pane's
+   * link indicator reads — a pane absent from the map is still waiting.
+   */
+  connectionCounts(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const row of this.conns.values()) {
+      for (const side of [row.client, row.server]) {
+        counts.set(side.pane, (counts.get(side.pane) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }
+
   destroy(): void {
     cancelAnimationFrame(this.raf);
     this.abort.abort();

@@ -47,6 +47,18 @@ export interface Example {
    * clientInit/clientTick/…). Passed to the player as `?prefix=`.
    */
   prefix?: string;
+  /**
+   * The sample's SERVER role, as a dist path in its own file list. The pane
+   * grid mounts a server pane for every example that declares one — booted
+   * from the same project files with this file as the entry — and the host's
+   * net coordinator routes the client panes' traffic to it. The editable
+   * `source` stays the CLIENT entry.
+   *
+   * The file must ALSO appear in `siblings`: that is what copies it into the
+   * built site and puts it in the fetched project file list. Naming a file
+   * here that nothing copies would 404 the server pane.
+   */
+  server?: { file: string };
 }
 
 /**
@@ -132,6 +144,24 @@ export const EXAMPLES: Example[] = [
     // The sandbox plays the `client` role of the same-file entries —
     // functor.json maps it to { "file": "game.fun", "prefix": "client" }.
     prefix: "client",
+  },
+  // The client/server sample: two ROLES over a shared typed protocol, run
+  // end-to-end in the pane grid — the client panes and a server pane, wired to
+  // each other by the host's net coordinator (no sockets, no server process).
+  // The editable buffer is the CLIENT entry (copied to `examples/mp.fun`, so
+  // its module is `Mp`); the other three files ride along as siblings, and the
+  // pane grid re-enters the same file list at `server.fun` for the server pane.
+  {
+    id: "mp",
+    label: "Arena (client/server)",
+    source: "examples/mp/client.fun",
+    multiplayer: true,
+    server: { file: "examples/mp/server.fun" },
+    siblings: [
+      { source: "examples/mp/protocol.fun", output: "examples/mp/protocol.fun" },
+      { source: "examples/mp/view.fun", output: "examples/mp/view.fun" },
+      { source: "examples/mp/server.fun", output: "examples/mp/server.fun" },
+    ],
   },
   {
     id: "mario",

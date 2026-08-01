@@ -24,6 +24,10 @@
   --scrub-p2: var(--pink);
   --scrub-p3: var(--amber);
   --scrub-p4: var(--green);
+  /* The authority's ink. Deliberately the one hue in the pane vocabulary with
+     no saturation: a server is not a fifth player, so it reads as absence of
+     player identity rather than as another color in the set. */
+  --scrub-server: #8b83ad;
 
   /* Spacing scale — a single rhythm the whole landing page snaps to. */
   --space-sm: 16px;
@@ -2891,6 +2895,10 @@ a:hover {
   gap: 8px;
   padding: 5px 9px;
   font: 10.5px/1 var(--font-mono);
+  /* One row, always. NOT overflow:hidden — the link menu drops out of this
+     header and must escape it (see the pane shell's note); the chip truncates
+     itself instead. */
+  white-space: nowrap;
   color: var(--text-dim);
   background: color-mix(in srgb, var(--pc) 8%, var(--bg-raised));
   border-bottom: 1px solid color-mix(in srgb, var(--pc) 14%, var(--line));
@@ -2989,13 +2997,73 @@ a:hover {
   border-top: 1px solid rgba(242, 99, 127, 0.35);
 }
 
+/* ---- the server pane: the authority, not a player ----
+
+   Clients are lit and numbered because they are a sequence you pick from. The
+   server is one per session and never picked, so it drops every device that
+   says "which one": no digit, no link chip (latency is a property of a
+   client's link), no "⌨ you". What is left carries the identity — a hairline
+   DASHED frame instead of the clients' solid glow-tinted one, and the label
+   itself, tracked wide. Quiet where the clients are lit. */
+
+.mp-pane.server {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--pc) 30%, transparent);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+}
+
+.mp-pane.server .mp-pane-hd {
+  background: color-mix(in srgb, var(--pc) 5%, var(--bg-panel));
+  border-bottom-style: dashed;
+  filter: none;
+}
+
+.mp-pane.server .mp-role,
+.mp-tab.server {
+  letter-spacing: 0.14em;
+}
+
+/* The one-word caption that says what "SERVER" MEANS — it holds the authority
+   of the session. Set as a quiet aside, not a badge. */
+.mp-authority {
+  font-size: 9px;
+  color: var(--text-dim);
+  opacity: 0.62;
+  letter-spacing: 0.04em;
+}
+
+.mp-tab.server {
+  filter: none;
+}
+
+/* ---- per-pane link state (the coordinator's connection table) ---- */
+
+.mp-conn {
+  font-size: 9.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.mp-conn[data-linked="true"] {
+  color: var(--green);
+}
+
 /* ---- per-pane link chip + menu ---- */
 
 .mp-link-host {
   position: relative;
+  min-width: 0;
 }
 
 .mp-link-chip {
+  /* Never wrap: at three tiles the pane header is narrow, and a two-line chip
+     doubles the header's height. It truncates instead. */
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font: 10px/1 var(--font-mono);
   color: var(--text-dim);
   cursor: pointer;

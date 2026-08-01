@@ -117,8 +117,18 @@ interface LinkProfile {
 
 type PaneState = PillState["state"];
 
+/**
+ * What a pane IS in the session. A `client` pane is a player: numbered, player
+ * colored, focusable, and the thing the CLIENTS control counts. The `server`
+ * pane is the authority: one per session, unnumbered, subdued, and outside the
+ * client count — see the server-pane block further down for the full contract.
+ */
+type PaneRole = "client" | "server";
+
 interface Pane {
-  index: number;
+  role: PaneRole;
+  /** The pane's routing identity in the coordinator ("client 2", "server"). */
+  id: string;
   /** Aborts every listener this pane registered outside its own subtree. */
   scope: AbortController;
   iframe: HTMLIFrameElement;
@@ -128,6 +138,7 @@ interface Pane {
   link: LinkProfile;
   frameLabels: HTMLElement[];
   dots: HTMLElement[];
+  conn: HTMLElement;
   errStrip: HTMLElement;
 }
 
@@ -142,7 +153,12 @@ export interface MultiplayerPanesOptions {
 }
 
 export interface MultiplayerPanes {
-  setSrc(src: string): void;
+  /**
+   * Load a fresh program into every pane. `serverSrc` is the player URL of the
+   * example's SERVER role (examples.ts `server`), or null for a sample that
+   * declares none — passing it mounts the server pane, passing null removes it.
+   */
+  setSrc(src: string, serverSrc?: string | null): void;
   push(source: string): void;
   reset(): void;
   aggregateStatus(state: PaneState, text: string, detail: string): void;
@@ -306,21 +322,41 @@ export function initMultiplayerPanes({
   const net = new NetCoordinator();
 
   const panes: Pane[] = [];
-  const makePane = (index: number, iframe: HTMLIFrameElement): Pane => {
-    const color = PLAYER_COLORS[index % PLAYER_COLORS.length];
+
+  // The server pane, when the current example declares one (examples.ts
+  // `server`). It is NOT in `panes`: `panes` is the client set the CLIENTS
+  // control sizes and the mirror bookkeeping pops from. Everything that is
+  // about "every running pane" — the scrub broadcasts, the aggregate pill, the
+  // frame labels, the coordinator's routing table — goes through `allPanes()`,
+  // with the server always LAST so client indices (and their digits) never move.
+  let serverPane: { pane: Pane; bridge: PlayerBridge } | null = null;
+  const allPanes = (): Pane[] => (serverPane ? [...panes, serverPane.pane] : panes);
+
+  const makePane = (role: PaneRole, index: number, iframe: HTMLIFrameElement): Pane => {
+    const client = role === "client";
+    const id = client ? `client ${index + 1}` : "server";
+    const color = client ? PLAYER_COLORS[index % PLAYER_COLORS.length] : "var(--scrub-server)";
     const shell = document.createElement("div");
-    shell.className = "mp-pane";
+    shell.className = client ? "mp-pane" : "mp-pane server";
     shell.style.setProperty("--pc", color);
+    // The server pane's header says what it is instead of who it is: no digit
+    // (it is not in the client sequence), no link chip (latency is a property
+    // of a client's link — the authority has none), no "⌨ you".
     shell.innerHTML = `
       <div class="mp-pane-hd">
-        <span class="mp-digit">${index + 1}</span>
-        <span class="mp-role">client</span>
-        <span class="mp-link-host">
+        ${client ? `<span class="mp-digit">${index + 1}</span>` : ""}
+        <span class="mp-role">${client ? "client" : "SERVER"}</span>
+        ${
+          client
+            ? `<span class="mp-link-host">
           <button class="mp-link-chip"
             title="Link impairment for this client (prototype — recorded per client; applies once the coordinator's link impairment lands)">⇅ Wi-Fi ▾</button>
-        </span>
+        </span>`
+            : `<span class="mp-authority">authority</span>`
+        }
         <span class="mp-hd-r">
-          <span class="mp-you" hidden>⌨ you</span>
+          ${client ? `<span class="mp-you" hidden>⌨ you</span>` : ""}
+          <span class="mp-conn" hidden></span>
           <span class="mp-pf"><b>#f</b> <span class="mp-pf-n">—</span></span>
           <span class="mp-st" data-state="busy"></span>
         </span>
@@ -328,18 +364,24 @@ export function initMultiplayerPanes({
       <div class="mp-pane-body"></div>
       <div class="mp-pane-err" hidden></div>`;
     shell.querySelector(".mp-pane-body")!.appendChild(iframe);
-    grid.appendChild(shell);
+    // A client tile is INSERTED BEFORE the server's, never appended after it:
+    // re-appending a mounted node is a remove + insert, and that reloads an
+    // iframe — the same invariant that keeps pane 1 in place would be broken
+    // for the authority, wiping the world every time the count changed.
+    const before = client && serverPane ? serverPane.pane : null;
+    grid.insertBefore(shell, before?.shell ?? null);
 
     const tab = document.createElement("button");
-    tab.className = "mp-tab";
+    tab.className = client ? "mp-tab" : "mp-tab server";
     tab.style.setProperty("--pc", color);
-    tab.innerHTML = `<span class="mp-digit">${index + 1}</span> client
+    tab.innerHTML = `${client ? `<span class="mp-digit">${index + 1}</span> client` : "SERVER"}
       <span class="mp-pf"><b>#f</b> <span class="mp-pf-n">—</span></span>
       <span class="mp-st" data-state="busy"></span>`;
-    tabsStrip.appendChild(tab);
+    tabsStrip.insertBefore(tab, before?.tab ?? null);
 
     const pane: Pane = {
-      index,
+      role,
+      id,
       iframe,
       shell,
       tab,
@@ -354,14 +396,22 @@ export function initMultiplayerPanes({
         shell.querySelector(".mp-st") as HTMLElement,
         tab.querySelector(".mp-st") as HTMLElement,
       ],
+      conn: shell.querySelector(".mp-conn") as HTMLElement,
       errStrip: shell.querySelector(".mp-pane-err") as HTMLElement,
     };
 
-    shell.querySelector(".mp-pane-hd")!.addEventListener("mousedown", () => focusPane(index));
-    tab.addEventListener("click", () => focusPane(index));
-    buildLinkMenu(pane, shell.querySelector(".mp-link-host") as HTMLElement, pane.scope.signal);
-    net.addPane(`client ${index + 1}`, iframe, pane.scope.signal);
-    panes.push(pane);
+    // Selecting a pane is what tabs mode needs to show it, so the server pane
+    // is selectable by click — but it never joins the KEYBOARD client cycle
+    // (digits / `[` / `]`) and never claims "⌨ you": game input belongs to a
+    // client, and the authority has no player to drive.
+    const select = () => focusPane(allPanes().indexOf(pane));
+    shell.querySelector(".mp-pane-hd")!.addEventListener("mousedown", select);
+    tab.addEventListener("click", select);
+    if (client) {
+      buildLinkMenu(pane, shell.querySelector(".mp-link-host") as HTMLElement, pane.scope.signal);
+      panes.push(pane);
+    }
+    net.addPane(id, iframe, pane.scope.signal);
     return pane;
   };
 
@@ -369,43 +419,82 @@ export function initMultiplayerPanes({
   // the primary bridge keep talking to it untouched). Panes 2..N are mirrors,
   // added and removed LIVE — pane 1's iframe never moves again after this
   // wrap, so its running model survives every count change.
-  makePane(0, frame);
+  makePane("client", 0, frame);
   const mirrors: { pane: Pane; bridge: PlayerBridge }[] = [];
 
-  const addMirror = (pushCurrent: boolean) => {
-    const index = panes.length;
-    const label = `client ${index + 1}`;
-    const iframe = document.createElement("iframe");
-    iframe.title = `${label} preview`;
-    iframe.allow = "pointer-lock";
-    const pane = makePane(index, iframe);
-    const bridge = new PlayerBridge(iframe, {
+  // Everything a pane the module created itself needs: its own status bridge
+  // and its own prefixed console relay. Pane 1 is excluded by construction —
+  // the PAGE owns its bridge (see `aggregateStatus`).
+  const attachBridge = (pane: Pane): PlayerBridge => {
+    const bridge = new PlayerBridge(pane.iframe, {
       onReloading: () => setPaneState(pane, "busy"),
       onLive: () => setPaneState(pane, "live"),
       onResult: (ok, message) => {
         setPaneState(pane, ok ? "live" : "error", message);
-        if (!ok) statusBar.appendOutput("error", `[${label}] ${message}`);
+        if (!ok) statusBar.appendOutput("error", `[${pane.id}] ${message}`);
       },
       signal: pane.scope.signal,
     });
-    mirrors.push({ pane, bridge });
-    // Runtime console lines from this mirror, prefixed with its identity.
     window.addEventListener(
       "message",
       (event) => {
         const data = asPlayerMessage(event.data);
         if (!data || data.type !== "functor-lang-console") return;
-        if (event.source !== iframe.contentWindow) return;
-        statusBar.appendOutput(data.level, `[${label}] ${data.message}`, data.frame ?? null);
+        if (event.source !== pane.iframe.contentWindow) return;
+        statusBar.appendOutput(data.level, `[${pane.id}] ${data.message}`, data.frame ?? null);
       },
       { signal: pane.scope.signal }
     );
+    return bridge;
+  };
+
+  const addMirror = (pushCurrent: boolean) => {
+    const index = panes.length;
+    const iframe = document.createElement("iframe");
+    iframe.title = `client ${index + 1} preview`;
+    iframe.allow = "pointer-lock";
+    const pane = makePane("client", index, iframe);
+    const bridge = attachBridge(pane);
+    mirrors.push({ pane, bridge });
     // A mirror added mid-session boots the served program, then catches up to
     // the (possibly edited) buffer; the bridge holds the push until ready.
     if (frame.getAttribute("src")) {
       iframe.src = frame.src; // already carries ?scrubber=hidden (the page adds it)
       if (pushCurrent) bridge.push(getSource());
     }
+  };
+
+  // ------------------------------------------------------------ server pane
+  // Mounted for an example that declares a SERVER role, at every client count
+  // including 1, and left alone by count changes — its world is the session's,
+  // not a client's. It runs the same project files with the server file as the
+  // entry, and its packets reach the clients through the same coordinator.
+  //
+  // It does NOT take editor pushes: `functor-lang-set-source` replaces the
+  // ENTRY module's source, and the sandbox's buffer is the client entry —
+  // pushing it here would swap the server's program for the client's. So an
+  // edit hot-reloads the clients live while the server keeps running the
+  // served build. Editing server.fun needs the multi-file `set-project` path
+  // (the IDE already speaks it); until the sandbox grows a file switcher,
+  // `↺ reset` reboots both roles from disk.
+  const mountServer = (src: string) => {
+    const iframe = document.createElement("iframe");
+    iframe.title = "server preview";
+    iframe.allow = "pointer-lock";
+    const pane = makePane("server", panes.length, iframe);
+    serverPane = { pane, bridge: attachBridge(pane) };
+    iframe.src = src;
+  };
+
+  const unmountServer = () => {
+    if (!serverPane) return;
+    serverPane.bridge.reset();
+    serverPane.pane.scope.abort();
+    serverPane.pane.shell.remove();
+    serverPane.pane.tab.remove();
+    paneDetails.delete(serverPane.pane);
+    serverPane = null;
+    if (focusedPane === null || !allPanes().includes(focusedPane)) focusPane(0);
   };
 
   const removeMirror = () => {
@@ -421,21 +510,25 @@ export function initMultiplayerPanes({
   for (let i = 1; i < count; i++) addMirror(false);
 
   // ------------------------------------------------------------ focus model
-  let focused = 0;
+  // Focus is held by IDENTITY, not by index: the server pane sits after the
+  // clients, so growing or shrinking the client set would otherwise slide the
+  // selection onto a different pane.
+  let focusedPane: Pane | null = null;
+  const focusedIndex = () => (focusedPane ? allPanes().indexOf(focusedPane) : 0);
   function focusPane(index: number) {
-    if (index !== focused) {
-      const previous = panes[focused];
-      if (previous && seamOf(previous.iframe)?.detached()) {
-        exitPanePointerLock(previous.iframe);
-      }
+    const current = allPanes();
+    const next = current[index] ?? current[0] ?? null;
+    if (next !== focusedPane && focusedPane && seamOf(focusedPane.iframe)?.detached()) {
+      exitPanePointerLock(focusedPane.iframe);
     }
-    focused = index;
-    for (const pane of panes) {
-      const on = pane.index === index;
+    focusedPane = next;
+    current.forEach((pane) => {
+      const on = pane === focusedPane;
       pane.shell.classList.toggle("focus", on);
       pane.tab.classList.toggle("focus", on);
-      (pane.shell.querySelector(".mp-you") as HTMLElement).hidden = !on;
-    }
+      const you = pane.shell.querySelector(".mp-you") as HTMLElement | null;
+      if (you) you.hidden = !on;
+    });
   }
   focusPane(0);
 
@@ -456,8 +549,8 @@ export function initMultiplayerPanes({
   window.addEventListener("blur", () => {
     closePopovers();
     const active = document.activeElement;
-    const pane = panes.find((candidate) => candidate.iframe === active);
-    if (pane) focusPane(pane.index);
+    const position = allPanes().findIndex((candidate) => candidate.iframe === active);
+    if (position >= 0) focusPane(position);
   }, { signal: moduleScope.signal });
 
 
@@ -471,12 +564,19 @@ export function initMultiplayerPanes({
       return;
     }
     if (target.closest?.(".cm-editor") || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+    // Digits and `[` `]` walk the CLIENTS only — they are the keyboard's
+    // player picker, and the authority has no player. (Its tab still selects
+    // it, which is what tabs mode needs to show it at all.)
     if (/^[1-9]$/.test(event.key)) {
       const index = Number(event.key) - 1;
       if (index < panes.length) focusPane(index);
     } else if (event.key === "[" || event.key === "]") {
       const delta = event.key === "]" ? 1 : -1;
-      focusPane((focused + delta + panes.length) % panes.length);
+      const from = focusedIndex();
+      // From the server pane (which sits past the clients), the cycle re-enters
+      // the client set at whichever end the direction implies.
+      if (from >= panes.length) focusPane(delta === 1 ? 0 : panes.length - 1);
+      else focusPane((from + delta + panes.length) % panes.length);
     } else if (event.key === "f") {
       setView(grid.dataset.view === "tiled" ? "tabs" : "tiled");
     }
@@ -484,7 +584,7 @@ export function initMultiplayerPanes({
 
   // ------------------------------------------------------- tiled / tabs view
   const setView = (view: "tiled" | "tabs", force = false) => {
-    if (panes.length === 1 && !force) return;
+    if (allPanes().length === 1 && !force) return;
     grid.dataset.view = view;
     tabsStrip.hidden = view !== "tabs";
     $btn("mp-view-tiled").setAttribute("aria-pressed", String(view === "tiled"));
@@ -496,8 +596,10 @@ export function initMultiplayerPanes({
   // Everything on the chrono bar that depends on how many panes exist.
   // (CSS keyed on data-count hides the pane header / 🔮 / view toggle.)
   const updateChrome = () => {
-    const single = panes.length === 1;
-    previewPane.dataset.count = String(panes.length);
+    // "Single" is about TILES, not clients: one client plus a server is still
+    // a grid, so it keeps its pane headers and the tiled/tabs toggle.
+    const single = allPanes().length === 1;
+    previewPane.dataset.count = String(allPanes().length);
     $btn("mp-view-tiled").disabled = single;
     $btn("mp-view-tabs").disabled = single;
     if (single) setView("tiled", true);
@@ -515,7 +617,7 @@ export function initMultiplayerPanes({
     }
     while (panes.length < target) addMirror(true);
     while (panes.length > target) removeMirror();
-    if (focused >= panes.length) focusPane(0);
+    if (focusedPane === null || !allPanes().includes(focusedPane)) focusPane(0);
     updateChrome();
     paintAggregate();
   };
@@ -608,24 +710,38 @@ export function initMultiplayerPanes({
     paintAggregate();
   };
   const paintAggregate = () => {
-    if (panes.length === 1) {
+    const running = allPanes();
+    if (running.length === 1) {
       if (lastMain) setPill(lastMain.state, lastMain.text, lastMain.detail);
       return;
     }
-    const states = [mainState, ...panes.slice(1).map((pane) => pane.state)];
+    // Pane 1's state is the page's (`mainState`); the rest report their own.
+    const states = [mainState, ...running.slice(1).map((pane) => pane.state)];
     if (states.includes("error")) {
-      const failing = panes.find((pane) => pane.state === "error");
+      const failing = running.find((pane) => pane.state === "error");
       setPill("error", "✕ build error", (failing && paneDetails.get(failing)) || mainDetail);
     } else if (states.includes("busy")) {
       setPill("busy", "◐ reloading…", "");
     } else {
-      setPill("live", `● ${panes.length} running`, mainDetail);
+      // The clients and the server are counted SEPARATELY ("2+1 running"): the
+      // CLIENTS control says 2, and a bare "3" would read as a third client.
+      setPill(
+        "live",
+        serverPane ? `● ${panes.length}+1 running` : `● ${running.length} running`,
+        mainDetail
+      );
     }
   };
 
   // ------------------------------------------------------ chrono bar wiring
-  const seams = () => panes.map((pane) => seamOf(pane.iframe)).filter((s): s is ScrubSeam => !!s);
-  const primarySeam = () => seamOf(panes[focused].iframe) ?? seams()[0] ?? null;
+  // The transport speaks to EVERY pane, server included: the authority parks
+  // and steps with its clients, or a paused session keeps simulating.
+  const seams = () =>
+    allPanes()
+      .map((pane) => seamOf(pane.iframe))
+      .filter((s): s is ScrubSeam => !!s);
+  const primarySeam = () =>
+    (focusedPane ? seamOf(focusedPane.iframe) : null) ?? seams()[0] ?? null;
   let pendingDetached:
     | { seam: ScrubSeam; generation: number; iframe: HTMLIFrameElement }
     | null = null;
@@ -635,7 +751,7 @@ export function initMultiplayerPanes({
       pendingPointerLock !== null &&
       (!pendingPointerLock.iframe.isConnected ||
         seamOf(pendingPointerLock.iframe) !== pendingPointerLock.seam ||
-        panes[focused]?.iframe !== pendingPointerLock.iframe)
+        focusedPane?.iframe !== pendingPointerLock.iframe)
     ) {
       try {
         pendingPointerLock.seam.setDetachedPointerLockPending(false);
@@ -668,7 +784,7 @@ export function initMultiplayerPanes({
         // Treat a destroyed realm as a refused request.
       }
     }
-    if (!detached || panes[focused]?.iframe !== request.iframe) {
+    if (!detached || focusedPane?.iframe !== request.iframe) {
       exitPanePointerLock(request.iframe);
     }
   };
@@ -683,7 +799,7 @@ export function initMultiplayerPanes({
     for (const seam of seams()) seam.step();
   });
   $btn("mp-camera").addEventListener("click", () => {
-    const iframe = panes[focused].iframe;
+    const iframe = focusedPane!.iframe;
     const seam = seamOf(iframe);
     if (!seam?.canDetach()) return;
     const setPointerClaim = (pending: boolean) => {
@@ -720,7 +836,7 @@ export function initMultiplayerPanes({
         pendingPointerLock.iframe !== iframe ||
         !iframe.isConnected ||
         seamOf(iframe) !== seam ||
-        panes[focused]?.iframe !== iframe
+        focusedPane?.iframe !== iframe
       ) {
         if (pendingPointerLock?.seam === seam && pendingPointerLock.iframe === iframe) {
           pendingPointerLock = null;
@@ -996,7 +1112,7 @@ export function initMultiplayerPanes({
       pauseBtn.textContent = current.paused ? "▶" : "⏸";
       pauseBtn.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
       const cameraBtn = $btn("mp-camera");
-      const cameraSeam = seamOf(panes[focused].iframe);
+      const cameraSeam = focusedPane ? seamOf(focusedPane.iframe) : null;
       const canDetach = cameraSeam?.canDetach() ?? false;
       const detached = cameraSeam?.detached() ?? false;
       cameraBtn.hidden = !canDetach;
@@ -1058,7 +1174,7 @@ export function initMultiplayerPanes({
       // Event markers (input / reload / reload-error): the reload ticks are the
       // "source changes on the timeline" — every hot-swap is already recorded.
       const key =
-        `${focused}|` +
+        `${focusedPane?.id ?? ""}|` +
         current.eventMarkers
           .map(
             (marker) =>
@@ -1093,12 +1209,33 @@ export function initMultiplayerPanes({
         );
       }
     }
-    for (const pane of panes) {
+    // Link state, straight from the coordinator's connection table — the seed
+    // of the link chip becoming real. Only a session that HAS an authority
+    // shows it: in a single-player example there is nothing to wait for.
+    const links = serverPane ? net.connectionCounts() : null;
+    for (const pane of allPanes()) {
       const seam = seamOf(pane.iframe);
       const frameNow = seam ? seam.frame() : null;
       const text = frameNow === null || frameNow === undefined ? "—" : String(frameNow);
       for (const label of pane.frameLabels) {
         if (label.textContent !== text) label.textContent = text;
+      }
+      pane.conn.hidden = !links;
+      if (!links) continue;
+      const count = links.get(pane.id) ?? 0;
+      const linked =
+        count > 0
+          ? pane.role === "server"
+            ? `● ${count} linked`
+            : "● linked"
+          : "○ waiting";
+      if (pane.conn.textContent !== linked) {
+        pane.conn.textContent = linked;
+        pane.conn.dataset.linked = String(count > 0);
+        pane.conn.title =
+          count > 0
+            ? "Connected through the host net coordinator (perfect link)"
+            : "No connection yet — waiting for the server pane's Sub.listen";
       }
     }
   };
@@ -1114,15 +1251,27 @@ export function initMultiplayerPanes({
   raf = requestAnimationFrame(tickLoop);
 
   return {
-    // Mirror a fresh program load into the extra panes.
-    setSrc(src) {
+    // Mirror a fresh program load into the extra panes, and mount/remove the
+    // server pane to match what the newly loaded example declares.
+    setSrc(src, serverSrc = null) {
       for (const { pane, bridge } of mirrors) {
         bridge.reset();
         setPaneState(pane, "busy");
         pane.iframe.src = src;
       }
+      if (!serverSrc) unmountServer();
+      else if (serverPane) {
+        serverPane.bridge.reset();
+        setPaneState(serverPane.pane, "busy");
+        serverPane.pane.iframe.src = serverSrc;
+      } else {
+        mountServer(serverSrc);
+      }
+      updateChrome();
+      paintAggregate();
     },
-    // Mirror a debounced hot-reload push.
+    // Mirror a debounced hot-reload push. The server pane is deliberately not
+    // a target — the buffer being edited is the CLIENT entry (see mountServer).
     push(source) {
       for (const { bridge } of mirrors) bridge.push(source);
     },
@@ -1144,6 +1293,7 @@ export function initMultiplayerPanes({
       cancelAnimationFrame(raf);
       net.destroy();
       moduleScope.abort();
+      unmountServer();
       while (mirrors.length) removeMirror();
     },
   };

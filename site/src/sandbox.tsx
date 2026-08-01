@@ -427,7 +427,25 @@ const loadExample = async (id: string) => {
   // prefixed contract (e.g. orbs' clientInit/clientTick/…).
   if (example?.prefix) params.set("prefix", example.prefix);
   frame.src = `player.html?${params}`;
-  mp?.setSrc(frame.src);
+  // A sample with a SERVER role (examples.ts `server`) also boots a server
+  // pane: the SAME file list re-entered at the server file. `?file=` is the
+  // whole project with the ENTRY FIRST, so the two roles differ only in which
+  // module the runtime looks the entry points up in.
+  const serverFile = example?.server?.file;
+  let serverSrc: string | null = null;
+  if (serverFile) {
+    // Derived from the client's params, so every project setting the sample
+    // declares (prefix, cursor, mouseCapture) reaches the server pane too —
+    // only the entry and the file ORDER differ.
+    const serverParams = new URLSearchParams(params);
+    serverParams.set("game", serverFile);
+    serverParams.delete("file");
+    for (const file of [serverFile, ...files.filter((f) => f !== serverFile)]) {
+      serverParams.append("file", file);
+    }
+    serverSrc = `player.html?${serverParams}`;
+  }
+  mp?.setSrc(frame.src, serverSrc);
 };
 
 const selectExample = (value: string) => {
