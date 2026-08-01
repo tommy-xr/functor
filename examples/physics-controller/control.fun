@@ -29,9 +29,6 @@ let landHardness = 6.0
 // The controller's own state. Everything here is plain data, so it snapshots,
 // hot-reloads, and time-travels with the rest of the model.
 type Ctl = {
-  // Gate for the first frame: the physics reads raise before the `physics`
-  // hook's declaration has been reconciled and stepped.
-  started: bool,
   // Grounded as of the last observation.
   grounded: bool,
   // Seconds of jump grace remaining after leaving the ground.
@@ -50,7 +47,6 @@ type Ctl = {
 }
 
 let zero: Ctl = {
-  started: false,
   grounded: false,
   coyote: 0.0,
   buffer: 0.0,
@@ -61,10 +57,8 @@ let zero: Ctl = {
   wishZ: 0.0,
 }
 
-// Clear the transient feel state after a respawn, but KEEP `started` — that is
-// the "the physics world has been reconciled" gate, not controller state, and
-// clearing it would make the character free-fall one uncommanded frame. The
-// steering wish is kept too: it belongs to the keys currently held down.
+// Clear the transient feel state after a respawn. The steering wish is kept:
+// it belongs to the keys currently held down.
 let respawned = (c) =>
   { c with grounded: false, coyote: 0.0, buffer: 0.0, squash: 0.0, lock: 0.0, landImpact: 0.0 }
 

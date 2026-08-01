@@ -320,7 +320,7 @@ impl FunctorLangEmbeddedGame {
         journal_arm();
         let source_hashes = inspector_sources(&loaded.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&loaded.module);
-        Ok(FunctorLangEmbeddedGame {
+        let mut game = FunctorLangEmbeddedGame {
             reporter: Reporter::new(SpanSource::Project(loaded.sources), report_to_log),
             last_frame_journal: Vec::new(),
             journal_ring: std::collections::VecDeque::new(),
@@ -363,7 +363,15 @@ impl FunctorLangEmbeddedGame {
             webview_handlers: Vec::new(),
             last_frame: empty_frame(),
             platform,
-        })
+        };
+        // Cold start (docs/physics.md): declare the initial world before the
+        // first frame, so frame 1's physics reads answer instead of raising.
+        // The world is a thread-local, so drop whatever an earlier producer on
+        // this thread left behind first — otherwise a same-tag body from the
+        // previous session would answer this session's priming reads.
+        physics::remove_world(physics::DEFAULT_WORLD);
+        game.ctx().prime_physics();
+        Ok(game)
     }
 
     /// Swap in a freshly loaded program, KEEPING THE MODEL — the desktop
@@ -409,9 +417,17 @@ impl FunctorLangEmbeddedGame {
         self.has_mouse_wheel = loaded.has_mouse_wheel;
         self.has_mouse_button = loaded.has_mouse_button;
         self.has_subscriptions = loaded.has_subscriptions;
+        let had_physics = self.has_physics;
         self.has_physics = loaded.has_physics;
         if !self.has_physics {
             physics::remove_world(physics::DEFAULT_WORLD);
+        } else if !had_physics {
+            // The edit ADDED the hook: there is no surviving world to keep, so
+            // this reload is a cold start for physics and must prime like one
+            // (docs/physics.md). Without it the very next frame's reads face an
+            // empty world — the cold-start hole this PR closes, reopened by the
+            // most common way to reach it.
+            self.ctx().prime_physics();
         }
         self.has_soundscape = loaded.has_soundscape;
         if !self.has_soundscape {
@@ -523,6 +539,10 @@ impl FunctorLangEmbeddedGame {
         self.input_buf.clear();
         self.last_frame = empty_frame();
         self.reporter.reset();
+        // A reset is a cold start: the model is `init` again and the world was
+        // removed, so re-prime it (a hot reload deliberately does NOT — there
+        // the world, like the model, survives).
+        self.ctx().prime_physics();
         self.platform.on_reload();
     }
 

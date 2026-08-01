@@ -74,9 +74,6 @@ let init = {
   lastMouse: NoMouse,
   eye: { x: 0.0 - 650.0, y: 192.0, z: 0.0 - 1200.0 },
   grounded: false,
-  // The pre-step physics reads raise on the very first frame: the `physics`
-  // hook's declaration has not been reconciled and stepped yet.
-  started: false,
   balls: [],
   nextBall: 0.0,
 }
@@ -158,8 +155,6 @@ let groundProbe = (pos) =>
 // read -> decide -> write, all in one frame. The reads see the previous step
 // (physics runs after `tick`) and the command applies at the next one.
 let tick = (model, dt, tts) =>
-  if not model.started then { model with started: true }
-  else
   let pos = Physics.position(walkerTag) in
   let probe = groundProbe(pos) in
   let forward = axis(model.held.down, model.held.up) in

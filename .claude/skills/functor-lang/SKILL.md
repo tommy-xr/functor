@@ -958,9 +958,12 @@ Prose docs: `docs/ui-interaction.md` (widget interaction and headless driving),
 `Physics.position` / `Physics.linearVelocity` / `Physics.cast` /
 `Physics.castExcluding` / `Physics.transformed` read the live stepped world
 (Functor Lang runs in the shell's process — no boundary). They work in **any**
-entry point, `tick` included: in `tick` they see the previous step (physics runs
-after `tick`), in `draw` this frame's. That one step of read latency is inherent
-to read → decide → step. A tag not in the world is
+entry point, `tick` and the `physics` hook included, under one rule: a read
+answers the LAST STEPPED world. Every pre-step caller (`tick`, `input`, the
+hook) sees the previous step; only `draw` (and post-step `update`s) sees this
+frame's. That one step of read latency is inherent
+to read → decide → step. The world is primed from `init` before frame 1, so
+even the first frame's reads answer. A tag not in the world is
 a **spanned runtime error** (there is no Option-shaped return to match on),
 so only read tags your `physics` hook declares. The tag is cross-frame
 identity: same tag = same body; drop a body by not declaring it.
@@ -1025,17 +1028,14 @@ let probe = (p) =>
   Physics.castExcluding(playerTag, Vec3.make(p.x, p.y - 0.9, p.z),
                         Vec3.make(0.0, -1.0, 0.0), 0.2)
 let tick = (m, dt, tts) =>
-  match m.started with          // guard the FIRST frame: nothing has been
-  | false => { m with started: true }   //   reconciled yet, so the reads below
-  | true =>                             //   would raise `no body tagged …`
-    let pos = Physics.position(playerTag) in
-    let vel = Physics.linearVelocity(playerTag) in
-    let onGround = probe(pos).hit in
-    // Steer the horizontal plane only — the solver owns `y`.
-    (m, if onGround && m.jump then
-          Effect.batch([Physics.setVelocityXZ(playerTag, vel.x, vel.z),
-                        Physics.setVelocityY(playerTag, 6.0)])
-        else Physics.setVelocityXZ(playerTag, vel.x, vel.z))
+  let pos = Physics.position(playerTag) in    // frame 1 included: the world is
+  let vel = Physics.linearVelocity(playerTag) in  //   primed from `init`
+  let onGround = probe(pos).hit in
+  // Steer the horizontal plane only — the solver owns `y`.
+  (m, if onGround && m.jump then
+        Effect.batch([Physics.setVelocityXZ(playerTag, vel.x, vel.z),
+                      Physics.setVelocityY(playerTag, 6.0)])
+      else Physics.setVelocityXZ(playerTag, vel.x, vel.z))
 ```
 
 The read happens in `tick`, the command drains immediately after `tick` (no
@@ -1043,9 +1043,10 @@ The read happens in `tick`, the command drains immediately after `tick` (no
 (when the 60 Hz accumulator is short of a full step, no step runs at all that
 frame and it lands on the next one). Reads and writes both live in `tick`.
 
-Note the two rules this example obeys: local `let` needs `in`, and the
-pre-step readers raise on the first frame, before the `physics` hook's
-declaration has been reconciled and stepped — so gate them.
+Note the rule this example obeys: a local `let` needs `in`. It needs no
+first-frame gate — the world is primed from `init` before frame 1, so the
+pre-step reads answer from the very first tick. (The `probe` cast is the one
+exception: ray queries need a step, so frame 1 reads "not grounded".)
 
 ⚠️ The sketch above is the LOOP SHAPE, not a usable controller — it has no
 coyote time, jump buffering, or post-jump lockout. See the next section.
@@ -1256,21 +1257,30 @@ not uniformly pre-step — when it is handling a `Physics.raycast` tagger or a
 `Physics.events` message it runs POST-step, and its reads see the current
 frame's world.
 
-Two real constraints:
+Three rules follow from that one:
 
-- **Never read inside the `physics` hook.** It is not merely stale — it is a
-  DEADLOCK. The read raises before the hook returns its scene, so the world
-  is never declared, so the body never exists, so the read raises again:
-  every frame, forever — and it takes `draw`'s `Physics.transformed` down
-  with it. The hook is a pure DECLARATION of the world; derive positions
-  from the model instead.
-- **The first frame**, for the pre-step readers: nothing has stepped yet, so
-  the read is a spanned error — `` no body tagged "ball" in the physics world
-  (bodies exist after the frame's `physics` declaration has been reconciled
-  and stepped) ``. Unlike the hook case this is self-correcting: it is logged
-  as a `<hook> error` (`tick error`, `draw error`, …), that hook's call is
-  skipped, and every later frame reads fine. Guard it (a `started` flag, or a
-  `Sub`/`update` gate) or do that particular read in `draw`.
+- **The `physics` hook is a pre-step reader like any other.** Reading inside
+  it is allowed and answers with the LAST stepped world — the same pose `tick`
+  saw that frame. (It used to be a DEADLOCK: the read raised, so the world was
+  never declared, so it raised again, forever. It no longer is.) The hook is
+  still a DECLARATION, so keep it cheap; a read there is for deriving one
+  body's declared pose from another's.
+- **The first frame is primed, so it reads.** Before the first frame the
+  runtime evaluates the hook once on `init` and reconciles it with ZERO steps,
+  so frame 1's `tick`/hook reads answer with the initial declared poses. A
+  `started: bool` guard is no longer needed — `examples/terrain` and
+  `examples/physics-controller` deleted theirs. Three footnotes: priming re-runs
+  at a RESTART (and at a reload that ADDS the hook) but not at an ordinary hot
+  reload, where the world survives with the model; inside the prime evaluation
+  itself — the one call with no stepped world behind it — a body read answers
+  the identity pose (origin, zero velocity) instead of raising; and priming
+  answers BODY reads only — `Physics.cast` needs a step (rapier ingests
+  colliders there), so a grounding probe still answers from frame 2.
+- **A hook error degrades, loudly.** An error inside the hook (or a
+  non-`Physics.scene` return) keeps the previous frame's declaration, keeps
+  stepping the world, and reports the teaching error ONCE — the hot-reload
+  broken-edit discipline. An unknown tag is still a spanned error everywhere
+  else: `` no body tagged "ball" in the physics world ``.
 
 The physics world survives hot reload (like the model); deleting the
 `physics` hook drops it. Gotcha: `--fixed-time T` pins the clock with

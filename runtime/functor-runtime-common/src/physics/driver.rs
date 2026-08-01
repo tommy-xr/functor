@@ -136,12 +136,54 @@ impl SteppedPhysics {
         .is_some()
     }
 
+    /// Reconcile `scene` into the world WITHOUT simulating — the cold-start
+    /// prime (docs/physics.md, "Priming the world at init"). Evaluating the
+    /// `physics` hook once on the initial model and declaring its result means
+    /// frame 1's reads (in `tick`, and in the hook itself) answer with the
+    /// initial declared poses instead of raising against an empty world.
+    ///
+    /// Nothing is recorded: the first `advance` snapshots the world as its
+    /// frame-0 keyframe, and that snapshot is taken AFTER this reconcile — so a
+    /// seek/rewind to any recorded frame restores the primed world exactly, and
+    /// replay stays byte-identical without a synthetic pre-frame in the log.
+    ///
+    /// Body READS (`Physics.position` / `linearVelocity` / `transformed`)
+    /// answer from a primed world, but synchronous RAY QUERIES do not: rapier's
+    /// broad phase ingests colliders at the step, so `Physics.cast` still
+    /// reports a miss until the first substep has run (docs/physics.md). This
+    /// deliberately does not force a broad-phase update to paper over that —
+    /// hand-updating it outside the pipeline would put the determinism the
+    /// Timeline depends on at risk for one frame of probe latency.
+    pub fn prime(&mut self, scene: &PhysicsScene) {
+        let scene = scene.hydrated_heightfields();
+        with_world(self.world, |w| {
+            w.reconcile(&scene);
+            // Reconcile is declaration only — no step runs, so nothing may
+            // observe events or warnings from it.
+            let _ = w.take_events();
+            let _ = w.take_command_warnings();
+        });
+    }
+
     /// One rendered frame's worth of recorded physics: simulate whole fixed
     /// substeps from `real_dt`, recording each through the Timeline. The
     /// declared `scene` reconciles on the frame's first recorded substep —
     /// identical semantics to `World::step_frame`, but every fixed frame is
     /// now seekable.
     pub fn advance(&mut self, scene: &PhysicsScene, real_dt: f32) -> Advanced {
+        self.advance_scene(Some(scene), real_dt)
+    }
+
+    /// Advance with NO declaration this frame — the degraded step taken when
+    /// the `physics` hook errored (docs/physics.md, "When the hook errors").
+    /// The world already holds the previous frame's declaration, so keeping it
+    /// is literally recording no `DeclareScene` for this frame: the sim keeps
+    /// running and replay reproduces it exactly.
+    pub fn advance_undeclared(&mut self, real_dt: f32) -> Advanced {
+        self.advance_scene(None, real_dt)
+    }
+
+    fn advance_scene(&mut self, scene: Option<&PhysicsScene>, real_dt: f32) -> Advanced {
         let mut out = Advanced {
             steps: 0,
             events: Vec::new(),
@@ -173,7 +215,7 @@ impl SteppedPhysics {
             // Resolve terrain once at the live shell boundary, then move that
             // exact immutable scene into the command log. Replays must never
             // consult whatever asset revision happens to be loaded later.
-            let mut scene = Some(scene.hydrated_heightfields());
+            let mut scene = scene.map(|scene| scene.hydrated_heightfields());
             let (events, warnings) = with_world(self.world, |w| {
                 let mut events = Vec::new();
                 for i in 0..steps {
@@ -183,9 +225,11 @@ impl SteppedPhysics {
                     // one DeclareScene per rendered frame keeps the log lean.
                     let mut cmds: Vec<Command> = Vec::new();
                     if i == 0 {
-                        cmds.push(Command::DeclareScene(
-                            scene.take().expect("first fixed substep owns the scene"),
-                        ));
+                        // A degraded frame (the hook errored) declares nothing
+                        // and keeps the world's existing declaration.
+                        if let Some(scene) = scene.take() {
+                            cmds.push(Command::DeclareScene(scene));
+                        }
                         for command in w.take_pending_commands() {
                             cmds.push(Command::Apply(command));
                         }
@@ -249,7 +293,8 @@ impl SteppedPhysics {
     }
 
     /// The fixed-frame range a rewind can restore EXACTLY: the practical floor
-    /// (frame 0's pre-step is the empty pre-reconcile world, so 1 is the real
+    /// (frame 0's pre-step is the world before any STEP — empty, or the
+    /// cold-start primed declaration — so 1 is the real
     /// floor) through the newest recorded frame. `None` until something has
     /// stepped. The coupled scene rewind (docs/time-travel.md T1) uses this to
     /// refuse rather than silently clamp — a clamp would land the world on a
@@ -277,12 +322,13 @@ impl SteppedPhysics {
         };
         if hi == 0 {
             // Only the empty frame-0 exists — nothing meaningful to seek to
-            // (frame 0's pre-step state is the empty world, before any
+            // (frame 0's pre-step state is the world before any step — empty,
+            // or the cold-start primed declaration, before any
             // reconcile, which draw-reads can't use).
             warnings.push("physics rewind: no stepped frame recorded yet".to_string());
             return;
         }
-        // Pre-step of fixed frame 0 is the empty world, so the practical floor
+        // Pre-step of fixed frame 0 is the world before any step, so the floor
         // is frame 1 (= the world after its first step).
         let floor = if lo == 0 { 1 } else { lo };
         let target = frame.clamp(floor, hi);
@@ -388,6 +434,71 @@ mod tests {
             snapshot() == end_a,
             "replaying identical inputs must reproduce run A"
         );
+    }
+
+    /// Priming (the cold-start declaration, no steps) is inside the frame-0
+    /// keyframe, so a rewind restores the primed world and a replay reproduces
+    /// the run byte-for-byte — no new entry in the recording format.
+    #[test]
+    fn a_primed_world_rewinds_and_replays_byte_identically() {
+        let mut sp = fresh();
+        sp.prime(&scene_at(0));
+        // Declaration only: the bodies exist, nothing has stepped.
+        assert!(with_world(DEFAULT_WORLD, |w| w.body_transform("a").is_some()).unwrap());
+        assert_eq!(with_world(DEFAULT_WORLD, |w| w.frame()), Some(0));
+        assert_eq!(sp.seekable_range(), None);
+
+        let mut snap_10 = Vec::new();
+        for t in 0..40 {
+            if t == 10 {
+                snap_10 = snapshot();
+            }
+            sp.advance(&scene_at(t), FIXED_DT);
+        }
+        let end = snapshot();
+
+        let warnings = sp.rewind_to_frame(10);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(snapshot() == snap_10, "a primed run must rewind byte-exact");
+        for t in 10..40 {
+            sp.advance(&scene_at(t), FIXED_DT);
+        }
+        assert!(snapshot() == end, "a primed run must replay byte-exact");
+        remove_world(DEFAULT_WORLD);
+    }
+
+    /// The degraded frame (the `physics` hook errored): no declaration is
+    /// recorded, so the world keeps the previous frame's bodies and keeps
+    /// simulating — and that frame replays exactly as it ran.
+    #[test]
+    fn an_undeclared_advance_keeps_the_world_and_replays() {
+        let mut sp = fresh();
+        sp.prime(&scene_at(0));
+        for t in 0..10 {
+            sp.advance(&scene_at(t), FIXED_DT);
+        }
+        let before = with_world(DEFAULT_WORLD, |w| w.body_transform("a").unwrap().0[1]).unwrap();
+        let snap_10 = snapshot();
+
+        for _ in 0..10 {
+            let out = sp.advance_undeclared(FIXED_DT);
+            assert_eq!(out.steps, 1, "a degraded frame still simulates");
+        }
+        let after = with_world(DEFAULT_WORLD, |w| w.body_transform("a").unwrap().0[1]).unwrap();
+        assert!(
+            after < before,
+            "the kept world must keep falling: {before} -> {after}"
+        );
+        let end = snapshot();
+
+        let warnings = sp.rewind_to_frame(10);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(snapshot() == snap_10);
+        for _ in 0..10 {
+            sp.advance_undeclared(FIXED_DT);
+        }
+        assert!(snapshot() == end, "degraded frames must replay byte-exact");
+        remove_world(DEFAULT_WORLD);
     }
 
     #[test]
