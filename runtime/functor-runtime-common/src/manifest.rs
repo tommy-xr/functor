@@ -265,10 +265,10 @@ pub fn duplicate_clip_names(clips: &[(String, f32)]) -> Vec<String> {
     duplicate_names(clips.iter().map(|(name, _)| name.as_str()))
 }
 
-/// Joint names appearing more than once in a model. `Anim.rotate` selects the
-/// smallest matching node id while `Anim.mask` selects all matching subtrees;
-/// duplicate nodes are not individually name-addressable, so the generator
-/// emits one field.
+/// Joint names appearing more than once in a model. `Anim.rotate` and
+/// `Anim.lookAt` select the smallest matching node id while `Anim.mask`
+/// selects all matching subtrees; duplicate nodes are not individually
+/// name-addressable, so the generator emits one field.
 pub fn duplicate_joint_names(joints: &[String]) -> Vec<String> {
     duplicate_names(joints.iter().map(String::as_str))
 }
