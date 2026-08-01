@@ -1051,7 +1051,7 @@ AudioScene.empty), got {}",
             tts,
             &self.source_hashes,
             &self.last_frame_journal,
-            Some(&draw_args),
+            Some((self.names.draw, &draw_args)),
             &ring,
             &self.runnable,
             &self.session,
@@ -1258,6 +1258,35 @@ let draw = (model, tts) =>
             Ok(_) => panic!("unprefixed bindings don't satisfy a prefixed role"),
         };
         assert!(err.contains("serverInit"), "{err}");
+    }
+
+    /// A prefixed role's EFFECTS must fold through the role's own update
+    /// (`serverUpdate`), not the canonical `update` — the drain would
+    /// otherwise fail its call and silently drop every message.
+    #[test]
+    fn a_prefixed_role_drains_its_effects_through_its_own_update() {
+        let source = "\
+type Msg = | GotTime(t: Float)\n\
+let serverInit = { ticks: 0.0, stamped: 0.0 }\n\
+let serverUpdate = (m, msg) =>\n\
+  match msg with\n\
+  | GotTime(t) => { m with stamped: m.stamped + 1.0 }\n\
+let serverTick = (m, dt, tts) =>\n\
+  ({ m with ticks: m.ticks + dt }, Effect.now((t) => GotTime(t)))\n\
+let serverDraw = (m, tts) =>\n\
+  Frame.create(Camera.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut game = FunctorLangEmbeddedGame::create_with_prefix(
+            vec![("game.fun".to_string(), source.to_string())],
+            "server",
+            Box::new(NativePlatform),
+        )
+        .expect("prefixed role loads");
+        game.tick(frame_time(0.016, 0.016));
+        let model = game.state_debug();
+        assert!(
+            model.contains("stamped: 1"),
+            "serverTick's Effect.now result reached serverUpdate: {model}"
+        );
     }
 
     #[test]

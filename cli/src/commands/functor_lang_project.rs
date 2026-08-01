@@ -227,6 +227,14 @@ name → .fun path (e.g. {\"client\": \"client.fun\", \"server\": \"server.fun\"
         }
     }
 
+    /// Does this project use the named-`entries` form? `build`'s contract
+    /// gate — which EVALUATES the role's top-level defs to resolve its
+    /// (possibly prefixed) bindings — is scoped to it, so a classic single
+    /// `entry` keeps the old "typecheck only, run nothing" build semantics.
+    pub fn is_named(&self) -> bool {
+        matches!(self.entries, FunctorLangEntries::Named(_))
+    }
+
     /// Every declared entry, resolved — `build` validates each role's
     /// contract, and the example-sweep test typechecks each.
     pub fn all(&self) -> Result<Vec<FunctorLangProject>, Error> {

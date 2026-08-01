@@ -91,7 +91,8 @@ fn sources_json(sources: &[InspectorSource]) -> Vec<serde_json::Value> {
 
 /// Replay the last real frame's journal into the wire-contract `invocations`,
 /// plus one synthesized `draw` invocation against the frozen model when the
-/// caller supplies its args (draw is pure and never journaled during play —
+/// caller supplies the role's draw name and its args (draw is pure and never
+/// journaled during play —
 /// replaying it once at trace-build time is exact and free). Each call is
 /// re-run through `Session::call_recorded` — entry points are pure functions
 /// of their args, so the record is exact, and effects are plain data (nothing
@@ -99,7 +100,7 @@ fn sources_json(sources: &[InspectorSource]) -> Vec<serde_json::Value> {
 /// within its entry name; binding spans map to `(file, local offsets)`.
 fn build_invocations(
     journal: &[JournalEntry],
-    draw_args: Option<&[Value]>,
+    draw: Option<(&str, &[Value])>,
     sources: &[InspectorSource],
     session: &Session,
 ) -> (Vec<serde_json::Value>, Vec<usize>) {
@@ -125,9 +126,11 @@ fn build_invocations(
             replayed.push((e.entry, Provenance::render(&e.provenance, &e.args), inv));
         }
     }
-    if let Some(args) = draw_args {
-        if let Ok((_discard, inv)) = session.call_recorded("draw", args.to_vec(), &mut FunctorHost) {
-            replayed.push(("draw", Provenance::Draw.render(args), inv));
+    if let Some((draw_name, args)) = draw {
+        if let Ok((_discard, inv)) =
+            session.call_recorded(draw_name, args.to_vec(), &mut FunctorHost)
+        {
+            replayed.push((draw_name, Provenance::Draw.render(args), inv));
         }
     }
     let _replay_pushed = crate::functor_lang_prelude::take_ui_handlers();
@@ -223,11 +226,11 @@ pub fn build_trace_doc(
     tts: f64,
     sources: &[InspectorSource],
     journal: &[JournalEntry],
-    draw_args: Option<&[Value]>,
+    draw: Option<(&str, &[Value])>,
     session: &Session,
 ) -> String {
     build_trace_doc_with_coverage(
-        paused, frame, tts, sources, journal, draw_args, &[], &[], session,
+        paused, frame, tts, sources, journal, draw, &[], &[], session,
     )
 }
 
@@ -254,7 +257,7 @@ pub fn build_trace_doc_with_coverage(
     tts: f64,
     sources: &[InspectorSource],
     journal: &[JournalEntry],
-    draw_args: Option<&[Value]>,
+    draw: Option<(&str, &[Value])>,
     ring: &[(u64, Vec<JournalEntry>)],
     runnable: &[usize],
     session: &Session,
@@ -267,7 +270,7 @@ pub fn build_trace_doc_with_coverage(
         })
         .to_string();
     }
-    let (invocations, paused_coverage) = build_invocations(journal, draw_args, sources, session);
+    let (invocations, paused_coverage) = build_invocations(journal, draw, sources, session);
     serde_json::json!({
         "frame": frame,
         "tts": tts,
@@ -676,7 +679,7 @@ mod tests {
             1.5,
             &sources,
             &[],
-            Some(&draw_args),
+            Some(("draw", &draw_args)),
             &session,
         ))
         .unwrap();
@@ -701,7 +704,7 @@ mod tests {
             0.5,
             &sources2,
             &[],
-            Some(&args2),
+            Some(("draw", &args2)),
             &session2,
         ))
         .unwrap();

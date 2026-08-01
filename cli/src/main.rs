@@ -417,13 +417,21 @@ async fn run(args: &Args) -> io::Result<()> {
                 // The strict gate validates EVERY declared role, not just the
                 // selected one: the sibling-module set is shared, so asset
                 // verification runs once (the first role), while each role
-                // re-roots the typecheck at its own entry and validates its
-                // own — possibly prefixed — entry-point contract
+                // re-roots the typecheck at its own entry.
+                //
+                // The contract gate on top of that is scoped to named
+                // `entries`: it EVALUATES the role's top-level defs to resolve
+                // its — possibly prefixed — entry points
                 // (`serverInit`/`serverTick`/… for a `{ "file", "prefix" }`
-                // role; see check_contract).
+                // role; see check_contract), which is the feature there. A
+                // classic single `entry` keeps the old boundary: `build`
+                // typechecks and runs no game code.
+                let named = config.is_named();
                 for (i, role) in config.all()?.iter().enumerate() {
                     let loaded = role.build(&working_directory_str, i == 0)?;
-                    role.check_contract(&loaded)?;
+                    if named {
+                        role.check_contract(&loaded)?;
+                    }
                 }
                 match environment {
                     Some(Environment::Wasm) => project.export_wasm(&working_directory_str),

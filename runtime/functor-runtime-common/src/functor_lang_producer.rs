@@ -712,6 +712,7 @@ impl FrameCtx<'_> {
             let mut reports: Vec<String> = Vec::new();
             perform_deferred_queries(
                 self.session,
+                self.names.update,
                 self.model,
                 deferred,
                 self.effect_runner,
@@ -738,6 +739,7 @@ impl FrameCtx<'_> {
                         let mut reports: Vec<String> = Vec::new();
                         deliver_physics_events(
                             self.session,
+                            self.names.update,
                             self.model,
                             &taggers,
                             &events,
@@ -1088,6 +1090,7 @@ to receive their messages; dropping them",
         let mut reports: Vec<String> = Vec::new();
         let deferred = drain_effects(
             self.session,
+            self.names.update,
             self.model,
             effects,
             self.effect_runner,

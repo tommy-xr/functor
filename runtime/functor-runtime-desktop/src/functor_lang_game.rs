@@ -1071,7 +1071,7 @@ impl Game for FunctorLangGame {
             return; // unrecognized code / Key::Unknown — never delivered.
         };
         let args = vec![self.model.clone(), key_value, Value::Bool(is_down)];
-        journal_push("input", &args, Provenance::Input);
+        journal_push(self.names.input, &args, Provenance::Input);
         match self.session.call(self.names.input, args, &mut FunctorHost) {
             Ok(returned) => self.ctx().absorb(returned),
             Err(err) => self.reporter.frame_error(self.names.input, &err),
@@ -1090,7 +1090,7 @@ impl Game for FunctorLangGame {
             Value::Number(x as f64),
             Value::Number(y as f64),
         ];
-        journal_push("mouseMove", &args, Provenance::MouseMove);
+        journal_push(self.names.mouse_move, &args, Provenance::MouseMove);
         match self
             .session
             .call(self.names.mouse_move, args, &mut FunctorHost)
@@ -1107,7 +1107,7 @@ impl Game for FunctorLangGame {
             return;
         }
         let args = vec![self.model.clone(), Value::Number(delta as f64)];
-        journal_push("mouseWheel", &args, Provenance::MouseWheel);
+        journal_push(self.names.mouse_wheel, &args, Provenance::MouseWheel);
         match self
             .session
             .call(self.names.mouse_wheel, args, &mut FunctorHost)
@@ -1130,7 +1130,7 @@ impl Game for FunctorLangGame {
             return; // unrecognized code / MouseButton::Unknown — never delivered.
         };
         let args = vec![self.model.clone(), button_value, Value::Bool(is_down)];
-        journal_push("mouseButton", &args, Provenance::MouseButton);
+        journal_push(self.names.mouse_button, &args, Provenance::MouseButton);
         match self
             .session
             .call(self.names.mouse_button, args, &mut FunctorHost)
@@ -1339,7 +1339,7 @@ AudioScene.empty), got {}",
             tts,
             &self.source_hashes,
             &self.last_frame_journal,
-            Some(&draw_args),
+            Some((self.names.draw, &draw_args)),
             &ring,
             &self.runnable,
             &self.session,

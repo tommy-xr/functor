@@ -290,6 +290,21 @@ mod tests {
         assert!(html.contains("bad<\\/script>.fun"));
     }
 
+    /// The role's binding prefix reaches the page: the web producer reads
+    /// `window.__functorLangEntryPrefix` to resolve `serverInit`/`serverTick`/….
+    #[test]
+    fn substitutes_the_entry_prefix() {
+        let html = render_functor_lang_index(
+            "game.fun",
+            &["game.fun".to_string()],
+            true,
+            "captured",
+            "server",
+        );
+        assert!(html.contains("window.__functorLangEntryPrefix = \"server\""));
+        assert!(!html.contains("__FUNCTOR_LANG_ENTRY_PREFIX__"));
+    }
+
     #[test]
     fn substitutes_the_mouse_capture_boolean() {
         let html =

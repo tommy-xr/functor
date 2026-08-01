@@ -352,6 +352,20 @@ mod tests {
         assert!(export.shadowed.is_empty());
     }
 
+    /// A role's binding prefix rides the exported bundle's page, not just the
+    /// dev server's.
+    #[test]
+    fn exports_the_entry_prefix() {
+        let dir = TestDir::new("prefix");
+        dir.write("game.fun", "let init = 0");
+
+        let wd = dir.path().to_string_lossy().to_string();
+        let export = export_functor_lang_wasm(&wd, "game.fun", false, "visible", "server").unwrap();
+
+        let index = fs::read_to_string(export.out_dir.join("index.html")).unwrap();
+        assert!(index.contains("window.__functorLangEntryPrefix = \"server\""));
+    }
+
     #[test]
     fn reserved_root_names_are_skipped_and_reported() {
         let dir = TestDir::new("reserved");

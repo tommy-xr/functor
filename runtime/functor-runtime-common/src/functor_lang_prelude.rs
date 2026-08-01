@@ -4572,6 +4572,7 @@ pub fn physics_event_value(event: &physics::PhysicsEvent) -> Value {
 /// answer immediately, further commands queue for the next step).
 pub fn deliver_physics_events(
     session: &functor_lang::Session,
+    update_name: &'static str,
     model: &mut Value,
     taggers: &[Value],
     events: &[physics::PhysicsEvent],
@@ -4600,17 +4601,18 @@ pub fn deliver_physics_events(
             // (PR2); a no-op unless journaling is armed.
             let args = vec![model.clone(), msg];
             crate::functor_lang_producer::journal_push(
-                "update",
+                update_name,
                 &args,
                 crate::functor_lang_producer::Provenance::Collision,
             );
-            match session.call("update", args, &mut FunctorHost) {
+            match session.call(update_name, args, &mut FunctorHost) {
                 Ok(returned) => {
                     let (next_model, more) = split_model_effect(returned);
                     *model = next_model;
                     if let Some(more) = more {
                         drain_mode(
                             session,
+                            update_name,
                             model,
                             vec![more],
                             runner,
@@ -4621,7 +4623,9 @@ pub fn deliver_physics_events(
                         );
                     }
                 }
-                Err(e) => report(format!("[functor-lang] update error: {}", e.message)),
+                Err(e) => {
+                    report(format!("[functor-lang] {update_name} error: {}", e.message))
+                }
             }
         }
     }
@@ -4694,7 +4698,9 @@ pub fn contains_effect(value: &Value) -> bool {
 /// F# executor's `maxEffectsPerFrame` discipline). Every performed effect
 /// is appended to `log` (the structured effect log; replay's input).
 /// Errors report through `report` (deduped by the producer) and drop that
-/// effect — one bad tagger must not stall the rest.
+/// effect — one bad tagger must not stall the rest. `update_name` is the
+/// ROLE's resolved update binding (`EntryNames::update` — `serverUpdate`
+/// under a prefix), so a same-file role's messages land in its own hook.
 ///
 /// Physics QUERIES are not performed here: they come back in the returned
 /// list for the driver to hold until after the frame's physics step, then
@@ -4703,6 +4709,7 @@ pub fn contains_effect(value: &Value) -> bool {
 #[must_use = "deferred physics queries must be performed after the step"]
 pub fn drain_effects(
     session: &functor_lang::Session,
+    update_name: &'static str,
     model: &mut Value,
     first: EffectTree,
     runner: &mut dyn EffectRunner,
@@ -4713,6 +4720,7 @@ pub fn drain_effects(
     let mut deferred = Vec::new();
     drain_mode(
         session,
+        update_name,
         model,
         vec![first],
         runner,
@@ -4762,6 +4770,7 @@ pub fn needs_update(tree: &EffectTree) -> bool {
 /// queue for the next frame's step, as always.
 pub fn perform_deferred_queries(
     session: &functor_lang::Session,
+    update_name: &'static str,
     model: &mut Value,
     deferred: Vec<EffectTree>,
     runner: &mut dyn EffectRunner,
@@ -4774,6 +4783,7 @@ pub fn perform_deferred_queries(
     }
     drain_mode(
         session,
+        update_name,
         model,
         deferred,
         runner,
@@ -4786,6 +4796,7 @@ pub fn perform_deferred_queries(
 
 fn drain_mode(
     session: &functor_lang::Session,
+    update_name: &'static str,
     model: &mut Value,
     queue: Vec<EffectTree>,
     runner: &mut dyn EffectRunner,
@@ -5084,8 +5095,8 @@ dropping the rest"
         } else {
             crate::functor_lang_producer::Provenance::EffectResult
         };
-        crate::functor_lang_producer::journal_push("update", &args, provenance);
-        match session.call("update", args, &mut FunctorHost) {
+        crate::functor_lang_producer::journal_push(update_name, &args, provenance);
+        match session.call(update_name, args, &mut FunctorHost) {
             Ok(returned) => {
                 let (next_model, more) = split_model_effect(returned);
                 *model = next_model;
@@ -5093,7 +5104,7 @@ dropping the rest"
                     queue.push(more);
                 }
             }
-            Err(e) => report(format!("[functor-lang] update error: {}", e.message)),
+            Err(e) => report(format!("[functor-lang] {update_name} error: {}", e.message)),
         }
     }
 }
@@ -6465,6 +6476,7 @@ Asset.model(\"shark.glb\") at the data boundary"
             let effect = effect_of(&session.global(name).unwrap()).unwrap().0.clone();
             let _ = drain_effects(
                 &session,
+                "update",
                 &mut model,
                 effect,
                 &mut FakeEffects::new(0.0, vec![]),
@@ -8168,6 +8180,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut runner = FakeEffects::new(0.0, vec![]);
         let deferred = drain_effects(
             &session,
+            "update",
             &mut model,
             tree.clone(),
             &mut runner,
@@ -8316,6 +8329,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             let mut runner = FakeEffects::new(0.0, vec![]);
             let deferred = drain_effects(
                 &session,
+                "update",
                 &mut model,
                 tree.clone(),
                 &mut runner,
@@ -8397,6 +8411,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut runner = FakeEffects::new(0.0, vec![]);
         let deferred = drain_effects(
             &session,
+            "update",
             &mut model,
             tree.clone(),
             &mut runner,
@@ -8457,6 +8472,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             let mut runner = FakeEffects::new(0.0, vec![]);
             let deferred = drain_effects(
                 &session,
+                "update",
                 &mut model,
                 tree.clone(),
                 &mut runner,
@@ -8487,6 +8503,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut runner = FakeEffects::new(0.0, vec![]);
         let _ = drain_effects(
             &session,
+            "update",
             &mut model,
             tree.clone(),
             &mut runner,
@@ -8663,6 +8680,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             model = m;
             let deferred = drain_effects(
                 &session,
+                "update",
                 &mut model,
                 fx.expect("an effect"),
                 runner,
@@ -8756,7 +8774,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
 
         // Pre-step drain: DEFERRED — nothing performed, nothing logged.
         let deferred =
-            drain_effects(&session, &mut model, tree, &mut runner, &mut log, &mut fail, false);
+            drain_effects(&session, "update", &mut model, tree, &mut runner, &mut log, &mut fail, false);
         assert_eq!(deferred.len(), 1);
         assert!(log.is_empty());
         assert!(matches!(model, Value::Number(_)), "model must be untouched");
@@ -8764,6 +8782,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         // Post-step drain: performed against the live world.
         perform_deferred_queries(
             &session,
+            "update",
             &mut model,
             deferred,
             &mut runner,
@@ -8794,6 +8813,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut replay = ReplayEffects::new(log.clone());
         let deferred = drain_effects(
             &session,
+            "update",
             &mut replay_model,
             EffectTree::Raycast {
                 origin: [0.0, 5.0, 0.0],
@@ -8808,6 +8828,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         );
         perform_deferred_queries(
             &session,
+            "update",
             &mut replay_model,
             deferred,
             &mut replay,
@@ -8889,6 +8910,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut runner = FakeEffects::new(0.0, vec![]);
         deliver_physics_events(
             &session,
+            "update",
             &mut model,
             &taggers,
             &[event],
@@ -9179,6 +9201,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut reports = Vec::new();
         let deferred = drain_effects(
             &session,
+            "update",
             &mut model,
             EffectTree::Random {
                 tagger: session.global("again").expect("tagger fn"),
@@ -9210,6 +9233,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut reports = Vec::new();
         let deferred = drain_effects(
             &session,
+            "update",
             &mut model,
             EffectTree::Batch(vec![EffectTree::None; 1500]),
             &mut FakeEffects::new(0.0, vec![0.5]),
@@ -9836,6 +9860,7 @@ the game dir"
         let mut log = EffectLog::new();
         drain_effects(
             &session,
+            "update",
             &mut model,
             effect.expect("a Send effect"),
             &mut FakeEffects::new(0.0, vec![]),
@@ -9946,6 +9971,7 @@ the game dir"
         let mut log = EffectLog::new();
         let _ = drain_effects(
             &session,
+            "update",
             &mut m,
             fx.expect("an effect"),
             &mut FakeEffects::new(0.0, vec![]),
@@ -10063,6 +10089,7 @@ the game dir"
         let mut log = EffectLog::new();
         let _ = drain_effects(
             &session,
+            "update",
             &mut model,
             fetch,
             &mut FakeEffects::new(0.0, vec![]),
@@ -10127,6 +10154,7 @@ the game dir"
         for effect in [fetch, shoot] {
             let _ = drain_effects(
                 &session,
+                "update",
                 &mut model,
                 effect,
                 &mut FakeEffects::new(0.0, vec![]),
@@ -10170,6 +10198,7 @@ the game dir"
         let shoot = effect_of(&session.global("shoot").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
+            "update",
             &mut model,
             shoot,
             &mut FakeEffects::new(0.0, vec![]),
@@ -10182,6 +10211,7 @@ the game dir"
         let blast = effect_of(&session.global("blast").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
+            "update",
             &mut model,
             blast,
             &mut FakeEffects::new(0.0, vec![]),
@@ -10235,6 +10265,7 @@ the game dir"
         let ping = effect_of(&session.global("ping").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
+            "update",
             &mut model,
             ping,
             &mut FakeEffects::new(0.0, vec![]),
@@ -10297,6 +10328,7 @@ the game dir"
         let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
+            "update",
             &mut model,
             warm,
             &mut FakeEffects::new(0.0, vec![]),
@@ -10381,6 +10413,7 @@ the game dir"
         let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
+            "update",
             &mut model,
             warm,
             &mut FakeEffects::new(0.0, vec![]),
@@ -10572,6 +10605,7 @@ a number",
             if let Some(tree) = fx {
                 let _ = drain_effects(
                     session,
+                    "update",
                     &mut m,
                     tree,
                     &mut FakeEffects::new(0.0, vec![]),
@@ -10682,6 +10716,7 @@ a number",
                 let mut log = EffectLog::new();
                 let _ = drain_effects(
                     session,
+                    "update",
                     &mut m,
                     tree,
                     &mut FakeEffects::new(0.0, vec![]),
