@@ -1517,20 +1517,13 @@ evaluation depth."
                 }
             }
             Value::Ctor { name, arity } => {
-                if args.len() != *arity {
-                    // Unreachable via `call`'s arity gate (which routes every
-                    // mismatch to `call_curried`); kept as the same message so
-                    // the two sites can never drift.
-                    Err(RunError {
-                        message: ctor_arity_message(name, *arity, args.len(), via),
-                        span,
-                    })
-                } else {
-                    Ok(Value::Variant {
-                        ctor: name.clone(),
-                        args: Rc::new(args),
-                    })
-                }
+                // Saturated by the arity gate above: every mismatch went to
+                // `call_curried`, which refuses it (constructors apply fully).
+                debug_assert_eq!(args.len(), *arity, "ctor mismatch reaches call_curried");
+                Ok(Value::Variant {
+                    ctor: name.clone(),
+                    args: Rc::new(args),
+                })
             }
             Value::Builtin(b) => self.call_builtin(*b, args, span),
             Value::HostFn(path) => self.host.call(path, args, span),
@@ -3197,7 +3190,10 @@ pub(crate) fn ctor_arity_message(
     };
     let mut message =
         format!("{who} takes {arity} argument(s), got {got} — constructors apply fully");
-    if got < arity {
+    // The staging hint only helps at a call the author wrote: a builtin that
+    // under-applied a ctor callback needs a different function, not a lambda
+    // around the same missing value.
+    if got < arity && via.is_none() {
         message.push_str("; wrap it in a lambda to stage arguments (e.g. `(x) => ");
         message.push_str(name);
         message.push_str("(…, x)`)");

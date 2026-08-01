@@ -532,6 +532,11 @@ snapshots — no GPU, fully agent-verifiable.
       (`List.map(Circle, xs)`) — so only call-syntax under-application changes;
       nullary ctors are untouched. A `Value::Partial` can therefore never name
       a constructor, which deletes the rebinder's ctor-partial normalization.
+      The two phases enforce the rule on different things — `check` on call
+      SYNTAX, the interpreter on the constructor VALUE — so an aliased ctor
+      (`let make = Rect` then `make(1.0)`) checks clean and errors at run time:
+      the one place a clean `check` still fails, documented in the skill because
+      "a function that does not curry" is not something HM can express.
       *Verify (done):* check + run + rebind tests; repo-wide `.fun` sweep (no
       deliberate partial ctor application existed); every example builds;
       `frame_bench` at parity.

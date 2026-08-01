@@ -1107,6 +1107,22 @@ fn ctor_application_demands_full_arity() {
     ));
 }
 
+/// The deliberate seam: the checker enforces the rule on CALL SYNTAX (it reads
+/// the callee's declared arity), while the interpreter enforces it on the
+/// constructor VALUE. So a ctor bound to a name types as an ordinary curried
+/// function and checks clean, then errors at run time (pinned in tests/run.rs's
+/// `ctor_application_demands_full_arity_at_runtime`). Expressing "a
+/// non-currying function" in HM would need a new kind of type; the run-time
+/// error is immediate and cites the call, so the seam is documented instead —
+/// see the `functor-lang` skill.
+#[test]
+fn ctor_alias_is_a_check_seam() {
+    assert_clean(&format!(
+        "{SHAPE}let make = Rect\n\
+         let staged = make(1.0)"
+    ));
+}
+
 /// Variant types are nominal in annotations, like records.
 #[test]
 fn variant_return_annotations_check() {

@@ -1897,14 +1897,25 @@ fn ctor_application_demands_full_arity_at_runtime() {
          let main = () => stage(Rect)"
     ));
     assert!(message.starts_with("`Rect` takes 2 argument(s), got 1"), "{message}");
-    // …including from inside a builtin, which names the builtin it came from.
+    // …including from inside a builtin, which names the builtin it came from —
+    // and drops the staging hint, since a lambda cannot fix `List.map`'s call.
     let (message, _, _) = run_err(&format!(
         "{SHAPE}let main = () => [1.0] |> List.map(Rect)"
     ));
-    assert!(
-        message.starts_with("the constructor `Rect` passed to List.map takes 2 argument(s), got 1"),
-        "{message}"
+    assert_eq!(
+        message,
+        "the constructor `Rect` passed to List.map takes 2 argument(s), got 1 \
+         — constructors apply fully"
     );
+    // A constructor VALUE never curries either, so an ALIAS that the checker
+    // typed as an ordinary curried function still errors here. This is the one
+    // place a clean `check` fails at run time — see `ctor_alias_is_a_check_seam`
+    // in tests/check.rs, which pins the other half.
+    let (message, _, _) = run_err(&format!(
+        "{SHAPE}let make = Rect\n\
+         let main = () => make(1.0)"
+    ));
+    assert!(message.starts_with("`Rect` takes 2 argument(s), got 1"), "{message}");
     // Staging arguments on purpose — the hint's lambda — works.
     assert_eq!(
         main_result(&format!(

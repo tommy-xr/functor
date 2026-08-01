@@ -683,6 +683,13 @@ let beat = Sub.every(0.5s, Tick)    // == Sub.every(Time.seconds(0.5), Tick)
   `List.map(Option.Some, xs)`, `Utils.Circle` from a sibling module), and it
   rebinds across a hot reload like any stored value. Nullary constructors are
   unaffected (they take no parens at all — `Point`, never `Point()`).
+  ⚠️ The two phases see different things, and that is **the one place a clean
+  `check` still fails at run time**: `check` reads CALL SYNTAX (the callee's
+  declared arity), while the interpreter refuses the constructor VALUE. So an
+  aliased ctor — `let make = Rect` then `make(1.0)`, or one handed to a
+  higher-order function — types as an ordinary curried function, checks clean,
+  and errors when it runs. A constructor value never curries anywhere; the type
+  system just can't say so.
 - **Duplicates are errors**: top-level names (per namespace — `type Foo` and
   `let Foo` may coexist, but constructors share the value namespace with
   `let`s), record fields (literal and update), lambda params, pattern
