@@ -490,7 +490,6 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
     pill={pill}
     clients={clients}
     runtimeTarget={runtimeTarget}
-    editorKeybindings={editorKeybindings}
     onSelect={selectExample}
     onReset={resetExample}
     onClients={selectClients}
@@ -498,7 +497,9 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
 );
 const statusBarHost = document.getElementById("statusbar")!;
 statusBarHost.className = "statusbar";
-createRoot(statusBarHost).render(<StatusBar store={statusBar} />);
+createRoot(statusBarHost).render(
+  <StatusBar store={statusBar} editorKeybindings={editorKeybindings} />
+);
 
 if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initialExample);
 

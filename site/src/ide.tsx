@@ -476,7 +476,6 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
   <IdeControls
     pill={pill}
     runtimeTarget={runtimeTarget}
-    editorKeybindings={editorKeybindings}
     onDownload={download}
     onRestart={restart}
   />
@@ -493,7 +492,9 @@ createRoot(document.querySelector(".file-pane")!).render(
 createRoot(document.querySelector(".editor-tab")!).render(<ActiveFileTab store={fileList} />);
 const statusBarHost = document.getElementById("statusbar")!;
 statusBarHost.className = "statusbar";
-createRoot(statusBarHost).render(<StatusBar store={statusBar} />);
+createRoot(statusBarHost).render(
+  <StatusBar store={statusBar} editorKeybindings={editorKeybindings} />
+);
 
 publishFiles();
 setDoc(activeFile()!.source);

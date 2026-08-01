@@ -55,7 +55,7 @@ try {
   await failurePage.waitForFunction(() => window.__sandbox.keybindings().error);
   check(
     "failed opt-in reports unavailability and keeps button focus",
-    (await failurePage.locator("#editor-keybindings").innerText()) === "vim unavailable" &&
+    (await failurePage.locator("#editor-keybindings").innerText()) === "keys: unavailable" &&
       (await failurePage.evaluate(() => document.activeElement?.id)) === "editor-keybindings" &&
       (await failurePage.getAttribute("#editor-keybindings", "aria-live")) === "polite" &&
       (await failurePage.getAttribute("#editor-keybindings", "aria-disabled")) === "true"
@@ -96,7 +96,13 @@ try {
   await sleep(100);
   check(
     "sandbox defaults to Standard keybindings",
-    (await page.evaluate(() => window.__sandbox.keybindings().mode)) === "standard"
+    (await page.evaluate(() => window.__sandbox.keybindings().mode)) === "standard" &&
+      (await page.locator("#editor-keybindings").innerText()) === "keys: standard"
+  );
+  check(
+    "sandbox keeps keybindings in the status bar",
+    (await page.locator("#statusbar > .statusbar-strip > #editor-keybindings").count()) === 1 &&
+      (await page.locator(".sandbox-controls #editor-keybindings").count()) === 0
   );
   check(
     "sandbox does not fetch Vim before opt-in",
@@ -112,7 +118,8 @@ try {
   check("sandbox fetches its lazy Vim chunk after opt-in", requested.includes("/assets/sandbox-dist.js"));
   check(
     "sandbox Vim control reports enabled",
-    (await page.getAttribute("#editor-keybindings", "aria-pressed")) === "true"
+    (await page.getAttribute("#editor-keybindings", "aria-pressed")) === "true" &&
+      (await page.locator("#editor-keybindings").innerText()) === "keys: vim"
   );
   check(
     "sandbox shows the Vim mode panel",
@@ -182,6 +189,11 @@ try {
   );
   check("IDE inherits the Vim preference", true);
   check("IDE fetches its own lazy Vim chunk", requested.includes("/assets/ide-dist.js"));
+  check(
+    "IDE keeps keybindings in the status bar",
+    (await page.locator("#statusbar > .statusbar-strip > #editor-keybindings").count()) === 1 &&
+      (await page.locator(".sandbox-controls #editor-keybindings").count()) === 0
+  );
   await page.locator("#editor .cm-content").focus();
   await page.keyboard.press("i");
   await page.waitForFunction(() => document.querySelector("#editor .cm-vim-panel")?.textContent?.includes("INSERT"));
@@ -200,9 +212,18 @@ try {
   );
   check("hero inherits the Vim preference", true);
   check("hero fetches its lazy Vim chunk", requested.includes("/assets/hero-dist.js"));
+  const heroControl = await page.evaluate(() => {
+    const control = document.querySelector(".hero-editor-keybindings");
+    return {
+      pressed: control?.getAttribute("aria-pressed") ?? null,
+      text: control?.textContent ?? null,
+      direct: control?.parentElement?.id === "hero-editor",
+    };
+  });
   check(
     "hero Vim control reports enabled",
-    (await page.getAttribute(".hero-editor-keybindings", "aria-pressed")) === "true"
+    heroControl.pressed === "true" && heroControl.text === "keys: vim" && heroControl.direct,
+    JSON.stringify(heroControl)
   );
   await page.locator(".hero-editor .cm-content").waitFor({ state: "visible" });
   await page.locator(".hero-editor .cm-content").focus();
@@ -254,7 +275,8 @@ try {
   await page.waitForFunction(() => window.__hero.keybindings().mode === "standard");
   check(
     "hero option disables Vim keybindings",
-    (await page.getAttribute(".hero-editor-keybindings", "aria-pressed")) === "false"
+    (await page.getAttribute(".hero-editor-keybindings", "aria-pressed")) === "false" &&
+      (await page.locator(".hero-editor-keybindings").innerText()) === "keys: standard"
   );
   check(
     "opting out persists Standard",

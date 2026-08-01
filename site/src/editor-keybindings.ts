@@ -85,7 +85,9 @@ export const editorKeybindingsButtonPresentation = (
   const enabled = state.mode === "vim";
   return {
     enabled,
-    text: state.error ? "vim unavailable" : `vim keys${state.loading ? " …" : ""}`,
+    text: state.error
+      ? "keys: unavailable"
+      : `keys: ${enabled || state.loading ? "vim" : "standard"}${state.loading ? " …" : ""}`,
     title: state.error
       ? `Vim keybindings could not load: ${state.error}`
       : `${enabled ? "Disable" : "Enable"} Vim keybindings`,

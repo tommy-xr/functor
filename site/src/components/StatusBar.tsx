@@ -11,6 +11,8 @@
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { outputPreamble } from "../status-bar-store.js";
 import type { StatusBarStore } from "../status-bar-store.js";
+import { EditorKeybindingsButton } from "./EditorKeybindingsButton.js";
+import type { EditorKeybindingsController } from "../editor-keybindings.js";
 
 /** Which panel a tab opens; also the tab's `data-tab`. */
 type TabName = "problems" | "output" | "executions";
@@ -20,7 +22,13 @@ const problemsLabel = (count: number, errors: number): string =>
     ? "✓ 0 problems"
     : `${errors > 0 ? "✖" : "⚠"} ${count} problem${count === 1 ? "" : "s"}`;
 
-export const StatusBar = ({ store }: { store: StatusBarStore }) => {
+export const StatusBar = ({
+  store,
+  editorKeybindings,
+}: {
+  store: StatusBarStore;
+  editorKeybindings: EditorKeybindingsController;
+}) => {
   const { problems, output, executions } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [open, setOpen] = useState<TabName | null>(null);
   const outputList = useRef<HTMLDivElement>(null);
@@ -120,6 +128,7 @@ export const StatusBar = ({ store }: { store: StatusBarStore }) => {
         {tab("problems", problemsLabel(problems.length, errors), errors > 0 ? " has-problems" : "")}
         {tab("output", "output")}
         {tab("executions", executions.length ? `⏸ ${executions.length} executions` : "executions")}
+        <EditorKeybindingsButton controller={editorKeybindings} />
       </div>
     </>
   );
