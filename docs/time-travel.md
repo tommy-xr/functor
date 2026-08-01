@@ -326,7 +326,7 @@ works for any scene under a fixed camera.
 
 The scene-diff trail/strobe modes follow the same rule for both render families:
 they traverse `Frame.scene` and every anchor `Frame.sprite_layers` scene, then
-draw dots or faded copies back into the matching tree. Sprite layers match by
+draw trail marks or faded copies back into the matching tree. Sprite layers match by
 declaration index and nodes by structural path. A future layer-count change
 truncates every 2D track rather than cross-wiring it; same-count layer reordering
 remains a positional-identity limitation until layers have stable ids. Sprite

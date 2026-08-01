@@ -3,7 +3,8 @@
 //! WORLD transform changes across the sequence ("movers") and render their
 //! future two ways:
 //!
-//! - a **trail** of dots tracing each mover's path (the clean-lines view), and
+//! - a **trail** of arrowheads tracing each mover's path, each pointing along
+//!   the local direction of travel (the clean-lines view), and
 //! - a **scene-space strobe**: real-geometry copies of each mover at its future
 //!   poses, color- or alpha-faded by age (the chronophotography view). Unlike the
 //!   screen-space `--ghost` compositor — which averages N whole frames, pinning
@@ -25,15 +26,35 @@
 
 use std::collections::BTreeMap;
 
-use cgmath::{vec4, InnerSpace, Matrix4, SquareMatrix, Vector3, Vector4};
+use cgmath::{vec4, Deg, InnerSpace, Matrix4, Rad, SquareMatrix, Vector3, Vector4};
 
 use crate::protocol::GameProducer;
 use crate::{
-    Camera2D, Frame, MaterialDescription, RecordedInput, Scene3D, SceneObject, SpriteLayer,
+    Camera2D, Frame, MaterialDescription, RecordedInput, Scene3D, SceneObject, Shape, SpriteLayer,
 };
 
 const TRAIL_RADIUS_3D: f32 = 0.07;
 const TRAIL_REFERENCE_HEIGHT_2D: f32 = 13.5;
+
+/// The arrowhead outline in its own XY space, pointing along +X: tip, then the
+/// two base corners. Every mark shares these exact points and carries its
+/// placement in the transform, so all of them draw from ONE cached polygon mesh
+/// (`PolygonMesh` keys on point count and skips re-upload when the points
+/// match).
+const ARROW_POINTS: [[f32; 2]; 3] = [[1.0, 0.0], [-0.5, 0.6], [-0.5, -0.6]];
+
+/// World size of one arrowhead per unit of trail radius: an arrow 1.5 units
+/// long in [`ARROW_POINTS`] space becomes ~3.3 radii long and ~2.6 wide, about
+/// the visual weight of the sphere it replaces.
+const ARROW_SCALE: f32 = 2.2;
+
+/// Minimum local displacement, as a fraction of the mark radius, for a heading
+/// to be meaningful. Below it the mover is effectively stationary at this
+/// sample (a ball at the apex of its arc, a paused entity) and would point
+/// somewhere arbitrary, so the mark falls back to the direction-free dot.
+/// Relative to the radius so it scales with the 2D camera the same way the
+/// marks do.
+const HEADING_EPS_RADII: f32 = 0.25;
 
 /// One step of a node path: (child index, sibling count). Node identity across
 /// frames = the path of these segments from the root. Including the sibling
@@ -137,7 +158,7 @@ fn anchor_leaves(scene: &Scene3D) -> BTreeMap<Vec<PathSeg>, AnchorLeaf> {
 /// each sampled frame — index 0 = the anchor, truncated at the first structural
 /// mismatch or teleport. `translated` distinguishes movers whose world POSITION
 /// changes from pure in-place spinners (rotation/scale only): the strobe
-/// depicts both, but a dotted trail of a spinner would just pile dots on one
+/// depicts both, but a trail of a spinner would just pile marks on one
 /// spot, so the trail consumer skips them.
 pub struct MoverTrack {
     pub leaf: SceneObject,
@@ -315,23 +336,95 @@ fn sampled_mover_tracks<'a>(
     tracks
 }
 
-/// A single dim emissive marker at a world position. The renderer applies a
-/// node's `xform` on `Group`/`Geometry` but NOT on `Material` (the prelude only
-/// ever puts transforms on Groups), so the world translation goes on an
-/// enclosing Group — the size lives on the geometry leaf.
-fn trail_dot(p: Vector3<f32>, radius: f32) -> Scene3D {
-    let sphere = Scene3D::sphere().transform(Matrix4::from_scale(radius));
+/// Which space a trail is drawn in — the marks are the same arrowhead, but a
+/// sprite layer is viewed straight down -Z, so its mark must stay in the XY
+/// plane, while a 3D mark has to read from any camera angle.
+#[derive(Clone, Copy)]
+enum TrailSpace {
+    Scene3D,
+    Sprite2D,
+}
+
+/// The emissive cyan wrapper every trail mark shares. The renderer applies a
+/// node's `xform` on `Group`/`Geometry` but NOT on `Material`, so placement
+/// goes on the enclosing Group and the mark's own shape on the leaves.
+fn trail_mark(marks: Vec<Scene3D>, place: Matrix4<f32>) -> Scene3D {
     let material = Scene3D {
-        obj: SceneObject::Material(
-            MaterialDescription::emissive(0.25, 0.85, 1.0, 1.0),
-            vec![sphere],
-        ),
+        obj: SceneObject::Material(MaterialDescription::emissive(0.25, 0.85, 1.0, 1.0), marks),
         xform: Matrix4::identity(),
     };
     Scene3D {
         obj: SceneObject::Group(vec![material]),
-        xform: Matrix4::from_translation(p),
+        xform: place,
     }
+}
+
+/// A single dim emissive marker at a world position — the direction-free
+/// fallback for a sample with no meaningful heading.
+fn trail_dot(p: Vector3<f32>, radius: f32) -> Scene3D {
+    let sphere = Scene3D::sphere().transform(Matrix4::from_scale(radius));
+    trail_mark(vec![sphere], Matrix4::from_translation(p))
+}
+
+/// Rotation taking +X onto the unit vector `dir`, with an arbitrary (but
+/// stable) roll: the arrowhead is symmetric about its axis, so only the axis
+/// matters. The helper axis avoids the degenerate cross product when `dir` is
+/// near +Y.
+fn heading_rotation(dir: Vector3<f32>) -> Matrix4<f32> {
+    let helper = if dir.y.abs() < 0.9 {
+        Vector3::new(0.0, 1.0, 0.0)
+    } else {
+        Vector3::new(0.0, 0.0, 1.0)
+    };
+    let x = dir;
+    let z = x.cross(helper).normalize();
+    let y = z.cross(x);
+    Matrix4::from_cols(x.extend(0.0), y.extend(0.0), z.extend(0.0), vec4(0.0, 0.0, 0.0, 1.0))
+}
+
+/// A marker pointing along `dir` (which the caller has established is longer
+/// than the heading threshold). In 3D the arrowhead is two flat heads crossed
+/// at 90° about the direction of travel, so it reads as an arrow from any
+/// camera angle instead of vanishing edge-on; a sprite layer is viewed from one
+/// fixed side, so one flat head in the XY plane is exactly right there.
+fn trail_arrow(p: Vector3<f32>, dir: Vector3<f32>, radius: f32, space: TrailSpace) -> Scene3D {
+    let head = Scene3D {
+        obj: SceneObject::Geometry(Shape::ConvexPolygon {
+            points: ARROW_POINTS.to_vec(),
+        }),
+        xform: Matrix4::identity(),
+    };
+    let (heads, rotation) = match space {
+        TrailSpace::Scene3D => (
+            vec![
+                head.clone(),
+                head.transform(Matrix4::from_angle_x(Deg(90.0))),
+            ],
+            heading_rotation(dir.normalize()),
+        ),
+        // Motion is in the layer's XY plane; spin the head about Z so it always
+        // faces the 2D camera.
+        TrailSpace::Sprite2D => (
+            vec![head],
+            Matrix4::from_angle_z(Rad(dir.y.atan2(dir.x))),
+        ),
+    };
+    trail_mark(
+        heads,
+        Matrix4::from_translation(p) * rotation * Matrix4::from_scale(radius * ARROW_SCALE),
+    )
+}
+
+/// The local direction of travel at sample `i`: the segment between its
+/// neighbors (central difference) where both exist, and the one-sided segment
+/// at each end of the track. `None` when the displacement is too small to be a
+/// heading — see [`HEADING_EPS_RADII`].
+fn heading_at(worlds: &[Matrix4<f32>], i: usize, radius: f32) -> Option<Vector3<f32>> {
+    let before = if i > 0 { &worlds[i - 1] } else { &worlds[i] };
+    let after = worlds.get(i + 1).unwrap_or(&worlds[i]);
+    let dir = world_pos(after) - world_pos(before);
+    let eps = radius * HEADING_EPS_RADII;
+    (dir.magnitude() > eps).then_some(dir)
 }
 
 /// The 1-based future-sample index the strobe's `c`-th copy stands on, for a
@@ -346,16 +439,17 @@ fn trail_from_tracks(
     tracks: &[MoverTrack],
     strobe: Option<&StrobeOptions>,
     radius: f32,
+    space: TrailSpace,
 ) -> Option<Scene3D> {
-    let mut dots = Vec::new();
+    let mut marks = Vec::new();
     for track in tracks {
         // A pure in-place spinner has a track (for the strobe) but no path to
-        // dot — its dots would all land on one spot.
+        // mark — its marks would all land on one spot.
         if !track.translated {
             continue;
         }
         // Off-cadence with the strobe: skip the samples where a copy stands,
-        // so dots fill the gaps BETWEEN copies instead of hiding under them.
+        // so marks fill the gaps BETWEEN copies instead of hiding under them.
         let n_future = track.worlds.len() - 1;
         let skip: Vec<usize> = match strobe {
             Some(s) if n_future > 0 && s.copies > 0 => {
@@ -368,23 +462,33 @@ fn trail_from_tracks(
             if skip.contains(&i) {
                 continue;
             }
-            dots.push(trail_dot(world_pos(w), radius));
+            let p = world_pos(w);
+            marks.push(match heading_at(&track.worlds, i, radius) {
+                Some(dir) => trail_arrow(p, dir, radius, space),
+                None => trail_dot(p, radius),
+            });
         }
     }
-    if dots.is_empty() {
+    if marks.is_empty() {
         None
     } else {
         Some(Scene3D {
-            obj: SceneObject::Group(dots),
+            obj: SceneObject::Group(marks),
             xform: Matrix4::identity(),
         })
     }
 }
 
-/// Build a dotted-trail scene from a scene sequence. Returns `None` when
-/// nothing moved. (The trail consumer of [`mover_tracks`].)
+/// Build a trail scene of direction-of-travel arrowheads from a scene
+/// sequence. Returns `None` when nothing moved. (The trail consumer of
+/// [`mover_tracks`].)
 pub fn trajectory_trail(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Option<Scene3D> {
-    trail_from_tracks(&mover_tracks(scenes, eps, max_step), None, TRAIL_RADIUS_3D)
+    trail_from_tracks(
+        &mover_tracks(scenes, eps, max_step),
+        None,
+        TRAIL_RADIUS_3D,
+        TrailSpace::Scene3D,
+    )
 }
 
 /// Scene-space strobe options.
@@ -522,7 +626,7 @@ enum StrobeFade {
 
 /// One strobe copy: the mover's leaf at a future world pose, shaded by its
 /// (age-faded) material. Transforms go on a Group / the leaf itself — never on
-/// a Material node, which the renderer ignores (see [`trail_dot`]).
+/// a Material node, which the renderer ignores (see [`trail_mark`]).
 fn strobe_copy(
     leaf: &SceneObject,
     material: Option<&MaterialDescription>,
@@ -746,7 +850,7 @@ pub struct PreviewOptions {
     pub eps: f32,
     /// Teleport threshold: cut a track at a per-sample jump beyond this.
     pub max_step: f32,
-    /// Emit the dotted trail?
+    /// Emit the arrowhead trail?
     pub trail: bool,
     /// Emit the scene-space strobe?
     pub strobe: Option<StrobeOptions>,
@@ -798,7 +902,7 @@ impl FramePreview {
         self.scene.is_empty() && self.sprite_layers.iter().all(SceneOverlays::is_empty)
     }
 
-    /// Add only dotted trails to `frame`. The screen-space ghost compositor
+    /// Add only trails to `frame`. The screen-space ghost compositor
     /// uses this so trails remain solid across every averaged future frame.
     /// Sprite trails get their own layer with the anchor camera, preventing a
     /// panning future camera from smearing the marker path.
@@ -866,7 +970,12 @@ fn scene_overlays(
     SceneOverlays {
         trail: if opts.trail {
             // When the strobe draws too, the trail stays off its cadence.
-            trail_from_tracks(&tracks, opts.strobe.as_ref(), trail_radius)
+            trail_from_tracks(
+                &tracks,
+                opts.strobe.as_ref(),
+                trail_radius,
+                TrailSpace::Scene3D,
+            )
         } else {
             None
         },
@@ -884,7 +993,12 @@ fn sprite_scene_overlays(
 ) -> SceneOverlays {
     let trail = if opts.trail {
         let tracks = mover_tracks(scenes, opts.eps, opts.max_step);
-        trail_from_tracks(&tracks, opts.strobe.as_ref(), trail_radius)
+        trail_from_tracks(
+            &tracks,
+            opts.strobe.as_ref(),
+            trail_radius,
+            TrailSpace::Sprite2D,
+        )
     } else {
         None
     };
@@ -1296,6 +1410,133 @@ mod tests {
         }
     }
 
+    // The marks of a trail, in track order.
+    fn marks(trail: &Scene3D) -> Vec<Scene3D> {
+        match &trail.obj {
+            SceneObject::Group(marks) => marks.clone(),
+            _ => panic!("expected a group of trail marks"),
+        }
+    }
+
+    // A mark's leaf shapes, under its Group -> Material wrapper.
+    fn mark_shapes(mark: &Scene3D) -> Vec<Shape> {
+        match &mark.obj {
+            SceneObject::Group(children) => match &children[0].obj {
+                SceneObject::Material(_, leaves) => leaves
+                    .iter()
+                    .map(|leaf| match &leaf.obj {
+                        SceneObject::Geometry(shape) => shape.clone(),
+                        other => panic!("expected a geometry leaf, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected a material wrapper, got {other:?}"),
+            },
+            other => panic!("expected a placed mark group, got {other:?}"),
+        }
+    }
+
+    // Where a mark's own +X (the arrowhead's tip direction) points in world space.
+    fn mark_heading(mark: &Scene3D) -> Vector3<f32> {
+        mark.xform.x.truncate().normalize()
+    }
+
+    fn assert_close(actual: Vector3<f32>, expected: Vector3<f32>) {
+        assert!(
+            (actual - expected).magnitude() < 1e-4,
+            "expected {expected:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn marks_point_along_the_local_direction_of_travel() {
+        // A mover running down +X, then one running down +Z: every mark's tip
+        // direction follows the track, and each 3D mark is the crossed pair of
+        // arrowheads (readable from any camera angle).
+        let along_x: Vec<Scene3D> = (0..=3).map(|i| frame(i as f32, 0.0)).collect();
+        let refs: Vec<&Scene3D> = along_x.iter().collect();
+        let trail = trajectory_trail(&refs, 0.05, 3.0).expect("a trail");
+        let along_x_marks = marks(&trail);
+        assert_eq!(along_x_marks.len(), 4);
+        for mark in &along_x_marks {
+            assert_close(mark_heading(mark), vec3(1.0, 0.0, 0.0));
+            assert_eq!(
+                mark_shapes(mark).len(),
+                2,
+                "a 3D arrowhead is two crossed heads"
+            );
+            assert!(matches!(
+                mark_shapes(mark)[0],
+                Shape::ConvexPolygon { .. }
+            ));
+        }
+
+        let along_z = |z: f32| Scene3D {
+            obj: SceneObject::Group(vec![
+                Scene3D::sphere().transform(Matrix4::from_translation(vec3(0.0, 0.0, z)))
+            ]),
+            xform: Matrix4::identity(),
+        };
+        let frames = [along_z(0.0), along_z(1.0), along_z(2.0)];
+        let refs: Vec<&Scene3D> = frames.iter().collect();
+        let trail = trajectory_trail(&refs, 0.05, 3.0).expect("a trail");
+        for mark in marks(&trail) {
+            assert_close(mark_heading(&mark), vec3(0.0, 0.0, 1.0));
+        }
+    }
+
+    #[test]
+    fn a_near_stationary_sample_falls_back_to_a_dot() {
+        // The mover advances once and then rests: the moving samples get
+        // arrowheads, the resting ones have no heading and stay dots.
+        let frames: Vec<Scene3D> = [0.0, 1.0, 1.0, 1.0]
+            .iter()
+            .map(|x| frame(*x, 0.0))
+            .collect();
+        let refs: Vec<&Scene3D> = frames.iter().collect();
+        let trail = trajectory_trail(&refs, 0.05, 3.0).expect("a trail");
+        let stepped = marks(&trail);
+        assert_eq!(stepped.len(), 4);
+        assert!(matches!(mark_shapes(&stepped[0])[0], Shape::ConvexPolygon { .. }));
+        assert!(matches!(mark_shapes(&stepped[1])[0], Shape::ConvexPolygon { .. }));
+        for resting in &stepped[2..] {
+            let shapes = mark_shapes(resting);
+            assert_eq!(shapes.len(), 1);
+            assert!(
+                matches!(shapes[0], Shape::Sphere),
+                "a heading-less sample keeps the dot form, got {:?}",
+                shapes[0]
+            );
+        }
+    }
+
+    #[test]
+    fn sprite_marks_stay_flat_in_the_layers_plane() {
+        // A 2D mover heading up (+Y): its mark points that way and keeps facing
+        // the layer camera (its own +Z stays +Z) — an out-of-plane 3D basis
+        // would turn the arrowhead edge-on and invisible.
+        let sprite_at = |x: f32, y: f32| {
+            let mut rendered = Frame::new(Camera::default(), Scene3D::cube());
+            rendered.sprite_layers.push(SpriteLayer {
+                camera: Camera2D::new(24.0, 13.5),
+                scene: frame(x, y),
+            });
+            rendered
+        };
+        let frames: Vec<Frame> = (0..=2).map(|i| sprite_at(0.0, i as f32)).collect();
+        let futures: Vec<&Frame> = frames.iter().skip(1).collect();
+        let preview = preview_from_frames(&frames[0], &futures, &preview_options(true, false));
+        let trail = preview.sprite_layers[0].trail.as_ref().expect("a trail");
+        for mark in marks(trail) {
+            assert_close(mark_heading(&mark), vec3(0.0, 1.0, 0.0));
+            assert_close(mark.xform.z.truncate().normalize(), vec3(0.0, 0.0, 1.0));
+            assert_eq!(
+                mark_shapes(&mark).len(),
+                1,
+                "a sprite mark is one flat arrowhead"
+            );
+        }
+    }
+
     #[test]
     fn nothing_moving_yields_no_trail() {
         let s = frame(1.0, 1.0);
@@ -1438,7 +1679,7 @@ mod tests {
             copies: 2,
             ..Default::default()
         };
-        let trail = trail_from_tracks(&tracks, Some(&opts), TRAIL_RADIUS_3D).expect("a trail");
+        let trail = trail_from_tracks(&tracks, Some(&opts), TRAIL_RADIUS_3D, TrailSpace::Scene3D).expect("a trail");
         match trail.obj {
             SceneObject::Group(dots) => {
                 assert_eq!(dots.len(), 3, "anchor + the two non-copy samples")
@@ -1465,7 +1706,7 @@ mod tests {
         assert!(!tracks[0].translated);
         assert!(strobe_overlay(&tracks, &StrobeOptions::default()).is_some());
         assert!(
-            trail_from_tracks(&tracks, None, TRAIL_RADIUS_3D).is_none(),
+            trail_from_tracks(&tracks, None, TRAIL_RADIUS_3D, TrailSpace::Scene3D).is_none(),
             "no dots for pure rotation"
         );
     }

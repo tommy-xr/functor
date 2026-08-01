@@ -1239,7 +1239,7 @@ async fn run_async() -> Result<(), JsValue> {
         let mut pending_detach = false;
         let mut pending_debug_camera_reset = false;
 
-        // Future preview (docs/time-travel.md T6/T6d): trail dots, scene-space
+        // Future preview (docs/time-travel.md T6/T6d): trail marks, scene-space
         // strobe copies, or the screen-space ghost compositor — one mode, driven
         // by the DOM preview <select>, with the shared forward window/samples
         // from the ⚙ popover. Same anchor cache as the desktop shell: while
@@ -1571,7 +1571,7 @@ async fn run_async() -> Result<(), JsValue> {
                 } else {
                     // The SIM samples fine (~20/s — the trail's smooth-arc
                     // rate) while the ⚙ rate governs STROBE COPIES per second,
-                    // so dots stay visible between copies and both hold their
+                    // so marks stay visible between copies and both hold their
                     // density as the window resizes.
                     const TRAIL_RATE: f32 = 20.0;
                     let divisions = ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
