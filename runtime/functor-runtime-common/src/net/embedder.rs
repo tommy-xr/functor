@@ -13,10 +13,14 @@
 //!  { "kind": "error",        "key": "ws://…", "conn": 1, "message": "…" }]
 //! ```
 //!
-//! It is deliberately NOT `NetEvent`: the push methods carry the routing `key`
-//! beside the event and take a message as text, so a serialized `NetEvent`
-//! would be missing the key and would put a `Message` payload on the wire as a
-//! byte array.
+//! The two directions of the seam use different shapes ON PURPOSE. Egress is
+//! the drained [`ConnCommand`](super::ConnCommand) JSON verbatim — the already
+//! versioned logic↔shell protocol type, so the embedder consumes exactly what
+//! every other host consumes (byte payloads included; an embedder that wants
+//! text decodes UTF-8 once). Ingress cannot be `NetEvent` or a mirrored
+//! `ConnCommand`: its job is to feed the four `net_push_*` producer methods,
+//! which take the routing `key` beside each event and a message as TEXT — so
+//! this type mirrors those signatures one-for-one instead.
 
 use serde::Deserialize;
 
