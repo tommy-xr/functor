@@ -107,6 +107,27 @@ const STYLE = `
 .scrub-event.input { fill: #ffd166; fill-opacity: 0.75; }
 .scrub-event.reload { fill: #b994ff; }
 .scrub-event.reload-error { fill: #ff6b7d; }
+/* A landing reload glows on the rail and settles. The color property mirrors
+   the fill so the drop-shadow takes the marker's own hue (violet ok / red
+   error), and fill-box keeps the widen centered on the 3px tick, not the viewBox.
+   The class is applied by hand (see reglowMarkerNearest): marker nodes are
+   reused, so an insertion-time animation would only ever run once. */
+.scrub-event.reload { color: #b994ff; }
+.scrub-event.reload-error { color: #ff6b7d; }
+.scrub-event.reload, .scrub-event.reload-error {
+  transform-box: fill-box; transform-origin: center;
+}
+.scrub-event.reload.born, .scrub-event.reload-error.born {
+  animation: scrub-marker-born 0.9s ease-out;
+}
+@keyframes scrub-marker-born {
+  0% {
+    fill-opacity: 1; transform: scaleX(2.6);
+    filter: drop-shadow(0 0 8px currentColor) brightness(2.4);
+  }
+  55% { filter: drop-shadow(0 0 4px currentColor) brightness(1.4); }
+  100% { transform: none; filter: none; }
+}
 .scrub-tick { fill: var(--sb-text); fill-opacity: 0.28; pointer-events: none; }
 .scrub-tick.major { fill: var(--sb-text); fill-opacity: 0.5; }
 .scrub-event-hit { cursor: pointer; outline: none; }
@@ -194,6 +215,9 @@ const STYLE = `
     box-shadow: 0 0 0 2px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.35);
   }
   #scrub-toast.show { animation: none; }
+  /* The marker keeps its final resting look; the reload still reads through
+     the viewport flash, which has its own reduced-motion treatment. */
+  .scrub-event.reload.born, .scrub-event.reload-error.born { animation: none; }
 }
 #scrub-camera.on {
   border-color: var(--sb-accent);
@@ -231,6 +255,50 @@ const STYLE = `
 @media (max-width: 380px) {
   #scrub-main { gap: 4px; }
   #scrubber button { padding: 6px 5px; font-size: 13px; }
+}`;
+
+// The viewport's answer to a hot reload: a brief edge vignette over the whole
+// page, cyan when the edit went live and red when the runtime rejected it.
+//
+// This is deliberately NOT part of STYLE. STYLE dresses the bar's chrome and is
+// only injected for a visible mount, but the flash belongs to the viewport, not
+// the bar — a hidden mount (the sandbox's panes, which dock their own chrono
+// bar over the seam) still runs the poll loop and still deserves the
+// acknowledgement. Keeping it separate lets the flash carry its own styling
+// wherever the seam is mounted. The cyan is the accent's literal value rather
+// than var(--sb-accent), which is scoped to #scrubber.
+const JUICE_STYLE = `
+/* z-index 9 keeps the vignette just UNDER the bar (10): it frames the viewport
+   without washing over the transport, so the marker glow stays crisp. */
+.scrub-reload-juice {
+  position: fixed; inset: 0; z-index: 9; pointer-events: none; opacity: 0;
+}
+/* Success is deliberately quiet. The star of an accepted edit is the redrawn
+   prediction in the scene, so the vignette only has to say "that landed" and
+   get out of the way — a hairline ring and a faint glow, gone in 0.28s. */
+.scrub-reload-juice.live {
+  animation: scrub-juice-flash 0.28s ease-out;
+  box-shadow: inset 0 0 0 1px rgba(65, 216, 230, 0.5),
+    inset 0 0 44px 8px rgba(65, 216, 230, 0.16);
+}
+/* A rejection shouts, and lingers a beat longer: nothing else on the page says
+   the edit was refused, so this is the one the reader must not miss. */
+.scrub-reload-juice.rejected {
+  animation: scrub-juice-flash 0.45s ease-out;
+  box-shadow: inset 0 0 0 2px rgba(255, 107, 125, 0.9),
+    inset 0 0 60px 12px rgba(255, 107, 125, 0.4);
+}
+@keyframes scrub-juice-flash {
+  0% { opacity: 0; }
+  18% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Same message, no ramp: the vignette holds once and clears. */
+  .scrub-reload-juice.live, .scrub-reload-juice.rejected {
+    animation: scrub-juice-reduced 0.5s steps(1, end);
+  }
+  @keyframes scrub-juice-reduced { 0% { opacity: 0.6; } 100% { opacity: 0; } }
 }`;
 
 const HTML = `
@@ -380,6 +448,11 @@ export function mountScrubber({ hidden = false } = {}) {
   let nextSeekId = 1;
   let lastSeekResultId = null;
   let lastEventsGeneration = null;
+  // The newest reload marker this mount has already acknowledged. `null` means
+  // no baseline yet: the first events publish seeds it WITHOUT flashing,
+  // because reloads that predate the mount are history, not news.
+  let lastReloadJuiceId = null;
+  let juiceOverlay = null;
   let lastRuntimeSnapshotKey = "";
   let lastDebugSnapshotKey = "";
   let detachedActive = false;
@@ -539,6 +612,62 @@ export function mountScrubber({ hidden = false } = {}) {
     } else {
       eventDetail.style.display = "none";
     }
+  };
+
+  // --- Reload juice: the page acknowledges a hot reload. ---------------------
+
+  // Layer 1 — the viewport flash. The overlay is built once per mount and
+  // lives on the document (not inside the bar), so it reads as the page
+  // answering the edit rather than a widget lighting up.
+  const flashReloadJuice = (kind) => {
+    if (!juiceOverlay) {
+      if (!document.getElementById("functor-scrubber-juice-style")) {
+        const style = document.createElement("style");
+        style.id = "functor-scrubber-juice-style";
+        style.textContent = JUICE_STYLE;
+        document.head.appendChild(style);
+      }
+      juiceOverlay = document.createElement("div");
+      juiceOverlay.className = "scrub-reload-juice";
+      juiceOverlay.setAttribute("aria-hidden", "true");
+      document.body.appendChild(juiceOverlay);
+    }
+    juiceOverlay.classList.remove("live", "rejected");
+    // Reading layout between the remove and the add restarts the animation, so
+    // back-to-back reloads each get their own flash instead of one stuck class.
+    void juiceOverlay.offsetWidth;
+    juiceOverlay.classList.add(kind === "reload-error" ? "rejected" : "live");
+  };
+
+  // Layer 2 — the rail marker glows and settles. Finding the node by geometry
+  // is deliberate: same-frame reloads CLUSTER into one marker, so the new
+  // reload may carry an id this cluster does not expose. Its rail position is
+  // the reliable handle — match the group's translate-x against where this
+  // frame falls in the current viewport, in the same 0..1000 viewBox units
+  // renderMarkers writes.
+  const reglowMarkerNearest = (frame) => {
+    const range = functor_lang_scene_range();
+    if (range.length !== 2 || range[1] <= range[0]) return;
+    const targetX = ((frame - range[0]) / (range[1] - range[0])) * 1000;
+    let best = null;
+    let bestDist = Infinity;
+    for (const tick of el.querySelectorAll(
+      ".scrub-event.reload, .scrub-event.reload-error"
+    )) {
+      const group = tick.closest("[transform]");
+      const m = group && /translate\(([-\d.]+)/.exec(group.getAttribute("transform"));
+      const dist = m ? Math.abs(Number(m[1]) - targetX) : Infinity;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = tick;
+      }
+    }
+    if (!best) return;
+    // Same restart trick as the flash: a reused node never re-runs an
+    // insertion-time animation on its own.
+    best.classList.remove("born");
+    void best.getBoundingClientRect();
+    best.classList.add("born");
   };
 
   // Ticks along the rail: one per second (TIMELINE_FPS frames), heavier every
@@ -1158,7 +1287,25 @@ export function mountScrubber({ hidden = false } = {}) {
       lastEventsGeneration = eventsGeneration;
       const eventsJson = functor_lang_timeline_events();
       try {
-        dispatch({ type: "events-published", events: JSON.parse(eventsJson) });
+        const parsed = JSON.parse(eventsJson);
+        // Match the runtime's own wire kinds ("reload-ok" / "reload-error"),
+        // never the timeline model's derived "reload" cluster category — the
+        // category cannot tell an accepted edit from a rejected one.
+        const reloads = parsed.filter(
+          (event) => typeof event.kind === "string" && event.kind.startsWith("reload-")
+        );
+        const newest = reloads.length > 0 ? reloads[reloads.length - 1] : null;
+        const seeded = lastReloadJuiceId !== null;
+        const newReload = seeded && newest && newest.id !== lastReloadJuiceId ? newest : null;
+        if (newest) lastReloadJuiceId = newest.id;
+        else if (!seeded) lastReloadJuiceId = -1;
+        dispatch({ type: "events-published", events: parsed });
+        // After the dispatch, so the marker node exists (or has been updated in
+        // place) before the glow is re-triggered on it.
+        if (newReload) {
+          flashReloadJuice(newReload.kind);
+          reglowMarkerNearest(newReload.frame);
+        }
       } catch {
         // A malformed marker payload must not stop the runtime poll loop.
       }

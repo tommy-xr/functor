@@ -464,6 +464,18 @@ const playerFrame = (page) => {
     await sleep(700);
   };
 
+  // Reload juice reports EDITS, not history. Staging replayed a whole input
+  // script and loaded the program before any of this ran, so nothing may have
+  // flashed yet — the overlay is built lazily on the first real flash, so its
+  // absence is the baseline guard.
+  check(
+    "hero staging lands without flashing the viewport",
+    await heroPlayer.evaluate(() => !document.querySelector(".scrub-reload-juice")),
+    await heroPlayer.evaluate(
+      () => document.querySelector(".scrub-reload-juice")?.className ?? "absent"
+    )
+  );
+
   // Weakening the jump rebuilds the predicted (pink) future under the edited
   // code. The anchor stays parked, so the recorded (cyan) past is unchanged;
   // only the extrapolated trajectory ahead of it moves.
@@ -477,9 +489,41 @@ const playerFrame = (page) => {
     `${strongJumpHash} -> ${weakJumpHash}`
   );
 
+  check(
+    "an accepted hero edit flashes the viewport cyan",
+    await heroPlayer.evaluate(() => {
+      const overlay = document.querySelector(".scrub-reload-juice");
+      return !!overlay && overlay.classList.contains("live") && !overlay.classList.contains("rejected");
+    }),
+    await heroPlayer.evaluate(
+      () => document.querySelector(".scrub-reload-juice")?.className ?? "absent"
+    )
+  );
+
+  // The clustering case, and the reason the glow is driven by hand: this second
+  // edit lands at the SAME parked frame, so the timeline folds it into the
+  // existing reload marker instead of inserting a node. A CSS insertion
+  // animation would never run again — clearing `born` first proves the code
+  // re-triggers it on the reused node.
+  const markersBeforeReglow = await heroPlayer.evaluate(() => {
+    for (const node of document.querySelectorAll(".scrub-event.born")) {
+      node.classList.remove("born");
+    }
+    return document.querySelectorAll(".scrub-event.reload").length;
+  });
+
   // gravity is editable in the same region: it must move the projection too.
   const heavyRegion = weakRegion.replace("let gravity = 30.0", "let gravity = 45.0");
   await applyHeroRegion(heavyRegion);
+  const reglow = await heroPlayer.evaluate(() => ({
+    born: document.querySelectorAll(".scrub-event.born").length,
+    markers: document.querySelectorAll(".scrub-event.reload").length,
+  }));
+  check(
+    "a repeat hero edit re-glows its clustered reload marker",
+    reglow.born > 0 && reglow.markers === markersBeforeReglow,
+    JSON.stringify({ markersBeforeReglow, ...reglow })
+  );
   const heavyJumpHash = await regionHash(heroPlayer);
   check(
     "editing gravity redraws the projected trajectory",
@@ -509,6 +553,24 @@ const playerFrame = (page) => {
     "hero broken edit keeps the last good projected trajectory",
     brokenJumpHash === wideJumpHash,
     `${wideJumpHash} -> ${brokenJumpHash}`
+  );
+  // The rejection marker publishes on the runtime's next poll, a frame or two
+  // after the panel reports the error; wait for the flash rather than racing it.
+  await heroPlayer
+    .waitForFunction(
+      () => document.querySelector(".scrub-reload-juice")?.classList.contains("rejected"),
+      { timeout: 5000 }
+    )
+    .catch(() => {});
+  check(
+    "a rejected hero edit flashes the viewport red",
+    await heroPlayer.evaluate(() => {
+      const overlay = document.querySelector(".scrub-reload-juice");
+      return !!overlay && overlay.classList.contains("rejected") && !overlay.classList.contains("live");
+    }),
+    await heroPlayer.evaluate(
+      () => document.querySelector(".scrub-reload-juice")?.className ?? "absent"
+    )
   );
 
   // Recover with the original tunables. The deliberately paused timeline
@@ -1026,6 +1088,29 @@ for (const example of examples) {
     .then(() => true)
     .catch(() => false);
   check("timeline renders successful hot-reload boundaries", reloadMarker);
+  // The viewport flash belongs to the SEAM, not the bar: this player mounts
+  // with ?scrubber=hidden (no chrome, no bar stylesheet), and the sandbox edit
+  // above must still light its pane. Proves the flash carries its own styling.
+  const sandboxFlash = await player
+    .waitForFunction(
+      () => document.querySelector(".scrub-reload-juice")?.classList.contains("live"),
+      { timeout: 5000 }
+    )
+    .then(() => true)
+    .catch(() => false);
+  const sandboxFlashStyled = await player.evaluate(() => {
+    const overlay = document.querySelector(".scrub-reload-juice");
+    if (!overlay) return null;
+    const style = getComputedStyle(overlay);
+    return { position: style.position, shadow: style.boxShadow.includes("rgb") };
+  });
+  check(
+    "a sandbox edit flashes its hidden-mounted pane",
+    sandboxFlash &&
+      sandboxFlashStyled?.position === "fixed" &&
+      sandboxFlashStyled?.shadow === true,
+    JSON.stringify({ sandboxFlash, sandboxFlashStyled })
+  );
   const rangeAfterSafeReload = await player.evaluate(() => window.__scrub.range());
   check(
     "plain-data history remains seekable across a hot reload",

@@ -158,6 +158,25 @@ check(
   `center = rgb(${after})`
 );
 
+// 2b. Reload juice on the runtime's own page, which mounts the scrubber
+//     VISIBLY: the accepted push flashes the viewport cyan AND glows the rail
+//     marker. The marker glow is driven by hand (marker nodes are reused and
+//     same-frame reloads cluster into one), so this is the second surface that
+//     proves the explicit re-trigger rather than a CSS insertion animation.
+const juiceAfterGreen = await page.evaluate(() => {
+  const overlay = document.querySelector(".scrub-reload-juice");
+  return {
+    live: !!overlay && overlay.classList.contains("live"),
+    rejected: !!overlay && overlay.classList.contains("rejected"),
+    glowing: document.querySelectorAll(".scrub-event.born").length,
+  };
+});
+check(
+  "an accepted push flashes the runtime page and glows its marker",
+  juiceAfterGreen.live && !juiceAfterGreen.rejected && juiceAfterGreen.glowing > 0,
+  JSON.stringify(juiceAfterGreen)
+);
+
 // 3. Survival probe: tick errors unless spin > 0.5 — a value only the
 //    PRESERVED model has (a fresh init restarts at 0.0).
 const survived = await push(V_PROBE_SURVIVED);
@@ -193,6 +212,22 @@ check(
   "old program keeps rendering after the broken push",
   stillGreen[1] > 150 && stillGreen[0] < 100,
   `center = rgb(${stillGreen})`
+);
+
+// 5b. The rejection reads as a rejection: the same overlay turns red.
+const juiceAfterBroken = await page
+  .waitForFunction(
+    () => document.querySelector(".scrub-reload-juice")?.classList.contains("rejected"),
+    { timeout: 5000 }
+  )
+  .then(() => true)
+  .catch(() => false);
+check(
+  "a rejected push flashes the runtime page red",
+  juiceAfterBroken,
+  await page.evaluate(
+    () => document.querySelector(".scrub-reload-juice")?.className ?? "absent"
+  )
 );
 
 // 6. A good push after the broken one still lands.
