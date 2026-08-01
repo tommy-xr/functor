@@ -122,8 +122,10 @@ try {
       (await page.locator("#editor-keybindings").innerText()) === "keys: vim"
   );
   check(
-    "sandbox shows the Vim mode panel",
-    (await page.locator("#editor .cm-vim-panel").innerText()).includes("NORMAL")
+    "sandbox shows the Vim mode in the status bar strip",
+    (await page.locator("#statusbar .statusbar-vim").innerText()).includes("NORMAL") &&
+      (await page.getAttribute("#statusbar .statusbar-vim", "data-vim-mode")) === "normal" &&
+      (await page.locator("#editor .cm-vim-panel").count()) === 0
   );
 
   const source = "alpha\nbeta\ngamma\n";
@@ -156,7 +158,7 @@ try {
   check(
     "Vim insert mode returns to Normal with Escape",
     (await page.evaluate(() => window.__sandbox.source())).startsWith("Zalpha") &&
-      (await page.locator("#editor .cm-vim-panel").innerText()).includes("NORMAL")
+      (await page.locator("#statusbar .statusbar-vim").innerText()).includes("NORMAL")
   );
 
   // Vim handles Escape before CodeMirror's keymaps; confirm autocomplete still
@@ -177,7 +179,7 @@ try {
     await page.waitForFunction(() => !document.querySelector(".cm-tooltip-autocomplete"));
     check(
       "Escape closes completion and returns Vim to Normal",
-      (await page.locator("#editor .cm-vim-panel").innerText()).includes("NORMAL")
+      (await page.locator("#statusbar .statusbar-vim").innerText()).includes("NORMAL")
     );
   }
 
@@ -196,11 +198,17 @@ try {
   );
   await page.locator("#editor .cm-content").focus();
   await page.keyboard.press("i");
-  await page.waitForFunction(() => document.querySelector("#editor .cm-vim-panel")?.textContent?.includes("INSERT"));
+  await page.waitForFunction(() =>
+    document.querySelector("#statusbar .statusbar-vim")?.textContent?.includes("INSERT")
+  );
+  check(
+    "IDE colors the Insert mode segment",
+    (await page.getAttribute("#statusbar .statusbar-vim", "data-vim-mode")) === "insert"
+  );
   await page.evaluate(() => window.__ide.openFile("palette.fun"));
   check(
     "IDE file switch preserves Vim insert mode",
-    (await page.locator("#editor .cm-vim-panel").innerText()).includes("INSERT")
+    (await page.locator("#statusbar .statusbar-vim").innerText()).includes("INSERT")
   );
   await page.keyboard.press("Escape");
 
@@ -221,8 +229,8 @@ try {
     };
   });
   check(
-    "hero Vim control reports enabled",
-    heroControl.pressed === "true" && heroControl.text === "keys: vim" && heroControl.direct,
+    "hero Vim control reports enabled with the mode readout",
+    heroControl.pressed === "true" && heroControl.text === "keys: vim · NORMAL" && heroControl.direct,
     JSON.stringify(heroControl)
   );
   await page.locator(".hero-editor .cm-content").waitFor({ state: "visible" });
@@ -246,6 +254,11 @@ try {
     "hero draws Vim visual selection",
     heroSelection.backgrounds > 0,
     JSON.stringify(heroSelection)
+  );
+  check(
+    "hero control reads out Visual mode with its color hook",
+    (await page.locator(".hero-editor-keybindings").innerText()) === "keys: vim · VISUAL" &&
+      (await page.getAttribute(".hero-editor-keybindings", "data-vim-mode")) === "visual"
   );
   await page.keyboard.press("Escape");
 

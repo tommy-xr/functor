@@ -8,7 +8,7 @@
 // are untouched — including keeping all three lists MOUNTED and toggled with
 // `display`, exactly as before.
 
-import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { outputPreamble } from "../status-bar-store.js";
 import type { StatusBarStore } from "../status-bar-store.js";
 import { EditorKeybindingsButton } from "./EditorKeybindingsButton.js";
@@ -30,8 +30,20 @@ export const StatusBar = ({
   editorKeybindings: EditorKeybindingsController;
 }) => {
   const { problems, output, executions } = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const keybindings = useSyncExternalStore(
+    editorKeybindings.state.subscribe,
+    editorKeybindings.state.getSnapshot
+  );
   const [open, setOpen] = useState<TabName | null>(null);
   const outputList = useRef<HTMLDivElement>(null);
+  // The Vim adapter renders its --MODE-- readout, pending keys, and `:`/`/`
+  // command input into this segment (imperatively — React never writes
+  // children here). Mode names color the segment via data-vim-mode.
+  const vimHost = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    editorKeybindings.setStatusbarHost(vimHost.current);
+    return () => editorKeybindings.setStatusbarHost(null);
+  }, [editorKeybindings]);
   // Stick to the bottom only if the user is already there (don't yank the
   // scroll out from under them mid-read). Measured HERE, during the render
   // that carries new lines: the DOM still holds the previous ones, so this is
@@ -125,6 +137,12 @@ export const StatusBar = ({
         </div>
       </div>
       <div className="statusbar-strip">
+        <span
+          ref={vimHost}
+          className="statusbar-vim"
+          data-vim-mode={keybindings.vimMode ?? undefined}
+          hidden={keybindings.vimMode === null}
+        />
         {tab("problems", problemsLabel(problems.length, errors), errors > 0 ? " has-problems" : "")}
         {tab("output", "output")}
         {tab("executions", executions.length ? `⏸ ${executions.length} executions` : "executions")}

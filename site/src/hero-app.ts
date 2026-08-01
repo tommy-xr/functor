@@ -46,7 +46,6 @@ const frame = document.querySelector<HTMLIFrameElement>(".hero-scene")!;
 const mount = document.getElementById("hero-editor")!;
 const card = document.querySelector(".hero-card")!;
 const editorKeybindings = createEditorKeybindingsController({
-  showStatus: false,
   includeSelectionSupport: true,
 });
 
@@ -124,12 +123,19 @@ const mountKeybindingsButton = () => {
   });
   const render = () => {
     const state = editorKeybindings.state.getSnapshot();
-    const presentation = editorKeybindingsButtonPresentation(state);
+    // The hero has no status bar, so its control doubles as the Vim mode
+    // readout — `keys: vim · NORMAL` — and carries the mode's color.
+    const presentation = editorKeybindingsButtonPresentation(state, { withVimMode: true });
     button.textContent = presentation.text;
     button.setAttribute("aria-pressed", String(presentation.enabled));
     button.setAttribute("aria-busy", String(state.loading));
     button.setAttribute("aria-disabled", String(Boolean(state.error)));
     button.title = presentation.title;
+    if (state.vimMode && !state.loading && !state.error) {
+      button.dataset.vimMode = state.vimMode;
+    } else {
+      delete button.dataset.vimMode;
+    }
   };
   editorKeybindings.state.subscribe(render);
   render();

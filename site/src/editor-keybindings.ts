@@ -17,6 +17,9 @@ export interface EditorKeybindingsState {
   mode: EditorKeybindings;
   loading: boolean;
   error: string | null;
+  /** The live Vim mode ("normal" / "insert" / "visual" / "visual line" /
+   * "visual block" / "replace"), or null whenever Vim is not active. */
+  vimMode: string | null;
 }
 
 export interface EditorKeybindingsButtonPresentation {
@@ -31,17 +34,22 @@ export interface EditorKeybindingsController {
   state: Store<EditorKeybindingsState>;
   attach(view: EditorView): void;
   setMode(mode: EditorKeybindings): Promise<void>;
+  /** Hand the adapter a status host (a status-bar segment): while Vim is
+   * active it renders the --MODE-- readout, pending keys, and the `:`/`/`
+   * command input there instead of in its own editor panel. Pass null to
+   * detach. Without a host, dialogs fall back to the adapter's floating
+   * panel inside the editor (the hero's arrangement). */
+  setStatusbarHost(host: HTMLElement | null): void;
 }
 
 interface EditorKeybindingsOptions {
-  /** Keep a persistent --NORMAL-- / --INSERT-- command panel. */
-  showStatus?: boolean;
   /** The hero omits basicSetup, so Vim selection rendering and multi-cursor
    * support live here. */
   includeSelectionSupport?: boolean;
 }
 
 type VimModule = typeof import("@replit/codemirror-vim");
+type VimCM = NonNullable<ReturnType<VimModule["getCM"]>>;
 type VimEditor = {
   state?: {
     vim?: {
@@ -49,6 +57,10 @@ type VimEditor = {
     };
   };
 };
+
+/** The adapter's spelling for its own panel: "visual line" / "visual block". */
+const composeVimMode = (event: { mode: string; subMode?: string }): string =>
+  event.subMode ? `${event.mode} ${event.subMode === "linewise" ? "line" : "block"}` : event.mode;
 
 const STORAGE_KEY = "functor-editor-keybindings-v1";
 let vimModulePromise: Promise<VimModule> | null = null;
@@ -80,14 +92,23 @@ const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 export const editorKeybindingsButtonPresentation = (
-  state: EditorKeybindingsState
+  state: EditorKeybindingsState,
+  options: {
+    /** Append the live Vim mode (`keys: vim · NORMAL`) — the hero's control
+     * doubles as its mode readout, having no status bar of its own. */
+    withVimMode?: boolean;
+  } = {}
 ): EditorKeybindingsButtonPresentation => {
   const enabled = state.mode === "vim";
+  const mode =
+    options.withVimMode && enabled && !state.loading && state.vimMode
+      ? ` · ${state.vimMode.toUpperCase()}`
+      : "";
   return {
     enabled,
     text: state.error
       ? "keys: unavailable"
-      : `keys: ${enabled || state.loading ? "vim" : "standard"}${state.loading ? " …" : ""}`,
+      : `keys: ${enabled || state.loading ? "vim" : "standard"}${mode}${state.loading ? " …" : ""}`,
     title: state.error
       ? `Vim keybindings could not load: ${state.error}`
       : `${enabled ? "Disable" : "Enable"} Vim keybindings`,
@@ -103,9 +124,26 @@ export const createEditorKeybindingsController = (
     mode: initialMode,
     loading: initialMode === "vim",
     error: null,
+    vimMode: null,
   });
   let view: EditorView | null = null;
   let generation = 0;
+  let statusbarHost: HTMLElement | null = null;
+  let activeVim: VimCM | null = null;
+
+  // Point the adapter's status rendering (mode text, pending keys, `:`/`/`
+  // dialogs) at the page's host segment. Reconfiguring off destroys the vim
+  // plugin, so a stale reference only needs the host itself cleared.
+  const installStatusbar = () => {
+    if (!activeVim) return;
+    activeVim.state.statusbar = statusbarHost;
+    activeVim.state.vimPlugin?.updateStatus?.();
+  };
+
+  const detachVim = () => {
+    activeVim = null;
+    if (statusbarHost) statusbarHost.textContent = "";
+  };
 
   const apply = async (
     mode: EditorKeybindings,
@@ -118,25 +156,40 @@ export const createEditorKeybindingsController = (
 
     if (mode === "standard") {
       target.dispatch({ effects: compartment.reconfigure([]) });
-      state.set({ mode, loading: false, error: null });
+      detachVim();
+      state.set({ mode, loading: false, error: null, vimMode: null });
       if (focus) target.focus();
       return;
     }
 
-    state.set({ mode, loading: true, error: null });
+    state.set({ mode, loading: true, error: null, vimMode: null });
     try {
       const module = await loadVim();
       if (request !== generation || state.getSnapshot().mode !== "vim") return;
       getVimEditor = module.getCM;
       target.dispatch({
         effects: compartment.reconfigure([
-          module.vim({ status: options.showStatus ?? true }),
+          // status: false — the readout lives in the page's status bar (or,
+          // hostless as in the hero, in the control itself), never in an
+          // adapter panel row of its own. Dialogs follow the host when set.
+          module.vim({ status: false }),
           ...(options.includeSelectionSupport
             ? [EditorState.allowMultipleSelections.of(true), drawSelection()]
             : []),
         ]),
       });
-      state.set({ mode, loading: false, error: null });
+      const cm = module.getCM(target);
+      if (cm) {
+        activeVim = cm;
+        cm.on("vim-mode-change", (event: { mode: string; subMode?: string }) => {
+          if (activeVim !== cm) return;
+          const snapshot = state.getSnapshot();
+          if (snapshot.mode !== "vim") return;
+          state.set({ ...snapshot, vimMode: composeVimMode(event) });
+        });
+        installStatusbar();
+      }
+      state.set({ mode, loading: false, error: null, vimMode: "normal" });
       if (focus) target.focus();
     } catch (error) {
       if (request !== generation) return;
@@ -145,7 +198,7 @@ export const createEditorKeybindingsController = (
       // A restore-time network failure must not erase an existing preference;
       // an explicit failed opt-in returns persistence to Standard.
       if (downgradeStoredModeOnFailure) persistMode("standard");
-      state.set({ mode: "standard", loading: false, error: errorMessage(error) });
+      state.set({ mode: "standard", loading: false, error: errorMessage(error), vimMode: null });
       console.error("editor: could not load Vim keybindings", error);
     }
   };
@@ -160,8 +213,13 @@ export const createEditorKeybindingsController = (
     },
     async setMode(mode) {
       persistMode(mode);
-      state.set({ mode, loading: mode === "vim", error: null });
+      state.set({ mode, loading: mode === "vim", error: null, vimMode: null });
       await apply(mode, true, true);
+    },
+    setStatusbarHost(host) {
+      if (statusbarHost && statusbarHost !== host) statusbarHost.textContent = "";
+      statusbarHost = host;
+      installStatusbar();
     },
   };
 };

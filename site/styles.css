@@ -938,6 +938,28 @@ a:hover {
   color: var(--cyan);
 }
 
+/* The hero control doubles as the mode readout (`keys: vim · NORMAL`), so it
+   wears the same mode colors as the sandbox/IDE status segment. */
+.editor-keybindings-toggle[data-vim-mode="normal"] {
+  color: var(--cyan);
+  text-shadow: 0 0 9px rgba(65, 216, 230, 0.55);
+}
+
+.editor-keybindings-toggle[data-vim-mode="insert"] {
+  color: var(--green);
+  text-shadow: 0 0 9px rgba(111, 220, 146, 0.55);
+}
+
+.editor-keybindings-toggle[data-vim-mode^="visual"] {
+  color: var(--pink);
+  text-shadow: 0 0 9px rgba(232, 88, 184, 0.55);
+}
+
+.editor-keybindings-toggle[data-vim-mode="replace"] {
+  color: var(--red);
+  text-shadow: 0 0 9px rgba(242, 99, 127, 0.55);
+}
+
 .editor-keybindings-toggle[aria-busy="true"] {
   cursor: progress;
 }
@@ -1311,10 +1333,10 @@ a:hover {
   line-height: 1.65;
 }
 
-/* The adapter's own command/status panel, brought into the same quiet chrome
-   as Functor's outer status bar. It is present only while Vim keybindings are
-   enabled; `:` and `/` reuse it for their command input. */
-#editor .cm-vim-panel,
+/* The adapter's floating dialog panel — hero only: the sandbox and IDE host
+   the Vim readout (and `:` / `/` command input) inside their status-bar
+   strip, so no adapter panel ever appears there. The hero keeps the floating
+   panel for dialogs, styled into the same quiet chrome. */
 .hero-editor .cm-vim-panel {
   min-height: 22px;
   align-items: center;
@@ -1327,7 +1349,6 @@ a:hover {
   letter-spacing: 0.04em;
 }
 
-#editor .cm-vim-panel input,
 .hero-editor .cm-vim-panel input {
   min-width: 0;
   color: var(--text);
@@ -2216,6 +2237,9 @@ a:hover {
   display: flex;
   gap: 2px;
   padding: 0 8px;
+  /* The Vim mode segment can push a narrow strip past its width; scroll the
+     strip rather than wrapping tabs onto a second row. */
+  overflow-x: auto;
 }
 
 .statusbar-tab {
@@ -2227,6 +2251,7 @@ a:hover {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   padding: 4px 10px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -2237,6 +2262,61 @@ a:hover {
 .statusbar-tab.active {
   color: var(--cyan);
   box-shadow: inset 0 2px 0 var(--cyan);
+}
+
+/* The Vim mode segment at the left edge of the strip. The adapter renders
+   into it imperatively: the clickable --MODE-- readout, pending keys, and
+   the `:` / `/` command input. Modes carry the synthwave palette — cyan
+   NORMAL, green INSERT, pink VISUAL, red REPLACE — with a soft neon glow. */
+.statusbar-vim {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 40%;
+  padding: 0 10px;
+  border-right: 1px solid var(--line);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  /* --NORMAL-- must never wrap mid-word on narrow strips; the segment
+     truncates instead of pushing the tabs onto a second row. */
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.statusbar-vim[hidden] {
+  display: none;
+}
+
+.statusbar-vim input {
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+}
+
+.statusbar-vim[data-vim-mode="normal"] {
+  color: var(--cyan);
+  text-shadow: 0 0 9px rgba(65, 216, 230, 0.55);
+}
+
+.statusbar-vim[data-vim-mode="insert"] {
+  color: var(--green);
+  text-shadow: 0 0 9px rgba(111, 220, 146, 0.55);
+}
+
+.statusbar-vim[data-vim-mode^="visual"] {
+  color: var(--pink);
+  text-shadow: 0 0 9px rgba(232, 88, 184, 0.55);
+}
+
+.statusbar-vim[data-vim-mode="replace"] {
+  color: var(--red);
+  text-shadow: 0 0 9px rgba(242, 99, 127, 0.55);
 }
 
 .statusbar-tab.has-problems {
