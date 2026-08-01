@@ -681,6 +681,77 @@ try {
     await page.close();
   }
 
+  // --- 4e. A LATE-JOINED client scrubs with everyone else. --------------------
+  // Pane frame indices are boot-relative, so a client added mid-session counts
+  // from 0 while the rest are in the hundreds. A broadcast seek sent as a bare
+  // number therefore asks that client for a frame it has never reached — it
+  // clamps to the end of its recording and sits still while everyone else
+  // rewinds. The host measures each pane's OFFSET against the reference clock
+  // (the server pane) and translates every seek through it.
+  //
+  // The assertion is a differential one, and it needs no knowledge of absolute
+  // frames: park the session, seek back one second on the rail, and every pane
+  // must move back one second OF ITS OWN CLOCK — and the late client's offset
+  // to the server must be exactly what it was before the seek (the panes still
+  // correspond). Untranslated, the late client's delta is ~0: it is asked for a
+  // frame past its own end. The measured offset is asserted non-trivial first,
+  // so a session that happened to boot in lockstep cannot pass vacuously.
+  {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await page.goto(`${BASE}/sandbox.html?example=mp`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+    await page.evaluate(() => {
+      // Every pane's frame, sampled in ONE task — the same rule the host's own
+      // measurement follows.
+      window.__mpProbe.frames = () =>
+        [...document.querySelectorAll(".mp-pane")].map((shell) => {
+          const win = shell.querySelector("iframe").contentWindow;
+          return {
+            role: shell.classList.contains("server") ? "server" : "client",
+            frame: win?.__scrub?.frame() ?? null,
+          };
+        });
+    });
+    // Let the session get a few seconds ahead, THEN add the late client.
+    await page.waitForFunction(() => (window.__mpProbe.frames()[1]?.frame ?? 0) > 180, {
+      timeout: 30000,
+    });
+    await page.selectOption("#client-count", "2");
+    await sleep(4000);
+    const joined = await page.evaluate(() => window.__mpProbe.frames());
+    const [c1, c2, srv] = joined.map((p) => p.frame);
+    const offset = c2 - srv;
+    check(
+      joined.length === 3 && offset < -60,
+      "the late-joined client's clock really is offset from the reference",
+      `client 1 #${c1}, client 2 #${c2}, server #${srv} → offset ${offset}`
+    );
+
+    await page.evaluate(() => window.__mpProbe.pauseAll());
+    await sleep(1200);
+    const before = (await page.evaluate(() => window.__mpProbe.frames())).map((p) => p.frame);
+    // The product path: focus the rail's playhead and page back one second.
+    await page.focus("#mp-playhead");
+    await page.keyboard.press("PageDown");
+    await sleep(1500);
+    const after = (await page.evaluate(() => window.__mpProbe.frames())).map((p) => p.frame);
+    const moved = before.map((frame, index) => frame - after[index]);
+    check(
+      moved.every((delta) => Math.abs(delta - 60) <= 8),
+      "a broadcast seek moves every pane back the same second of ITS OWN clock",
+      `${JSON.stringify(before)} → ${JSON.stringify(after)} (deltas ${JSON.stringify(moved)})`
+    );
+    check(
+      Math.abs(after[1] - after[2] - offset) <= 8,
+      "the late client and the server still correspond after the seek",
+      `offset was ${offset}, now ${after[1] - after[2]}`
+    );
+    await page.close();
+  }
+
   // --- 5. Switching away drops the server pane. -------------------------------
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });

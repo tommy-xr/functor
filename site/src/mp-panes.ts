@@ -41,6 +41,10 @@ import { initNetworkGraph, type NetworkNode } from "./mp-network.js";
 interface ScrubSeam {
   paused(): boolean;
   frame(): number;
+  /** The recorded window `[lo, hi]`, empty until anything is recorded. `hi` is
+   * the pane's LIVE HEAD — the newest frame it has simulated — independent of
+   * where its scrubber is currently parked (which is what `frame()` reports). */
+  range(): number[];
   seek(frame: number): void;
   togglePause(): void;
   canDetach(): boolean;
@@ -1046,8 +1050,99 @@ export function initMultiplayerPanes({
     allPanes()
       .map((pane) => seamOf(pane.iframe))
       .filter((s): s is ScrubSeam => !!s);
-  const primarySeam = () =>
-    (focusedPane ? seamOf(focusedPane.iframe) : null) ?? seams()[0] ?? null;
+  // The pane the chrono bar mirrors: the focused one, or — while that pane is
+  // reloading and has no seam — the first that has one. Resolved as a PANE, not
+  // as a seam: the bar reads its viewport AND its frame offset, and taking those
+  // two from different panes is how a reload window mislabels the rail.
+  const primaryPane = (): Pane | null => {
+    if (focusedPane && seamOf(focusedPane.iframe)) return focusedPane;
+    return allPanes().find((pane) => seamOf(pane.iframe)) ?? null;
+  };
+  const primarySeam = () => {
+    const pane = primaryPane();
+    return pane ? seamOf(pane.iframe) : null;
+  };
+
+  // ------------------------------------------------------ per-pane frame offsets
+  // A pane's frame index is BOOT-RELATIVE: it counts from 0 when that document
+  // starts running. So a client added three seconds into a session is ~180
+  // frames behind the rest for the very same instant, and a broadcast seek sent
+  // as a bare number lands somewhere else in its world (or clamps to the end of
+  // its recording, which is what you actually see: the late client refuses to
+  // move while everyone else rewinds).
+  //
+  // There is no session epoch to translate through yet, so the host MEASURES
+  // the difference, every frame, from the panes' LIVE HEADS:
+  //
+  //     offset(pane) = head(pane) - head(reference)
+  //
+  // where a head is `range()[1]` — the newest frame a pane has simulated — read
+  // for every pane in the same rAF, so the numbers describe one moment. It is
+  // deliberately the head and NOT `frame()`: `frame()` is where that pane's
+  // scrubber is currently PARKED, so measuring from it while the session sits
+  // rewound would call the parked position the present and bake the rewind into
+  // the offset. The reference clock is the SERVER pane when there is one (the
+  // only pane that outlives every client) and pane 1 otherwise.
+  //
+  // Nothing is latched, and that is what keeps this honest: a pane whose head
+  // has not appeared yet (booting — the range is empty until the first frame is
+  // recorded) is simply not measured, and one that reloads, or joins while the
+  // session is parked, or hitches behind the others, is re-measured on the next
+  // frame from whatever its head actually is. An earlier draft latched a first
+  // reading and needed reload detection, boot detection, and a reference-change
+  // rule to stay correct; measuring continuously needs none of them.
+  //
+  // Every broadcast seek, and the rail's own label, is translated through it —
+  // the chrono bar speaks reference-clock frames and each pane hears its own.
+  //
+  // The exact epoch — a frame index that means the same instant everywhere by
+  // construction — arrives with barrier stepping, when the coordinator delivers
+  // on step boundaries instead of on the host's rAF (coordinator arc).
+  const offsets = new Map<Pane, number>();
+  const referencePane = (): Pane | null => serverPane?.pane ?? panes[0] ?? null;
+
+  /** A pane's live head, or null while it has recorded nothing. */
+  const headOf = (pane: Pane): number | null => {
+    const range = seamOf(pane.iframe)?.range();
+    const head = range && range.length === 2 ? range[1] : null;
+    return typeof head === "number" && head > 0 ? head : null;
+  };
+
+  const measureClocks = () => {
+    const reference = referencePane();
+    const referenceHead = reference ? headOf(reference) : null;
+    if (!reference || referenceHead === null) return;
+    offsets.set(reference, 0);
+    const live = allPanes();
+    for (const pane of live) {
+      if (pane === reference) continue;
+      const head = headOf(pane);
+      // No head yet: keep whatever was last measured rather than claiming 0 —
+      // a booting pane is not "in step with the server".
+      if (head !== null) offsets.set(pane, head - referenceHead);
+    }
+    for (const pane of [...offsets.keys()]) if (!live.includes(pane)) offsets.delete(pane);
+  };
+
+  const offsetOf = (pane: Pane | null): number => (pane && offsets.get(pane)) || 0;
+
+  /** A frame the PRIMARY pane reported (the rail mirrors that pane), read back
+   * in reference-clock frames. */
+  const toReference = (paneFrame: number): number => paneFrame - offsetOf(primaryPane());
+
+  /**
+   * Seek every pane to one reference-clock frame, each in its own indices.
+   *
+   * A pane whose recording does not reach that instant — a client that joined
+   * after it — clamps to its own earliest frame rather than the seek being
+   * refused for everyone: rewinding to before a late client joined is a normal
+   * thing to want, and the pane's own rail says where it actually landed.
+   */
+  const seekAll = (referenceFrame: number) => {
+    for (const pane of allPanes()) {
+      seamOf(pane.iframe)?.seek(Math.max(0, Math.round(referenceFrame + offsetOf(pane))));
+    }
+  };
   let pendingDetached:
     | { seam: ScrubSeam; generation: number; iframe: HTMLIFrameElement }
     | null = null;
@@ -1272,7 +1367,9 @@ export function initMultiplayerPanes({
     const target = Math.round(
       current.viewport.lo + unit * (current.viewport.hi - current.viewport.lo)
     );
-    for (const seam of seams()) seam.seek(target);
+    // The viewport is the FOCUSED pane's, so the target is in its indices:
+    // back to the reference clock, then out to every pane in its own.
+    seekAll(toReference(target));
   };
   rail.addEventListener("pointerdown", (event) => {
     event.preventDefault();
@@ -1303,7 +1400,7 @@ export function initMultiplayerPanes({
     if (target === undefined) return;
     event.preventDefault();
     event.stopPropagation();
-    for (const seam of seams()) seam.seek(Math.round(target));
+    seekAll(toReference(Math.round(target)));
   });
 
   // The rail mirrors the FOCUSED pane (each pane is an independent sim in the
@@ -1318,8 +1415,17 @@ export function initMultiplayerPanes({
     // focused pane is loading. Navigation/removal makes that old seam unable
     // to acknowledge, so treat it as a refusal instead of stalling the bar.
     reconcilePendingCamera();
+    measureClocks();
     const primary = primarySeam();
     const current = primary?.view();
+    // The rail mirrors the focused pane, but it LABELS the reference clock:
+    // the numbers on the bar mean the same instant whichever pane you focus.
+    // (Geometry is unit fractions of that pane's own viewport, so only the
+    // numbers shift.)
+    const clockShift = offsetOf(primaryPane());
+    // Clamped at 0: a pane that booted BEFORE the reference has a positive
+    // offset, and its first second would otherwise label as negative frames.
+    const inReference = (frame: number) => Math.max(0, Math.round(frame - clockShift));
     if (!primary?.detached()) debugDrawer.hidden = true;
     chrono.classList.toggle("dormant", !current);
     if (primary && current) {
@@ -1384,32 +1490,33 @@ export function initMultiplayerPanes({
       overflow.textContent = `+${current.previewClippedFrames}`;
       $btn("mp-extrap").classList.toggle("on", previewOn);
       $btn("mp-extrap").setAttribute("aria-pressed", String(previewOn));
+      const selectedRef = inReference(current.selectedFrame);
+      const viewportHiRef = inReference(current.viewport.hi);
       const labelHtml =
-        `${current.selectedFrame}` +
+        `${selectedRef}` +
         (outside ? ` <span class="out">outside</span>` : "") +
         (previewOn ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
-        ` / ${Math.round(current.viewport.hi)}`;
+        ` / ${viewportHiRef}`;
       // The stripes' availability note is ARIA-only, but it shares the label's
-      // change guard so it repaints exactly when the label does.
-      // Mirrors timeline-model's describeRecordedAvailability exactly.
+      // change guard so it repaints exactly when the label does. It follows
+      // timeline-model's describeRecordedAvailability WORD for word, but not
+      // number for number: an in-pane bar says the pane's own frames, while
+      // this bar speaks the reference clock (see the offsets above).
       const availability = !current.recordingAvailable
         ? ", no recorded history is currently available"
         : striped
-          ? `, recorded frames ${Math.round(current.recorded.lo)} to ` +
-            `${Math.round(current.recorded.hi)}; striped history outside that range is unavailable`
+          ? `, recorded frames ${inReference(current.recorded.lo)} to ` +
+            `${inReference(current.recorded.hi)}; striped history outside that range is unavailable`
           : "";
       if (labelHtml + availability !== lastLabel) {
         lastLabel = labelHtml + availability;
         $("mp-frame").innerHTML = labelHtml;
-        playheadEl.setAttribute("aria-valuemin", String(Math.round(current.viewport.lo)));
-        playheadEl.setAttribute(
-          "aria-valuemax",
-          String(Math.max(Math.round(current.viewport.hi), current.selectedFrame))
-        );
-        playheadEl.setAttribute("aria-valuenow", String(current.selectedFrame));
+        playheadEl.setAttribute("aria-valuemin", String(inReference(current.viewport.lo)));
+        playheadEl.setAttribute("aria-valuemax", String(Math.max(viewportHiRef, selectedRef)));
+        playheadEl.setAttribute("aria-valuenow", String(selectedRef));
         playheadEl.setAttribute(
           "aria-valuetext",
-          `frame ${current.selectedFrame} of ${Math.round(current.viewport.hi)}` +
+          `frame ${selectedRef} of ${viewportHiRef}` +
             (outside ? ", outside the frozen viewport" : "") +
             availability
         );
@@ -1504,7 +1611,8 @@ export function initMultiplayerPanes({
             tick.addEventListener("click", (event) => {
               event.stopPropagation();
               primarySeam()?.selectEvent(marker.id);
-              for (const seam of seams()) seam.seek(marker.frame);
+              // The markers are the focused pane's, so its frames are too.
+              seekAll(toReference(marker.frame));
             });
             tick.addEventListener("mouseenter", () => showTip(marker.unit, detail));
             tick.addEventListener("mouseleave", hideTip);
