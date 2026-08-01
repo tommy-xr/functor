@@ -2,7 +2,8 @@
 //!
 //! This module defines the transport-agnostic types shared by every protocol
 //! (HTTP, WebSocket, TCP/UDP, WebRTC) and a deterministic in-memory network
-//! (`VirtualNet`) used to drive multiplayer games headlessly in tests.
+//! (`VirtualNet`) — the intended basis for the future native headless
+//! coordinator's packet scheduling, tested standalone today.
 //!
 //! Nothing here opens a real socket. The real, async transports (tokio on
 //! native, web-sys on wasm) land in later phases behind the same `NetEvent` /

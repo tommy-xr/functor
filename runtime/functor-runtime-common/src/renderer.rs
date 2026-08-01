@@ -34,10 +34,10 @@ const TRANSPARENT_DEBUG_ALPHA: f32 = 0.2;
 /// 3. Forward pass — clear, then `Scene3D::render` with the lights + shadow map.
 /// 4. Sprite passes — ordered orthographic, alpha-blended layers above 3D.
 ///
-/// Known MVP cost: shells that call `render_frame` more than once per game frame
-/// (stereo per-eye, netsim panes) re-render the target passes each call —
+/// Known MVP cost: a shell that calls `render_frame` more than once per game
+/// frame (stereo, one call per eye) re-renders the target passes each call —
 /// redundant work, and a *self-sampling* target sees the previous call's image
-/// (the other eye's / pane's) rather than the previous game frame's. Correct
+/// (the other eye's) rather than the previous game frame's. Correct
 /// output per call; splitting target passes from the per-eye main pass is the
 /// eventual fix.
 pub fn render_frame(
@@ -292,9 +292,9 @@ target frame are ignored (depth 1 only)",
 
     // Main (forward) pass into the bound framebuffer, at the viewport's
     // sub-rectangle (x,y default to 0 = full window). The scissor clips the clear
-    // and draws to this pane, so multiple instances can share one framebuffer
-    // (e.g. a netsim viewer). Reset the clear color (the shadow pass cleared its
-    // depth-color buffer to white).
+    // and draws to that sub-rectangle, so several views can share one
+    // framebuffer (stereo renders one eye per half). Reset the clear color (the
+    // shadow pass cleared its depth-color buffer to white).
     unsafe {
         gl.viewport(
             viewport.x as i32,

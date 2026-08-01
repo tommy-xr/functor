@@ -7,13 +7,6 @@ edition = "2021"
 # Treat warnings as a buld error
 strict = ["functor_runtime_common/strict"]
 
-# A live multi-pane viewer for the netsim: renders each game instance's view in
-# its own pane while stepping the simulation. Native-only (needs GL + dylib load).
-[[bin]]
-name = "functor-netsim-viz"
-path = "src/bin/netsim_viz.rs"
-required-features = []
-
 [dependencies]
 # The Functor Lang language, for the --functor-lang producer (docs/functor-lang.md Track C2).
 functor-lang = { path = "../../functor-lang" }
@@ -36,7 +29,6 @@ async-trait = "0.1.80"
 log = "0.4"
 
 [target.'cfg(not(any(target_arch = "wasm32")))'.dependencies]
-functor-netsim = { path = "./../functor-netsim" }
 glfw = { version = "0.56.0" }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

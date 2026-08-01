@@ -330,7 +330,7 @@ export function initMultiplayerPanes({
         <span class="mp-role">client</span>
         <span class="mp-link-host">
           <button class="mp-link-chip"
-            title="Link impairment for this client (prototype — recorded per client; applies once the netsim transport lands)">⇅ Wi-Fi ▾</button>
+            title="Link impairment for this client (prototype — recorded per client; applies once the coordinator's link impairment lands)">⇅ Wi-Fi ▾</button>
         </span>
         <span class="mp-hd-r">
           <span class="mp-you" hidden>⌨ you</span>
@@ -552,7 +552,7 @@ export function initMultiplayerPanes({
       <label>⇅ <input class="mp-l-ms" type="number" min="0" value="45"> ms
         ± <input class="mp-l-j" type="number" min="0" value="12"></label>
       <label>✂ <input class="mp-l-loss" type="number" min="0" max="100" step="0.1" value="1.2"> % loss</label>
-      <p class="mp-link-note">prototype: recorded per client, applied when the netsim transport lands</p>`;
+      <p class="mp-link-note">prototype: recorded per client, applied when link impairment lands</p>`;
     host.appendChild(menu);
 
     const msInput = menu.querySelector(".mp-l-ms") as HTMLInputElement;

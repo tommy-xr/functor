@@ -7,9 +7,15 @@
 //! caller drains delivered events per node. Given the same seed and the same
 //! sequence of calls, behavior is byte-for-byte reproducible.
 //!
-//! This is the substance of the in-process netsim SDK (Phase 3): the connection
-//! manager will talk to a `Transport` trait whose virtual implementation is built
-//! on this type. Phase 0 ships and tests it standalone — no game required.
+//! This is the intended basis for FUTURE coordinator scheduling — packets as
+//! `{deliver_tick, seq, dest, event}` data over a seeded SplitMix64 and a
+//! per-link [`LinkProfile`]. The named consumer is the native headless
+//! coordinator (MCP over the debug protocol), which will schedule packets
+//! through this directly; the site's TypeScript coordinator
+//! (`site/src/net-coordinator.ts`) mirrors the routing semantics rather than
+//! calling into it, and does not yet deliver on step time. Nothing calls this
+//! outside its own tests today. It ships and is tested standalone: no game
+//! required.
 
 use std::collections::HashMap;
 

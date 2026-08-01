@@ -4,8 +4,8 @@
 //
 // Tracks a player per connection, integrates their movement, and broadcasts
 // the whole world to every client each tick. Naive (full-state, no delta, no
-// prediction) — enough to prove the loop and to drive deterministically
-// through the netsim. The protocol is the shared `Protocol.Wire` ADT
+// prediction) — enough to prove the loop and to drive through the host
+// coordinator. The protocol is the shared `Protocol.Wire` ADT
 // (file = module), sent typed with `Effect.sendMsg` and received as
 // `Net.Data` — no string codec on either end.
 //

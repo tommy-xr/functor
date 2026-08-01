@@ -115,14 +115,6 @@ enum PreloadHandle {
     Texture(Arc<AssetHandle<Texture2D>>),
 }
 
-/// Replay-aware result from the shell asset driver. Ordinary shells consume
-/// only `settled`; whole-environment drivers also retain terrain publications
-/// so warm caches cannot change collision timing after a seek.
-pub struct PreloadDriveResult {
-    pub settled: Vec<u64>,
-    pub terrain_publications: Vec<crate::terrain::TerrainHydrationPublication>,
-}
-
 /// First texture unit for terrain detail maps; must match the terrain
 /// renderer's `DETAIL_TEXTURE_UNIT0` (unit 0 is the height texture).
 const TERRAIN_DETAIL_UNIT0: u32 = 1;
@@ -285,42 +277,9 @@ impl SceneContext {
         asset_cache: &Arc<AssetCache>,
         commands: Vec<crate::asset::preload::PreloadCommand>,
     ) -> Vec<u64> {
-        self.drive_preloads_internal(asset_cache, commands, &[], false)
-            .settled
-    }
-
-    /// NetSim's replay-aware preload step. Terrain requests named in
-    /// `deferred_terrain` remain resident but are not polled or published this
-    /// frame, preserving the original collision-hydration boundary even when
-    /// the decoded asset cache is warm after a seek.
-    pub fn drive_preloads_deferring_terrain(
-        &self,
-        asset_cache: &Arc<AssetCache>,
-        commands: Vec<crate::asset::preload::PreloadCommand>,
-        deferred_terrain: &[crate::terrain::TerrainSource],
-    ) -> PreloadDriveResult {
-        self.drive_preloads_internal(asset_cache, commands, deferred_terrain, true)
-    }
-
-    fn drive_preloads_internal(
-        &self,
-        asset_cache: &Arc<AssetCache>,
-        commands: Vec<crate::asset::preload::PreloadCommand>,
-        deferred_terrain: &[crate::terrain::TerrainSource],
-        capture_terrain_publications: bool,
-    ) -> PreloadDriveResult {
         self.terrain_decode_residency.borrow_mut().begin_epoch();
-        for source in deferred_terrain {
-            self.terrain_decode_residency.borrow_mut().mark_source(
-                &source.locator,
-                &source.while_pending,
-                true,
-                |_| true,
-            );
-        }
         self.capture_terrain_requests();
-        let terrain_publications =
-            self.drive_terrain_requests(asset_cache, capture_terrain_publications);
+        self.drive_terrain_requests(asset_cache);
         self.terrain_decode_residency
             .borrow_mut()
             .evict_stale(|locator| self.heightmap_pipeline.evict(locator));
@@ -376,10 +335,7 @@ impl SceneContext {
             settled.append(&mut entry.tokens);
             false
         });
-        PreloadDriveResult {
-            settled,
-            terrain_publications,
-        }
+        settled
     }
 
     /// Claim terrain hydration requests emitted by the producer that just ran.
@@ -407,16 +363,6 @@ impl SceneContext {
         *self.terrain_requests.borrow_mut() = requests.into_iter().collect();
     }
 
-    /// Re-publish one opaque terrain surface captured from the original
-    /// timeline. The data stays owned by the common runtime; NetSim only
-    /// schedules this event.
-    pub fn replay_terrain_publication(
-        &self,
-        publication: &crate::terrain::TerrainHydrationPublication,
-    ) {
-        crate::terrain::replay_heightmap_publication(publication);
-    }
-
     /// Discard only the in-flight preload driver state before restoring a
     /// whole-shell snapshot. Decoded pipeline handles and terrain hydration
     /// remain warm; the snapshot's logical preload commands are re-submitted
@@ -425,12 +371,7 @@ impl SceneContext {
         self.preloads.borrow_mut().clear();
     }
 
-    fn drive_terrain_requests(
-        &self,
-        asset_cache: &Arc<AssetCache>,
-        capture_publications: bool,
-    ) -> Vec<crate::terrain::TerrainHydrationPublication> {
-        let mut publications = Vec::new();
+    fn drive_terrain_requests(&self, asset_cache: &Arc<AssetCache>) {
         self.terrain_requests.borrow_mut().retain(|source| {
             let handle = asset_cache
                 .load_asset_with_pipeline(self.heightmap_pipeline.clone(), &source.locator);
@@ -456,28 +397,12 @@ impl SceneContext {
             match resolved {
                 crate::asset::WhilePendingState::Loading(stand_in) => {
                     if let Some(data) = stand_in {
-                        if capture_publications {
-                            crate::terrain::publish_heightmap(source, data.clone());
-                            publications.push(crate::terrain::TerrainHydrationPublication::new(
-                                source.clone(),
-                                data,
-                            ));
-                        } else {
-                            crate::terrain::publish_heightmap(source, data);
-                        }
+                        crate::terrain::publish_heightmap(source, data);
                     }
                     true
                 }
                 crate::asset::WhilePendingState::Loaded(data) => {
-                    if capture_publications {
-                        crate::terrain::publish_heightmap(source, data.clone());
-                        publications.push(crate::terrain::TerrainHydrationPublication::new(
-                            source.clone(),
-                            data,
-                        ));
-                    } else {
-                        crate::terrain::publish_heightmap(source, data);
-                    }
+                    crate::terrain::publish_heightmap(source, data);
                     crate::asset::while_pending_chain_is_unsettled(
                         asset_cache,
                         &source.while_pending,
@@ -487,15 +412,7 @@ impl SceneContext {
                     // Rendering uses the pipeline fallback after terminal
                     // failure; publish that same flat surface for collision.
                     let data = handle.fallback();
-                    if capture_publications {
-                        crate::terrain::publish_heightmap(source, data.clone());
-                        publications.push(crate::terrain::TerrainHydrationPublication::new(
-                            source.clone(),
-                            data,
-                        ));
-                    } else {
-                        crate::terrain::publish_heightmap(source, data);
-                    }
+                    crate::terrain::publish_heightmap(source, data);
                     crate::asset::while_pending_chain_is_unsettled(
                         asset_cache,
                         &source.while_pending,
@@ -503,7 +420,6 @@ impl SceneContext {
                 }
             }
         });
-        publications
     }
 
     fn draw_terrain(
@@ -1900,5 +1816,86 @@ mod preload_tests {
         for path in [primary, stand_in] {
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    /// A game that only ever declares `Physics.heightfield` — never a terrain
+    /// in its scene — still hydrates collision: the physics declaration is
+    /// what requests the heightmap, and the shell's terrain asset driver
+    /// decodes and publishes it with no renderer in the loop. (Ported from
+    /// the deleted netsim suite, which drove the same slice through a game
+    /// instance; the fetch → decode → publish → heightfield chain here needs
+    /// neither a producer nor a network.)
+    #[test]
+    fn physics_only_terrain_hydrates_without_a_renderer() {
+        use crate::physics::{
+            remove_world, with_world, Body, PhysicsScene, Shape, SteppedPhysics, DEFAULT_WORLD,
+            FIXED_DT,
+        };
+        use crate::terrain::{TerrainGeometry, TerrainSource};
+
+        remove_world(DEFAULT_WORLD);
+        let path = std::env::temp_dir().join(format!(
+            "functor-physics-only-terrain-{}.png",
+            std::process::id()
+        ));
+        image::ImageBuffer::from_pixel(2, 2, image::Luma([u16::MAX]))
+            .save(&path)
+            .unwrap();
+        let source = TerrainSource {
+            locator: path.to_string_lossy().to_string(),
+            while_pending: Vec::new(),
+        };
+        let scene = PhysicsScene::create(
+            [0.0, -9.81, 0.0],
+            vec![Body::fixed(
+                "terrain".to_string(),
+                Shape::Heightfield {
+                    geometry: TerrainGeometry {
+                        source: source.clone(),
+                        width: 20.0,
+                        depth: 20.0,
+                        min_height: 0.0,
+                        max_height: 10.0,
+                    },
+                    data: None,
+                },
+            )],
+        );
+        let hit_y = || {
+            with_world(DEFAULT_WORLD, |world| {
+                world
+                    .raycast([0.0, 20.0, 0.0], [0.0, -1.0, 0.0], 30.0)
+                    .map(|hit| hit.position[1])
+            })
+            .flatten()
+        };
+
+        let ctx = SceneContext::new();
+        let cache = Arc::new(AssetCache::new());
+        let mut physics = SteppedPhysics::new();
+
+        // The first fixed frame declares the heightfield with no samples yet;
+        // that declaration is the only thing that asks for the heightmap.
+        physics.advance(&scene, FIXED_DT);
+        assert!(hit_y().is_none(), "nothing to collide with before the load");
+
+        // The shell's asset driver claims that request, decodes the file and
+        // publishes it into the render/physics hydration bridge.
+        ctx.drive_preloads(&cache, vec![]);
+        assert!(
+            crate::terrain::hydrated_heightmap(&source).is_some(),
+            "the terrain driver published the decoded surface"
+        );
+
+        // The next frame builds the collider from the published samples.
+        physics.advance(&scene, FIXED_DT);
+        let hit = hit_y().expect("the hydrated heightfield collides");
+        assert!(
+            (hit - 10.0).abs() < 0.001,
+            "the max-height sample reached physics: {hit}"
+        );
+
+        remove_world(DEFAULT_WORLD);
+        let _ = std::fs::remove_file(&path);
     }
 }

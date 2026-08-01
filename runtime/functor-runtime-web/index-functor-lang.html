@@ -91,13 +91,6 @@
         functor_lang_viewer_look,
         functor_lang_viewer_move,
         functor_lang_viewer_zoom,
-        functorLangStartSim,
-        functorLangSimStep,
-        functorLangSimState,
-        functorLangSimTimeline,
-        functorLangSimSeek,
-        functorLangSimLen,
-        functorLangStopSim,
       } from "./pkg/functor_runtime_web.js";
       // The time-travel scrubber is the shared component, served next to pkg/
       // by the dev server (see runtime/functor-runtime-web/scrubber.js). It
@@ -654,30 +647,7 @@
         });
       };
 
-      // The multiplayer netsim seam, mirroring `window.__scrub`: several game
-      // instances (a server + N clients from one multi-entry project) stepped
-      // over a virtual network in this page, scrubbable as ONE environment.
-      // Exposed on `window` so the IDE — and `e2e/wasm-sim.mjs` — can drive it
-      // without importing the module themselves. No sockets are opened: the sim
-      // routes the games' own connect/send commands internally.
-      //
-      // Installed INSIDE init().then() — these wrappers call straight into wasm,
-      // so publishing them earlier would let a caller (or a test waiting on
-      // `window.__sim`) invoke an uninitialized module.
-      const installSim = () => {
-        window.__sim = {
-          start: (entries, seed = 1) => functorLangStartSim(entries, seed),
-          step: (frames = 1) => functorLangSimStep(frames),
-          state: (id) => functorLangSimState(id),
-          timeline: () => functorLangSimTimeline(),
-          seek: (frame) => functorLangSimSeek(frame),
-          len: () => functorLangSimLen(),
-          stop: () => functorLangStopSim(),
-        };
-      };
-
       init().then(() => {
-        installSim();
         // In a deterministic capture (?fixed-time), don't wire up input — a
         // stray mouse move would turn the camera, like on native.
         const deterministic = new URLSearchParams(window.location.search).has("fixed-time");
