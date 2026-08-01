@@ -1630,7 +1630,6 @@ a:hover {
   color: var(--text-dim);
   font-size: 0.62rem;
   letter-spacing: 0.04em;
-  opacity: 0.85;
 }
 
 .api-intro {
@@ -1848,6 +1847,14 @@ a:hover {
   font-size: 0.66rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+}
+
+/* The first module under a category belongs to it, so it drops the separating
+   rule `.docs-main h2` gives every other module heading. */
+.api-category-divider + .api-module > h2 {
+  margin-top: 22px;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .api-category-divider h2::before {

@@ -56,7 +56,7 @@ const module_ = (module) => {
   const id = slug(module.name);
   const entries = `${module.items.length} ${module.items.length === 1 ? "entry" : "entries"}`;
   return [
-    `<section class="api-module" id="${escapeAttr(id)}" data-group="${escapeAttr(module.group ?? "engine")}" data-category="${escapeAttr(categoryKey(module))}" data-search="${escapeAttr(`${module.name} ${module.docs}`.toLowerCase())}">`,
+    `<section class="api-module" id="${escapeAttr(id)}" data-group="${escapeAttr(module.group ?? "engine")}" data-category="${escapeAttr(categoryKey(module))}" data-search="${escapeAttr(`${module.name} ${module.category ?? ""} ${module.docs}`.toLowerCase())}">`,
     `<h2><span>${escapeText(module.name)}</span><span class="api-module-count">${entries}</span></h2>`,
     prose(module.docs),
     `<div class="api-items">`,
@@ -142,9 +142,9 @@ const sections = (modules) => {
     const moduleGroup = module.group ?? "engine";
     if (moduleGroup !== group) {
       group = moduleGroup;
-      category = undefined;
       out.push(divider(group));
     }
+    // The key carries the group, so a group change always opens a category too.
     if (categoryKey(module) !== category) {
       category = categoryKey(module);
       out.push(categoryHeading(module));

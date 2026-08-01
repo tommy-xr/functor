@@ -32,6 +32,11 @@ pub struct ApiModule {
     pub group: ApiGroup,
     /// The category heading this module renders under, within its group.
     pub category: String,
+    /// The extension this module's source carries on disk, so an error about
+    /// it names a plausible file. Presentation-neutral output does not need
+    /// it.
+    #[serde(skip)]
+    pub extension: &'static str,
     pub docs: Option<String>,
     pub items: Vec<ApiItem>,
 }
@@ -245,30 +250,54 @@ pub fn generate() -> Result<ApiReference, GenerateError> {
 ///
 /// Both directions are errors, so the table and the sources cannot drift: a
 /// table entry naming a module that is not documented (or documented in the
-/// other group), and a documented module with no table entry at all.
+/// other group), and a documented module with no table entry at all. A group's
+/// categories also have to be contiguous, since both renderers announce a
+/// group once and then walk its categories.
 fn categorize(
     mut modules: Vec<ApiModule>,
     categories: &[(ApiGroup, &str, &[&str])],
 ) -> Result<Vec<ApiModule>, GenerateError> {
-    let mut ordered = Vec::with_capacity(modules.len());
+    let mut ordered: Vec<ApiModule> = Vec::with_capacity(modules.len());
+    let mut groups: Vec<ApiGroup> = Vec::new();
     for (group, category, names) in categories {
-        for name in *names {
-            // Removed as it is placed, so listing a module twice in the table
-            // reports as "not documented" on the second mention rather than
-            // duplicating it into the page.
-            let Some(index) = modules.iter().position(|module| module.name == *name) else {
+        if groups.last() != Some(group) {
+            if groups.contains(group) {
                 return Err(categorization_error(
-                    name,
+                    names.first().unwrap_or(&""),
+                    "funi",
+                    format!(
+                        "{group:?} categories are split around another group's — a group's \
+                         categories must be contiguous in CATEGORIES (tools/functor-docgen), \
+                         so \"{category}\" has to move next to the others"
+                    ),
+                ));
+            }
+            groups.push(*group);
+        }
+        for name in *names {
+            // Modules are removed as they are placed, so a second mention would
+            // otherwise report as "not documented" and point at the prelude
+            // instead of at the table.
+            let Some(index) = modules.iter().position(|module| module.name == *name) else {
+                let message = if let Some(placed) = ordered.iter().find(|m| m.name == *name) {
+                    format!(
+                        "`{name}` is listed twice in CATEGORIES (tools/functor-docgen) — \
+                         under \"{}\" and again under \"{category}\"",
+                        placed.category
+                    )
+                } else {
                     format!(
                         "`{name}` is listed under \"{category}\" but no such module is \
                          documented — fix or remove its entry in CATEGORIES \
                          (tools/functor-docgen)"
-                    ),
-                ));
+                    )
+                };
+                return Err(categorization_error(name, "funi", message));
             };
             if modules[index].group != *group {
                 return Err(categorization_error(
                     name,
+                    modules[index].extension,
                     format!(
                         "`{name}` is listed under \"{category}\" as {group:?}, but it is \
                          documented as {:?} — fix its entry in CATEGORIES \
@@ -285,6 +314,7 @@ fn categorize(
     if let Some(module) = modules.first() {
         return Err(categorization_error(
             &module.name,
+            module.extension,
             format!(
                 "`{}` has no category — add it to CATEGORIES (tools/functor-docgen) so it \
                  renders under a heading",
@@ -295,10 +325,10 @@ fn categorize(
     Ok(ordered)
 }
 
-fn categorization_error(module: &str, message: String) -> GenerateError {
+fn categorization_error(module: &str, extension: &'static str, message: String) -> GenerateError {
     GenerateError {
         module: module.to_string(),
-        extension: "funi",
+        extension,
         line: 1,
         col: 1,
         message,
@@ -478,6 +508,10 @@ fn extract_module(
         group,
         // Stamped by `categorize` once the whole inventory is known.
         category: String::new(),
+        extension: match parse_as {
+            Parse::Interface => "funi",
+            Parse::Implementation => "fun",
+        },
         docs: module_doc(&source),
         items,
     })
@@ -699,6 +733,49 @@ mod tests {
         let error = super::categorize(vec![widget], &[]).expect_err("Widget has no category");
         assert!(
             error.to_string().contains("`Widget` has no category"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A group announces itself once, so its categories cannot be split
+    /// around another group's.
+    #[test]
+    fn a_group_split_across_the_table_fails_generation() {
+        let error = super::categorize(
+            Vec::new(),
+            &[
+                (ApiGroup::Engine, "Scene & rendering", &[]),
+                (ApiGroup::Stdlib, "Collections", &[]),
+                (ApiGroup::Engine, "Audio", &[]),
+            ],
+        )
+        .expect_err("Engine is split around Stdlib");
+        assert!(
+            error.to_string().contains("must be contiguous"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// A module named twice says so, instead of pointing at the prelude.
+    #[test]
+    fn a_module_listed_twice_fails_generation() {
+        let widget = super::extract_module(
+            "Widget".to_string(),
+            "//! Widgets.\n/// An opaque widget.\ntype t\n".to_string(),
+            ApiGroup::Engine,
+            super::Parse::Interface,
+        )
+        .unwrap();
+        let error = super::categorize(
+            vec![widget],
+            &[
+                (ApiGroup::Engine, "Scene & rendering", &["Widget"]),
+                (ApiGroup::Engine, "Audio", &["Widget"]),
+            ],
+        )
+        .expect_err("Widget is listed twice");
+        assert!(
+            error.to_string().contains("listed twice"),
             "unexpected error: {error}"
         );
     }
