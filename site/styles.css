@@ -2324,6 +2324,32 @@ a:hover {
   display: none;
 }
 
+/* The adapter still renders into the host — pending keys and the `:` / `/`
+   dialog input stay — but its own `--MODE--` button and flex spacer are
+   hidden: the segment's React label carries the mode without the hyphens.
+   Both adapter spans are identified by their inline styles (cursor:pointer
+   on the click-to-Esc button, flex:1 on the spacer); dialogs are divs and
+   the pending-keys span is unstyled, so neither is caught. Coupled to the
+   pinned @replit/codemirror-vim internals on purpose. */
+.statusbar-vim-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.statusbar-vim-host > span[style*="cursor"],
+.statusbar-vim-host > span[style*="flex"] {
+  display: none;
+}
+
+/* While a `:` / `/` dialog occupies the host, the dialog IS the readout —
+   drop the mode label instead of stacking NORMAL next to the command line. */
+.statusbar-vim:has(.statusbar-vim-host > div) > .statusbar-vim-mode {
+  display: none;
+}
+
 .statusbar-vim input {
   min-width: 0;
   border: 0;

@@ -33,11 +33,15 @@ const VimSegment = ({ controller }: { controller: EditorKeybindingsController })
   }, [controller]);
   return (
     <span
-      ref={host}
       className="statusbar-vim"
       data-vim-mode={vimMode ?? undefined}
       hidden={vimMode === null}
-    />
+    >
+      {/* Our own label — plain NORMAL, no --hyphens--. The adapter's own
+          hyphenated mode button inside the host is hidden in CSS. */}
+      <span className="statusbar-vim-mode">{vimMode?.toUpperCase()}</span>
+      <span ref={host} className="statusbar-vim-host" />
+    </span>
   );
 };
 
