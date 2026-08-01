@@ -7,6 +7,7 @@ import { indentLess, indentMore, indentWithTab } from "@codemirror/commands";
 import { Compartment } from "@codemirror/state";
 import type { Extension } from "@codemirror/state";
 import type { EditorView, KeyBinding } from "@codemirror/view";
+import { showHoverAtCursor } from "./lang-intel.js";
 import { createStore } from "./store.js";
 import type { Store } from "./store.js";
 
@@ -49,7 +50,15 @@ let vimModulePromise: Promise<VimModule> | null = null;
 let getVimEditor: VimModule["getCM"] | null = null;
 
 const loadVim = (): Promise<VimModule> => {
-  vimModulePromise ??= import("@replit/codemirror-vim");
+  vimModulePromise ??= import("@replit/codemirror-vim").then((module) => {
+    // VSCodeVim's `gh`: show the hover info (type + live value) at the caret.
+    // The Vim keymap is an adapter-level singleton, so register once at load.
+    module.Vim.defineAction("showHover", (cm: VimCM) => {
+      showHoverAtCursor(cm.cm6);
+    });
+    module.Vim.mapCommand("gh", "action", "showHover", {}, { context: "normal" });
+    return module;
+  });
   return vimModulePromise;
 };
 

@@ -237,6 +237,26 @@ try {
       "Escape closes completion and returns Vim to Normal",
       (await page.locator("#statusbar .statusbar-vim").innerText()).includes("NORMAL")
     );
+
+    // VSCodeVim's `gh`: summon the hover info (the wasm's type) at the caret;
+    // any cursor motion dismisses it.
+    await page.evaluate(() => window.__sandbox.setSource("let init = 0.0\n"));
+    await page.locator("#editor .cm-content").focus();
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("g");
+    await page.keyboard.press("g");
+    await page.keyboard.press("0");
+    await page.keyboard.press("w");
+    await page.keyboard.press("g");
+    await page.keyboard.press("h");
+    await page.waitForFunction(() => document.querySelector(".cm-hover-type"));
+    check(
+      "gh shows hover info at the cursor",
+      (await page.locator(".cm-hover-type").innerText()).length > 0
+    );
+    await page.keyboard.press("l");
+    await page.waitForFunction(() => !document.querySelector(".cm-hover-type"));
+    check("cursor motion dismisses the gh hover", true);
   }
 
   // Vim is a sandbox/IDE feature: even with the preference persisted, the
