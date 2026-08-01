@@ -434,6 +434,12 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   module renames it (`step` → `Server.step`), which the rebinder treats
   like any rename: the stored closure keeps its OLD body and prints a loud
   `[functor-lang]` warning.
+- **In the editor**: completion follows the CURSOR into a block — inside
+  `module Server { … }` the module's own names are offered bare (shadowing
+  the file's, which stay visible), `Utils.` offers the nested module `Grid`,
+  `Utils.Grid.` offers its members, and inside the declaring file a block is
+  referenced bare (`Grid.`). Hover shows the canonical name
+  (`Server.step : …`), and each `module` block is a folding range.
 
 ### Interface files (`.funi`)
 

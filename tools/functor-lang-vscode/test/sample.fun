@@ -35,6 +35,15 @@ let report = (scores) =>
     |> List.map((s) => Text.concat("score: ", Text.fromFloat(s)))
     |> Text.toBullets
 
+// An inline module: a named namespace inside the file.
+module Server {
+  type Cmd = | Spawn(id: float) | Despawn(id: float)
+  let step = (c: Cmd): float =>
+    match c with
+    | Spawn(id) => id
+    | Despawn(id) => -id
+}
+
 let main = () =>
   report([
     12.0,

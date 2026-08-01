@@ -100,7 +100,7 @@
     },
     "keyword": {
       "name": "keyword.control.functor",
-      "match": "\\b(let|type)\\b"
+      "match": "\\b(let|type|module)\\b"
     },
     "boolean": {
       "name": "constant.language.boolean.functor",

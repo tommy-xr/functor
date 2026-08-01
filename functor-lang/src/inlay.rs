@@ -146,4 +146,15 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1, ": Map<string, 'a>");
     }
+
+    // PR 2. A param of a def inside an inline `module` is hinted like any
+    // other — the hints are per-def, and a module's defs are ordinary defs.
+    #[test]
+    fn infers_a_param_inside_an_inline_module() {
+        let src = "module Server {\n  let step = (d) => d + 1.0\n}\n";
+        let got = hints(src);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, ": float");
+        assert_eq!(got[0].0, src.find("(d)").unwrap() + 2);
+    }
 }

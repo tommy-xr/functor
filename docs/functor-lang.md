@@ -658,8 +658,21 @@ snapshots — no GPU, fully agent-verifiable.
       canonicalization, shadowing (values and record types), opens
       (local + cross-file, collision + cycle), each collision, file-level
       cycle attribution, and cross-reload rebind.
-      Follow-ups: LSP completion/goto for inline modules, and a
-      `functor.json` `entries` form that names them as roles.
+      Follow-ups: a `functor.json` `entries` form that names them as roles.
+      **Part 7 — module-aware editor tooling — done:** the cursor's
+      namespace is now span-based (the `module` block it sits in, from the
+      project's `inline_modules` index), so bare completion inside a block
+      offers the module's own names — shadowing the file's — alongside the
+      file's top level; `Utils.` offers the nested module `Grid` (not the
+      member `Grid.cell`) and `Utils.Grid.` its members; inside the
+      declaring file a block is referenced bare (`Grid.`). Hover, goto,
+      code lenses, inlay hints, doc comments, and `expect` status already
+      key off canonical names/spans and are pinned by tests. `module`
+      blocks are the one construct the LSP emits FOLDING RANGES for
+      (indentation folding is the client's default), and the VSCode
+      grammar highlights the `module` keyword. *Verify:* completion,
+      goto, hover, codelens, inlay, and docs unit tests, plus an
+      end-to-end LSP test for in-block completion scope + folding.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values

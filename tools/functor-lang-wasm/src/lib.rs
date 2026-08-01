@@ -340,15 +340,17 @@ fn complete_impl(sources: Vec<(PathBuf, String)>, active: &Path, offset: usize) 
         let Some(project) = borrow.as_ref() else {
             return empty_completion();
         };
-        // Complete in the active file's module scope; a file the cached
+        // Complete in the active file's module scope — plus the inline
+        // `module` block the cursor sits in, found by span. A file the cached
         // project doesn't know (just created, buffer still broken) falls back
         // to the entry module.
-        let module = project
-            .sources
-            .file_by_path(active)
-            .map(|file| file.module.clone())
-            .unwrap_or_else(|| project.entry.clone());
-        let items = functor_lang::complete::complete(project, &module, &live, byte);
+        let file = project.sources.file_by_path(active);
+        let module = file.map_or_else(|| project.entry.clone(), |file| file.module.clone());
+        let inline = file
+            .and_then(|file| project.inline_module_at(file.base + byte))
+            .map(|module| module.name.clone());
+        let items =
+            functor_lang::complete::complete(project, &module, inline.as_deref(), &live, byte);
         completion_json(&items)
     })
 }

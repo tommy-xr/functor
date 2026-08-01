@@ -387,4 +387,22 @@ mod review_tests {
         let src = "let f = (x: float) => let mut a = x in a := a + 1.0; a";
         assert_eq!(hover_at(src, "mut a ="), "mut a : float");
     }
+
+    // PR 2. A member of an inline `module` hovers with its CANONICAL
+    // qualified name, both at the reference and at the declaration.
+    #[test]
+    fn inline_module_members_hover_qualified() {
+        let src = "module Server {\n  \
+                   let step = (delta: float) => delta\n\
+                   }\n\
+                   let go = () => Server.step(1.0)\n";
+        assert_eq!(
+            hover_at(src, "Server.step(1.0"),
+            "Server.step : (float) => float"
+        );
+        assert_eq!(
+            hover_at(src, "let step ="),
+            "Server.step : (float) => float"
+        );
+    }
 }

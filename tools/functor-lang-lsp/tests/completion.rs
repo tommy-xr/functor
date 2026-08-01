@@ -40,7 +40,7 @@ fn find<'a>(
 fn real_prelude_scene_member_completion() {
     let project = project();
     let live = "let s = Scene.";
-    let items = complete(&project, "Game", live, live.len());
+    let items = complete(&project, "Game", None, live, live.len());
     let names = labels(&items);
     for member in ["cube", "sphere", "group"] {
         assert!(
@@ -58,7 +58,7 @@ fn real_prelude_scene_member_completion() {
 fn real_prelude_partial_member_filters() {
     let project = project();
     let live = "let s = Scene.cu";
-    let items = complete(&project, "Game", live, live.len());
+    let items = complete(&project, "Game", None, live, live.len());
     assert_eq!(labels(&items), ["cube"]);
 }
 
@@ -66,7 +66,7 @@ fn real_prelude_partial_member_filters() {
 fn bundled_animator_member_completion() {
     let project = project();
     let live = "let pose = Animator.";
-    let items = complete(&project, "Game", live, live.len());
+    let items = complete(&project, "Game", None, live, live.len());
     let names = labels(&items);
     for member in ["start", "play", "pose"] {
         assert!(

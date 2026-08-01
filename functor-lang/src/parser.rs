@@ -290,11 +290,12 @@ the top level of the file"
                 _ => return self.error("`let`, `type`, `expect`, or `}` inside a module"),
             }
         }
-        self.bump();
+        let close = self.bump();
         Ok(ModuleDecl {
             name,
             items,
             span: kw.span.to(name_span),
+            block: kw.span.to(close.span),
         })
     }
 

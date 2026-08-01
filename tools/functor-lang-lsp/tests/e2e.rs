@@ -628,6 +628,75 @@ fn scope_aware_completion_over_real_stdio() {
     server.child.wait().expect("wait for exit");
 }
 
+/// Inline modules over the real binary: the cursor's `module` block decides
+/// the completion namespace (span-based, so the SECOND block in the file wins
+/// where it should), and the same blocks come back as folding ranges.
+#[test]
+fn inline_modules_drive_completion_scope_and_folding() {
+    // Two blocks: `describe` is visible bare only inside `Client`, and the
+    // file's `speed` is visible inside both.
+    const TEXT: &str = "let speed = 4.0\n\
+                        module Server {\n  \
+                        let step = (d: float) => d\n\
+                        }\n\
+                        module Client {\n  \
+                        let describe = () => speed\n\
+                        }\n";
+    let mut server = Server::spawn();
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} },
+    }));
+    let capabilities = server.recv()["result"]["capabilities"].clone();
+    assert_eq!(capabilities["foldingRangeProvider"], json!(true));
+    server.send(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    server.send(json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": URI, "languageId": "functor-lang", "version": 1, "text": TEXT,
+        } },
+    }));
+    server.recv(); // publishDiagnostics (clean)
+
+    // Completion at the end of `Client`'s body line (line 5): the block's own
+    // `describe` and the file's `speed`, but NOT `Server`'s `step`.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": URI },
+            "position": { "line": 5, "character": 23 },
+        },
+    }));
+    let result = server.recv()["result"].clone();
+    let labels: Vec<String> = result
+        .as_array()
+        .expect("completion array")
+        .iter()
+        .map(|item| item["label"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(labels.contains(&"describe".to_string()), "{result}");
+    assert!(labels.contains(&"speed".to_string()), "{result}");
+    assert!(!labels.contains(&"step".to_string()), "{result}");
+
+    // Folding: one region per block, `module` line → closing-brace line.
+    server.send(json!({
+        "jsonrpc": "2.0", "id": 3, "method": "textDocument/foldingRange",
+        "params": { "textDocument": { "uri": URI } },
+    }));
+    let result = server.recv()["result"].clone();
+    assert_eq!(
+        result,
+        json!([
+            { "startLine": 1, "endLine": 3, "kind": "region" },
+            { "startLine": 4, "endLine": 6, "kind": "region" },
+        ]),
+    );
+
+    server.send(json!({ "jsonrpc": "2.0", "id": 9, "method": "shutdown" }));
+    server.recv();
+    server.send(json!({ "jsonrpc": "2.0", "method": "exit" }));
+    server.child.wait().expect("wait for exit");
+}
+
 /// The VSCode extension's grammar and manifests must at least be valid JSON
 /// (visual verification happens in the editor — see tools/functor-lang-vscode/README).
 /// The highlighting sample must also be a valid Functor Lang module, so it stays in

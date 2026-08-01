@@ -172,6 +172,9 @@ pub struct Project {
     pub sources: SourceMap,
     /// The entry file's module name (`game.fun` → `Game`).
     pub entry: String,
+    /// Every inline `module` block of the project's files, in file order —
+    /// the editor tooling's index (which module the cursor is in, folding).
+    pub inline_modules: Vec<InlineModule>,
     /// Per-module record-literal visibility (own + `open`ed types) —
     /// [`Project::check`] hands it to the checker so a bare literal never
     /// resolves against an unrelated sibling's type.
@@ -193,6 +196,29 @@ impl Project {
     pub fn check_with_types(&self) -> (Vec<CheckError>, crate::types::ExprTypes) {
         crate::types::check_with_scopes_and_types(&self.module, &self.scopes)
     }
+
+    /// The inline `module` block containing project-wide `offset`, if any —
+    /// the cursor's namespace for `functor_lang::complete` (blocks never
+    /// nest, so at most one matches).
+    pub fn inline_module_at(&self, offset: usize) -> Option<&InlineModule> {
+        self.inline_modules
+            .iter()
+            .find(|module| module.span.start <= offset && offset < module.span.end)
+    }
+}
+
+/// One `module Name { … }` block, indexed for editor tooling.
+pub struct InlineModule {
+    /// The declared name — how the block is referenced inside its own file
+    /// (`Grid`).
+    pub name: String,
+    /// The declaring file's module (`Utils`).
+    pub file: String,
+    /// The canonical prefix its members carry: bare in the ENTRY file
+    /// (`Server.step`), file-qualified elsewhere (`Utils.Grid.cell`).
+    pub path: String,
+    /// The whole block, `module` through `}`, in the project-wide span space.
+    pub span: crate::Span,
 }
 
 /// One file of a project, with its base offset in the project-wide span
@@ -702,6 +728,7 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     // Inline `module` blocks are keyed by their full path (`Utils.Grid`);
     // a file's own top-level exports never include them.
     let mut exports: HashMap<String, Exports> = HashMap::new();
+    let mut inline_modules: Vec<InlineModule> = Vec::new();
     let file_modules: HashSet<&str> = files.iter().map(|f| f.module.as_str()).collect();
     for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
         exports.insert(file.module.clone(), exports_of(&program.items));
@@ -744,6 +771,18 @@ rename it"
                 ));
             }
             exports.insert(format!("{}.{name}", file.module), exports_of(&decl.items));
+            inline_modules.push(InlineModule {
+                name: decl.name.clone(),
+                file: file.module.clone(),
+                // The entry file's members canonicalize BARE (`lower`'s
+                // rule), so its inline modules keep only their own segment.
+                path: if file.module == entry {
+                    decl.name.clone()
+                } else {
+                    format!("{}.{name}", file.module)
+                },
+                span: decl.block,
+            });
         }
     }
     let exports = exports;
@@ -889,6 +928,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         module: merged,
         sources: SourceMap { files },
         entry,
+        inline_modules,
         scopes,
     })
 }
