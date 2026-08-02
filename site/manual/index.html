@@ -372,7 +372,7 @@ module Server {
           |> step(dt) }
 
   // The authority holds no seat of its own, so nothing renders as "mine".
-  let draw = (m: Model, tts: float) => render(0.0 - 1.0, m.ships)
+  let draw = (m: Model, tts: float) => render(-1.0, m.ships)
 }</pre>
           <p>
             Two rules to know when a role moves into a block. A block's own names
@@ -392,8 +392,8 @@ functor -d . run native --entry client  # you steer, with A and D
 functor -d . run native --entry server  # the same world, seen from the authority</pre>
           <p>
             A role is not native-only. <code>run wasm</code> and <code>build wasm</code> bake it
-            into the served page's boot config — the web player also takes
-            <code>?module=Server</code> directly — and <code>run vr</code> declares the role in
+            into the served or exported page's boot config, this site's player takes
+            <code>?module=Server</code> on its URL, and <code>run vr</code> declares the role in
             every push to the headset.
           </p>
           <p class="docs-callout">
@@ -401,9 +401,9 @@ functor -d . run native --entry server  # the same world, seen from the authorit
             program in and boots the file's bare <code>init</code> / <code>tick</code> /
             <code>draw</code>, which a role living in a block by definition doesn't answer. The
             sandbox can play a declared role when it knows it up front:
-            <a href="../sandbox.html?example=orbs">open Orbs in the sandbox</a> to see these same
-            two blocks at full size — over a real wire, with an authoritative claim-resolution
-            rule.
+            <a href="../sandbox.html?example=orbs">open Orbs in the sandbox</a> to see the same
+            two-block shape at full size — over a real wire, with an authoritative
+            claim-resolution rule.
           </p>
         </section>
 
@@ -556,7 +556,9 @@ let area = (s: Shape): float =>
           <p>
             Constructors resolve <em>bare</em> and live in the value namespace
             (<code>Shape.Circle</code> does <strong>not</strong> work), so constructor names must
-            be unique across all variant types in the file. Variants from a <em>module</em> are the
+            be unique across all variant types in the module — a file, or an inline
+            <code>module</code> block, each of which is its own namespace. Variants from a
+            <em>module</em> are the
             other way around — <code>Option.Some</code>, never bare <code>Some</code> (see
             <a href="../docs/#api-option">Option and Result</a>). Unapplied constructors are
             first-class: <code>xs |> List.map(Circle)</code>. When the scrutinee's type is known,
