@@ -45,6 +45,27 @@ pub enum HostNetEvent {
     },
 }
 
+/// The inbound-event sender every socket task holds — a `Sender<HostNetEvent>`
+/// that also maintains the shell's `pending_net` gauge (`GET /state`,
+/// protocol v10).
+///
+/// It is a newtype rather than a bare `Sender` so a socket path added later
+/// cannot forget to count: there is exactly one way to hand an event to the
+/// main loop, and it counts. The count goes UP before the event is queued and
+/// back DOWN either when `deliver_net_ws` hands it to the game, or immediately
+/// if the main loop is gone and the send fails.
+#[derive(Clone)]
+struct EventTx(Sender<HostNetEvent>);
+
+impl EventTx {
+    fn send(&self, event: HostNetEvent) {
+        functor_runtime_common::net::note_inbound_queued();
+        if self.0.send(event).is_err() {
+            functor_runtime_common::net::note_inbound_delivered();
+        }
+    }
+}
+
 /// What a per-connection task should do next.
 enum OutMsg {
     Send(Vec<u8>),
@@ -67,7 +88,7 @@ pub struct WsManager {
     /// Active listeners: bind key -> accept-loop task.
     listeners: HashMap<String, tokio::task::JoinHandle<()>>,
     next_id: Arc<AtomicU64>,
-    events: Sender<HostNetEvent>,
+    events: EventTx,
 }
 
 impl WsManager {
@@ -77,7 +98,7 @@ impl WsManager {
             client_by_key: HashMap::new(),
             listeners: HashMap::new(),
             next_id: Arc::new(AtomicU64::new(1)),
-            events,
+            events: EventTx(events),
         }
     }
 
@@ -152,13 +173,13 @@ async fn run_client(
     key: String,
     id: u64,
     url: String,
-    events: Sender<HostNetEvent>,
+    events: EventTx,
     conns: SharedConns,
 ) {
     let ws = match tokio_tungstenite::connect_async(&url).await {
         Ok((ws, _resp)) => ws,
         Err(e) => {
-            let _ = events.send(HostNetEvent::Error {
+            events.send(HostNetEvent::Error {
                 key,
                 id,
                 message: e.to_string(),
@@ -175,13 +196,13 @@ async fn accept_loop(
     key: String,
     addr: String,
     next_id: Arc<AtomicU64>,
-    events: Sender<HostNetEvent>,
+    events: EventTx,
     conns: SharedConns,
 ) {
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            let _ = events.send(HostNetEvent::Error {
+            events.send(HostNetEvent::Error {
                 key,
                 id: 0,
                 message: format!("bind {addr}: {e}"),
@@ -200,7 +221,7 @@ async fn accept_loop(
                     match tokio_tungstenite::accept_async(stream).await {
                         Ok(ws) => serve(ws, key, id, events, conns).await,
                         Err(e) => {
-                            let _ = events.send(HostNetEvent::Error {
+                            events.send(HostNetEvent::Error {
                                 key,
                                 id,
                                 message: e.to_string(),
@@ -221,7 +242,7 @@ async fn serve<S>(
     ws: tokio_tungstenite::WebSocketStream<S>,
     key: String,
     id: u64,
-    events: Sender<HostNetEvent>,
+    events: EventTx,
     conns: SharedConns,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -234,7 +255,7 @@ async fn serve<S>(
             key: key.clone(),
         },
     );
-    let _ = events.send(HostNetEvent::Connected {
+    events.send(HostNetEvent::Connected {
         key: key.clone(),
         id,
     });
@@ -260,10 +281,10 @@ async fn serve<S>(
             },
             incoming = read.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    let _ = events.send(HostNetEvent::Message { key: key.clone(), id, text });
+                    events.send(HostNetEvent::Message { key: key.clone(), id, text });
                 }
                 Some(Ok(Message::Binary(data))) => {
-                    let _ = events.send(HostNetEvent::Message {
+                    events.send(HostNetEvent::Message {
                         key: key.clone(),
                         id,
                         text: String::from_utf8_lossy(&data).to_string(),
@@ -272,7 +293,7 @@ async fn serve<S>(
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
-                    let _ = events.send(HostNetEvent::Error { key: key.clone(), id, message: e.to_string() });
+                    events.send(HostNetEvent::Error { key: key.clone(), id, message: e.to_string() });
                     break;
                 }
             },
@@ -280,7 +301,7 @@ async fn serve<S>(
     }
 
     conns.lock().unwrap().remove(&id);
-    let _ = events.send(HostNetEvent::Disconnected { key, id });
+    events.send(HostNetEvent::Disconnected { key, id });
 }
 
 #[cfg(test)]

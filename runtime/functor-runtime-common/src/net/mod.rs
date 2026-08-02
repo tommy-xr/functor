@@ -22,6 +22,66 @@ pub use inbox::*;
 pub use registry::*;
 pub use virtual_net::*;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Inbound network events a shell has accepted from its transport but has not
+/// yet delivered into the game — the debug protocol's `pending_net`.
+///
+/// The shells receive connection events and completed HTTP responses on
+/// background threads/tasks and hand them to the game once per rendered frame
+/// (`deliver_net_ws`). The channel in between has no observable depth, so the
+/// gauge is kept here instead: a shell counts an event UP before it queues it
+/// and DOWN as it delivers it, which makes the gauge err high for an instant
+/// rather than reporting quiescence while an event is in flight.
+///
+/// It is a lower bound on outstanding network work — a packet still on the
+/// wire between two processes is invisible to every process — but it is the
+/// fact a driver needs before snapshotting a baseline: nothing already
+/// received is still unprocessed.
+static INBOUND_PENDING: AtomicU64 = AtomicU64::new(0);
+
+/// Shell: one inbound event is being queued for the game.
+pub fn note_inbound_queued() {
+    INBOUND_PENDING.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Shell: one queued inbound event has been delivered (or could not be
+/// queued at all). Saturating, so a miscounted shell cannot wrap the gauge.
+pub fn note_inbound_delivered() {
+    let _ = INBOUND_PENDING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+        Some(pending.saturating_sub(1))
+    });
+}
+
+/// The current inbound queue depth, for `GET /state`'s `pending_net`.
+pub fn inbound_pending() -> u64 {
+    INBOUND_PENDING.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod inbound_gauge_tests {
+    use super::*;
+
+    /// The gauge tracks queued-minus-delivered, and a delivery a shell reports
+    /// without a matching queue SATURATES rather than wrapping — a miscount
+    /// must not turn `pending_net` into 18 quintillion, which a harness would
+    /// read as "never quiescent" forever.
+    #[test]
+    fn the_inbound_gauge_counts_up_and_saturates_down() {
+        let base = inbound_pending();
+        note_inbound_queued();
+        note_inbound_queued();
+        assert_eq!(inbound_pending(), base + 2);
+        note_inbound_delivered();
+        note_inbound_delivered();
+        assert_eq!(inbound_pending(), base);
+        if base == 0 {
+            note_inbound_delivered();
+            assert_eq!(inbound_pending(), 0);
+        }
+    }
+}
+
 /// Stable identifier for one connection, assigned by the runtime and reported to
 /// the game via [`NetEvent::Connected`]. It is plain data: the game stores it in
 /// its model and names it when sending (so outbound `Effect`s stay plain data and

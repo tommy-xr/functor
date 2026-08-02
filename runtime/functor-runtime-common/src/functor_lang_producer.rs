@@ -717,6 +717,11 @@ pub struct FrameCtx<'a> {
     /// canonical lookup and error message in the frame body goes through it.
     pub names: &'a EntryNames,
     pub model: &'a mut Value,
+    /// How many times `model` has been replaced (see [`FrameCtx::absorb`], the
+    /// producer's single model assignment). The debug protocol reports it as
+    /// `model_revision`: the version label for a model a NETWORK can change
+    /// while the clock is paused and `frame` stands still.
+    pub model_revision: &'a mut u64,
     pub physics_rt: &'a mut SteppedPhysics,
     /// The physics world's current fixed frame (what the coupled scene
     /// recorder stores per rendered frame).
@@ -1200,9 +1205,15 @@ impl FrameCtx<'_> {
     /// adopt the model, and drain the effects to a fixed point through `update`
     /// (docs/functor-lang.md B6). Every producer path that runs game code funnels through
     /// here, so effects work uniformly from tick, input, mouse, and messages.
+    ///
+    /// It is therefore also the producer's single model ASSIGNMENT, and where
+    /// `model_revision` is counted: every replacement, whatever ran the game
+    /// code — a stepped `tick`, an injected input, or an inbound network
+    /// message folding through `update` while the clock is paused.
     pub fn absorb(&mut self, returned: Value) {
         let (model, effects) = split_model_effect(returned);
         *self.model = model;
+        *self.model_revision = self.model_revision.saturating_add(1);
         // Effects are commands, not data — one stored in the model would make
         // the pair sniff ambiguous on a later return (see `split_model_effect`).
         if contains_effect(self.model) {
@@ -1849,10 +1860,12 @@ fn forward_step_scene_with_error(
 
     let result = {
         let mut clock = clock;
+        let mut model_revision = 0u64;
         let mut ctx = FrameCtx {
             session,
             names,
             model: &mut model,
+            model_revision: &mut model_revision,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
             recorder: &mut dry_recorder,
@@ -2713,10 +2726,12 @@ mod tests {
             },
             silent_emit,
         );
+        let mut model_revision = 0u64;
         let mut ctx = FrameCtx {
             session,
             names: &EntryNames::UNPREFIXED,
             model,
+            model_revision: &mut model_revision,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
             recorder: &mut recorder,
@@ -2879,10 +2894,12 @@ mod tests {
             },
             silent_emit,
         );
+        let mut model_revision = 0u64;
         let mut ctx = FrameCtx {
             session,
             names: &EntryNames::UNPREFIXED,
             model,
+            model_revision: &mut model_revision,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
             recorder: &mut recorder,
@@ -2940,10 +2957,12 @@ mod tests {
             },
             silent_emit,
         );
+        let mut model_revision = 0u64;
         let mut ctx = FrameCtx {
             session,
             names: &EntryNames::UNPREFIXED,
             model,
+            model_revision: &mut model_revision,
             physics_rt: &mut physics_rt,
             physics_frame: &mut physics_frame,
             recorder: &mut recorder,
@@ -3148,6 +3167,7 @@ mod tests {
     struct PhysicsHarness {
         session: Session,
         model: Value,
+        model_revision: u64,
         physics_rt: SteppedPhysics,
         physics_frame: u64,
         recorder: SceneRecorder,
@@ -3175,6 +3195,7 @@ mod tests {
             PhysicsHarness {
                 session,
                 model,
+                model_revision: 0,
                 physics_rt: SteppedPhysics::new(),
                 physics_frame: 0,
                 recorder: SceneRecorder::new(),
@@ -3202,6 +3223,7 @@ mod tests {
                 session: &self.session,
                 names: &EntryNames::UNPREFIXED,
                 model: &mut self.model,
+                model_revision: &mut self.model_revision,
                 physics_rt: &mut self.physics_rt,
                 physics_frame: &mut self.physics_frame,
                 recorder: &mut self.recorder,

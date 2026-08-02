@@ -9828,6 +9828,8 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             frame: 1,
             tts: 0.0,
             pending_steps: 0,
+            model_revision: 0,
+            pending_net: 0,
             viewport: crate::debug_protocol::RuntimeViewport::new(1, 1),
             views: vec![],
             model: value_to_json(&value),

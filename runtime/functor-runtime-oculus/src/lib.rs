@@ -639,6 +639,11 @@ fn service_debug_request(
                 frame: debug.frame_count,
                 tts: clock.current_tts(),
                 pending_steps: clock.pending_steps(),
+                model_revision: game.model_revision(),
+                // The device shell delivers inbound net events through the same
+                // process-global gauge the desktop shell counts on; it reads 0
+                // until a device transport counts into it.
+                pending_net: functor_runtime_common::net::inbound_pending(),
                 viewport: RuntimeViewport::new(width, height),
                 views,
                 model: game.state_json(),

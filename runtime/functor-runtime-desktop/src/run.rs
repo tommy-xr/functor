@@ -829,12 +829,20 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
 
 /// Deliver async HTTP + WebSocket results into the game's inbox *before* tick, so
 /// this frame's executor drain sees them.
+///
+/// This is also where the `pending_net` gauge comes back down: a sender counts
+/// an event UP before it reaches the channel (`ws_host`, and the HTTP dispatch
+/// below), and every event delivered here counts DOWN. Counting in that order
+/// means the gauge can read high for an instant but never reads 0 while
+/// something already received is still undelivered — which is the only
+/// direction a driver waiting for quiescence can safely trust.
 fn deliver_net_ws(
     game: &mut dyn Game,
     net_rx: &std::sync::mpsc::Receiver<net_dispatch::NetResult>,
     ws_rx: &std::sync::mpsc::Receiver<ws_host::HostNetEvent>,
 ) {
     while let Ok(result) = net_rx.try_recv() {
+        functor_runtime_common::net::note_inbound_delivered();
         match result {
             net_dispatch::NetResult::Response {
                 token,
@@ -847,6 +855,7 @@ fn deliver_net_ws(
         }
     }
     while let Ok(event) = ws_rx.try_recv() {
+        functor_runtime_common::net::note_inbound_delivered();
         match event {
             ws_host::HostNetEvent::Connected { key, id } => game.net_push_connected(key, id as i32),
             ws_host::HostNetEvent::Message { key, id, text } => {
@@ -878,7 +887,11 @@ fn dispatch_net_ws(
                     let tx = net_tx.clone();
                     let client = http_client.clone();
                     tokio::spawn(async move {
-                        let _ = tx.send(net_dispatch::perform_http(&client, cmd).await);
+                        let result = net_dispatch::perform_http(&client, cmd).await;
+                        functor_runtime_common::net::note_inbound_queued();
+                        if tx.send(result).is_err() {
+                            functor_runtime_common::net::note_inbound_delivered();
+                        }
                     });
                 }
             }
@@ -945,6 +958,8 @@ fn service_debug_request(
                 frame: *frame_count,
                 tts,
                 pending_steps: clock.pending_steps(),
+                model_revision: game.model_revision(),
+                pending_net: functor_runtime_common::net::inbound_pending(),
                 viewport: debug_server::RuntimeViewport::new(width, height),
                 views: vec![debug_server::RuntimeView::new("main", width, height)],
                 model: game.state_json(),

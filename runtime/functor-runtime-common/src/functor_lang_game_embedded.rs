@@ -103,6 +103,11 @@ pub struct FunctorLangEmbeddedGame {
     module: functor_lang::ir::Module,
     session: Session,
     model: Value,
+    /// How many times [`Self::model`] has been replaced by game logic — the
+    /// debug protocol's `model_revision`. Counted by `FrameCtx::absorb`, and
+    /// deliberately NOT reset by a hot reload (which rebinds the model rather
+    /// than replacing it), so it stays monotone for the life of the process.
+    model_revision: u64,
     has_input: bool,
     has_sampled_input: bool,
     /// The shell samples physical state before a fixed simulation step. Hold
@@ -345,6 +350,7 @@ impl FunctorLangEmbeddedGame {
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
+            model_revision: 0,
             has_input: loaded.has_input,
             has_sampled_input: loaded.has_sampled_input,
             pending_sampled_input: None,
@@ -569,6 +575,7 @@ impl FunctorLangEmbeddedGame {
             session: &self.session,
             names: &self.names,
             model: &mut self.model,
+            model_revision: &mut self.model_revision,
             physics_rt: &mut self.physics_rt,
             physics_frame: &mut self.physics_frame,
             recorder: &mut self.recorder,
@@ -1084,6 +1091,10 @@ AudioScene.empty), got {}",
 
     fn state_json(&self) -> serde_json::Value {
         crate::functor_lang_prelude::value_to_json(&self.model)
+    }
+
+    fn model_revision(&self) -> u64 {
+        self.model_revision
     }
 
     /// The paused-inspector trace (visual-debugger PR2b), same contract and
