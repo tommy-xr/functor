@@ -20,8 +20,20 @@ let xbotClips: XbotClips = {
 
 type XbotJoints = {
   mixamorig_Head: string,
+  mixamorig_LeftArm: string,
+  mixamorig_LeftForeArm: string,
+  mixamorig_LeftHand: string,
+  mixamorig_RightArm: string,
+  mixamorig_RightForeArm: string,
+  mixamorig_RightHand: string,
 }
 
 let xbotJoints: XbotJoints = {
   mixamorig_Head: "mixamorig:Head",
+  mixamorig_LeftArm: "mixamorig:LeftArm",
+  mixamorig_LeftForeArm: "mixamorig:LeftForeArm",
+  mixamorig_LeftHand: "mixamorig:LeftHand",
+  mixamorig_RightArm: "mixamorig:RightArm",
+  mixamorig_RightForeArm: "mixamorig:RightForeArm",
+  mixamorig_RightHand: "mixamorig:RightHand",
 }

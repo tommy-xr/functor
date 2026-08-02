@@ -102,6 +102,25 @@ fn camera_world_ray_checks_as_anim_look_at_input() {
     );
 }
 
+/// The same cursor-derived model-space Vec3 can drive the stacked two-bone
+/// post-pass without unpacking or weakening its brand.
+#[test]
+fn camera_world_ray_checks_as_anim_reach_input() {
+    let diags = check(
+        "let camera = Camera3D.lookAt(\n\
+           Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0))\n\
+         let reach = (mouse: Input.mouse): Anim.t =>\n\
+           match Camera3D.toWorldRay(mouse, camera) with\n\
+           | Option.Some(ray) => Anim.rest() |> Anim.reach(\n\
+               \"upper\", \"lower\", \"hand\", ray.origin |> Vec3.add(ray.direction), 1.0)\n\
+           | Option.None => Anim.rest()",
+    );
+    assert!(
+        diags.is_empty(),
+        "Camera3D.toWorldRay should feed Anim.reach directly: {diags:?}"
+    );
+}
+
 /// Engine-owned `.fun` modules participate in the same typecheck as the host
 /// interfaces they build upon.
 #[test]

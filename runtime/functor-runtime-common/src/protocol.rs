@@ -71,6 +71,9 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v11: the `AnimExpr::Reach` two-bone IK variant nested in
+/// `ModelDescription.animation`.
+///
 /// v10: logical mouse surface extent — `InputSnapshot.mouse.surface_width` /
 /// `surface_height`, defaulted when decoding older samples.
 ///
@@ -103,7 +106,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -600,7 +603,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -627,7 +630,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 10);
+        assert_eq!(PROTOCOL_VERSION, 11);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
@@ -640,6 +643,28 @@ mod tests {
             r#"{"Geometry":{"ConvexPolygon":{"points":[[0.0,0.0],[2.0,0.0],[1.0,1.5]]}}}"#
         );
         let back: SceneObject = serde_json::from_str(&json).expect("deserialize polygon geometry");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    #[test]
+    fn two_bone_reach_animation_wire_is_pinned() {
+        use crate::anim::AnimExpr;
+
+        assert_eq!(PROTOCOL_VERSION, 11);
+        let reach = AnimExpr::Reach {
+            root: "upper".to_string(),
+            middle: "lower".to_string(),
+            end: "hand".to_string(),
+            target: [1.0, 2.0, 3.0],
+            weight: 0.75,
+            expr: Box::new(AnimExpr::Rest),
+        };
+        let json = serde_json::to_string(&reach).expect("serialize two-bone reach");
+        assert_eq!(
+            json,
+            r#"{"Reach":{"root":"upper","middle":"lower","end":"hand","target":[1.0,2.0,3.0],"weight":0.75,"expr":"Rest"}}"#
+        );
+        let back: AnimExpr = serde_json::from_str(&json).expect("deserialize two-bone reach");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 

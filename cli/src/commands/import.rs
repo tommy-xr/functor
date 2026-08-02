@@ -15,7 +15,7 @@
 //!
 //! `file = module`, so games write `Scene.model(Assets.xbot)` and
 //! `Anim.clip(Assets.xbotClips.walk.name, tts)`, or pass
-//! `Assets.xbotJoints.mixamorig_Head` to `Anim.rotate` / `Anim.lookAt` /
+//! `Assets.xbotJoints.mixamorig_Head` to `Anim.rotate` / `Anim.lookAt` / `Anim.reach` /
 //! `Anim.mask` — a typo is a check-time error instead of a silent fallback.
 //! The file is meant to be CHECKED IN (it typechecks without the binary assets,
 //! which are fetched, not committed); `run`/`build` call [`ensure_fresh`] to
@@ -529,7 +529,7 @@ fn vetted_joints(file: &str, joints: Vec<String>) -> Vec<String> {
         if !dups.is_empty() {
             emit(Event::Warning {
                 message: format!(
-                    "{file}: duplicate joint name(s) {} — Anim.rotate/Anim.lookAt/Anim.mask resolve \
+                    "{file}: duplicate joint name(s) {} — Anim.rotate/Anim.lookAt/Anim.reach/Anim.mask resolve \
 by name (rotation/look-at: smallest id; mask: all matching subtrees), so one constant \
 per name is generated",
                     dups.join(", ")

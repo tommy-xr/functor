@@ -46,6 +46,8 @@
 //!    both fields are Vec3 values and direction is normalized)
 //! Anim.lookAt(joint, target, maxDeflection, weight, anim)  -> Anim
 //!   (post-pass aim of local +Z at a model-space Vec3 target)
+//! Anim.reach(root, middle, end, target, weight, anim)      -> Anim
+//!   (post-pass two-bone reach preserving the evaluated bend side)
 //! Frame.create(camera, scene)                               -> Frame
 //! Camera2D.create(width, height)                             -> Camera2D
 //! Camera2D.at(x, y, camera) / Camera2D.zoom(k, camera)       -> Camera2D
@@ -3032,9 +3034,9 @@ one with Asset.model/texture(…) first"
 }
 
 /// The Anim pose algebra — clip sampling, blending, the rest pose, additive
-/// layers, masks, per-joint rotation, and model-space look-at. Playheads,
-/// targets, and weights are explicit in the values, so the pose stays a pure
-/// function of what the game derived.
+/// layers, masks, per-joint rotation, model-space look-at, and two-bone reach.
+/// Playheads, targets, and weights are explicit in the values, so the pose
+/// stays a pure function of what the game derived.
 fn register_anim(reg: &mut crate::host_registry::Registry) {
     // A clip sample as a value: the named glTF clip at a playhead in seconds
     // (looping by the clip's duration). The playhead is explicit — derive it
@@ -3180,6 +3182,40 @@ a non-empty joint name, model-space Vec3 target, Angle limit from 0 to 180 degre
                 joint,
                 target: [target.0 .0, target.0 .1, target.0 .2],
                 max_angle: max_deflection.0,
+                weight: weight as f32,
+                expr: Box::new(anim.0),
+            }))
+        },
+    );
+    // A pure two-bone IK post-pass: solve a direct root -> middle -> end
+    // chain toward a model-space target after the expression below has
+    // settled. The evaluated middle position supplies the bend side.
+    const REACH: &str = "Anim.reach(\"rootJoint\", \"middleJoint\", \"endJoint\", target, \
+weight, anim) — three distinct non-empty joint names forming a direct two-bone chain \
+with uniform root scale, a model-space Vec3 target, and weight";
+    reg.fn6(
+        "Anim.reach",
+        REACH,
+        |root: String,
+         middle: String,
+         end: String,
+         target: FunctorLangVec3,
+         weight: f64,
+         anim: FunctorLangAnim| {
+            if root.is_empty()
+                || middle.is_empty()
+                || end.is_empty()
+                || root == middle
+                || root == end
+                || middle == end
+            {
+                return Err(format!("usage: {REACH}"));
+            }
+            Ok(FunctorLangAnim(AnimExpr::Reach {
+                root,
+                middle,
+                end,
+                target: [target.0 .0, target.0 .1, target.0 .2],
                 weight: weight as f32,
                 expr: Box::new(anim.0),
             }))
@@ -7955,8 +7991,8 @@ Anim.clip(\"walk\", tts)"
     }
 
     // The full pose algebra composes through pipes and lands on the Model
-    // node as nested AnimExpr data: rest |> rotate |> lookAt, masked blends,
-    // additive layers.
+    // node as nested AnimExpr data: rest |> rotate |> lookAt |> reach,
+    // masked blends, additive layers.
     #[test]
     fn anim_algebra_composes_and_serializes() {
         let value = eval(
@@ -7965,6 +8001,7 @@ Anim.clip(\"walk\", tts)"
                Anim.rest()\n\
                  |> Anim.rotate(\"finger_index_0_r\", Angle.degrees(45.0), Angle.degrees(0.0), Angle.degrees(0.0))\n\
                  |> Anim.lookAt(\"finger_index_0_r\", Vec3.make(1.0, 2.0, 3.0), Angle.degrees(80.0), 0.75)\n\
+                 |> Anim.reach(\"arm_r\", \"forearm_r\", \"wrist_r\", Vec3.make(3.0, 2.0, 1.0), 0.6)\n\
                  |> Anim.mask([\"wrist_r\"])\n\
                  |> Anim.add(Anim.clip(\"wave\", 1.0), 0.5))",
         );
@@ -7989,6 +8026,22 @@ Anim.clip(\"walk\", tts)"
             panic!("expected a Mask base, got {base:?}");
         };
         assert_eq!(joints, &vec!["wrist_r".to_string()]);
+        let AnimExpr::Reach {
+            root,
+            middle,
+            end,
+            target,
+            weight,
+            expr,
+        } = &**expr
+        else {
+            panic!("expected a Reach inside the mask, got {expr:?}");
+        };
+        assert_eq!(root, "arm_r");
+        assert_eq!(middle, "forearm_r");
+        assert_eq!(end, "wrist_r");
+        assert_eq!(target, &[3.0, 2.0, 1.0]);
+        assert!((*weight - 0.6).abs() < 1e-6);
         let AnimExpr::LookAt {
             joint,
             target,
@@ -8063,6 +8116,22 @@ Anim.clip(\"walk\", tts)"
                 "let main = () => Anim.rest() |> Anim.lookAt(\"head\", Vec3.make(0.0, 1.0, 2.0), Angle.degrees(181.0), 1.0)"
             ),
             "usage: Anim.lookAt(\"jointName\", target, maxDeflection, weight, anim) — a non-empty joint name, model-space Vec3 target, Angle limit from 0 to 180 degrees, and weight"
+        );
+    }
+
+    #[test]
+    fn anim_reach_enforces_spatial_brand_and_distinct_joint_names() {
+        let bare_target = fail_message(
+            "let main = () => Anim.rest() |> Anim.reach(\"arm\", \"forearm\", \"hand\", { x: 0.0, y: 1.0, z: 2.0 }, 1.0)"
+        );
+        assert!(bare_target.contains("Vec3"), "message: {bare_target}");
+
+        let duplicate_name = fail_message(
+            "let main = () => Anim.rest() |> Anim.reach(\"arm\", \"arm\", \"hand\", Vec3.make(0.0, 1.0, 2.0), 1.0)"
+        );
+        assert!(
+            duplicate_name.contains("three distinct non-empty joint names"),
+            "message: {duplicate_name}"
         );
     }
 
