@@ -15,7 +15,9 @@
 
 // --- Tunables (tweak these to change whether the jump clears the chasm) ---
 // <editable>
-// Tune the jump — speed, launch, gravity, gap — then click 🔮.
+// Tune the jump, then click 🔮 ("extrapolate") to see the
+// past and future of anything that changes — or just keep
+// tuning while it's on, and watch the future redraw.
 let runSpeed = 8.0        // horizontal speed while held
 let jumpVelocity = 13.0   // upward launch speed
 let gravity = 30.0        // downward acceleration
