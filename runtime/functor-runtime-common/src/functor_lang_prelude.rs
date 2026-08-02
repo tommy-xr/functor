@@ -7822,6 +7822,63 @@ Scene.cube()))"
         )));
     }
 
+    /// The rest of the frame's fields, one assertion each — the ones a future
+    /// refactor that stops deriving would silently drop.
+    /// [xreview: Claude Low]
+    #[test]
+    fn frame_equals_covers_every_decoration() {
+        const CAMERA: &str =
+            "Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))";
+        const CAM2D: &str = "Camera2D.create(16.0, 9.0)";
+        let differs = |a: &str, b: &str| {
+            assert!(
+                !equality(&format!("Frame.equals({a}, {b})")),
+                "expected {a} != {b}"
+            );
+        };
+        let base = format!("Frame.create({CAMERA}, Scene.cube())");
+        // Fog.
+        differs(
+            &base,
+            &format!(
+                "{base} |> Frame.withFog(Fog.linear(5.0, 50.0, Color.rgb(0.1, 0.1, 0.2)))"
+            ),
+        );
+        // Skybox.
+        differs(
+            &base,
+            &format!(
+                "{base} |> Frame.withSkybox(Skybox.files(\"px.png\", \"nx.png\", \"py.png\", \
+\"ny.png\", \"pz.png\", \"nz.png\"))"
+            ),
+        );
+        // Render-target passes.
+        let target = "RenderTarget.named(\"feed\") |> RenderTarget.sized(64.0, 64.0)";
+        differs(
+            &base,
+            &format!("{base} |> Frame.withRenderTarget({target}, {base})"),
+        );
+        // 2D layers — present vs absent, and their content.
+        let dot = "Sprite.circle(Color.rgb(1.0, 1.0, 1.0), 1.0)";
+        differs(&base, &format!("{base} |> Frame.with2D({CAM2D}, {dot})"));
+        differs(
+            &format!("{base} |> Frame.with2D({CAM2D}, {dot})"),
+            &format!("{base} |> Frame.with2D({CAM2D}, Sprite.blank())"),
+        );
+        // The `Frame.create2D` marker: a pure 2D frame is not the 3D frame
+        // that happens to carry the same layer.
+        differs(
+            &format!("Frame.create2D({CAM2D}, {dot})"),
+            &format!(
+                "Frame.create({CAMERA}, Scene.group([])) |> Frame.with2D({CAM2D}, {dot})"
+            ),
+        );
+        // …and each of those still equals itself.
+        assert!(equality(&format!(
+            "Frame.equals(Frame.create2D({CAM2D}, {dot}), Frame.create2D({CAM2D}, {dot}))"
+        )));
+    }
+
     // The Angle rule for animations: a bare clip name teaches Anim.clip.
     #[test]
     fn bare_strings_are_not_anims() {

@@ -437,10 +437,11 @@ Three limits, all deliberate:
   that needs constraint-based typeclasses (an `Eq` bound propagated through
   generalization), which is a much larger design than this change; the
   limitation is pinned by a test rather than left as a surprise.
-- **Structural equality for `Scene.t` / `Frame.t` is out of scope.** Whether
-  scenes should compare at all — and as `==` or as `Scene.equals` — is a
-  separate decision. This check-time rejection is exactly the thing that
-  decision would carve an exception into.
+- **Structural equality for `Scene.t` / `Frame.t` is an explicit FUNCTION, not
+  an exception to this rule.** That decision has since been made: the two
+  pure-data engine values gained `Scene.equals` / `Frame.equals`, and `==` on
+  them stays a check-time error. Keeping it a call makes the O(size) walk
+  visible where it happens, and the rejection above teaches it.
 
 ### Still open
 

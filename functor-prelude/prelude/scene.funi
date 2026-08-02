@@ -103,4 +103,9 @@ let rotateZ : (Angle.t, t) => t
 ///
 /// Children are ordered, so two groups holding the same nodes in a different
 /// order are not equal.
+///
+/// The answer is a bare `bool`, so a failing `expect` reports only that the
+/// two scenes differ — scene values are opaque and cannot be printed. Write
+/// the assertion over the smallest node that makes the point, or bisect by
+/// comparing sub-scenes, rather than one `expect` over a whole frame.
 let equals : (t, t) => bool

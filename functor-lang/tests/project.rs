@@ -2277,6 +2277,55 @@ compares structurally")),
     );
 }
 
+/// The hint is only actionable where the signature actually accepts the
+/// operand, so it is withheld in the two places it would teach code that does
+/// not check: a NESTED occurrence (the operands are a list/tuple, not the
+/// handle) and a GENERIC mismatch. The plain refusal still stands.
+/// [xreview: Claude Medium + Codex Medium]
+#[test]
+fn the_equals_hint_is_withheld_where_it_would_not_apply() {
+    const WIDGET: &str = "type Handle = host\n\
+         let make : () => Handle\n\
+         let equals : (Handle, Handle) => bool";
+    for nested in [
+        "let same = (): bool => [Widget.make()] == [Widget.make()]\n",
+        "let same = (): bool => (Widget.make(), 1.0) == (Widget.make(), 1.0)\n",
+    ] {
+        let project = load("host-type-equals-nested", &[("game.fun", nested), ("widget.funi", WIDGET)]);
+        let diags = project.check();
+        assert!(
+            diags.iter().any(|d| d.message.contains("supports no `==`"))
+                && !diags
+                    .iter()
+                    .any(|d| d.message.contains("compares structurally")),
+            "{nested}: {diags:?}"
+        );
+    }
+    // A generic handle whose `equals` is pinned to a DIFFERENT instantiation.
+    let generic = load(
+        "host-type-equals-generic",
+        &[
+            (
+                "game.fun",
+                "let same = (a: Widget.Handle<string>, b: Widget.Handle<string>): bool => a == b\n",
+            ),
+            (
+                "widget.funi",
+                "type Handle<'v> = host\n\
+                 let equals : (Handle<float>, Handle<float>) => bool",
+            ),
+        ],
+    );
+    let diags = generic.check();
+    assert!(
+        diags.iter().any(|d| d.message.contains("supports no `==`"))
+            && !diags
+                .iter()
+                .any(|d| d.message.contains("compares structurally")),
+        "{diags:?}"
+    );
+}
+
 /// A plain `type t` stays comparable. Not every abstract prelude type is a
 /// host handle — `Sprite.t` and `Physics.tag` are ordinary Functor Lang data
 /// behind an opaque name — so the marker is what distinguishes them, and its
