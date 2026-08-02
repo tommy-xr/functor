@@ -74,6 +74,17 @@ export interface DecodedWire {
   /** False for a plain `Effect.send` text payload, or a frame that would not
    * parse — the row then shows the raw text and says so. */
   typed: boolean;
+  /**
+   * The payload as DATA, or null when it is not a typed frame — the same parse
+   * `head`/`body` were rendered from, handed back rather than thrown away.
+   *
+   * A row's consumer needs both: the compact line to show, and the value itself
+   * the moment the reader opens it (value-tree.ts). Returning it here is what
+   * keeps the panel to ONE `JSON.parse` per row per repaint — a world snapshot
+   * parsed twice a row, ten times a second, is the panel's largest avoidable
+   * cost.
+   */
+  value: WireValue | null;
 }
 
 /** A number as a game author wrote it: whole numbers without their `.0`, and
@@ -86,7 +97,8 @@ const num = (n: number): string =>
 const str = (value: string, full: boolean): string =>
   JSON.stringify(full || value.length <= MAX_STRING ? value : `${value.slice(0, MAX_STRING)}…`);
 
-const keyOf = (key: WireKey): string => {
+/** A map key as a row (or a tree node) labels it. */
+export const keyLabel = (key: WireKey): string => {
   if (typeof key !== "object" || key === null) return String(key);
   if ("Text" in key) return key.Text;
   if ("Number" in key) return num(key.Number);
@@ -131,7 +143,7 @@ const render = (value: WireValue, depth: number, full: boolean): string => {
   if ("Map" in value && Array.isArray(value.Map)) {
     if (deep) return "{…}";
     const shown = take(value.Map).map(
-      (entry) => `${keyOf(entry?.[0])}→${render(entry?.[1], depth + 1, full)}`
+      (entry) => `${keyLabel(entry?.[0])}→${render(entry?.[1], depth + 1, full)}`
     );
     return `{${[...shown, ...more(value.Map, "…")].join(", ")}}`;
   }
@@ -150,6 +162,13 @@ const render = (value: WireValue, depth: number, full: boolean): string => {
   // pretending — and rather than throwing.
   return asJson(value);
 };
+
+/**
+ * The one-line, depth-capped rendering of any value — the compact form a row
+ * shows, and the SUMMARY a collapsed tree node shows (value-tree.ts). One
+ * rendering for both, so a node and the row it opened from read the same.
+ */
+export const summarize = (value: WireValue): string => render(value, 0, false);
 
 /**
  * The typed payload inside a wire text, or null for plain `Effect.send` text
@@ -177,15 +196,15 @@ const parseWire = (raw: string): WireValue | null => {
 export function decodeWire(wire: string | undefined): DecodedWire {
   const raw = wire ?? "";
   const value = parseWire(raw);
-  if (!value) return { head: "", body: raw, typed: false };
+  if (!value) return { head: "", body: raw, typed: false, value: null };
   const compact = render(value, 0, false);
   if ("Variant" in value && Array.isArray(value.Variant) && typeof value.Variant[0] === "string") {
     const ctor = value.Variant[0];
     // `render` already puts the constructor at the front; the row prints the
     // head itself, so the body is only what follows it.
-    return { head: ctor, body: compact.slice(ctor.length).trim(), typed: true };
+    return { head: ctor, body: compact.slice(ctor.length).trim(), typed: true, value };
   }
-  return { head: "", body: compact, typed: true };
+  return { head: "", body: compact, typed: true, value };
 }
 
 /**
