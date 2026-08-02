@@ -160,7 +160,10 @@ fn desktop_input_snapshot(
     xr_primary_down: bool,
     xr_surface: (i32, i32),
     xr_override: Option<&XrInputSnapshot>,
-    gamepad_override: Option<&GamepadSnapshot>,
+    // The RESOLVED gamepad sample: callers apply `override > polled > None`
+    // (the windowed loop passes its per-frame GLFW poll as the fallback;
+    // headless has no GLFW instance, so injection is its only source).
+    gamepad: Option<&GamepadSnapshot>,
 ) -> InputSnapshot {
     let xr = match xr_override {
         Some(injected) => Some(injected.clone()),
@@ -170,10 +173,7 @@ fn desktop_input_snapshot(
     };
     let mut snapshot =
         sampled_input_snapshot(held_keys, mouse_pos, xr_surface, held_buttons, edges, xr);
-    // The gamepad domain's only desktop source for now is debug injection
-    // (`POST /input` `{"type":"gamepad"}`); GLFW pad polling slots in here as
-    // `override > polled > None`, the XR shape above.
-    snapshot.gamepad = gamepad_override.cloned();
+    snapshot.gamepad = gamepad.cloned();
     snapshot
 }
 
@@ -316,11 +316,12 @@ fn refresh_fixed_input_levels(
     held_buttons: MouseButtons,
     xr_primary_down: bool,
     xr_override: Option<&XrInputSnapshot>,
-    gamepad_override: Option<&GamepadSnapshot>,
+    // Resolved `override > polled > None`, like `desktop_input_snapshot`.
+    gamepad: Option<&GamepadSnapshot>,
 ) {
     snapshot.held_keys = held_keys.iter().copied().collect();
     snapshot.mouse.buttons = held_buttons;
-    snapshot.gamepad = gamepad_override.cloned();
+    snapshot.gamepad = gamepad.cloned();
     // An injected sample owns the whole XR domain — window keys must not
     // re-derive its trigger/thumbstick out from under the driver.
     match xr_override {
@@ -1813,6 +1814,9 @@ Escape releases while captured"
         let mut xr_primary_clicked = false;
         let mut xr_override: Option<XrInputSnapshot> = None;
         let mut gamepad_override: Option<GamepadSnapshot> = None;
+        // The pad polled from GLFW this frame; a debug-injected override wins
+        // over it at every sample site (`override > polled > None`).
+        let mut polled_gamepad: Option<GamepadSnapshot> = None;
         // `--fixed-time` is a deterministic capture pin: the one zero-delta
         // bootstrap step must not observe cursor motion from the host window.
         // Explicit debug input remains authoritative; key release/focus-loss
@@ -1827,7 +1831,7 @@ Escape releases while captured"
             false,
             window.get_size(),
             xr_override.as_ref(),
-            gamepad_override.as_ref(),
+            gamepad_override.as_ref().or(polled_gamepad.as_ref()),
         );
         // Whether the window owns the pointer (free-look). Capture is always
         // entered by a non-overlay click; see the Escape / MouseButton / Focus
@@ -2004,7 +2008,7 @@ then restart the runner"
                             held_buttons,
                             false,
                             xr_override.as_ref(),
-                            gamepad_override.as_ref(),
+                            gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                         );
                     }
                     window.set_cursor_mode(glfw::CursorMode::Normal);
@@ -2030,6 +2034,13 @@ then restart the runner"
             // capture can't turn the camera). Window close/escape and the debug
             // server's /input still work.
             let ignore_user_input = clock.is_pinned();
+            // Poll the pad once per render frame — level state, refreshed
+            // whole. Gated like other window input: not while time is pinned,
+            // and only while the window has focus (an unfocused game must not
+            // keep steering; None also covers disconnect, never stale values).
+            polled_gamepad = (!ignore_user_input && window.is_focused())
+                .then(|| crate::desktop_gamepad::sample(&glfw))
+                .flatten();
             // Keyboard events for a focused `Ui.textInput` this frame,
             // collected from the GLFW stream while the overlay wants the
             // keyboard and handed to `draw_view` below. While the clock is
@@ -2114,7 +2125,7 @@ then restart the runner"
                                     held_buttons,
                                     false,
                                     xr_override.as_ref(),
-                                    gamepad_override.as_ref(),
+                                    gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                                 );
                             }
                             window.set_cursor_mode(glfw::CursorMode::Normal);
@@ -2165,7 +2176,7 @@ Escape again to quit"
                                 held_buttons,
                                 false,
                                 xr_override.as_ref(),
-                                gamepad_override.as_ref(),
+                                gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                             );
                         }
                         if !hidden {
@@ -2363,7 +2374,7 @@ Escape again to quit"
                                 held_buttons,
                                 xr_primary_down || xr_primary_clicked,
                                 xr_override.as_ref(),
-                                gamepad_override.as_ref(),
+                                gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                             );
                         }
                     }
@@ -2409,7 +2420,7 @@ Escape again to quit"
                                     held_buttons,
                                     xr_primary_down || xr_primary_clicked,
                                     xr_override.as_ref(),
-                                    gamepad_override.as_ref(),
+                                    gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                                 );
                             }
                         }
@@ -2453,7 +2464,7 @@ Escape again to quit"
                                     held_buttons,
                                     xr_primary_down || xr_primary_clicked,
                                     xr_override.as_ref(),
-                                    gamepad_override.as_ref(),
+                                    gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                                 );
                             }
                         }
@@ -2496,7 +2507,7 @@ Escape again to quit"
                                 held_buttons,
                                 false,
                                 xr_override.as_ref(),
-                                gamepad_override.as_ref(),
+                                gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                             );
                         }
                     }
@@ -2658,7 +2669,7 @@ Escape again to quit"
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
-                            gamepad_override.as_ref(),
+                            gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                         );
                         game.sampled_input(&snapshot);
                     }
@@ -3453,7 +3464,7 @@ Escape again to quit"
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
-                            gamepad_override.as_ref(),
+                            gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                         )
                     };
                     let sampled_input_changed = service_debug_request(
@@ -3505,7 +3516,7 @@ Escape again to quit"
                             xr_primary_down || xr_primary_clicked,
                             window.get_size(),
                             xr_override.as_ref(),
-                            gamepad_override.as_ref(),
+                            gamepad_override.as_ref().or(polled_gamepad.as_ref()),
                         );
                     }
                 }

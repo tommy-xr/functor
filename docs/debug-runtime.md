@@ -273,8 +273,8 @@ only be driven this way. `held_keys` and `mouse` stay live alongside it.
 level state (no entry point call, recorded, replayable), a whole-sample
 replacement whose omitted fields take their defaults (centered sticks,
 released triggers/buttons), `deny_unknown_fields`, and `{"type":"gamepad_clear"}`
-as the release half — today restoring no `gamepad` domain at all (no shell
-polls a physical pad yet, so injection is the domain's only source). The
+as the release half — restoring the GLFW-polled pad on desktop, or no
+`gamepad` domain at all when none is connected. The
 body is the snake_case [`gamepad` sample]
 (#sampled-input-in-get-state) `GET /state` reports: `left_stick`/`right_stick`
 (`[-1..1]`, up-positive Y), `left_trigger`/`right_trigger` (`0..1`), and the
@@ -459,11 +459,11 @@ Non-XR runtimes omit `xr`, and padless runtimes omit `gamepad` — each domain
 is a typed sibling field, present only when its device is live. `gamepad`
 carries the pad's held state: sticks as `[x, y]` in `-1..1` with up-positive
 Y, triggers in `0..1`, positional face buttons (`south` is the bottom one),
-bumpers, stick clicks, dpad, and `start`/`select`. No shell polls a physical
-pad yet, so today the domain appears only while a sample is injected
-(`{"type":"gamepad"}` above). Future mobile-touch support should add another
-typed sibling field rather than target-specific endpoints or string-keyed
-capability bags.
+bumpers, stick clicks, dpad, and `start`/`select`. Desktop polls the first
+standard-mapping pad each frame (an injected sample wins over the poll); the
+web runtime does not sample pads yet. Future mobile-touch support should add
+another typed sibling field rather than target-specific endpoints or
+string-keyed capability bags.
 
 ### `POST /time` — frame-loop control
 

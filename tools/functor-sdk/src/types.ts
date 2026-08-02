@@ -107,8 +107,8 @@ export interface InputSnapshot {
   };
   /** Present while an XR target has valid head tracking. */
   xr?: XrInputSnapshot;
-  /** Present while a gamepad sample is injected (no shell polls a physical
-   * pad yet; polling will make this "while a pad is connected"). */
+  /** Present while a pad is connected (desktop GLFW polling) or a sample is
+   * injected; absent on web, which does not sample pads yet. */
   gamepad?: GamepadSnapshot;
 }
 

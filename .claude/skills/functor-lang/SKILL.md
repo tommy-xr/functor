@@ -370,10 +370,11 @@ let grab = (s) =>
   are `0..1`; face buttons are POSITIONAL (`south` is the bottom face button —
   A on Xbox, Cross on PlayStation), plus bumpers, stick clicks, dpad, and
   `start`/`select`. Levels only, raw values: detect edges against your model
-  and apply your own deadzone. No shell polls a physical pad yet — today the
-  domain is supplied by desktop debug injection only (`POST /input`
-  `{"type":"gamepad",…}`), so it is `Option.None` everywhere else. A future
-  mobile-touch domain belongs as another typed sibling on the snapshot.
+  and apply your own deadzone. Native polls the first connected
+  standard-mapping pad each frame (debug injection — `POST /input`
+  `{"type":"gamepad",…}` — wins over the poll); the web runtime does not
+  sample pads yet, so on wasm it is `Option.None`. A future mobile-touch
+  domain belongs as another typed sibling on the snapshot.
 - **Bundled modules use the ordinary module semantics.** The language-owned
   `Net.fun` / `Key.fun` / `Mouse.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory

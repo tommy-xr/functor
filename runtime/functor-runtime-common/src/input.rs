@@ -292,9 +292,11 @@ pub struct XrControllerSnapshot {
 /// and the browser's down-positive axes at its boundary. Triggers are
 /// `0..1`. Values are raw (no deadzone shaping); games apply their own.
 ///
-/// No shell polls a physical pad yet: today the domain's only source is
-/// debug injection (`POST /input` `{"type":"gamepad",…}`); GLFW and Web
-/// Gamepad API polling land as `override > polled > None` in the shells.
+/// The desktop shell polls the first standard-mapping pad via GLFW
+/// (`desktop_gamepad` in `functor-runtime-desktop`), with debug injection
+/// (`POST /input` `{"type":"gamepad",…}`) winning over the poll; the web
+/// shell does not sample the browser Gamepad API yet, so on wasm the domain
+/// is absent.
 ///
 /// Levels only, no edge sets: pads are polled, so a press always spans at
 /// least one render frame and shows up in at least one sample — games detect

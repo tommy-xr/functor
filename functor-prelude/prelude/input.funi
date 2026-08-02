@@ -41,9 +41,9 @@ type xr = {
 /// Nintendo) — because letter names swap between vendors. Sticks are `-1..1`
 /// with up-positive `y` (the XR thumbstick convention); triggers are `0..1`.
 /// Values are raw — apply your own deadzone. Levels only: detect edges
-/// against your model, as XR games do. No shell polls a physical pad yet:
-/// today the domain is supplied by desktop debug injection only, and it is
-/// `Option.None` everywhere else.
+/// against your model, as XR games do. Native polls the first connected
+/// standard-mapping pad (debug injection wins over the poll); the web
+/// runtime does not sample pads yet, so on wasm this is `Option.None`.
 type gamepad = {
   leftStick: point2,
   rightStick: point2,
