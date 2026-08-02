@@ -41,12 +41,13 @@ type xr = {
 /// Nintendo) — because letter names swap between vendors. Sticks are `-1..1`
 /// with up-positive `y` (the XR thumbstick convention); triggers are `0..1`.
 /// Values are raw — apply your own deadzone. Levels only: detect edges
-/// against your model, as XR games do. Native's windowed runtime polls the
-/// first connected standard-mapping pad (debug injection wins over the
-/// poll); while the window is unfocused or the clock is pinned a connected
-/// pad reads rest-level controls rather than `Option.None`. Headless and
-/// the web runtime do not poll pads, so there this is `Option.None` unless
-/// injected.
+/// against your model, as XR games do. Native's windowed runtime and the
+/// web runtime both poll the first connected standard-mapping pad each
+/// frame (on native, debug injection wins over the poll); while the
+/// window/document is unfocused or the clock is pinned a connected pad
+/// reads rest-level controls rather than `Option.None`. Browsers hide pads
+/// until a button is first pressed, and headless polls nothing — there this
+/// is `Option.None` unless injected.
 type gamepad = {
   leftStick: point2,
   rightStick: point2,

@@ -35,6 +35,7 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 use wasm_bindgen::prelude::*;
 
 mod functor_lang_game;
+mod web_gamepad;
 use functor_lang_game::WebPlatform;
 
 fn window() -> web_sys::Window {
@@ -1629,6 +1630,22 @@ async fn run_async() -> Result<(), JsValue> {
             // Retina-scaled drawable buffer updated later in this frame.
             input_snapshot.mouse.surface_width = canvas.client_width().max(0) as u32;
             input_snapshot.mouse.surface_height = canvas.client_height().max(0) as u32;
+            // Poll the pad once per render frame — the desktop windowed
+            // contract: presence is sticky while a standard-mapping pad is
+            // connected, and controls read rest level while the clock is
+            // pinned or the document unfocused (the pad twin of the page's
+            // blur key sweep). Disconnect is `None` next frame, never stale.
+            let document_focused = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.has_focus().ok())
+                .unwrap_or(true);
+            input_snapshot.gamepad = web_gamepad::sample().map(|pad| {
+                if suspended || !document_focused {
+                    functor_runtime_common::GamepadSnapshot::default()
+                } else {
+                    pad
+                }
+            });
             functor_lang_game::drain_input(
                 &mut **game,
                 &mut input_snapshot,

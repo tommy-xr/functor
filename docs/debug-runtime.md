@@ -462,10 +462,10 @@ is a typed sibling field, present only when its device is live. `gamepad`
 carries the pad's held state: sticks as `[x, y]` in `-1..1` with up-positive
 Y, triggers in `0..1`, positional face buttons (`south` is the bottom one),
 bumpers, stick clicks, dpad, and `start`/`select`. Desktop's windowed runtime
-polls the first standard-mapping pad each frame (an injected sample wins over
-the poll); presence is sticky while the pad is connected, with controls at
-rest level while the window is unfocused or the clock is pinned. `--headless`
-has no GLFW instance, so there (and on web, which does not sample pads yet)
+and the web runtime poll the first standard-mapping pad each frame (on
+desktop an injected sample wins over the poll); presence is sticky while the
+pad is connected, with controls at rest level while the window/document is
+unfocused or the clock is pinned. `--headless` has no GLFW instance, so there
 injection is the domain's only source. Future mobile-touch support should add
 another typed sibling field rather than target-specific endpoints or
 string-keyed capability bags.

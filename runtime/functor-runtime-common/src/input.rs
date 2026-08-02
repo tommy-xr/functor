@@ -294,11 +294,12 @@ pub struct XrControllerSnapshot {
 ///
 /// The desktop windowed shell polls the first standard-mapping pad via GLFW
 /// (`desktop_gamepad` in `functor-runtime-desktop`), with debug injection
-/// (`POST /input` `{"type":"gamepad",…}`) winning over the poll. Presence is
-/// sticky: while input is gated (window unfocused, clock pinned) a connected
-/// pad reads rest-level controls rather than vanishing. Headless has no GLFW
-/// instance and the web shell does not sample the browser Gamepad API yet —
-/// there the domain exists only while injected.
+/// (`POST /input` `{"type":"gamepad",…}`) winning over the poll; the web
+/// shell polls the browser Gamepad API each frame (`web_gamepad` in
+/// `functor-runtime-web`). Presence is sticky on both: while input is gated
+/// (window/document unfocused, clock pinned) a connected pad reads
+/// rest-level controls rather than vanishing. Headless has no GLFW instance,
+/// so there the domain exists only while injected.
 ///
 /// Levels only, no edge sets: pads are polled, so a press always spans at
 /// least one render frame and shows up in at least one sample — games detect
@@ -328,6 +329,42 @@ pub struct GamepadSnapshot {
     pub dpad_right: bool,
     pub start: bool,
     pub select: bool,
+}
+
+impl GamepadSnapshot {
+    /// Build a snapshot from the W3C Gamepad API's `"standard"` mapping — the
+    /// web shell's conversion, kept here (IO-free) so it unit-tests natively
+    /// while the wasm-only shell just gathers the raw arrays.
+    ///
+    /// `axes` are the four standard stick axes with the browser's
+    /// down-positive Y (negated here to the domain's up-positive convention).
+    /// `triggers` are standard buttons 6/7's ANALOG `value`s, already `0..1`.
+    /// `buttons` are the 16 standard buttons' `pressed` booleans — indices
+    /// 6/7 (the triggers' digital shadows) are ignored in favor of the analog
+    /// values, and 16 (guide) has no snapshot field.
+    pub fn from_standard_mapping(axes: [f32; 4], triggers: [f32; 2], buttons: [bool; 16]) -> Self {
+        let stick = |x: f32, y: f32| [x.clamp(-1.0, 1.0), (-y).clamp(-1.0, 1.0)];
+        GamepadSnapshot {
+            left_stick: stick(axes[0], axes[1]),
+            right_stick: stick(axes[2], axes[3]),
+            left_trigger: triggers[0].clamp(0.0, 1.0),
+            right_trigger: triggers[1].clamp(0.0, 1.0),
+            south: buttons[0],
+            east: buttons[1],
+            west: buttons[2],
+            north: buttons[3],
+            left_bumper: buttons[4],
+            right_bumper: buttons[5],
+            select: buttons[8],
+            start: buttons[9],
+            left_stick_pressed: buttons[10],
+            right_stick_pressed: buttons[11],
+            dpad_up: buttons[12],
+            dpad_down: buttons[13],
+            dpad_left: buttons[14],
+            dpad_right: buttons[15],
+        }
+    }
 }
 
 /// Canonical key identifier shared across the F# <-> Rust boundary and all
@@ -1194,6 +1231,40 @@ mod tests {
                 .to_string()
                 .contains("gamepad: Option.None"),
         );
+    }
+
+    #[test]
+    fn standard_mapping_converts_axes_triggers_and_positional_buttons() {
+        let mut buttons = [false; 16];
+        buttons[0] = true; // south
+        buttons[6] = true; // left trigger's digital shadow — ignored
+        buttons[8] = true; // select
+        buttons[15] = true; // dpad right
+        let pad = GamepadSnapshot::from_standard_mapping(
+            // Browser Y is down-positive: stick pushed UP reads negative.
+            [0.25, -1.0, -0.5, 1.0],
+            [0.75, 0.0],
+            buttons,
+        );
+        assert_eq!(pad.left_stick, [0.25, 1.0]);
+        assert_eq!(pad.right_stick, [-0.5, -1.0]);
+        assert_eq!(pad.left_trigger, 0.75);
+        assert_eq!(pad.right_trigger, 0.0);
+        assert!(pad.south && pad.select && pad.dpad_right);
+        assert!(!pad.east && !pad.west && !pad.north && !pad.start);
+        assert!(!pad.dpad_up && !pad.dpad_down && !pad.dpad_left);
+        assert!(!pad.left_bumper && !pad.right_bumper);
+        assert!(!pad.left_stick_pressed && !pad.right_stick_pressed);
+
+        // Out-of-range values clamp instead of leaking.
+        let wild = GamepadSnapshot::from_standard_mapping(
+            [2.0, 2.0, 0.0, 0.0],
+            [3.0, -1.0],
+            [false; 16],
+        );
+        assert_eq!(wild.left_stick, [1.0, -1.0]);
+        assert_eq!(wild.left_trigger, 1.0);
+        assert_eq!(wild.right_trigger, 0.0);
     }
 
     #[test]
