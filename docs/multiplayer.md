@@ -123,10 +123,10 @@ Plain-text `Effect.send` traffic shares the
 connection untouched (interop with non-Functor peers); a frame that fails to
 decode (version skew, corruption) arrives as `Net.Error`. Typed sends land in
 the structured effect log as data (`net.sendMsg` records), so they replay and
-introspect like every other effect. `examples/mp` is the full reference — its
-client and server exchange the shared `Protocol.Wire` ADT (typed `Move`s up,
-typed `Snapshot`s down, full float precision) with no string codec anywhere;
-`e2e/net-coordinator.mjs` drives it as a
+introspect like every other effect. `examples/orbs` is the full reference — its
+`module Client` and `module Server` exchange the shared `Wire` ADT (typed
+`Steer`s and `Claim`s up, typed `Snapshot`s down, full float precision) with no
+string codec anywhere; `e2e/net-coordinator.mjs` drives it as a
 whole hosted session.
 
 Two sharp edges, by design: (1) constructors match by their **canonical tag**,
@@ -180,7 +180,7 @@ today, not step-time delivery. `VirtualNet`'s scheduling — packets as
 `LinkProfile` — is the basis planned for latency, jitter, loss, partitions, and
 the step-time delivery barrier that makes them reproducible.
 
-`e2e/net-coordinator.mjs` (`npm run test:net-coordinator`) drives `examples/mp`
+`e2e/net-coordinator.mjs` (`npm run test:net-coordinator`) drives `examples/orbs`
 as a server plus two clients in headless Chromium and asserts the handshake,
 two-way traffic, convergence across clients, and input propagation.
 

@@ -11201,191 +11201,343 @@ a number",
         assert_eq!(fountain.position, Some([5.0, 0.5, 0.0]));
     }
 
-    /// A framed `Protocol.Move(vx, vz)` wire text, as the mp client sends it.
-    /// (`Protocol` is a non-entry sibling module, so its ctors carry the
-    /// qualified canonical tag.)
-    fn mp_move_frame(vx: f64, vz: f64) -> String {
+    /// An orbs `Intent` record — the held controls a `Steer` carries.
+    fn orbs_intent(turn: f64, thrust: bool, claim: bool) -> EffectValue {
+        EffectValue::Record(vec![
+            ("turn".into(), EffectValue::Number(turn)),
+            ("thrust".into(), EffectValue::Bool(thrust)),
+            ("claim".into(), EffectValue::Bool(claim)),
+        ])
+    }
+
+    /// A framed `Steer(intent)` wire text, as an orbs client sends it. Both
+    /// roles are inline `module` blocks of the ENTRY file and the protocol is
+    /// declared above them at that file's top level, so its ctors carry BARE
+    /// canonical tags (there is no sibling module to qualify through).
+    fn orbs_steer_frame(turn: f64, thrust: bool, claim: bool) -> String {
         encode_typed_msg(&EffectValue::Variant(
-            "Protocol.Move".into(),
-            vec![EffectValue::Number(vx), EffectValue::Number(vz)],
+            "Steer".into(),
+            vec![orbs_intent(turn, thrust, claim)],
         ))
     }
 
-    /// A framed `Protocol.Snapshot(rows)` wire text, as the mp server
+    /// A framed `Join` — the handshake that asks the authority for a seat.
+    fn orbs_join_frame() -> String {
+        encode_typed_msg(&EffectValue::Variant("Join".into(), vec![]))
+    }
+
+    /// A framed `Welcome(pid)` — the authority's answer to a `Join`.
+    fn orbs_welcome_frame(pid: f64) -> String {
+        encode_typed_msg(&EffectValue::Variant(
+            "Welcome".into(),
+            vec![EffectValue::Number(pid)],
+        ))
+    }
+
+    fn orbs_ship(pid: f64, x: f64, y: f64) -> EffectValue {
+        EffectValue::Record(vec![
+            ("pid".into(), EffectValue::Number(pid)),
+            ("x".into(), EffectValue::Number(x)),
+            ("y".into(), EffectValue::Number(y)),
+            ("rot".into(), EffectValue::Number(0.0)),
+        ])
+    }
+
+    fn orbs_orb(id: f64, x: f64, y: f64, owner: f64) -> EffectValue {
+        EffectValue::Record(vec![
+            ("id".into(), EffectValue::Number(id)),
+            ("x".into(), EffectValue::Number(x)),
+            ("y".into(), EffectValue::Number(y)),
+            ("owner".into(), EffectValue::Number(owner)),
+        ])
+    }
+
+    /// A framed `Snapshot(ships, orbs)` wire text, as the orbs server
     /// broadcasts it.
-    fn mp_snapshot_frame(rows: &[(f64, f64, f64)]) -> String {
+    fn orbs_snapshot_frame(ships: &[(f64, f64, f64)], orbs: &[(f64, f64, f64, f64)]) -> String {
         encode_typed_msg(&EffectValue::Variant(
-            "Protocol.Snapshot".into(),
-            vec![EffectValue::List(
-                rows.iter()
-                    .map(|(pid, x, z)| {
-                        EffectValue::Record(vec![
-                            ("pid".into(), EffectValue::Number(*pid)),
-                            ("x".into(), EffectValue::Number(*x)),
-                            ("z".into(), EffectValue::Number(*z)),
-                        ])
-                    })
-                    .collect(),
-            )],
+            "Snapshot".into(),
+            vec![
+                EffectValue::List(
+                    ships.iter().map(|(pid, x, y)| orbs_ship(*pid, *x, *y)).collect(),
+                ),
+                EffectValue::List(
+                    orbs.iter()
+                        .map(|(id, x, y, owner)| orbs_orb(*id, *x, *y, *owner))
+                        .collect(),
+                ),
+            ],
         ))
     }
 
-    /// Decode a broadcast payload back to (pid, x, z) rows — fails loud on
-    /// anything but a framed `Protocol.Snapshot`.
-    fn mp_decode_rows(payload: &[u8]) -> Vec<(f64, f64, f64)> {
+    /// Decode a payload back to its `Wire` value — fails loud on anything but
+    /// a typed frame.
+    fn orbs_decode(payload: &[u8]) -> EffectValue {
         let text = std::str::from_utf8(payload).expect("utf8 payload");
-        match decode_typed_msg(text).expect("a typed frame").expect("frame decodes") {
-            EffectValue::Variant(ctor, args) if ctor == "Protocol.Snapshot" => match &args[..] {
-                [EffectValue::List(rows)] => rows
-                    .iter()
-                    .map(|row| match row {
-                        EffectValue::Record(fields) => {
-                            let get = |name: &str| match fields.iter().find(|(k, _)| k == name) {
-                                Some((_, EffectValue::Number(v))) => *v,
-                                other => panic!("bad row field {name}: {other:?}"),
-                            };
-                            (get("pid"), get("x"), get("z"))
-                        }
-                        other => panic!("row is not a record: {other:?}"),
-                    })
-                    .collect(),
+        decode_typed_msg(text).expect("a typed frame").expect("frame decodes")
+    }
+
+    /// A record's numeric fields, in the order asked for — fails loud on a
+    /// missing or non-numeric field (a renamed field is a test failure, not a
+    /// silently skipped assertion).
+    fn orbs_fields(value: &EffectValue, names: &[&str]) -> Vec<f64> {
+        match value {
+            EffectValue::Record(fields) => names
+                .iter()
+                .map(|name| match fields.iter().find(|(k, _)| k == name) {
+                    Some((_, EffectValue::Number(v))) => *v,
+                    other => panic!("bad field {name}: {other:?}"),
+                })
+                .collect(),
+            other => panic!("not a record: {other:?}"),
+        }
+    }
+
+    /// A broadcast `Snapshot`, decoded WHOLE: its `(pid, x, y)` ships (lowest
+    /// pid first — the world's pilot list is prepend-ordered, which is not a
+    /// contract) and its `(id, x, y, owner)` orbs in wire order.
+    #[allow(clippy::type_complexity)]
+    fn orbs_snapshot(payload: &[u8]) -> (Vec<(f64, f64, f64)>, Vec<(f64, f64, f64, f64)>) {
+        match orbs_decode(payload) {
+            EffectValue::Variant(ctor, args) if ctor == "Snapshot" => match &args[..] {
+                [EffectValue::List(ships), EffectValue::List(orbs)] => {
+                    let mut ships: Vec<(f64, f64, f64)> = ships
+                        .iter()
+                        .map(|ship| {
+                            let f = orbs_fields(ship, &["pid", "x", "y"]);
+                            (f[0], f[1], f[2])
+                        })
+                        .collect();
+                    ships.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let orbs = orbs
+                        .iter()
+                        .map(|orb| {
+                            let f = orbs_fields(orb, &["id", "x", "y", "owner"]);
+                            (f[0], f[1], f[2], f[3])
+                        })
+                        .collect();
+                    (ships, orbs)
+                }
                 other => panic!("Snapshot args: {other:?}"),
             },
-            other => panic!("not a Protocol.Snapshot: {other:?}"),
+            other => panic!("not a Snapshot: {other:?}"),
         }
     }
 
-    /// Headless server-lifecycle test for the `examples/mp` server entry,
-    /// with no socket. Loads the SHIPPED `server.fun` so this tracks the
-    /// example, and exercises the whole server spine — `toMsg` decoding typed
-    /// `Net.Data` packets, the join/move/left `update` logic, `wrapAxis`
-    /// integration, and the broadcast-the-whole-world-to-every-client
-    /// `Effect.sendMsg` (the naive server's defining behavior), plus a
-    /// plain-text packet ignored (the protocol is typed) and a disconnect
-    /// dropping a player.
-    #[test]
-    fn mp_server_broadcasts_the_world_to_every_client() {
-        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // project::load walks the entry's siblings (file = module) — the mp
-        // example keeps its wire codec in a shared Protocol module — and
-        // injects the built-in Net module, like the runner.
+    /// The SHIPPED `examples/orbs/game.fun`, loaded like the runner does:
+    /// `project::load` walks the entry's siblings (file = module) and injects
+    /// the built-in Net module. Orbs is ONE file — both roles are inline
+    /// modules of it — so each role's contract is looked up under `Client.*` /
+    /// `Server.*` (what functor.json's `{ "file": …, "module": … }` resolves).
+    fn orbs_session() -> functor_lang::Session {
         let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/mp/server.fun");
+            .join("../../examples/orbs/game.fun");
         let project = functor_lang::project::load(&entry)
-            .unwrap_or_else(|e| panic!("load mp server: {}", e.render()));
-        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
-            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+            .unwrap_or_else(|e| panic!("load orbs: {}", e.render()));
+        functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message))
+    }
 
-        // toMsg(event) folded through update; update returns a bare Model here.
-        fn call(session: &functor_lang::Session, name: &str, args: Vec<Value>) -> Value {
-            let f = session.global(name).unwrap_or_else(|| panic!("no `{name}`"));
-            session
-                .apply(f, args, name, &mut FunctorHost)
-                .unwrap_or_else(|e| panic!("{name}: {}", e.message))
-        }
-        fn feed(session: &functor_lang::Session, model: Value, ev: Value) -> Value {
-            let msg = call(session, "toMsg", vec![ev]);
-            split_model_effect(call(session, "update", vec![model, msg])).0
-        }
-        // One tick's broadcast, drained into (conn, payload) Send pairs.
-        fn broadcast(session: &functor_lang::Session, model: Value) -> (Value, Vec<(u64, Vec<u8>)>) {
-            crate::net::drain_conn_commands(); // clear
-            let (mut m, fx) = split_model_effect(call(
-                session,
-                "tick",
-                vec![model, Value::Number(0.5), Value::Number(0.5)],
-            ));
+    fn orbs_call(session: &functor_lang::Session, name: &str, args: Vec<Value>) -> Value {
+        let f = session.global(name).unwrap_or_else(|| panic!("no `{name}`"));
+        session
+            .apply(f, args, name, &mut FunctorHost)
+            .unwrap_or_else(|e| panic!("{name}: {}", e.message))
+    }
+
+    /// Perform whatever an entry point returned, draining its effects into the
+    /// settled model plus (conn, payload) Send pairs.
+    fn orbs_drain_sends(
+        session: &functor_lang::Session,
+        label: &'static str,
+        returned: Value,
+    ) -> (Value, Vec<(u64, Vec<u8>)>) {
+        crate::net::drain_conn_commands(); // clear
+        let (mut m, fx) = split_model_effect(returned);
+        if let Some(tree) = fx {
             let mut log = EffectLog::new();
-            if let Some(tree) = fx {
-                let _ = drain_effects(
+            let _ = drain_effects(
+                session,
+                label,
+                &mut m,
+                tree,
+                &mut FakeEffects::new(0.0, vec![]),
+                &mut log,
+                &mut |r| panic!("unexpected report: {r}"),
+                false,
+            );
+        }
+        let sends = crate::net::drain_conn_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                crate::net::ConnCommand::Send { conn, payload } => Some((conn, payload)),
+                _ => None,
+            })
+            .collect();
+        (m, sends)
+    }
+
+    /// Headless server-lifecycle test for the `examples/orbs` SERVER role,
+    /// with no socket. Loads the SHIPPED `game.fun` so this tracks the
+    /// example, and exercises the whole server spine — `toMsg` decoding typed
+    /// `Net.Data` packets, the `Join` handshake seating one pilot per
+    /// CONNECTION (and answering its `Welcome`), a `Steer` folded in against
+    /// the connection it arrived on, the world step, and the
+    /// broadcast-the-whole-world-to-every-seat `Effect.sendMsg` (the naive
+    /// server's defining behavior), plus a plain-text packet ignored (the
+    /// protocol is typed) and a disconnect releasing a seat.
+    #[test]
+    fn orbs_server_broadcasts_the_world_to_every_client() {
+        let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let session = orbs_session();
+
+        fn feed(
+            session: &functor_lang::Session,
+            model: Value,
+            ev: Value,
+        ) -> (Value, Vec<(u64, Vec<u8>)>) {
+            let msg = orbs_call(session, "toMsg", vec![ev]);
+            orbs_drain_sends(
+                session,
+                "Server.update",
+                orbs_call(session, "Server.update", vec![model, msg]),
+            )
+        }
+        // One tick's broadcast.
+        fn broadcast(
+            session: &functor_lang::Session,
+            model: Value,
+        ) -> (Value, Vec<(u64, Vec<u8>)>) {
+            orbs_drain_sends(
+                session,
+                "Server.update",
+                orbs_call(
                     session,
-                    "update",
-                    &mut m,
-                    tree,
-                    &mut FakeEffects::new(0.0, vec![]),
-                    &mut log,
-                    &mut |r| panic!("unexpected report: {r}"),
-                    false,
-                );
-            }
-            let sends = crate::net::drain_conn_commands()
-                .into_iter()
-                .filter_map(|c| match c {
-                    crate::net::ConnCommand::Send { conn, payload } => Some((conn, payload)),
-                    _ => None,
-                })
-                .collect();
-            (m, sends)
+                    "Server.tick",
+                    vec![model, Value::Number(0.5), Value::Number(0.5)],
+                ),
+            )
         }
         let event = |kind, id: u64, text: &str| {
             net_event_value(kind, id, text).to_functor_lang().unwrap()
         };
 
         // The listener is declared on the arena address.
-        let subs = call(&session, "subscriptions", vec![session.global("init").unwrap()]);
+        let init = session.global("Server.init").expect("no `Server.init`");
+        let subs = orbs_call(&session, "Server.subscriptions", vec![init.clone()]);
         let conns = net_conn_subs(&subs).expect("a Sub tree");
-        assert!(conns.len() == 1 && conns[0].listen && conns[0].key == "127.0.0.1:9001");
+        assert!(conns.len() == 1 && conns[0].listen && conns[0].key == "127.0.0.1:9101");
 
-        // Two clients join (pid 0 on cid 1, pid 1 on cid 2), each sends a
-        // typed Move, and a plain-TEXT packet from cid 1 is IGNORED (the
-        // protocol is the typed Wire ADT; its velocity is not reset).
-        let mut model = session.global("init").unwrap();
-        model = feed(&session, model, event(NetEventKind::Connected, 1, ""));
-        model = feed(&session, model, event(NetEventKind::Connected, 2, ""));
-        model = feed(&session, model, event(NetEventKind::Message, 1, &mp_move_frame(1.0, 0.0))); // pid 0: +x
-        model = feed(&session, model, event(NetEventKind::Message, 2, &mp_move_frame(0.0, 1.0))); // pid 1: +z
-        model = feed(&session, model, event(NetEventKind::Message, 1, "junk")); // ignored
+        // A socket alone is not a pilot: the connection opens, and only the
+        // `Join` that follows it is answered with a seat and a `Welcome`.
+        let (model, sends) = feed(&session, init, event(NetEventKind::Connected, 1, ""));
+        assert!(sends.is_empty(), "a bare connect answers nothing: {sends:?}");
+        let (model, sends) = feed(
+            &session,
+            model,
+            event(NetEventKind::Message, 1, &orbs_join_frame()),
+        );
+        assert_eq!(
+            sends,
+            vec![(1, orbs_welcome_frame(0.0).into_bytes())],
+            "the first Join is welcomed as pid 0, to the connection it came from"
+        );
+        // A re-Join over the SAME connection is answered from the seat it
+        // already has — one connection is one pilot, however many times it
+        // asks.
+        let (model, sends) = feed(
+            &session,
+            model,
+            event(NetEventKind::Message, 1, &orbs_join_frame()),
+        );
+        assert_eq!(
+            sends,
+            vec![(1, orbs_welcome_frame(0.0).into_bytes())],
+            "a re-Join is answered from the seat it already holds, not a fresh pid"
+        );
 
-        // Tick (dt = 0.5). pid 0: x = -2 + 1·2·0.5 = -1.0, z = -1.8.
-        // pid 1: x = -2.0, z = 0 + 1·2·0.5 = 1.0. pid 0 still moving proves
-        // the text packet did NOT reset its velocity. Full float precision —
-        // the typed wire has no *100 fixed-point rounding.
+        // A second connection joins as pid 1.
+        let (model, _) = feed(&session, model, event(NetEventKind::Connected, 2, ""));
+        let (model, sends) = feed(
+            &session,
+            model,
+            event(NetEventKind::Message, 2, &orbs_join_frame()),
+        );
+        assert_eq!(sends, vec![(2, orbs_welcome_frame(1.0).into_bytes())]);
+
+        // Both connections steer — cid 1 thrusts, cid 2 turns — so the fold is
+        // exercised for more than one sender, and a plain-TEXT packet from
+        // cid 1 is IGNORED (the protocol is the typed Wire ADT; its intent is
+        // not reset).
+        let (model, _) = feed(
+            &session,
+            model,
+            event(NetEventKind::Message, 1, &orbs_steer_frame(0.0, true, false)),
+        );
+        let (model, _) = feed(
+            &session,
+            model,
+            event(NetEventKind::Message, 2, &orbs_steer_frame(1.0, false, false)),
+        );
+        let (model, _) = feed(&session, model, event(NetEventKind::Message, 1, "junk"));
+
+        // Tick (dt = 0.5). rot 0 is straight up, so pid 0 thrusts to
+        // y = 9 * 0.5 = 4.5 on its spawn lane x = -11; pid 1 only turns, so it
+        // holds its spawn (x = -11 + 7.3, y = 0) — proof the text packet did
+        // not reset pid 0's intent, and that each Steer moved only the
+        // connection it arrived on. Full float precision — the typed wire has
+        // no fixed-point rounding.
         let (model, sends) = broadcast(&session, model);
-        // The WHOLE world goes to EVERY client — two identical full snapshots.
-        let world = vec![(1.0, -2.0, 1.0), (0.0, -1.0, -1.8)];
-        assert_eq!(sends.len(), 2, "one Send per client, got: {sends:?}");
+        let ships = [(0.0, -11.0, 4.5), (1.0, 0.0 - 11.0 + 7.3, 0.0)];
+        // Nobody claimed anything, so the whole opening board rides along —
+        // a snapshot that dropped or mutated the orbs would be a live bug.
+        let orbs = [
+            (0.0, 0.0, 0.0, -1.0),
+            (1.0, -10.0, 4.0, -1.0),
+            (2.0, 10.0, 4.0, -1.0),
+            (3.0, -6.0, -5.0, -1.0),
+            (4.0, 6.0, -5.0, -1.0),
+        ];
+        // The WHOLE world goes to EVERY seat — two identical full snapshots.
+        assert_eq!(sends.len(), 2, "one Send per seat, got: {sends:?}");
         let mut recipients: Vec<u64> = sends.iter().map(|(c, _)| *c).collect();
         recipients.sort();
-        assert_eq!(recipients, vec![1, 2], "broadcast reaches both clients");
+        assert_eq!(recipients, vec![1, 2], "the broadcast reaches both clients");
         for (_, payload) in &sends {
-            assert_eq!(mp_decode_rows(payload), world, "every client receives the full world");
+            let (got_ships, got_orbs) = orbs_snapshot(payload);
+            assert_eq!(got_ships.len(), ships.len(), "ships: {got_ships:?}");
+            for (got, want) in got_ships.iter().zip(&ships) {
+                assert_close(*got, *want);
+            }
+            assert_eq!(got_orbs, orbs, "every client receives the whole board");
         }
 
-        // Client 1 disconnects -> Left drops pid 0. The next tick broadcasts
-        // only pid 1, and only to the client that is still connected (cid 2).
-        let model = feed(&session, model, event(NetEventKind::Disconnected, 1, ""));
+        // Client 1 disconnects -> its seat is released. The next tick
+        // broadcasts only pid 1, and only to the client still connected.
+        let (model, _) = feed(&session, model, event(NetEventKind::Disconnected, 1, ""));
         let (_, sends) = broadcast(&session, model);
         assert_eq!(sends.len(), 1, "only the remaining client is served: {sends:?}");
         assert_eq!(sends[0].0, 2);
-        let rows = mp_decode_rows(&sends[0].1);
+        let (ships, _) = orbs_snapshot(&sends[0].1);
         assert!(
-            rows.len() == 1 && rows[0].0 == 1.0,
-            "snapshot no longer contains pid 0, got: {rows:?}"
+            ships.len() == 1 && ships[0].0 == 1.0,
+            "the snapshot no longer contains pid 0, got: {ships:?}"
         );
     }
 
-    /// Headless client-lifecycle test for the `examples/mp` client entry,
-    /// with no socket. Loads the SHIPPED `client.fun` (and its Protocol/View
-    /// siblings) and drives connect (typed auto-move sent), a typed Snapshot
-    /// landing in the world, WASD `input` producing typed Move sends, and a
-    /// disconnect. The snapshot fed in is the exact frame the server entry
-    /// broadcasts (same builder), so this doubles as a wire round-trip check
-    /// between the two roles.
+    /// Headless client-lifecycle test for the `examples/orbs` CLIENT role,
+    /// with no socket. Loads the SHIPPED `game.fun` and drives connect (the
+    /// `Join` handshake sent), the `Welcome` that hands over an identity, a
+    /// typed `Snapshot` landing in the board, `sampledInput` held levels
+    /// becoming the per-tick `Steer` (including the release back to neutral),
+    /// the in-range `Claim` proposal riding along with it, and a disconnect.
+    /// The snapshot fed in is built by the same helper the server entry's
+    /// broadcast is decoded with, so this doubles as a wire round-trip check
+    /// between the two blocks.
     #[test]
-    fn mp_client_decodes_snapshots_and_sends_input() {
+    fn orbs_client_decodes_snapshots_and_sends_input() {
         let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/mp/client.fun");
-        let project = functor_lang::project::load(&entry)
-            .unwrap_or_else(|e| panic!("load mp client: {}", e.render()));
-        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
-            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
-        fn call(session: &functor_lang::Session, name: &str, args: Vec<Value>) -> Value {
-            let f = session.global(name).unwrap_or_else(|| panic!("no `{name}`"));
-            session
-                .apply(f, args, name, &mut FunctorHost)
-                .unwrap_or_else(|e| panic!("{name}: {}", e.message))
-        }
+        let session = orbs_session();
         fn field<'a>(v: &'a Value, name: &str) -> &'a Value {
             match v {
                 Value::Record(fields) => fields
@@ -11402,110 +11554,149 @@ a number",
                 other => panic!("not a number: {other}"),
             }
         }
-        // Drain whatever an entry point emitted into (conn, payload) Send pairs.
-        fn sends_of(session: &functor_lang::Session, returned: Value) -> Vec<(u64, Vec<u8>)> {
-            crate::net::drain_conn_commands(); // clear
-            let (mut m, fx) = split_model_effect(returned);
-            if let Some(tree) = fx {
-                let mut log = EffectLog::new();
-                let _ = drain_effects(
-                    session,
-                    "update",
-                    &mut m,
-                    tree,
-                    &mut FakeEffects::new(0.0, vec![]),
-                    &mut log,
-                    &mut |r| panic!("unexpected report: {r}"),
-                    false,
-                );
-            }
-            crate::net::drain_conn_commands()
-                .into_iter()
-                .filter_map(|c| match c {
-                    crate::net::ConnCommand::Send { conn, payload } => Some((conn, payload)),
-                    _ => None,
-                })
-                .collect()
-        }
+        let sends_of =
+            |session: &functor_lang::Session, returned: Value| -> Vec<(u64, Vec<u8>)> {
+                orbs_drain_sends(session, "Client.update", returned).1
+            };
         let event = |kind, id: u64, text: &str| {
             net_event_value(kind, id, text).to_functor_lang().unwrap()
         };
         // Keys are the built-in `Key` module's variants (`Key.W`), as the
-        // producers deliver them.
+        // producers deliver them; `sampledInput` reads the held LEVELS off the
+        // snapshot it is handed.
         let key = |k: &str| Value::Variant {
             ctor: std::rc::Rc::from(format!("Key.{k}").as_str()),
             args: std::rc::Rc::new(Vec::new()),
         };
+        let held = |keys: Vec<Value>| {
+            Value::Record(std::rc::Rc::new(vec![(
+                "heldKeys".to_string(),
+                Value::List(std::rc::Rc::new(keys)),
+            )]))
+        };
+        let tick = |session: &functor_lang::Session, model: Value| {
+            orbs_call(
+                session,
+                "Client.tick",
+                vec![model, Value::Number(0.016), Value::Number(0.016)],
+            )
+        };
 
         // subscriptions declares an OUTBOUND connection (not a listener).
-        let subs = call(&session, "subscriptions", vec![session.global("init").unwrap()]);
+        let init = session.global("Client.init").expect("no `Client.init`");
+        let subs = orbs_call(&session, "Client.subscriptions", vec![init.clone()]);
         let conns = net_conn_subs(&subs).expect("a Sub tree");
-        assert!(!conns[0].listen && conns[0].key == "ws://127.0.0.1:9001/play");
+        assert!(!conns[0].listen && conns[0].key == "ws://127.0.0.1:9101/orbs");
 
-        // The socket opens (id 5): store it and auto-move +x (a typed Move).
-        let connected = call(&session, "toMsg", vec![event(NetEventKind::Connected, 5, "")]);
-        let joined = call(&session, "update", vec![session.global("init").unwrap(), connected]);
+        // Nothing is sent before the socket is up.
+        assert!(
+            sends_of(&session, tick(&session, init.clone())).is_empty(),
+            "a tick before connect sends nothing"
+        );
+
+        // The socket opens (id 5): store it and open the handshake with a Join.
+        let opened = orbs_call(&session, "toMsg", vec![event(NetEventKind::Connected, 5, "")]);
+        let joined = orbs_call(&session, "Client.update", vec![init, opened]);
         let (model, _) = split_model_effect(joined.clone());
-        assert_eq!(field(&model, "conn").to_string(), "Online(5)");
-        assert_eq!(field(&model, "status").to_string(), "\"connected\"");
-        assert_eq!(sends_of(&session, joined), vec![(5, mp_move_frame(1.0, 0.0).into_bytes())]);
-
-        // WASD `input` (the trickiest hook: nested match, mixed bare/tuple arms)
-        // sends the mapped typed Move on keydown, a stop on keyup, and NOTHING
-        // for a non-WASD key or before the socket opens.
-        assert_eq!(
-            sends_of(&session, call(&session, "input", vec![model.clone(), key("W"), Value::Bool(true)])),
-            vec![(5, mp_move_frame(0.0, 1.0).into_bytes())]
-        );
-        assert_eq!(
-            sends_of(&session, call(&session, "input", vec![model.clone(), key("A"), Value::Bool(true)])),
-            vec![(5, mp_move_frame(-1.0, 0.0).into_bytes())]
-        );
+        assert_eq!(field(&model, "conn").to_string(), "Option.Some(5)");
+        assert_eq!(num(field(&model, "myPid")), -1.0, "no identity until the Welcome");
+        assert_eq!(sends_of(&session, joined), vec![(5, orbs_join_frame().into_bytes())]);
+        // …and until the server answers, a tick still sends nothing: the
+        // client steers no one before it is seated.
         assert!(
-            sends_of(&session, call(&session, "input", vec![model.clone(), key("X"), Value::Bool(true)])).is_empty(),
-            "a non-WASD key sends nothing"
-        );
-        assert_eq!(
-            sends_of(&session, call(&session, "input", vec![model.clone(), key("W"), Value::Bool(false)])),
-            vec![(5, mp_move_frame(0.0, 0.0).into_bytes())],
-            "key release sends a stop"
-        );
-        assert!(
-            sends_of(&session, call(&session, "input", vec![session.global("init").unwrap(), key("W"), Value::Bool(true)])).is_empty(),
-            "input before connect sends nothing"
+            sends_of(&session, tick(&session, model.clone())).is_empty(),
+            "a tick before the Welcome sends nothing"
         );
 
-        // A server snapshot (the exact frame server.fun broadcasts) lands in
-        // the world, binding each pid to its own coordinates.
-        let msg = call(&session, "toMsg", vec![event(
-            NetEventKind::Message,
-            5,
-            &mp_snapshot_frame(&[(1.0, -2.0, 1.0), (0.0, -1.0, -1.8)]),
-        )]);
-        let (model, _) = split_model_effect(call(&session, "update", vec![model, msg]));
-        assert_eq!(field(&model, "status").to_string(), "\"in-world\"");
-        let world = match field(&model, "world") {
+        // The Welcome hands over the identity.
+        let welcome = orbs_call(
+            &session,
+            "toMsg",
+            vec![event(NetEventKind::Message, 5, &orbs_welcome_frame(0.0))],
+        );
+        let (model, _) =
+            split_model_effect(orbs_call(&session, "Client.update", vec![model, welcome]));
+        assert_eq!(num(field(&model, "myPid")), 0.0);
+
+        // A server snapshot lands in the board, binding each pid to its own
+        // coordinates. Our ship sits just off orb 0 (at the origin), inside
+        // the claim range.
+        let msg = orbs_call(
+            &session,
+            "toMsg",
+            vec![event(
+                NetEventKind::Message,
+                5,
+                &orbs_snapshot_frame(
+                    &[(0.0, 0.5, 0.0), (1.0, -3.7, 0.0)],
+                    &[(0.0, 0.0, 0.0, -1.0), (1.0, -10.0, 4.0, -1.0)],
+                ),
+            )],
+        );
+        let (model, _) = split_model_effect(orbs_call(&session, "Client.update", vec![model, msg]));
+        let ships = match field(&model, "ships") {
             Value::List(items) => items.clone(),
-            other => panic!("world is not a list: {other}"),
+            other => panic!("ships is not a list: {other}"),
         };
-        assert_eq!(world.len(), 2, "two players decoded, got: {}", field(&model, "world"));
+        assert_eq!(ships.len(), 2, "two ships decoded, got: {}", field(&model, "ships"));
         let at = |pid: f64| -> (f64, f64) {
-            let p = world
+            let s = ships
                 .iter()
-                .find(|p| num(field(p, "pid")) == pid)
-                .unwrap_or_else(|| panic!("no player pid {pid}"));
-            (num(field(p, "x")), num(field(p, "z")))
+                .find(|s| num(field(s, "pid")) == pid)
+                .unwrap_or_else(|| panic!("no ship pid {pid}"));
+            (num(field(s, "x")), num(field(s, "y")))
         };
         // Per-pid coordinates, full float precision (a swapped field order
         // would fail here).
-        assert_eq!(at(0.0), (-1.0, -1.8));
-        assert_eq!(at(1.0), (-2.0, 1.0));
+        assert_eq!(at(0.0), (0.5, 0.0));
+        assert_eq!(at(1.0), (-3.7, 0.0));
 
-        // Disconnect drops the connection and clears the id.
-        let dropped = call(&session, "toMsg", vec![event(NetEventKind::Disconnected, 5, "")]);
-        let (model, _) = split_model_effect(call(&session, "update", vec![model, dropped]));
-        assert_eq!(field(&model, "conn").to_string(), "Offline");
-        assert_eq!(field(&model, "status").to_string(), "\"disconnected\"");
+        // Held LEVELS become the per-tick Steer: `w` is thrust, `a` turns, an
+        // unrelated key is neither, and releasing everything steers back to
+        // neutral (a latched control would show up here).
+        let steer = |model: &Value, keys: Vec<Value>| -> Vec<(u64, Vec<u8>)> {
+            let (sampled, _) = split_model_effect(orbs_call(
+                &session,
+                "Client.sampledInput",
+                vec![model.clone(), held(keys)],
+            ));
+            sends_of(&session, tick(&session, sampled))
+        };
+        assert_eq!(
+            steer(&model, vec![key("W")]),
+            vec![(5, orbs_steer_frame(0.0, true, false).into_bytes())],
+            "a seated client streams its held intent"
+        );
+        assert_eq!(
+            steer(&model, vec![key("A")]),
+            vec![(5, orbs_steer_frame(1.0, false, false).into_bytes())]
+        );
+        let coast = vec![(5, orbs_steer_frame(0.0, false, false).into_bytes())];
+        assert_eq!(steer(&model, vec![key("X")]), coast, "an unrelated key steers nothing");
+        assert_eq!(steer(&model, vec![]), coast, "releasing everything coasts");
+
+        // Holding SPACE over a free orb rides a Claim along with the Steer —
+        // a PROPOSAL the server re-checks, not a fact.
+        let claim_sends = steer(&model, vec![key("Space")]);
+        assert_eq!(
+            claim_sends
+                .iter()
+                .map(|(conn, payload)| (*conn, orbs_decode(payload)))
+                .collect::<Vec<_>>(),
+            vec![
+                (5, EffectValue::Variant("Steer".into(), vec![orbs_intent(0.0, false, true)])),
+                (5, EffectValue::Variant("Claim".into(), vec![EffectValue::Number(0.0)])),
+            ],
+            "the claim names the orb the last snapshot put us over"
+        );
+
+        // Disconnect drops the connection and clears the board.
+        let dropped = orbs_call(&session, "toMsg", vec![event(NetEventKind::Disconnected, 5, "")]);
+        let (model, _) =
+            split_model_effect(orbs_call(&session, "Client.update", vec![model, dropped]));
+        assert_eq!(field(&model, "conn").to_string(), "Option.None");
+        assert_eq!(field(&model, "ships").to_string(), "[]");
+        assert_eq!(field(&model, "orbs").to_string(), "[]");
     }
 
     // Ui teaching errors: non-View children and unbranded anchors fail loud.

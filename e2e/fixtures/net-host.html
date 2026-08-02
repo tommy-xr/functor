@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>net coordinator host — examples/mp across panes</title>
+    <title>net coordinator host — examples/orbs across panes</title>
     <style>
       body { margin: 0; background: #12071f; color: #d8d0e8; font: 13px monospace; }
       .row { display: flex; gap: 4px; padding: 4px; }
@@ -15,37 +15,34 @@
 
       It is the smallest possible embodiment of what site/src/mp-panes.ts does:
       mount N `player.html?net=embedder` panes, hand them all to ONE
-      NetCoordinator, and let them talk. The panes here run examples/mp — a
-      SERVER entry and two CLIENT entries over a shared protocol.fun — which
-      the sandbox cannot yet express (it has no server-pane UI; that is a later
-      PR). Copied into site/dist by the driver, next to the coordinator bundle
-      and a copy of examples/mp.
+      NetCoordinator, and let them talk. The panes here run examples/orbs —
+      ONE game.fun whose two roles are inline modules of it, so a pane's ROLE
+      (not its file) is what `?module=Client` / `?module=Server` selects.
+      Copied into site/dist by the driver, next to the coordinator bundle and a
+      copy of examples/orbs.
     -->
     <div class="row" id="panes"></div>
     <script type="module">
       import { NetCoordinator } from "./net-coordinator.js";
 
-      // Entry FIRST, then siblings — the ?file= contract (file = module).
-      const SIBLINGS = [
-        "examples/mp/protocol.fun",
-        "examples/mp/view.fun",
-        "examples/mp/client.fun",
-        "examples/mp/server.fun",
-      ];
+      // One file, both roles (file = module; the roles are `module` blocks).
+      const GAME = "examples/orbs/game.fun";
 
       const net = new NetCoordinator();
       const traces = new Map();
       const consoleLines = [];
       const frames = new Map();
 
-      const mount = (id, entry) => {
+      const mount = (id, role) => {
         const frame = document.createElement("iframe");
         frame.title = id;
-        const params = new URLSearchParams({ game: entry, scrubber: "hidden", net: "embedder" });
-        params.append("file", entry);
-        for (const sibling of SIBLINGS) {
-          if (sibling !== entry) params.append("file", sibling);
-        }
+        const params = new URLSearchParams({
+          game: GAME,
+          scrubber: "hidden",
+          net: "embedder",
+          module: role,
+        });
+        params.append("file", GAME);
         frames.set(id, frame);
         net.addPane(id, frame);
         document.getElementById("panes").appendChild(frame);
@@ -67,10 +64,10 @@
       });
 
       // One server, two clients — so a client's view must include the OTHER
-      // client's player for propagation to be proved.
-      mount("server", "examples/mp/server.fun");
-      mount("client 1", "examples/mp/client.fun");
-      mount("client 2", "examples/mp/client.fun");
+      // client's ship for propagation to be proved.
+      mount("server", "Server");
+      mount("client 1", "Client");
+      mount("client 2", "Client");
 
       window.__netHost = {
         packets: () => net.packets().map((p) => ({ ...p })),

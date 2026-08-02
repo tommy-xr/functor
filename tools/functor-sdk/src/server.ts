@@ -167,30 +167,67 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     // CLI's `--entry <name>` flag (placed before the subcommand, ahead of the
     // trailing runner args).
     const entryArgs: string[] = [];
+    // `entry` names a role out of an `entries` map. A project without one has
+    // no role to select, so honouring the request is impossible — say so
+    // rather than silently launching its sole entry.
+    const noRoles = () => {
+      if (options.entry) {
+        throw new Error(
+          `the project in ${gameDir} declares no \`entries\` map, but launch ` +
+            `requested entry "${options.entry}" — \`entry\` selects one of a ` +
+            "multi-entry project's roles.",
+        );
+      }
+    };
     if (existsSync(functorJson)) {
       // Don't clobber a real project's config — but since the CLI launches its
       // entry (not `functorLangPath`), verify they agree, or the SDK would silently run
       // a DIFFERENT game than the caller asked for.
       const cfg = JSON.parse(readFileSync(functorJson, "utf8"));
+      // A role is either a bare path (roles-as-files) or an object naming the
+      // file plus the inline `module`/`prefix` it resolves the contract in
+      // (two roles in ONE file — examples/orbs).
       const entries =
         cfg.entries && typeof cfg.entries === "object"
-          ? (cfg.entries as Record<string, string>)
+          ? (cfg.entries as Record<string, string | { file?: string }>)
           : undefined;
+      const fileOf = (role: string | { file?: string }): string =>
+        typeof role === "string" ? role : String(role?.file ?? "");
       if (entries) {
-        // Multi-entry project: find the named entry matching the requested
-        // path and select it explicitly (the CLI's default would be `client`).
-        const name = Object.keys(entries).find(
-          (k) => resolve(gameDir, String(entries[k])) === gamePath,
+        // Multi-entry project: select the role explicitly (the CLI's default
+        // would be `client`). Same-file roles are indistinguishable by path,
+        // so the caller must name one; otherwise the path picks it.
+        const matches = Object.keys(entries).filter(
+          (k) => resolve(gameDir, fileOf(entries[k])) === gamePath,
         );
-        if (!name) {
+        if (!options.entry && matches.length > 1) {
+          throw new Error(
+            `functor.json in ${gameDir} maps {${matches.join(", ")}} to the same ` +
+              `file ${gamePath} (roles as inline modules of one file), so the path ` +
+              "cannot say which you meant — pass `entry` to name the role.",
+          );
+        }
+        const name = options.entry ?? matches[0];
+        if (!name || !Object.keys(entries).includes(name)) {
           throw new Error(
             `functor.json in ${gameDir} declares entries ` +
               `{${Object.keys(entries).join(", ")}}, but launch requested ` +
-              `functorLangPath ${gamePath}, which matches none of them.`,
+              `${options.entry ? `entry "${options.entry}"` : `functorLangPath ${gamePath}`}, ` +
+              `which matches none of them.`,
+          );
+        }
+        // Whichever way the role was chosen, it must be the file the caller
+        // asked for — otherwise the SDK would silently run a different source.
+        if (resolve(gameDir, fileOf(entries[name])) !== gamePath) {
+          throw new Error(
+            `functor.json in ${gameDir} maps entry "${name}" to ` +
+              `"${fileOf(entries[name])}", but launch requested functorLangPath ` +
+              `${gamePath}. They must match.`,
           );
         }
         entryArgs.push("--entry", name);
       } else {
+        noRoles();
         const cfgEntry: string = cfg.entry ?? "game.fun";
         if (resolve(gameDir, cfgEntry) !== gamePath) {
           throw new Error(
@@ -201,6 +238,7 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
         }
       }
     } else {
+      noRoles();
       writeFileSync(functorJson, JSON.stringify({ language: "functor-lang", entry: wantEntry }));
     }
 

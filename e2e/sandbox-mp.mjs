@@ -1,20 +1,25 @@
 // Sandbox multiplayer e2e: the SERVER PANE, end to end.
 //
 // e2e/net-coordinator.mjs proves the routing substrate on a bare fixture page.
-// This one proves the PRODUCT: pick "Arena (client/server)" in the sandbox and
+// This one proves the PRODUCT: pick "Orbs (multiplayer)" in the sandbox and
 // you get a working session in the pane grid — a server pane plus N client
-// panes, wired by the same host coordinator, with the clients actually joining
-// the server's world.
+// panes, wired by the same host coordinator, with the clients actually seated
+// in the server's arena.
+//
+// Orbs keeps BOTH roles in one `game.fun` as inline `module Client` /
+// `module Server` blocks, so a pane's ROLE — not its file — is what
+// distinguishes it, and it travels as `?module=`.
 //
 // It asserts:
 //
-//   1. mp at the default count mounts a server pane beside ONE client (the
+//   1. orbs at the default count mounts a server pane beside ONE client (the
 //      server is extra at every client count, not a client you gave up);
 //   2. #clients=2 grows to server + two clients, and the pill counts them
 //      honestly as "2+1 running";
-//   3. both clients reach `status: "in-world"` — read from each pane's paused
-//      inspector trace, the same path the net-coordinator e2e uses — so the
-//      panes are one session, not three lonely sims;
+//   3. every pane boots the SAME file at its own inline module, and both
+//      clients are seated by the authority (a pid off the wire) — read from
+//      each pane's paused inspector trace, the same path the net-coordinator
+//      e2e uses — so the panes are one session, not three lonely sims;
 //   4. every pane header shows its coordinator link state;
 //   5. the GRID layout puts the clients in two columns with the server as a
 //      full-width strip below them — and switching layout reloads no pane;
@@ -22,9 +27,8 @@
 //   7. every pane CARD letterboxes to a 16:9 body inside its cell in the grid
 //      and network views, the "+" seat is last in reading order, and the
 //      network wires anchor to the cards rather than to the cells;
-//   8. ORBS — the same-file sample — boots every pane of the ONE file at its
-//      own inline module (`?module=Client` / `?module=Server`), and its real
-//      wire carries packets both ways between the blocks.
+//   8. parked, the wires and the pinned wire log replay the packet LOG at the
+//      playhead rather than showing a frozen live feed.
 //
 // Run manually (needs the web-runtime wasm bundle):
 //
@@ -280,9 +284,8 @@ const installProbe = (page) =>
         for (const s of shells()) s.frame.contentWindow.__mpAlive = true;
       },
       allAlive: () => shells().every((s) => s.frame.contentWindow?.__mpAlive === true),
-      // A keydown/keyup straight into a pane's window — the mp client only
-      // sends to the server when its input changes, so client → server traffic
-      // has to be provoked.
+      // A keydown/keyup straight into a pane's window — how a client pane is
+      // given real intent to put on the wire.
       key: (role, code, down) => {
         const win = shells().find((s) => s.role === role)?.frame.contentWindow;
         if (!win) return false;
@@ -303,7 +306,7 @@ try {
   // --- 1. One client + a server pane. -----------------------------------------
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    await page.goto(`${BASE}/sandbox.html?example=mp`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });
@@ -311,7 +314,7 @@ try {
     const roles = await page.evaluate(() => window.__mpProbe.roles());
     check(
       roles.length === 2 && roles[0] === "client 1" && roles[1] === "server",
-      "mp at one client mounts a server pane beside it",
+      "orbs at one client mounts a server pane beside it",
       roles.join(", ")
     );
     const clientsControl = await page.inputValue("#client-count");
@@ -423,7 +426,7 @@ try {
     const consoleLog = [];
     page.on("console", (m) => consoleLog.push(m.text()));
     page.on("pageerror", (e) => consoleLog.push(`pageerror: ${e}`));
-    await page.goto(`${BASE}/sandbox.html?example=mp#clients=2`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });
@@ -433,6 +436,27 @@ try {
       roles.join(", ") === "client 1, client 2, server",
       "#clients=2 runs two clients and one server, server last",
       roles.join(", ")
+    );
+
+    // The ROLE seam. Orbs' two roles are inline modules of ONE file, so a pane
+    // that lost its `?module=` would boot the file's (nonexistent) plain
+    // top-level contract — silent-ish rather than a 404. Assert the params
+    // themselves, then that all three panes really are the same file.
+    const srcs = await page.evaluate(() => window.__mpProbe.srcs());
+    const params = srcs.map((src) => new URLSearchParams(src.split("?")[1]));
+    check(
+      params.length === 3 &&
+        params.every((p) => !p.has("prefix")) &&
+        params[0].get("module") === "Client" &&
+        params[1].get("module") === "Client" &&
+        params[2].get("module") === "Server",
+      "every pane boots its role as a MODULE — clients Client, authority Server",
+      params.map((p) => `${p.get("game")}?module=${p.get("module")}`).join(" | ")
+    );
+    check(
+      params.every((p) => p.get("game") === params[0].get("game")),
+      "all three panes boot the same file",
+      params.map((p) => p.get("game")).join(" | ")
     );
 
     // The link indicator: every pane linked through the coordinator.
@@ -464,8 +488,10 @@ try {
       .catch(() => page.evaluate(() => window.__mpProbe.pill()));
     check(pill.includes("2+1 running"), "the pill counts clients and server apart", pill);
 
-    // Both clients joined the SERVER's world — the assertion that makes this a
-    // session rather than three independent sims.
+    // Both clients are in the SERVER's arena — the assertion that makes this a
+    // session rather than three independent sims. A client's `myPid` starts at
+    // -1 and only a Welcome off the wire replaces it, so a seated pid is the
+    // authority's answer travelling back.
     await sleep(2500);
     await page.evaluate(() => window.__mpProbe.pauseAll());
     await sleep(1500);
@@ -474,20 +500,34 @@ try {
       c2: window.__mpProbe.model("client 2"),
       server: window.__mpProbe.model("server"),
     }));
+    // A pid off the wire AND a board that actually arrived: `ships: []` would
+    // satisfy a mere `includes("ships: [")`, so count the ships (each renders
+    // `{ pid: …, x: …, y: …, rot: … }`; `myPid` is capitalised, orbs carry
+    // `id:`/`owner:`, so lowercase `pid: ` counts ships alone).
+    const seated = (model) =>
+      typeof model === "string" &&
+      /myPid: \d/.test(model) &&
+      (model.match(/\bpid: /g) ?? []).length === 2;
     check(
-      typeof models.c1 === "string" &&
-        typeof models.c2 === "string" &&
-        models.c1.includes('status: "in-world"') &&
-        models.c2.includes('status: "in-world"'),
-      "both client panes joined the server pane's world",
-      JSON.stringify(models.c1)
+      seated(models.c1) && seated(models.c2),
+      "both client panes were seated by the server pane (a pid off the wire)",
+      String(models.c1).slice(0, 160)
     );
+    // A SEAT, not just a pilot: the world's pilots carry a `pid` too, so only
+    // the cid→pid pairing proves the authority bound each connection.
     check(
-      typeof models.server === "string" && (models.server.match(/cid: /g) ?? []).length === 2,
-      "the server pane tracks both clients",
-      String(models.server)
+      typeof models.server === "string" &&
+        (models.server.match(/cid: \d+, pid: \d+/g) ?? []).length === 2,
+      "the server pane holds a seat for each client",
+      String(models.server).slice(0, 160)
     );
-    const errors = consoleLog.filter((line) => line.includes("[functor-lang]") && line.includes("error"));
+    // A boot failure can surface as an uncaught exception rather than a
+    // `[functor-lang]` line, so the pageerror relay counts too.
+    const errors = consoleLog.filter(
+      (line) =>
+        line.startsWith("pageerror:") ||
+        (line.includes("[functor-lang]") && line.includes("error"))
+    );
     check(errors.length === 0, "no pane reported a runtime error", errors.slice(0, 3).join(" | "));
     await page.close();
   }
@@ -499,7 +539,7 @@ try {
   // someone changes the count.
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    await page.goto(`${BASE}/sandbox.html?example=mp`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });
@@ -543,7 +583,7 @@ try {
   // document-lifetime marker 4b uses on the server is applied to EVERY pane here.
   {
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-    await page.goto(`${BASE}/sandbox.html?example=mp#clients=2`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });
@@ -707,7 +747,7 @@ try {
   // a real length) rather than about hard-coded coordinates.
   {
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-    await page.goto(`${BASE}/sandbox.html?example=mp#clients=2`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });
@@ -832,8 +872,9 @@ try {
     let flight = await page.evaluate(() => window.__mpProbe.network());
     let flowing = false;
     for (let i = 0; i < 40 && !flowing; i++) {
-      // Drive client 1 so it has intent to send; a dot lives 600ms, so sample
-      // faster than that.
+      // Orbs' client streams a Steer every tick regardless, but driving client
+      // 1 puts real intent on the wire; a dot lives 600ms, so sample faster
+      // than that.
       await page.evaluate((down) => window.__mpProbe.key("client 1", "KeyW", down), i % 2 === 0);
       await sleep(150);
       flight = await page.evaluate(() => window.__mpProbe.network());
@@ -914,7 +955,7 @@ try {
   // so a session that happened to boot in lockstep cannot pass vacuously.
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    await page.goto(`${BASE}/sandbox.html?example=mp`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });
@@ -968,119 +1009,7 @@ try {
     await page.close();
   }
 
-  // --- 4f. Orbs: both roles are MODULES of one file, over the real wire. ------
-  // examples/mp puts its roles in separate FILES; orbs puts them in one buffer
-  // as `module Client` / `module Server`, so the ROLE — not the file — is what
-  // distinguishes the panes. That makes this the only section where booting
-  // the wrong param is silent-ish rather than a 404: a pane that lost its
-  // `?module=` would boot the file's (nonexistent) plain top-level contract, so
-  // reaching `live` at all is already an assertion, and the packet flow below
-  // proves the two blocks are really talking to each other.
-  {
-    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-    const consoleLog = [];
-    page.on("console", (m) => consoleLog.push(m.text()));
-    page.on("pageerror", (e) => consoleLog.push(`pageerror: ${e}`));
-    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
-    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
-      timeout: 40000,
-    });
-    await installProbe(page);
-    const roles = await page.evaluate(() => window.__mpProbe.roles());
-    check(
-      roles.join(", ") === "client 1, client 2, server",
-      "orbs mounts two client panes and an authority pane",
-      roles.join(", ")
-    );
-    const srcs = await page.evaluate(() => window.__mpProbe.srcs());
-    const params = srcs.map((src) => new URLSearchParams(src.split("?")[1]));
-    check(
-      params.length === 3 &&
-        params.every((p) => !p.has("prefix")) &&
-        params[0].get("module") === "Client" &&
-        params[1].get("module") === "Client" &&
-        params[2].get("module") === "Server",
-      "every orbs pane boots its role as a MODULE — clients Client, authority Server",
-      params.map((p) => `${p.get("game")}?module=${p.get("module")}`).join(" | ")
-    );
-    // One file, one project: the panes differ ONLY by the role they resolve.
-    check(
-      params.every((p) => p.get("game") === params[0].get("game")),
-      "all three panes boot the same file",
-      params.map((p) => p.get("game")).join(" | ")
-    );
-
-    const pill = await page
-      .waitForFunction(() => window.__mpProbe.pill().includes("2+1 running"), null, {
-        timeout: 20000,
-      })
-      .then(() => page.evaluate(() => window.__mpProbe.pill()))
-      .catch(() => page.evaluate(() => window.__mpProbe.pill()));
-    check(pill.includes("2+1 running"), "the orbs pill counts clients and authority apart", pill);
-
-    // THE TRANSPORT. Orbs speaks a real wire: each client dials the authority
-    // (`Sub.connect`), the authority listens (`Sub.listen`) and answers a
-    // Welcome, then snapshots stream back every tick. Packets on the hub's
-    // wires — both directions — are that traffic, sampled live.
-    await page.click("#mp-view-network");
-    await sleep(600);
-    const graph = await page.evaluate(() => window.__mpProbe.network());
-    check(
-      graph.wires === 2 && graph.drawn === 2,
-      "the hub view wires each orbs client to the authority",
-      `${graph.wires} wires`
-    );
-    let flight = graph;
-    let flowing = false;
-    for (let i = 0; i < 40 && !flowing; i++) {
-      await sleep(150);
-      flight = await page.evaluate(() => window.__mpProbe.network());
-      flowing = flight.up > 0 && flight.down > 0;
-    }
-    check(
-      flowing,
-      "orbs packets fly both ways — Steer up, Snapshot down",
-      `up=${flight.up} down=${flight.down}`
-    );
-
-    // …and the traffic MEANS something: the authority seated both connections
-    // and each client is flying a pid the server handed it (init's -1).
-    await page.click("#mp-view-tiled");
-    await sleep(2500);
-    await page.evaluate(() => window.__mpProbe.pauseAll());
-    await sleep(1500);
-    const models = await page.evaluate(() => ({
-      c1: window.__mpProbe.model("client 1"),
-      c2: window.__mpProbe.model("client 2"),
-      server: window.__mpProbe.model("server"),
-    }));
-    const seated = (model) =>
-      typeof model === "string" && /myPid: (?!-1)\d/.test(model) && model.includes("ships: [");
-    check(
-      seated(models.c1) && seated(models.c2),
-      "both orbs clients were seated by the authority (a pid off the wire)",
-      String(models.c1).slice(0, 120)
-    );
-    // A SEAT, not just a pilot: the world's pilots carry a `pid` too, so only
-    // the cid→pid pairing proves the authority bound each connection.
-    check(
-      typeof models.server === "string" &&
-        (models.server.match(/cid: \d+, pid: \d+/g) ?? []).length === 2,
-      "the authority holds a seat for each client pane",
-      String(models.server).slice(0, 160)
-    );
-    // A boot failure can surface as an uncaught exception rather than a
-    // `[functor-lang]` line, so the pageerror relay counts too.
-    const errors = consoleLog.filter(
-      (line) =>
-        line.startsWith("pageerror:") ||
-        (line.includes("[functor-lang]") && line.includes("error"))
-    );
-    check(errors.length === 0, "no orbs pane reported a runtime error", errors.slice(0, 3).join(" | "));
-    await page.close();
-  }
-
-  // --- 4g. Parked, the wires replay the LOG at the playhead. ------------------
+  // --- 4f. Parked, the wires replay the LOG at the playhead. ------------------
   // Traffic is keyed to the timeline (Packet.frame, the reference clock), so a
   // parked session does not show a frozen live feed — it shows the packets that
   // actually crossed around the frame the rail is parked at. Two assertions
@@ -1242,7 +1171,7 @@ try {
   // --- 5. Switching away drops the server pane. -------------------------------
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    await page.goto(`${BASE}/sandbox.html?example=mp`);
+    await page.goto(`${BASE}/sandbox.html?example=orbs`);
     await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
       timeout: 40000,
     });

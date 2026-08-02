@@ -740,10 +740,13 @@ snapshots — no GPU, fully agent-verifiable.
       Nothing at the file's top level answers a plain entry any more, and the
       sandbox plays both ends of it over the REAL transport: the client panes
       boot `?module=Client`, the authority pane `?module=Server`, one buffer,
-      one atomic hot reload. `examples/mp` is deliberately NOT migrated — it
-      is the roles-as-FILES shape (`client.fun` + `server.fun` over a shared
+      one atomic hot reload. `examples/mp` was deliberately NOT migrated — it
+      was the roles-as-FILES shape (`client.fun` + `server.fun` over a shared
       `protocol.fun`), the one to reach for once roles outgrow a buffer or
-      want independent deploy units. Two traps the migration documents at the
+      want independent deploy units — and was later REMOVED, leaving orbs as
+      the sole multiplayer sample (that form stays supported, and covered by
+      the config/parsing tests, but ships with no bundled example).
+      Two traps the migration documents at the
       trap (SKILL.md's inline-module section): a block's own `init` shadows
       the file's, so `let init = init` inside the block is self-referential
       rather than an alias, and a `module Client` may not sit beside a

@@ -38,9 +38,8 @@ export interface Example {
   siteFiles?: ExampleCopy[];
   /**
    * Marks a sample that declares a server entry point (the functor.json
-   * `entries` shape, like examples/mp) or is otherwise structured for
-   * multiple clients (like examples/orbs) — the sandbox shows its CLIENTS
-   * control only for those.
+   * `entries` shape, like examples/orbs) or is otherwise structured for
+   * multiple clients — the sandbox shows its CLIENTS control only for those.
    */
   multiplayer?: boolean;
   /**
@@ -165,24 +164,6 @@ export const EXAMPLES: Example[] = [
     // the same file at `module Server` (`?module=Server`).
     module: "Client",
     server: { file: exampleEntryPath("orbs"), module: "Server" },
-  },
-  // The client/server sample: two ROLES over a shared typed protocol, run
-  // end-to-end in the pane grid — the client panes and a server pane, wired to
-  // each other by the host's net coordinator (no sockets, no server process).
-  // The editable buffer is the CLIENT entry (copied to `examples/mp.fun`, so
-  // its module is `Mp`); the other three files ride along as siblings, and the
-  // pane grid re-enters the same file list at `server.fun` for the server pane.
-  {
-    id: "mp",
-    label: "Arena (client/server)",
-    source: "examples/mp/client.fun",
-    multiplayer: true,
-    server: { file: "examples/mp/server.fun" },
-    siblings: [
-      { source: "examples/mp/protocol.fun", output: "examples/mp/protocol.fun" },
-      { source: "examples/mp/view.fun", output: "examples/mp/view.fun" },
-      { source: "examples/mp/server.fun", output: "examples/mp/server.fun" },
-    ],
   },
   {
     id: "platformer",

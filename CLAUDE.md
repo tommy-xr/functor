@@ -238,8 +238,7 @@ Instead of one `entry`, a project may declare named **`entries`**
 (`{"entries": {"client": "client.fun", "server": "server.fun"}}`) — roles sharing one
 directory of sibling modules (file = module). `--entry <name>` picks the role
 (default: `client`, or the sole entry), anywhere on the line:
-`functor -d examples/mp run native --entry server`. `examples/mp` is the reference —
-client + authoritative server over a shared `protocol.fun`. A role may also be an
+`functor -d examples/orbs run native --entry server`. A role may also be an
 object pointing at a **shared file**, so two roles live in ONE file and an edit
 hot-reloads both atomically. The preferred form on native names an **inline module** —
 `"server": {"file": "game.fun", "module": "Server"}` — whose members are that role's
@@ -252,14 +251,14 @@ names. Both forms run on every shell — `run wasm`/`build wasm` bake the role i
 served/exported page's boot config, the site player takes `?module=<Ident>` or
 `?prefix=<ident>`, and `run vr` DECLARES the role in each device push's query string
 (`POST /load-project?module=Server`), which the APK's embedded producer re-resolves on
-every push. The two multiplayer samples are the
-deliberate pair of shapes: **`examples/orbs`** is the SAME-FILE reference — one `game.fun`
-whose `client` and `server` roles are both inline modules of it (`module Client { … }` /
-`module Server { … }`, with the protocol, the world step and the renderer shared bare above
-them), so one buffer hot-reloads both roles atomically and the sandbox runs the two panes
-off the same source; **`examples/mp`** is the roles-as-FILES reference (`client.fun` +
-`server.fun` over a shared `protocol.fun`) — the shape to reach for once roles outgrow one
-buffer or want independent deploy units.
+every push. **`examples/orbs`** is the multiplayer
+reference and the SAME-FILE shape — one `game.fun` whose `client` and `server` roles are
+both inline modules of it (`module Client { … }` / `module Server { … }`, with the
+protocol, the world step and the renderer shared bare above them), so one buffer
+hot-reloads both roles atomically and the sandbox runs the two panes off the same source.
+The roles-as-FILES form (one `.fun` per role over a shared sibling) is equally supported —
+reach for it once roles outgrow one buffer or want independent deploy units — but ships
+with no bundled example; the config/parsing tests cover it.
 
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with

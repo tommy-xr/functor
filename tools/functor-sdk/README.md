@@ -139,19 +139,21 @@ holds, e.g. network convergence; `stepAll(clients, dt)` advances every client by
 one lockstep frame.
 
 `test/multiplayer.e2e.test.ts` does exactly this end-to-end: it launches one
-server + two client runners (`examples/mp`, a multi-entry project) and waits
-until the server tracks 2 players and each client converges on a 2-player
-world.
+server + two client runners (`examples/orbs`, a multi-entry project) and waits
+until the server seats 2 clients and each client converges on a 2-ship world.
+Orbs' two roles are inline modules of ONE `game.fun`, so the role is named with
+`entry` (the CLI's `--entry`) rather than inferred from the path.
 
 ```ts
-const launch = (entry: string, port: number) =>
+const launch = (entry: "client" | "server", port: number) =>
   FunctorRunner.launch({
-    gameDir: "examples/mp",
-    functorLangPath: `examples/mp/${entry}`,
+    gameDir: "examples/orbs",
+    functorLangPath: "examples/orbs/game.fun",
+    entry,
     port,
   });
-await using a = await launch("server.fun", 8077);
-await using b = await launch("client.fun", 8078);
+await using a = await launch("server", 8077);
+await using b = await launch("client", 8078);
 await Promise.all([a.pause(), b.pause()]);
 for (let frame = 0; frame < 600; frame++) {
   await a.keyDown("up");        // per-client input
@@ -175,7 +177,7 @@ cargo build --bin functor
 ```
 
 (The games driven by the tests are `examples/hello` — the held-input
-test — and `examples/mp` (its `server.fun` / `client.fun` entries) — the
+test — and `examples/orbs` (its `client` / `server` entries) — the
 multiplayer test. A `build` step is optional: `functor -d <dir> build native`
 just typechecks the `.fun`.)
 
