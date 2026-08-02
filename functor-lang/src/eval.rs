@@ -552,15 +552,23 @@ pub(crate) type BrandOps = Rc<HashMap<String, BrandOpRow>>;
 /// One brand's declared operators, indexed by [`op_slot`].
 pub(crate) type BrandOpRow = [Option<OpImpl>; 4];
 
-/// A declared operator's implementation. A top-level NAME stays late-bound,
-/// exactly like every other global reference in the language: the table is
-/// built before the module's defs are evaluated (so a top-level constant may
-/// use branded arithmetic), and hot-reload's rebinding then reaches the
-/// operator for free.
+/// A declared operator's implementation, kept SYMBOLIC wherever resolving it
+/// could need something this interpreter does not have.
+///
+/// Nothing here is resolved at defs-load time. A top-level NAME is late-bound
+/// exactly like every other global reference; a HOST external is looked up
+/// only when the operator actually dispatches — because the very same defs
+/// (the engine prelude's `.funi` interfaces, `unit deg (+) = Angle.add`
+/// included) are loaded under the PLAIN, hostless interpreter by the editor's
+/// expect gutter, where `Angle.add` has no implementation and must not be an
+/// error until something tries to use it.
 #[derive(Clone)]
 pub(crate) enum OpImpl {
-    /// An external, a constructor, or a lambda — self-contained.
+    /// A constructor or a lambda — self-contained, and building it needs no
+    /// host, so it is resolved once at load.
     Value(Value),
+    /// A host external (`Angle.add`), resolved at dispatch.
+    External(Vec<String>),
     /// A top-level `let`, resolved from the globals at dispatch.
     Global(String),
 }
@@ -859,7 +867,7 @@ impl Interp<'_> {
             // programs (every prelude unit) resolve up front and never enter
             // this branch.
             if !self.brand_ops_complete {
-                let (ops, complete) = self.load_brand_ops(module, false)?;
+                let (ops, complete) = self.load_brand_ops(module)?;
                 self.brand_ops = ops;
                 self.brand_ops_complete = complete;
             }
@@ -921,20 +929,21 @@ impl Interp<'_> {
     /// Build the operator table before the defs run (see
     /// [`Interp::load_brand_ops`]).
     fn load_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
-        let (ops, complete) = self.load_brand_ops(module, false)?;
+        let (ops, complete) = self.load_brand_ops(module)?;
         self.brand_ops = ops;
         self.brand_ops_complete = complete;
         Ok(())
     }
 
-    /// The final attempt, once every def exists: only needed when something
-    /// could not be resolved earlier, and it reports why instead of leaving
-    /// the operator silently missing.
+    /// The final attempt, once every def exists — needed only when something
+    /// could not be resolved earlier. Like every other pass it cannot fail the
+    /// load: an operator that stays unresolved is absent, and reports itself
+    /// at its use site.
     fn settle_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
         if self.brand_ops_complete {
             return Ok(());
         }
-        let (ops, complete) = self.load_brand_ops(module, true)?;
+        let (ops, complete) = self.load_brand_ops(module)?;
         self.brand_ops = ops;
         self.brand_ops_complete = complete;
         Ok(())
@@ -966,15 +975,19 @@ impl Interp<'_> {
     /// a top-level `let` cannot be probed that early; the build reports
     /// itself INCOMPLETE and [`Interp::eval_defs`] retries as the defs land,
     /// so such a unit works from the first initializer that could use it.
-    /// `strict` (the final attempt) reports what is still unresolvable
-    /// instead of leaving it silently absent.
+    ///
+    /// **An operator that cannot be RESOLVED here never fails the load.** A
+    /// brand whose constructor this interpreter cannot run — the engine
+    /// prelude's units under a HOSTLESS interpreter, which is exactly what the
+    /// editor's expect gutter loads through `functor-lang-wasm` — simply gets
+    /// no entry: with no host there is no way to build one of its values
+    /// either, so nothing can dispatch on it. What is genuinely wrong surfaces
+    /// at the operator's use site, where the teaching errors live. (A
+    /// DUPLICATE declaration is different: it is a program error that needs no
+    /// host to detect, and it still refuses the load.)
     ///
     /// Returns the table and whether every declared operator found its brand.
-    fn load_brand_ops(
-        &mut self,
-        module: &Module,
-        strict: bool,
-    ) -> Result<(BrandOps, bool), RunError> {
+    fn load_brand_ops(&mut self, module: &Module) -> Result<(BrandOps, bool), RunError> {
         if module.unit_ops.is_empty() {
             return Ok((BrandOps::default(), true));
         }
@@ -1008,26 +1021,12 @@ impl Interp<'_> {
                         .map(|probe| brand_tag(&probe).map(str::to_string));
                     let tag = match probed {
                         Ok(Some(tag)) => tag,
-                        // A brand whose values carry no runtime tag (a record)
-                        // cannot be dispatched on — the CHECKER refuses that
-                        // declaration, and the final attempt says so too.
-                        Ok(None) if strict => {
-                            return Err(RunError {
-                                message: format!(
-                                    "`unit {} ({})` needs a brand whose values carry a runtime \
-tag — `{}` builds a value nothing can dispatch on; use a single-constructor variant, or a host \
-type",
-                                    unit_op.suffix,
-                                    unit_op.op.symbol(),
-                                    unit_op.suffix
-                                ),
-                                span: unit_op.span,
-                            })
-                        }
-                        // Not buildable YET (its constructor is a def that has
-                        // not been evaluated): leave it out and report the
-                        // build incomplete, so `eval_defs` retries.
-                        Err(error) if strict => return Err(error),
+                        // Untagged (a record brand — the CHECKER refuses that
+                        // declaration), not buildable YET (its constructor is
+                        // a def that has not been evaluated), or not buildable
+                        // AT ALL in this interpreter (a host constructor with
+                        // no host). Leave it out and mark the build
+                        // incomplete, so `eval_defs` retries as globals land.
                         Ok(None) | Err(_) => {
                             complete = false;
                             continue;
@@ -1040,11 +1039,22 @@ type",
             let Some(slot) = op_slot(unit_op.op) else {
                 continue;
             };
-            // A name stays late-bound (globals resolve at call time, and the
-            // defs may not be evaluated yet); anything else is a value.
+            // Names stay symbolic: a global resolves at call time (the defs
+            // may not have run), and a HOST external must not be looked up
+            // here at all — these same declarations load under a hostless
+            // interpreter. A lambda or constructor needs neither, so it is
+            // built once; if even that fails, the entry is skipped rather than
+            // failing the load.
             let implementation = match &unit_op.target.kind {
                 ExprKind::Global(name) => OpImpl::Global(name.clone()),
-                _ => OpImpl::Value(self.eval(&unit_op.target, &Env::empty())?),
+                ExprKind::External(path) => OpImpl::External(path.clone()),
+                _ => match self.eval(&unit_op.target, &Env::empty()) {
+                    Ok(value) => OpImpl::Value(value),
+                    Err(_) => {
+                        complete = false;
+                        continue;
+                    }
+                },
             };
             let row = ops.entry(tag.clone()).or_default();
             // The checker rejects a second declaration for one brand and
@@ -1064,6 +1074,27 @@ implementation",
             row[slot] = Some(implementation);
         }
         Ok((Rc::new(ops), complete))
+    }
+
+    /// Resolve an [`ExprKind::External`] path to its value: a builtin, or the
+    /// host's function. Shared with unit-operator dispatch, which resolves its
+    /// implementation the same way — and, crucially, only when it dispatches
+    /// (see [`OpImpl`]).
+    fn external_value(&mut self, path: &[String], span: Span) -> Result<Value, RunError> {
+        let joined = path.join(".");
+        match builtin(path) {
+            // `Math.pi` is a constant, not a callable — resolve it straight to
+            // its value (every other builtin is a function).
+            Some(Builtin::MathPi) => Ok(Value::Number(std::f64::consts::PI)),
+            Some(b) => Ok(Value::Builtin(b)),
+            None if self.host.provides(&joined) => Ok(Value::HostFn(Rc::from(joined.as_str()))),
+            // `#[cold]` helper: the message formatting must not enlarge this
+            // hot frame (eval recursion sits near the stack budget at the
+            // 128-depth cap — the call_curried rule; adding the formatting
+            // inline here overflowed the deep-recursion test's 2MB stack in
+            // debug).
+            None => Err(unknown_external_error(path, joined, span)),
+        }
     }
 
     fn call_main(&mut self, def: &Def) -> Result<Value, RunError> {
@@ -1266,24 +1297,7 @@ evaluation depth."
                 self.record_ref(name, expr.span, &value);
                 Ok(value)
             }
-            ExprKind::External(path) => {
-                let joined = path.join(".");
-                match builtin(path) {
-                    // `Math.pi` is a constant, not a callable — resolve it
-                    // straight to its value (every other builtin is a function).
-                    Some(Builtin::MathPi) => Ok(Value::Number(std::f64::consts::PI)),
-                    Some(b) => Ok(Value::Builtin(b)),
-                    None if self.host.provides(&joined) => {
-                        Ok(Value::HostFn(Rc::from(joined.as_str())))
-                    }
-                    // `#[cold]` helper: the message formatting must not
-                    // enlarge this hot frame (eval recursion sits near the
-                    // stack budget at the 128-depth cap — the call_curried
-                    // rule; adding the formatting inline here overflowed the
-                    // deep-recursion test's 2MB stack in debug).
-                    None => Err(unknown_external_error(path, joined, expr.span)),
-                }
-            }
+            ExprKind::External(path) => self.external_value(path, expr.span),
             // Container CONSTRUCTION charges one step (the depth invariant
             // behind run_expects_budgeted's stack contract: every level of a
             // value's nesting was constructed once, so value depth ≤ budget.
@@ -1688,6 +1702,12 @@ evaluation depth."
         if let Some((implementation, first, second)) = found {
             match implementation {
                 OpImpl::Value(value) => call = Some((value, first, second)),
+                // A host external is looked up HERE, so a missing host is the
+                // ordinary unknown-external error at the use site rather than
+                // a load failure.
+                OpImpl::External(path) => {
+                    call = Some((self.external_value(&path, span)?, first, second))
+                }
                 // A named implementation is late-bound like any global, so it
                 // obeys the same rule: a top-level initializer may only use
                 // globals defined ABOVE it.

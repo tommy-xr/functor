@@ -639,8 +639,11 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   duplicate error.
 - **The implementation is an expression**: a name, or a lambda (the prelude's
   `.funi` declarations name host externals). It is checked against the shape
-  above at the DECLARATION. A NAME is late-bound like any global, so it must be
-  defined above any top-level constant that uses the operator.
+  above at the DECLARATION, and RESOLVED only when the operator dispatches — a
+  name is late-bound like any global (so it must be defined above any top-level
+  constant that uses the operator), and a host external is looked up at the use
+  site, so these declarations still load under the plain, hostless
+  interpreter.
 - **The brand must be distinguishable at run time** — a single-constructor
   variant, or a host type like `Angle.t`. A record brand or a multi-constructor
   type is a check error at the declaration (the interpreter dispatches on a

@@ -225,6 +225,16 @@ Two consequences worth stating:
   uses it. A unit whose own *constructor* is a top-level `let` cannot be probed
   that early, so the table is completed as the defs land — the first
   initializer that could use it already can.
+- **Nothing is resolved until it is needed.** A declaration's *implementation*
+  stays symbolic at load: a host external (`Angle.add`) is looked up only when
+  the operator actually dispatches, and a top-level name is late-bound like any
+  global. This is not an optimization — the same declarations load under the
+  PLAIN, hostless interpreter (the editor's expect gutter runs a project's defs
+  that way with the engine `.funi` interfaces linked), where `Angle.add` has no
+  implementation and must not be an error until something uses it. For the same
+  reason, a brand whose constructor cannot run in this interpreter simply gets
+  no entry rather than failing the load: with no host you cannot build one of
+  its values either, so nothing can dispatch on it.
 - **`functor-lang run` (which does not typecheck) behaves like the checked
   path**, and so does a fake/plain prelude: both roads end at exactly the call
   the declaration names, and both refuse a duplicate declaration. An operand

@@ -356,6 +356,54 @@ fn an_undeclared_prelude_operator_names_the_declared_ones() {
     assert!(!diags.is_empty(), "an angle plus a duration must not check");
 }
 
+/// The prelude's `unit … (<op>)` declarations must LOAD under the plain,
+/// hostless interpreter — the editor's expect gutter runs a project's defs
+/// that way with the engine `.funi` interfaces linked, so an operator that
+/// resolved its brand or its implementation eagerly failed every load with
+/// ``unknown external `Angle.degrees` ``. Nothing about a unit operator may
+/// need a host until it actually dispatches.
+#[test]
+fn prelude_unit_operators_load_under_the_plain_interpreter() {
+    let hostless = |src: &str| {
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            vec![(std::path::PathBuf::from("game.fun"), src.to_string())],
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("loads: {}", e.message));
+        functor_lang::run_expects_budgeted(
+            &project.module,
+            &mut functor_lang::NoHost,
+            Some(1_000_000),
+        )
+        .map(|reports| {
+            reports
+                .iter()
+                .map(|report| report.outcome.status().0.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|failure| panic!("defs must load hostlessly: {}", failure.error.message))
+    };
+
+    assert_eq!(
+        hostless("let area = (w, h) => w * h\nexpect area(3.0, 4.0) == 12.0\n"),
+        ["pass"]
+    );
+
+    // …and a USER brand's operators still dispatch there, because building one
+    // of its values needs no host: the hostless path degrades only where it
+    // must.
+    assert_eq!(
+        hostless(
+            "type Px = | Px(value: float)\n\
+             unit px = Px\n\
+             let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+             unit px (+) = (a, b) => Px(unwrap(a) + unwrap(b))\n\
+             expect unwrap(16px + 4px) == 20.0\n"
+        ),
+        ["pass"]
+    );
+}
+
 /// The cost of ad-hoc overloading, pinned deliberately: because the prelude
 /// always declares `+`/`-`/`*` on `Angle.t` and `Time.t`, a helper whose
 /// operands inference never pins down is now ambiguous and asks for an
