@@ -874,6 +874,14 @@ impl Game for FunctorLangGame {
         Ok(status)
     }
 
+    fn set_entry_role(&mut self, role: EntryRole) -> Option<EntryRole> {
+        Some(std::mem::replace(&mut self.role, role))
+    }
+
+    fn entry_role(&self) -> Option<EntryRole> {
+        Some(self.role.clone())
+    }
+
     fn reload_project(&mut self, files: &[(String, String)]) -> Result<String, String> {
         if files.is_empty() {
             return Err("a pushed project needs at least the entry file".to_string());

@@ -308,16 +308,9 @@ camelCase binding prefix (e.g. \"server\" resolves serverInit/serverTick/…)"
             };
             // A prefix concatenates into binding NAMES, so it must itself be a
             // valid identifier — refuse `"my server"` here, not as a baffling
-            // "has no top-level `let my serverInit`" later.
-            let mut chars = prefix.chars();
-            let valid = match chars.next() {
-                None => true,
-                Some(first) => {
-                    (first.is_ascii_alphabetic() || first == '_')
-                        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-                }
-            };
-            if !valid {
+            // "has no top-level `let my serverInit`" later. The rule is the
+            // shared one every role carrier validates with.
+            if !functor_runtime_common::functor_lang_producer::EntryRole::is_valid_prefix(&prefix) {
                 return Err(Error::other(format!(
                     "functor.json entry `{name}`: \"prefix\" must be a valid identifier \
 (it becomes the binding prefix: `{prefix}Init`, `{prefix}Tick`, …)"
@@ -346,15 +339,7 @@ module holding this role's entry bindings (e.g. \"Server\" resolves Server.init/
             // spelled like one — refuse `"my server"` (or a lowercase name,
             // which the parser rejects at the declaration) here, not as a
             // baffling missing-block error later.
-            let mut chars = module.chars();
-            let valid = match chars.next() {
-                None => true,
-                Some(first) => {
-                    first.is_ascii_uppercase()
-                        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-                }
-            };
-            if !valid {
+            if !functor_runtime_common::functor_lang_producer::EntryRole::is_valid_module(&module) {
                 return Err(Error::other(format!(
                     "functor.json entry `{name}`: \"module\" must be a Capitalized inline \
 module name (it is the block's own name: `module {module} {{ … }}`)"
@@ -625,32 +610,6 @@ impl FunctorLangProject {
         Ok(())
     }
 
-    /// Can this shell boot this role? Native takes either same-file form
-    /// (`--entry-prefix` / `--entry-module`) and wasm bakes either into the
-    /// served page's boot config, but the vr device push path still boots the
-    /// APK's embedded producer with the unprefixed contract — so running a
-    /// role there would silently play the WRONG role. The test names the
-    /// shells that DO support the forms, so a future environment is refused
-    /// until it is taught them. The config refuses a role declaring both
-    /// forms, so at most one is ever named here.
-    fn check_role_supported(&self, environment: &Environment) -> Result<(), Error> {
-        use functor_runtime_common::functor_lang_producer::EntryRole;
-        match environment {
-            Environment::Native | Environment::Wasm => return Ok(()),
-            Environment::Vr => {}
-        }
-        let shell = environment.as_str();
-        let (form, name) = match self.entry_role() {
-            EntryRole::Prefix(prefix) if prefix.is_empty() => return Ok(()),
-            EntryRole::Prefix(prefix) => ("prefix", prefix),
-            EntryRole::Module(module) => ("module", module),
-        };
-        Err(Error::other(format!(
-            "entry {form} `{name}` is not supported on {shell} yet — run this role with \
-`run native` or `run wasm` (the vr shell loads the unprefixed contract)"
-        )))
-    }
-
     /// Spawn the runner on the entry (`run` and `develop` — hot reload is
     /// built into the producer, so there is no separate watch loop).
     pub async fn run(
@@ -661,7 +620,6 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
-        self.check_role_supported(environment)?;
         if matches!(environment, Environment::Vr) {
             if !runner_args.is_empty() {
                 emit(Event::Warning {
@@ -822,6 +780,10 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
     async fn run_vr(&self, working_directory: &str) -> Result<(), Error> {
         let entry_path = self.entry_path(working_directory)?;
         let project_root = Path::new(working_directory);
+        // The device has no command line: every push DECLARES this entry's
+        // same-file role, so the APK's producer resolves the same contract
+        // `run native` and `run wasm` do (and re-resolves it on each re-push).
+        let role = self.entry_role();
         let serial = adb_device().await?;
         adb_require_runtime(&serial).await?;
         // `am start` on the running singleTask activity is a no-op resume —
@@ -858,6 +820,26 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             )));
         }
 
+        // The tool APK installs separately from this CLI, so a headset can be
+        // running an older build — and a pre-v9 runtime IGNORES the role query
+        // and boots the unprefixed contract, i.e. silently the wrong game. A
+        // declared role therefore requires a runtime that speaks the form; the
+        // plain contract runs on any of them.
+        use functor_runtime_common::functor_lang_producer::EntryRole;
+        if !matches!(&role, EntryRole::Prefix(prefix) if prefix.is_empty()) {
+            let version = probe_protocol_version(&addr);
+            if version.is_some_and(|version| version < ENTRY_ROLE_PROTOCOL_VERSION) {
+                return Err(Error::other(format!(
+                    "the headset's functor runtime is too old for an entry role (it speaks debug \
+protocol v{}, and roles need v{ENTRY_ROLE_PROTOCOL_VERSION}) — it would ignore the role and boot \
+the unprefixed contract. Reinstall the tool APK (npm run build:oculus:apk && adb install -r \
+target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run native` / \
+`run wasm`.",
+                    version.unwrap_or(0)
+                )));
+            }
+        }
+
         let mut attempted_assets = project_asset_files(project_root)?;
         let report = sync_project_assets(&addr, &attempted_assets, None)?;
         let mut observed_assets = attempted_assets.clone();
@@ -874,7 +856,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         let files = read_project_json(&entry_path)?;
         let mut attempted = None;
         for _ in 0..20 {
-            match post_load_project(&addr, &files) {
+            match post_project(&addr, "/load-project", &files, &role) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = Some(files.clone());
@@ -960,7 +942,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             if current == attempted {
                 continue;
             }
-            match post_reload_project(&addr, &current) {
+            match post_project(&addr, "/reload-project", &current, &role) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
@@ -1220,6 +1202,11 @@ const VR_PACKAGE: &str = "dev.functor.runner";
 const VR_COMPONENT: &str = "dev.functor.runner/android.app.NativeActivity";
 /// Its device-loopback push port (`adb forward` bridges it to this machine).
 const VR_PORT: u16 = 8123;
+
+/// The debug protocol version that added the project push's entry-role query.
+/// Older device runtimes ignore it, so a declared role must not be pushed to
+/// one — see the check in `run_vr`.
+const ENTRY_ROLE_PROTOCOL_VERSION: u64 = 9;
 
 /// Run one adb command to completion; stdout on success, a rendered error
 /// (including the "adb isn't installed" case) otherwise.
@@ -1527,16 +1514,25 @@ fn read_project_json(entry_path: &Path) -> Result<String, Error> {
     serde_json::to_string(&files).map_err(Error::other)
 }
 
-/// POST the whole project file set (the `read_project_json` body) to the
-/// runtime's `/reload-project`.
-fn post_reload_project(addr: &str, files_json: &str) -> Result<(u16, String), Error> {
-    http_post(addr, "/reload-project", "application/json", files_json)
-}
-
-/// Load the first pushed project as a new game, taking its model from `init`.
-/// Later watch-loop edits use `/reload-project` and preserve that model.
-fn post_load_project(addr: &str, files_json: &str) -> Result<(u16, String), Error> {
-    http_post(addr, "/load-project", "application/json", files_json)
+/// POST the whole project file set (the `read_project_json` body) to one of
+/// the runtime's project routes, DECLARING this entry's same-file role in the
+/// query string. A device session takes its role from the push (no command
+/// line reaches it), and every push re-declares it, so the plain contract
+/// travels as an explicit empty prefix rather than as silence.
+///
+/// `/load-project` starts a new game, taking its model from `init`;
+/// `/reload-project` (the watch loop's route) preserves that live model.
+fn post_project(
+    addr: &str,
+    route: &str,
+    files_json: &str,
+    role: &functor_runtime_common::functor_lang_producer::EntryRole,
+) -> Result<(u16, String), Error> {
+    let path = format!(
+        "{route}{}",
+        functor_runtime_common::debug_protocol::encode_entry_role_query(role)
+    );
+    http_post(addr, &path, "application/json", files_json)
 }
 
 /// Minimal HTTP POST over std::net — one dependency-free request to the
@@ -1544,6 +1540,31 @@ fn post_load_project(addr: &str, files_json: &str) -> Result<(u16, String), Erro
 /// keeps the read side trivial (read to EOF, split headers off).
 fn post_reload_source(addr: &str, source: &str) -> Result<(u16, String), Error> {
     http_post(addr, "/reload-source", "text/plain", source)
+}
+
+/// The debug protocol version a runtime reports at `GET /`, or `None` when the
+/// endpoint is unreachable or answers something unexpected.
+fn probe_protocol_version(addr: &str) -> Option<u64> {
+    use std::io::{Read, Write};
+    use std::net::ToSocketAddrs;
+    let timeout = std::time::Duration::from_secs(5);
+    let sockaddr = addr.to_socket_addrs().ok()?.next()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&sockaddr, timeout).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
+    write!(
+        stream,
+        "GET / HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).ok()?;
+    let response = String::from_utf8_lossy(&response);
+    let (_, body) = response.split_once("\r\n\r\n")?;
+    serde_json::from_str::<serde_json::Value>(body.trim())
+        .ok()?
+        .get("protocol_version")?
+        .as_u64()
 }
 
 fn http_post(
@@ -1626,7 +1647,6 @@ mod tests {
         manifest_mouse_capture, nth_line, project_asset_files, resolve_debug_args, CursorPolicy,
         FunctorLangConfig, FunctorLangEntries, FunctorLangProject,
     };
-    use crate::Environment;
 
     fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -1957,12 +1977,17 @@ mod tests {
         assert!(err.to_string().contains("valid identifier"), "{err}");
     }
 
-    /// The shells that can boot a same-file ROLE. Both forms run on native
-    /// and wasm (the page's boot config carries the module now); vr still
-    /// boots the unprefixed contract, so a role is refused there with a
-    /// teaching error naming the form.
+    /// Every shell boots either same-file ROLE now. Native and wasm take it
+    /// from a command line / the page's boot config; vr has neither, so the
+    /// device push DECLARES it — this pins the query string `run vr` appends
+    /// to `/load-project` and `/reload-project` for each form, including the
+    /// plain contract's explicit empty prefix (silence would mean "keep the
+    /// role already in force", which cannot switch a live session back).
     #[test]
-    fn a_role_runs_on_native_and_wasm_but_not_vr() {
+    fn every_role_form_declares_itself_on_the_vr_push() {
+        use functor_runtime_common::debug_protocol::{
+            encode_entry_role_query, parse_entry_role_query,
+        };
         let config = named_json(&[
             (
                 "client",
@@ -1974,23 +1999,21 @@ mod tests {
             ),
             ("plain", serde_json::json!("game.fun")),
         ]);
-        for role in ["client", "legacy"] {
-            let project = config.select(Some(role)).unwrap();
-            for env in [Environment::Native, Environment::Wasm] {
-                assert!(
-                    project.check_role_supported(&env).is_ok(),
-                    "`{role}` must boot on {env:?}"
-                );
-            }
-            let err = project
-                .check_role_supported(&Environment::Vr)
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains("not supported on vr yet"), "{err}");
+        for (role, expected) in [
+            ("client", "?module=Client"),
+            ("legacy", "?prefix=legacy"),
+            ("plain", "?prefix="),
+        ] {
+            let declared = config.select(Some(role)).unwrap().entry_role();
+            let query = encode_entry_role_query(&declared);
+            assert_eq!(query, expected, "`{role}` push query");
+            // What the device parses back is the role the CLI resolved.
+            assert_eq!(
+                parse_entry_role_query(query.trim_start_matches('?')).unwrap(),
+                Some(declared),
+                "`{role}` round trip"
+            );
         }
-        // A role with neither form is the plain contract — every shell boots it.
-        let plain = config.select(Some("plain")).unwrap();
-        assert!(plain.check_role_supported(&Environment::Vr).is_ok());
     }
 
     #[test]

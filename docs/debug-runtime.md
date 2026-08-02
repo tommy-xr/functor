@@ -113,8 +113,8 @@ screenshot run has no reason to grab your mouse.
 | `POST /input` | inject input (see below) |
 | `POST /time` | control the frame clock (see below) |
 | `POST /reload-source` | swap game logic from the request body (see below) |
-| `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first |
-| `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init` |
+| `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first; `?module=`/`?prefix=` declares the same-file entry role |
+| `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init`; takes the same role query |
 | `GET /project` | the running program's own `.fun` sources as a JSON array of `[path, source]` pairs, entry first — the read half of the push routes (see below) |
 | `POST /reload-asset` | upload one project-relative texture/model/audio asset as a binary path+bytes envelope |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
@@ -426,6 +426,30 @@ starts with the project's `init` model. Its watch loop then uses
 `/reload-project`, preserving that live model across edits. Both routes carry
 all sibling `.fun`/`.funi` modules, with the same file-as-module behavior as
 desktop.
+
+#### Declaring a same-file entry role (protocol v9)
+
+A device session has no command line, so a project push declares which
+same-file role to boot in the route's **query string** — the same two forms
+functor.json and the web page's boot config carry:
+
+```sh
+curl -X POST --data-binary @project.json \
+  'http://127.0.0.1:8123/load-project?module=Server'   # an inline `module Server { … }`
+curl -X POST --data-binary @project.json \
+  'http://127.0.0.1:8123/reload-project?prefix=server' # serverInit/serverTick/…
+```
+
+The runtime **re-resolves** the role against each pushed program, so an edit
+that renames or deletes the block fails with an error naming it and the old
+program keeps running — under the role it was already running.
+
+Declaring nothing is not the same as declaring the plain contract: a push with
+no role query leaves the role already in force alone (so `functor push` and the
+MCP tools need no revision), while `?prefix=` explicitly selects the unprefixed
+contract. `functor run vr` always declares, including `?prefix=` for a plain
+project. A pre-v9 runtime ignores the query and boots the unprefixed contract;
+a role declared twice, or one that is not an identifier, is a **400**.
 
 ### `GET /project` — read the running sources back (protocol v5)
 

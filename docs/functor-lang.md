@@ -725,15 +725,12 @@ snapshots — no GPU, fully agent-verifiable.
       `build wasm` bake into the served/exported index page, and the site
       player takes as `?module=<Ident>` (capitalized identifier; anything
       else warns and boots the unprefixed contract). `run wasm` and
-      `build wasm` no longer refuse a module role; **vr still does**, because
-      its device push path boots the APK's embedded producer with the
-      unprefixed contract and teaching it the form needs a protocol +
-      on-device change. *Verify:* embedded-producer tests (a module role's
-      contract is the block's, a push re-resolves it with the model
-      preserved, a push deleting the block keeps the old program, an unknown
-      block lists the file's blocks), CLI tests for the lifted guards and the
-      page's baked boot config, and a headless `run wasm` browser smoke of a
-      `module Server` role.
+      `build wasm` no longer refuse a module role. *Verify:*
+      embedded-producer tests (a module role's contract is the block's, a
+      push re-resolves it with the model preserved, a push deleting the block
+      keeps the old program, an unknown block lists the file's blocks), CLI
+      tests for the lifted guards and the page's baked boot config, and a
+      headless `run wasm` browser smoke of a `module Server` role.
       **Part 10 — the samples adopt the two canonical shapes — done:**
       `examples/orbs` is now fully symmetric — its functor.json maps BOTH
       roles to blocks of the one `game.fun`
@@ -758,6 +755,24 @@ snapshots — no GPU, fully agent-verifiable.
       project (the exported page carries `__functorLangEntryModule`), and the
       sandbox e2e pinning the module-form panes plus live packet flow between
       the client panes and the authority.
+      **Part 11 — roles over the device push protocol (vr) — done:** the
+      device has no command line, so a project push DECLARES its role in the
+      query string of `POST /load-project` / `POST /reload-project`
+      (`?module=Server` / `?prefix=server`; debug-protocol v9). The Quest
+      shell adopts it before the load, which means the SAME re-resolution
+      Part 9 built runs on every re-push: an edit that deletes the block
+      fails loudly naming it and the old program keeps running, and the role
+      it was running with survives the rejection. Tolerant both ways — a
+      pre-v9 APK ignores the query, and a v9 runtime hearing no query keeps
+      the role already in force (so `functor push` and the MCP tools need no
+      revision), which is why the plain contract travels as an explicit
+      `?prefix=` rather than as silence. **No shell refuses a role now**, so
+      the CLI's per-environment guard is gone. *Verify:* query
+      encode/parse/round-trip tests, an HTTP test that the role reaches the
+      runtime loop (and that a doubly-declared or non-identifier role is a
+      400), an embedded-producer test of the whole boot → re-push → broken
+      push → role-less push sequence, and an on-device run of a `module`
+      role on a Quest 3 (stereo capture, live re-push, deleted-block push).
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values

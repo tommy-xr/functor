@@ -248,10 +248,11 @@ error listing the file's blocks). The transitional form names a binding **prefix
 `"server": {"file": "game.fun", "prefix": "server"}` — resolving every canonical entry
 binding through the prefix as camelCase (`serverInit`/`serverTick`/…); a role declares at
 most one of the two. `build` validates every declared role's contract with its resolved
-names. Both forms run on native and wasm — `run wasm`/`build wasm` bake the role into the
-served/exported page's boot config, and the site player takes `?module=<Ident>` or
-`?prefix=<ident>`. Only `run vr` refuses a role (the device push path boots the APK's
-embedded producer with the unprefixed contract). The two multiplayer samples are the
+names. Both forms run on every shell — `run wasm`/`build wasm` bake the role into the
+served/exported page's boot config, the site player takes `?module=<Ident>` or
+`?prefix=<ident>`, and `run vr` DECLARES the role in each device push's query string
+(`POST /load-project?module=Server`), which the APK's embedded producer re-resolves on
+every push. The two multiplayer samples are the
 deliberate pair of shapes: **`examples/orbs`** is the SAME-FILE reference — one `game.fun`
 whose `client` and `server` roles are both inline modules of it (`module Client { … }` /
 `module Server { … }`, with the protocol, the world step and the renderer shared bare above

@@ -969,11 +969,17 @@ fn service_debug_request(
         debug_server::DebugRequest::ReloadSource(source, resp) => {
             let _ = resp.send(game.reload_source(&source));
         }
-        debug_server::DebugRequest::ReloadProject(files, resp) => {
-            let _ = resp.send(game.reload_project(&files));
+        debug_server::DebugRequest::ReloadProject(files, role, resp) => {
+            let _ = resp.send(functor_runtime_common::protocol::reload_with_role(
+                game,
+                role,
+                |game| game.reload_project(&files),
+            ));
         }
-        debug_server::DebugRequest::LoadProject(files, resp) => {
-            let result = game.load_project(&files);
+        debug_server::DebugRequest::LoadProject(files, role, resp) => {
+            let result = functor_runtime_common::protocol::load_with_role(game, role, |game| {
+                game.load_project(&files)
+            });
             if result.is_ok() {
                 clock.restart();
                 *frame_count = 0;

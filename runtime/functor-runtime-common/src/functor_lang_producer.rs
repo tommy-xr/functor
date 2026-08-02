@@ -196,6 +196,35 @@ impl EntryRole {
         }
     }
 
+    /// Is `prefix` spellable as a binding prefix? It concatenates into binding
+    /// NAMES (`server` → `serverInit`), so it must itself be an identifier;
+    /// empty is the plain contract. Every carrier of a role — functor.json,
+    /// the page's boot config, the device push query — validates with THIS,
+    /// so no seam accepts a name another would refuse.
+    pub fn is_valid_prefix(prefix: &str) -> bool {
+        let mut chars = prefix.chars();
+        match chars.next() {
+            None => true,
+            Some(first) => {
+                (first.is_ascii_alphabetic() || first == '_')
+                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+        }
+    }
+
+    /// Is `module` spellable as an inline module name? It names a
+    /// `module Server { … }` block, which the parser only accepts
+    /// Capitalized; empty means no module form is declared.
+    pub fn is_valid_module(module: &str) -> bool {
+        let mut chars = module.chars();
+        match chars.next() {
+            None => true,
+            Some(first) => {
+                first.is_ascii_uppercase() && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+        }
+    }
+
     /// Resolve this role's binding names against the linked `project` whose
     /// entry is the role's file. An inline-module role names a block of THAT
     /// file; an unknown name is an error listing the blocks it does declare.

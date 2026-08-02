@@ -48,7 +48,13 @@ the whole source project (`POST /load-project` — sibling modules included)
 plus its model/texture/audio files, then re-checks + re-pushes changed source
 or assets on every save while streaming the headset's runtime log into the
 terminal. The initial load takes the model from `init`; later source pushes use
-`POST /reload-project` and preserve it. Assets transfer individually through
+`POST /reload-project` and preserve it. A project that declares a same-file
+entry role (`{"file": "game.fun", "module": "Server"}` or a binding `prefix`)
+gets it DECLARED in each push's query string — `POST /load-project?module=Server`
+— which is how a device with no command line learns which contract to boot.
+The shell re-resolves the role against every pushed program, so an edit that
+deletes the block fails naming it and the old program keeps running. A push
+with no role query leaves the role already in force alone. Assets transfer individually through
 `POST /reload-asset`; a final
 `POST /sync-assets` manifest removes deleted uploads and changed render assets
 are decoded again on the next frame. The pieces also work individually:
