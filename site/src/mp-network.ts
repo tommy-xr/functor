@@ -53,6 +53,19 @@ const FLIGHT_MS = 600;
 const MAX_DOTS = 260;
 
 /**
+ * How wide a window of the packet log the REPLAY renders, in reference-clock
+ * frames.
+ *
+ * The live feed keeps `FLIGHT_MS` of traffic in the air at once; parking the
+ * session must show the same picture at the same density, so the window is that
+ * flight time expressed in frames (600ms at the timeline's 60fps). A packet
+ * routed AT the playhead is at the start of its flight and one a full window
+ * back is arriving — so scrubbing sweeps the traffic along the wires exactly as
+ * running it would, in either direction.
+ */
+const REPLAY_WINDOW_FRAMES = 36;
+
+/**
  * Payload bytes at which a dot reaches its largest size, per direction.
  *
  * INTENT is a keypress-sized message, so it saturates early and its range is
@@ -94,6 +107,13 @@ export interface NetworkGraphOptions {
   net: NetCoordinator;
   clients: () => NetworkNode[];
   server: () => NetworkNode | null;
+  /**
+   * The session clock, in reference-clock frames (mp-panes owns it). While
+   * `parked` — paused, or mid-scrub — the graph stops animating the live feed
+   * and REPLAYS the log around `frame` instead: the traffic belongs to the
+   * timeline, so the rail decides which packets are on the wires.
+   */
+  clock: () => { parked: boolean; frame: number | null };
 }
 
 export interface NetworkGraph {
@@ -126,7 +146,11 @@ interface Dot {
   el: SVGElement;
   edge: Edge;
   dir: Direction;
+  /** When the dot was spawned, on the host clock — the LIVE feed's animation. */
   start: number;
+  /** Fixed position along the wire (0..1), for a REPLAYED dot: a parked session
+   * has no host-clock flight, its position is decided by the playhead. */
+  held: number | null;
 }
 
 interface Point {
@@ -146,6 +170,7 @@ export function initNetworkGraph({
   net,
   clients,
   server,
+  clock,
 }: NetworkGraphOptions): NetworkGraph {
   const layer = document.createElement("div");
   layer.className = "mp-net-layer";
@@ -169,6 +194,13 @@ export function initNetworkGraph({
    * listener only buffers — every DOM write happens in `step`. */
   let inbox: Packet[] = [];
   let active = false;
+  /** Which feed the dots on screen came from. A mode change clears them: a live
+   * dot mid-flight and a replayed one mean different things, and letting the
+   * two coexist would show traffic at the playhead that never crossed there. */
+  let replaying = false;
+  /** The frame the replay is currently drawn for, so a held playhead rebuilds
+   * nothing. `null` = nothing drawn yet. */
+  let replayFrame: number | null = null;
 
   const addEdge = (node: NetworkNode): Edge => {
     const path = document.createElementNS(SVG_NS, "path");
@@ -305,7 +337,13 @@ export function initNetworkGraph({
     }
   };
 
-  const spawn = (edge: Edge, dir: Direction, bytes: number, now: number) => {
+  const spawn = (
+    edge: Edge,
+    dir: Direction,
+    bytes: number,
+    now: number,
+    held: number | null = null
+  ) => {
     // Both directions are circles; size scales MILDLY with the bytes the dot
     // carries, over a range that differs by direction (FULL_BYTES). The
     // client's own ink rides on `color` for intent; authority takes the
@@ -315,13 +353,52 @@ export function initNetworkGraph({
     const el = document.createElementNS(SVG_NS, "circle");
     el.setAttribute("r", (dir === "up" ? 2.6 + weight * 2 : 2 + weight * 0.8).toFixed(2));
     if (dir === "up") el.style.color = edge.node.color;
-    el.setAttribute("class", `mp-packet ${dir}`);
+    // `replay` is the same shape and the same ink — it is the same traffic, read
+    // from the log instead of from the live feed. The class exists so the
+    // provenance is assertable (and stylable) rather than inferred.
+    el.setAttribute("class", `mp-packet ${dir}${held === null ? "" : " replay"}`);
     if (dots.length >= MAX_DOTS) {
       const oldest = dots.shift();
       oldest?.el.remove();
     }
     packets.appendChild(el);
-    dots.push({ el, edge, dir, start: now });
+    dots.push({ el, edge, dir, start: now, held });
+  };
+
+  /**
+   * Draw the log's window at `frame`: one dot per edge per direction per frame
+   * of recorded traffic, held at the position that frame's age gives it.
+   *
+   * The same batching rule the live feed uses (Addendum 5a.5), applied to the
+   * record rather than to the moment — so a parked frame and the live frame it
+   * was show the same picture.
+   */
+  const renderReplay = (frame: number, now: number) => {
+    clearDots();
+    replayFrame = frame;
+    if (reduceMotion.matches) return;
+    const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number; age: number }>();
+    // Newest first: the log is chronological, and the window is at its end
+    // whenever the session is live-parked, so walking back leaves early.
+    const log = net.packets();
+    for (let i = log.length - 1; i >= 0; i--) {
+      const packet = log[i];
+      if (packet.frame === null) continue;
+      const age = frame - packet.frame;
+      if (age < 0) continue;
+      if (age >= REPLAY_WINDOW_FRAMES) break;
+      if (packet.kind !== "message") continue;
+      const dir: Direction = packet.from === "server" ? "down" : "up";
+      const edge = edges.get(dir === "up" ? packet.from : packet.to);
+      if (!edge) continue;
+      const key = `${edge.node.id}|${dir}|${packet.frame}`;
+      const carried = batched.get(key);
+      if (carried) carried.bytes += packet.size;
+      else batched.set(key, { edge, dir, bytes: packet.size, age });
+    }
+    for (const { edge, dir, bytes, age } of batched.values()) {
+      spawn(edge, dir, bytes, now, age / REPLAY_WINDOW_FRAMES);
+    }
   };
 
   const step = () => {
@@ -329,41 +406,58 @@ export function initNetworkGraph({
     const now = performance.now();
     const seen = inbox;
     inbox = [];
+    // PARKED: the traffic belongs to the timeline, so the rail decides what is
+    // on the wires — the live feed is dropped (`seen` is discarded above) and
+    // the window around the playhead is drawn from the coordinator's log
+    // instead. Live/unparked keeps the per-frame batched feed below.
+    const { parked, frame } = clock();
+    const replay = parked && frame !== null;
+    if (replay !== replaying) {
+      replaying = replay;
+      clearDots();
+      replayFrame = null;
+    }
+    // A held playhead rebuilds nothing; the advance pass below still runs, so a
+    // relayout re-places the held dots on the wires' new geometry.
+    if (replay && frame !== replayFrame) renderReplay(frame, now);
     // BATCHED PER FRAME (Addendum 5a.5, retiring the old time sampling): one
     // dot per edge per direction per frame that carried traffic, sized by the
     // bytes that frame carried. A 60Hz session broadcasts a snapshot per client
     // per frame, so a dot per packet is a swarm and a time sample is a lie
     // about the rate; a dot per frame is exactly what the wire did, at the rate
-    // the screen can show. (Traffic keyed to the TIMELINE — replaying the
-    // scrubbed window's packets — arrives with the wire-log PR.)
-    const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number }>();
-    for (const packet of seen) {
-      // Lifecycle events (connected/disconnected) are not traffic — the pane
-      // headers already say who is linked. Dots are payload.
-      if (packet.kind !== "message") continue;
-      const dir: Direction = packet.from === "server" ? "down" : "up";
-      const edge = edges.get(dir === "up" ? packet.from : packet.to);
-      if (!edge) continue;
-      edge.count += 1;
-      // Reduced motion: no flying dots at all. The edge keeps a static packet
-      // COUNT badge instead, so the traffic is still legible without animation.
-      if (reduceMotion.matches) continue;
-      const key = `${edge.node.id}|${dir}`;
-      const carried = batched.get(key);
-      if (carried) carried.bytes += packet.size;
-      else batched.set(key, { edge, dir, bytes: packet.size });
+    // the screen can show.
+    if (!replay) {
+      const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number }>();
+      for (const packet of seen) {
+        // Lifecycle events (connected/disconnected) are not traffic — the pane
+        // headers already say who is linked. Dots are payload.
+        if (packet.kind !== "message") continue;
+        const dir: Direction = packet.from === "server" ? "down" : "up";
+        const edge = edges.get(dir === "up" ? packet.from : packet.to);
+        if (!edge) continue;
+        edge.count += 1;
+        // Reduced motion: no flying dots at all. The edge keeps a static packet
+        // COUNT badge instead, so the traffic is still legible without animation.
+        if (reduceMotion.matches) continue;
+        const key = `${edge.node.id}|${dir}`;
+        const carried = batched.get(key);
+        if (carried) carried.bytes += packet.size;
+        else batched.set(key, { edge, dir, bytes: packet.size });
+      }
+      for (const { edge, dir, bytes } of batched.values()) spawn(edge, dir, bytes, now);
+      // The preference can flip while the view is open; whatever is still in the
+      // air stops immediately rather than finishing its flight.
+      if (reduceMotion.matches && dots.length > 0) clearDots();
     }
-    for (const { edge, dir, bytes } of batched.values()) spawn(edge, dir, bytes, now);
-    // The preference can flip while the view is open; whatever is still in the
-    // air stops immediately rather than finishing its flight.
-    if (reduceMotion.matches && dots.length > 0) clearDots();
     // Read every position first, then write every transform: `getPointAtLength`
     // flushes pending layout, so interleaving it with the transform writes
     // would flush once PER DOT.
     const moved: { el: SVGElement; point: DOMPoint }[] = [];
     for (let i = dots.length - 1; i >= 0; i--) {
       const dot = dots[i];
-      const t = (now - dot.start) / FLIGHT_MS;
+      // A replayed dot is HELD where the playhead put it; a live one flies on
+      // the host clock. Both then travel the same wire the same way.
+      const t = dot.held ?? (now - dot.start) / FLIGHT_MS;
       if (t >= 1 || dot.edge.length === 0) {
         dot.el.remove();
         dots.splice(i, 1);
@@ -383,6 +477,9 @@ export function initNetworkGraph({
     for (const dot of dots) dot.el.remove();
     dots.length = 0;
     inbox = [];
+    // Nothing is drawn, so no frame is drawn FOR: the next parked step rebuilds
+    // (renderReplay re-stamps this immediately after clearing).
+    replayFrame = null;
   };
 
   const setActive = (on: boolean) => {

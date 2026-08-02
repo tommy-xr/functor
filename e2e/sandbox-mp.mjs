@@ -141,6 +141,8 @@ const installProbe = (page) =>
             c.textContent.trim()
           ),
           dots: document.querySelectorAll(".mp-packet").length,
+          replay: document.querySelectorAll(".mp-packet.replay").length,
+          live: document.querySelectorAll(".mp-packet:not(.replay)").length,
           up: document.querySelectorAll(".mp-packet.up").length,
           down: document.querySelectorAll(".mp-packet.down").length,
           // The legend + demoted pane readouts now live on the status bar's
@@ -1044,6 +1046,80 @@ try {
         (line.includes("[functor-lang]") && line.includes("error"))
     );
     check(errors.length === 0, "no orbs pane reported a runtime error", errors.slice(0, 3).join(" | "));
+    await page.close();
+  }
+
+  // --- 4g. Parked, the wires replay the LOG at the playhead. ------------------
+  // Traffic is keyed to the timeline (Packet.frame, the reference clock), so a
+  // parked session does not show a frozen live feed — it shows the packets that
+  // actually crossed around the frame the rail is parked at. Two assertions
+  // make that real: at the HEAD there is replayed traffic and no live dot at
+  // all, and at the very start of the recording — before the connect handshake
+  // — there is nothing on the wires, because nothing had been sent yet.
+  //
+  // The session is parked as soon as it is linked, which freezes the recorded
+  // window at its first ~900 frames: `Home` therefore still lands on the boot
+  // frames, whatever else this suite does afterwards.
+  {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+    await page.click("#mp-view-network");
+    await settle(page);
+    // The server broadcasts a snapshot per tick, so traffic appears as soon as
+    // the panes are linked — no input needed to provoke it.
+    const flowed = await page
+      .waitForFunction(() => window.__mpProbe.network().down > 0, null, { timeout: 25000 })
+      .then(() => true)
+      .catch(() => false);
+    check(flowed, "orbs' authority traffic reaches the wires live");
+
+    await page.evaluate(() => window.__mpProbe.pauseAll());
+    await sleep(600);
+    await page.focus("#mp-playhead");
+    await page.keyboard.press("End");
+    await sleep(400);
+    const head = await page.evaluate(() => ({
+      ...window.__mpProbe.network(),
+      label: window.__mpProbe.railFrame(),
+    }));
+    check(
+      head.replay > 0 && head.live === 0,
+      "parked at the head, every dot on the wires comes from the packet log",
+      `replay=${head.replay} live=${head.live} at #f ${head.label}`
+    );
+
+    await page.keyboard.press("Home");
+    await sleep(400);
+    const start = await page.evaluate(() => ({
+      ...window.__mpProbe.network(),
+      label: window.__mpProbe.railFrame(),
+    }));
+    // The recording may begin BEFORE the connect handshake (slow boot: the
+    // wires are empty here) or right on top of it (fast boot: the handshake
+    // packets replay). The invariant is the same either way: parked at the
+    // start, everything on the wires is replayed history — nothing is live.
+    check(
+      start.live === 0 && (start.dots === 0 || start.replay === start.dots),
+      "parked at the recording's start, only replayed history is on the wires",
+      `${start.dots} dots (${start.replay} replay, ${start.live} live) at #f ${start.label}`
+    );
+
+    // Resuming hands the wires back to the live feed — and the replayed dots go
+    // with the mode, rather than lingering as traffic that is not happening.
+    await page.evaluate(() => window.__mpProbe.pauseAll());
+    const resumed = await page
+      .waitForFunction(() => window.__mpProbe.network().live > 0, null, { timeout: 15000 })
+      .then(() => page.evaluate(() => window.__mpProbe.network()))
+      .catch(() => page.evaluate(() => window.__mpProbe.network()));
+    check(
+      resumed.live > 0 && resumed.replay === 0,
+      "resuming returns the wires to the live feed",
+      `live=${resumed.live} replay=${resumed.replay}`
+    );
     await page.close();
   }
 

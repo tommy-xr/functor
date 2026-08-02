@@ -425,7 +425,18 @@ export function initMultiplayerPanes({
   // it owns every pane — including pane 1, the page's own #player — so no pane
   // can be created outside its view. It is inert for a game that declares no
   // `Sub.connect`/`Sub.listen`: those panes never post a command.
-  const net = new NetCoordinator();
+  //
+  // It is handed the session's REFERENCE CLOCK so every routed packet lands on
+  // the axis the chrono rail labels (see the frame-offset block below, which
+  // owns the definition). Passed as a getter because the panes it measures do
+  // not exist yet at this line — and because the reference pane can change
+  // (a server pane mounting, a client count going to zero and back).
+  const net = new NetCoordinator({
+    referenceFrame: () => {
+      const reference = referencePane();
+      return reference ? headOf(reference) : null;
+    },
+  });
 
   const panes: Pane[] = [];
 
@@ -447,12 +458,20 @@ export function initMultiplayerPanes({
     color: pane.color,
     linkLabel: () => `${pane.link.name} · ${pane.link.ms}ms`,
   });
+  // Where the SESSION is parked, in reference-clock frames — the one number the
+  // rail's label already shows, published for the views that have to agree with
+  // it. `parked` is the chrono state (paused or mid-scrub), which is what turns
+  // the network view from a live feed into a replay of the log at `frame`.
+  // Written once per frame by `paint`, read by the graph on the same rAF.
+  let sessionClock: { parked: boolean; frame: number | null } = { parked: false, frame: null };
+
   const graph = initNetworkGraph({
     stage,
     grid,
     net,
     clients: () => panes.map(asNode),
     server: () => (serverPane ? asNode(serverPane.pane) : null),
+    clock: () => sessionClock,
   });
 
   const makePane = (role: PaneRole, index: number, iframe: HTMLIFrameElement): Pane => {
@@ -1449,6 +1468,12 @@ export function initMultiplayerPanes({
     const inReference = (frame: number) => Math.max(0, Math.round(frame - clockShift));
     if (!primary?.detached()) debugDrawer.hidden = true;
     chrono.classList.toggle("dormant", !current);
+    // Publish the session clock before anything else reads it this frame (the
+    // graph steps after `paint`). A bar with no seam yet is not parked — it has
+    // no time at all, and claiming "parked at nothing" would blank the live feed.
+    sessionClock = current
+      ? { parked: current.paused, frame: inReference(current.selectedFrame) }
+      : { parked: false, frame: null };
     if (primary && current) {
       const span = Math.max(current.viewport.hi - current.viewport.lo, 1);
       const played = $("mp-played");

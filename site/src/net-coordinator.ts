@@ -32,12 +32,13 @@
 // loss, partitions — is deliberately absent, and so is the step barrier: a
 // routed packet is delivered on the host's NEXT rAF, not on the receiving
 // pane's next fixed step. Impairment and the barrier are later PRs; when the
-// barrier lands, `flush()` becomes step-time delivery and `Packet.tick` stops
-// being null.
+// barrier lands, `flush()` becomes step-time delivery and a packet's frame
+// stops being a measurement and becomes the step it was scheduled in.
 //
-// The packet log records from day one even though nothing renders it yet: the
-// coordinator is the only place that sees every packet, so it owns the log the
-// later packet-log rail reads.
+// The packet log is the record every traffic view reads. Each row is keyed to
+// the REFERENCE CLOCK (`Packet.frame`) so traffic lives on the same axis the
+// chrono rail draws — scrubbing back replays the window's packets instead of
+// only ever showing the live present.
 
 /** The commands a pane's runtime emits (`functor_runtime_common::net::ConnCommand`,
  * serialized by serde's default externally-tagged representation). */
@@ -60,11 +61,25 @@ type DeliveredEvent =
 
 /** One routed packet, as the packet-log rail and the network view read it. */
 export interface Packet {
-  /** The step it belongs to — always null until the barrier lands (see above). */
-  tick: number | null;
+  /**
+   * The REFERENCE-CLOCK frame the packet was routed in — the session's own time
+   * axis, the one the chrono rail labels (mp-panes' `referenceFrame`). This is
+   * what makes traffic scrubbable: park the rail at frame N and the view can
+   * replay exactly the packets that crossed around N.
+   *
+   * MEASURED, not scheduled: there is no step barrier yet, so this is the
+   * reference pane's live head at route time, ±a frame. When the barrier lands
+   * it becomes the step the packet is delivered in, by construction.
+   *
+   * `null` when there is no reference clock to key against — a host that passed
+   * no `referenceFrame`, or a session whose reference pane has not recorded a
+   * frame yet (a packet from the boot handshake).
+   */
+  frame: number | null;
   /** When the coordinator routed it (`performance.now()`). Host-clock time, not
-   * game time: until the barrier lands a packet has no step to belong to, and
-   * the network view still has to place it on a wall-clock timeline. */
+   * game time: the wall-clock sibling of `frame`, kept because a live view
+   * animates on the host's clock while `frame` places the packet in the
+   * session's. */
   at: number;
   /** Pane id the packet originated from. */
   from: string;
@@ -134,6 +149,20 @@ interface PendingConnect {
   since: number;
 }
 
+export interface NetCoordinatorOptions {
+  /**
+   * The session's REFERENCE CLOCK, as a frame number — what every routed packet
+   * is keyed to (`Packet.frame`).
+   *
+   * A getter rather than a pushed value: the coordinator is constructed before
+   * any pane exists, and the clock is a live measurement of whichever pane is
+   * currently the reference (the server pane, or client 1 without one). The
+   * host owns that definition — the coordinator only asks, per packet, what
+   * time it is. `null` while nothing has recorded a frame yet.
+   */
+  referenceFrame?: () => number | null;
+}
+
 export class NetCoordinator {
   private readonly panes = new Map<string, Pane>();
   /** authority -> the listening side (pane + its listen key). */
@@ -148,7 +177,10 @@ export class NetCoordinator {
   private raf = 0;
   private readonly abort = new AbortController();
 
-  constructor() {
+  private readonly options: NetCoordinatorOptions;
+
+  constructor(options: NetCoordinatorOptions = {}) {
+    this.options = options;
     window.addEventListener("message", (event) => this.onMessage(event), {
       signal: this.abort.signal,
     });
@@ -391,7 +423,7 @@ export class NetCoordinator {
     if (!pane) return;
     pane.outbox.push(event);
     const packet: Packet = {
-      tick: null,
+      frame: this.options.referenceFrame?.() ?? null,
       at: performance.now(),
       from,
       to: to.pane,
