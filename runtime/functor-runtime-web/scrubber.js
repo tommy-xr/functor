@@ -502,6 +502,13 @@ export function mountScrubber({ hidden = false } = {}) {
   // The 🔮 attention pulse is a one-shot invitation: once the button has been
   // used (or the host withdraws it), it never pulses again for this mount.
   let attentionDismissed = false;
+  // Edit-triggered peeks are OFF until a host asks for them (see the peek
+  // driver and `setPeekOnEdit`). Default-off is the point: the peek is a
+  // teaching moment for a first-time visitor, and every other surface that
+  // mounts this bar — the browser IDE, `functor run wasm`, an exported
+  // bundle — is a working environment where 🔮 is a routine tool that must
+  // not grab the viewport on every save.
+  let peekOnEdit = false;
   let wasPaused = false;
   let pausedAt = 0;
   let toastTimer = 0;
@@ -1278,6 +1285,21 @@ export function mountScrubber({ hidden = false } = {}) {
       if (attentionDismissed) return;
       extrapolate.classList.add("attention");
     },
+    // Arm (or withdraw) the edit-triggered peek for this mount. OFF by default,
+    // so a surface only glimpses the future if it asked to: the landing hero
+    // turns it on when it stages its demo, because there the glimpse teaches a
+    // first-time visitor what extrapolation is. Working surfaces — the browser
+    // IDE, `functor run wasm`, an exported bundle — leave it off, since there
+    // 🔮 is a routine tool and a trail on every save would be noise.
+    //
+    // It sits here beside `setAttention`/`setReset` rather than in `setPreview`
+    // on purpose: those are host-armed affordances, while `setPreview`'s fields
+    // flow into the reducer, and the peek is deliberately not reducer state.
+    // Withdrawing it mid-glimpse ends the glimpse.
+    setPeekOnEdit: (enabled) => {
+      peekOnEdit = enabled === true;
+      if (!peekOnEdit && peekActive()) endPeek();
+    },
     model: () => state,
     view,
     // Whether an edit-triggered glimpse of the extrapolation is on screen right
@@ -1429,11 +1451,17 @@ export function mountScrubber({ hidden = false } = {}) {
           // same frame as a reload would otherwise start a glimpse over a
           // running sim, with no later pause edge to cut it short.
           //
-          // A `hidden` mount has no bar to press: it is the seam-only mode for
-          // hosts that dock their own chrome (the sandbox), which reads the
-          // reducer the peek deliberately leaves alone. Peeking there would drop
-          // an unexplained trail into the viewport and glow a detached button.
-          if (!hidden && newReload.kind === "reload-ok" && pausedNow && !state.preview.enabled) {
+          // `peekOnEdit` is the real gate: only a host that asked for the
+          // teaching moment gets it. `!hidden` stays as defense in depth — a
+          // seam-only mount has no bar to press, so a glimpse there could only
+          // ever be an unexplained trail and a glow on a detached button.
+          if (
+            peekOnEdit &&
+            !hidden &&
+            newReload.kind === "reload-ok" &&
+            pausedNow &&
+            !state.preview.enabled
+          ) {
             startPeek();
           }
         }

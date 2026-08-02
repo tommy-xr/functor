@@ -64,6 +64,8 @@ interface HeroScrubSeam {
   }): void;
   setAttention(attention: { extrapolate?: boolean }): void;
   setReset(handler: (() => void) | null): void;
+  /** Arm the edit-triggered extrapolation peek. Off by default everywhere. */
+  setPeekOnEdit(enabled: boolean): void;
 }
 
 type HeroPlayerWindow = Window & { __scrub?: HeroScrubSeam };
@@ -317,6 +319,12 @@ const seedJumpHistory = async (inputs: ScriptedInput[]) => {
   scrub.setReset(reparkStagedMoment);
   // …and points at 🔮 exactly once, at the moment the demo is ready for it.
   scrub.setAttention({ extrapolate: true });
+  // The hero is the ONE surface that peeks: a visitor here is meeting
+  // extrapolation for the first time, so an edit on the parked timeline should
+  // show them its own future unprompted. Working surfaces (the sandbox, the
+  // browser IDE, `functor run wasm`) leave this off — there 🔮 is a routine
+  // tool and a trail on every save would be noise, not a lesson.
+  scrub.setPeekOnEdit(true);
 };
 
 const maybeStageDemo = () => {

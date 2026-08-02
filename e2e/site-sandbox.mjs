@@ -880,6 +880,46 @@ const playerFrame = (page) => {
     JSON.stringify({ beforeResume, afterResume })
   );
 
+  // The peek is HOST-OPT-IN, and off by default. The hero turns it on when it
+  // stages its demo because there the glimpse teaches a first-time visitor what
+  // extrapolation is; every other surface that mounts this same bar — the
+  // browser IDE, `functor run wasm`, an exported bundle — leaves it off, since
+  // 🔮 is a routine tool there and a trail on every save would be noise.
+  //
+  // Withdrawing the opt-in puts this visible mount in exactly the state those
+  // surfaces mount in (`peekOnEdit === false`), so a real accepted edit on a
+  // parked timeline is the honest negative: same bar, same reload, no glimpse.
+  await heroPlayer.evaluate(() => window.__scrub.setPeekOnEdit(false));
+  await heroPlayer.evaluate(() => window.__scrub.togglePause());
+  await heroPlayer.waitForFunction(() => window.__scrub.paused(), { timeout: 8000 });
+  const optedOutBefore = await peekState();
+  await peekEdit(heavyRegion);
+  const optedOut = await peekState();
+  await sleep(300); // a glimpse would be well underway by now
+  const optedOutSettled = await peekState();
+  check(
+    "a default (opted-out) mount does not peek on a paused edit",
+    !optedOutBefore.enabled &&
+      !optedOut.peeking &&
+      !optedOut.pressed &&
+      !optedOutSettled.peeking &&
+      !optedOutSettled.pressed &&
+      !optedOutSettled.enabled &&
+      optedOutSettled.previewFrames === 0,
+    JSON.stringify({ optedOutBefore, optedOut, optedOutSettled })
+  );
+
+  // …and re-arming restores it, so the opt-in is a live switch rather than a
+  // one-way door the hero happens to flip before anything is observable.
+  await heroPlayer.evaluate(() => window.__scrub.setPeekOnEdit(true));
+  await peekEdit(region);
+  const reArmed = await peekState();
+  check(
+    "re-arming the opt-in restores the peek",
+    reArmed.peeking && reArmed.pressed && !reArmed.enabled,
+    JSON.stringify(reArmed)
+  );
+
   await page.close();
 }
 
