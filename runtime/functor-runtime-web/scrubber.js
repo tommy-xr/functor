@@ -195,6 +195,29 @@ const STYLE = `
   0%, 100% { box-shadow: 0 0 0 1px rgba(232, 88, 184, 0.35), 0 0 0 rgba(232, 88, 184, 0); }
   50% { box-shadow: 0 0 0 1px var(--sb-future), 0 0 14px 2px rgba(232, 88, 184, 0.45); }
 }
+/* Peek: while an edit-triggered glimpse of the extrapolation plays, the button
+   presses once and then SHINES for the whole glimpse — it is the glimpse's only
+   chrome, saying "the future you just saw lives HERE". The class is removed when
+   the peek ends, so the infinite shine retires with the trail's fade-out and the
+   two read as one gesture. The filled background is what makes this categorically
+   different from the resting attention ring rather than merely brighter.
+   Declared after the attention pulse so the press wins if both classes land on
+   the button at once. */
+#scrub-extrapolate.peeking {
+  animation: scrub-peek-press 0.3s ease-out, scrub-peek-shine 2s ease-in-out 0.3s infinite;
+  border-color: var(--sb-future);
+  background: rgba(232, 88, 184, 0.22);
+  box-shadow: 0 0 0 2px var(--sb-future), 0 0 18px 3px rgba(232, 88, 184, 0.75);
+}
+@keyframes scrub-peek-press {
+  0% { transform: translateY(0); }
+  35% { transform: translateY(1px); box-shadow: 0 0 0 2px var(--sb-future), 0 0 16px rgba(232, 88, 184, 0.85); }
+  100% { transform: none; }
+}
+@keyframes scrub-peek-shine {
+  0%, 100% { box-shadow: 0 0 0 2px var(--sb-future), 0 0 18px 3px rgba(232, 88, 184, 0.75); }
+  50% { box-shadow: 0 0 0 2px var(--sb-future), 0 0 13px 2px rgba(232, 88, 184, 0.55); }
+}
 #scrub-toast {
   /* Docked under the bar's right edge: the frame label sits centered under the
      rail and event details hang below the marker, so this corner is free. */
@@ -214,6 +237,15 @@ const STYLE = `
   #scrub-extrapolate.attention {
     animation: none;
     box-shadow: 0 0 0 2px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.35);
+  }
+  /* The glimpse still reads through the trail itself; a steady ring marks the
+     button for the duration without the press or the shine. The filled
+     background carries over from the rule above, so the peek stays
+     categorically distinct from the resting ring here too. */
+  #scrub-extrapolate.peeking {
+    animation: none;
+    border-color: var(--sb-future);
+    box-shadow: 0 0 0 2px var(--sb-future);
   }
   #scrub-toast.show { animation: none; }
   /* The marker keeps its final resting look; the reload still reads through
@@ -474,6 +506,13 @@ export function mountScrubber({ hidden = false } = {}) {
   // The 🔮 attention pulse is a one-shot invitation: once the button has been
   // used (or the host withdraws it), it never pulses again for this mount.
   let attentionDismissed = false;
+  // Edit-triggered peeks are OFF until a host asks for them (see the peek
+  // driver and `setPeekOnEdit`). Default-off is the point: the peek is a
+  // teaching moment for a first-time visitor, and every other surface that
+  // mounts this bar — the browser IDE, `functor run wasm`, an exported
+  // bundle — is a working environment where 🔮 is a routine tool that must
+  // not grab the viewport on every save.
+  let peekOnEdit = false;
   let wasPaused = false;
   let pausedAt = 0;
   let toastTimer = 0;
@@ -1061,8 +1100,68 @@ export function mountScrubber({ hidden = false } = {}) {
   reset.addEventListener("click", () => {
     if (resetAction) resetAction();
   });
+  // The peek: a successful edit landing on a PAUSED timeline with extrapolation
+  // off shows its own consequence for a beat — the engine preview fades in, holds,
+  // and fades back out — so a visitor who never touches the bar still discovers
+  // that the future is computable, and is shown where that power lives.
+  //
+  // It drives the ENGINE preview directly and deliberately skips the reducer.
+  // Two reasons, and both are the design:
+  //   1. The chrome must stay quiet. A glimpse is not a mode — the rail's pink
+  //      future segment, the `+frames` label, `.on` and `aria-pressed` all read
+  //      from `state.preview.enabled`, so leaving the reducer alone keeps every
+  //      one of them at rest. Only the button's transient press acknowledges it.
+  //   2. The easing already lives runtime-side. The overlay's presence ramp
+  //      fades the trail in and out on its own, so the glimpse needs no chrome
+  //      animation and no timeline state to unwind afterwards.
+  // Leaving the peek OUT of the timeline state also keeps it out of the recorded,
+  // replayable model: a glimpse is a hint about the UI, never part of the run.
+  // How long the future stays on screen. The button's shine is INFINITE and
+  // retires when the class comes off at the end of the hold, so this duration
+  // alone decides the gesture's length — there is no animation length to keep
+  // it in step with.
+  const PEEK_HOLD_MS = 1500;
+  let peekTimer = null;
+  const peekActive = () => peekTimer !== null;
+  // Retire the glimpse's chrome without touching the engine preview.
+  const cancelPeek = () => {
+    clearTimeout(peekTimer);
+    peekTimer = null;
+    extrapolate.classList.remove("peeking");
+  };
+  // End the glimpse and hand the engine preview back to the reducer, which is
+  // the only owner of the real setting. Pushing the reducer's truth rather than
+  // a hard "off" matters: if the preview was genuinely enabled mid-glimpse (the
+  // adopt click, or a host driving the seam), the hold must not switch it off.
+  const endPeek = () => {
+    cancelPeek();
+    pushPreview();
+  };
+  const startPeek = () => {
+    // Unconditional on purpose: a second edit mid-glimpse extends the hold (the
+    // future stays on screen and the press replays, so a run of edits reads as
+    // one continuous look), and re-asserting the mode also recovers the trail if
+    // something pushed the preview off underneath us. Setting the same mode is
+    // idempotent and does NOT restart the overlay's presence ramp, so extending
+    // never re-fades what is already on screen.
+    clearTimeout(peekTimer);
+    functor_lang_scrub_set_preview(previewMode);
+    // The glimpse IS the invitation, delivered. Retire the one-shot attention
+    // pulse rather than layering two glows on the same button.
+    dismissAttention();
+    extrapolate.classList.remove("peeking");
+    void extrapolate.offsetWidth; // restart the press animation from the top
+    extrapolate.classList.add("peeking");
+    peekTimer = setTimeout(endPeek, PEEK_HOLD_MS);
+  };
   extrapolate.addEventListener("click", () => {
     dismissAttention();
+    // Reaching for 🔮 during the glimpse means "keep this", and the ordinary
+    // toggle below already delivers exactly that: a peek only starts while the
+    // real setting is off, so the toggle turns it on and the glimpse becomes
+    // permanent. Retiring the hold first is what makes it stick — otherwise the
+    // pending timer would hand the engine back and fade out what was adopted.
+    cancelPeek();
     dispatch({ type: "preview-changed", preview: { enabled: !state.preview.enabled } });
     pushPreview();
   });
@@ -1194,8 +1293,27 @@ export function mountScrubber({ hidden = false } = {}) {
       if (attentionDismissed) return;
       extrapolate.classList.add("attention");
     },
+    // Arm (or withdraw) the edit-triggered peek for this mount. OFF by default,
+    // so a surface only glimpses the future if it asked to: the landing hero
+    // turns it on when it stages its demo, because there the glimpse teaches a
+    // first-time visitor what extrapolation is. Working surfaces — the browser
+    // IDE, `functor run wasm`, an exported bundle — leave it off, since there
+    // 🔮 is a routine tool and a trail on every save would be noise.
+    //
+    // It sits here beside `setAttention`/`setReset` rather than in `setPreview`
+    // on purpose: those are host-armed affordances, while `setPreview`'s fields
+    // flow into the reducer, and the peek is deliberately not reducer state.
+    // Withdrawing it mid-glimpse ends the glimpse.
+    setPeekOnEdit: (enabled) => {
+      peekOnEdit = enabled === true;
+      if (!peekOnEdit && peekActive()) endPeek();
+    },
     model: () => state,
     view,
+    // Whether an edit-triggered glimpse of the extrapolation is on screen right
+    // now. It lives outside the timeline state on purpose (see the peek driver),
+    // so this is the only way to observe it.
+    peeking: () => peekActive(),
     events: () => state.events,
     selectEvent: (id) => dispatch({ type: "event-selected", id }),
     // Queue a compact input script against future fixed-step frames. The
@@ -1234,6 +1352,10 @@ export function mountScrubber({ hidden = false } = {}) {
     // skipping the runtime's ease so a script can capture an exact mid-fade
     // frame; a NEGATIVE value clears the pin and resumes easing.
     setPreview: ({ mode: nextMode, presence: nextPresence, ...preview }) => {
+      // An explicit host push is the real setting; a transient glimpse must not
+      // outlive it. Without this the hold would keep reporting `peeking()` and
+      // holding the glow over a preview this call already changed.
+      cancelPeek();
       if (nextMode !== undefined && Number.isFinite(Number(nextMode))) {
         previewMode = Number(nextMode);
       }
@@ -1255,7 +1377,15 @@ export function mountScrubber({ hidden = false } = {}) {
     const pausedNow = functor_lang_scrub_paused();
     if (pausedNow !== wasPaused) {
       wasPaused = pausedNow;
-      if (pausedNow) pausedAt = performance.now();
+      if (pausedNow) {
+        pausedAt = performance.now();
+      } else if (peekActive()) {
+        // Resuming ends a glimpse on the spot. The peek is a parked-timeline
+        // affordance: a trail over a running sim that then vanishes on its own
+        // timer reads as a rendering glitch, and extrapolating a future the
+        // clock is already walking into is the toggle's job, not a hint's.
+        endPeek();
+      }
     }
     const nextDetached = functor_lang_viewer_detached();
     const detachedGeneration = functor_lang_viewer_detached_generation();
@@ -1319,6 +1449,29 @@ export function mountScrubber({ hidden = false } = {}) {
         if (newReload) {
           flashReloadJuice(newReload.kind);
           reglowMarkerCluster(newReload.frame);
+          // Only an ACCEPTED edit earns a glimpse — a rejected one has no new
+          // future to show. Parked-and-off is the whole audience for it: playing
+          // already shows the consequence, and enabled is already showing it.
+          //
+          // `pausedNow` is this frame's read, NOT `state.runtime.paused`: the
+          // runtime snapshot is dispatched further down, so the reducer still
+          // holds the PREVIOUS frame's pause state here. A resume landing on the
+          // same frame as a reload would otherwise start a glimpse over a
+          // running sim, with no later pause edge to cut it short.
+          //
+          // `peekOnEdit` is the real gate: only a host that asked for the
+          // teaching moment gets it. `!hidden` stays as defense in depth — a
+          // seam-only mount has no bar to press, so a glimpse there could only
+          // ever be an unexplained trail and a glow on a detached button.
+          if (
+            peekOnEdit &&
+            !hidden &&
+            newReload.kind === "reload-ok" &&
+            pausedNow &&
+            !state.preview.enabled
+          ) {
+            startPeek();
+          }
         }
       } catch {
         // A malformed marker payload must not stop the runtime poll loop.
@@ -1358,6 +1511,11 @@ export function mountScrubber({ hidden = false } = {}) {
     destroy() {
       cancelAnimationFrame(raf);
       clearTimeout(toastTimer);
+      // Tearing down mid-glimpse would otherwise leave the engine preview on
+      // with nothing left to turn it off, and the pending hold would later fire
+      // against a dead mount and push THIS mount's stale state at the engine.
+      // End it now: the trail goes with the bar that explained it.
+      if (peekActive()) endPeek();
       window.removeEventListener("keydown", onPausedGameKey);
       el.remove();
       // The flash overlay lives on the document, not inside the bar, so it has
