@@ -454,18 +454,18 @@ const loadExample = async (id: string) => {
     // only the entry, the file ORDER, and the role prefix differ.
     const serverParams = new URLSearchParams(params);
     serverParams.set("game", serverFile);
-    // …except the role PREFIX, which is the one param the server owns: a
-    // same-file sample (orbs) has both roles in one entry, so the server pane
-    // differs from the client pane only by the prefix it resolves through, and
-    // inheriting the client's would boot the wrong contract.
-    serverParams.delete("prefix");
-    if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
     serverParams.delete("file");
-    // The client's ROLE must not leak into the server pane — neither form.
-    // A same-file sample states the server's own inline module; absent, the
-    // server file's plain top-level contract is the role.
-    serverParams.delete("module");
+    // …except the ROLE, which is the one thing the server owns, in either of
+    // its two forms: a same-file sample (orbs) has both roles in one entry, so
+    // the server pane differs from the client pane only by the role it
+    // resolves through, and inheriting the client's would boot the wrong
+    // contract. Drop BOTH forms first, then apply the server's own — absent,
+    // the server file's plain top-level contract is the role. (Clearing has to
+    // come before setting: deleting after a set is what silently boots the
+    // server pane as a second client.)
     serverParams.delete("prefix");
+    serverParams.delete("module");
+    if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
     if (example?.server?.module) serverParams.set("module", example.server.module);
     for (const file of [serverFile, ...files.filter((f) => f !== serverFile)]) {
       serverParams.append("file", file);
