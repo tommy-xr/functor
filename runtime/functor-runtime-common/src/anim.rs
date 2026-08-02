@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{JointPose, Model, Pose, Skeleton};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnimExpr {
     /// Sample the clip named `name` at `playhead` seconds. The playhead wraps
     /// by the clip's duration (negative playheads wrap backwards from the

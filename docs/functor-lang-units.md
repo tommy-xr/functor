@@ -379,8 +379,16 @@ error:
 
 ```
 `==` on `Scene.t`: engine values are opaque — compare the numbers you derived
-from them instead (`Scene.t` supports no `==`)
+from them instead (`Scene.t` supports no `==` — `Scene.equals(a, b)` compares
+structurally)
 ```
+
+That trailing clause appears only when the type's own module declares
+`equals : (t, t) => bool` — the EXPLICIT structural walk `Scene.t` and
+`Frame.t` offer for inline `expect` tests over `draw` output. It is derived
+from the interface, not special-cased, so any host-opaque type earns the hint
+by declaring that signature; a type without one (`Color.t`, `Effect.t`) keeps
+the plain message.
 
 An interface (`.funi`) file distinguishes the two kinds of abstract type with
 a marker on the `type` item:
@@ -429,10 +437,11 @@ Three limits, all deliberate:
   that needs constraint-based typeclasses (an `Eq` bound propagated through
   generalization), which is a much larger design than this change; the
   limitation is pinned by a test rather than left as a surprise.
-- **Structural equality for `Scene.t` / `Frame.t` is out of scope.** Whether
-  scenes should compare at all — and as `==` or as `Scene.equals` — is a
-  separate decision. This check-time rejection is exactly the thing that
-  decision would carve an exception into.
+- **Structural equality for `Scene.t` / `Frame.t` is an explicit FUNCTION, not
+  an exception to this rule.** That decision has since been made: the two
+  pure-data engine values gained `Scene.equals` / `Frame.equals`, and `==` on
+  them stays a check-time error. Keeping it a call makes the O(size) walk
+  visible where it happens, and the rejection above teaches it.
 
 ### Still open
 

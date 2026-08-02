@@ -30,3 +30,19 @@ let withClearColor : (Color.t, t) => t
 /// Layers render in call order, so a second `with2D` draws above the first.
 /// The main frame is last for piping.
 let with2D : (Camera2D.t, Sprite.t, t) => t
+
+/// Compare two frames structurally — the escape hatch for `Frame.t`, which is
+/// opaque and therefore supports no `==`.
+///
+/// Compares every part of the frame: camera, scene, lights, render-target
+/// passes, fog, skybox, clear color, and 2D layers (all ordered). It also
+/// distinguishes HOW the frame was built — a `Frame.create2D` frame is never
+/// equal to a 3D frame carrying the same layer through `with2D`. Intended for
+/// inline `expect` tests over `draw` output, NOT for per-frame logic — the
+/// walk is O(frame size).
+///
+/// It inherits `Scene.equals`'s rules: floats compare exactly, assets compare
+/// by locator rather than by loaded content, animation compares as declared,
+/// and a failing `expect` can only report THAT the two frames differ — assert
+/// over the smallest piece that makes the point.
+let equals : (t, t) => bool

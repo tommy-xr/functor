@@ -81,3 +81,31 @@ let rotateX : (Angle.t, t) => t
 let rotateY : (Angle.t, t) => t
 /// Rotate a scene node around Z.
 let rotateZ : (Angle.t, t) => t
+
+/// Compare two scene nodes structurally — the escape hatch for `Scene.t`,
+/// which is opaque and therefore supports no `==`.
+///
+/// Intended for inline `expect` tests over `draw` output, NOT for per-frame
+/// logic: the walk is O(scene size), which is why it is an explicit call
+/// rather than an operator.
+///
+/// Three things it is literal about:
+///
+/// - Floats compare EXACTLY — transforms, colors, and playheads. There is no
+///   epsilon, so build both sides of a test from the same arithmetic. (The
+///   comparison happens after the engine boundary's narrowing to 32-bit, so
+///   two numbers that narrow to the same float are equal.)
+/// - Assets compare by LOCATOR, not by loaded content: the same path or URL
+///   (and the same `Asset.whilePending` chain) is equal, whether or not either
+///   has finished loading.
+/// - Animation compares as DECLARED — the clip name and playhead seconds in
+///   the attached pose, never a sampled skeleton.
+///
+/// Children are ordered, so two groups holding the same nodes in a different
+/// order are not equal.
+///
+/// The answer is a bare `bool`, so a failing `expect` reports only that the
+/// two scenes differ — scene values are opaque and cannot be printed. Write
+/// the assertion over the smallest node that makes the point, or bisect by
+/// comparing sub-scenes, rather than one `expect` over a whole frame.
+let equals : (t, t) => bool

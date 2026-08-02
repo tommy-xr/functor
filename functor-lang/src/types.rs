@@ -3575,14 +3575,50 @@ is {other}"
         let Some(name) = self.opaque_engine_type(ty) else {
             return;
         };
+        let structural = self.structural_equals_hint(&name, ty);
         self.diag(
             span,
             format!(
                 "`{}` on `{name}`: engine values are opaque — compare the numbers you derived \
-from them instead (`{name}` supports no `==`)",
+from them instead (`{name}` supports no `==`{structural})",
                 op.symbol()
             ),
         );
+    }
+
+    /// The one escape hatch a host-opaque type may offer: its own module's
+    /// `equals : (t, t) => bool` (`Scene.equals`, `Frame.equals`), an
+    /// EXPLICIT structural walk. Nothing is special-cased — the hint appears
+    /// exactly when the interface declares that shape, so a module gains it
+    /// by adding the signature.
+    ///
+    /// `operand` is the type the refused `==` actually compares, and the
+    /// signature must accept **it**, not merely something with the same
+    /// name. That one rule covers both ways the advice could be wrong
+    /// [xreview: Claude Medium + Codex Medium, AGREED]:
+    ///
+    /// - NESTED — `opaque_engine_type` walks into lists/tuples/maps, so
+    ///   `[Scene.cube()] == […]` names `Scene.t` while the operand is
+    ///   `List<Scene.t>`. `Scene.equals` does not apply to a list.
+    /// - GENERIC — an `equals : (Handle<float>, Handle<float>) => bool`
+    ///   does not apply to a `Handle<string>` operand.
+    ///
+    /// In both cases the plain refusal stands on its own; only the
+    /// actionable clause is withheld.
+    fn structural_equals_hint(&self, name: &str, operand: &Type) -> String {
+        let Some((module, _)) = name.rsplit_once('.') else {
+            return String::new();
+        };
+        let path = format!("{module}.equals");
+        let Some(Type::Fn(params, result)) = self.signatures.get(&path).map(|s| &s.ty) else {
+            return String::new();
+        };
+        if params.len() == 2 && params.iter().all(|param| param == operand) && **result == Type::Bool
+        {
+            format!(" — `{path}(a, b)` compares structurally")
+        } else {
+            String::new()
+        }
     }
 
     /// The name of an opaque ENGINE type this operand would compare, if any.

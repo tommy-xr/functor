@@ -389,6 +389,45 @@ fn equality_on_an_engine_value_is_a_check_error() {
     }
 }
 
+/// The two pure-data engine values offer an explicit structural walk instead,
+/// so their refusal names it. Every other opaque type has no such hatch and
+/// keeps the plain message.
+#[test]
+fn scene_and_frame_refusals_point_at_equals() {
+    for (src, hint) in [
+        (
+            "let bad: bool = Scene.cube() == Scene.cube()\n",
+            "`Scene.equals(a, b)` compares structurally",
+        ),
+        (
+            "let camera = Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))\n\
+             let bad: bool = Frame.create(camera, Scene.cube()) == Frame.create(camera, Scene.cube())\n",
+            "`Frame.equals(a, b)` compares structurally",
+        ),
+    ] {
+        let diags = check(src);
+        assert!(diags.iter().any(|m| m.contains(hint)), "{src}: {diags:?}");
+    }
+    // A type with no `equals` is unchanged.
+    let diags = check("let bad: bool = Color.rgb(1.0, 0.0, 0.0) == Color.rgb(1.0, 0.0, 0.0)\n");
+    assert!(
+        !diags.iter().any(|m| m.contains("compares structurally")),
+        "{diags:?}"
+    );
+}
+
+/// The escape hatch itself checks clean and answers `bool`.
+#[test]
+fn scene_and_frame_equals_check_clean() {
+    let diags = check(
+        "let camera = Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))\n\
+         let sameScene: bool = Scene.equals(Scene.cube(), Scene.cube())\n\
+         let sameFrame: bool = Frame.equals(Frame.create(camera, Scene.cube()),\n\
+                                            Frame.create(camera, Scene.cube()))\n",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
 /// The rule walks what the sibling "functions cannot be compared" rule walks
 /// — nested tuples, lists, maps, and a nominal's type arguments — so a host
 /// value one level in is caught too. [xreview: Codex Medium, Claude Medium]

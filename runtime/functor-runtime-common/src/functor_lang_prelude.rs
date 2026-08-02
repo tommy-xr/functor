@@ -2219,6 +2219,14 @@ row 0 has {cols} heights, row {r} has {}",
             transformed(scene, Matrix4::from_angle_z(angle))
         },
     );
+    // Structural equality, as an explicit call rather than `==` — `Scene.t` is
+    // host-opaque, and the O(scene-size) walk should be visible at the call
+    // site. It exists for inline `expect` tests over `draw` output.
+    reg.fn2(
+        "Scene.equals",
+        "Scene.equals(a, b)",
+        |a: FunctorLangScene, b: FunctorLangScene| Value::Bool(a.0 == b.0),
+    );
 }
 
 fn register_camera(reg: &mut crate::host_registry::Registry) {
@@ -2450,6 +2458,12 @@ frame's main pass",
             let (r, g, b) = color.0;
             FunctorLangFrame(Frame::with_clear_color(frame.0, r, g, b))
         },
+    );
+    // See `Scene.equals` — the same explicit structural walk, one level up.
+    reg.fn2(
+        "Frame.equals",
+        "Frame.equals(a, b)",
+        |a: FunctorLangFrame, b: FunctorLangFrame| Value::Bool(a.0 == b.0),
     );
 }
 
@@ -7677,6 +7691,192 @@ Vec3.make(x, y, z)"
         assert!(json.contains("\"Blend\""), "json: {json}");
         let back: Scene3D = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // --- Scene.equals / Frame.equals (structural equality for draw tests) ---
+
+    /// Evaluate a `Scene.equals`/`Frame.equals` expression to its bool.
+    fn equality(expr: &str) -> bool {
+        match eval(&format!("let main = () => {expr}")) {
+            Value::Bool(b) => b,
+            other => panic!("expected a bool from `{expr}`, got {other}"),
+        }
+    }
+
+    /// The shape of the walk: identical constructions are equal, and each
+    /// axis of a scene node — transform, material, children, and their ORDER
+    /// — makes it unequal on its own.
+    #[test]
+    fn scene_equals_compares_structurally() {
+        assert!(equality("Scene.equals(Scene.cube(), Scene.cube())"));
+        assert!(!equality("Scene.equals(Scene.cube(), Scene.sphere())"));
+        // Transform.
+        assert!(equality(
+            "Scene.equals(Scene.cube() |> Scene.translate(Vec3.make(1.0, 0.0, 0.0)),\n\
+                          Scene.cube() |> Scene.translate(Vec3.make(1.0, 0.0, 0.0)))"
+        ));
+        assert!(!equality(
+            "Scene.equals(Scene.cube() |> Scene.translate(Vec3.make(1.0, 0.0, 0.0)),\n\
+                          Scene.cube() |> Scene.translate(Vec3.make(2.0, 0.0, 0.0)))"
+        ));
+        // Material.
+        assert!(!equality(
+            "Scene.equals(Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)),\n\
+                          Scene.cube() |> Scene.color(Color.rgb(0.0, 1.0, 0.0)))"
+        ));
+        // Children, and their order.
+        assert!(equality(
+            "Scene.equals(Scene.group([Scene.cube(), Scene.sphere()]),\n\
+                          Scene.group([Scene.cube(), Scene.sphere()]))"
+        ));
+        assert!(!equality(
+            "Scene.equals(Scene.group([Scene.cube(), Scene.sphere()]),\n\
+                          Scene.group([Scene.sphere(), Scene.cube()]))"
+        ));
+    }
+
+    /// Floats compare EXACTLY — there is no epsilon, so a difference far
+    /// below any visible one is still a difference. (The comparison happens
+    /// after the boundary's f64 → f32 narrowing, so it is f32-exact: a
+    /// difference the cast erases, like `0.1 + 0.2` against `0.3`, is gone
+    /// before equality ever sees it.)
+    #[test]
+    fn scene_equals_compares_floats_exactly() {
+        assert!(!equality(
+            "Scene.equals(Scene.cube() |> Scene.scale(1.0),\n\
+                          Scene.cube() |> Scene.scale(1.000001))"
+        ));
+        assert!(equality(
+            "Scene.equals(Scene.cube() |> Scene.scale(0.1 + 0.2),\n\
+                          Scene.cube() |> Scene.scale(0.3))"
+        ));
+    }
+
+    /// An asset compares by LOCATOR, not by loaded content — nothing has been
+    /// loaded here, so two nodes naming the same model are equal and two
+    /// naming different files are not.
+    #[test]
+    fn scene_equals_compares_assets_by_locator() {
+        assert!(equality(
+            "Scene.equals(Scene.model(Asset.model(\"Xbot.glb\")),\n\
+                          Scene.model(Asset.model(\"Xbot.glb\")))"
+        ));
+        assert!(!equality(
+            "Scene.equals(Scene.model(Asset.model(\"Xbot.glb\")),\n\
+                          Scene.model(Asset.model(\"Ybot.glb\")))"
+        ));
+    }
+
+    /// Animation compares as DECLARED: the clip name plus the playhead
+    /// seconds, so the same model at two times is two different scenes.
+    #[test]
+    fn scene_equals_compares_animation_as_declared() {
+        assert!(equality(
+            "Scene.equals(\n\
+               Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"walk\", 0.5)),\n\
+               Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"walk\", 0.5)))"
+        ));
+        assert!(!equality(
+            "Scene.equals(\n\
+               Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"walk\", 0.5)),\n\
+               Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"walk\", 0.75)))"
+        ));
+        assert!(!equality(
+            "Scene.equals(\n\
+               Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"walk\", 0.5)),\n\
+               Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"run\", 0.5)))"
+        ));
+    }
+
+    /// `Frame.equals` is the same walk one level up: it compares the camera,
+    /// the scene, the lights, and the frame's optional decorations.
+    #[test]
+    fn frame_equals_compares_the_whole_frame() {
+        const CAMERA: &str =
+            "Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))";
+        assert!(equality(&format!(
+            "Frame.equals(Frame.create({CAMERA}, Scene.cube()),\n\
+                          Frame.create({CAMERA}, Scene.cube()))"
+        )));
+        // The scene differs.
+        assert!(!equality(&format!(
+            "Frame.equals(Frame.create({CAMERA}, Scene.cube()),\n\
+                          Frame.create({CAMERA}, Scene.cube() |> Scene.rotateY(Angle.degrees(90.0))))"
+        )));
+        // The camera differs.
+        assert!(!equality(&format!(
+            "Frame.equals(Frame.create({CAMERA}, Scene.cube()),\n\
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -4.0), Vec3.make(0.0, 0.0, 0.0)), \
+Scene.cube()))"
+        )));
+        // The lights differ.
+        assert!(!equality(&format!(
+            "Frame.equals(Frame.createLit({CAMERA}, Scene.cube(), [Light.ambient(Color.rgb(1.0, 1.0, 1.0))]),\n\
+                          Frame.createLit({CAMERA}, Scene.cube(), [Light.ambient(Color.rgb(0.5, 0.5, 0.5))]))"
+        )));
+        // A decoration only one side carries.
+        assert!(!equality(&format!(
+            "Frame.equals(Frame.create({CAMERA}, Scene.cube()),\n\
+                          Frame.create({CAMERA}, Scene.cube()) \
+|> Frame.withClearColor(Color.rgb(0.0, 0.0, 0.0)))"
+        )));
+    }
+
+    /// The rest of the frame's fields, one assertion each — the ones a future
+    /// refactor that stops deriving would silently drop.
+    /// [xreview: Claude Low]
+    #[test]
+    fn frame_equals_covers_every_decoration() {
+        const CAMERA: &str =
+            "Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))";
+        const CAM2D: &str = "Camera2D.create(16.0, 9.0)";
+        let differs = |a: &str, b: &str| {
+            assert!(
+                !equality(&format!("Frame.equals({a}, {b})")),
+                "expected {a} != {b}"
+            );
+        };
+        let base = format!("Frame.create({CAMERA}, Scene.cube())");
+        // Fog.
+        differs(
+            &base,
+            &format!(
+                "{base} |> Frame.withFog(Fog.linear(5.0, 50.0, Color.rgb(0.1, 0.1, 0.2)))"
+            ),
+        );
+        // Skybox.
+        differs(
+            &base,
+            &format!(
+                "{base} |> Frame.withSkybox(Skybox.files(\"px.png\", \"nx.png\", \"py.png\", \
+\"ny.png\", \"pz.png\", \"nz.png\"))"
+            ),
+        );
+        // Render-target passes.
+        let target = "RenderTarget.named(\"feed\") |> RenderTarget.sized(64.0, 64.0)";
+        differs(
+            &base,
+            &format!("{base} |> Frame.withRenderTarget({target}, {base})"),
+        );
+        // 2D layers — present vs absent, and their content.
+        let dot = "Sprite.circle(Color.rgb(1.0, 1.0, 1.0), 1.0)";
+        differs(&base, &format!("{base} |> Frame.with2D({CAM2D}, {dot})"));
+        differs(
+            &format!("{base} |> Frame.with2D({CAM2D}, {dot})"),
+            &format!("{base} |> Frame.with2D({CAM2D}, Sprite.blank())"),
+        );
+        // The `Frame.create2D` marker: a pure 2D frame is not the 3D frame
+        // that happens to carry the same layer.
+        differs(
+            &format!("Frame.create2D({CAM2D}, {dot})"),
+            &format!(
+                "Frame.create({CAMERA}, Scene.group([])) |> Frame.with2D({CAM2D}, {dot})"
+            ),
+        );
+        // …and each of those still equals itself.
+        assert!(equality(&format!(
+            "Frame.equals(Frame.create2D({CAM2D}, {dot}), Frame.create2D({CAM2D}, {dot}))"
+        )));
     }
 
     // The Angle rule for animations: a bare clip name teaches Anim.clip.
