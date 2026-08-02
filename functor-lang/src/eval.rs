@@ -1517,21 +1517,13 @@ evaluation depth."
                 }
             }
             Value::Ctor { name, arity } => {
-                if args.len() != *arity {
-                    let who = match via {
-                        Some(builtin) => format!("the function passed to {builtin}"),
-                        None => format!("`{label}`"),
-                    };
-                    Err(RunError {
-                        message: format!("{who} takes {arity} argument(s), got {}", args.len()),
-                        span,
-                    })
-                } else {
-                    Ok(Value::Variant {
-                        ctor: name.clone(),
-                        args: Rc::new(args),
-                    })
-                }
+                // Saturated by the arity gate above: every mismatch went to
+                // `call_curried`, which refuses it (constructors apply fully).
+                debug_assert_eq!(args.len(), *arity, "ctor mismatch reaches call_curried");
+                Ok(Value::Variant {
+                    ctor: name.clone(),
+                    args: Rc::new(args),
+                })
             }
             Value::Builtin(b) => self.call_builtin(*b, args, span),
             Value::HostFn(path) => self.host.call(path, args, span),
@@ -1573,6 +1565,17 @@ evaluation depth."
             return self.call(partial.callee.clone(), combined, label, span, via);
         }
         let arity = arity.expect("non-partial cold path carries its arity");
+        // Constructors do NOT curry: applying one with the wrong argument
+        // count is an error right here, under- and over-application alike.
+        // (A bare `Circle` reference is still a first-class function value —
+        // only CALLING one with the wrong count is refused. The checker
+        // catches direct call syntax; this is the gradual-seam backstop.)
+        if let Value::Ctor { name, .. } = &callee {
+            return Err(RunError {
+                message: ctor_arity_message(name, arity, args.len(), via),
+                span,
+            });
+        }
         if args.len() < arity {
             // Under-applied → capture what we have as a partial. (The count
             // still needed is derived from the callee's arity at display time,
@@ -3167,6 +3170,35 @@ fn callee_arity(v: &Value) -> Option<usize> {
         Value::Builtin(b) => Some(builtin_arity(*b)),
         _ => None,
     }
+}
+
+/// The wrong-argument-count message for a constructor application, shared by
+/// the checker ([`crate::types`], where `via` is always `None`) and the
+/// interpreter so the two can never word it differently. Constructors do not
+/// curry: unlike a function, under-applying one is an error at the call rather
+/// than a partial (OCaml/F# do the same), so the message says how to stage
+/// arguments on purpose.
+pub(crate) fn ctor_arity_message(
+    name: &str,
+    arity: usize,
+    got: usize,
+    via: Option<&str>,
+) -> String {
+    let who = match via {
+        Some(builtin) => format!("the constructor `{name}` passed to {builtin}"),
+        None => format!("`{name}`"),
+    };
+    let mut message =
+        format!("{who} takes {arity} argument(s), got {got} — constructors apply fully");
+    // The staging hint only helps at a call the author wrote: a builtin that
+    // under-applied a ctor callback needs a different function, not a lambda
+    // around the same missing value.
+    if got < arity && via.is_none() {
+        message.push_str("; wrap it in a lambda to stage arguments (e.g. `(x) => ");
+        message.push_str(name);
+        message.push_str("(…, x)`)");
+    }
+    message
 }
 
 /// A builtin's argument count — currying needs each builtin's arity to decide

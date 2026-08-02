@@ -208,8 +208,9 @@ pub struct Closure {
 }
 
 /// A partially-applied callable. `callee` is the underlying callable (a
-/// closure, constructor, or builtin — never a host fn, which the host
-/// saturates, nor another `Partial`, which is unwrapped before capture);
+/// closure or a builtin — never a host fn, which the host saturates; never a
+/// constructor, which applies fully; nor another `Partial`, which is unwrapped
+/// before capture);
 /// `applied` are the arguments already supplied. Only produced when a call
 /// supplies FEWER args than the callee's arity — the saturated call path never
 /// allocates one. The count still needed is derived from the callee's arity
@@ -537,11 +538,10 @@ impl fmt::Display for Value {
                 }
                 Value::Partial(p) => {
                     // How many args are still needed, derived live from the
-                    // callee's arity (a Partial's callee is always a closure,
-                    // ctor, or builtin — see [`Partial`]).
+                    // callee's arity (a Partial's callee is always a closure or
+                    // a builtin — see [`Partial`]).
                     let arity = match &p.callee {
                         Value::Closure(c) => c.params.len(),
-                        Value::Ctor { arity, .. } => *arity,
                         Value::Builtin(b) => crate::eval::builtin_arity(*b),
                         _ => p.applied.len(),
                     };

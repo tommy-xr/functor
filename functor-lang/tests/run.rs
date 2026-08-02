@@ -1871,16 +1871,58 @@ fn error_new_comparisons_reject_bad_operands() {
     assert_eq!(message, "functions cannot be compared with `!=`");
 }
 
-// Currying: over-applying a saturated constructor is still an error (the
-// resulting variant isn't callable); under-applying it (here, zero args) is a
-// legal partial rather than an arity error.
+// Constructors apply FULLY: over- AND under-application are the same arity
+// error at the call site, worded alike (functions still curry — this is the
+// constructor-only rule).
 #[test]
-fn ctor_over_application_at_runtime_errors() {
-    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle(1.0, 2.0)"));
-    assert_eq!(message, "cannot call a variant");
+fn ctor_application_demands_full_arity_at_runtime() {
+    let (message, line, col) = run_err(&format!("{SHAPE}let main = () => Circle(1.0, 2.0)"));
     assert_eq!(
-        main_result(&format!("{SHAPE}let main = () => Circle()")),
-        "<partial 1 more>"
+        message,
+        "`Circle` takes 1 argument(s), got 2 — constructors apply fully"
+    );
+    assert_eq!((line, col), (2, 18));
+    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Rect(1.0)"));
+    assert_eq!(
+        message,
+        "`Rect` takes 2 argument(s), got 1 — constructors apply fully; \
+         wrap it in a lambda to stage arguments (e.g. `(x) => Rect(…, x)`)"
+    );
+    // Zero args on a parameterful ctor is under-application, not a nullary use.
+    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle()"));
+    assert!(message.starts_with("`Circle` takes 1 argument(s), got 0"), "{message}");
+    // A gradual seam the checker cannot see through still errors at the call…
+    let (message, _, _) = run_err(&format!(
+        "{SHAPE}let stage = (f: unknown) => f(1.0)\n\
+         let main = () => stage(Rect)"
+    ));
+    assert!(message.starts_with("`Rect` takes 2 argument(s), got 1"), "{message}");
+    // …including from inside a builtin, which names the builtin it came from —
+    // and drops the staging hint, since a lambda cannot fix `List.map`'s call.
+    let (message, _, _) = run_err(&format!(
+        "{SHAPE}let main = () => [1.0] |> List.map(Rect)"
+    ));
+    assert_eq!(
+        message,
+        "the constructor `Rect` passed to List.map takes 2 argument(s), got 1 \
+         — constructors apply fully"
+    );
+    // A constructor VALUE never curries either, so an ALIAS that the checker
+    // typed as an ordinary curried function still errors here. This is the one
+    // place a clean `check` fails at run time — see `ctor_alias_is_a_check_seam`
+    // in tests/check.rs, which pins the other half.
+    let (message, _, _) = run_err(&format!(
+        "{SHAPE}let make = Rect\n\
+         let main = () => make(1.0)"
+    ));
+    assert!(message.starts_with("`Rect` takes 2 argument(s), got 1"), "{message}");
+    // Staging arguments on purpose — the hint's lambda — works.
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let mkTall = (h) => Rect(2.0, h)\n\
+             let main = () => mkTall(5.0)"
+        )),
+        "Rect(2, 5)"
     );
 }
 
@@ -2103,16 +2145,31 @@ fn over_application_applies_remainder_to_result() {
     );
 }
 
-/// A partially-applied constructor is a first-class value; saturating it
-/// builds the variant.
+/// A BARE constructor reference stays a first-class function value — that is
+/// what the full-arity rule leaves untouched: only call syntax with the wrong
+/// count is refused. Unqualified, stdlib-qualified, and module-qualified.
 #[test]
-fn constructor_partial_then_saturate() {
+fn bare_constructors_are_first_class() {
     assert_eq!(
         main_result(&format!(
-            "{SHAPE}let mkTall = Rect(2.0)\n\
-             let main = () => mkTall(5.0)"
+            "{SHAPE}let main = () => [1.0, 2.0] |> List.map(Circle)"
         )),
-        "Rect(2, 5)"
+        "[Circle(1), Circle(2)]"
+    );
+    assert_eq!(
+        main_result(
+            "module Wrapper { type Wrap = | Wrap(v: float) }\n\
+             let main = () => List.map(Wrapper.Wrap, [1.0])"
+        ),
+        "[Wrapper.Wrap(1)]"
+    );
+    // A ctor bound to a plain global, then applied fully.
+    assert_eq!(
+        main_result(&format!(
+            "{SHAPE}let make = Circle\n\
+             let main = () => make(3.0)"
+        )),
+        "Circle(3)"
     );
 }
 

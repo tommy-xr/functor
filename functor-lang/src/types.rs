@@ -782,7 +782,6 @@ fn check_impl(
         expr_types: HashMap::new(),
         partials: HashMap::new(),
         def_param_names: HashMap::new(),
-        ctor_param_names: HashMap::new(),
         match_scrutinees: Vec::new(),
         unit_hints: HashMap::new(),
     };
@@ -846,12 +845,6 @@ fn check_impl(
                     checker.ctors.insert(
                         variant.name.clone(),
                         (decl.name.clone(), decl.params.len(), fields),
-                    );
-                    // Field names, so a partially-applied constructor can name
-                    // the arguments it is still missing.
-                    checker.ctor_param_names.insert(
-                        variant.name.clone(),
-                        variant.fields.iter().map(|f| f.name.clone()).collect(),
                     );
                 }
             }
@@ -1205,8 +1198,6 @@ struct Checker<'s> {
     /// Top-level def name → its lambda parameter names, in order — so a
     /// partial application can NAME the arguments it is missing.
     def_param_names: HashMap<String, Vec<String>>,
-    /// Constructor name → its field names, in order (same purpose).
-    ctor_param_names: HashMap<String, Vec<String>>,
     /// Scrutinee types of the `match`es currently being checked, outermost
     /// first (the innermost is the one whose arms are being checked). Purely
     /// a diagnostic side channel: it turns "`Y` is not a constructor of `B`"
@@ -1955,14 +1946,13 @@ if this position is deliberately untyped"
         }
     }
 
-    /// The parameter names of `callee`, when it names a def or a constructor
-    /// (a partial application uses them to name its missing arguments). A
-    /// builtin or a local function value has no names here, so the diagnostic
-    /// falls back to the parameter types alone.
+    /// The parameter names of `callee`, when it names a def (a partial
+    /// application uses them to name its missing arguments; a constructor
+    /// never partially applies). A builtin or a local function value has no
+    /// names here, so the diagnostic falls back to the parameter types alone.
     fn callee_param_names(&self, callee: &Expr) -> Option<Vec<String>> {
         match &callee.kind {
             ExprKind::Global(name) => self.def_param_names.get(name).cloned(),
-            ExprKind::Ctor { name, .. } => self.ctor_param_names.get(name).cloned(),
             _ => None,
         }
     }
@@ -2326,6 +2316,25 @@ missing {missing}. Did you forget an argument?"
             }
             ExprKind::Call { callee, args } => {
                 let callee_ty = self.infer(callee);
+                // Constructors apply FULLY: `Rect(1.0)` on a two-field ctor is
+                // an arity error here, not a partial (the interpreter refuses
+                // it too, for calls that reach it through a gradual seam).
+                if let ExprKind::Ctor { name, arity } = &callee.kind {
+                    if args.len() != *arity {
+                        self.diag(
+                            expr.span,
+                            crate::eval::ctor_arity_message(name, *arity, args.len(), None),
+                        );
+                        for arg in args {
+                            self.infer(arg);
+                        }
+                        // Recover as the gradual seam so one wrong count is one
+                        // diagnostic: neither the variant type (which would add
+                        // a mismatch wherever the call is consumed) nor a
+                        // partial function type.
+                        return Type::Unknown;
+                    }
+                }
                 match callee_ty {
                     // Currying: a call may supply FEWER args (partial
                     // application → a function of the remaining params), an

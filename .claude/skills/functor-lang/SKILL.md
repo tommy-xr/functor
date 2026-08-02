@@ -669,16 +669,27 @@ let beat = Sub.every(0.5s, Tick)    // == Sub.every(Time.seconds(0.5), Tick)
   exhaustiveness is length-based). A tuple pattern matches by EXACT arity
   (mismatch = non-match, like ctors).
   Pattern vars are immutable bindings; lambdas may capture them. First
-  matching arm wins; no arm matching is a spanned runtime error. Unapplied
-  ctors are first-class (`xs |> List.map(Circle)`), and they **curry**:
-  under-applying yields a partial, not an error — `Rect(1.0)` displays as
-  `<partial 1 more>` and `Rect(1.0)(2.0)` completes it to `Rect(1, 2)`. Only
-  OVER-application errors (`cannot call a variant`). So a dropped ctor
-  argument surfaces as a stray function value flowing through your model,
-  not as an arity error at the call. `check` catches it where the types are
-  pinned down, but in unannotated code it can slip through to run time —
-  so a variant that mysteriously renders/compares wrong is worth grepping
-  for a missing argument.
+  matching arm wins; no arm matching is a spanned runtime error.
+- **Constructors apply FULLY — functions curry, constructors don't.** Calling
+  one with the wrong argument count is an immediate error at the call site,
+  under- and over-application alike (`` `Rect` takes 2 argument(s), got 1 —
+  constructors apply fully ``): at `check` time, and at run time for the
+  gradual seams `check` can't see through. A dropped argument is therefore an
+  error where you wrote it, not a `<partial>` drifting through your model
+  until a `match` or an `==` fails far away. To stage arguments on purpose,
+  say so with a lambda: `let mkTall = (h) => Rect(2.0, h)`.
+  A BARE constructor reference is unchanged — still a first-class function
+  value for higher-order use (`xs |> List.map(Circle)`,
+  `List.map(Option.Some, xs)`, `Utils.Circle` from a sibling module), and it
+  rebinds across a hot reload like any stored value. Nullary constructors are
+  unaffected (they take no parens at all — `Point`, never `Point()`).
+  ⚠️ The two phases see different things, and that is **the one place a clean
+  `check` still fails at run time**: `check` reads CALL SYNTAX (the callee's
+  declared arity), while the interpreter refuses the constructor VALUE. So an
+  aliased ctor — `let make = Rect` then `make(1.0)`, or one handed to a
+  higher-order function — types as an ordinary curried function, checks clean,
+  and errors when it runs. A constructor value never curries anywhere; the type
+  system just can't say so.
 - **Duplicates are errors**: top-level names (per namespace — `type Foo` and
   `let Foo` may coexist, but constructors share the value namespace with
   `let`s), record fields (literal and update), lambda params, pattern
