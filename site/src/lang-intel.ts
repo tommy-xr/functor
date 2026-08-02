@@ -78,11 +78,17 @@ interface AnalyzeDiagnostic {
   severity: "error";
 }
 
-/** The parsed `analyze` / `analyze_project` payload; all three are present. */
+/**
+ * The parsed `analyze` / `analyze_project` payload; all three keys are
+ * present. `inlays`/`lenses` are NULL (together) when the check pass didn't
+ * run — a parse/link failure mid-typing — meaning "keep the previous set";
+ * an empty array is authoritative (clears them). Diagnostics are always
+ * fresh.
+ */
 interface AnalyzeResult {
   diagnostics: AnalyzeDiagnostic[];
-  inlays: { pos: number; label: string }[];
-  lenses: { from: number; text: string }[];
+  inlays: { pos: number; label: string }[] | null;
+  lenses: { from: number; text: string }[] | null;
 }
 
 /** The parsed `hover` payload (the empty string means "nothing to show"). */
@@ -212,6 +218,9 @@ export const analyzeCached = (docString: string): AnalyzeResult | null => {
       args ? analyzeProjectFn!(args.filesJson, args.active) : analyzeFn(docString)
     );
   } catch {
+    // A genuine wasm trap / malformed JSON — the analyzer itself is broken,
+    // not the buffer. The empty (authoritative) result, NOT the null keep-
+    // stale one: null here would pin the last decorations forever.
     result = { diagnostics: [], inlays: [], lenses: [] };
   }
   lastKey = key;
@@ -500,16 +509,21 @@ class LensWidget extends WidgetType {
 const buildDecorations = (state: EditorState): DecorationSet | null => {
   const result = peekCached(state.doc.toString());
   if (!result) return null;
+  // Null inlays/lenses = the pass didn't run (a transient parse error while
+  // typing): keep the previous set, mapped through the edits. Dropping the
+  // block-widget lenses here would reflow the whole buffer on every broken
+  // keystroke. Diagnostics still refresh — only the decorations hold.
+  if (result.inlays == null || result.lenses == null) return null;
   const doc = state.doc;
   const len = doc.length;
   const ranges: Range<Decoration>[] = [];
-  for (const it of result.inlays || []) {
+  for (const it of result.inlays) {
     const pos = Math.max(0, Math.min(it.pos | 0, len));
     ranges.push(
       Decoration.widget({ widget: new InlayWidget(String(it.label ?? "")), side: 1 }).range(pos)
     );
   }
-  for (const it of result.lenses || []) {
+  for (const it of result.lenses) {
     const from = Math.max(0, Math.min(it.from | 0, len));
     const line = doc.lineAt(from);
     ranges.push(

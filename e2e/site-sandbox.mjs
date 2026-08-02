@@ -1597,6 +1597,45 @@ for (const example of examples) {
       `lenses=${lenses}, defs=${topDefs}`
     );
 
+    // A transient parse error (the mid-typing state) must KEEP the lenses —
+    // dropping the block widgets would reflow the whole buffer on every
+    // broken keystroke. The wasm signals "didn't run" with null lenses; the
+    // decoration field holds the previous set (mapped through the edits)
+    // while diagnostics refresh. TYPE the breakage — an incremental edit,
+    // the case the keep-stale rule exists for (setSource is a wholesale
+    // replace, which legitimately rebuilds from scratch).
+    // A zero-width load diagnostic renders as a lint POINT, not a range.
+    const lintMarks = () =>
+      page.locator(".cm-lintRange-error, .cm-lintPoint-error").count();
+    await page.click(".cm-content");
+    await page.keyboard.press("Control+End");
+    await page.keyboard.press("Meta+ArrowDown"); // mac's cursorDocEnd
+    // No brackets — autoclose would pair them into a VALID empty record.
+    await page.keyboard.type("let broken =");
+    const marked = await poll(lintMarks, (n) => n > 0);
+    check("broken edit: the parse error is marked", marked > 0, `count=${marked}`);
+    // The decoration rebuild is rAF-deferred after the lint pass; let it land
+    // before counting, or the count could pass vacuously (the old empty-array
+    // behavior also still shows lenses at the instant the marks render).
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    );
+    const held = await page.locator(".cm-lens").count();
+    check(
+      "broken edit: codelenses survive the transient parse error",
+      held >= topDefs,
+      `lenses=${held}, defs=${topDefs}`
+    );
+    // Restore the clean buffer so the hover check below sees the same doc,
+    // and wait out the fresh boot the restore triggers — the section's final
+    // "keeps the sandbox live" check must not race it.
+    await page.evaluate((s) => window.__sandbox.setSource(s), INTEL_SRC);
+    await poll(lintMarks, (n) => n === 0);
+    await poll(() => page.locator(".cm-lens").count(), (n) => n >= topDefs);
+    await page.waitForFunction(() => window.__sandbox.status().state === "live", {
+      timeout: 30000,
+    });
+
     // Hover a REAL code token (skip the lens/inlay widget text) and rest the
     // mouse over it — a jiggle would keep resetting the hover timer.
     const coord = await page.evaluate(() => {
