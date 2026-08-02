@@ -23,8 +23,17 @@
 // scrubbing sweeps the rows the same way it sweeps the dots.
 
 import type { NetCoordinator, Packet } from "./net-coordinator.js";
-import { hasTree, mountValueTree } from "./value-tree.js";
-import { decodeWire, fullWire, type WireValue } from "./wire-value.js";
+import {
+  buildWireRow,
+  indexAfter,
+  LIVE_ROW_MS,
+  logWindow,
+  onLink,
+  openTree,
+  packetKey,
+  shortName,
+} from "./wire-rows.js";
+import type { WireValue } from "./wire-value.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -88,17 +97,6 @@ const WIRE_LOG_LEAD = 3;
 const PANEL_MARGIN = 10;
 
 /**
- * How often the LIVE tail repaints its rows, in ms.
- *
- * A tail that turns over sixty times a second is not a log, it is a blur — and
- * each repaint decodes a dozen payloads and rebuilds the rows, on a page that
- * is already running three games. Ten a second reads as live and costs a sixth
- * as much. Parked, there is no throttle at all: the panel must answer the rail
- * on the frame the playhead moves.
- */
-const LIVE_ROW_MS = 100;
-
-/**
  * Payload bytes at which a dot reaches its largest size, per direction.
  *
  * INTENT is a keypress-sized message, so it saturates early and its range is
@@ -147,6 +145,17 @@ export interface NetworkGraphOptions {
    * timeline, so the rail decides which packets are on the wires.
    */
   clock: () => { parked: boolean; frame: number | null };
+  /**
+   * A wire was pinned (or unpinned, with null) — the one place a reader says
+   * "THIS link is the interesting one".
+   *
+   * The wire tab in the bottom panel follows the non-null half of it (see
+   * wire-tab.ts's note on the selection model): pinning a wire here focuses the
+   * same link there, so one click aims both surfaces. Unpinning is deliberately
+   * NOT propagated — "no pin" and "every link" are different statements, and
+   * this panel unpins itself whenever the network view closes.
+   */
+  onSelect?: (id: string | null) => void;
 }
 
 export interface NetworkGraph {
@@ -217,6 +226,7 @@ export function initNetworkGraph({
   clients,
   server,
   clock,
+  onSelect,
 }: NetworkGraphOptions): NetworkGraph {
   const layer = document.createElement("div");
   layer.className = "mp-net-layer";
@@ -302,11 +312,6 @@ export function initNetworkGraph({
    * a repaint rebuilds every row, and the button the reader just pressed with
    * the keyboard is one of the ones it destroys. */
   let refocus: Packet | null = null;
-
-  /** A row's cache key — the four fields that make two rows different. Identity
-   * is the `Packet` itself (see `opened`); this is only for the change hash. */
-  const packetKey = (packet: Packet): string =>
-    `${packet.frame}:${packet.from}:${packet.size}:${packet.at}`;
 
   const addEdge = (node: NetworkNode): Edge => {
     const path = document.createElementNS(SVG_NS, "path");
@@ -465,41 +470,9 @@ export function initNetworkGraph({
   // game sent. It is a panel rather than a hover tooltip precisely because it
   // has to stay readable while the other hand is scrubbing.
 
-  /** `client 2` → `c2`, `server` → `srv`: a direction column has to fit. */
-  const shortName = (id: string): string =>
-    id === "server" ? "srv" : id.startsWith("client ") ? `c${id.slice(7)}` : id;
-
-  /**
-   * Is this packet traffic on the pinned link?
-   *
-   * A link is a PANE PAIR, not a connection id: a game that opened two
-   * connections to the same authority would interleave both here. Nothing in
-   * the samples does, and the pane pair is what the wire on screen represents.
-   */
-  const onLink = (packet: Packet, id: string): boolean =>
-    packet.kind === "message" &&
-    ((packet.from === id && packet.to === "server") ||
-      (packet.from === "server" && packet.to === id));
-
-  /**
-   * The first index in the log whose frame is after `at` — the playhead's place
-   * in the record, by binary search.
-   *
-   * The log is sorted by frame because the reference clock only ever advances;
-   * an unframed packet (the boot handshake, routed before the reference pane
-   * had recorded a frame) sorts before everything, which is also where it
-   * belongs on the timeline.
-   */
-  const indexAfter = (log: readonly Packet[], at: number): number => {
-    let lo = 0;
-    let hi = log.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if ((log[mid].frame ?? -Infinity) <= at) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo;
-  };
+  // The row grammar itself — `#f · direction · payload · bytes`, plus the log
+  // walks that place a viewport on the playhead — is shared with the wire tab
+  // (wire-rows.ts), so the two surfaces read identically.
 
   const selectEdge = (id: string | null) => {
     if (id !== null && !edges.has(id)) return;
@@ -520,6 +493,7 @@ export function initNetworkGraph({
     // A new link is a new tether and a new free quadrant to find, even when the
     // row count happens to match (which is what renderPanel re-places on).
     placePanel();
+    onSelect?.(id);
   };
 
   /**
@@ -528,38 +502,20 @@ export function initNetworkGraph({
    * means when the log is already in routing order), plus which row the
    * playhead is on.
    *
-   * SCRUB-LOCKED: parked, the window ends a few rows PAST the playhead's row so
-   * the parked frame is not the last line on the panel; live, it tails the
-   * newest traffic. One time axis, two representations (design §5).
-   *
-   * Costs a screenful, not a session: the log is ordered by frame (the
-   * reference clock only advances), so the playhead's position is found by
-   * BINARY SEARCH and the walk starts there. A linear scan from the end would
-   * traverse all ten thousand packets every time the rail is parked in the
-   * past — exactly the state this feature exists for.
+   * SCRUB-LOCKED, and the lock itself is shared with the wire tab
+   * (`logWindow`): one time axis, two representations (design §5), so the two
+   * surfaces cannot answer the rail differently. All this adds is WHICH packets
+   * count as this panel's — the pinned link's.
    */
   const viewportRows = (
     id: string,
     at: number | null
-  ): { rows: Packet[]; highlight: number } => {
-    const log = net.packets();
-    const before: Packet[] = [];
-    const after: Packet[] = [];
-    // The lead rows first, walking FORWARD from the playhead: the ones nearest
-    // it, not the newest in the session.
-    const pivot = at === null ? log.length : indexAfter(log, at);
-    for (let i = pivot; i < log.length && after.length < WIRE_LOG_LEAD; i++) {
-      if (onLink(log[i], id)) after.push(log[i]);
-    }
-    for (let i = pivot - 1; i >= 0 && before.length < WIRE_LOG_ROWS; i--) {
-      if (onLink(log[i], id)) before.push(log[i]);
-    }
-    before.reverse();
-    const rows = before.slice(Math.max(0, before.length - (WIRE_LOG_ROWS - after.length)));
-    const highlight = at === null || rows.length === 0 ? -1 : rows.length - 1;
-    rows.push(...after);
-    return { rows, highlight };
-  };
+  ): { rows: Packet[]; highlight: number } =>
+    logWindow(net.packets(), at, {
+      match: (packet) => onLink(packet, id),
+      back: WIRE_LOG_ROWS,
+      lead: WIRE_LOG_LEAD,
+    });
 
   /**
    * Open a row into a value tree — or close the one that is open.
@@ -574,14 +530,13 @@ export function initNetworkGraph({
     if (opened?.packet === packet) {
       opened = null;
     } else {
-      const host = document.createElement("div");
-      host.className = "mp-wl-tree";
-      // The rows are a `role="log"` live region; a tree opening inside one
-      // would otherwise be read out in full on every repaint that re-parents
-      // it. It is a thing to explore, not an announcement.
-      host.setAttribute("aria-live", "off");
-      mountValueTree(host, value, placePanel);
-      opened = { packet, host, held: clock().parked ? null : [...shown] };
+      // The panel positions itself against its own height, so a node opening
+      // inside the tree has to re-place it.
+      opened = {
+        packet,
+        host: openTree(value, placePanel),
+        held: clock().parked ? null : [...shown],
+      };
     }
     // The reader may have pressed this button with the keyboard, and the
     // repaint below destroys it — hand the focus to its replacement.
@@ -633,76 +588,16 @@ export function initNetworkGraph({
     let focusTarget: HTMLElement | null = null;
     panelRows.replaceChildren(
       ...shown.map((packet, index) => {
-        const up = packet.from !== "server";
-        const decoded = decodeWire(packet.text);
-        if (!decoded.typed) anyPlain = true;
         const isOpen = opened?.packet === packet;
-        const row = document.createElement("div");
-        row.className = `mp-wl${index === highlight ? " at" : ""}`;
-        // The full rendering is built ON HOVER, once: rendering every row's
-        // whole payload unelided (a world snapshot, per row, per repaint) to
-        // fill a tooltip nobody has asked for yet is the most expensive thing
-        // this panel could do. An OPEN row skips it: the tooltip would cover
-        // the tree that already says the same thing, better.
-        if (!isOpen) {
-          row.addEventListener(
-            "mouseenter",
-            () => {
-              row.title = fullWire(packet.text);
-            },
-            { once: true }
-          );
-        }
-        const frameCell = document.createElement("span");
-        frameCell.className = "f";
-        frameCell.textContent = `#f ${packet.frame ?? "—"}`;
-        const dirCell = document.createElement("span");
-        dirCell.className = `d ${up ? "up" : "dn"}`;
-        dirCell.textContent = up
-          ? `${shortName(packet.from)}→srv`
-          : `srv→${shortName(packet.to)}`;
-        // The payload cell is the disclosure control when there is something to
-        // disclose: a typed payload WITH structure, whose whole value the page
-        // already holds (the frame is decoded client-side, so opening it costs
-        // nothing but the DOM). A plain `Effect.send` text — or a bare
-        // `Welcome(2)`, which the row already shows completely — stays a plain
-        // cell rather than a control that opens the line you are looking at.
-        //
-        // textContent, never innerHTML: this is a running game's own data.
-        const value = decoded.value && hasTree(decoded.value) ? decoded.value : null;
-        let payload: HTMLElement;
-        if (value) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.setAttribute("aria-expanded", String(isOpen));
-          button.addEventListener("click", () => openRow(packet, value, shown));
-          if (refocus === packet) focusTarget = button;
-          payload = button;
-        } else {
-          payload = document.createElement("span");
-        }
-        payload.className = "payload";
-        if (decoded.head) {
-          const ctor = document.createElement("b");
-          ctor.textContent = decoded.head;
-          const args = document.createElement("em");
-          args.textContent = decoded.body;
-          payload.append(ctor, args);
-        } else {
-          payload.textContent = decoded.body;
-        }
-        const bytes = document.createElement("span");
-        bytes.className = "n";
-        bytes.textContent = `${packet.size} B`;
-        row.append(frameCell, dirCell, payload, bytes);
-        // The tree is the SAME element across repaints, moved into the rebuilt
-        // row: every node the reader opened inside it stays open, because its
-        // state never left the DOM.
-        if (isOpen && opened) {
-          row.classList.add("open");
-          row.append(opened.host);
-        }
-        return row;
+        const built = buildWireRow({
+          packet,
+          at: index === highlight,
+          tree: isOpen && opened ? opened.host : null,
+          onOpen: (value) => openRow(packet, value, shown),
+        });
+        if (!built.typed) anyPlain = true;
+        if (refocus === packet) focusTarget = built.button;
+        return built.el;
       })
     );
     // The rebuild threw away the element the keyboard was on; put the focus on

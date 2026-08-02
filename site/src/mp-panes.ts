@@ -36,6 +36,7 @@ import type { StatusBar } from "./status-bar-store.js";
 import type { PillState } from "./components/StatusPill.js";
 import { NetCoordinator } from "./net-coordinator.js";
 import { initNetworkGraph, type NetworkNode } from "./mp-network.js";
+import { initWireTab } from "./wire-tab.js";
 
 /** The shared scrubber's `window.__scrub` seam (runtime/functor-runtime-web/scrubber.js). */
 interface ScrubSeam {
@@ -466,6 +467,17 @@ export function initMultiplayerPanes({
   // Written once per frame by `paint`, read by the graph on the same rAF.
   let sessionClock: { parked: boolean; frame: number | null } = { parked: false, frame: null };
 
+  // The TRAFFIC MONITOR, docked in the status bar's wire tab (wire-tab.ts): the
+  // same rows the pinned panel shows, in every layout rather than only in the
+  // network view, filterable per link. It reads the same coordinator log and
+  // the same session clock — one record, two framings.
+  const wireTab = initWireTab({
+    slot: statusBar.wire,
+    net,
+    links: () => panes.map((pane) => ({ id: pane.id, color: pane.color })),
+    clock: () => sessionClock,
+  });
+
   const graph = initNetworkGraph({
     stage,
     grid,
@@ -473,6 +485,11 @@ export function initMultiplayerPanes({
     clients: () => panes.map(asNode),
     server: () => (serverPane ? asNode(serverPane.pane) : null),
     clock: () => sessionClock,
+    // Pinning a wire aims the docked monitor at the same link (see wire-tab's
+    // note on the selection model). Unpinning is not propagated.
+    onSelect: (id) => {
+      if (id !== null) wireTab.focus(id);
+    },
   });
 
   const makePane = (role: PaneRole, index: number, iframe: HTMLIFrameElement): Pane => {
@@ -928,6 +945,11 @@ export function initMultiplayerPanes({
     // thumbnails too), so the frame counters need a home wherever that happens.
     // Only the packet legend is network-scoped, via `data-view` above.
     viewStrip.hidden = single;
+    // The wire tab is present exactly when there is an authority to talk to:
+    // links, and a coordinator log to read. A single-role example has neither,
+    // so the tab is absent rather than empty (the NETWORK view's gate, and the
+    // CLIENTS control's discipline).
+    statusBar.setWirePresent(serverPane !== null);
     const canAdd = !single && panes.length < MAX_CLIENTS;
     addTile.hidden = !canAdd;
     addTab.hidden = !canAdd;
@@ -1734,8 +1756,10 @@ export function initMultiplayerPanes({
     // the cards.
     if (animating > 0 && grid.dataset.view === "network") graph.relayout();
     // One loop for the whole preview column: the network graph advances its
-    // packets here rather than running a second rAF beside this one.
+    // packets here rather than running a second rAF beside this one, and the
+    // docked monitor repaints on it too (closed, that is one guarded write).
     graph.step();
+    wireTab.step();
     raf = requestAnimationFrame(tickLoop);
   };
   raf = requestAnimationFrame(tickLoop);
@@ -1763,6 +1787,7 @@ export function initMultiplayerPanes({
       // land under the new session's playhead.
       net.clearLog();
       graph.resetCounts();
+      wireTab.reset();
       updateChrome();
       paintAggregate();
     },
@@ -1789,6 +1814,8 @@ export function initMultiplayerPanes({
       cancelAnimationFrame(raf);
       viewStrip.hidden = true;
       viewStrip.replaceChildren();
+      statusBar.setWirePresent(false);
+      wireTab.destroy();
       graph.destroy();
       net.destroy();
       moduleScope.abort();
