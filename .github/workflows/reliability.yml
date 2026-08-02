@@ -54,6 +54,9 @@ on:
           - e2e-headless
 
 concurrency:
+  # Per-PR for the label path; per-ref for a dispatch. Re-labelling or pushing
+  # supersedes the run in flight instead of stacking a second 10x run on top of
+  # it — at this cost, never pay twice for a superseded answer.
   group: reliability-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -139,10 +142,17 @@ jobs:
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
+      # DELIBERATE DEVIATION from the mirrored source: `save-if: false`.
+      # rust-cache keys on runner.os + github.job + lockfiles, NOT on matrix.*,
+      # so all N legs would restore the same entry and then race to save it —
+      # burning upload bandwidth and evicting the caches the REAL CI jobs
+      # depend on, out of a shared repo cache budget. The real wasm-smoke.yml /
+      # e2e.yml jobs populate this cache; a reliability run only consumes it.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          save-if: false
 
       - name: Install GL/X11 system libraries
         run: |
@@ -217,6 +227,11 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # macOS runners are the scarcest and priciest concurrency GitHub gives us.
+      # Without a cap, 10-25 legs claim the whole macOS allowance and stall
+      # every other PR's e2e job behind this opt-in run. Capped, a reliability
+      # run takes longer in wall-clock but stops being a denial of service.
+      max-parallel: 5
       matrix:
         iteration: ${{ fromJSON(needs.gate.outputs.iterations) }}
     steps:
@@ -231,10 +246,13 @@ jobs:
       - name: Install wasm-pack
         run: npm install -g wasm-pack
 
+      # DELIBERATE DEVIATION from the mirrored source — see the note in the
+      # wasm-smoke job above. Restore only; never save from a matrix leg.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          save-if: false
 
       - name: Build web runtime bundle
         run: wasm-pack build --target=web
@@ -259,15 +277,26 @@ jobs:
       - name: Tally pass rates
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_COUNT: ${{ needs.gate.outputs.count }}
+          RUN_WASM: ${{ needs.gate.outputs.run_wasm_smoke }}
+          RUN_E2E: ${{ needs.gate.outputs.run_e2e_headless }}
+          RESULT_WASM: ${{ needs.wasm-smoke.result }}
+          RESULT_E2E: ${{ needs.e2e-headless.result }}
         run: |
           set -euo pipefail
 
           # A matrix's aggregate result cannot distinguish 9/10 from 0/10, so
-          # count this run's own jobs. Matrix job names look like
-          # "wasm-smoke (3)"; the leading token is the suite.
+          # the per-iteration counts come from this run's own jobs. Matrix job
+          # names look like "wasm-smoke (3)".
           gh api --paginate \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
             --jq '.jobs[] | [.name, .conclusion] | @tsv' > jobs.tsv
+
+          # Echo the raw tally input: when the counts below disagree with what
+          # the run page shows, this log is what tells you why.
+          echo "--- jobs seen by the tally ---"
+          cat jobs.tsv
+          echo "------------------------------"
 
           {
             echo "## Reliability run"
@@ -278,21 +307,43 @@ jobs:
 
           failed=0
           for suite in wasm-smoke e2e-headless; do
+            case "$suite" in
+              wasm-smoke)   enabled="$RUN_WASM"; aggregate="$RESULT_WASM" ;;
+              e2e-headless) enabled="$RUN_E2E";  aggregate="$RESULT_E2E"  ;;
+              *) echo "unhandled suite ${suite}" >&2; exit 1 ;;
+            esac
+
+            if [ "$enabled" != "true" ]; then
+              echo "| ${suite} | - | - | not selected |" >> "$GITHUB_STEP_SUMMARY"
+              echo "${suite}: not selected"
+              continue
+            fi
+
             total=$(awk -F'\t' -v s="$suite" 'index($1, s " (") == 1' jobs.tsv | wc -l | tr -d ' ')
-            if [ "$total" -eq 0 ]; then continue; fi
             passed=$(awk -F'\t' -v s="$suite" 'index($1, s " (") == 1 && $2 == "success"' jobs.tsv | wc -l | tr -d ' ')
-            if [ "$passed" -eq "$total" ]; then
-              verdict="OK"
-            else
+
+            # Never report a pass we cannot actually account for. If the matrix
+            # did not expand into the expected number of jobs, or the jobs are
+            # not named as assumed, the counts above are meaningless — fail
+            # loudly rather than printing a reassuring 0/0.
+            if [ "$total" -ne "$EXPECTED_COUNT" ]; then
+              verdict="INCOMPLETE — expected ${EXPECTED_COUNT} iterations, accounted for ${total}"
+              failed=1
+            elif [ "$aggregate" != "success" ] || [ "$passed" -ne "$total" ]; then
+              # The aggregate result is the authoritative gate; the counts are
+              # the diagnosis. Disagreement means the tally missed something.
               verdict="FLAKY"
               failed=1
+            else
+              verdict="OK"
             fi
+
             echo "| ${suite} | ${passed} | ${total} | ${verdict} |" >> "$GITHUB_STEP_SUMMARY"
-            echo "${suite}: ${passed}/${total} — ${verdict}"
+            echo "${suite}: ${passed}/${total} — ${verdict} (matrix result: ${aggregate})"
           done
 
           if [ "$failed" -ne 0 ]; then
             echo >> "$GITHUB_STEP_SUMMARY"
-            echo "At least one iteration failed — this is a flake, not a pass." >> "$GITHUB_STEP_SUMMARY"
+            echo "At least one iteration failed or could not be accounted for — this is a flake, not a pass." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
