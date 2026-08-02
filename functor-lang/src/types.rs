@@ -3575,14 +3575,37 @@ is {other}"
         let Some(name) = self.opaque_engine_type(ty) else {
             return;
         };
+        let structural = self.structural_equals_hint(&name);
         self.diag(
             span,
             format!(
                 "`{}` on `{name}`: engine values are opaque — compare the numbers you derived \
-from them instead (`{name}` supports no `==`)",
+from them instead (`{name}` supports no `==`{structural})",
                 op.symbol()
             ),
         );
+    }
+
+    /// The one escape hatch a host-opaque type may offer: its own module's
+    /// `equals : (t, t) => bool` (`Scene.equals`, `Frame.equals`), an
+    /// EXPLICIT structural walk. Nothing is special-cased — the hint appears
+    /// exactly when the interface declares that shape, so a module gains it
+    /// by adding the signature.
+    fn structural_equals_hint(&self, name: &str) -> String {
+        let Some((module, _)) = name.rsplit_once('.') else {
+            return String::new();
+        };
+        let path = format!("{module}.equals");
+        let Some(Type::Fn(params, result)) = self.signatures.get(&path).map(|s| &s.ty) else {
+            return String::new();
+        };
+        let is_self =
+            |ty: &Type| matches!(ty, Type::Variant(n, _) | Type::Record(n, _) if n == name);
+        if params.len() == 2 && params.iter().all(is_self) && **result == Type::Bool {
+            format!(" — `{path}(a, b)` compares structurally")
+        } else {
+            String::new()
+        }
     }
 
     /// The name of an opaque ENGINE type this operand would compare, if any.

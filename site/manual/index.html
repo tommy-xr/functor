@@ -862,7 +862,9 @@ functor docs --format json         # the machine-readable shape</pre>
               <strong>Engine values are opaque.</strong> <code>&lt;Scene></code>,
               <code>&lt;Frame></code>, <code>&lt;Camera3D></code> and friends can be passed around
               and composed, but not taken apart, and <code>==</code> on one is a
-              <em>check-time</em> error — compare the numbers you derived instead.
+              <em>check-time</em> error — compare the numbers you derived instead, or
+              compare structurally with <code>Scene.equals</code> /
+              <code>Frame.equals</code> (meant for tests over <code>draw</code>).
               Branded values do compare: <code>90deg == 90deg</code>,
               <code>1.5s &lt; 2000ms</code>, and physics tags, all fine.
               (<code>Sprite.t</code> is the other deliberate exception: it is plain data

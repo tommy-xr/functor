@@ -144,7 +144,7 @@ pub(crate) struct CameraBasis {
 /// (so it serializes cleanly across the wasm boundary); the runtime turns it
 /// into view/projection matrices at render time via `view_matrix` /
 /// `projection_matrix`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Camera {
     pub eye: [f32; 3],
     pub target: [f32; 3],

@@ -154,7 +154,7 @@ impl Camera2D {
 
 /// One ordered 2D pass attached to a frame. Layers render after the 3D pass,
 /// in declaration order; later layers appear on top.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct SpriteLayer {
     pub camera: Camera2D,
     pub scene: Scene3D,

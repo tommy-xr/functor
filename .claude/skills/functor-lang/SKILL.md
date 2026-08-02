@@ -750,6 +750,16 @@ let ordered = 4px < 16px            // …and >, <=, >=, ==, != (all derived)
   host value buried in a model still fails at run time), and it is
   DIRECT-only — equality is polymorphic, so `let same = (a, b) => a == b`
   called with two scenes checks clean and fails at run time.
+- **`Scene.equals` / `Frame.equals` are the escape hatch** — an explicit
+  structural walk over the pure-data `draw` output, which is why the
+  refusal above ends `` — `Scene.equals(a, b)` compares structurally `` for
+  those two. Deliberately a FUNCTION, not `==`: the walk is O(scene size),
+  so it belongs in inline `expect` tests over `draw`, not in per-frame
+  logic. Floats compare exactly (no epsilon), assets compare by LOCATOR
+  rather than loaded content, animation compares as declared (clip name +
+  playhead), and children are ordered. The hint is derived, not
+  special-cased: any host-opaque type whose module declares
+  `equals : (t, t) => bool` gets it.
 - **Comparisons are IEEE**, so NaN (`0.0 / 0.0`) is false against
   everything — including itself — under `<`, `>`, `<=`, `>=`, and `==`;
   `nan != nan` is therefore `true`.
@@ -1025,7 +1035,10 @@ order the source reads). `Physics.rotateX/Y/Z` follows the same rule.
 
 **Opaque vs. plain data.** Most engine values (`<Scene>`, `<Camera3D>`,
 `<Camera2D>`, `<Frame>`, `<Anim>`, `<Effect>`) are opaque: pass them around, but
-they cannot be inspected, compared, or serialized. `Sprite.t` is the deliberate
+they cannot be inspected, compared, or serialized — except that `Scene.t` and
+`Frame.t` compare through the explicit `Scene.equals` / `Frame.equals` (an
+O(size) structural walk meant for `expect` tests over `draw`, not per-frame
+logic). `Sprite.t` is the deliberate
 exception — its abstract type hides a private plain-data picture tree, so sprite
 values DO support structural display/equality, snapshots, and hot reload
 (lowering to 3D happens at `Frame.create2D` / `Frame.with2D`).
@@ -1520,7 +1533,9 @@ Transforms wrap in Group nodes: the **outer call applies last in world
 space** — `s |> Scene.rotateY(r) |> Scene.translate(Vec3.make(x, 0.0, 0.0))` rotates in
 place, then moves (the order the source reads). Most engine values (`<Scene>`,
 `<Camera3D>`, `<Camera2D>`, `<Frame>`) are opaque: they can be passed around but
-not inspected, compared, or serialized. `Sprite.t` is the deliberate
+not inspected, compared, or serialized — `Scene.equals` / `Frame.equals` are the
+explicit exception, an O(size) structural walk for `expect` tests over `draw`.
+`Sprite.t` is the deliberate
 exception: its abstract type hides a private plain-data picture tree, so sprite
 values do support structural display/equality, snapshots, and hot reload.
 

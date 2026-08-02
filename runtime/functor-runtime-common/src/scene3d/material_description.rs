@@ -19,7 +19,7 @@ pub enum SpriteSampling {
     Nearest,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MaterialDescription {
     #[serde(
         serialize_with = "serialize_vec4",

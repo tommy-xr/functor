@@ -2223,6 +2223,60 @@ fn a_host_type_refuses_equality_at_check_time() {
     assert!(project.check().is_empty(), "{:?}", project.check());
 }
 
+/// A host-opaque type's module may offer an EXPLICIT structural comparison —
+/// `equals : (t, t) => bool` — and when it does, the refusal points at it.
+/// Nothing is special-cased: the hint is derived from the interface, so a
+/// module earns it by declaring that exact signature.
+#[test]
+fn a_host_type_with_an_equals_points_at_it() {
+    let with_equals = load(
+        "host-type-equals",
+        &[
+            (
+                "game.fun",
+                "let same = (): bool => Widget.make() == Widget.make()\n",
+            ),
+            (
+                "widget.funi",
+                "type Handle = host\n\
+                 let make : () => Handle\n\
+                 let equals : (Handle, Handle) => bool",
+            ),
+        ],
+    );
+    assert!(
+        with_equals.check().iter().any(|d| d
+            .message
+            .contains("`Widget.Handle` supports no `==` — `Widget.equals(a, b)` \
+compares structurally")),
+        "{:?}",
+        with_equals.check()
+    );
+    // A DIFFERENTLY-shaped `equals` is not that escape hatch, so it is not
+    // advertised — the refusal stays the plain one.
+    let wrong_shape = load(
+        "host-type-equals-wrong",
+        &[
+            (
+                "game.fun",
+                "let same = (): bool => Widget.make() == Widget.make()\n",
+            ),
+            (
+                "widget.funi",
+                "type Handle = host\n\
+                 let make : () => Handle\n\
+                 let equals : (Handle, float) => bool",
+            ),
+        ],
+    );
+    let diags = wrong_shape.check();
+    assert!(
+        diags.iter().any(|d| d.message.contains("supports no `==`"))
+            && !diags.iter().any(|d| d.message.contains("compares structurally")),
+        "{diags:?}"
+    );
+}
+
 /// A plain `type t` stays comparable. Not every abstract prelude type is a
 /// host handle — `Sprite.t` and `Physics.tag` are ordinary Functor Lang data
 /// behind an opaque name — so the marker is what distinguishes them, and its

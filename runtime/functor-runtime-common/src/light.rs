@@ -7,7 +7,7 @@ use crate::RenderContext;
 
 /// A light source. Pure data in the `Frame`, so lights serialize for `/scene`
 /// introspection. Colors/directions are plain `[f32; 3]` (Serialize-friendly).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub enum Light {
     /// Uniform light from every direction: its color is added to every lit
     /// surface regardless of orientation.

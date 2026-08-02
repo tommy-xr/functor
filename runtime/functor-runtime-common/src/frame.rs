@@ -13,7 +13,7 @@ fn is_false(value: &bool) -> bool {
 /// A named offscreen pass: `frame` (its own camera/scene/lights) is rendered
 /// into `target`'s texture before the owning frame's main pass, and sampled via
 /// `TextureDescription::RenderTarget(target.id)`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct RenderTargetPass {
     pub target: RenderTargetDescriptor,
     pub frame: Frame,
@@ -22,7 +22,13 @@ pub struct RenderTargetPass {
 /// What a game's `draw` returns each frame: a 3D pass plus any ordered 2D
 /// sprite layers. Intentionally a growable record (post-processing etc. can be
 /// added later) so the render boundary signature doesn't churn.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// `PartialEq` is the structural walk behind `Frame.equals`: every field —
+/// camera, scene, lights (ordered), render-target passes (ordered), fog,
+/// skybox, clear color, 2D layers (ordered), and the `pure_2d` marker. It
+/// inherits [`Scene3D`]'s rules: floats compare exactly, assets compare by
+/// locator, and animation compares as declared.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Frame {
     pub camera: Camera,
     pub scene: Scene3D,

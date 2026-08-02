@@ -935,7 +935,7 @@ skybox disabled for this set",
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Shape {
     Cube,
     Sphere,
@@ -959,7 +959,7 @@ pub enum Shape {
     ConvexPolygon { points: Vec<[f32; 2]> },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SceneObject {
     Geometry(Shape),
     Model(ModelDescription),
@@ -968,7 +968,22 @@ pub enum SceneObject {
     Group(Vec<Scene3D>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A scene node: what it draws, under a transform.
+///
+/// `PartialEq` is the structural walk behind `Scene.equals`, and it is
+/// deliberately literal about three things:
+///
+/// - **Floats compare exactly** (transform entries, colors, playheads). Two
+///   nodes built by different arithmetic that lands a bit apart are unequal.
+/// - **Assets compare by LOCATOR, not by loaded content** — the path/URL
+///   string in [`ModelHandle`] / [`TextureDescription`] (and the
+///   `while_pending` chain beside it). Nothing here has been loaded, so
+///   "equal" means "names the same asset".
+/// - **Animation compares as DECLARED** — [`crate::anim::AnimExpr`]'s clip
+///   name and playhead seconds, not a sampled pose.
+///
+/// Children are ordered: a group's list must match element-wise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene3D {
     pub obj: SceneObject,
     #[serde(

@@ -7,7 +7,7 @@ use crate::anim::AnimExpr;
 use crate::scene3d::deserialize_matrix;
 use crate::scene3d::serialize_matrix;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ModelHandle {
     File(String),
 }
@@ -16,12 +16,12 @@ pub enum ModelHandle {
 // shape the renderer consumes; the F#-era authoring constructors
 // (`MeshSelector::all` / `MeshOverride::material` / `ModelDescription::modify`)
 // were removed with the F# framework — Functor Lang builds models with empty `overrides`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MeshSelector {
     All,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MeshOverride {
     Material(MaterialDescription),
     #[serde(
@@ -31,7 +31,7 @@ pub enum MeshOverride {
     Transform(Matrix4<f32>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelDescription {
     pub handle: ModelHandle,
     pub overrides: Vec<(MeshSelector, MeshOverride)>,
