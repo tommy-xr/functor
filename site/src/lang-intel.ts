@@ -35,6 +35,8 @@ import type { CompletionContext } from "@codemirror/autocomplete";
 import { functorLangLanguage } from "./functor-lang.js";
 import type { ProjectFile } from "./protocol.js";
 import type { StatusBar } from "./status-bar-store.js";
+import { fromValueJson } from "./wire-value.js";
+import type { WireValue } from "./wire-value.js";
 
 // --- The analysis wasm's boundary ----------------------------------------------
 // The glue module is fetched at runtime (not bundled), so nothing here is
@@ -651,6 +653,14 @@ interface TraceInvocation {
   ghost: boolean;
   result: string;
   result_preview: string;
+  /** The result as STRUCTURE — the runtime's `value_to_json` grammar, which
+   * `fromValueJson` converts into the tree's `WireValue` (see wire-value.ts).
+   * Optional: an older runtime (or a relay from one) has only the text. */
+  result_json?: unknown;
+  /** The producer's whole-document JSON budget refused this result — the
+   * `result_json` above is the `{"$truncated": …}` marker, and the `result`
+   * text beside it is still complete. */
+  result_json_truncated?: boolean;
   truncated: boolean;
   bindings: TraceBinding[];
 }
@@ -1208,6 +1218,9 @@ export const setLiveTrace = (
   trace: InspectorTraceDoc | null | undefined
 ) => {
   liveTrace = trace && trace.paused ? trace : null;
+  liveResults = shownInvocations().map((i) =>
+    i.result_json === undefined ? null : fromValueJson(i.result_json)
+  );
   selectedExec = new Map();
   refreshLive(view);
 };
@@ -1240,20 +1253,39 @@ interface LiveExecution {
   count: number;
   provenance: string;
   selected: boolean;
+  /** What the call RETURNED, as data — the tree the row opens. Null when the
+   * relay carried no structured result (an older runtime). */
+  result: WireValue | null;
+  /** The producer's budget refused the structured result: `result` is the
+   * marker node, not the value, and `resultPreview` is what to show instead. */
+  resultTruncated: boolean;
+  /** The runtime's own one-line rendering of the result — the honest fallback
+   * when the structured copy was refused (that text is never budgeted). */
+  resultPreview: string;
 }
 
-export const liveExecutions = (): LiveExecution[] => {
-  if (!liveTrace) return [];
-  return (liveTrace.invocations || [])
-    .filter((i) => !i.ghost)
-    .map((i) => ({
-      entry: i.entry,
-      index: i.index || 0,
-      count: i.count || 1,
-      provenance: i.provenance || "",
-      selected: ((selectedExec.get(i.entry) || 0) % (i.count || 1)) === (i.index || 0),
-    }));
-};
+// The converted results of the CURRENT trace, parallel to the non-ghost
+// invocations below and rebuilt only in `setLiveTrace`.
+//
+// Identity is the point, not just the saved work: the host remounts a row's
+// tree when its value changes, so converting afresh on every call would hand it
+// a new value per click and collapse whatever the reader had opened.
+let liveResults: (WireValue | null)[] = [];
+
+const shownInvocations = (): TraceInvocation[] =>
+  liveTrace ? (liveTrace.invocations || []).filter((i) => !i.ghost) : [];
+
+export const liveExecutions = (): LiveExecution[] =>
+  shownInvocations().map((i, n) => ({
+    entry: i.entry,
+    index: i.index || 0,
+    count: i.count || 1,
+    provenance: i.provenance || "",
+    selected: ((selectedExec.get(i.entry) || 0) % (i.count || 1)) === (i.index || 0),
+    result: liveResults[n] ?? null,
+    resultTruncated: i.result_json_truncated === true,
+    resultPreview: i.result_preview || i.result || "",
+  }));
 
 // Select which execution of `entry` overlays (the picker's click).
 export const selectExecution = (view: EditorView, entry: string, index: number) => {
@@ -1280,8 +1312,15 @@ export const wireLiveTrace = (
   const renderExecutions = () => {
     statusBar.setExecutions(
       liveExecutions().map((e) => ({
+        // The row's IDENTITY is the execution it names, not its label: the
+        // label carries the call's arguments (`tick dt=0.0166…`), which change
+        // every frame, and the host keeps a row open across a scrub.
+        key: `${e.entry}:${e.index}`,
         label: `${e.entry} ${e.index + 1}/${e.count} — ${e.provenance}`,
         selected: e.selected,
+        result: e.result,
+        resultTruncated: e.resultTruncated,
+        resultPreview: e.resultPreview,
         onPick: () => {
           selectExecution(view, e.entry, e.index);
           renderExecutions();

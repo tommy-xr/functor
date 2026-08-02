@@ -8,7 +8,7 @@
 //   node --test site/src/wire-value.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeWire, fullWire } from "./wire-value.ts";
+import { decodeWire, fromValueJson, fullWire, summarize } from "./wire-value.ts";
 
 const framed = (value: unknown) => `fun:${JSON.stringify(value)}`;
 
@@ -72,4 +72,53 @@ test("caps the tooltip's rendering rather than carrying a whole payload", () => 
   const full = fullWire(wire);
   assert.ok(full.length <= 2001, `full was ${full.length}`);
   assert.ok(row.body.length < 120, `body was ${row.body.length}`);
+});
+
+// --- The trace's value grammar (`fromValueJson`) --------------------------------
+// The paused inspector relays `value_to_json`, not `EffectValue`; the tree
+// renders one grammar, so the conversion is what has to be right.
+
+test("converts the trace's value grammar into the tree's shape", () => {
+  assert.deepEqual(fromValueJson({ n: 1, ok: true, who: "a" }), {
+    Record: [
+      ["n", { Number: 1 }],
+      ["ok", { Bool: true }],
+      ["who", { Text: "a" }],
+    ],
+  });
+  assert.deepEqual(fromValueJson([1, 2]), { List: [{ Number: 1 }, { Number: 2 }] });
+  assert.deepEqual(fromValueJson({ $tuple: [1, "x"] }), {
+    Tuple: [{ Number: 1 }, { Text: "x" }],
+  });
+  assert.deepEqual(fromValueJson({ $ctor: "Steer", args: [{ turn: 1 }] }), {
+    Variant: ["Steer", [{ Record: [["turn", { Number: 1 }]] }]],
+  });
+  assert.deepEqual(fromValueJson({ $map: [["a", 1]] }), {
+    Map: [[{ Text: "a" }, { Number: 1 }]],
+  });
+});
+
+test("things that are not data render as themselves, unquoted", () => {
+  assert.equal(summarize(fromValueJson({ $fn: "<fn(dt)>" })), "<fn(dt)>");
+  assert.equal(summarize(fromValueJson({ $host: "SceneNode" })), "<SceneNode>");
+  assert.equal(summarize(fromValueJson({ $number: "NaN" })), "NaN");
+  assert.equal(summarize(fromValueJson({ $truncated: "trace budget" })), "… (trace budget)");
+});
+
+test("the trace conversion is total on anything the relay could carry", () => {
+  const hostile = [
+    null,
+    undefined,
+    7,
+    "x",
+    [null, undefined],
+    { $ctor: 7 },
+    { $ctor: "X", args: "not an array" },
+    { $tuple: "no" },
+    { $map: [null, ["k"], [{ $fn: "f" }, 1]] },
+    { nested: { deep: [{ $host: "H" }] } },
+  ];
+  for (const json of hostile) {
+    assert.equal(typeof summarize(fromValueJson(json)), "string", `for ${JSON.stringify(json)}`);
+  }
 });
