@@ -46,10 +46,19 @@ use super::mcp_net::NetCoordinator;
 /// localhost endpoints, not per-frame runtime work.
 const PUMP_INTERVAL: Duration = Duration::from_millis(8);
 
+/// Largest delivery body the pump will post, comfortably under the debug
+/// server's own 64 KB command limit. A backlog larger than this is split across
+/// rounds rather than posted whole (which would 413 forever).
+const MAX_DELIVERY_BYTES: usize = 32 * 1024;
+
 /// Rows `wire_log` returns when the caller names no limit, and the ceiling it
 /// will return at all.
 const WIRE_LOG_DEFAULT_ROWS: usize = 100;
 const WIRE_LOG_MAX_ROWS: usize = 2_000;
+
+/// Total `payload_text` bytes one `wire_log` answer will carry. The row cap
+/// bounds the count; this bounds the SIZE, which the rows themselves do not.
+const MAX_WIRE_PAYLOAD_BYTES: usize = 256 * 1024;
 
 /// How long `launch_game` waits for a spawned runtime to answer discovery.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -217,6 +226,33 @@ struct GroupMember {
 struct Group {
     members: Vec<GroupMember>,
     net: NetCoordinator,
+    /// Members whose last pump round failed, so the report is printed once per
+    /// outage instead of 125 times a second.
+    unreachable: BTreeSet<String>,
+}
+
+impl Group {
+    /// Report a member the pump could not reach — once, until it recovers.
+    fn note_unreachable(&mut self, label: &str, what: String) {
+        if self.unreachable.insert(label.to_string()) {
+            eprintln!("[coordinator] {label} unreachable — {what}");
+        }
+    }
+
+    fn note_reachable(&mut self, label: &str) {
+        if self.unreachable.remove(label) {
+            eprintln!("[coordinator] {label} is reachable again");
+        }
+    }
+}
+
+/// Whether a `/net/deliver` batch is safe to keep and retry.
+enum DeliveryOutcome {
+    Applied,
+    /// The runtime provably did not fold it — requeue.
+    NotApplied(String),
+    /// It may or may not have folded — report, and do NOT retry.
+    Ambiguous(String),
 }
 
 /// What `spawn_runtime` hands back to the two launch tools.
@@ -1242,9 +1278,10 @@ files writes the inline project to a scratch directory this server owns",
     /// the background pump held off for the whole round. So a packet a client
     /// sends in round N reaches the authority before the authority steps.
     ///
-    /// Delivery in v1 is IMMEDIATE, in order, and never dropped (a perfect,
-    /// reliable link). Latency, jitter, and step-time scheduling arrive with
-    /// barrier stepping.
+    /// Delivery in v1 is IMMEDIATE and in order (a perfect, reliable link):
+    /// the router never drops or reorders, and a failed delivery is re-queued
+    /// at the front and retried. Latency, jitter, and step-time scheduling
+    /// arrive with barrier stepping.
     #[tool]
     async fn launch_session_group(
         &self,
@@ -1298,10 +1335,17 @@ files writes the inline project to a scratch directory this server owns",
                     // A half-launched group is a half-wired network: tear the
                     // launched roles down rather than leave the caller to guess
                     // which ones exist.
-                    self.abandon_group_members(&members).await;
-                    return tool_error(format!(
-                        "launch_session_group stopped at role {role:?}: {message}"
-                    ));
+                    let orphaned = self.abandon_group_members(&members).await;
+                    let mut error =
+                        format!("launch_session_group stopped at role {role:?}: {message}");
+                    if !orphaned.is_empty() {
+                        error.push_str(&format!(
+                            "\n\nWARNING: could not confirm termination of {} — those runtimes \
+may still be running, and this server no longer tracks them.",
+                            orphaned.join(", ")
+                        ));
+                    }
+                    return tool_error(error);
                 }
             }
         }
@@ -1313,6 +1357,7 @@ files writes the inline project to a scratch directory this server owns",
         let group = Arc::new(tokio::sync::Mutex::new(Group {
             members: members.clone(),
             net,
+            unreachable: BTreeSet::new(),
         }));
         {
             let mut registry = self.sessions.lock().expect("mcp registry poisoned");
@@ -1385,10 +1430,31 @@ files writes the inline project to a scratch directory this server owns",
             .filter(|packet| filter.matches(packet))
             .collect();
         let total = matched.len();
-        let rows: Vec<Value> = matched
+        // A row cap alone is not an output bound — a game chooses how big a
+        // message is, and 2000 rows of a chatty protocol is megabytes straight
+        // into a model's context. So payloads also share a byte budget, spent
+        // NEWEST-first (a reader asking for a window wants its tail); an
+        // elided row keeps every other field and says so.
+        let mut payload_budget = MAX_WIRE_PAYLOAD_BYTES;
+        let mut elided = 0usize;
+        let mut rows: Vec<Value> = matched
             .into_iter()
             .skip(total.saturating_sub(limit))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
             .map(|packet| {
+                let payload = match &packet.payload_text {
+                    Some(text) if text.len() <= payload_budget => {
+                        payload_budget -= text.len();
+                        Value::String(text.clone())
+                    }
+                    Some(_) => {
+                        elided += 1;
+                        Value::Null
+                    }
+                    None => Value::Null,
+                };
                 serde_json::json!({
                     "seq": packet.seq,
                     // Always null in v1 — delivery is immediate and
@@ -1400,10 +1466,12 @@ files writes the inline project to a scratch directory this server owns",
                     "conn": packet.conn,
                     "kind": packet.kind,
                     "size": packet.size,
-                    "payload_text": packet.payload_text,
+                    "payload_text": payload,
+                    "payload_elided": packet.payload_text.is_some() && payload.is_null(),
                 })
             })
             .collect();
+        rows.reverse();
         ok_text(
             serde_json::json!({
                 "group": group_id,
@@ -1412,6 +1480,9 @@ files writes the inline project to a scratch directory this server owns",
                 "oldest_seq": guard.net.oldest_seq(),
                 "matched": total,
                 "returned": rows.len(),
+                // How many returned rows dropped their payload to stay inside
+                // the byte budget — narrow the window or the `link` to see them.
+                "payloads_elided": elided,
                 "connections": guard.net.connection_counts(),
                 "rows": rows,
             })
@@ -1519,6 +1590,16 @@ files writes the inline project to a scratch directory this server owns",
             .lock()
             .expect("mcp registry poisoned")
             .begin_stop(&args.session));
+        // De-route BEFORE taking the session gate, for two reasons. It removes
+        // a lock-order inversion: `step_all` takes a group lock and THEN the
+        // per-session gates, so a stop holding a gate while waiting for the
+        // group lock could hang both for the life of the process (neither
+        // tokio mutex has a timeout). And it runs on every exit from here,
+        // including the unconfirmed-termination error return below — otherwise
+        // a group could outlive its last member and its pump would poll a dead
+        // runtime forever. `begin_stop` has already marked the session closing,
+        // so nothing new can start on it either way.
+        self.forget_group_member(&args.session).await;
         // Stop is a lifecycle boundary: after `closing` is visible it must
         // drain the current operation and finish cleanup even if its own MCP
         // request is subsequently cancelled.
@@ -1573,10 +1654,6 @@ MCP server before reconnecting or reusing that runtime URL.",
                 args.session, target.url
             ));
         }
-        // The coordinator must forget a stopped role, or its peers keep a
-        // connection to a runtime that no longer exists. A group with no
-        // members left disappears, which is also what ends its pump task.
-        self.forget_group_member(&args.session).await;
         ok_text(format!(
             "stopped session {} ({})",
             args.session,
@@ -1841,14 +1918,15 @@ a session that must step twice per round is two rounds, not one list",
                 coordinated.insert(id, group);
             }
         }
+        // ONE deadline for the call, not one per session: N sessions must not
+        // multiply how long a single tool call can block. Started BEFORE the
+        // group locks, since waiting for a concurrent round to finish is time
+        // this call spends like any other.
+        let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
         let mut groups: Vec<tokio::sync::OwnedMutexGuard<Group>> = Vec::new();
         for group in coordinated.into_values() {
             groups.push(group.lock_owned().await);
         }
-
-        // ONE deadline for the call, not one per session: N sessions must not
-        // multiply how long a single tool call can block.
-        let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
         let mut stepped: Vec<Value> = Vec::with_capacity(targets.len());
         for (session, target) in targets {
             let desync = |message: String| {
@@ -2223,10 +2301,12 @@ impl FunctorMcp {
         })
     }
 
-    /// Tear down the roles a failed group launch already started. Best effort
-    /// by construction: the caller is already reporting a failure, and a child
-    /// this server cannot kill is reported by `list_sessions` either way.
-    async fn abandon_group_members(&self, members: &[GroupMember]) {
+    /// Tear down the roles a failed group launch already started, returning
+    /// the ones whose termination could NOT be confirmed. The caller is already
+    /// reporting a failure; an orphaned runtime has to be named in it, since
+    /// the session record is gone and `list_sessions` will not show it.
+    async fn abandon_group_members(&self, members: &[GroupMember]) -> Vec<String> {
+        let mut orphaned = Vec::new();
         for member in members {
             let child = {
                 let mut registry = self.sessions.lock().expect("mcp registry poisoned");
@@ -2235,14 +2315,19 @@ impl FunctorMcp {
                 child
             };
             if let Some(mut child) = child {
-                let _ = terminate_child(
+                if terminate_child(
                     &mut child,
                     "owned runtime child",
                     RUNTIME_CHILD_SHUTDOWN_TIMEOUT,
                 )
-                .await;
+                .await
+                .is_err()
+                {
+                    orphaned.push(member.url.clone());
+                }
             }
         }
+        orphaned
     }
 
     /// Remove a session from its group's routing table, dropping the group
@@ -2253,15 +2338,17 @@ impl FunctorMcp {
         };
         {
             let mut guard = group.lock().await;
-            let Some(index) = guard
+            // Not `else { return }`: the registry cleanup below must run even
+            // when the member is already gone, or `session_groups` keeps a
+            // stale row and the group can never empty (so its pump never ends).
+            if let Some(index) = guard
                 .members
                 .iter()
                 .position(|member| member.session == session)
-            else {
-                return;
-            };
-            let label = guard.members.remove(index).label;
-            guard.net.remove_session(&label);
+            {
+                let label = guard.members.remove(index).label;
+                guard.net.remove_session(&label);
+            }
         }
         let mut registry = self.sessions.lock().expect("mcp registry poisoned");
         registry.session_groups.remove(session);
@@ -2346,8 +2433,18 @@ wired to each other by this process, with no sockets)"
         for member in &members {
             let json = match self.get(&member.url, "/net/outbound").await {
                 Ok(json) => json,
-                Err(_) => continue,
+                // A member that cannot be drained is skipped for the round, but
+                // never SILENTLY: the failure includes a 409 from a runtime
+                // that is not on the embedder transport, which is the exact
+                // misconfiguration `EMBEDDER_TRANSPORT_REQUIRED` exists to make
+                // loud. Reported once per member until it succeeds again, so a
+                // dead child does not print 125 lines a second.
+                Err(error) => {
+                    guard.note_unreachable(&member.label, format!("drain failed: {error}"));
+                    continue;
+                }
             };
+            guard.note_reachable(&member.label);
             if json == "[]" {
                 continue;
             }
@@ -2358,8 +2455,8 @@ wired to each other by this process, with no sockets)"
                     }
                 }
                 // A runtime whose outbound JSON does not parse is a protocol
-                // break, not a game bug — say so once per round on stderr,
-                // which is this server's log channel (stdout is JSON-RPC).
+                // break, not a game bug — say so on stderr, which is this
+                // server's log channel (stdout is JSON-RPC).
                 Err(error) => eprintln!(
                     "[coordinator] {} sent unparseable outbound commands: {error}",
                     member.label
@@ -2367,14 +2464,48 @@ wired to each other by this process, with no sockets)"
             }
         }
         guard.net.retry_pending();
+        for (label, shed) in guard.net.take_drops() {
+            eprintln!(
+                "[coordinator] {label}'s queue overflowed — dropped {shed} undelivered event(s); \
+that session is not consuming its traffic"
+            );
+        }
         for member in &members {
-            let events = guard.net.take_outbox(&member.label);
-            if events.is_empty() {
-                continue;
-            }
-            let body = serde_json::to_string(&events).expect("delivered events serialize");
-            if self.post(&member.url, "/net/deliver", body).await.is_err() {
-                guard.net.requeue(&member.label, events);
+            let mut events = guard.net.take_outbox(&member.label);
+            while !events.is_empty() {
+                // CHUNKED, because `/net/deliver` caps its body: posting a
+                // whole backlog as one request would 413, be re-queued whole,
+                // and 413 again every round — a session's inbound dead for the
+                // rest of the run, silently. Splitting means a backlog drains
+                // over several rounds instead.
+                let rest = events.split_off(deliverable_prefix(&events));
+                let body = serde_json::to_string(&events).expect("delivered events serialize");
+                match self.post_delivery(&member.url, body).await {
+                    DeliveryOutcome::Applied => events = rest,
+                    DeliveryOutcome::NotApplied(error) => {
+                        // In order: the un-posted tail first, then this batch in
+                        // front of it. A reliable channel must not reorder.
+                        guard.net.requeue(&member.label, rest);
+                        guard.net.requeue(&member.label, events);
+                        guard.note_unreachable(&member.label, format!("delivery failed: {error}"));
+                        break;
+                    }
+                    // Ambiguous: the runtime may already have folded it, so
+                    // this batch is NOT retried (see `post_delivery`). The tail
+                    // goes back, and the loss is loud.
+                    DeliveryOutcome::Ambiguous(error) => {
+                        guard.net.requeue(&member.label, rest);
+                        guard.note_unreachable(
+                            &member.label,
+                            format!(
+                                "delivery outcome unknown, so {} event(s) were NOT retried \
+(retrying could double-fold them): {error}",
+                                events.len()
+                            ),
+                        );
+                        break;
+                    }
+                }
             }
         }
     }
@@ -2445,6 +2576,43 @@ wired to each other by this process, with no sockets)"
             .await
             .map_err(|error| format!("POST {path} on {url} failed: {error}"))?;
         read_body(path, response).await
+    }
+
+    /// `POST /net/deliver`, classified by whether the batch can be SAFELY
+    /// retried.
+    ///
+    /// `/net/deliver` applies its events before answering, so a blind retry on
+    /// any failure would re-fold a batch the runtime may already have absorbed
+    /// — duplicating messages on a channel `Sub.connect` promises is reliable
+    /// and ordered, which is worse for a game than losing them. So only a
+    /// failure that provably did NOT apply is re-queued: a refused connection
+    /// (nothing was sent) or a status the runtime chose (it rejected the body).
+    /// An ambiguous failure — a timeout, a truncated response — is reported and
+    /// dropped rather than risked twice. A transactional batch id belongs with
+    /// the barrier-stepping protocol, not with a v1 that talks to a child
+    /// process over loopback.
+    async fn post_delivery(&self, url: &str, body: String) -> DeliveryOutcome {
+        let response = match self
+            .http
+            .post(format!("{url}/net/deliver"))
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if error.is_connect() => {
+                return DeliveryOutcome::NotApplied(format!("connection refused: {error}"))
+            }
+            Err(error) => return DeliveryOutcome::Ambiguous(format!("request failed: {error}")),
+        };
+        let rejected = response.status().is_client_error() || response.status().is_server_error();
+        match read_body("/net/deliver", response).await {
+            Ok(_) => DeliveryOutcome::Applied,
+            // The runtime answered, and its answer was a refusal: nothing was
+            // folded, so the batch is safe to keep.
+            Err(message) if rejected => DeliveryOutcome::NotApplied(message),
+            Err(message) => DeliveryOutcome::Ambiguous(message),
+        }
     }
 
     async fn post_binary(&self, url: &str, path: &str, body: Vec<u8>) -> Result<String, String> {
@@ -3500,19 +3668,28 @@ Rebuild that runtime from this version of Functor."
     }
 }
 
-/// The roles a project's `functor.json` declares, in manifest order.
+/// The roles a project's `functor.json` declares, sorted — `manifest_entries`'
+/// pairs with their files dropped. `entries` is a map, so its declaration order
+/// is not part of what the manifest means; a group's launch order comes from
+/// [`group_roles`] instead.
 fn declared_entries(manifest: &str) -> Result<Vec<String>, String> {
-    let value: Value = serde_json::from_str(manifest)
-        .map_err(|error| format!("functor.json is not valid JSON: {error}"))?;
-    match value.get("entries").and_then(Value::as_object) {
-        Some(entries) if !entries.is_empty() => Ok(entries.keys().cloned().collect()),
-        // A single-entry project has exactly one role, so a "group" of it is
-        // one game — say what is missing rather than launch a lonely session.
-        _ => Err(
-            "this project declares no `entries`, so it has no roles to group — a multiplayer project's functor.json looks like {\"entries\": {\"client\": …, \"server\": …}}"
+    // A single-`entry` manifest parses as ONE NAMELESS role, which is exactly
+    // the case to refuse: a "group" of a single-entry project is one game. So
+    // is a manifest `manifest_entries` cannot reason about at all.
+    let roles: Vec<String> = manifest_entries(manifest)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(role, _)| role)
+        .filter(|role| !role.is_empty())
+        .collect();
+    if roles.is_empty() {
+        return Err(
+            "this project declares no `entries`, so it has no roles to group — a multiplayer \
+project's functor.json looks like {\"entries\": {\"client\": …, \"server\": …}}"
                 .to_string(),
-        ),
+        );
     }
+    Ok(roles)
 }
 
 /// The roles to launch, in order. Explicit `roles` wins verbatim (repeats are
@@ -3638,6 +3815,20 @@ ends; pass a single label instead"
             },
         }
     }
+}
+
+/// How many leading events fit in one `/net/deliver` body. At least one always
+/// does: a single event over the budget is posted alone and lets the runtime's
+/// own 413 be the (loud) answer, rather than being silently stuck forever.
+fn deliverable_prefix(events: &[functor_runtime_common::net::DeliveredEvent]) -> usize {
+    let mut bytes = 2; // the enclosing `[]`
+    for (index, event) in events.iter().enumerate() {
+        bytes += serde_json::to_string(event).map_or(0, |json| json.len() + 1);
+        if bytes > MAX_DELIVERY_BYTES {
+            return index.max(1);
+        }
+    }
+    events.len()
 }
 
 fn node_executable() -> String {
@@ -5098,7 +5289,7 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 mod tests {
     use super::{
         acquire_target_operation, base64_encoded_len, checked_output_total, declared_entries,
-        encoded_capture_total, group_labels, group_roles,
+        deliverable_prefix, encoded_capture_total, group_labels, group_roles, MAX_DELIVERY_BYTES,
         ensure_operation_active, extend_bounded, find_guide_section, guide_sections,
         json_encoded_len, node_code_call_result, node_code_summary, read_body,
         read_bounded_response, render_api_hits, render_guide_contents, render_guide_section,
@@ -6366,7 +6557,7 @@ mod tests {
         let error = declared_entries(r#"{"entry":"game.fun"}"#).unwrap_err();
         assert!(error.contains("no `entries`"), "{error}");
         assert_eq!(
-            declared_entries(r#"{"entries":{"client":{},"server":{}}}"#).unwrap(),
+            declared_entries(r#"{"entries":{"client":{"file":"game.fun","module":"Client"},"server":{"file":"game.fun","module":"Server"}}}"#).unwrap(),
             ["client", "server"]
         );
     }
@@ -6414,5 +6605,38 @@ mod tests {
             matching(WireFilter::parse(Some("server:client2"), None, &known).unwrap()),
             [2]
         );
+    }
+
+    /// `/net/deliver` caps its body, so a backlog must be SPLIT rather than
+    /// posted whole: posting whole would 413, be re-queued whole, and 413 again
+    /// every round — that session's inbound dead for the rest of the run.
+    #[test]
+    fn a_delivery_batch_is_split_below_the_endpoint_limit() {
+        use functor_runtime_common::net::DeliveredEvent;
+        let event = |index: usize| DeliveredEvent::Message {
+            key: "ws://127.0.0.1:9101/orbs".into(),
+            conn: 1,
+            text: format!("{index}").repeat(400),
+        };
+        let events: Vec<DeliveredEvent> = (0..200).map(event).collect();
+        let prefix = deliverable_prefix(&events);
+        assert!(prefix > 0 && prefix < events.len(), "split at {prefix}");
+        assert!(
+            serde_json::to_string(&events[..prefix]).unwrap().len() <= MAX_DELIVERY_BYTES + 4096,
+            "the chosen prefix stays near the budget"
+        );
+
+        // A small backlog is one body.
+        let small: Vec<DeliveredEvent> = (0..3).map(event).collect();
+        assert_eq!(deliverable_prefix(&small), 3);
+
+        // A SINGLE event over the budget still goes alone: the runtime's own
+        // 413 is then the loud answer, rather than a batch stuck forever.
+        let huge = vec![DeliveredEvent::Message {
+            key: "k".into(),
+            conn: 1,
+            text: "x".repeat(MAX_DELIVERY_BYTES * 2),
+        }];
+        assert_eq!(deliverable_prefix(&huge), 1);
     }
 }

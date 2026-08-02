@@ -563,6 +563,10 @@ what lets a driver route a packet and then step, and know the step saw it.
 `pending_net` therefore stays 0 on this transport — nothing waits in a shell
 channel.
 
+`--net-transport embedder` without `--debug-port` is refused at startup: with no
+client there is nothing to drain the queue or deliver into it, so the game's
+network would silently be a black hole with an unbounded backlog behind it.
+
 The device runtime answers 409 for both: a Quest session's network is a real
 socket to a real peer, with no coordinator behind adb.
 

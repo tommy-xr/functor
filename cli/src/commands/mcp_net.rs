@@ -26,7 +26,9 @@
 //!     batch.
 //!
 //! PERFECT LINKS ONLY, and delivery is IMMEDIATE: a routed packet is handed to
-//! its destination on the coordinator's next pump, in order, never dropped.
+//! its destination on the coordinator's next pump, in order. The ROUTER never
+//! drops or reorders one — a delivery the pump could not complete comes back
+//! to the front of its queue ([`NetCoordinator::requeue`]).
 //! Everything a link profile would add — latency, jitter, partitions — and
 //! step-TIME scheduling ("departs step 610, deliver at 618") arrive with
 //! barrier stepping, which is the PR that also gives [`Packet::frame`] a
@@ -47,6 +49,16 @@ const PACKET_LOG_CAP: usize = 10_000;
 /// …and a second bound, on the payload TEXT the log retains: a count alone is
 /// not a memory bound, because a game chooses how big a message is.
 const PACKET_LOG_BYTES: usize = 8 << 20;
+
+/// Bound on a single session's undelivered queue.
+///
+/// The log is capped but the OUTBOX was not: a member that stops answering
+/// (its child died without a `stop_game`) keeps having packets routed TO it by
+/// peers that are still running, forever. Past this, the oldest queued events
+/// are dropped and COUNTED — a coordinator that advertises a perfect link must
+/// not discard traffic silently, and a queue that has grown this far belongs
+/// to a session that is not coming back.
+const OUTBOX_CAP: usize = 4_096;
 
 /// How long a `Connect` with no listener waits for its server session before it
 /// errors.
@@ -116,7 +128,6 @@ fn authority_of(endpoint: &str) -> &str {
     after_scheme.split('/').next().unwrap_or(after_scheme)
 }
 
-#[derive(Default)]
 pub struct NetCoordinator {
     /// Registered sessions, in launch order (the order the log reads best in).
     sessions: Vec<String>,
@@ -130,17 +141,29 @@ pub struct NetCoordinator {
     pending: Vec<PendingConnect>,
     log: VecDeque<Packet>,
     log_bytes: usize,
+    /// Events shed from an over-full outbox, per session, awaiting a report.
+    dropped: BTreeMap<String, usize>,
     next_conn: i32,
     next_seq: u64,
-    started: Option<Instant>,
+    started: Instant,
 }
 
 impl NetCoordinator {
     pub fn new() -> Self {
         Self {
+            sessions: Vec::new(),
+            outbox: BTreeMap::new(),
+            listeners: BTreeMap::new(),
+            conns: BTreeMap::new(),
+            pending: Vec::new(),
+            log: VecDeque::new(),
+            log_bytes: 0,
+            dropped: BTreeMap::new(),
+            // Ids start at 1: 0 is the "no connection" id an unroutable-connect
+            // error carries, so there is no valid `Default` for this type.
             next_conn: 1,
-            started: Some(Instant::now()),
-            ..Default::default()
+            next_seq: 0,
+            started: Instant::now(),
         }
     }
 
@@ -223,7 +246,13 @@ impl NetCoordinator {
                 }
             }
             ConnCommand::Send { conn, payload } => {
-                let conn = conn as i32;
+                // A `ConnectionId` is a u64 while the delivery side is an i32:
+                // truncating would let a bogus id (a stale one a model carried
+                // across a reload) ALIAS a live connection and be delivered
+                // instead of dropped. Refuse it the way `peer_of` would.
+                let Ok(conn) = i32::try_from(conn) else {
+                    return;
+                };
                 // A send on a connection this session is not an end of (a
                 // closed one, or a stale id a model carried across a reload) is
                 // DROPPED, not misrouted — `VirtualNet::send` refuses the same
@@ -245,7 +274,9 @@ impl NetCoordinator {
                 );
             }
             ConnCommand::CloseConn { conn } => {
-                let conn = conn as i32;
+                let Ok(conn) = i32::try_from(conn) else {
+                    return;
+                };
                 // Same ownership rule: only an end may close it.
                 if self.peer_of(conn, session).is_some() {
                     self.close(conn, session);
@@ -332,6 +363,12 @@ Sub.listen(\"{authority}\", …) before a client can connect"
         for event in events.into_iter().rev() {
             queue.push_front(event);
         }
+    }
+
+    /// Take the per-session drop counts accumulated since the last call, so
+    /// the pump can report them once rather than per packet.
+    pub fn take_drops(&mut self) -> BTreeMap<String, usize> {
+        std::mem::take(&mut self.dropped)
     }
 
     /// Every packet routed so far, oldest first (capped).
@@ -483,15 +520,17 @@ Sub.listen(\"{authority}\", …) before a client can connect"
         };
         let conn = event.conn();
         queue.push_back(event);
+        if queue.len() > OUTBOX_CAP {
+            let shed = queue.len() - OUTBOX_CAP;
+            queue.drain(..shed);
+            *self.dropped.entry(to.session.clone()).or_insert(0) += shed;
+        }
 
         let seq = self.next_seq;
         self.next_seq += 1;
         let packet = Packet {
             seq,
-            at_ms: self
-                .started
-                .map(|start| start.elapsed().as_secs_f64() * 1000.0)
-                .unwrap_or(0.0),
+            at_ms: self.started.elapsed().as_secs_f64() * 1000.0,
             frame: None,
             from: from.to_string(),
             to: to.session.clone(),
@@ -760,5 +799,69 @@ mod tests {
         let seqs: Vec<u64> = net.packets().map(|p| p.seq).collect();
         assert_eq!(seqs, vec![0, 1, 2, 3, 4]);
         assert_eq!(net.routed(), 5);
+    }
+
+    /// A member that stops consuming must not grow its queue forever: past the
+    /// cap the OLDEST events are shed and COUNTED, because a coordinator that
+    /// advertises a perfect link may not discard traffic silently.
+    #[test]
+    fn an_unconsumed_outbox_is_bounded_and_reports_what_it_shed() {
+        let mut net = group(&["server", "client1"]);
+        net.perform("server", listen("127.0.0.1:9101"));
+        net.perform("client1", connect("ws://127.0.0.1:9101/orbs"));
+        net.take_outbox("server");
+        // client1 never drains again.
+        for index in 0..(OUTBOX_CAP + 50) {
+            net.perform(
+                "server",
+                ConnCommand::Send {
+                    conn: 1,
+                    payload: format!("{index}").into_bytes(),
+                },
+            );
+        }
+        // 51: the handshake's `connected` row was still queued too.
+        let drops = net.take_drops();
+        assert_eq!(drops.get("client1"), Some(&51), "{drops:?}");
+        assert!(net.take_drops().is_empty(), "drops are reported once");
+        let queued = net.take_outbox("client1");
+        assert_eq!(queued.len(), OUTBOX_CAP);
+        // The NEWEST survive: the `connected` row and the first 50 sends were
+        // shed, so the oldest kept is send #50.
+        assert_eq!(
+            queued.first(),
+            Some(&DeliveredEvent::Message {
+                key: "ws://127.0.0.1:9101/orbs".into(),
+                conn: 1,
+                text: "50".into()
+            })
+        );
+    }
+
+    /// A `conn` that does not fit the delivery side's i32 must be REFUSED, not
+    /// truncated: `4_294_967_297` would alias live connection 1 and be
+    /// delivered against it.
+    #[test]
+    fn an_out_of_range_conn_is_refused_rather_than_truncated() {
+        let mut net = group(&["server", "client1"]);
+        net.perform("server", listen("127.0.0.1:9101"));
+        net.perform("client1", connect("ws://127.0.0.1:9101/orbs"));
+        net.take_outbox("server");
+        net.take_outbox("client1");
+
+        net.perform(
+            "client1",
+            ConnCommand::Send {
+                conn: (1u64 << 32) + 1,
+                payload: b"alias".to_vec(),
+            },
+        );
+        assert!(net.take_outbox("server").is_empty());
+        net.perform("client1", ConnCommand::CloseConn { conn: (1u64 << 32) + 1 });
+        assert_eq!(
+            net.connection_counts().get("client1"),
+            Some(&1),
+            "the live connection survived a forged close"
+        );
     }
 }

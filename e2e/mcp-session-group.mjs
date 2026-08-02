@@ -35,11 +35,10 @@
 //   node e2e/mcp-session-group.mjs
 //
 // Set FUNCTOR_BIN when the build uses a shared CARGO_TARGET_DIR.
-import { connect } from "node:net";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { check, failures, ROOT, sleep, startMcp } from "./mcp-rpc.mjs";
+import { check, failures, portIsBound, ROOT, startMcp, waitForState } from "./mcp-rpc.mjs";
 
 const DIR = "examples/orbs";
 /** The ws port `examples/orbs` declares (`let bind = "127.0.0.1:9101"`). Under
@@ -47,28 +46,6 @@ const DIR = "examples/orbs";
 const WS_PORT = 9101;
 const ROUNDS = 12;
 const DTS = 0.016;
-
-/** True when something is listening on a localhost TCP port. */
-async function portIsBound(port) {
-  return new Promise((resolve) => {
-    const socket = connect({ host: "127.0.0.1", port });
-    socket.once("connect", () => (socket.destroy(), resolve(true)));
-    socket.once("error", () => (socket.destroy(), resolve(false)));
-  });
-}
-
-async function waitForState(rpc, session, predicate, what, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  for (;;) {
-    last = await rpc.call("get_state", { session });
-    if (predicate(last)) return last;
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for ${what}; last model: ${JSON.stringify(last.model)}`);
-    }
-    await sleep(100);
-  }
-}
 
 const { proc, rpc } = await startMcp("functor-e2e-session-group");
 let group = null;

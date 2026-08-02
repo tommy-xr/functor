@@ -480,13 +480,18 @@ registry keyed by **authority** (`host:port` — so a client's
 connection id per pair** shared by both ends, both ends told `connected` under
 their own routing key, and **FIFO per session**. A client that dials before its
 authority exists waits and connects the moment the listener appears (15 s
-grace), and reloading the authority re-queues its clients — their runtimes can
-never re-dial on their own.
+grace). A client whose peer is REMOVED from the group (its session stopped) is
+re-queued, because a runtime never re-dials on its own; a plain hot RELOAD of
+the authority is not that case — the model, and with it the connection ids,
+survives, so the group keeps routing straight across it.
 
 **Cadence.** Routing runs on this server's own loop, in two places:
 
-- **continuously in the background**, every ~8 ms, so a group running live on
-  wall-clock time still moves its packets between tool calls;
+- **continuously in the background** — a round is scheduled every 8 ms, though
+  its real period is the round trip to each member (a headless runtime services
+  the debug channel once per ~16 ms loop, so a three-role group settles nearer
+  50–100 ms) — so a group running live on wall-clock time still moves its
+  packets between tool calls;
 - **at every session boundary inside a `step_all` round**, with the background
   pump held off for the whole round. So a packet client 1 sends in round *N*
   is delivered — and folded through `update`, since `POST /net/deliver` answers
@@ -496,10 +501,17 @@ That second half is what `step_all` could not do over sockets. It is still not
 a *barrier*: the group runs freely between rounds, and nothing schedules a
 packet into a named step.
 
-**Delivery in v1 is IMMEDIATE, in order, and never dropped** — a perfect,
-reliable link. Latency, jitter, and step-time scheduling ("departs step 610,
-deliver at 618") arrive with barrier stepping, which is also what will give
-`wire_log`'s `frame` a value; today it is always `null` rather than a
+**Delivery in v1 is IMMEDIATE and in order** — a perfect, reliable link: the
+router never drops or reorders a packet, and a delivery that fails in transit
+is re-queued at the front of its queue and retried. The one honest gap is that
+`GET /net/outbound` is take-and-consume, so a drain whose RESPONSE is lost
+takes those commands with it, and a delivery whose outcome is UNKNOWN (a
+timeout) is reported and not retried rather than risked twice — on a reliable
+ordered channel, a duplicate is worse than a gap. A session that stops
+consuming has its queue bounded and the shed count reported. All of these land
+on stderr, which is where this server logs; none of them are silent. Latency, jitter, and step-time scheduling ("departs step
+610, deliver at 618") arrive with barrier stepping, which is also what will
+give `wire_log`'s `frame` a value; today it is always `null` rather than a
 measurement dressed up as a schedule.
 
 **Reading the wire.** `wire_log` returns rows oldest-first:
@@ -519,7 +531,10 @@ cursor — read the last row's `seq`, run a round, pass it back as `since`, and
 you have exactly that round's traffic. `link` narrows to one label
 (`"client1"`) or an unordered pair (`"client1:server"`), and `direction`
 (`"sent"` / `"received"`) narrows a single label further. A label the group does
-not have is an error, not an empty result.
+not have is an error, not an empty result. Rows share a payload byte budget
+spent newest-first, so a chatty protocol's oldest rows come back with
+`payload_elided: true` (and `payloads_elided` counted) rather than flooding the
+answer — narrow the window or the `link` to read them.
 
 **What reproduces, and what does not.** With immediate in-order delivery and
 `step_all`'s boundary pumping, a steady-state round routes the same packets, in

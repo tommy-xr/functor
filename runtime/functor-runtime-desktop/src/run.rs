@@ -1479,6 +1479,22 @@ then restart the runner"
         .debug_port
         .and_then(|port| debug_server::spawn(&args.debug_bind, port, args.debug_port_optional));
 
+    // The embedder transport is only half a network without a debug client:
+    // the drained commands accumulate in an unbounded queue nobody takes, and
+    // no event can ever be delivered. Refusing here turns a silent leak (and a
+    // game whose networking quietly does nothing) into a startup error — and
+    // it deliberately keys on the SERVER, not the flag, so an optional port
+    // that was already taken fails just as loudly.
+    if args.net_transport == NetTransportArg::Embedder && debug_requests.is_none() {
+        eprintln!(
+            "error: --net-transport embedder needs a debug server — the embedder IS the client \
+of `GET /net/outbound` / `POST /net/deliver`, so without one this game's network can never be \
+drained or delivered. Pass --debug-port <PORT> (or drop --net-transport embedder to use real \
+sockets)."
+        );
+        std::process::exit(1);
+    }
+
     // Headless: drive the game + debug server with no GL window, and return.
     if args.headless {
         if args.capture_frame.is_some() {
