@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use functor_runtime_common::asset::pipelines::TexturePipeline;
 use functor_runtime_common::asset::{AssetCache, AssetLoader};
 use functor_runtime_common::functor_lang_game_embedded::FunctorLangEmbeddedGame;
+use functor_runtime_common::functor_lang_producer::EntryRole;
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::net::{
@@ -163,6 +164,29 @@ fn functor_lang_entry_prefix() -> String {
         .unwrap_or_default()
 }
 
+/// The role's inline entry MODULE (same-file entries, mirroring the desktop
+/// `--entry-module` flag): the page sets `window.__functorLangEntryModule`
+/// before initializing this module (the CLI's Functor Lang index page
+/// substitutes the role's declared module; the site's player.html reads
+/// `?module=<Ident>`), and the producer resolves every canonical entry
+/// binding as a member of that `module` block (`"Server"` →
+/// `Server.init`/`Server.tick`/…). Absent or empty = no module role.
+fn functor_lang_entry_module() -> String {
+    js_sys::Reflect::get(&window(), &JsValue::from_str("__functorLangEntryModule"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+/// This page's role, as the producers' shared resolver takes it: an inline
+/// `module` block wins when the page declares one (the two boot keys are
+/// mutually exclusive — the CLI's config refuses both, and player.html drops
+/// the prefix when a module is given), otherwise the binding prefix (empty =
+/// the classic unprefixed contract).
+fn functor_lang_entry_role() -> EntryRole {
+    EntryRole::from_parts(&functor_lang_entry_module(), &functor_lang_entry_prefix())
+}
+
 /// Where the runtime's networking goes. Two routings exist: real browser
 /// WebSockets, and the *embedder* — the page hosting this runtime.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -261,9 +285,9 @@ fn parse_project_files(value: &JsValue) -> Option<Vec<(String, String)>> {
 /// `run_async` to fail loud with.
 async fn create_functor_lang_game(entry: &str) -> Result<FunctorLangEmbeddedGame, String> {
     let sources = load_project_sources(entry).await?;
-    FunctorLangEmbeddedGame::create_with_prefix(
+    FunctorLangEmbeddedGame::create_for_role(
         sources,
-        &functor_lang_entry_prefix(),
+        functor_lang_entry_role(),
         Box::new(WebPlatform::new()),
     )
 }

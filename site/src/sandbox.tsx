@@ -438,6 +438,9 @@ const loadExample = async (id: string) => {
   // A same-file-entries sample plays its declared role: the player boots the
   // prefixed contract (e.g. orbs' clientInit/clientTick/…).
   if (example?.prefix) params.set("prefix", example.prefix);
+  // …or, in the preferred same-file form, the role's inline module (the
+  // player takes one of the two).
+  if (example?.module) params.set("module", example.module);
   frame.src = `player.html?${params}`;
   // A sample with a SERVER role (examples.ts `server`) also boots a server
   // pane: the SAME file list re-entered at the server file. `?file=` is the
@@ -458,6 +461,12 @@ const loadExample = async (id: string) => {
     serverParams.delete("prefix");
     if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
     serverParams.delete("file");
+    // The client's ROLE must not leak into the server pane — neither form.
+    // A same-file sample states the server's own inline module; absent, the
+    // server file's plain top-level contract is the role.
+    serverParams.delete("module");
+    serverParams.delete("prefix");
+    if (example?.server?.module) serverParams.set("module", example.server.module);
     for (const file of [serverFile, ...files.filter((f) => f !== serverFile)]) {
       serverParams.append("file", file);
     }
