@@ -754,8 +754,9 @@ phase (7):
   with a physics scene under `LinkProfile { latency, jitter, loss }`; assert each
   client's read-back converges to the server within tolerance after reconcile.
   Sweep profiles; add a partition→heal case (predict through, snap back on heal).
-  Blocked on the coordinator gaining link impairment and step-time delivery — it
-  routes over perfect links today.
+  The coordinator now applies latency and jitter per link; loss, partitions, and
+  step-time delivery are still outstanding, so the latency half of this sweep is
+  writable today and the loss half is not.
 - **Multi-pane overlays**: render the authoritative server transform as a
   translucent **ghost** beside the client's predicted body (see prediction error +
   the reconcile snap); per-client metrics (max prediction error, rewinds/sec,

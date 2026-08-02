@@ -1,4 +1,5 @@
-// The ROW GRAMMAR of the traffic monitor: `#f · direction · payload · bytes`,
+// The ROW GRAMMAR of the traffic monitor: `#f sent→delivered · direction ·
+// payload · bytes`,
 // and the two log walks that decide which packets a viewport holds.
 //
 // It exists because the same grammar is now read in two places — the pinned
@@ -80,6 +81,26 @@ export const packetKey = (packet: Packet): string =>
   `${packet.frame}:${packet.from}:${packet.size}:${packet.at}`;
 
 /**
+ * Is this packet still on the wire at `at`? Sent by then, not yet delivered.
+ *
+ * The scrub-locked window keys on the SENT frame (that is the frame the row
+ * prints first, and the axis the log is ordered by), which means a parked
+ * playhead can sit in the middle of a packet's flight — under a mobile link,
+ * eight frames of the window are exactly that. Rather than hide those rows or
+ * pretend they had landed, they render in an IN-FLIGHT state: the row is in the
+ * list because it was sent, and it says the receiving game has not seen it yet.
+ *
+ * Live (`at === null`) nothing is marked: the tail's newest rows would all be
+ * mid-flight, which is true and useless — the dots are where flight is read.
+ */
+export const inFlightAt = (packet: Packet, at: number | null): boolean =>
+  at !== null &&
+  packet.frame !== null &&
+  packet.deliveredFrame !== null &&
+  packet.frame <= at &&
+  at < packet.deliveredFrame;
+
+/**
  * The scrub-lock itself: a window of matching packets around `at`, and which of
  * its rows the playhead is on (-1 while live).
  *
@@ -139,6 +160,8 @@ export interface WireRowOptions {
   packet: Packet;
   /** The playhead's row, while the session is parked. */
   at?: boolean;
+  /** The packet is still crossing its link at the playhead (`inFlightAt`). */
+  inFlight?: boolean;
   /** The open row's value tree, moved in by its host — present only on the one
    * row that is open. */
   tree?: HTMLElement | null;
@@ -171,6 +194,7 @@ export interface WireRow {
 export const buildWireRow = ({
   packet,
   at = false,
+  inFlight = false,
   tree = null,
   link = null,
   color,
@@ -180,7 +204,9 @@ export const buildWireRow = ({
   const decoded = decodeWire(packet.text);
   const open = tree !== null;
   const row = document.createElement("div");
-  row.className = `mp-wl${link === null ? "" : " linked"}${at ? " at" : ""}${open ? " open" : ""}`;
+  row.className =
+    `mp-wl${link === null ? "" : " linked"}${at ? " at" : ""}` +
+    `${inFlight ? " flight" : ""}${open ? " open" : ""}`;
   if (color) row.style.setProperty("--pc", color);
   // The full rendering is built ON HOVER, once: rendering every row's whole
   // payload unelided (a world snapshot, per row, per repaint) to fill a tooltip
@@ -202,7 +228,22 @@ export const buildWireRow = ({
     el.textContent = text;
     return el;
   };
-  const cells: HTMLElement[] = [cell("f", `#f ${packet.frame ?? "—"}`)];
+  // The frame cell carries the WHOLE crossing: sent, then delivered. The delay
+  // is the link chip made visible per packet (Addendum 8.2) — subdued, because
+  // the sent frame is what the row is filed under and what the rail matches.
+  // A same-frame delivery (a link under half a frame) prints no arrow: there is
+  // nothing to say, and an unbroken column of "→" would say it loudest.
+  const frames = cell("f", `#f ${packet.frame ?? "—"}`);
+  if (packet.deliveredFrame !== null && packet.deliveredFrame !== packet.frame) {
+    const delivered = document.createElement("i");
+    delivered.className = "dl";
+    delivered.textContent = `→${packet.deliveredFrame}${inFlight ? " ⋯" : ""}`;
+    delivered.title = inFlight
+      ? `sent at #f ${packet.frame}, still crossing at the playhead — it lands at #f ${packet.deliveredFrame}`
+      : `sent at #f ${packet.frame}, delivered at #f ${packet.deliveredFrame}`;
+    frames.append(delivered);
+  }
+  const cells: HTMLElement[] = [frames];
   if (link !== null) cells.push(cell("l", link));
   cells.push(
     cell(`d ${up ? "up" : "dn"}`, up ? `${shortName(packet.from)}→srv` : `srv→${shortName(packet.to)}`)
