@@ -96,8 +96,10 @@ const STYLE = `
   background: rgba(30, 24, 51, 0.97); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   font: 10px/1.2 var(--sb-font); letter-spacing: 0.02em; white-space: nowrap;
   opacity: 0; visibility: hidden; pointer-events: none;
-  /* The delay lives on the SHOW transition, so the tip fades out immediately
-     on leave rather than waiting out its own dwell. */
+  /* The 0.38s dwell lives on the SHOW transition (below), so a passing cursor
+     never trips a tip, and on leave the opacity fades out at once instead of
+     waiting the dwell out again. Visibility still flips a beat later; the tip
+     is already transparent and pointer-events: none by then. */
   transition: opacity 0.12s ease 0s, visibility 0s linear 0.38s;
 }
 #scrub-main button[data-tip]:hover::after,
@@ -105,9 +107,16 @@ const STYLE = `
   opacity: 1; visibility: visible;
   transition: opacity 0.12s ease 0.38s, visibility 0s linear 0.38s;
 }
-/* The right cluster hangs its tips from the button's right corner — centered,
-   they clip at the iframe edge. Selectors are #scrub-main-qualified so they
-   OUTWEIGH the base rule above; a bare #scrub-camera[data-tip]::after loses. */
+/* Each cluster hangs its tips from the OUTER corner of its button — centered,
+   they overhang the bar and clip at the viewport edge (the landing hero's
+   iframe is ~500px, so both edges are live, not just the right). Selectors are
+   #scrub-main-qualified so they OUTWEIGH the base rule above; a bare
+   #scrub-camera[data-tip]::after loses. */
+#scrub-main #scrub-pause[data-tip]::after,
+#scrub-main #scrub-step[data-tip]::after,
+#scrub-main #scrub-reset[data-tip]::after {
+  left: 0; right: auto; transform: none;
+}
 #scrub-main #scrub-camera[data-tip]::after,
 #scrub-main #scrub-extrapolate[data-tip]::after {
   left: auto; right: 0; transform: none;
@@ -263,10 +272,12 @@ const STYLE = `
   to { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* A steady ring carries the same "look here" without motion. */
+  /* A steady ring carries the same "look here" without motion — held at the
+     pulse's own peak, so the reduced-motion rest state is no louder than the
+     animated one, and stays clearly below the peek's filled ring below. */
   #scrub-extrapolate.attention {
     animation: none;
-    box-shadow: 0 0 0 2px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.35);
+    box-shadow: 0 0 0 1px rgba(232, 88, 184, 0.3);
   }
   /* The glimpse still reads through the trail itself; a steady ring marks the
      button for the duration without the press or the shine. The filled
