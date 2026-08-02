@@ -435,12 +435,12 @@ const loadExample = async (id: string) => {
     params.set("cursor", cursorPolicy);
   }
   for (const file of files) params.append("file", file);
-  // A same-file-entries sample plays its declared role: the player boots the
-  // prefixed contract (e.g. orbs' clientInit/clientTick/…).
-  if (example?.prefix) params.set("prefix", example.prefix);
-  // …or, in the preferred same-file form, the role's inline module (the
-  // player takes one of the two).
+  // A same-file-entries sample plays its declared role: in the preferred form
+  // the role's inline module (e.g. orbs' Client.init/Client.tick/…)…
   if (example?.module) params.set("module", example.module);
+  // …or the transitional prefixed contract (clientInit/clientTick/…); the
+  // player takes one of the two.
+  if (example?.prefix) params.set("prefix", example.prefix);
   frame.src = `player.html?${params}`;
   // A sample with a SERVER role (examples.ts `server`) also boots a server
   // pane: the SAME file list re-entered at the server file. `?file=` is the
@@ -450,23 +450,19 @@ const loadExample = async (id: string) => {
   let serverSrc: string | null = null;
   if (serverFile) {
     // Derived from the client's params, so every project setting the sample
-    // declares (prefix, cursor, mouseCapture) reaches the server pane too —
-    // only the entry, the file ORDER, and the role prefix differ.
+    // declares (cursor, mouseCapture) reaches the server pane too — only the
+    // entry, the file ORDER, and the ROLE differ.
     const serverParams = new URLSearchParams(params);
     serverParams.set("game", serverFile);
-    // …except the role PREFIX, which is the one param the server owns: a
-    // same-file sample (orbs) has both roles in one entry, so the server pane
-    // differs from the client pane only by the prefix it resolves through, and
-    // inheriting the client's would boot the wrong contract.
-    serverParams.delete("prefix");
-    if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
     serverParams.delete("file");
-    // The client's ROLE must not leak into the server pane — neither form.
-    // A same-file sample states the server's own inline module; absent, the
-    // server file's plain top-level contract is the role.
+    // The client's ROLE must not leak into the server pane — neither form, so
+    // both are dropped before the server's own is applied. A same-file sample
+    // (orbs) has both roles in the one entry and differs only here; absent a
+    // declared role, the server file's plain top-level contract is the role.
     serverParams.delete("module");
     serverParams.delete("prefix");
     if (example?.server?.module) serverParams.set("module", example.server.module);
+    if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
     for (const file of [serverFile, ...files.filter((f) => f !== serverFile)]) {
       serverParams.append("file", file);
     }
