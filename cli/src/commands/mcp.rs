@@ -298,8 +298,12 @@ struct CodeOutputBudget {
 struct CodeInputRestore {
     baseline_keys: BTreeSet<String>,
     baseline_mouse_buttons: BTreeSet<String>,
+    // Active touch contacts at baseline, id → position, so a contact the code
+    // ended can be re-begun where it was.
+    baseline_touches: BTreeMap<u32, (f64, f64)>,
     touched_keys: BTreeSet<String>,
     touched_mouse_buttons: BTreeSet<String>,
+    touched_contacts: BTreeSet<u32>,
 }
 
 impl CodeInputRestore {
@@ -327,9 +331,22 @@ impl CodeInputRestore {
             })
             .map(str::to_string)
             .collect();
+        let baseline_touches = state
+            .pointer("/input/touch/touches")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|point| {
+                Some((
+                    u32::try_from(point.get("id")?.as_u64()?).ok()?,
+                    (point.get("x")?.as_f64()?, point.get("y")?.as_f64()?),
+                ))
+            })
+            .collect();
         Self {
             baseline_keys,
             baseline_mouse_buttons,
+            baseline_touches,
             ..Self::default()
         }
     }
@@ -345,8 +362,14 @@ impl CodeInputRestore {
             .insert(button.to_ascii_lowercase());
     }
 
+    fn touch_contact(&mut self, id: u32) {
+        self.touched_contacts.insert(id);
+    }
+
     fn is_empty(&self) -> bool {
-        self.touched_keys.is_empty() && self.touched_mouse_buttons.is_empty()
+        self.touched_keys.is_empty()
+            && self.touched_mouse_buttons.is_empty()
+            && self.touched_contacts.is_empty()
     }
 }
 
@@ -3442,18 +3465,19 @@ still be alive; stop an owned session, or restart both an attached runtime and t
             }
             "touch" => {
                 require_arity(method, args, 4)?;
-                let phase = args[0]
-                    .as_str()
-                    .ok_or_else(|| "touch phase must be a string".to_string())?;
+                let phase = string_arg(method, args, 0)?;
+                validate_touch_phase(&phase)?;
+                let id = u32_arg(method, args, 1)?;
+                input_restore.touch_contact(id);
                 self.post(
                     url,
                     "/input",
                     serde_json::json!({
                         "type": "touch",
                         "phase": phase,
-                        "id": u32_arg(method, args, 1)?,
-                        "x": f64_arg(method, args, 2)?,
-                        "y": f64_arg(method, args, 3)?,
+                        "id": id,
+                        "x": finite_f64_arg(method, args, 2)?,
+                        "y": finite_f64_arg(method, args, 3)?,
                     })
                     .to_string(),
                 )
@@ -3601,8 +3625,30 @@ runtime, restart both the runtime and this MCP server before reconnecting."
                 failures.push(format!("mouse button {button:?}: {error}"));
             }
         }
+        for id in &input_restore.touched_contacts {
+            let baseline = input_restore.baseline_touches.get(id);
+            let currently_active = current.baseline_touches.contains_key(id);
+            let command = match (baseline, currently_active) {
+                // A contact the code begun and left held: cancel it (the game
+                // sees a release, exactly as if the platform stole it).
+                (None, true) => serde_json::json!({
+                    "type": "touch", "phase": "cancel", "id": id, "x": 0.0, "y": 0.0,
+                }),
+                // A baseline contact the code ended: re-begin it where it was.
+                (Some((x, y)), false) => serde_json::json!({
+                    "type": "touch", "phase": "begin", "id": id, "x": x, "y": y,
+                }),
+                _ => continue,
+            };
+            if let Err(error) = self
+                .post(&target.url, "/input", command.to_string())
+                .await
+            {
+                failures.push(format!("touch contact {id}: {error}"));
+            }
+        }
         if failures.is_empty() {
-            format!("{cause}; code-touched key and mouse-button levels were restored")
+            format!("{cause}; code-touched key, mouse-button, and touch levels were restored")
         } else {
             target.quarantined.store(true, Ordering::Release);
             format!(
@@ -4153,10 +4199,13 @@ fn u32_arg(method: &str, args: &[Value], index: usize) -> Result<u32, String> {
         .map_err(|_| format!("{method} argument {} exceeds u32", index + 1))
 }
 
-fn f64_arg(method: &str, args: &[Value], index: usize) -> Result<f64, String> {
-    args.get(index)
-        .and_then(Value::as_f64)
-        .ok_or_else(|| format!("{method} argument {} must be a number", index + 1))
+fn validate_touch_phase(phase: &str) -> Result<(), String> {
+    match phase {
+        "begin" | "move" | "end" | "cancel" => Ok(()),
+        _ => Err(format!(
+            "unknown touch phase {phase:?}; expected begin, move, end, or cancel"
+        )),
+    }
 }
 
 fn i32_arg(method: &str, args: &[Value], index: usize) -> Result<i32, String> {
@@ -4221,6 +4270,19 @@ fn track_input_command(
                 return Err("mouse_button input requires a boolean `down`".into());
             }
             input_restore.touch_mouse_button(button);
+        }
+        "touch" => {
+            let phase = command
+                .get("phase")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "touch input requires a string `phase`".to_string())?;
+            validate_touch_phase(phase)?;
+            let id = command
+                .get("id")
+                .and_then(Value::as_u64)
+                .and_then(|id| u32::try_from(id).ok())
+                .ok_or_else(|| "touch input requires a non-negative integer `id`".to_string())?;
+            input_restore.touch_contact(id);
         }
         _ => {}
     }

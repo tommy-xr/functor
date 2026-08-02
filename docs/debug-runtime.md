@@ -430,11 +430,6 @@ clients should treat absent edge arrays/button sets as empty.
       "menu_pressed": false
     }
   },
-  "touch": {
-    "touches": [{ "id": 0, "x": 120.0, "y": 48.0 }],
-    "pressed": [],
-    "released": []
-  },
   "gamepad": {
     "left_stick": [0.0, 0.0],
     "right_stick": [0.0, 0.0],
@@ -454,6 +449,11 @@ clients should treat absent edge arrays/button sets as empty.
     "dpad_right": false,
     "start": false,
     "select": false
+  },
+  "touch": {
+    "touches": [{ "id": 0, "x": 120.0, "y": 48.0 }],
+    "pressed": [],
+    "released": []
   }
 }
 ```
@@ -484,8 +484,10 @@ pad is connected, with controls at rest level while the window/document is
 unfocused or the clock is pinned. `--headless` has no GLFW instance, so there
 injection is the domain's only source. `touch` carries active contacts plus
 one-step `pressed`/`released` transition lists (the keyboard contract for
-fingers); `Some` with empty lists means a touch surface exists but is idle,
-and desktop supplies the domain through injection only. Further devices
+fingers); `Some` with empty lists means a touch surface exists but is idle.
+No shell produces the domain from hardware yet on ANY target — debug
+injection is its only source until the web touch-event wiring lands.
+Further devices
 should add typed sibling fields rather than target-specific endpoints or
 string-keyed capability bags.
 

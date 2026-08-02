@@ -39,10 +39,11 @@ pub struct InputSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamepad: Option<GamepadSnapshot>,
     /// Live touch contacts when the target supplies them. `Some` signals
-    /// touch CAPABILITY (a touch surface exists — the web shell sets it on
-    /// touch-capable devices before any contact), so a game can decide to
+    /// touch CAPABILITY (a touch surface exists), so a game can decide to
     /// show touch UI; an idle touchscreen is `Some` with empty lists, and
-    /// `None` means no touch surface at all.
+    /// `None` means no touch surface at all. Today the domain's only source
+    /// is debug injection — the web shell's touch-event wiring (which will
+    /// set `Some` on touch-capable devices before any contact) lands next.
     ///
     /// Omitted rather than serialized as `null` when absent, like `xr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,9 +51,10 @@ pub struct InputSnapshot {
 }
 
 /// One touch contact in the same top-left-origin logical coordinate space as
-/// [`MouseSnapshot`] (window points natively, CSS pixels on web). `id` is a
-/// small shell-assigned ordinal stable for the contact's lifetime — shells
-/// remap the platform's arbitrary identifiers.
+/// [`MouseSnapshot`] (window points natively, CSS pixels on web; fractional
+/// `f32`, unlike the mouse's integer point). `id` is a small shell-assigned
+/// ordinal stable for the contact's lifetime — shells remap the platform's
+/// arbitrary identifiers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TouchPoint {
@@ -219,10 +221,7 @@ impl InputEdges {
         } else {
             &mut self.released_touches
         };
-        match edges.iter_mut().find(|p| p.id == point.id) {
-            Some(existing) => *existing = point,
-            None => edges.push(point),
-        }
+        upsert_touch_point(edges, point);
     }
 
     /// Copy the pending transitions into a step snapshot.
@@ -333,34 +332,54 @@ pub fn apply_mouse_transition_to_snapshot(
     true
 }
 
+/// Insert or reposition an id-keyed point. Returns whether it was NEWLY
+/// inserted (a repeated begin repositions without a second press edge).
+fn upsert_touch_point(points: &mut Vec<TouchPoint>, point: TouchPoint) -> bool {
+    match points.iter_mut().find(|p| p.id == point.id) {
+        Some(existing) => {
+            *existing = point;
+            false
+        }
+        None => {
+            points.push(point);
+            true
+        }
+    }
+}
+
 /// Fold one touch-contact transition into shell-held touch level state.
 ///
 /// The ONE reducer every shell (web events, debug injection) shares, so live
 /// input and replay cannot drift. `touch` is the shell's persistent level
-/// state: `Begin` upserts the contact (materializing the domain — receiving a
+/// state: `Begin` adds the contact (materializing the domain — receiving a
 /// touch event IS the capability signal), `Move` repositions it, `End` and
 /// `Cancel` remove it. Edges record like keyboard edges — de-duplicated, a
 /// `Cancel` reporting through `released` so a stolen gesture never leaks a
-/// held contact. `record_edge` follows
-/// [`apply_key_transition_to_snapshot`]'s recovery-only semantics. Returns
+/// held contact. A `Begin` on an id already held means a release was lost
+/// (ids are reused ordinals): it records an implicit release at the stale
+/// position and a fresh press, so neither contact is swallowed. Unlike the
+/// keyboard reducers there is no silent-recovery mode — a touch removal is
+/// always model-visible, which is the never-leaks-held guarantee. Returns
 /// whether the level state actually changed.
 pub fn apply_touch_transition(
     touch: &mut Option<TouchSnapshot>,
     edges: &mut InputEdges,
     phase: TouchPhase,
     point: TouchPoint,
-    record_edge: bool,
 ) -> bool {
     match phase {
         TouchPhase::Begin => {
             let touch = touch.get_or_insert_with(TouchSnapshot::default);
-            let was_down = touch.touches.iter().any(|p| p.id == point.id);
             match touch.touches.iter_mut().find(|p| p.id == point.id) {
-                Some(existing) => *existing = point,
-                None => touch.touches.push(point),
-            }
-            if !was_down && record_edge {
-                edges.touch_transition(point, true);
+                Some(existing) => {
+                    edges.touch_transition(*existing, false);
+                    edges.touch_transition(point, true);
+                    *existing = point;
+                }
+                None => {
+                    touch.touches.push(point);
+                    edges.touch_transition(point, true);
+                }
             }
             true
         }
@@ -382,9 +401,7 @@ pub fn apply_touch_transition(
                 return false;
             };
             levels.touches.remove(index);
-            if record_edge {
-                edges.touch_transition(point, false);
-            }
+            edges.touch_transition(point, false);
             true
         }
     }
@@ -1520,7 +1537,6 @@ mod tests {
             &mut edges,
             TouchPhase::Begin,
             point(0, 10.0, 20.0),
-            true,
         ));
         // Move repositions the level without a new edge; moving an unknown
         // contact is a no-op.
@@ -1529,14 +1545,12 @@ mod tests {
             &mut edges,
             TouchPhase::Move,
             point(0, 15.0, 25.0),
-            true,
         ));
         assert!(!apply_touch_transition(
             &mut touch,
             &mut edges,
             TouchPhase::Move,
             point(7, 0.0, 0.0),
-            true,
         ));
         // A second contact, then a quick tap of it before the step: both its
         // edges survive while the level is already gone.
@@ -1545,14 +1559,12 @@ mod tests {
             &mut edges,
             TouchPhase::Begin,
             point(1, 100.0, 100.0),
-            true,
         ));
         assert!(apply_touch_transition(
             &mut touch,
             &mut edges,
             TouchPhase::End,
             point(1, 101.0, 99.0),
-            true,
         ));
 
         let mut snapshot = InputSnapshot {
@@ -1576,14 +1588,13 @@ mod tests {
         assert_eq!(sampled.touches, vec![point(0, 15.0, 25.0)]);
 
         // Cancel reports through released — a stolen gesture never leaks a
-        // held contact — and a recovery-only sweep (record_edge: false)
-        // clears the level without inventing a model-visible edge.
+        // held contact. There is deliberately no silent-recovery mode: every
+        // touch removal is model-visible.
         assert!(apply_touch_transition(
             &mut touch,
             &mut edges,
             TouchPhase::Cancel,
             point(0, 15.0, 25.0),
-            true,
         ));
         let mut cancelled = InputSnapshot {
             touch: touch.clone(),
@@ -1599,8 +1610,35 @@ mod tests {
             &mut edges,
             TouchPhase::End,
             point(0, 15.0, 25.0),
-            true,
         ));
+
+        // A Begin on an id already held means an End was lost (ids are
+        // reused ordinals): the reducer records an implicit release at the
+        // STALE position plus a fresh press, so neither contact is swallowed.
+        let mut edges = InputEdges::default();
+        let mut reused: Option<TouchSnapshot> = None;
+        apply_touch_transition(
+            &mut reused,
+            &mut edges,
+            TouchPhase::Begin,
+            point(0, 10.0, 10.0),
+        );
+        edges.clear();
+        apply_touch_transition(
+            &mut reused,
+            &mut edges,
+            TouchPhase::Begin,
+            point(0, 90.0, 90.0),
+        );
+        let mut relanded = InputSnapshot::default();
+        edges.apply_to(&mut relanded);
+        let sampled = relanded.touch.as_ref().unwrap();
+        assert_eq!(sampled.released, vec![point(0, 10.0, 10.0)]);
+        assert_eq!(sampled.pressed, vec![point(0, 90.0, 90.0)]);
+        assert_eq!(
+            reused.as_ref().unwrap().touches,
+            vec![point(0, 90.0, 90.0)]
+        );
 
         // A tap landing entirely between steps still reaches the game even
         // when no level state existed: pending edges materialize the domain.
@@ -1611,14 +1649,12 @@ mod tests {
             &mut edges,
             TouchPhase::Begin,
             point(3, 5.0, 5.0),
-            true,
         );
         apply_touch_transition(
             &mut fresh,
             &mut edges,
             TouchPhase::End,
             point(3, 5.0, 5.0),
-            true,
         );
         let mut bare = InputSnapshot::default();
         edges.apply_to(&mut bare);
