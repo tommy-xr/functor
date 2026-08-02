@@ -26,6 +26,7 @@ import {
   analyzeCached,
   completeAt,
   resetIntel,
+  refreshIntel,
   onDiagnostics,
   wireLiveTrace,
   currentLiveHints,
@@ -330,6 +331,10 @@ const setDoc = (
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
   programmaticEdit = false;
+  // …and drop the outgoing program's decorations (the IDE's setDoc does the
+  // same): if the incoming source doesn't analyze cleanly, the keep-stale
+  // lens rule would otherwise pin the old program's lenses to the new buffer.
+  refreshIntel(view);
   runtimeTarget.projectChanged({ fresh: true });
 };
 

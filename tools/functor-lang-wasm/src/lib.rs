@@ -52,7 +52,10 @@ const USER_FILE: &str = "game.fun";
 ///
 /// `from`/`to`/`pos` are whole-document UTF-16 offsets.
 /// A load-level failure (parse/link error) comes back as a single diagnostic —
-/// never an exception. Prelude spans are filtered out.
+/// never an exception — with `"inlays": null, "lenses": null` meaning "the
+/// pass didn't run; keep the previous set" (the mid-typing state must not
+/// reflow the buffer by dropping every lens). An EMPTY `inlays`/`lenses`
+/// array is authoritative (clears them). Prelude spans are filtered out.
 #[wasm_bindgen]
 pub fn functor_lang_analyze(src: &str) -> String {
     analyze_json(src)
@@ -440,8 +443,8 @@ fn load_error_json(active: &Path, active_src: &str, err: project::ProjectError) 
     };
     json!({
         "diagnostics": [{ "from": at, "to": at, "message": message, "severity": "error" }],
-        "inlays": [],
-        "lenses": [],
+        "inlays": Value::Null,
+        "lenses": Value::Null,
     })
     .to_string()
 }
@@ -554,13 +557,27 @@ mod tests {
     }
 
     // A parse failure comes back as a single diagnostic (never an exception),
-    // at the reported point.
+    // at the reported point — with NULL inlays/lenses ("the pass didn't run;
+    // keep the previous set"), so a transient mid-typing error doesn't drop
+    // every lens and reflow the buffer.
     #[test]
-    fn parse_error_is_a_single_diagnostic() {
+    fn parse_error_is_a_single_diagnostic_with_null_lenses() {
         let out = parse(&analyze_json("let init = {\n"));
         let diags = out["diagnostics"].as_array().unwrap();
         assert_eq!(diags.len(), 1, "{out}");
         assert_eq!(diags[0]["severity"], "error");
+        assert!(out["inlays"].is_null(), "{out}");
+        assert!(out["lenses"].is_null(), "{out}");
+    }
+
+    // A VALID program with nothing to report answers with EMPTY arrays — the
+    // authoritative "there are no lenses" (clears them), distinct from null.
+    #[test]
+    fn valid_lens_free_program_reports_empty_arrays() {
+        let out = parse(&analyze_json("type Tag = | A | B\n"));
+        assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0, "{out}");
+        assert_eq!(out["lenses"].as_array().unwrap().len(), 0, "{out}");
+        assert_eq!(out["inlays"].as_array().unwrap().len(), 0, "{out}");
     }
 
     // Non-ASCII before an error proves the UTF-8 byte offset is converted to a

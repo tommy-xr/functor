@@ -6,9 +6,9 @@
 //! The answer is the **innermost** expression (or lambda parameter, or
 //! top-level definition name) whose span contains the offset, rendered as
 //! `name : Type` for named things and bare `Type` otherwise. Types come from
-//! the checker's per-expression table ([`crate::types::ExprTypes`]) — in
-//! unannotated code they are honestly `Unknown` (the language is gradually
-//! typed; see [`crate::types`]).
+//! the checker's per-expression and per-binding tables
+//! ([`crate::types::ExprTypes`]) — where inference has nothing (the language
+//! is gradually typed; see [`crate::types`]) they are honestly `unknown`.
 
 use crate::ast::TypeName;
 use crate::ir::{Expr, ExprKind, Module, Pattern, PatternKind};
@@ -87,11 +87,15 @@ fn visit(expr: &Expr, types: &ExprTypes, consider: &mut impl FnMut(Span, String)
         ExprKind::Lambda { params, body, .. } => {
             consider(expr.span, ty.to_string());
             for param in params.iter() {
-                let shown = param
-                    .ty
-                    .as_ref()
-                    .map(type_name_text)
-                    .unwrap_or_else(|| "Unknown".to_string());
+                // Inferred type first — but an Unknown entry (e.g. an
+                // annotation that didn't resolve) defers to the user's own
+                // spelling, which is what they need to see to fix it.
+                let shown = types
+                    .binding(param.binding)
+                    .filter(|t| **t != Type::Unknown)
+                    .map(Type::to_string)
+                    .or_else(|| param.ty.as_ref().map(type_name_text))
+                    .unwrap_or_else(|| Type::Unknown.to_string());
                 consider(param.span, format!("{} : {shown}", param.name));
             }
             visit(body, types, consider);
@@ -279,9 +283,27 @@ mod tests {
     }
 
     #[test]
-    fn unannotated_code_hovers_as_unknown() {
+    fn unannotated_param_hovers_with_the_inferred_type() {
+        // A polymorphic param renders its inferred type var, matching the
+        // codelens (`f : ('a) => 'a`) and inlay hints.
         let text = hover_at("let f = (x) => x", "x)").unwrap();
-        assert_eq!(text, "x : Unknown");
+        assert_eq!(text, "x : 'a");
+    }
+
+    #[test]
+    fn unannotated_params_hover_with_types_inferred_from_use() {
+        let src = "let dot = (t, ix, iz) => t * 2.0 + ix + iz";
+        assert_eq!(hover_at(src, "t,").unwrap(), "t : float");
+        assert_eq!(hover_at(src, "ix,").unwrap(), "ix : float");
+        assert_eq!(hover_at(src, "iz)").unwrap(), "iz : float");
+    }
+
+    #[test]
+    fn unresolvable_annotation_hovers_with_the_users_spelling() {
+        // A mistyped/unimported type name checks as Unknown, but hover must
+        // show what the user wrote — that's what they need to see to fix it.
+        let text = hover_at("let f = (p: Bogus) => 1.0", "p:").unwrap();
+        assert_eq!(text, "p : Bogus");
     }
 
     #[test]
