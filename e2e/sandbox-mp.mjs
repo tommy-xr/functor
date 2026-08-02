@@ -18,7 +18,10 @@
 //   4. every pane header shows its coordinator link state;
 //   5. the GRID layout puts the clients in two columns with the server as a
 //      full-width strip below them — and switching layout reloads no pane;
-//   6. switching to a single-role example removes the server pane again.
+//   6. switching to a single-role example removes the server pane again;
+//   7. every pane CARD letterboxes to a 16:9 body inside its cell in the grid
+//      and network views, the "+" seat is last in reading order, and the
+//      network wires anchor to the cards rather than to the cells.
 //
 // Run manually (needs the web-runtime wasm bundle):
 //
@@ -33,6 +36,27 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wait for the view transition to finish. Switching layout FLIPs the cards
+ * (mp-panes.ts, 420ms), and a transform moves a card's measured box without
+ * resizing anything — so geometry read mid-flight is the card's *animated*
+ * box, not its laid-out one. The "+" seat FLIPs alongside the cards and its
+ * band geometry is asserted too, so it has to be waited on as well.
+ */
+const settle = (page) =>
+  page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".mp-pane, .mp-add-tile")].every(
+        (node) => node.getAnimations().length === 0
+      ),
+    null,
+    { timeout: 5000 }
+  );
+
+/** A letterboxed card sits centred on an axis when its two margins match. */
+const centred = (b, axis, size) =>
+  Math.abs(b[axis] - b.cell[axis] - (b.cell[axis] + b.cell[size] - (b[axis] + b[size]))) <= 2;
 
 let failures = 0;
 const check = (ok, what, detail = "") => {
@@ -123,6 +147,21 @@ const installProbe = (page) =>
           networkTitle: document.getElementById("mp-view-network").title,
         };
       },
+      /**
+       * Each wire's endpoints in PAGE coordinates, so they can be compared with
+       * the pane boxes: a wire has to leave the letterboxed CARD, not the cell
+       * the card floats in (Addendum 5b.3).
+       */
+      wireEnds: () => {
+        const origin = document.querySelector(".mp-net-layer").getBoundingClientRect();
+        return [...document.querySelectorAll(".mp-wire")].map((wire) => {
+          const at = (length) => {
+            const point = wire.getPointAtLength(length);
+            return { x: point.x + origin.x, y: point.y + origin.y };
+          };
+          return { from: at(0), to: at(wire.getTotalLength()) };
+        });
+      },
       // What a pane header still shows at its current width: the priority clip
       // keeps identity + link state and drops the frame counter first.
       headerParts: (index) => {
@@ -147,6 +186,8 @@ const installProbe = (page) =>
           hidden: !tile || tile.hidden,
           display: tile ? getComputedStyle(tile).display : "none",
           tag: tile?.tagName,
+          // Addendum 5b.1: the seat is the LAST thing in the arrangement.
+          last: !!tile && tile.parentElement.lastElementChild === tile,
           tabDisplay: getComputedStyle(document.querySelector(".mp-tab.add")).display,
         };
       },
@@ -161,18 +202,37 @@ const installProbe = (page) =>
           0
         );
       },
-      // Laid-out geometry per pane, plus the server's resolved grid placement.
+      // Laid-out geometry per pane: the CARD (the letterboxed pane itself, and
+      // what the wires anchor to), the CELL it sits in (what the layout
+      // places), and the body's aspect — 16:9 wherever the view letterboxes.
       boxes: () =>
         shells().map((s) => {
           const shell = s.frame.closest(".mp-pane");
+          const cell = shell.closest(".mp-cell");
           const box = shell.getBoundingClientRect();
+          const cellBox = cell.getBoundingClientRect();
+          const body = shell.querySelector(".mp-pane-body").getBoundingClientRect();
           return {
             role: s.role,
             x: Math.round(box.x),
             y: Math.round(box.y),
             w: Math.round(box.width),
             h: Math.round(box.height),
-            gridColumn: getComputedStyle(shell).gridColumn,
+            cell: {
+              x: Math.round(cellBox.x),
+              y: Math.round(cellBox.y),
+              w: Math.round(cellBox.width),
+              h: Math.round(cellBox.height),
+            },
+            bodyRatio: body.width / body.height,
+            /** How much of the cell the card left over, UNROUNDED: the
+             * letterbox arithmetic is exact to the pixel, and rounding would
+             * hide a card that overflows its cell by a fraction of one. */
+            slack: { w: cellBox.width - box.width, h: cellBox.height - box.height },
+            /** What the header actually needs, against the 22px the letterbox
+             * arithmetic budgets for it. */
+            headerScroll: shell.querySelector(".mp-pane-hd").scrollHeight,
+            gridColumn: getComputedStyle(cell).gridColumn,
           };
         }),
       // Document-lifetime markers for EVERY pane: a re-parented iframe reloads
@@ -264,6 +324,10 @@ try {
       "a + tile sits after the client panes, as a real button",
       JSON.stringify(tile)
     );
+    check(
+      tile.last,
+      "the seat is LAST in reading order, after every occupied cell"
+    );
     await page.evaluate(() => window.__mpProbe.clickAddTile());
     await sleep(2500);
     const afterAdd = await page.evaluate(() => ({
@@ -281,27 +345,34 @@ try {
     await page.selectOption("#client-count", "3");
     await sleep(2500);
     const atMax = await page.evaluate(() => window.__mpProbe.addTile());
-    check(atMax.hidden, "the + tile is hidden at MAX_CLIENTS", JSON.stringify(atMax));
+    // The ATTRIBUTE is not the picture: the seat sets its own `display`, which
+    // outranks the UA's `[hidden]` rule — so assert what is painted.
+    check(
+      atMax.hidden && atMax.display === "none",
+      "the + tile is hidden at MAX_CLIENTS",
+      JSON.stringify(atMax)
+    );
     await page.selectOption("#client-count", "1");
     await sleep(1500);
 
-    // Grid with a LONE client: the open seat takes the cell beside it (at the
-    // size the new client will be), with the server strip below both.
+    // Grid with a LONE client: the client takes the whole row (no peer to match)
+    // and the open seat closes the layout as a band UNDER everything — never
+    // between the client and the authority (Addendum 5b.1).
     await page.click("#mp-view-grid");
-    await sleep(700);
+    await settle(page);
     const [client, server] = await page.evaluate(() => window.__mpProbe.boxes());
     const seat = await page.evaluate(() => {
       const box = document.querySelector(".mp-add-tile").getBoundingClientRect();
-      return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width) };
+      return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
     });
     check(
-      seat.x > client.x &&
-        Math.abs(seat.w - client.w) < 2 &&
-        Math.abs(seat.y - client.y) < 2 &&
-        server.w > client.w * 1.8 &&
+      seat.y >= server.y + server.h &&
+        Math.abs(seat.w - client.cell.w) < 2 &&
+        seat.h < client.h &&
+        server.gridColumn === "1 / -1" &&
         server.y >= client.y + client.h &&
         server.h < client.h,
-      "grid puts the open seat beside the lone client, over the server strip",
+      "grid closes with the open seat as a band under the client and the strip",
       JSON.stringify([client, seat, server])
     );
     await page.close();
@@ -459,6 +530,7 @@ try {
       `${grid.view} — ${grid.pressed.join(" ")}`
     );
 
+    await settle(page);
     const boxes = await page.evaluate(() => window.__mpProbe.boxes());
     const [c1, c2, server] = boxes;
     check(
@@ -467,7 +539,9 @@ try {
       JSON.stringify([c1, c2])
     );
     check(
-      server.gridColumn === "1 / -1" && server.w > c1.w * 1.8 && server.y >= c1.y + c1.h,
+      server.gridColumn === "1 / -1" &&
+        server.cell.w > c1.cell.w * 1.8 &&
+        server.y >= c1.y + c1.h,
       "the server pane spans every column as a strip below the clients",
       JSON.stringify(server)
     );
@@ -475,6 +549,34 @@ try {
       server.h < c1.h,
       "the server strip is shorter than a client cell",
       `${server.h} vs ${c1.h}`
+    );
+    // Addendum 5b.2: every card in GRID letterboxes its body to 16:9 inside
+    // its cell — a game window reads as a game window rather
+    // than as whatever shape the track handed it. The card fitting INSIDE its
+    // cell is asserted exactly (`<=`, unrounded slack): the arithmetic budgets
+    // for the header row AND the card's own borders, and a card a fraction
+    // taller than its cell is that budget silently going wrong.
+    check(
+      boxes.every((b) => Math.abs(b.bodyRatio - 16 / 9) < 0.02) &&
+        boxes.every(
+          (b) => b.slack.w >= 0 && b.slack.h >= 0 && centred(b, "x", "w")
+        ) &&
+        boxes.some((b) => b.slack.w > 8 || b.slack.h > 8) &&
+        // The pinned header row the letterbox arithmetic subtracts: if the
+        // header ever needs more than that, the cards silently outgrow their
+        // cells — so assert the budget rather than only its symptom.
+        boxes.every((b) => b.headerScroll <= 22),
+      "every grid card letterboxes to a 16:9 body, centred across its cell",
+      JSON.stringify(boxes.map((b) => [b.role, +b.bodyRatio.toFixed(3), b.w, b.h, b.cell.w, b.cell.h]))
+    );
+    // Vertically the slack goes OUTWARD, not between the players and the
+    // authority: the client cards hug the foot of their cells, the strip the
+    // head of its band, so the two meet.
+    check(
+      Math.abs(c1.y + c1.h - (c1.cell.y + c1.cell.h)) <= 2 &&
+        Math.abs(server.y - server.cell.y) <= 2,
+      "the clients hug the foot of their cells and the strip the head of its band",
+      JSON.stringify([c1, server].map((b) => [b.role, b.y, b.h, b.cell.y, b.cell.h]))
     );
     check(
       await page.evaluate(() => window.__mpProbe.allAlive()),
@@ -485,6 +587,7 @@ try {
     await page.click("#mp-view-tiled");
     await sleep(400);
     const back = await page.evaluate(() => window.__mpProbe.layout());
+    await settle(page);
     const backBoxes = await page.evaluate(() => window.__mpProbe.boxes());
     check(
       back.view === "tiled" &&
@@ -545,14 +648,14 @@ try {
     await page.selectOption("#client-count", "3");
     await sleep(2500);
     await page.click("#mp-view-grid");
-    await sleep(400);
+    await settle(page);
     const three = await page.evaluate(() => window.__mpProbe.boxes());
     check(
       three.length === 4 &&
         Math.abs(three[2].w - three[0].w) < 2 &&
         three[2].x === three[0].x &&
         three[2].y >= three[0].y + three[0].h &&
-        three[3].w > three[2].w * 1.8,
+        three[3].cell.w > three[2].cell.w * 1.8,
       "a third client keeps its half-width cell above the full-width strip",
       JSON.stringify(three.map((b) => [b.role, b.x, b.y, b.w, b.h]))
     );
@@ -582,6 +685,7 @@ try {
       `${layout.view} — ${layout.pressed.join(" ")}`
     );
 
+    await settle(page);
     const [c1, c2, server] = await page.evaluate(() => window.__mpProbe.boxes());
     check(
       c1.x + c1.w <= server.x + 2 &&
@@ -592,11 +696,77 @@ try {
       JSON.stringify([c1, server, c2].map((b) => [b.role, b.x, b.y, b.w, b.h]))
     );
 
+    // Addendum 5b.2/5b.3: the clients are 16:9 cards flanking the hub, not
+    // full-height towers, and the hub is still the smallest card of the three.
+    const netBoxes = [c1, c2, server];
+    check(
+      netBoxes.every((b) => Math.abs(b.bodyRatio - 16 / 9) < 0.02) &&
+        netBoxes.every(
+          (b) =>
+            b.slack.h > 8 &&
+            b.slack.w >= 0 &&
+            centred(b, "x", "w") &&
+            centred(b, "y", "h") &&
+            b.headerScroll <= 22
+        ),
+      "every network card letterboxes to a 16:9 body, centred in its cell",
+      JSON.stringify(netBoxes.map((b) => [b.role, +b.bodyRatio.toFixed(3), b.w, b.h, b.cell.w, b.cell.h]))
+    );
+    check(
+      Math.abs(c1.y - c2.y) > c1.h / 2,
+      "the two clients are staggered, so no wire shares a centreline",
+      `${c1.y} vs ${c2.y} (card height ${c1.h})`
+    );
+
     const graph = await page.evaluate(() => window.__mpProbe.network());
     check(
       graph.wires === 2 && graph.drawn === 2 && graph.lengths.every((l) => l > 50),
       "one measured wire per client↔server link",
       JSON.stringify(graph.lengths)
+    );
+
+    // The wires anchor to the LETTERBOXED CARD, never to the cell it floats in:
+    // every endpoint has to sit on the edge of some card's box, and a card is
+    // strictly inside its cell here, so an endpoint on a cell edge is a miss.
+    const ends = await page.evaluate(() => window.__mpProbe.wireEnds());
+    const onEdge = (point, box) => {
+      const inX = point.x >= box.x - 2 && point.x <= box.x + box.w + 2;
+      const inY = point.y >= box.y - 2 && point.y <= box.y + box.h + 2;
+      const atX = Math.abs(point.x - box.x) <= 2 || Math.abs(point.x - (box.x + box.w)) <= 2;
+      const atY = Math.abs(point.y - box.y) <= 2 || Math.abs(point.y - (box.y + box.h)) <= 2;
+      return (inX && inY && (atX || atY));
+    };
+    // Topology as well as anchoring: each wire runs between the HUB's card and
+    // ONE client's, and every client is served exactly once — so a wire that
+    // happened to touch the right kind of edge on the wrong pane still fails.
+    const anchoredTo = (point) =>
+      onEdge(point, server) ? "server" : [c1, c2].findIndex((b) => onEdge(point, b));
+    const served = ends.map((wire) => {
+      const from = anchoredTo(wire.from);
+      const to = anchoredTo(wire.to);
+      if (from === "server" && typeof to === "number" && to >= 0) return to;
+      if (to === "server" && typeof from === "number" && from >= 0) return from;
+      return -1;
+    });
+    const anchored = served.sort().join() === "0,1";
+    // The cards take their cell's WIDTH here and letterbox on height, so a
+    // side departure is the same point either way — the endpoint that tells
+    // card-anchored from cell-anchored apart is client 2's, which leaves the
+    // TOP of a card sitting low in a tall cell. Off the cell it would be a
+    // hundred-odd pixels higher, in the dead space above the card.
+    const fromCardTop = ends.some((wire) =>
+      [wire.from, wire.to].some(
+        (point) =>
+          Math.abs(point.y - c2.y) <= 2 &&
+          point.x >= c2.x - 2 &&
+          point.x <= c2.x + c2.w + 2 &&
+          c2.y - c2.cell.y > 8
+      )
+    );
+    check(
+      ends.length === 2 && anchored && fromCardTop,
+      "each wire leaves a card's own edge, not its cell's",
+      JSON.stringify(ends.map((w) => [Math.round(w.from.x), Math.round(w.from.y), Math.round(w.to.x), Math.round(w.to.y)]))
     );
     check(
       graph.chips.length === 2 && graph.chips.every((c) => c.includes("Wi-Fi")),
@@ -662,10 +832,12 @@ try {
       `shown=${parked.stripShown} "${parked.strip}"`
     );
 
-    // Three clients: two flanking the hub, the third parked below it.
+    // Three clients: two flanking the hub, the third filling the quadrant they
+    // leave open — at a PLAYER's size, since the channel belongs to the hub.
     await page.click("#mp-view-network");
     await page.selectOption("#client-count", "3");
     await sleep(2500);
+    await settle(page);
     const three = await page.evaluate(() => window.__mpProbe.boxes());
     const graph3 = await page.evaluate(() => window.__mpProbe.network());
     const hub = three[3];
@@ -673,9 +845,14 @@ try {
       three.length === 4 &&
         three[0].x < hub.x &&
         three[1].x > hub.x &&
-        three[2].y >= hub.y + hub.h - 2 &&
-        graph3.wires === 3,
-      "a third client parks below the hub, and gets its own wire",
+        // Upper right: right of the hub, above client 2 — and clients 1 and 2
+        // have not moved to make room for it.
+        three[2].x > hub.x &&
+        three[2].y + three[2].h <= three[1].y + 2 &&
+        graph3.wires === 3 &&
+        // Every client is a player-sized window; the hub stays the smallest.
+        three.slice(0, 3).every((client) => hub.w < client.w && hub.h < client.h),
+      "a third client fills the open quadrant at a player's size, with its own wire",
       `${JSON.stringify(three.map((b) => [b.role, b.x, b.y]))} — ${graph3.wires} wires`
     );
     await page.close();
@@ -807,10 +984,12 @@ try {
     await page.selectOption("#client-count", "3");
     await sleep(2500);
     await page.click("#mp-view-grid");
-    await sleep(400);
+    await settle(page);
     const solo = await page.evaluate(() => window.__mpProbe.boxes());
     check(
-      solo.length === 3 && solo[2].w > solo[0].w * 1.8 && solo[2].y >= solo[0].y + solo[0].h,
+      solo.length === 3 &&
+        solo[2].cell.w > solo[0].cell.w * 1.8 &&
+        solo[2].y >= solo[0].y + solo[0].h,
       "in a single-role example the odd last client spans the bottom row",
       JSON.stringify(solo.map((b) => [b.role, b.x, b.y, b.w, b.h]))
     );
