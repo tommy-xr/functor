@@ -261,8 +261,8 @@ mod tests {
         let scrubber = std::str::from_utf8(SCRUBBER_JS).expect("scrubber source is UTF-8");
         assert_eq!(
             scrubber.matches("if (event.button !== 0) return;").count(),
-            3,
-            "playhead, preview, and rail must preserve non-primary compatibility mouse events"
+            4,
+            "playhead, preview, past handle, and rail must preserve non-primary compatibility mouse events"
         );
     }
 
