@@ -1984,8 +1984,22 @@ let draw = (model, tts: float) =>
       typoCursor,
       (labels) => labels[0] === "sphere"
     );
-    // Accept via the editor's own apply path (deterministic — no key focus).
-    const accepted = await page.evaluate(() => window.__sandbox.acceptCompletion());
+    // Accept via the editor's own apply path (no key focus) — but CM renders
+    // the popup's labels a beat before its selection state goes active, and
+    // an accept in that window is a silent no-op. Wait for a selected option,
+    // then retry the accept until it reports true (bounded).
+    await page
+      .waitForFunction(
+        () => !!document.querySelector(".cm-tooltip-autocomplete li[aria-selected]"),
+        null,
+        { timeout: 4000 }
+      )
+      .catch(() => {}); // the retry below is the real gate; the check reports honestly
+    let accepted = false;
+    for (let i = 0; i < 20 && !accepted; i++) {
+      accepted = await page.evaluate(() => window.__sandbox.acceptCompletion());
+      if (!accepted) await sleep(100);
+    }
     await sleep(150);
     const afterAccept = await page.evaluate(() => window.__sandbox.getSource());
     check(
