@@ -58,5 +58,10 @@
   // `.tsx` joins the checked set alongside `.ts` — the React islands in
   // src/components/ are checked directly, not merely transitively via their
   // importer.
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
+  // `*.test.ts` is the one exception: those run under NODE (`node --test`, type
+  // stripping), so they import `node:test` and a `./x.ts` specifier — neither of
+  // which exists in the browser world this config describes. They cover pure,
+  // DOM-free modules, which is why they can run there at all.
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/*.test.ts"]
 }

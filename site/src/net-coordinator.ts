@@ -32,12 +32,13 @@
 // loss, partitions — is deliberately absent, and so is the step barrier: a
 // routed packet is delivered on the host's NEXT rAF, not on the receiving
 // pane's next fixed step. Impairment and the barrier are later PRs; when the
-// barrier lands, `flush()` becomes step-time delivery and `Packet.tick` stops
-// being null.
+// barrier lands, `flush()` becomes step-time delivery and a packet's frame
+// stops being a measurement and becomes the step it was scheduled in.
 //
-// The packet log records from day one even though nothing renders it yet: the
-// coordinator is the only place that sees every packet, so it owns the log the
-// later packet-log rail reads.
+// The packet log is the record every traffic view reads. Each row is keyed to
+// the REFERENCE CLOCK (`Packet.frame`) so traffic lives on the same axis the
+// chrono rail draws — scrubbing back replays the window's packets instead of
+// only ever showing the live present.
 
 /** The commands a pane's runtime emits (`functor_runtime_common::net::ConnCommand`,
  * serialized by serde's default externally-tagged representation). */
@@ -60,11 +61,25 @@ type DeliveredEvent =
 
 /** One routed packet, as the packet-log rail and the network view read it. */
 export interface Packet {
-  /** The step it belongs to — always null until the barrier lands (see above). */
-  tick: number | null;
+  /**
+   * The REFERENCE-CLOCK frame the packet was routed in — the session's own time
+   * axis, the one the chrono rail labels (mp-panes' `referenceFrame`). This is
+   * what makes traffic scrubbable: park the rail at frame N and the view can
+   * replay exactly the packets that crossed around N.
+   *
+   * MEASURED, not scheduled: there is no step barrier yet, so this is the
+   * reference pane's live head at route time, ±a frame. When the barrier lands
+   * it becomes the step the packet is delivered in, by construction.
+   *
+   * `null` when there is no reference clock to key against — a host that passed
+   * no `referenceFrame`, or a session whose reference pane has not recorded a
+   * frame yet (a packet from the boot handshake).
+   */
+  frame: number | null;
   /** When the coordinator routed it (`performance.now()`). Host-clock time, not
-   * game time: until the barrier lands a packet has no step to belong to, and
-   * the network view still has to place it on a wall-clock timeline. */
+   * game time: the wall-clock sibling of `frame`, kept because a live view
+   * animates on the host's clock while `frame` places the packet in the
+   * session's. */
   at: number;
   /** Pane id the packet originated from. */
   from: string;
@@ -74,12 +89,32 @@ export interface Packet {
   kind: DeliveredEvent["kind"];
   /** Payload bytes for a message; 0 for the lifecycle kinds. */
   size: number;
+  /**
+   * The message's wire TEXT, exactly as the receiving runtime sees it — kept so
+   * a reader can decode it into the value the game actually sent (wire-value.ts)
+   * rather than showing bytes. Undefined for the lifecycle kinds.
+   *
+   * It costs nothing to route (the coordinator already decodes the payload for
+   * delivery, so this is the same string) and it is what bounds the log's
+   * memory: the cap is a packet count, so a chatty snapshot protocol holds
+   * roughly `PACKET_LOG_CAP × payload` bytes of text. Decoding is deliberately
+   * NOT done here — only the handful of rows a panel shows are ever parsed.
+   */
+  text?: string;
 }
 
 /** Newest entries win: an hour-long session must not grow without bound. The
  * trim runs in blocks so it is not an O(n) memmove per packet at the cap. */
 const PACKET_LOG_CAP = 10_000;
 const PACKET_LOG_SLACK = 1_000;
+
+/**
+ * …and a second bound, on the payload TEXT the log retains: a count alone is
+ * not a memory bound, because a game chooses how big a message is. 8 MB holds
+ * the whole 10k-packet cap for an ordinary protocol (orbs' snapshots are ~800
+ * bytes) and sheds oldest-first for a chatty one.
+ */
+const PACKET_LOG_BYTES = 8 << 20;
 
 /**
  * How long a `Connect` with no listener waits for its server pane before it
@@ -134,6 +169,20 @@ interface PendingConnect {
   since: number;
 }
 
+export interface NetCoordinatorOptions {
+  /**
+   * The session's REFERENCE CLOCK, as a frame number — what every routed packet
+   * is keyed to (`Packet.frame`).
+   *
+   * A getter rather than a pushed value: the coordinator is constructed before
+   * any pane exists, and the clock is a live measurement of whichever pane is
+   * currently the reference (the server pane, or client 1 without one). The
+   * host owns that definition — the coordinator only asks, per packet, what
+   * time it is. `null` while nothing has recorded a frame yet.
+   */
+  referenceFrame?: () => number | null;
+}
+
 export class NetCoordinator {
   private readonly panes = new Map<string, Pane>();
   /** authority -> the listening side (pane + its listen key). */
@@ -143,12 +192,17 @@ export class NetCoordinator {
   private readonly conns = new Map<number, Conn>();
   private readonly pending: PendingConnect[] = [];
   private readonly log: Packet[] = [];
+  /** Payload text the log is holding, in characters (see PACKET_LOG_BYTES). */
+  private logBytes = 0;
   private readonly watchers = new Set<(packet: Packet) => void>();
   private nextConn = 1;
   private raf = 0;
   private readonly abort = new AbortController();
 
-  constructor() {
+  private readonly options: NetCoordinatorOptions;
+
+  constructor(options: NetCoordinatorOptions = {}) {
+    this.options = options;
     window.addEventListener("message", (event) => this.onMessage(event), {
       signal: this.abort.signal,
     });
@@ -206,6 +260,18 @@ export class NetCoordinator {
   /** Every packet routed so far, oldest first (capped at the last 10k). */
   packets(): readonly Packet[] {
     return this.log;
+  }
+
+  /**
+   * Forget every routed packet. A new PROGRAM is a new session: its panes
+   * restart their clocks from zero, so the previous program's rows would
+   * otherwise share frame numbers with the new one's and reappear under the
+   * playhead as traffic that never happened (and, on a quiet link, as another
+   * protocol's decoded messages).
+   */
+  clearLog(): void {
+    this.log.length = 0;
+    this.logBytes = 0;
   }
 
   /**
@@ -391,17 +457,27 @@ export class NetCoordinator {
     if (!pane) return;
     pane.outbox.push(event);
     const packet: Packet = {
-      tick: null,
+      frame: this.options.referenceFrame?.() ?? null,
       at: performance.now(),
       from,
       to: to.pane,
       conn: event.conn,
       kind: event.kind,
       size,
+      ...(event.kind === "message" ? { text: event.text } : {}),
     };
     this.log.push(packet);
+    this.logBytes += packet.text?.length ?? 0;
     if (this.log.length > PACKET_LOG_CAP + PACKET_LOG_SLACK) {
-      this.log.splice(0, this.log.length - PACKET_LOG_CAP);
+      for (const dropped of this.log.splice(0, this.log.length - PACKET_LOG_CAP)) {
+        this.logBytes -= dropped.text?.length ?? 0;
+      }
+    }
+    // The byte bound sheds one packet at a time: it only bites for a protocol
+    // whose messages are large, and there the newest few are what a reader is
+    // looking at anyway.
+    while (this.logBytes > PACKET_LOG_BYTES && this.log.length > 1) {
+      this.logBytes -= this.log.shift()?.text?.length ?? 0;
     }
     for (const watcher of this.watchers) watcher(packet);
   }

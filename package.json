@@ -29,6 +29,7 @@
     "test:wasm-remote-assets": "node e2e/remote-assets.mjs",
     "test:inspector-emit": "node e2e/inspector-emit.mjs",
     "test:scrubber": "node --test runtime/functor-runtime-web/timeline-model.test.js",
+    "test:wire-value": "node --test site/src/wire-value.test.ts",
     "test:vscode-e2e": "playwright test -c tools/functor-lang-vscode/tests-integration/playwright.config.mjs",
     "check:site": "tsc -p site --noEmit",
     "site:build": "npm run generate:icons && node site/build.mjs",

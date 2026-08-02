@@ -103,6 +103,10 @@ interface TimelineView {
   previewFrames: number;
   previewClippedFrames: number;
   selectedFrame: number;
+  /** The event marker the timeline has selected, if any (timeline-model.js) —
+   * what makes Escape's cascade able to tell "an event is selected" from "the
+   * wire log is pinned". */
+  selectedEventId: number | null;
   paused: boolean;
   eventMarkers: {
     id: number;
@@ -425,7 +429,15 @@ export function initMultiplayerPanes({
   // it owns every pane — including pane 1, the page's own #player — so no pane
   // can be created outside its view. It is inert for a game that declares no
   // `Sub.connect`/`Sub.listen`: those panes never post a command.
-  const net = new NetCoordinator();
+  //
+  // It is handed the session's REFERENCE CLOCK so every routed packet lands on
+  // the axis the chrono rail labels (see the frame-offset block below, which
+  // owns the definition). Passed as a getter because the panes it measures do
+  // not exist yet at this line — and because the reference pane can change
+  // (a server pane mounting, a client count going to zero and back).
+  // Measured once per frame by `measureClocks` (see the frame-offset block).
+  let referenceFrame: number | null = null;
+  const net = new NetCoordinator({ referenceFrame: () => referenceFrame });
 
   const panes: Pane[] = [];
 
@@ -447,12 +459,20 @@ export function initMultiplayerPanes({
     color: pane.color,
     linkLabel: () => `${pane.link.name} · ${pane.link.ms}ms`,
   });
+  // Where the SESSION is parked, in reference-clock frames — the one number the
+  // rail's label already shows, published for the views that have to agree with
+  // it. `parked` is the chrono state (paused or mid-scrub), which is what turns
+  // the network view from a live feed into a replay of the log at `frame`.
+  // Written once per frame by `paint`, read by the graph on the same rAF.
+  let sessionClock: { parked: boolean; frame: number | null } = { parked: false, frame: null };
+
   const graph = initNetworkGraph({
     stage,
     grid,
     net,
     clients: () => panes.map(asNode),
     server: () => (serverPane ? asNode(serverPane.pane) : null),
+    clock: () => sessionClock,
   });
 
   const makePane = (role: PaneRole, index: number, iframe: HTMLIFrameElement): Pane => {
@@ -723,9 +743,24 @@ export function initMultiplayerPanes({
   // input lands (coordinator arc, input inversion).
   function pickerKeys(event: KeyboardEvent) {
     const target = event.target as HTMLElement;
+    // Escape dismisses ONE layer at a time, outermost first: a transient
+    // popover, then the timeline's selected event, then the pinned wire log.
+    // That order is "most recently opened, most easily reopened" — a link menu
+    // is a click away, an event marker is a click away, and the wire log is the
+    // thing you were reading, so it should not vanish because a menu happened to
+    // be open. Each press does exactly one thing, so nothing is dismissed
+    // invisibly.
     if (event.key === "Escape") {
-      closePopovers();
-      primarySeam()?.selectEvent(null);
+      if (document.querySelector(".mp-link-menu:not([hidden])")) {
+        closePopovers();
+        return;
+      }
+      const seam = primarySeam();
+      if (seam?.view()?.selectedEventId != null) {
+        seam.selectEvent(null);
+        return;
+      }
+      graph.selectEdge(null);
       return;
     }
     if (target.closest?.(".cm-editor") || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
@@ -1132,6 +1167,11 @@ export function initMultiplayerPanes({
   const measureClocks = () => {
     const reference = referencePane();
     const referenceHead = reference ? headOf(reference) : null;
+    // Published for the coordinator, which stamps every packet with it. Read
+    // ONCE per frame here rather than per packet: `headOf` crosses the iframe
+    // boundary into a pane's wasm, and a busy session routes dozens of packets
+    // between two frames — all of which belong to this same instant anyway.
+    referenceFrame = referenceHead;
     if (!reference || referenceHead === null) return;
     offsets.set(reference, 0);
     const live = allPanes();
@@ -1449,6 +1489,12 @@ export function initMultiplayerPanes({
     const inReference = (frame: number) => Math.max(0, Math.round(frame - clockShift));
     if (!primary?.detached()) debugDrawer.hidden = true;
     chrono.classList.toggle("dormant", !current);
+    // Publish the session clock before anything else reads it this frame (the
+    // graph steps after `paint`). A bar with no seam yet is not parked — it has
+    // no time at all, and claiming "parked at nothing" would blank the live feed.
+    sessionClock = current
+      ? { parked: current.paused, frame: inReference(current.selectedFrame) }
+      : { parked: false, frame: null };
     if (primary && current) {
       const span = Math.max(current.viewport.hi - current.viewport.lo, 1);
       const played = $("mp-played");
@@ -1711,8 +1757,11 @@ export function initMultiplayerPanes({
       } else {
         mountServer(serverSrc);
       }
-      // A different program is a different session: the per-link packet totals
-      // the reduced-motion badge shows start over with it.
+      // A different program is a different session: the packet log, and the
+      // per-link totals the reduced-motion badge shows, start over with it —
+      // the new panes count frames from zero, so the old rows would otherwise
+      // land under the new session's playhead.
+      net.clearLog();
       graph.resetCounts();
       updateChrome();
       paintAggregate();
