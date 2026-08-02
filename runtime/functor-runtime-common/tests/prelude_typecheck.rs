@@ -389,6 +389,57 @@ fn equality_on_an_engine_value_is_a_check_error() {
     }
 }
 
+/// The rule walks what the sibling "functions cannot be compared" rule walks
+/// — nested tuples, lists, maps, and a nominal's type arguments — so a host
+/// value one level in is caught too. [xreview: Codex Medium, Claude Medium]
+#[test]
+fn equality_on_a_nested_engine_value_is_a_check_error_too() {
+    for (src, ty) in [
+        ("let bad: bool = (Scene.cube(), 1.0) == (Scene.cube(), 1.0)\n", "Scene.t"),
+        (
+            "let bad: bool = ((Scene.cube(), 1.0), true) == ((Scene.cube(), 1.0), true)\n",
+            "Scene.t",
+        ),
+        ("let bad: bool = [Scene.cube()] == [Scene.cube()]\n", "Scene.t"),
+        // A brand that DECLARES `==` is comparable as an operand, but not
+        // nested: the structural walk never consults the brand table, so
+        // this really is a certain runtime error. [xreview: Claude High]
+        ("let bad: bool = (90deg, 1.0) == (90deg, 1.0)\n", "Angle.t"),
+        ("let bad: bool = [1.5s] == [1.5s]\n", "Time.t"),
+    ] {
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|m| m.contains("engine values are opaque") && m.contains(ty)),
+            "{src}: {diags:?}"
+        );
+    }
+    // …while the same brands still compare fine as OPERANDS.
+    assert!(
+        check("let a: bool = 90deg == 90deg\nlet b: bool = 1.5s == 1.5s\n").is_empty(),
+        "a branded operand must stay comparable"
+    );
+}
+
+/// The KNOWN limit, pinned deliberately rather than left as a surprise:
+/// equality is polymorphic, so a generic helper's `a == b` carries no
+/// constraint to its call sites. `same(Scene.cube(), Scene.cube())` therefore
+/// still checks clean and meets the RUNTIME error — the gradual-seam backstop.
+/// Closing this needs constraint-based typeclasses, which is a much larger
+/// design than this change. [xreview: Codex High — accepted limitation]
+#[test]
+fn polymorphic_equality_is_not_constrained_by_the_opacity_rule() {
+    let diags = check(
+        "let same = (a, b) => a == b\n\
+         let engines: bool = same(Scene.cube(), Scene.cube())\n",
+    );
+    assert!(
+        diags.is_empty(),
+        "an indirect comparison is NOT caught statically (yet): {diags:?}"
+    );
+}
+
 /// …but the brands that DECLARE `==` are exempt, which is the whole point of
 /// declaring it — and `Physics.tag`, a brand over a STRING, was never opaque
 /// and keeps comparing structurally. Games read collision events that way

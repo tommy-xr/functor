@@ -3141,16 +3141,18 @@ is {other}"
         node_span: Span,
     ) -> Type {
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                self.arithmetic(op, lhs, lhs_span, rhs, rhs_span, node_span)
-            }
             // Ordering goes through the SAME ad-hoc overloading arithmetic
             // does: a brand that declares `<` claims all four (`>` is `<`
             // swapped; `<=` and `>=` are the negations), and everything else
-            // is float ordering exactly as before.
-            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                self.arithmetic(op, lhs, lhs_span, rhs, rhs_span, node_span)
-            }
+            // is float arithmetic/ordering exactly as before.
+            BinOp::Add
+            | BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge => self.arithmetic(op, lhs, lhs_span, rhs, rhs_span, node_span),
             // `==` is an error only where the runtime outcome is certain:
             // comparing functions always fails at runtime, and operands whose
             // known types cannot be equal always yield `false`. Runtime
@@ -3583,27 +3585,47 @@ from them instead (`{name}` supports no `==`)",
         );
     }
 
-    /// The name of an opaque ENGINE type this operand would compare — itself,
-    /// or (like [`contains_fn`], the sibling certainty rule) a TUPLE element,
-    /// since structural equality recurses into one and hits the same runtime
-    /// error. A brand that declares its own `==` is not opaque to equality,
-    /// which is the whole point of declaring it.
+    /// The name of an opaque ENGINE type this operand would compare, if any.
     ///
-    /// Records and collections are deliberately NOT walked: this rule is for
-    /// certain, immediate errors, and the runtime error stays the backstop
-    /// for a host value buried inside a model.
+    /// It walks exactly what [`contains_fn`] walks — the type itself, map
+    /// keys/values, tuple elements, and a nominal's type ARGUMENTS — because
+    /// the two are the same rule about the same question: runtime `==` has
+    /// precisely two refusals (a function value and a `HostData`), and each
+    /// certainty rule reports one of them at check time. Anywhere a compared
+    /// function is certainly an error, a compared host value is too. They
+    /// stay separate functions only because they answer differently: a bool
+    /// versus the NAME the diagnostic teaches with.
+    ///
+    /// A record's FIELDS are not walked (neither rule walks them), so a host
+    /// value buried in a model still meets the runtime error — the
+    /// gradual-seam backstop.
+    ///
+    /// `declares_eq` is the ONE asymmetry between the top level and the walk,
+    /// and it is load-bearing. A brand that declares its own `==` is not
+    /// opaque *as an operand*, because the operator node dispatches to that
+    /// implementation. NESTED, it is opaque again: the structural walk
+    /// (`value_eq`) recurses on its own and never consults the brand table,
+    /// so `(90deg, 1.0) == (90deg, 1.0)` really is a certain runtime error
+    /// even though `90deg == 90deg` is fine. [xreview: Claude High]
     fn opaque_engine_type(&self, ty: &Type) -> Option<String> {
-        let opaque = |name: Option<String>| {
-            let name = name?;
-            (self.host_types.contains(&name)
-                && !self.brand_ops.contains_key(&(name.clone(), BinOp::Eq)))
-            .then_some(name)
-        };
-        if let Some(name) = opaque(brand_name(ty)) {
-            return Some(name);
-        }
+        self.opaque_engine_type_at(ty, true)
+    }
+
+    fn opaque_engine_type_at(&self, ty: &Type, operand: bool) -> Option<String> {
+        let nested = |ty: &Type| self.opaque_engine_type_at(ty, false);
         match ty {
-            Type::Tuple(elements) => elements.iter().find_map(|el| opaque(brand_name(el))),
+            Type::Map(key, value) => nested(key).or_else(|| nested(value)),
+            Type::List(element) => nested(element),
+            Type::Tuple(elements) => elements.iter().find_map(nested),
+            Type::Record(_, args) | Type::Variant(_, args) => {
+                // The type's OWN name first — a nominal is opaque before its
+                // (empty, for every host handle) arguments matter.
+                let name = brand_name(ty).filter(|name| {
+                    self.host_types.contains(name)
+                        && !(operand && self.brand_ops.contains_key(&(name.clone(), BinOp::Eq)))
+                });
+                name.or_else(|| args.iter().find_map(nested))
+            }
             _ => None,
         }
     }

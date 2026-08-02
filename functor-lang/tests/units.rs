@@ -866,6 +866,29 @@ fn the_interpreter_derives_the_orderings_too() {
     assert_eq!(main_result(&src), "(true, true, true)");
 }
 
+/// A plain ADT is not "a branded value". The runtime tag exists for every
+/// variant, so the failure hint must consult the operator TABLE before
+/// advising a `unit` declaration — otherwise `Some(1.0) < Some(2.0)` tells
+/// you to declare an operator on `Option`. [xreview: Claude Medium]
+#[test]
+fn an_ordinary_variant_gets_no_unit_advice() {
+    let src = format!(
+        "{ORD}type Box = | Wrap(v: float)\nlet main = () => Wrap(1.0) < Wrap(2.0)\n"
+    );
+    let program = functor_lang::parse(&src).expect("parses");
+    let module = functor_lang::lower(program).expect("lowers");
+    let message = functor_lang::run(&module, Tracing::Off)
+        .err()
+        .expect("`<` is not declared for Wrap")
+        .error
+        .message;
+    assert!(message.contains("comparison needs numbers"), "{message}");
+    assert!(
+        !message.contains("branded value") && !message.contains("unit <suffix>"),
+        "a plain ADT must get no unit advice: {message}"
+    );
+}
+
 /// A brand with NO declared `==` keeps STRUCTURAL equality: a plain-data
 /// variant compares as it always did, and nothing about `unit` changed that.
 #[test]

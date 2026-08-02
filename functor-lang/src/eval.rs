@@ -577,15 +577,15 @@ pub(crate) enum OpImpl {
 /// shares its base's slot — `>`, `<=`, and `>=` all read the brand's `<`, and
 /// `!=` reads its `==` — so one implementation answers every spelling.
 fn op_slot(op: crate::ast::BinOp) -> usize {
-    use crate::ast::BinOp;
-    match op.declarable() {
-        BinOp::Add => 0,
-        BinOp::Sub => 1,
-        BinOp::Mul => 2,
-        BinOp::Div => 3,
-        BinOp::Eq => 4,
-        _ => 5,
-    }
+    let declarable = op.declarable();
+    // DERIVED from `DECLARABLE`, not a second hardcoded order: `slot_op` is
+    // that array indexed, so hardcoding here would let a reorder silently
+    // point every brand's `+` at some other implementation.
+    // [xreview: Claude Low]
+    crate::ast::BinOp::DECLARABLE
+        .iter()
+        .position(|candidate| *candidate == declarable)
+        .expect("`declarable()` always answers a declarable operator")
 }
 
 /// The operator a [`BrandOpRow`] slot holds — the inverse of [`op_slot`],
@@ -1672,6 +1672,37 @@ evaluation depth."
         }
     }
 
+    /// A declared operator's implementation as a callable VALUE. Shared by
+    /// arithmetic and comparison dispatch: which implementation to use, and
+    /// in what argument order, is what legitimately differs between them —
+    /// resolving one is not.
+    ///
+    /// A named implementation is late-bound like any other global, so it
+    /// obeys the same rule: a top-level initializer may only use globals
+    /// defined ABOVE it.
+    fn resolve_op_impl(
+        &mut self,
+        implementation: OpImpl,
+        op: crate::ast::BinOp,
+        span: Span,
+    ) -> Result<Value, RunError> {
+        match implementation {
+            OpImpl::Value(value) => Ok(value),
+            // A host external is looked up HERE, so a missing host is the
+            // ordinary unknown-external error at the use site rather than a
+            // load failure.
+            OpImpl::External(path) => self.external_value(&path, span),
+            OpImpl::Global(name) => self.globals.get(&name).cloned().ok_or_else(|| RunError {
+                message: format!(
+                    "`{}` on this branded value calls `{name}`, which is used before its \
+definition (a top-level initializer may only use globals defined above it)",
+                    op.symbol()
+                ),
+                span,
+            }),
+        }
+    }
+
     /// Arithmetic where at least one operand is not a number — the runtime
     /// half of unit operators. The implementation is exactly the one the
     /// `unit … (<op>) = …` declaration names, called with the operands in the
@@ -1703,31 +1734,8 @@ evaluation depth."
         };
         let mut call = None;
         if let Some((implementation, first, second)) = found {
-            match implementation {
-                OpImpl::Value(value) => call = Some((value, first, second)),
-                // A host external is looked up HERE, so a missing host is the
-                // ordinary unknown-external error at the use site rather than
-                // a load failure.
-                OpImpl::External(path) => {
-                    call = Some((self.external_value(&path, span)?, first, second))
-                }
-                // A named implementation is late-bound like any global, so it
-                // obeys the same rule: a top-level initializer may only use
-                // globals defined ABOVE it.
-                OpImpl::Global(name) => match self.globals.get(&name) {
-                    Some(value) => call = Some((value.clone(), first, second)),
-                    None => {
-                        return Err(RunError {
-                            message: format!(
-                                "`{}` on this branded value calls `{name}`, which is used before \
-its definition (a top-level initializer may only use globals defined above it)",
-                                op.symbol()
-                            ),
-                            span,
-                        })
-                    }
-                },
-            }
+            let callee = self.resolve_op_impl(implementation, op, span)?;
+            call = Some((callee, first, second));
         }
         match call {
             Some((implementation, first, second)) => self.call(
@@ -1756,9 +1764,14 @@ its definition (a top-level initializer may only use globals defined above it)",
         let Some(tag) = brand_tag(lhs).or_else(|| brand_tag(rhs)) else {
             return String::new();
         };
-        let declared: Vec<&str> = self
-            .brand_ops
-            .get(tag)
+        // `brand_tag` answers for ANY variant, so a plain ADT would otherwise
+        // be told it is "a branded value" and advised to declare an operator
+        // — wrong advice for ordinary data. Only a tag the table actually
+        // knows gets unit advice. [xreview: Claude Medium]
+        let Some(row) = self.brand_ops.get(tag) else {
+            return String::new();
+        };
+        let declared: Vec<&str> = Some(row)
             .into_iter()
             .flat_map(|row| {
                 row.iter()
@@ -1815,37 +1828,24 @@ its definition (a top-level initializer may only use globals defined above it)",
         span: Span,
     ) -> Result<Option<Value>, RunError> {
         use crate::ast::BinOp;
-        // The overwhelmingly common path: no operator declared anywhere, or
-        // an operand that carries no brand tag at all (a number, string,
-        // record, list…). Neither touches the table.
+        // The overwhelmingly common path, gated cheapest-first: no operator
+        // declared anywhere, then an operand that carries no brand tag at all
+        // (a number, string, record, list, tuple — everything `frame_bench`
+        // compares). Neither reaches the table, and neither computes a slot.
         if self.brand_ops.is_empty() {
             return Ok(None);
         }
+        let Some(tag) = brand_tag(lhs).or_else(|| brand_tag(rhs)) else {
+            return Ok(None);
+        };
         let slot = op_slot(op);
-        let Some(implementation) = brand_tag(lhs)
-            .or_else(|| brand_tag(rhs))
+        let Some(implementation) = Some(tag)
             .and_then(|tag| self.brand_ops.get(tag))
             .and_then(|row| row[slot].clone())
         else {
             return Ok(None);
         };
-        let implementation = match implementation {
-            OpImpl::Value(value) => value,
-            // Late-bound, exactly like the arithmetic operators.
-            OpImpl::Global(name) => match self.globals.get(&name) {
-                Some(value) => value.clone(),
-                None => {
-                    return Err(RunError {
-                        message: format!(
-                            "`{}` on this branded value calls `{name}`, which is used before its \
-definition (a top-level initializer may only use globals defined above it)",
-                            op.symbol()
-                        ),
-                        span,
-                    })
-                }
-            },
-        };
+        let implementation = self.resolve_op_impl(implementation, op, span)?;
         // `>` is the declared `<` with its operands swapped; `<=` and `>=`
         // are its negations (`a <= b` is `not (b < a)`), and `!=` negates
         // `==`.

@@ -411,13 +411,10 @@ pub enum BinOp {
 }
 
 impl BinOp {
-    /// The arithmetic operators, in declaration order — the ONE list of what
-    /// a `unit <suffix> (<op>)` may declare, shared by the parser, the
-    /// typechecker, and the interpreter's dispatch table.
-    pub const ARITHMETIC: [BinOp; 4] = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div];
-
     /// Every operator a `unit <suffix> (<op>)` may declare, in declaration
-    /// order: the four arithmetic ones, then the two COMPARISON bases. Only
+    /// order — the ONE such list, shared by the parser, the typechecker, and
+    /// the interpreter's dispatch table (whose slots ARE these indices). The
+    /// four arithmetic operators, then the two COMPARISON bases. Only
     /// `==` and `<` are declarable — `!=` derives from `==`, and `>`, `<=`,
     /// `>=` derive from `<` (see [`BinOp::declarable`]) — so a brand cannot
     /// declare an ordering that disagrees with itself.
@@ -446,9 +443,14 @@ impl BinOp {
 
     /// Is this a comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`)? Comparisons
     /// answer `bool` whichever brand claims them, where arithmetic answers
-    /// the brand — the one place the two families diverge.
+    /// the brand — the one place the two families diverge. Matched
+    /// POSITIVELY so a future non-comparison operator cannot silently join
+    /// the wrong family. [xreview: Claude Low]
     pub fn is_comparison(self) -> bool {
-        !matches!(self, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+        matches!(
+            self,
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne
+        )
     }
 
     /// The operator's source spelling — the single source of truth for

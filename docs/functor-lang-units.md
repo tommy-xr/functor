@@ -350,9 +350,12 @@ and/or negate the one implementation. Two consequences carry over unchanged:
 - **Float comparison is untouched** — number/number is still the first match,
   and the table is consulted only when it fails.
 - **`==` reaches the table before the structural walk**, but only after two
-  cheap gates: no declared operators at all, or an operand with no brand tag
-  (a number, string, record, list, tuple — everything `frame_bench` compares),
-  returns immediately. `frame_bench` shows no allocation or byte change.
+  cheap gates, ordered cheapest-first: no declared operators at all, then an
+  operand with no brand tag (a number, string, record, list, tuple —
+  everything `frame_bench` compares). Neither reaches the table, and neither
+  even computes an operator slot. `frame_bench` shows byte-identical
+  `allocs/frame` and `bytes/frame` and wall-clock parity against the base ref
+  (three interleaved release runs).
 
 A brand with no declared `==` keeps STRUCTURAL equality exactly as before, so
 adding units to a project cannot change what `==` already meant.
@@ -411,12 +414,21 @@ types are every abstract type in the engine prelude EXCEPT those three.
 exempt from the error because they DECLARE `==`, which is precisely what
 makes them comparable.
 
-Two limits, both deliberate:
+Three limits, all deliberate:
 
-- The rule reads the operand's own type and a tuple element's (mirroring the
-  existing "functions cannot be compared" certainty rule), not a record field
-  or a list element. A host value buried inside a model still meets the
-  runtime error, which remains the gradual-seam backstop.
+- The rule walks exactly what the existing "functions cannot be compared"
+  certainty rule walks — the operand's own type, map keys/values, tuple
+  elements, and a nominal's type ARGUMENTS — not a record's fields. Runtime
+  `==` has precisely two refusals (a function value and a host value), and
+  each certainty rule reports one of them, so they share one traversal
+  policy. A host value buried in a record still meets the runtime error,
+  which remains the gradual-seam backstop.
+- **Equality is polymorphic, so the rule is direct-only.** `let same = (a, b)
+  => a == b` carries no constraint to its call sites, so
+  `same(myScene, other)` still checks clean and fails at run time. Closing
+  that needs constraint-based typeclasses (an `Eq` bound propagated through
+  generalization), which is a much larger design than this change; the
+  limitation is pinned by a test rather than left as a surprise.
 - **Structural equality for `Scene.t` / `Frame.t` is out of scope.** Whether
   scenes should compare at all — and as `==` or as `Scene.equals` — is a
   separate decision. This check-time rejection is exactly the thing that

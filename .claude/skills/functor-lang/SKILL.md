@@ -728,9 +728,11 @@ let ordered = 4px < 16px            // …and >, <=, >=, ==, != (all derived)
   nodes…) — the runtime error stays as the gradual-seam backstop. Brands
   over data are NOT affected: `Physics.tag` (a string underneath) and
   `Sprite.t` compare structurally, and `Angle.t`/`Time.t` compare because
-  they DECLARE `==` (see Units). Nesting: the rule reads the operand's own
-  type and a tuple element's, not a record field — a host value buried in a
-  model still fails at run time.
+  they DECLARE `==` (see Units). Two limits: the rule walks tuples, map
+  keys/values, and a nominal's type ARGUMENTS but not a record's fields (a
+  host value buried in a model still fails at run time), and it is
+  DIRECT-only — equality is polymorphic, so `let same = (a, b) => a == b`
+  called with two scenes checks clean and fails at run time.
 - **Comparisons are IEEE**, so NaN (`0.0 / 0.0`) is false against
   everything — including itself — under `<`, `>`, `<=`, `>=`, and `==`;
   `nan != nan` is therefore `true`.

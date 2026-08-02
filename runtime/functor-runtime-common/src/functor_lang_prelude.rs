@@ -5643,32 +5643,27 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
     /// interfaces linked, so unit suffixes and their operators resolve —
     /// `eval` above lowers one bare source, where no `unit` is declared.
     fn eval_with_prelude(src: &str) -> Result<Value, String> {
-        let project = functor_lang::project::load_sources_with_bundled_modules(
-            vec![(std::path::PathBuf::from("game.fun"), src.to_string())],
-            &functor_prelude::bundled_modules(),
-        )
-        .map_err(|e| e.message)?;
-        let diags = functor_lang::check(&project.module);
-        if let Some(first) = diags.first() {
-            return Err(first.message.clone());
-        }
-        let record = functor_lang::run_with_host(&project.module, Tracing::Off, &mut FunctorHost)
-            .map_err(|f| f.error.message)?;
-        match record.outcome {
-            functor_lang::RunOutcome::Main(value) => Ok(value),
-            _ => Err("expected a main result".to_string()),
-        }
+        eval_with_prelude_impl(src, true)
     }
 
     /// [`eval_with_prelude`] with the CHECKER skipped — the gradual seam
     /// (`functor-lang run`, a value arriving through an `unknown`), where the
     /// interpreter's own refusals are the only ones there are.
     fn eval_with_prelude_unchecked(src: &str) -> Result<Value, String> {
+        eval_with_prelude_impl(src, false)
+    }
+
+    fn eval_with_prelude_impl(src: &str, typecheck: bool) -> Result<Value, String> {
         let project = functor_lang::project::load_sources_with_bundled_modules(
             vec![(std::path::PathBuf::from("game.fun"), src.to_string())],
             &functor_prelude::bundled_modules(),
         )
         .map_err(|e| e.message)?;
+        if typecheck {
+            if let Some(first) = functor_lang::check(&project.module).first() {
+                return Err(first.message.clone());
+            }
+        }
         let record = functor_lang::run_with_host(&project.module, Tracing::Off, &mut FunctorHost)
             .map_err(|f| f.error.message)?;
         match record.outcome {
