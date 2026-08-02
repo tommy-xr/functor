@@ -33,15 +33,25 @@ let track = (touch: Input.touch, stick: Stick): Stick =>
     |> Option.map((p: Input.touchPoint) => { stick with x: p.x, y: p.y })
     |> Option.defaultValue(idle)
 
-// Claim: an inactive stick anchors on the first press inside its zone.
+// Claim: an inactive stick anchors on the first press inside its zone. A
+// press whose release landed in the SAME snapshot (a quick tap) is skipped —
+// claiming a contact that is already gone would flash a phantom stick, and
+// worse, adopt the tap's recycled id if a new finger lands next sample. The
+// current position comes from the held list (a begin+move coalesced into one
+// snapshot deflects immediately), falling back to the press point.
 let claim = (inZone: (Input.touchPoint) => bool, touch: Input.touch, stick: Stick): Stick =>
   if stick.active then stick
   else
     touch.pressed
-    |> List.filter(inZone)
+    |> List.filter((p: Input.touchPoint) =>
+        inZone(p) && not (touch.released |> List.any((r: Input.touchPoint) => r.id == p.id)))
     |> List.head
     |> Option.map((p: Input.touchPoint) =>
-        { active: true, id: p.id, anchorX: p.x, anchorY: p.y, x: p.x, y: p.y })
+        let now =
+          touch.touches
+          |> List.find((h: Input.touchPoint) => h.id == p.id)
+          |> Option.defaultValue(p) in
+        { active: true, id: p.id, anchorX: p.x, anchorY: p.y, x: now.x, y: now.y })
     |> Option.defaultValue(stick)
 
 /// Fold one sampled touch record into the stick: existing contacts tracked
@@ -51,8 +61,8 @@ let update = (inZone: (Input.touchPoint) => bool, touch: Input.touch, stick: Sti
 
 /// The stick's deflection as a unit-clamped vector in STICK space (`x` right,
 /// `y` down — surface pixels; negate `y` for an up-positive world). `radius`
-/// is the pixel deflection that reads as full tilt; a radial dead zone keeps
-/// a resting thumb from drifting the player.
+/// is the POSITIVE pixel deflection that reads as full tilt; a radial dead
+/// zone keeps a resting thumb from drifting the player.
 let vector = (radius: float, stick: Stick): Input.point2 =>
   if not stick.active then { x: 0.0, y: 0.0 }
   else
@@ -129,4 +139,23 @@ expect (
                 touches: [{ id: 1.0, x: 100.0, y: 100.0 }],
                 pressed: [{ id: 1.0, x: 100.0, y: 100.0 }] } in
   not update(anywhere, noTouches, update(anywhere, press, idle)).active
+)
+
+// A quick tap — press AND release in one snapshot — never claims: the
+// contact is already gone, and its id may be recycled next sample.
+expect (
+  let tap = { touches: [],
+              pressed: [{ id: 0.0, x: 100.0, y: 100.0 }],
+              released: [{ id: 0.0, x: 100.0, y: 100.0 }] } in
+  not update(anywhere, tap, idle).active
+)
+
+// A begin+move coalesced into one snapshot deflects immediately: the anchor
+// is the press point, the position is the held contact's current one.
+expect (
+  let coalesced = { noTouches with
+                    touches: [{ id: 2.0, x: 160.0, y: 100.0 }],
+                    pressed: [{ id: 2.0, x: 100.0, y: 100.0 }] } in
+  let s = update(anywhere, coalesced, idle) in
+  s.anchorX == 100.0 && s.x == 160.0 && vector(60.0, s).x == 1.0
 )

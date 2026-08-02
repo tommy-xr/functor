@@ -82,16 +82,19 @@ let sampledInput = (m: Model, snap: Input.snapshot) =>
   | Option.None => sized
 
 // --- Simulation -------------------------------------------------------------
-// Stick vectors are surface-space (y down); the world is up-positive.
-let moveVec = (m: Model): Input.point2 =>
-  let pad = Pad.vector(stickRadius, m.left) in
+// The one statement of the input-priority rule: the pad wins when deflected
+// (stick space is y-down surface px, negated ONCE into the up-positive
+// world); otherwise the keyboard axes, unit-clamped so a diagonal cannot
+// outrun a full stick tilt.
+let stickOr = (stick: Pad.Stick, kx: float, ky: float): Input.point2 =>
+  let pad = Pad.vector(stickRadius, stick) in
   if pad.x != 0.0 || pad.y != 0.0 then { x: pad.x, y: 0.0 - pad.y }
-  else { x: m.keys.moveX, y: m.keys.moveY }
+  else
+    let len = Math.sqrt(kx * kx + ky * ky) in
+    if len > 1.0 then { x: kx / len, y: ky / len } else { x: kx, y: ky }
 
-let aimVec = (m: Model): Input.point2 =>
-  let pad = Pad.vector(stickRadius, m.right) in
-  if pad.x != 0.0 || pad.y != 0.0 then { x: pad.x, y: 0.0 - pad.y }
-  else { x: m.keys.aimX, y: m.keys.aimY }
+let moveVec = (m: Model): Input.point2 => stickOr(m.left, m.keys.moveX, m.keys.moveY)
+let aimVec = (m: Model): Input.point2 => stickOr(m.right, m.keys.aimX, m.keys.aimY)
 
 let arenaHalfW = 7.6
 let arenaHalfH = 4.2
@@ -112,7 +115,10 @@ let tick = (m: Model, dt, tts) =>
     aimed.shots
     |> List.map((s: Shot) => stepShot(dt, s))
     |> List.filter((s: Shot) => s.ttl > 0.0) in
-  if tilt >= fireTilt && aimed.cooldown <= 0.0 then
+  // Cooldown drains BEFORE the eligibility check, so a dt at or above
+  // fireCooldown sustains one shot per tick rather than alternating.
+  let cool = Math.max(0.0, aimed.cooldown - dt) in
+  if tilt >= fireTilt && cool <= 0.0 then
     let shot = {
       x: px,
       y: py,
@@ -122,29 +128,30 @@ let tick = (m: Model, dt, tts) =>
     } in
     { aimed with shots: [shot, ..flying], cooldown: fireCooldown }
   else
-    { aimed with shots: flying, cooldown: Math.max(0.0, aimed.cooldown - dt) }
+    { aimed with shots: flying, cooldown: cool }
 
 // --- Drawing ----------------------------------------------------------------
 let camW = 16.0
 let camH = 9.0
 
-// Surface CSS pixels (top-left origin) → world units (center origin, +Y up),
-// for drawing the stick overlays where the thumbs actually are.
-let toWorldX = (m: Model, sx: float) => (sx / m.surfaceW - 0.5) * camW
-let toWorldY = (m: Model, sy: float) => (0.5 - sy / m.surfaceH) * camH
-let pxToWorld = (m: Model, px: float) => px / m.surfaceW * camW
+// The stick overlays draw in their OWN sprite layer whose camera IS the
+// surface (`Camera2D.create(surfaceW, surfaceH)`), so surface pixels map to
+// layer units exactly — no letterbox math. Mapping thumbs through the 16x9
+// GAME camera would drift off the finger on any non-16:9 screen, because
+// that camera aspect-fits with letterbox bars.
+let overlayX = (m: Model, sx: float) => sx - m.surfaceW / 2.0
+let overlayY = (m: Model, sy: float) => m.surfaceH / 2.0 - sy
 
 let stickOverlay = (m: Model, stick: Pad.Stick) =>
   if not stick.active then Sprite.blank()
   else
-    let base = pxToWorld(m, stickRadius) in
     Sprite.group([
-      Sprite.circle(Color.rgb(0.5, 0.75, 0.95), base)
+      Sprite.circle(Color.rgb(0.5, 0.75, 0.95), stickRadius)
         |> Sprite.fade(0.18)
-        |> Sprite.move(toWorldX(m, stick.anchorX), toWorldY(m, stick.anchorY)),
-      Sprite.circle(Color.rgb(0.75, 0.9, 1.0), base * 0.35)
+        |> Sprite.move(overlayX(m, stick.anchorX), overlayY(m, stick.anchorY)),
+      Sprite.circle(Color.rgb(0.75, 0.9, 1.0), stickRadius * 0.35)
         |> Sprite.fade(0.45)
-        |> Sprite.move(toWorldX(m, stick.x), toWorldY(m, stick.y)),
+        |> Sprite.move(overlayX(m, stick.x), overlayY(m, stick.y)),
     ])
 
 let shotSprite = (s: Shot) =>
@@ -183,10 +190,12 @@ let draw = (m: Model, tts) =>
       Sprite.group(m.shots |> List.map(shotSprite)),
       player(m),
       hint(m),
-      stickOverlay(m, m.left),
-      stickOverlay(m, m.right),
     ]),
   )
+    |> Frame.with2D(
+        Camera2D.create(m.surfaceW, m.surfaceH),
+        Sprite.group([stickOverlay(m, m.left), stickOverlay(m, m.right)]),
+      )
     |> Frame.withClearColor(Color.rgb(0.03, 0.04, 0.08))
 
 // --- Inline tests: the input → simulation seam ------------------------------
@@ -216,4 +225,20 @@ expect (
 expect (
   let keys = { moveX: 1.0, moveY: 0.0, aimX: 0.0, aimY: 0.0 } in
   tick({ init with keys: keys, px: arenaHalfW }, 0.5, 0.5).px == arenaHalfW
+)
+
+// A keyboard diagonal is unit-clamped — it cannot outrun a full stick tilt.
+expect (
+  let keys = { moveX: 1.0, moveY: 1.0, aimX: 0.0, aimY: 0.0 } in
+  let v = moveVec({ init with keys: keys }) in
+  Math.abs(Math.sqrt(v.x * v.x + v.y * v.y) - 1.0) < 0.0001
+)
+
+// Sustained fire at dt >= fireCooldown fires every tick, not every other:
+// the cooldown drains before the eligibility check.
+expect (
+  let stick = { active: true, id: 0.0, anchorX: 600.0, anchorY: 300.0, x: 670.0, y: 300.0 } in
+  let one = tick({ init with right: stick }, fireCooldown, fireCooldown) in
+  let two = tick(one, fireCooldown, fireCooldown * 2.0) in
+  (two.shots |> List.length) == 2.0
 )
