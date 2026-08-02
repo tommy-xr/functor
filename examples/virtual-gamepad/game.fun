@@ -167,7 +167,7 @@ let hint = (m: Model) =>
     else "WASD: move    arrows: aim + fire    (touch a phone for thumbsticks)" in
   // Sprite.text is center-anchored, so the caption centers under the arena.
   Sprite.text(Color.rgb(0.65, 0.75, 0.9), 0.34, label)
-    |> Sprite.move(0.0, 0.0 - arenaHalfH - 0.36)
+    |> Sprite.move(0.0, 0.0 - arenaHalfH - 0.12)
 
 let arena = () =>
   Sprite.group([
