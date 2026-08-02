@@ -1709,13 +1709,23 @@ async fn run_async() -> Result<(), JsValue> {
             if preview_selects {
                 preview_last_on = selected;
             }
-            preview_presence = functor_runtime_common::presence_step(
-                preview_presence,
-                if preview_selects { 1.0 } else { 0.0 },
-                real_delta,
-            );
-            let display_presence = preview_presence_override
-                .unwrap_or_else(|| functor_runtime_common::presence_ease(preview_presence));
+            let display_presence = match preview_presence_override {
+                // A pin HOLDS the phase at the opacity it names, so clearing it
+                // resumes the ease from what was on screen rather than from
+                // wherever a free-running phase had drifted to.
+                Some(pinned) => {
+                    preview_presence = functor_runtime_common::presence_phase(pinned);
+                    pinned
+                }
+                None => {
+                    preview_presence = functor_runtime_common::presence_step(
+                        preview_presence,
+                        if preview_selects { 1.0 } else { 0.0 },
+                        real_delta,
+                    );
+                    functor_runtime_common::presence_ease(preview_presence)
+                }
+            };
             let active = if preview_selects {
                 selected
             } else {

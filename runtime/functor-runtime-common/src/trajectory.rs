@@ -1047,49 +1047,6 @@ impl SceneOverlays {
     }
 }
 
-/// Multiply an overlay material's alpha by the presence ramp. Textures and
-/// normal maps ride along untouched — only the constant color's alpha moves. A
-/// bare [`MaterialDescription::Texture`] has no color channel, so (exactly as
-/// [`alpha_faded_material`] does) it becomes a white-tinted emissive texture,
-/// the only form that CAN carry an alpha.
-fn presence_scaled_material(material: &MaterialDescription, presence: f32) -> MaterialDescription {
-    let scale = |mut color: Vector4<f32>| {
-        color.w *= presence;
-        color
-    };
-    match material {
-        MaterialDescription::Color(color) => MaterialDescription::Color(scale(*color)),
-        MaterialDescription::Emissive { color, texture } => MaterialDescription::Emissive {
-            color: scale(*color),
-            texture: texture.clone(),
-        },
-        MaterialDescription::Lit {
-            color,
-            texture,
-            normal_map,
-        } => MaterialDescription::Lit {
-            color: scale(*color),
-            texture: texture.clone(),
-            normal_map: normal_map.clone(),
-        },
-        MaterialDescription::Texture(texture) => MaterialDescription::Emissive {
-            color: vec4(1.0, 1.0, 1.0, presence),
-            texture: Some(texture.clone()),
-        },
-        MaterialDescription::SpriteTexture {
-            color,
-            texture,
-            source_pixels,
-            sampling,
-        } => MaterialDescription::SpriteTexture {
-            color: scale(*color),
-            texture: texture.clone(),
-            source_pixels: *source_pixels,
-            sampling: *sampling,
-        },
-    }
-}
-
 /// Walk an overlay subtree and multiply every material's alpha by `presence`.
 ///
 /// This is deliberately an APPLY-TIME transform on the per-frame clone, never a
@@ -1104,7 +1061,13 @@ fn presence_scaled_material(material: &MaterialDescription, presence: f32) -> Ma
 fn scale_presence(scene: &mut Scene3D, presence: f32) {
     match &mut scene.obj {
         SceneObject::Material(material, items) => {
-            *material = presence_scaled_material(material, presence);
+            // Scaling every color's alpha by k is EXACTLY the sprite onion-skin
+            // fade with no direction tint, so reuse it rather than growing a
+            // third copy of the five-variant material rewrite.
+            let faded = alpha_faded_material(Some(material), presence, None);
+            if let Some(faded) = faded {
+                *material = faded;
+            }
             for item in items {
                 scale_presence(item, presence);
             }
@@ -1157,6 +1120,22 @@ pub fn presence_step(presence: f32, target: f32, dt: f32) -> f32 {
 pub fn presence_ease(phase: f32) -> f32 {
     let p = phase.clamp(0.0, 1.0);
     p * p * (3.0 - 2.0 * p)
+}
+
+/// The inverse of [`presence_ease`]: the phase that renders at `alpha`.
+///
+/// A tooling PIN (`--preview-presence`, `setPreview({ presence })`) names a
+/// final alpha, but the runtime's state is a linear phase. Seeding the phase
+/// through this on every pinned frame is what makes RELEASING a pin continuous —
+/// the ease picks up from exactly the opacity that was on screen instead of
+/// jumping to wherever a free-running phase had drifted.
+pub fn presence_phase(alpha: f32) -> f32 {
+    if !alpha.is_finite() {
+        return 0.0;
+    }
+    let a = alpha.clamp(0.0, 1.0);
+    // Closed-form inverse of the smoothstep cubic 3a² - 2a³.
+    0.5 - (((1.0 - 2.0 * a).clamp(-1.0, 1.0)).asin() / 3.0).sin()
 }
 
 /// A computed preview for the complete render frame. Sprite overlays use the
@@ -2205,6 +2184,53 @@ mod tests {
             );
             assert!(presence_ease(p) >= presence_ease((p - 0.1).max(0.0)));
         }
+    }
+
+    #[test]
+    fn presence_phase_inverts_the_ease_so_releasing_a_pin_is_continuous() {
+        // Seeding the phase from a pinned alpha must render at exactly that
+        // alpha, or clearing the pin visibly jumps.
+        for i in 0..=20 {
+            let alpha = i as f32 / 20.0;
+            let phase = presence_phase(alpha);
+            assert!((0.0..=1.0).contains(&phase), "phase escaped [0, 1]: {phase}");
+            assert!(
+                (presence_ease(phase) - alpha).abs() < 1e-4,
+                "pin at {alpha} would resume at {} (phase {phase})",
+                presence_ease(phase)
+            );
+        }
+        // Endpoints land on the ends (within float slop from the trig form).
+        assert!(presence_phase(0.0).abs() < 1e-6, "{}", presence_phase(0.0));
+        assert!((presence_phase(1.0) - 1.0).abs() < 1e-6);
+        // Out of range is clamped, not propagated as NaN.
+        assert!(presence_phase(-3.0).abs() < 1e-6);
+        assert!((presence_phase(3.0) - 1.0).abs() < 1e-6);
+        assert!(presence_phase(f32::NAN).is_finite());
+    }
+
+    #[test]
+    fn nested_overlay_materials_all_scale() {
+        // `Material` nodes nest (a strobe copy of a game subtree that sets its
+        // own material inside another). Every level must fade, not just the
+        // outermost.
+        let mut scene = Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::color(1.0, 1.0, 1.0, 1.0),
+                vec![Scene3D {
+                    obj: SceneObject::Material(
+                        MaterialDescription::color(1.0, 0.0, 0.0, 0.5),
+                        vec![Scene3D::sphere()],
+                    ),
+                    xform: Matrix4::identity(),
+                }],
+            ),
+            xform: Matrix4::identity(),
+        };
+        scale_presence(&mut scene, 0.5);
+        let mut alphas = Vec::new();
+        material_alphas(&scene, &mut alphas);
+        assert_eq!(alphas, vec![0.5, 0.25]);
     }
 
     #[test]

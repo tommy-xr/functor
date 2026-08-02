@@ -707,6 +707,7 @@ fn forward_pass(
         // The transparent-debug pass owns the blend state for the whole scene
         // (constant alpha); leave it alone there too.
         pass_blends: caller_blends || debug_render_mode == DebugRenderMode::Transparent,
+        blend_active: std::cell::Cell::new(false),
         shadow,
         fog,
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),

@@ -1373,12 +1373,18 @@ named \"{name}\" — {hint}"
                 // follow-up (a dedicated constant-alpha overlay pass, modeled
                 // on the transparent-debug recipe in `renderer.rs`) removes
                 // both that and the overlay's shadow-pass contribution.
+                // Only the node that transitions blending OFF→ON restores it:
+                // `Material` nodes nest, so an inner translucent material must
+                // not disable blending out from under the outer subtree's
+                // remaining siblings.
                 let blend = !depth_pass
                     && !render_context.pass_blends
+                    && !render_context.blend_active.get()
                     && material_description
                         .color_alpha()
                         .is_some_and(|alpha| alpha < 1.0);
                 if blend {
+                    render_context.blend_active.set(true);
                     unsafe {
                         render_context.gl.enable(glow::BLEND);
                         render_context.gl.blend_func_separate(
@@ -1400,6 +1406,7 @@ named \"{name}\" — {hint}"
                     )
                 }
                 if blend {
+                    render_context.blend_active.set(false);
                     unsafe {
                         render_context.gl.disable(glow::BLEND);
                     }

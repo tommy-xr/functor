@@ -205,6 +205,7 @@ pub fn render_shadow_pass(
         // Irrelevant here: the depth pass writes no color, and the
         // translucent-material blend is skipped outright under `DepthOnly`.
         pass_blends: false,
+        blend_active: std::cell::Cell::new(false),
         shadow: None,
         // Fog is a forward-pass concern; the depth pass renders no color.
         fog: None,

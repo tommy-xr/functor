@@ -1567,8 +1567,9 @@ Escape releases while captured"
         // What the preview last selected while it was ON. Fading OUT needs
         // geometry after the toggle has already flipped the wanted-flags to
         // false, so the last on-mode keeps driving the computation until
-        // presence reaches zero.
-        let mut preview_last_on: (bool, bool) = (false, false);
+        // presence reaches zero. Same type as the web twin uses for the same
+        // state.
+        let mut preview_last_on = functor_runtime_common::InteractivePreview::default();
         // An explicit `--preview-presence` PINS presence and skips the ease
         // (deterministic mid-fade captures); negative = no override.
         let preview_presence_override = (args.preview_presence >= 0.0)
@@ -2517,19 +2518,32 @@ Escape again to quit"
             // mid-fade frame.
             let preview_selects = trail_wanted || strobe_wanted;
             if preview_selects {
-                preview_last_on = (trail_wanted, strobe_wanted);
+                preview_last_on = functor_runtime_common::InteractivePreview {
+                    trail: trail_wanted,
+                    strobe: strobe_wanted,
+                };
             }
-            preview_presence = functor_runtime_common::presence_step(
-                preview_presence,
-                if preview_selects { 1.0 } else { 0.0 },
-                real_delta,
-            );
-            let display_presence = preview_presence_override
-                .unwrap_or_else(|| functor_runtime_common::presence_ease(preview_presence));
+            let display_presence = match preview_presence_override {
+                // A pin HOLDS the phase at the opacity it names, so clearing it
+                // resumes the ease from what was on screen rather than from
+                // wherever a free-running phase had drifted to.
+                Some(pinned) => {
+                    preview_presence = functor_runtime_common::presence_phase(pinned);
+                    pinned
+                }
+                None => {
+                    preview_presence = functor_runtime_common::presence_step(
+                        preview_presence,
+                        if preview_selects { 1.0 } else { 0.0 },
+                        real_delta,
+                    );
+                    functor_runtime_common::presence_ease(preview_presence)
+                }
+            };
             let (trail_wanted, strobe_wanted) = if preview_selects {
                 (trail_wanted, strobe_wanted)
             } else {
-                preview_last_on
+                (preview_last_on.trail, preview_last_on.strobe)
             };
             // Forward window/densities. The SIM samples fine (~20/s — the
             // trail's smooth-arc rate) while the preview rate governs STROBE COPIES
