@@ -169,6 +169,15 @@ struct Session {
     /// Never read — its `Drop` is the whole point.
     #[allow(dead_code)]
     scratch: Option<ScratchDir>,
+    /// The `functor.json` this session BOOTED with, verbatim — the launch
+    /// directory's, or the inline file set's. `GET /project` reports modules,
+    /// not project metadata, so this is the only place a launched session's
+    /// manifest survives, and `save_project` writes it rather than
+    /// reconstructing one (a multi-entry project reconstructed as
+    /// `{"entry": "game.fun"}` builds green and fails at run). `None` for an
+    /// ATTACHED session: the manifest of a runtime someone else started is not
+    /// knowable over the wire.
+    manifest: Option<String>,
 }
 
 /// The await-safe part of a registry session.
@@ -409,6 +418,7 @@ impl Registry {
         port: Option<u16>,
         child: Option<Child>,
         scratch: Option<ScratchDir>,
+        manifest: Option<String>,
     ) -> String {
         // A launched child is a process this server just created, so it starts
         // a fresh exact-URL lifecycle even if an old attached runtime used the
@@ -442,7 +452,7 @@ impl Registry {
                 },
             )
         });
-        self.insert_with_gate(url, port, child, scratch, operation_gate, quarantined)
+        self.insert_with_gate(url, port, child, scratch, manifest, operation_gate, quarantined)
     }
 
     fn insert_with_gate(
@@ -451,6 +461,7 @@ impl Registry {
         port: Option<u16>,
         child: Option<Child>,
         scratch: Option<ScratchDir>,
+        manifest: Option<String>,
         operation_gate: Arc<tokio::sync::Mutex<()>>,
         quarantined: Arc<AtomicBool>,
     ) -> String {
@@ -470,6 +481,7 @@ impl Registry {
                 port,
                 child,
                 scratch,
+                manifest,
             },
         );
         id
@@ -610,6 +622,11 @@ stop an owned session, or restart both an attached runtime and this MCP server, 
         self.sessions.keys().cloned().collect()
     }
 
+    /// The `functor.json` this session booted with, if this server launched it.
+    fn manifest(&self, id: &str) -> Option<String> {
+        self.sessions.get(id).and_then(|s| s.manifest.clone())
+    }
+
     fn remove(&mut self, id: &str) -> Result<Session, String> {
         match self.sessions.remove(id) {
             Some(session) => {
@@ -739,6 +756,8 @@ stop it if owned, or restart both the attached runtime and this MCP server",
                 None,
                 None,
                 None,
+                // Attached: the runtime's manifest is not on this wire.
+                None,
                 self.operation_gate.clone(),
                 self.quarantined.clone(),
             ))
@@ -807,12 +826,20 @@ pub struct LaunchArgs {
     /// just wrote. A `functor.json` pair is honored; without one the server
     /// synthesizes a single-entry manifest. Give this OR `dir`.
     pub files: Option<Vec<(String, String)>>,
-    /// Named entry, for a project whose functor.json declares `entries`.
+    /// Named entry, for a project whose functor.json declares `entries` — the
+    /// ROLE this session runs (`"server"`, `"client"`). Defaults to `client`,
+    /// or the sole entry. Launch one session per role to simulate a
+    /// multiplayer game.
     pub entry: Option<String>,
     /// `"hidden"` (default) renders into an invisible window — `capture_frame`
     /// works. `"headless"` creates no GL context at all — no display or GPU
     /// needed, but `capture_frame` then fails.
     pub mode: Option<String>,
+    /// Include the runtime's full endpoint index in the response (default
+    /// false). The response always carries `protocol_version`, which is the
+    /// part a caller acts on; the index is the same ~2 KB on every launch, and
+    /// `GET /` on the session's url serves it at any time.
+    pub discovery: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -848,6 +875,19 @@ pub struct StepArgs {
     /// Delta time for each step, in seconds (default 0.016).
     pub dts: Option<f64>,
     /// How many steps to queue (default 1, maximum 10,000).
+    pub frames: Option<u32>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct StepAllArgs {
+    /// The sessions to step, in the order they must step — producer first,
+    /// then the authority, then any observer. The order is the caller's
+    /// declaration and this tool preserves it exactly.
+    pub sessions: Vec<String>,
+    /// Delta time for each step, in seconds (default 0.016). Every session
+    /// steps by the same amount, which is what keeps them in lockstep.
+    pub dts: Option<f64>,
+    /// How many steps each session runs per round (default 1, maximum 10,000).
     pub frames: Option<u32>,
 }
 
@@ -1056,6 +1096,13 @@ files writes the inline project to a scratch directory this server owns",
                 )
             }
         };
+        // Remember the manifest this session boots with, BEFORE the game runs:
+        // `GET /project` reports modules, not project metadata, so this is the
+        // only copy `save_project` can write back. Both arms above leave a
+        // `functor.json` in `dir` (the inline path synthesizes one), and an
+        // unreadable manifest is not this tool's error to raise — the launch
+        // below fails on it with the runtime's own message.
+        let manifest = std::fs::read_to_string(dir.join("functor.json")).ok();
         let port = resolve!(self
             .sessions
             .lock()
@@ -1120,19 +1167,27 @@ files writes the inline project to a scratch directory this server owns",
             Some(port),
             Some(child),
             scratch,
+            manifest,
         );
-        ok_text(
-            serde_json::json!({
-                "session": id,
-                "url": url,
-                "port": port,
-                "mode": mode,
-                "owned": true,
-                "dir": absolute(&dir),
-                "discovery": discovery,
-            })
-            .to_string(),
-        )
+        let mut response = serde_json::json!({
+            "session": id,
+            "url": url,
+            "port": port,
+            "mode": mode,
+            "owned": true,
+            "dir": absolute(&dir),
+            "protocol_version": discovery.get("protocol_version").cloned().unwrap_or(Value::Null),
+            "endpoints": "GET / on this url, or launch_game { discovery: true }",
+        });
+        // The endpoint index is ~2 KB of text that says the same thing on every
+        // launch, and a client launching three roles paid for it three times.
+        // The version is the part a caller acts on; the index stays one
+        // argument away (and `connect_game`, where the runtime is a stranger,
+        // still returns it unconditionally).
+        if args.discovery.unwrap_or(false) {
+            response["discovery"] = discovery;
+        }
+        ok_text(response.to_string())
     }
 
     /// Attach to a debug server this process does NOT own — a runtime someone
@@ -1494,6 +1549,85 @@ MCP server before reconnecting or reusing that runtime URL.",
         ok_text(state.to_string())
     }
 
+    /// Step several sessions ONE ROUND, strictly sequentially, in the order
+    /// given — the multiplayer lockstep primitive. Each session's steps fully
+    /// land (`pending_steps` back to 0) before the next session starts, and
+    /// the result carries every session's post-step state summary.
+    ///
+    /// The order is the contract: **step producer → authority → observer**.
+    /// A client's input has to reach the authority before the authority steps,
+    /// and the authority's broadcast has to exist before an observer steps, or
+    /// each round lands work an arbitrary number of rounds late. Stepping the
+    /// same group CONCURRENTLY is not reproducible: whether a packet arrives
+    /// before or after its receiver's step is a race, so two identical runs
+    /// disagree. Pause every session first — this steps the clock, it does not
+    /// pin it.
+    ///
+    /// Sessions are resolved and checked for duplicates before anything steps,
+    /// so a typo cannot leave the group half-advanced. A failure partway
+    /// through still means the earlier sessions advanced: like the SDK's
+    /// `stepAll`, there is no rollback, so treat it as terminal for the run.
+    #[tool]
+    async fn step_all(
+        &self,
+        Parameters(args): Parameters<StepAllArgs>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let frames = args.frames.unwrap_or(1);
+        if !(1..=MAX_STEP_FRAMES).contains(&frames) {
+            return tool_error(format!(
+                "step_all frames must be between 1 and {MAX_STEP_FRAMES}; got {frames}"
+            ));
+        }
+        let dts = args.dts.unwrap_or(0.016);
+        if !dts.is_finite() || dts <= 0.0 {
+            return tool_error(format!(
+                "step_all dts must be a finite positive number; got {dts}"
+            ));
+        }
+        if args.sessions.is_empty() {
+            return tool_error(
+                "step_all needs at least one session id, in the order they must step \
+(producer → authority → observer)",
+            );
+        }
+        // Resolve everything up front: a group half-stepped because the third
+        // id was a typo is a desynced simulation with no way back.
+        let mut targets = Vec::with_capacity(args.sessions.len());
+        for (index, session) in args.sessions.iter().enumerate() {
+            if args.sessions[..index].contains(session) {
+                return tool_error(format!(
+                    "step_all lists session {session:?} more than once — a session that must \
+step twice per round is two rounds, not one list"
+                ));
+            }
+            targets.push((session.clone(), resolve!(self.target(session))));
+        }
+
+        let mut stepped = Vec::with_capacity(targets.len());
+        for (session, target) in targets {
+            // One gate at a time, in order: holding all of them would deadlock
+            // against any other caller holding one of ours.
+            let _operation = resolve!(self.acquire_operation(&target, &context).await);
+            let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
+            let state = match self.advance(&target, dts, frames, operation_deadline).await {
+                Ok(state) => state,
+                Err(message) => {
+                    return tool_error(format!(
+                        "step_all stopped at session {session:?}: {message}\n\nSessions before it \
+in the list have already advanced; the group is no longer in lockstep."
+                    ))
+                }
+            };
+            let mut summary = summarize_state(&state);
+            summary["session"] = Value::String(session);
+            stepped.push(summary);
+        }
+        ok_text(
+            serde_json::json!({ "dts": dts, "frames": frames, "sessions": stepped }).to_string(),
+        )
+    }
+
     /// Un-pin the clock: the game follows wall-clock time again, and window
     /// input reaches it once more.
     #[tool]
@@ -1600,10 +1734,12 @@ or \"fps\" (a first-person WASD + mouse-look scene)"
     /// authored over the wire gets a durable home. The sources come from the
     /// RUNTIME (`GET /project`), so they are what it is actually running,
     /// including every `reload_source`/`reload_project` edit that never
-    /// touched a file. A single-entry `functor.json` is synthesized when the
-    /// directory has none (a project's own manifest is never rewritten, and a
-    /// multi-entry one is not reconstructed). A directory that already holds a
-    /// project is REFUSED unless `overwrite` is true.
+    /// touched a file. The `functor.json` the session BOOTED with is written
+    /// alongside them, so a multi-entry (multiplayer) project keeps its roles;
+    /// a directory's own manifest is never rewritten, and an ATTACHED session,
+    /// whose manifest is not knowable over the wire, gets a synthesized
+    /// single-entry one. A directory that already holds a project is REFUSED
+    /// unless `overwrite` is true.
     #[tool]
     async fn save_project(
         &self,
@@ -1628,10 +1764,16 @@ rebuild that runtime from this version of Functor."
         };
         let files: Vec<(String, String)> = resolve!(serde_json::from_str(&body)
             .map_err(|error| format!("GET /project did not return [path, source] pairs: {error}")));
+        let manifest = self
+            .sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .manifest(&args.session);
         let dir = std::path::PathBuf::from(&args.dir);
         let written = resolve!(save_project_to(
             &dir,
             &files,
+            manifest.as_deref(),
             args.overwrite.unwrap_or(false)
         ));
         ok_text(
@@ -3132,6 +3274,10 @@ fn summarize_state(state: &Value) -> Value {
         "frame": state.get("frame").cloned().unwrap_or(Value::Null),
         "tts": state.get("tts").cloned().unwrap_or(Value::Null),
         "pending_steps": state.get("pending_steps").cloned().unwrap_or(Value::Null),
+        // The networked facts (protocol v10): `frame` alone cannot say whether
+        // anything landed on a session a peer can write to.
+        "model_revision": state.get("model_revision").cloned().unwrap_or(Value::Null),
+        "pending_net": state.get("pending_net").cloned().unwrap_or(Value::Null),
         "held_keys": state.pointer("/input/held_keys").cloned().unwrap_or(Value::Null),
         "model_bytes": json_encoded_len(state.get("model").unwrap_or(&Value::Null)).unwrap_or(0),
     })
@@ -3753,6 +3899,33 @@ fn existing_project_files(dir: &std::path::Path) -> Vec<String> {
     found
 }
 
+/// The `.fun` files a `functor.json` DECLARES: its `entry`, or every `entries`
+/// value (the plain `"client.fun"` form and the same-file `{ "file": … }` one).
+/// `None` means the text is not a manifest object at all.
+///
+/// Used to check that a remembered manifest still describes the file set being
+/// saved — an unknown/extra key is not this function's business, since the
+/// manifest is written verbatim and the loader owns its own validation.
+fn manifest_entry_files(manifest: &str) -> Option<Vec<String>> {
+    let json: serde_json::Value = serde_json::from_str(manifest).ok()?;
+    let object = json.as_object()?;
+    let declared = match (object.get("entry"), object.get("entries")) {
+        (Some(entry), _) => vec![entry.as_str()?.to_string()],
+        (None, Some(serde_json::Value::Object(entries))) => entries
+            .values()
+            .map(|value| match value {
+                serde_json::Value::String(file) => Some(file.clone()),
+                serde_json::Value::Object(role) => {
+                    Some(role.get("file")?.as_str()?.to_string())
+                }
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?,
+        _ => return None,
+    };
+    Some(declared)
+}
+
 /// Persist a session's sources into `dir`, returning what was written.
 ///
 /// A directory that already holds a project is refused unless `overwrite` —
@@ -3761,9 +3934,18 @@ fn existing_project_files(dir: &std::path::Path) -> Vec<String> {
 /// `overwrite`, modules this session does NOT have are removed as well:
 /// `file = module`, so a leftover sibling would still load and the saved copy
 /// would not be the program that ran.
+///
+/// `manifest` is the `functor.json` the session BOOTED with, when this server
+/// launched it. It is written verbatim rather than reconstructed: a multiplayer
+/// project's `entries` map cannot be recovered from `GET /project` (which
+/// reports modules, not project metadata), and reconstructing it as
+/// `{"entry": "game.fun"}` produces a directory that builds green and then runs
+/// the wrong role — the failure this argument exists to prevent. A manifest
+/// that no longer describes the file set is REFUSED rather than adjusted.
 fn save_project_to(
     dir: &std::path::Path,
     files: &[(String, String)],
+    manifest: Option<&str>,
     overwrite: bool,
 ) -> Result<Vec<String>, String> {
     let entry = entry_of(files)?.to_string();
@@ -3783,7 +3965,33 @@ overwrite: true to replace it",
     if !files.iter().any(|(path, _)| path == "functor.json")
         && !existing.iter().any(|name| name == "functor.json")
     {
-        files.push(("functor.json".to_string(), synthesized_manifest(&entry)));
+        let manifest = match manifest {
+            // The session's own manifest: roles, cursor policy, and every other
+            // project-level setting survive the save exactly as launched.
+            Some(manifest) => {
+                if let Some(declared) = manifest_entry_files(manifest) {
+                    let missing: Vec<&str> = declared
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|file| !files.iter().any(|(path, _)| path == file))
+                        .collect();
+                    if !missing.is_empty() {
+                        return Err(format!(
+                            "the session's functor.json declares {} but the running program \
+no longer has {} — saving would write a manifest that builds and then fails at run. Save the \
+sources to a directory that already holds the right functor.json instead.",
+                            declared.join(", "),
+                            missing.join(", ")
+                        ));
+                    }
+                }
+                manifest.to_string()
+            }
+            // An ATTACHED session: nothing on the wire reports the manifest, so
+            // the single-entry one is the only honest guess.
+            None => synthesized_manifest(&entry),
+        };
+        files.push(("functor.json".to_string(), manifest));
     }
     write_project_files(dir, &files)?;
     for stale in existing
@@ -4459,8 +4667,8 @@ mod tests {
         .await;
         {
             let mut registry = server.sessions.lock().unwrap();
-            registry.insert(url.clone(), None, None, None);
-            registry.insert(url.clone(), None, None, None);
+            registry.insert(url.clone(), None, None, None, None);
+            registry.insert(url.clone(), None, None, None, None);
         }
         let target = server.target("s1").unwrap();
 
@@ -4900,6 +5108,7 @@ mod tests {
                 ("game.fun".into(), "let init = 1".into()),
                 ("util.fun".into(), "let k = 2".into()),
             ],
+            None,
             false,
         )
         .unwrap();
@@ -4909,6 +5118,73 @@ mod tests {
             std::fs::read_to_string(dir.join("game.fun")).unwrap(),
             "let init = 1"
         );
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("functor.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["entry"], "game.fun");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A MULTI-ENTRY project must survive the round trip. `GET /project`
+    /// reports modules, not project metadata, so a reconstructed manifest
+    /// would say `{"entry": "game.fun"}` — a directory that builds green and
+    /// then runs the client when asked for the server. The session's own
+    /// manifest is written verbatim instead, roles and all.
+    #[test]
+    fn saving_preserves_the_multi_entry_manifest_the_session_booted_with() {
+        let dir = std::env::temp_dir().join(format!("functor-mcp-save-mp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let booted = "{\n  \"language\": \"functor-lang\",\n  \"entries\": {\n    \
+\"client\": { \"file\": \"game.fun\", \"module\": \"Client\" },\n    \
+\"server\": { \"file\": \"game.fun\", \"module\": \"Server\" }\n  }\n}\n";
+
+        super::save_project_to(
+            &dir,
+            &[("game.fun".into(), "let x = 1".into())],
+            Some(booted),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("functor.json")).unwrap(),
+            booted,
+            "the manifest is written verbatim, not reconstructed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A manifest that no longer describes the file set is REFUSED, not
+    /// quietly adjusted: writing it would produce exactly the failure the
+    /// preservation exists to prevent, one step later.
+    #[test]
+    fn saving_refuses_a_manifest_that_names_a_module_the_session_no_longer_has() {
+        let dir = std::env::temp_dir().join(format!("functor-mcp-save-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let error = super::save_project_to(
+            &dir,
+            &[("game.fun".into(), "let x = 1".into())],
+            Some("{\"language\":\"functor-lang\",\"entries\":{\"client\":\"client.fun\"}}"),
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("client.fun"), "{error}");
+        assert!(!dir.join("functor.json").exists(), "nothing was written");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An ATTACHED session's manifest is not knowable over the wire, so the
+    /// synthesized single-entry one remains the honest answer there.
+    #[test]
+    fn saving_an_attached_session_still_synthesizes_a_single_entry_manifest() {
+        let dir = std::env::temp_dir().join(format!("functor-mcp-save-att-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        super::save_project_to(&dir, &[("game.fun".into(), "let x = 1".into())], None, false)
+            .unwrap();
+
         let manifest: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("functor.json")).unwrap())
                 .unwrap();
@@ -4929,12 +5205,14 @@ mod tests {
                 ("game.fun".into(), "let init = 1".into()),
                 ("util.fun".into(), "let k = 2".into()),
             ],
+            None,
             false,
         )
         .unwrap();
         std::fs::write(dir.join("functor.json"), "{\"entry\":\"game.fun\"}").unwrap();
 
-        super::save_project_to(&dir, &[("game.fun".into(), "let init = 2".into())], true).unwrap();
+        super::save_project_to(&dir, &[("game.fun".into(), "let init = 2".into())], None, true)
+            .unwrap();
 
         assert_eq!(
             std::fs::read_to_string(dir.join("game.fun")).unwrap(),
@@ -4965,7 +5243,7 @@ mod tests {
         std::fs::write(dir.join("game.fun"), "someone else's game").unwrap();
 
         let error =
-            super::save_project_to(&dir, &[("game.fun".into(), "let init = 1".into())], false)
+            super::save_project_to(&dir, &[("game.fun".into(), "let init = 1".into())], None, false)
                 .unwrap_err();
 
         assert!(error.contains("already holds a project"), "{error}");
@@ -4981,9 +5259,9 @@ mod tests {
     #[test]
     fn ids_are_short_sequential_and_resolve_to_their_url() {
         let mut registry = Registry::default();
-        let first = registry.insert("http://127.0.0.1:1".into(), None, None, None);
-        let alias = registry.insert("http://127.0.0.1:1".into(), None, None, None);
-        let second = registry.insert("http://127.0.0.1:2".into(), None, None, None);
+        let first = registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
+        let alias = registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
+        let second = registry.insert("http://127.0.0.1:2".into(), None, None, None, None);
 
         assert_eq!(first, "s1");
         assert_eq!(alias, "s2");
@@ -5032,7 +5310,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_wins_while_a_mutating_request_waits_for_the_gate() {
         let mut registry = Registry::default();
-        registry.insert("http://127.0.0.1:1".into(), None, None, None);
+        registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
         let target = registry.target("s1").unwrap();
         let held = target.operation_gate.clone().lock_owned().await;
         let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
@@ -5077,8 +5355,8 @@ mod tests {
     #[tokio::test]
     async fn stop_closing_rejects_queued_clones_but_not_an_alias_id() {
         let mut registry = Registry::default();
-        registry.insert("http://127.0.0.1:1".into(), None, None, None);
-        registry.insert("http://127.0.0.1:1".into(), None, None, None);
+        registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
+        registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
         let queued = registry.target("s1").unwrap();
         let held = queued.operation_gate.clone().lock_owned().await;
         let waiter =
@@ -5108,8 +5386,8 @@ mod tests {
         let server = FunctorMcp::new();
         {
             let mut registry = server.sessions.lock().unwrap();
-            registry.insert("http://127.0.0.1:1".into(), None, None, None);
-            registry.insert("http://127.0.0.1:1".into(), None, None, None);
+            registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
+            registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
             registry.sessions.get_mut("s1").unwrap().owned = true;
         }
         let reservation = server.reserve_connect("http://127.0.0.1:1");
@@ -5164,8 +5442,8 @@ mod tests {
         let empty = registry.url("s1").unwrap_err();
         assert!(empty.contains("no sessions yet"), "{empty}");
 
-        registry.insert("http://127.0.0.1:1".into(), None, None, None);
-        registry.insert("http://127.0.0.1:2".into(), None, None, None);
+        registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
+        registry.insert("http://127.0.0.1:2".into(), None, None, None, None);
         let unknown = registry.url("s9").unwrap_err();
         assert!(unknown.contains("s1, s2"), "{unknown}");
     }
@@ -5181,7 +5459,7 @@ mod tests {
         let other = registry.reserve_port().unwrap();
         assert_ne!(port, other);
 
-        registry.insert("http://127.0.0.1:1".into(), Some(port), None, None);
+        registry.insert("http://127.0.0.1:1".into(), Some(port), None, None, None);
         registry.remove("s1").unwrap();
         assert!(!registry.reserved.contains(&port));
     }
@@ -5189,13 +5467,13 @@ mod tests {
     #[test]
     fn removing_a_session_forgets_it_and_does_not_reuse_its_id() {
         let mut registry = Registry::default();
-        registry.insert("http://127.0.0.1:1".into(), None, None, None);
+        registry.insert("http://127.0.0.1:1".into(), None, None, None, None);
         let removed = registry.remove("s1").unwrap();
 
         assert_eq!(removed.url, "http://127.0.0.1:1");
         assert!(registry.url("s1").is_err());
         assert_eq!(
-            registry.insert("http://127.0.0.1:3".into(), None, None, None),
+            registry.insert("http://127.0.0.1:3".into(), None, None, None, None),
             "s2"
         );
         let Err(message) = registry.remove("s1") else {

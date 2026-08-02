@@ -55,6 +55,7 @@ const EXPECTED_TOOLS = [
   "send_input",
   "pause",
   "step",
+  "step_all",
   "resume",
   "rewind",
   "reload_source",
@@ -226,7 +227,11 @@ try {
   const launched = await rpc.call("launch_game", { dir: "examples/counter", mode: "headless" });
   session = launched.session;
   check(/^s\d+$/.test(session), `launch_game returned a session id (${session})`);
-  check(launched.discovery?.service === "functor debug runtime", "the child answered the debug-runtime discovery endpoint");
+  check(
+    typeof launched.protocol_version === "number",
+    `the child answered discovery, reporting protocol v${launched.protocol_version}`,
+  );
+  check(launched.discovery === undefined, "the ~2 KB endpoint index is not repeated on every launch (pass discovery: true for it)");
   check(launched.owned === true, "the session is owned (this server spawned it)");
 
   const listed = await rpc.call("list_sessions");
@@ -899,7 +904,7 @@ let draw = (m: Model, tts) =>
   check(scaffoldResult.files.includes("game.fun"), `init_game wrote ${scaffoldResult.files} into ${scaffoldResult.dir}`);
 
   const scaffolded = await rpc.call("launch_game", { dir: scaffold, mode: "headless" });
-  check(scaffolded.discovery?.service === "functor debug runtime", "the scaffolded project boots");
+  check(typeof scaffolded.protocol_version === "number", "the scaffolded project boots");
   await rpc.call("stop_game", { session: scaffolded.session });
 
   let reinit = null;

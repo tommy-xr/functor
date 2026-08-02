@@ -93,7 +93,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 
 | Tool | What it does |
 | --- | --- |
-| `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `mode` is `hidden` (default) or `headless`. |
+| `launch_game` | Spawn a game as a child on a free port and return its session id. The project comes from `dir` **or** from `files` — the whole project inline (see below). `entry` names the ROLE, for a project whose `functor.json` declares `entries` (`"server"`, `"client"`; default `client`, or the sole entry) — one session per role. `mode` is `hidden` (default) or `headless`. The response carries `protocol_version`; pass `discovery: true` for the full endpoint index. |
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |
@@ -102,7 +102,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 
 | Tool | What it does |
 | --- | --- |
-| `get_state` | `frame`, `tts`, `pending_steps`, viewports, sampled `input`, and the model — the structured JSON view (the default read; `model_debug` is the Debug text). |
+| `get_state` | `frame`, `tts`, `pending_steps`, `model_revision`, `pending_net`, viewports, sampled `input`, and the model — the structured JSON view (the default read; `model_debug` is the Debug text). |
 | `get_scene` | The camera, scene graph, and lights `draw` produced. Pure data, so it works headlessly. |
 | `get_trace` | The paused inspector trace: every entry point's binder and variable values for the last real frame. Pause first. |
 | `capture_frame` | A PNG of the next rendered frame, returned as an MCP image block. |
@@ -113,6 +113,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | --- | --- |
 | `pause` | Pin the clock (defaults to the current `tts`), so nothing advances on its own. |
 | `step` | Run 1–10,000 `frames` of finite positive `dts` each, **wait for them to land**, and return the fresh state. |
+| `step_all` | Step several sessions one round, strictly sequentially, in the order given — the multiplayer lockstep primitive. See [Running a multiplayer session](#running-a-multiplayer-session). |
 | `resume` | Follow wall-clock time again. |
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
@@ -124,7 +125,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | Tool | What it does |
 | --- | --- |
 | `init_game` | Scaffold a starter project on disk — the same `functor.json` + `game.fun` `functor init` writes. `template` is `"3d"` (default) or `"fps"`. Never overwrites; its `dir` goes straight into `launch_game`. |
-| `save_project` | Write a session's **current** source to a directory. The sources come from the RUNTIME (`GET /project`), so they include every wire-only edit. Refuses a directory that already holds a project unless `overwrite`. |
+| `save_project` | Write a session's **current** source to a directory, with the `functor.json` it booted with — so a multi-entry (multiplayer) project keeps its roles. The sources come from the RUNTIME (`GET /project`), so they include every wire-only edit. Refuses a directory that already holds a project unless `overwrite`. |
 
 **Learning the language and the API.** Two session-free tools, and they are
 different halves: `language_guide` is the LANGUAGE (how to write `.fun` at all),
@@ -173,6 +174,10 @@ deterministic rather than racy:
   half-landed batch. A batch (`frames > 1`) runs up to 8 ticks per rendered
   frame, so it has proportionally fewer input/network/render points — step one
   at a time when the game must see input or I/O between steps.
+- **Order is the semantics for a networked group.** `step_all` steps sessions
+  sequentially in the order given — producer → authority → observer — because
+  stepping them concurrently makes packet arrival a race. See
+  [Running a multiplayer session](#running-a-multiplayer-session).
 - **Input is level state.** A key, a held mouse button, and an injected XR sample
   stay in force across steps until released or replaced. That is how a paused
   session is scripted: press, step a few frames, release.
@@ -323,10 +328,17 @@ A directory that already holds a project (a `functor.json` or any `.fun` /
 a matching name is no evidence that it is the same project. Pass
 `overwrite: true` to replace it; that also **deletes modules the session does
 not have**, since `file = module` means a leftover sibling would still load and
-the saved copy would not be the program that ran. A `functor.json` is
-synthesized only when the directory has none — an existing manifest is never
-rewritten, and a multi-entry one is not reconstructed (`/project` reports
-modules, not project metadata).
+the saved copy would not be the program that ran.
+
+The `functor.json` is written only when the directory has none — an existing
+manifest is never rewritten — and it is the one the session **booted with**,
+verbatim. `/project` reports modules, not project metadata, so a manifest
+cannot be reconstructed from it: a multi-entry (multiplayer) project would come
+back as `{"entry": "game.fun"}`, a directory that builds green and then runs the
+wrong role. A remembered manifest that no longer describes the file set (a
+module the session dropped) is REFUSED rather than adjusted. An ATTACHED
+session is the one case with no answer — nothing on the wire reports a
+runtime's manifest — so it still gets a synthesized single-entry one.
 
 The other direction is `init_game`, which scaffolds the ordinary starter on
 disk — `init_game { "dir": "./my-game" }` then
@@ -349,6 +361,66 @@ stop_game  { "session": "s1" }
 Nothing advanced between the click and the step, and `step` returned only once
 the step had actually run — so `model.count` is the click's effect, not a
 sample of a still-moving game.
+
+## Running a multiplayer session
+
+A multi-entry project (`functor.json` with `entries`, like `examples/orbs`) is
+one directory holding several ROLES — often, as in orbs, several inline
+`module` blocks of one file. Each role is its own runtime, so it is its own
+session: launch one per role and name it with `entry`, since the path cannot
+say which role a shared file is being run as.
+
+```jsonc
+launch_game { "dir": "examples/orbs", "entry": "server", "mode": "headless" }  // → s1
+launch_game { "dir": "examples/orbs", "entry": "client", "mode": "headless" }  // → s2
+launch_game { "dir": "examples/orbs", "entry": "client", "mode": "headless" }  // → s3
+
+pause    { "session": "s2" }                     // pin every role's clock
+pause    { "session": "s1" }
+pause    { "session": "s3" }
+step_all { "sessions": ["s2", "s1", "s3"] }      // one lockstep round
+```
+
+**The ordering law: step producer → authority → observer.** `step_all` steps the
+sessions strictly sequentially in the order given — each session's steps land
+fully (`pending_steps` back to 0) before the next session starts — and returns
+every session's post-step summary in that order. The order is the semantics, not
+a convenience: a client's input has to reach the authority *before* the
+authority steps, and the authority's broadcast has to exist *before* an observer
+steps, or every round lands its work an arbitrary number of rounds late.
+**Concurrent stepping is not reproducible**: whether a packet arrives before or
+after its receiver's step is a race, so two identical runs disagree. Sessions
+are resolved and de-duplicated before anything steps, so a typo cannot leave the
+group half-advanced — but a failure *partway through* means earlier sessions
+already advanced, with no rollback.
+
+**Pause freezes the CLOCK, not the network.** A paused role keeps accepting
+inbound messages and folding them through `update`, so its model changes while
+`frame` and `tts` stand still. Two consequences for a driver:
+
+- `frame` is **not** a version label for a networked model. `model_revision`
+  is: it counts every replacement of the model, whatever caused it, so
+  comparing it against an earlier read answers "did anything land" even with
+  the clock stopped.
+- Before snapshotting a baseline, wait for **`pending_net` to reach 0** on
+  every role. That is the shell's inbound queue depth; zero means nothing
+  already received is still unprocessed. (It cannot see a packet still on the
+  wire, so it is a lower bound — pair it with a game-level condition, e.g.
+  "the server seated both clients".)
+
+Both fields need debug protocol v10 (`docs/debug-runtime.md`).
+
+**Hot-reload keeps connections.** Reloading the authority with `reload_source`
+or `reload_project` preserves the live model *and* the live sockets — connections
+are owned by the shell, which does not reload — so clients stay joined across an
+edit to the server's rules.
+
+Launch the authority first and let its listener bind before a client dials —
+an orbs client connects once and does not retry.
+
+`e2e/mcp-step-all.mjs` is the end-to-end proof: it runs the three roles of
+`examples/orbs` twice from scratch and asserts the ordered lockstep produces
+the identical world trace both times.
 
 ## Debugging a human's live session
 
@@ -401,6 +473,8 @@ tracking every frame).
 - [`docs/debug-runtime.md`](debug-runtime.md) — the HTTP surface these tools wrap,
   with the exact request/response shapes.
 - `e2e/mcp-server.mjs` — the end-to-end proof, speaking raw JSON-RPC to the server.
+- `e2e/mcp-step-all.mjs` — the multiplayer proof: three roles of
+  `examples/orbs`, stepped in order, run twice, asserted identical.
 - `.claude/skills/functor-lang/SKILL.md` — the language guide `language_guide`
   serves, and the file to edit when the language changes.
 - [`docs/functor-lang.md`](functor-lang.md) — the language roadmap behind it.
