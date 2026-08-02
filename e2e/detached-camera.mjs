@@ -564,6 +564,10 @@ try {
     // reproduce the untouched authored frame exactly.
     const twoD = Buffer.from(TWO_D_SOURCE).toString("base64url");
     await page.goto(`${BASE}/player.html?src=${twoD}`);
+    // Tooltips are page pixels: a cursor parked on a bar button (left there
+    // by an earlier scenario's click) would leak hover chrome into the
+    // byte-equality captures below. Park it over inert canvas instead.
+    await page.mouse.move(480, 420);
     await page.waitForFunction(() => window.__scrub?.range().length === 2);
     await page.evaluate(() => window.__scrub.togglePause());
     await page.waitForFunction(() => window.__scrub.paused());

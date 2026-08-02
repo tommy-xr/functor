@@ -84,6 +84,43 @@ const STYLE = `
 #scrubber button:active {
   transform: translateY(0); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
+/* Themed tooltips instead of native title= tips: those are slow, unstyled, and
+   never appear on keyboard focus. data-tip carries the label; aria-label keeps
+   the accessible name (which title= was doubling as). */
+#scrub-main button[data-tip] { position: relative; }
+#scrub-main button[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute; z-index: 13; top: calc(100% + 7px); left: 50%;
+  transform: translateX(-50%); padding: 4px 8px;
+  border: 1px solid var(--sb-line); border-radius: 5px; color: var(--sb-text);
+  background: rgba(30, 24, 51, 0.97); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  font: 10px/1.2 var(--sb-font); letter-spacing: 0.02em; white-space: nowrap;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  /* The 0.38s dwell lives on the SHOW transition (below), so a passing cursor
+     never trips a tip, and on leave the opacity fades out at once instead of
+     waiting the dwell out again. Visibility still flips a beat later; the tip
+     is already transparent and pointer-events: none by then. */
+  transition: opacity 0.12s ease 0s, visibility 0s linear 0.38s;
+}
+#scrub-main button[data-tip]:hover::after,
+#scrub-main button[data-tip]:focus-visible::after {
+  opacity: 1; visibility: visible;
+  transition: opacity 0.12s ease 0.38s, visibility 0s linear 0.38s;
+}
+/* Each cluster hangs its tips from the OUTER corner of its button — centered,
+   they overhang the bar and clip at the viewport edge (the landing hero's
+   iframe is ~500px, so both edges are live, not just the right). Selectors are
+   #scrub-main-qualified so they OUTWEIGH the base rule above; a bare
+   #scrub-camera[data-tip]::after loses. */
+#scrub-main #scrub-pause[data-tip]::after,
+#scrub-main #scrub-step[data-tip]::after,
+#scrub-main #scrub-reset[data-tip]::after {
+  left: 0; right: auto; transform: none;
+}
+#scrub-main #scrub-camera[data-tip]::after,
+#scrub-main #scrub-extrapolate[data-tip]::after {
+  left: auto; right: 0; transform: none;
+}
 #scrub-rail {
   position: relative; flex: 1; min-width: 80px; height: 30px; cursor: ew-resize;
   touch-action: none; user-select: none;
@@ -188,12 +225,14 @@ const STYLE = `
    the demo is staged. A slow breath rather than a blink — it should read as
    "this is the next thing", not as an alarm. Cleared for good on first use. */
 #scrub-extrapolate.attention {
-  border-color: var(--sb-future);
-  animation: scrub-attention 2s ease-in-out infinite;
+  border-color: rgba(232, 88, 184, 0.5);
+  animation: scrub-attention 3.2s ease-in-out infinite;
 }
+/* No outer halo at all: the rest state is presence, not motion — a ring that
+   breathes between two close values. */
 @keyframes scrub-attention {
-  0%, 100% { box-shadow: 0 0 0 1px rgba(232, 88, 184, 0.35), 0 0 0 rgba(232, 88, 184, 0); }
-  50% { box-shadow: 0 0 0 1px var(--sb-future), 0 0 14px 2px rgba(232, 88, 184, 0.45); }
+  0%, 100% { box-shadow: 0 0 0 1px rgba(232, 88, 184, 0.16); }
+  50% { box-shadow: 0 0 0 1px rgba(232, 88, 184, 0.3); }
 }
 /* Peek: while an edit-triggered glimpse of the extrapolation plays, the button
    presses once and then SHINES for the whole glimpse — it is the glimpse's only
@@ -233,10 +272,12 @@ const STYLE = `
   to { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* A steady ring carries the same "look here" without motion. */
+  /* A steady ring carries the same "look here" without motion — held at the
+     pulse's own peak, so the reduced-motion rest state is no louder than the
+     animated one, and stays clearly below the peek's filled ring below. */
   #scrub-extrapolate.attention {
     animation: none;
-    box-shadow: 0 0 0 2px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.35);
+    box-shadow: 0 0 0 1px rgba(232, 88, 184, 0.3);
   }
   /* The glimpse still reads through the trail itself; a steady ring marks the
      button for the duration without the press or the shine. The filled
@@ -306,20 +347,22 @@ const JUICE_STYLE = `
 .scrub-reload-juice {
   position: fixed; inset: 0; z-index: 9; pointer-events: none; opacity: 0;
 }
-/* Success is deliberately quiet. The star of an accepted edit is the redrawn
-   prediction in the scene, so the vignette only has to say "that landed" and
-   get out of the way — a hairline ring and a faint glow, gone in 0.28s. */
+/* Success is deliberately a whisper. The star of an accepted edit is the
+   redrawn prediction in the scene, so the vignette only has to say "that
+   landed" out of the corner of the eye — a hairline ring and the faintest
+   glow, gone in 0.26s. */
 .scrub-reload-juice.live {
-  animation: scrub-juice-flash 0.28s ease-out;
-  box-shadow: inset 0 0 0 1px rgba(65, 216, 230, 0.5),
-    inset 0 0 44px 8px rgba(65, 216, 230, 0.16);
+  animation: scrub-juice-flash 0.26s ease-out;
+  box-shadow: inset 0 0 0 1px rgba(65, 216, 230, 0.22),
+    inset 0 0 30px 5px rgba(65, 216, 230, 0.07);
 }
-/* A rejection shouts, and lingers a beat longer: nothing else on the page says
-   the edit was refused, so this is the one the reader must not miss. */
+/* A rejection is the one that must not be missed — nothing else on the page
+   says the edit was refused — so it reads clearly and lingers a beat longer.
+   Clearly, not a klaxon: enough red to catch the eye without flooding it. */
 .scrub-reload-juice.rejected {
-  animation: scrub-juice-flash 0.45s ease-out;
-  box-shadow: inset 0 0 0 2px rgba(255, 107, 125, 0.9),
-    inset 0 0 60px 12px rgba(255, 107, 125, 0.4);
+  animation: scrub-juice-flash 0.42s ease-out;
+  box-shadow: inset 0 0 0 2px rgba(255, 107, 125, 0.55),
+    inset 0 0 46px 8px rgba(255, 107, 125, 0.22);
 }
 @keyframes scrub-juice-flash {
   0% { opacity: 0; }
@@ -336,9 +379,11 @@ const JUICE_STYLE = `
 
 const HTML = `
   <div id="scrub-main">
-    <button id="scrub-pause" title="Pause / resume">⏸</button>
-    <button id="scrub-step" title="Step one frame forward">⏭</button>
-    <button id="scrub-reset" title="Reset the demo" hidden>↺</button>
+    <button id="scrub-pause" data-tip="Pause" aria-label="Pause">⏸</button>
+    <button id="scrub-step" data-tip="Step one frame"
+      aria-label="Step one frame forward">⏭</button>
+    <button id="scrub-reset" data-tip="Reset the demo"
+      aria-label="Reset the demo" hidden>↺</button>
     <span id="scrub-rail" aria-label="Time-travel timeline" title="Drag to seek">
     <svg id="scrub-timeline" viewBox="0 0 1000 30" preserveAspectRatio="none"
       role="group" aria-label="Timeline event markers">
@@ -372,8 +417,13 @@ const HTML = `
     </span>
     <!-- Left of the rail = transport (⏸ ⏭/↺); right of it = ways to LOOK at
          the frame the transport landed on (📷 the scene, 🔮 its future). -->
-    <button id="scrub-camera" title="Open the debug camera" hidden>📷</button>
-    <button id="scrub-extrapolate" title="Extrapolate the game into the future">🔮</button>
+    <button id="scrub-camera" data-tip="Debug camera"
+      aria-label="Open the debug camera" hidden>📷</button>
+    <!-- The tip is deliberately JUST the name: 🔮 shows the past AND the
+         future, so "preview the future" was wrong, and the hero excerpt's
+         comment does the teaching. -->
+    <button id="scrub-extrapolate" data-tip="Extrapolate"
+      aria-label="Extrapolate — see past and future states">🔮</button>
   </div>
   <!-- ▶, not ⏸: the notice only ever shows while paused, and the transport
        button reads ▶ then. It must name the glyph actually on the bar. -->
@@ -876,14 +926,20 @@ export function mountScrubber({ hidden = false } = {}) {
       (state.preview.enabled ? ` <span class="fut">+${current.previewFrames}</span>` : "") +
       ` / ${Math.round(current.viewport.hi)}`;
     pause.textContent = current.paused ? "▶" : "⏸";
-    pause.setAttribute("aria-label", current.paused ? "Resume" : "Pause");
+    pause.dataset.tip = current.paused ? "Play" : "Pause";
+    pause.setAttribute("aria-label", current.paused ? "Play" : "Pause");
     camera.hidden = false;
     camera.disabled = pendingPointerLock || pendingDetachedGeneration !== null;
     camera.textContent = detachedActive ? "🔗" : "📷";
-    camera.title = detachedActive
-      ? "Exit the debug camera"
-      : "Debug camera — FPS in 3D, pan/zoom in 2D";
-    camera.setAttribute("aria-label", camera.title);
+    // The tip is the short name (it hangs under a right-edge button); the
+    // accessible name keeps the longer teaching string title= used to carry.
+    camera.dataset.tip = detachedActive ? "Exit debug camera" : "Debug camera";
+    camera.setAttribute(
+      "aria-label",
+      detachedActive
+        ? "Exit the debug camera"
+        : "Debug camera — FPS in 3D, pan/zoom in 2D",
+    );
     camera.setAttribute("aria-pressed", String(detachedActive));
     camera.classList.toggle("on", detachedActive);
     el.classList.toggle("debug-active", detachedActive);

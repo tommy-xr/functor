@@ -310,10 +310,10 @@ a:hover {
   border-top: 1px solid var(--line);
   /* Tall enough for the whole excerpt — the four tunables and their lead
      comment up top, the world composition below — with no line clipped. The
-     budget is 14 code lines at the shared 11.5px/1.65 editor type; adding a
+     budget is 16 code lines at the shared 11.5px/1.65 editor type; adding a
      line to the <editable> region means growing this too (the e2e asserts
      nothing clips). */
-  height: 304px;
+  height: 342px;
   overflow: hidden;
   background: #161226;
   display: flex;
