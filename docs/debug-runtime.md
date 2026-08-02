@@ -210,6 +210,7 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"xr_clear"}                                            // drop it again
 {"type":"gamepad","left_stick":[0.0,1.0],"south":true}         // set the gamepad sample
 {"type":"gamepad_clear"}                                       // drop it again
+{"type":"touch","phase":"begin","id":0,"x":10,"y":20}          // one touch transition
 ```
 
 `mouse_button` is both an edge and level state, exactly like `key`: it calls the
@@ -268,6 +269,16 @@ without it. That is the point: the mouse/keyboard emulator pins both hands to
 `z = -0.55` with identity orientations, so gestures like pulling a hand back
 toward your face, or aiming with a rotated grip, are inexpressible there and can
 only be driven this way. `held_keys` and `mouse` stay live alongside it.
+
+`{"type":"touch"}` is EVENTED, like `key`, not whole-sample like `xr`: each
+command is one contact transition (phases `begin`/`move`/`end`/`cancel`, `id`
+a small stable ordinal, `x`/`y` in the mouse's logical coordinates) folded
+through the same reducer real platform touch events take — it updates the
+held contacts later steps' `sampledInput` sees and records the same
+de-duplicated one-step `pressed`/`released` edges, so a scripted tap or drag
+replays identically. A begun contact is level state until its `end` (or
+`cancel`, which the game sees as a release); there is no separate clear
+command — end every begun id.
 
 `{"type":"gamepad"}` is the same contract for the gamepad domain: sampled
 level state (no entry point call, recorded, replayable), a whole-sample
@@ -419,6 +430,11 @@ clients should treat absent edge arrays/button sets as empty.
       "menu_pressed": false
     }
   },
+  "touch": {
+    "touches": [{ "id": 0, "x": 120.0, "y": 48.0 }],
+    "pressed": [],
+    "released": []
+  },
   "gamepad": {
     "left_stick": [0.0, 0.0],
     "right_stick": [0.0, 0.0],
@@ -466,8 +482,11 @@ and the web runtime poll the first standard-mapping pad each frame (on
 desktop an injected sample wins over the poll); presence is sticky while the
 pad is connected, with controls at rest level while the window/document is
 unfocused or the clock is pinned. `--headless` has no GLFW instance, so there
-injection is the domain's only source. Future mobile-touch support should add
-another typed sibling field rather than target-specific endpoints or
+injection is the domain's only source. `touch` carries active contacts plus
+one-step `pressed`/`released` transition lists (the keyboard contract for
+fingers); `Some` with empty lists means a touch surface exists but is idle,
+and desktop supplies the domain through injection only. Further devices
+should add typed sibling fields rather than target-specific endpoints or
 string-keyed capability bags.
 
 ### `POST /time` — frame-loop control

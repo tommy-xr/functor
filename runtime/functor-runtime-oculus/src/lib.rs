@@ -757,6 +757,11 @@ tracking); use the desktop runtime's --headless/--debug-port path"
 desktop runtime's --headless/--debug-port path"
                         .to_string(),
                 ),
+                InputCommand::Touch { .. } => Err(
+                    "touch injection is unsupported on the device runtime; use the \
+desktop runtime's --headless/--debug-port path"
+                        .to_string(),
+                ),
             };
             if clock.is_paused() {
                 game.absorb_paused_input();

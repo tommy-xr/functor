@@ -1596,13 +1596,23 @@ let init = {
   mouseX: 0.0,
   padX: 0.0,
   padSouth: false,
-  padTrigger: 0.0
+  padTrigger: 0.0,
+  touchCount: 0.0,
+  tapX: 0.0,
+  releasedCount: 0.0
 }
 let sampledInput = (model, snapshot: Input.snapshot) =>
   let (padX, padSouth, padTrigger) =
     (match snapshot.gamepad with
      | Option.Some(pad) => (pad.leftStick.x, pad.south, pad.rightTrigger)
      | Option.None => (0.0, false, 0.0)) in
+  let (touchCount, tapX, releasedCount) =
+    (match snapshot.touch with
+     | Option.Some(t) =>
+       (List.length(t.touches),
+        t.pressed |> List.head |> Option.map((p) => p.x) |> Option.defaultValue(0.0),
+        List.length(t.released))
+     | Option.None => (0.0, 0.0, 0.0)) in
   match snapshot.xr with
   | Option.Some(xr) => {
       trigger: xr.right.trigger,
@@ -1614,7 +1624,10 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
       mouseX: snapshot.mouse.x,
       padX: padX,
       padSouth: padSouth,
-      padTrigger: padTrigger
+      padTrigger: padTrigger,
+      touchCount: touchCount,
+      tapX: tapX,
+      releasedCount: releasedCount
     }
   | Option.None => model
 let tick = (model, dt, tts) => model
@@ -1661,6 +1674,23 @@ let draw = (model, tts) =>
                 right_trigger: 0.25,
                 ..crate::GamepadSnapshot::default()
             }),
+            touch: Some(crate::TouchSnapshot {
+                touches: vec![crate::TouchPoint {
+                    id: 0,
+                    x: 120.0,
+                    y: 48.0,
+                }],
+                pressed: vec![crate::TouchPoint {
+                    id: 0,
+                    x: 118.5,
+                    y: 50.0,
+                }],
+                released: vec![crate::TouchPoint {
+                    id: 1,
+                    x: 10.0,
+                    y: 10.0,
+                }],
+            }),
             ..crate::InputSnapshot::default()
         };
         game.sampled_input(&snapshot);
@@ -1677,6 +1707,9 @@ let draw = (model, tts) =>
         assert!(model.contains("padX: -0.5"), "{model}");
         assert!(model.contains("padSouth: true"), "{model}");
         assert!(model.contains("padTrigger: 0.25"), "{model}");
+        assert!(model.contains("touchCount: 1"), "{model}");
+        assert!(model.contains("tapX: 118.5"), "{model}");
+        assert!(model.contains("releasedCount: 1"), "{model}");
         assert!(matches!(
             game.recorded_inputs_at(0).as_slice(),
             [crate::RecordedInput::Snapshot(recorded)] if recorded.as_ref() == &snapshot

@@ -71,6 +71,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v14: the touch device domain — [`crate::InputSnapshot::touch`], defaulted
+/// (and omitted when absent) when decoding older samples, so retained
+/// recordings remain readable.
+///
 /// v13: the gamepad device domain — [`crate::InputSnapshot::gamepad`],
 /// defaulted (and omitted when absent) when decoding older samples, so
 /// retained recordings remain readable.

@@ -1,9 +1,9 @@
 //! Target-neutral continuously sampled input.
 //!
 //! The optional `sampledInput(model, snapshot)` game hook receives one
-//! `Input.snapshot` immediately before every fixed simulation step. XR and
-//! gamepad are typed device domains; a future mobile-touch record belongs
-//! beside them on the snapshot.
+//! `Input.snapshot` immediately before every fixed simulation step. XR,
+//! gamepad, and touch are typed device domains; further devices belong as
+//! siblings beside them on the snapshot.
 
 /// A plain two-dimensional point or axis pair.
 type point2 = { x: float, y: float }
@@ -69,6 +69,25 @@ type gamepad = {
   select: bool
 }
 
+/// One touch contact in the same top-left-origin logical coordinate space as
+/// `mouse` (window points natively, CSS pixels on web). `id` is a small
+/// ordinal stable for the contact's lifetime.
+type touchPoint = { id: float, x: float, y: float }
+
+/// Active touch contacts plus this step's transitions — the keyboard
+/// contract for fingers: `touches` are held levels at current positions,
+/// `pressed`/`released` are de-duplicated one-step edges (a quick tap can
+/// appear in both while `touches` no longer carries it). A contact the
+/// platform steals (gesture navigation) reports through `released`, never a
+/// silently vanished touch. On the snapshot, `Option.Some` signals a touch
+/// surface EXISTS (empty lists while idle — the cue to show touch UI);
+/// `Option.None` means no touch input at all.
+type touch = {
+  touches: List<touchPoint>,
+  pressed: List<touchPoint>,
+  released: List<touchPoint>
+}
+
 /// A fixed set of mouse buttons. `mouse.buttons` uses it for held levels;
 /// `mouse.pressed` / `mouse.released` use it for one-step transitions.
 type mouseButtons = { left: bool, right: bool, middle: bool }
@@ -100,5 +119,6 @@ type snapshot = {
   releasedKeys: List<Key.t>,
   mouse: mouse,
   xr: Option.t<xr>,
-  gamepad: Option.t<gamepad>
+  gamepad: Option.t<gamepad>,
+  touch: Option.t<touch>
 }
