@@ -1391,6 +1391,13 @@ async fn run_async() -> Result<(), JsValue> {
         let initial_time = performance.now() as f32;
         let mut last_time = initial_time;
         let mut input_snapshot = InputSnapshot::default();
+        // Touch CAPABILITY is declared up front on touch-capable devices —
+        // `Some` with empty lists — so a game can decide to show touch UI
+        // before the first contact. (Touch events themselves would also
+        // materialize the domain; this makes the idle state honest too.)
+        if window.navigator().max_touch_points() > 0 {
+            input_snapshot.touch = Some(functor_runtime_common::TouchSnapshot::default());
+        }
         // rAF can produce zero or several fixed steps. Keep transitions until
         // the first step, then clear them before any catch-up step.
         let mut input_edges = InputEdges::default();

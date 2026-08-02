@@ -1150,6 +1150,19 @@ impl FrameCtx<'_> {
                                     );
                                 }
                             }
+                            RecordedInput::Touch { phase, id, x, y } => {
+                                let sample = sampled_input.get_or_insert_with(Default::default);
+                                crate::apply_touch_transition(
+                                    &mut sample.touch,
+                                    &mut projected_edges,
+                                    *phase,
+                                    crate::TouchPoint {
+                                        id: *id,
+                                        x: *x,
+                                        y: *y,
+                                    },
+                                );
+                            }
                             _ => {}
                         }
                         self.replay_input(event.clone(), &ui_handlers, &webview_handlers);
@@ -1253,6 +1266,10 @@ impl FrameCtx<'_> {
                 self.deliver_sampled_input(&snapshot, false);
                 return;
             }
+            // Touch has no event entry point — it reaches games only through
+            // the sampled snapshot, which the projection fold above already
+            // rebuilt from this event.
+            RecordedInput::Touch { .. } => return,
             RecordedInput::UiEvent(event) => {
                 self.deliver_ui_event(ui_handlers, &event);
                 return;

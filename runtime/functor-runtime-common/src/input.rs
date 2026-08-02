@@ -41,9 +41,11 @@ pub struct InputSnapshot {
     /// Live touch contacts when the target supplies them. `Some` signals
     /// touch CAPABILITY (a touch surface exists), so a game can decide to
     /// show touch UI; an idle touchscreen is `Some` with empty lists, and
-    /// `None` means no touch surface at all. Today the domain's only source
-    /// is debug injection — the web shell's touch-event wiring (which will
-    /// set `Some` on touch-capable devices before any contact) lands next.
+    /// `None` means no touch surface at all. The web shell declares
+    /// capability up front on touch-capable devices (`maxTouchPoints > 0`)
+    /// and folds the page's touch events through the shared reducer; desktop
+    /// has no touch hardware source, so there the domain exists only while
+    /// debug-injected.
     ///
     /// Omitted rather than serialized as `null` when absent, like `xr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -736,6 +738,15 @@ pub enum RecordedInput {
     /// A mouse-button edge carrying the raw `MouseButton as i32` code, so
     /// replay re-runs `MouseButton::from_i32` exactly as the live path does.
     MouseButton { button: i32, is_down: bool },
+    /// A touch-contact transition carrying its raw scalars, so a shell input
+    /// bridge (the web page's touch listeners) and replay run the same
+    /// reducer path ([`apply_touch_transition`]).
+    Touch {
+        phase: TouchPhase,
+        id: u32,
+        x: f32,
+        y: f32,
+    },
     /// The continuously sampled input delivered before one simulation tick.
     ///
     /// Unlike edge events above, this is recorded every tick whose game
