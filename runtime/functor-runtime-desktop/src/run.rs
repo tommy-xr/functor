@@ -335,6 +335,12 @@ fn refresh_fixed_input_levels(
     snapshot.gamepad = gamepad_override.or(polled_gamepad).cloned();
     // Refresh touch LEVELS only — the snapshot's pressed/released lists are
     // owned by the separate edge application, exactly like keyboard edges.
+    // Deliberately add-only, unlike the wholesale xr/gamepad assignments:
+    // touch capability is sticky (no source ever un-declares a surface), so
+    // there is no None case to propagate. Today every injection also
+    // rebuilds the fixed snapshot wholesale (`sampled_input_changed`), so
+    // this refresh re-clones identical data — it exists so the level-refresh
+    // contract stays uniform across domains for any future polled source.
     if let Some(levels) = touch {
         snapshot
             .touch
@@ -1316,7 +1322,6 @@ fn service_debug_request(
                         edges,
                         phase,
                         functor_runtime_common::TouchPoint { id, x, y },
-                        true,
                     );
                     Ok(())
                 }
@@ -4213,6 +4218,68 @@ mod tests {
             None,
         );
         assert_eq!(polled_only.gamepad.as_ref(), Some(&polled));
+    }
+
+    #[test]
+    fn touch_levels_precede_edge_application_and_survive_refresh() {
+        use functor_runtime_common::{TouchPhase, TouchPoint, TouchSnapshot};
+        let point = |id, x, y| TouchPoint { id, x, y };
+
+        // Injection path: a begin folds into the shell-held levels + edges.
+        let mut touch_levels: Option<TouchSnapshot> = None;
+        let mut edges = InputEdges::default();
+        functor_runtime_common::apply_touch_transition(
+            &mut touch_levels,
+            &mut edges,
+            TouchPhase::Begin,
+            point(0, 40.0, 30.0),
+        );
+
+        // The builder sets levels BEFORE applying edges, so the same
+        // snapshot carries both the held contact and its press edge.
+        let snapshot = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (0, 0),
+            MouseButtons::default(),
+            &edges,
+            false,
+            false,
+            (800, 600),
+            None,
+            None,
+            None,
+            touch_levels.as_ref(),
+        );
+        let touch = snapshot.touch.as_ref().unwrap();
+        assert_eq!(touch.touches, vec![point(0, 40.0, 30.0)]);
+        assert_eq!(touch.pressed, vec![point(0, 40.0, 30.0)]);
+
+        // The fixed-step refresh updates LEVELS while preserving the edge
+        // lists a separate edge application already placed.
+        let mut fixed = snapshot.clone();
+        functor_runtime_common::apply_touch_transition(
+            &mut touch_levels,
+            &mut edges,
+            TouchPhase::Move,
+            point(0, 60.0, 70.0),
+        );
+        refresh_fixed_input_levels(
+            &mut fixed,
+            &BTreeSet::new(),
+            MouseButtons::default(),
+            false,
+            None,
+            None,
+            None,
+            touch_levels.as_ref(),
+        );
+        let touch = fixed.touch.as_ref().unwrap();
+        assert_eq!(touch.touches, vec![point(0, 60.0, 70.0)]);
+        assert_eq!(
+            touch.pressed,
+            vec![point(0, 40.0, 30.0)],
+            "refresh must not clobber separately-applied edges"
+        );
     }
 
     #[test]

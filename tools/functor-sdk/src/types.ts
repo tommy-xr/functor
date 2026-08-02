@@ -95,9 +95,9 @@ export interface MouseButtons {
 
 /** Runtime-owned input sampled independently of the game model.
  *
- * Typed device domains extend this record: XR and gamepad are available
- * today; a mobile-touch snapshot can be added without replacing
- * keyboard/mouse or introducing target-specific clients. */
+ * Typed device domains extend this record — XR, gamepad, and touch today;
+ * further devices join as sibling fields without replacing keyboard/mouse or
+ * introducing target-specific clients. */
 export interface InputSnapshot {
   /** Keys currently held, by canonical name. */
   held_keys: KeyName[];
