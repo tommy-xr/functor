@@ -240,8 +240,9 @@ a binding **prefix** — `"server": { "file": "game.fun", "prefix": "server" }`
 — resolving every canonical entry binding through the prefix as camelCase
 (`serverInit`/`serverTick`/…). A role declares at most one of the two.
 `examples/orbs` is the same-file reference: its `client` role is the file's
-plain top-level contract and its `server` role is a `module Server { … }`
-block. Module roles are **native-only** for now (`run wasm`/`build wasm`/
+plain top-level contract and its `server` role is the `server` PREFIX — the
+form that also runs in the browser, which its sandbox server pane needs.
+Module roles are **native-only** for now (`run wasm`/`build wasm`/
 `run vr` refuse them, like vr already refuses prefixes), so a role that must
 also run in the browser stays on the prefix form until the web runtime learns
 the module one; prefixed roles run on native and wasm (`run wasm`/`build wasm` bake the prefix into the page's
@@ -444,8 +445,8 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   top-level lookups, so `module Main { let tick = … }` does NOT satisfy a
   plain entry. A functor.json ROLE may opt into a block instead —
   `"server": { "file": "game.fun", "module": "Server" }` resolves
-  `Server.init`/`Server.tick`/… (see `entries` above); `examples/orbs` is the
-  reference, and the role is native-only for now.
+  `Server.init`/`Server.tick`/… (see `entries` above); the role is
+  native-only for now.
 - **Hot reload**: canonical names are the rebind identity, so an inline
   module's closures rebind normally — but MOVING a def into (or out of) a
   module renames it (`step` → `Server.step`), which the rebinder treats

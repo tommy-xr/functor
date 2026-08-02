@@ -2,6 +2,6 @@
   "language": "functor-lang",
   "entries": {
     "client": "game.fun",
-    "server": { "file": "game.fun", "module": "Server" }
+    "server": { "file": "game.fun", "prefix": "server" }
   }
 }

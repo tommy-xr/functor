@@ -58,11 +58,15 @@ export interface Example {
    * net coordinator routes the client panes' traffic to it. The editable
    * `source` stays the CLIENT entry.
    *
-   * The file must ALSO appear in `siblings`: that is what copies it into the
-   * built site and puts it in the fetched project file list. Naming a file
-   * here that nothing copies would 404 the server pane.
+   * The file must ALSO appear in `siblings` — that is what copies it into the
+   * built site and puts it in the fetched project file list; naming a file
+   * here that nothing copies would 404 the server pane — UNLESS it is the
+   * example's own entry, which is copied and listed already. A same-file
+   * sample says so by naming that entry and the `prefix` its server role
+   * resolves through (orbs: `serverInit`/`serverTick`/…), which the server
+   * pane's `?prefix=` carries.
    */
-  server?: { file: string };
+  server?: { file: string; prefix?: string };
 }
 
 /**
@@ -138,16 +142,17 @@ export const EXAMPLES: Example[] = [
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
   // The minimal multiplayer-mechanics sample in ONE module (banner sections:
-  // PROTOCOL / SERVER / BOT / CLIENT), so the wire ADT and the authoritative
-  // claim resolution are right there in the editable buffer.
+  // PROTOCOL / SERVER / CLIENT / SERVER ROLE), so the wire ADT and the
+  // authoritative claim resolution are right there in the editable buffer.
   {
     id: "orbs",
     label: "Orbs (multiplayer)",
     source: "examples/orbs/game.fun",
     multiplayer: true,
-    // The sandbox plays the `client` role, which is the file's ordinary
-    // top-level contract (the `server` role lives in its `module Server`
-    // block, a native-only entries form) — so no `prefix` is needed.
+    // Both roles are in the ONE editable buffer: the sandbox plays the
+    // `client` role (the file's ordinary top-level contract, so no `prefix`),
+    // and the server pane re-enters the same file through the `server` prefix.
+    server: { file: exampleEntryPath("orbs"), prefix: "server" },
   },
   // The client/server sample: two ROLES over a shared typed protocol, run
   // end-to-end in the pane grid — the client panes and a server pane, wired to
