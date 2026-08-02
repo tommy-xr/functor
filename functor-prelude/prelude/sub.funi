@@ -3,7 +3,7 @@
 //! Events become game messages and are folded through `update` before `tick`.
 
 /// An opaque subscription description.
-type t
+type t = host
 
 /// Subscribe to no events.
 let none : () => t

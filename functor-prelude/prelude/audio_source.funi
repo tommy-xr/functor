@@ -4,7 +4,7 @@
 //! live voice instead of restarting it every frame.
 
 /// An opaque continuous audio source.
-type t
+type t = host
 
 /// Create a non-spatial source identified by a stable key.
 let ambient : (string, Asset.Sound) => t

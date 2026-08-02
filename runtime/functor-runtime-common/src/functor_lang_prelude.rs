@@ -1497,7 +1497,33 @@ fn register_branded_constructors(reg: &mut crate::host_registry::Registry) {
             FunctorLangAngle(Angle::from_radians(a.0.radians() * factor as f32))
         },
     );
+    // Angle comparison — what `unit deg (==)` / `(<)` resolve to. An angle
+    // is an opaque host value with no structure, so this is the ONLY way one
+    // can be compared; underneath it is float equality/ordering on radians
+    // (documented as such in `angle.funi`).
+    reg.fn2(
+        "Angle.equals",
+        "Angle.equals(a, b)",
+        |a: FunctorLangAngle, b: FunctorLangAngle| Value::Bool(a.0.radians() == b.0.radians()),
+    );
+    reg.fn2(
+        "Angle.less",
+        "Angle.less(a, b)",
+        |a: FunctorLangAngle, b: FunctorLangAngle| Value::Bool(a.0.radians() < b.0.radians()),
+    );
     reg.fn1("Time.seconds", "Time.seconds(n)", FunctorLangDuration);
+    // Duration comparison — `unit s (==)` / `(<)` in `time.funi`. Durations
+    // are stored in seconds, so every suffix compares against every other.
+    reg.fn2(
+        "Time.equals",
+        "Time.equals(a, b)",
+        |a: FunctorLangDuration, b: FunctorLangDuration| Value::Bool(a.0 == b.0),
+    );
+    reg.fn2(
+        "Time.less",
+        "Time.less(a, b)",
+        |a: FunctorLangDuration, b: FunctorLangDuration| Value::Bool(a.0 < b.0),
+    );
     // Duration arithmetic — `unit s (+)` / `(-)` / `(*)` in `time.funi`.
     // Durations are stored in seconds, so every suffix shares these.
     reg.fn2(
@@ -5634,6 +5660,23 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
         }
     }
 
+    /// [`eval_with_prelude`] with the CHECKER skipped — the gradual seam
+    /// (`functor-lang run`, a value arriving through an `unknown`), where the
+    /// interpreter's own refusals are the only ones there are.
+    fn eval_with_prelude_unchecked(src: &str) -> Result<Value, String> {
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            vec![(std::path::PathBuf::from("game.fun"), src.to_string())],
+            &functor_prelude::bundled_modules(),
+        )
+        .map_err(|e| e.message)?;
+        let record = functor_lang::run_with_host(&project.module, Tracing::Off, &mut FunctorHost)
+            .map_err(|f| f.error.message)?;
+        match record.outcome {
+            functor_lang::RunOutcome::Main(value) => Ok(value),
+            _ => Err("expected a main result".to_string()),
+        }
+    }
+
     fn radians(value: &Value) -> f32 {
         angle_of(value, "an Angle", Span::new(0, 0))
             .expect("an Angle")
@@ -5705,6 +5748,64 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
         )
         .expect("runs");
         assert!((radians(&value) - std::f32::consts::FRAC_PI_2 * 1.5).abs() < 1e-6);
+    }
+
+    /// Branded comparison end to end: `90deg == 90deg` is TRUE where it used
+    /// to be a runtime "host values cannot be compared" error, and the four
+    /// derived orderings come from the one declared `<`.
+    #[test]
+    fn angles_and_durations_compare_and_order() {
+        for (src, want) in [
+            ("let main = () => 90deg == 90deg\n", true),
+            ("let main = () => 90deg == 45deg\n", false),
+            ("let main = () => 90deg != 45deg\n", true),
+            ("let main = () => 45deg < 90deg\n", true),
+            ("let main = () => 90deg > 45deg\n", true),
+            ("let main = () => 45deg <= 45deg\n", true),
+            ("let main = () => 45deg >= 90deg\n", false),
+            // One brand, every suffix: seconds against milliseconds.
+            ("let main = () => 1s == 1000ms\n", true),
+            ("let main = () => 1.5s < 2000ms\n", true),
+            ("let main = () => 2min > 90s\n", true),
+            // Arithmetic feeds comparison — both resolve on the same brand.
+            ("let main = () => (90deg + 45deg) > 90deg\n", true),
+        ] {
+            assert_eq!(
+                eval_with_prelude(src).expect(src).to_string(),
+                want.to_string(),
+                "{src}"
+            );
+        }
+    }
+
+    /// The other half of the same story: an engine value that declares NO
+    /// `==` still refuses comparison at run time — the gradual-seam backstop
+    /// behind the check-time error.
+    #[test]
+    fn an_engine_value_still_refuses_equality_at_run_time() {
+        let error = eval_with_prelude_unchecked("let main = () => Scene.cube() == Scene.cube()\n")
+            .err()
+            .expect("a scene cannot be compared");
+        assert!(error.contains("host values cannot be compared"), "{error}");
+    }
+
+    /// A `Physics.tag` is a brand over a STRING, so it compares structurally
+    /// with no declaration at all — what `examples/physics` reads collision
+    /// events with.
+    #[test]
+    fn a_physics_tag_compares_as_its_string() {
+        assert_eq!(
+            eval_with_prelude("let main = () => Physics.tag(\"ball\") == Physics.tag(\"ball\")\n")
+                .expect("runs")
+                .to_string(),
+            "true"
+        );
+        assert_eq!(
+            eval_with_prelude("let main = () => Physics.tag(\"ball\") == Physics.tag(\"wall\")\n")
+                .expect("runs")
+                .to_string(),
+            "false"
+        );
     }
 
     /// The branded result flows on into the APIs that take it — the whole

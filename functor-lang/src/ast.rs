@@ -156,6 +156,18 @@ pub enum TypeBody {
     Record(Vec<FieldTy>),
     Variants(Vec<VariantDecl>),
     Abstract,
+    /// `type t = host` — an abstract type whose values are HOST values with
+    /// no observable structure (a `Scene.t`, a `Frame.t`, an `Effect.t`).
+    /// Typing-wise it is exactly [`TypeBody::Abstract`]; the marker adds one
+    /// fact the checker cannot otherwise know — structural equality on such a
+    /// value is a RUNTIME error — so `==`/`!=` on one is refused at check
+    /// time instead (unless the brand declares its own `==`, as `Angle.t` and
+    /// `Time.t` do). Only interface (`.funi`) files may declare it.
+    ///
+    /// A plain `type t` stays comparable: some abstract prelude types
+    /// (`Sprite.t`, `Physics.tag`) are ordinary Functor Lang data behind the
+    /// name and compare structurally today.
+    Host,
 }
 
 /// One `| Ctor(name: Type, …)` / `| Ctor` alternative of a variant type.
@@ -404,6 +416,41 @@ impl BinOp {
     /// typechecker, and the interpreter's dispatch table.
     pub const ARITHMETIC: [BinOp; 4] = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div];
 
+    /// Every operator a `unit <suffix> (<op>)` may declare, in declaration
+    /// order: the four arithmetic ones, then the two COMPARISON bases. Only
+    /// `==` and `<` are declarable — `!=` derives from `==`, and `>`, `<=`,
+    /// `>=` derive from `<` (see [`BinOp::declarable`]) — so a brand cannot
+    /// declare an ordering that disagrees with itself.
+    pub const DECLARABLE: [BinOp; 6] = [
+        BinOp::Add,
+        BinOp::Sub,
+        BinOp::Mul,
+        BinOp::Div,
+        BinOp::Eq,
+        BinOp::Lt,
+    ];
+
+    /// The declarable operator this one is implemented BY — itself for the
+    /// six in [`BinOp::DECLARABLE`], and the base of a derived comparison
+    /// otherwise. `!=` is `==` negated; `>` is `<` with its operands swapped,
+    /// `<=` is `>` negated, and `>=` is `<` negated. One `('t, 't) => bool`
+    /// implementation per brand therefore answers all four orderings, so a
+    /// brand's ordering is total and self-consistent by construction.
+    pub fn declarable(self) -> BinOp {
+        match self {
+            BinOp::Ne => BinOp::Eq,
+            BinOp::Gt | BinOp::Le | BinOp::Ge => BinOp::Lt,
+            other => other,
+        }
+    }
+
+    /// Is this a comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`)? Comparisons
+    /// answer `bool` whichever brand claims them, where arithmetic answers
+    /// the brand — the one place the two families diverge.
+    pub fn is_comparison(self) -> bool {
+        !matches!(self, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+    }
+
     /// The operator's source spelling — the single source of truth for
     /// diagnostics in the typechecker and the interpreter.
     pub fn symbol(self) -> &'static str {
@@ -431,9 +478,9 @@ impl BinOp {
 pub(crate) fn declared_operators_hint(brand: &str, declared: &[&str], op: BinOp) -> String {
     if declared.is_empty() {
         return format!(
-            " — `{brand}` is a branded value with no arithmetic; declare it with \
+            " — `{brand}` is a branded value with no declared operators; declare one with \
 `unit <suffix> ({}) = …`",
-            op.symbol()
+            op.declarable().symbol()
         );
     }
     format!(
@@ -443,7 +490,8 @@ pub(crate) fn declared_operators_hint(brand: &str, declared: &[&str], op: BinOp)
             .map(|symbol| format!("`{symbol}`"))
             .collect::<Vec<_>>()
             .join(", "),
-        op.symbol()
+        // The DECLARABLE spelling: a derived `>` is missing because `<` is.
+        op.declarable().symbol()
     )
 }
 

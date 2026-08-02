@@ -368,9 +368,11 @@ project-wide, so declare them at the top level of the file"
         }))
     }
 
-    /// The tail of `unit <suffix> (<op>) = <target>`, from the `(`. Only the
-    /// four arithmetic operators are declarable — comparisons are deliberately
-    /// not (see `docs/functor-lang-units.md`).
+    /// The tail of `unit <suffix> (<op>) = <target>`, from the `(`. Six
+    /// operators are declarable: the four arithmetic ones, plus `==` and `<`.
+    /// The other comparisons are DERIVED (`!=` from `==`; `>`, `<=`, `>=`
+    /// from `<`), so they are not declarable — see
+    /// `docs/functor-lang-units.md`.
     fn unit_op_decl(
         &mut self,
         kw: Span,
@@ -385,9 +387,30 @@ project-wide, so declare them at the top level of the file"
             TokenKind::Minus => BinOp::Sub,
             TokenKind::Star => BinOp::Mul,
             TokenKind::Slash => BinOp::Div,
+            TokenKind::EqEq => BinOp::Eq,
+            TokenKind::Lt => BinOp::Lt,
+            // The derived comparisons name their base, so the error can be
+            // exact rather than a bare list.
+            TokenKind::BangEq => {
+                return Err(ParseError {
+                    message: "`!=` is derived from `==` — declare `unit <suffix> (==)` and `!=` \
+follows".to_string(),
+                    span: op_span,
+                })
+            }
+            TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => {
+                return Err(ParseError {
+                    message: "`>`, `<=`, and `>=` are derived from `<` — declare \
+`unit <suffix> (<)` and all three follow"
+                        .to_string(),
+                    span: op_span,
+                })
+            }
             _ => {
-                return self
-                    .error("an operator to declare: `+`, `-`, `*`, or `/` (e.g. `unit deg (+) = Angle.add`)")
+                return self.error(
+                    "an operator to declare: `+`, `-`, `*`, `/`, `==`, or `<` \
+(e.g. `unit deg (+) = Angle.add`)",
+                )
             }
         };
         self.bump();
@@ -563,6 +586,26 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             });
         }
         self.bump(); // `=`
+        // `type t = host` — an abstract type whose values are opaque HOST
+        // values (see `TypeBody::Host`). Contextual, like `unit`/`open`, so
+        // `host` stays usable as an ordinary name everywhere else.
+        if matches!(self.peek_kind(), TokenKind::Ident(name) if name == "host") {
+            let end = self.bump().span;
+            if !self.interface {
+                return Err(ParseError {
+                    message: "`= host` marks a type whose values come from the ENGINE, so it \
+belongs in an interface (.funi) file — a `.fun` type is ordinary data"
+                        .to_string(),
+                    span: end,
+                });
+            }
+            return Ok(TypeDecl {
+                name,
+                params,
+                body: TypeBody::Host,
+                span: kw.span.to(end),
+            });
+        }
         match self.peek_kind() {
             TokenKind::LBrace => {
                 self.bump();

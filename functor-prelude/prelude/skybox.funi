@@ -1,7 +1,7 @@
 //! Cubemap skyboxes attached to frames with `Frame.withSkybox`.
 
 /// An opaque cubemap skybox.
-type t
+type t = host
 
 /// Load six cubemap faces in `+X, -X, +Y, -Y, +Z, -Z` order.
 ///

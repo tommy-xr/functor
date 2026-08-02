@@ -2,9 +2,10 @@
 
 Functor Lang lets a numeric literal carry a **unit suffix** — `90deg`, `0.5s`,
 `16px` — where a `unit` declaration says what the suffix means, and lets that
-brand carry arithmetic: `90deg + 45deg`, `1.5s - 200ms`, `45deg * 2.0`. This
-document covers both shipped phases — the literals (Phase 1) and the operators
-(Phase 2).
+brand carry arithmetic and comparison: `90deg + 45deg`, `1.5s - 200ms`,
+`45deg * 2.0`, `90deg == 90deg`, `1.5s < 2000ms`. This document covers all
+three shipped phases — the literals (Phase 1), the arithmetic operators
+(Phase 2), and the comparison operators (Phase 3).
 
 Syntax and semantics for day-to-day use live in the `functor-lang` skill; the
 prelude's own suffixes are documented at their source
@@ -89,7 +90,7 @@ They resolve only where the engine prelude does (a runner-hosted project, or
 the headless test seam), like every other prelude name. A project declares its
 own units for its own brands.
 
-## Phase 2 (shipped): operators on units
+## Phase 2 (shipped): arithmetic operators on units
 
 Phase 1 gives a brand a cheap way IN from a number. What it did not give is
 arithmetic: `90deg + 45deg` did not typecheck, because `+` was `(float, float)
@@ -128,8 +129,8 @@ unit px (/) = dividePx               // (Px, float) => Px
   type (`Angle.t`). A record brand carries no tag and a multi-constructor type
   carries a different one per constructor, so an operator on either is a check
   error at the declaration.
-- Comparisons (`<`, `>`, `==`) are deliberately not declarable: `==` is already
-  structural for plain-data brands, and ordering wants its own design pass.
+- Comparisons are declarable too, but only their two BASES (`==` and `<`) —
+  see Phase 3.
 
 > **Deviation from the original design.** The design sketch attached operators
 > to the unit declaration as a block (`unit px = Px { (+) = … }`). Shipping them
@@ -249,13 +250,185 @@ Two consequences worth stating:
 `Time.scale`) declared beside the units in `angle.funi` / `time.funi`. Both are
 public API and appear in the generated reference.
 
+## Phase 3 (shipped): comparison on brands
+
+Phase 2 let a brand add. What it did not let it do is *answer a question*:
+`90deg == 90deg` typechecked and then died at run time with `host values
+cannot be compared`, and `1.5s < 2000ms` did not typecheck at all. Both work
+now, through exactly the Phase 2 machinery.
+
+### Two declarations, six operators
+
+```functor
+type Px = | Px(value: float)
+
+unit px = Px
+unit px (==) = (a, b) => unwrap(a) == unwrap(b)   // (Px, Px) => bool
+unit px (<)  = (a, b) => unwrap(a) < unwrap(b)    // (Px, Px) => bool
+```
+
+Only `==` and `<` are declarable. The other four spellings are **derived**:
+
+| Written | Evaluates as |
+| --- | --- |
+| `a == b` | `equals(a, b)` |
+| `a != b` | `not equals(a, b)` |
+| `a < b` | `less(a, b)` |
+| `a > b` | `less(b, a)` |
+| `a <= b` | `not less(b, a)` |
+| `a >= b` | `not less(a, b)` |
+
+Deriving rather than declaring is the whole design choice, and it is worth
+being explicit about why, because the language's comparison operators do
+**not** share a desugaring today — the parser produces six distinct `BinOp`s
+and the interpreter gives each its own IEEE float closure. So the mapping
+above is new, and it buys three things:
+
+1. **A brand's ordering cannot contradict itself.** With four declarable
+   orderings, a brand could ship `a < b` and `a >= b` that disagree. With one,
+   `<` *is* the order, and the rest are theorems about it.
+2. **Two implementations per brand, not six** — the prelude, and every game
+   brand, writes half as much.
+3. **It matches what a brand is.** A unit brand wraps ONE scalar (radians,
+   seconds, pixels), and a scalar is totally ordered.
+
+The cost is one honest divergence from float semantics, stated plainly: for
+floats, `a <= b` is *not* `not (b < a)` when either side is NaN (`nan <= nan`
+is false; `not (nan < nan)` is true). A brand built from a NaN therefore
+compares as if NaN were an ordinary value under `<=` and `>=`. Float
+comparison itself is untouched — this applies only to a branded operand — and
+a NaN angle or duration is already a bug the engine boundary rejects.
+
+Everything else is Phase 2's rules verbatim:
+
+- The implementations are typed `('t, 't) => bool`, checked **at the
+  declaration** against that shape.
+- The operator belongs to the **BRAND**, not the suffix — one `unit s (<)`
+  covers `s`, `ms`, `us`, `min`, and `hr`, so `1.5s < 2000ms` works.
+- The brand must be **distinguishable at run time** (a single-constructor
+  variant, or a host type), because the interpreter dispatches on the tag.
+- Declaring the same brand + operator twice, through any suffix, is a
+  duplicate error — and `unit px (!=)` / `(>)` / `(<=)` / `(>=)` are parse
+  errors naming the base to declare instead.
+
+### Resolution
+
+Identical to Phase 2's post-inference ad-hoc overloading: zonk the operands,
+let a declaring brand claim the node, otherwise fall through to float, and
+defer a node whose operands are still unsolved. Only the ANSWER differs — a
+comparison is `bool` whichever way it resolves, so unlike `+`/`-` its result
+carries no evidence and only an operand can decide it.
+
+That makes an unannotated comparison ambiguous once a brand declares `<`:
+
+```
+`<` here could be float comparison or `Angle.t` comparison or `Time.t`
+comparison — annotate an operand (e.g. `(a: Angle.t)`) so the operator can be
+resolved
+```
+
+> **This is the same breaking change Phase 2 made, extended to `<`.** A helper
+> like `let clamp = (v, lo, hi) => if v < lo then lo else …` now needs one
+> annotation (`(v: float, lo, hi)`). Three examples in this repository needed
+> exactly that one-word edit; nothing else in the repo moved.
+
+Phase 3 also **narrows** Phase 2's deferral, which strictly reduces how often
+that error can fire. A node only defers while a branded reading is still
+possible, and which side could still be a brand depends on the operator:
+`*` puts the brand on either side, `/` only on the left, and everything
+else — `+`, `-`, and the four orderings — combines or compares like with
+like. So a side already solved to a non-brand settles the node immediately.
+That is what keeps `Math.abs(d) < step` deciding `step` on the spot (and with
+it the `rate * dt` that produced `step`), with no annotation anywhere.
+
+### Runtime
+
+The dispatch table Phase 2 built gains two slots. A comparison whose operands
+are not both numbers looks up the brand's tag, and the derived spellings swap
+and/or negate the one implementation. Two consequences carry over unchanged:
+
+- **Float comparison is untouched** — number/number is still the first match,
+  and the table is consulted only when it fails.
+- **`==` reaches the table before the structural walk**, but only after two
+  cheap gates: no declared operators at all, or an operand with no brand tag
+  (a number, string, record, list, tuple — everything `frame_bench` compares),
+  returns immediately. `frame_bench` shows no allocation or byte change.
+
+A brand with no declared `==` keeps STRUCTURAL equality exactly as before, so
+adding units to a project cannot change what `==` already meant.
+
+### Where the implementations live for prelude brands
+
+`Angle.equals` / `Angle.less` and `Time.equals` / `Time.less`, declared beside
+their units in `angle.funi` / `time.funi`. Both are public API in the
+generated reference, and both document the sharp edge honestly: **`==` on an
+angle or a duration is float equality underneath.** `90deg == 90deg` is true
+because both sides build the same number, but an angle accumulated through
+arithmetic may miss an exact literal by a rounding step, and there is no way
+back out of the brand to compare with a tolerance — so keep the plain float
+where that matters.
+
+## Engine values refuse `==` at CHECK time
+
+The other half of the same story. `myScene == otherScene` used to typecheck
+and die at run time (`host values cannot be compared`). It is now a check
+error:
+
+```
+`==` on `Scene.t`: engine values are opaque — compare the numbers you derived
+from them instead (`Scene.t` supports no `==`)
+```
+
+An interface (`.funi`) file distinguishes the two kinds of abstract type with
+a marker on the `type` item:
+
+```functor
+type t = host        // an opaque HOST value: Scene.t, Frame.t, Effect.t, …
+type tag             // abstract, but ordinary Functor Lang data underneath
+```
+
+`= host` is a contextual keyword in the existing `type <name> = <body>`
+position — the least invasive marker available, since docgen quotes a
+declaration verbatim from its span and therefore renders it with no change at
+all. It is rejected in a `.fun` file: only the host can be responsible for
+what it claims.
+
+The polarity is a deliberate deviation from the obvious one. `type t` stays
+comparable and the OPAQUE case is what gets marked, because not every
+abstract prelude type is a host handle — `Sprite.t` and `Sprite.region` are
+plain Functor Lang data behind an opaque name (documented as comparable in
+`sprite.funi`), and `Physics.tag` is a brand over a STRING that games compare
+constantly:
+
+```functor
+match e.a == ballTag with | true => e.b | false => …    // examples/physics
+onDeck: probe.hit && probe.tag == deckTag               // examples/physics-controller
+```
+
+Marking the opaque types keeps those working by construction. The 30 marked
+types are every abstract type in the engine prelude EXCEPT those three.
+`Angle.t` and `Time.t` are marked too — they are host values — but they are
+exempt from the error because they DECLARE `==`, which is precisely what
+makes them comparable.
+
+Two limits, both deliberate:
+
+- The rule reads the operand's own type and a tuple element's (mirroring the
+  existing "functions cannot be compared" certainty rule), not a record field
+  or a list element. A host value buried inside a model still meets the
+  runtime error, which remains the gradual-seam backstop.
+- **Structural equality for `Scene.t` / `Frame.t` is out of scope.** Whether
+  scenes should compare at all — and as `==` or as `Scene.equals` — is a
+  separate decision. This check-time rejection is exactly the thing that
+  decision would carve an exception into.
+
 ### Still open
 
 - **Mixed literals.** `90deg + 45` is an error (the bare number is not lifted
   through the unit's constructor). Erroring is the conservative start.
 - **Prefix minus.** `-(someAngle)` would want a `negate` declaration, or to
   derive from `(-)` with a zero the brand cannot supply.
-- **Comparisons.** `==`, `<`, `>` on brands are a follow-up.
+- **Structural equality for engine values** — see above.
 
 ### Explicit non-goal: dimensional analysis
 

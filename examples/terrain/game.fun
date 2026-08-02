@@ -91,7 +91,7 @@ let setHeld = (held, key, isDown) =>
   | _ => held
 
 
-let clamp = (value, lo, hi) =>
+let clamp = (value: float, lo, hi) =>
   if value < lo then lo else if hi < value then hi else value
 
 let mouseMove = (model, x, y) =>

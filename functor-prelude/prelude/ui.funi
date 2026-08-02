@@ -10,9 +10,9 @@
 //! program with interactive UI must define that hook.
 
 /// An opaque UI view.
-type view
+type view = host
 /// An opaque screen anchor.
-type anchor
+type anchor = host
 
 /// Create a text view.
 let text : (string) => view

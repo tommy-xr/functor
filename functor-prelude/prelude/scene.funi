@@ -12,7 +12,7 @@
 //! arguments, so a box is `Scene.cube() |> Scene.scaleXYZ(w, h, d)`.
 
 /// An opaque scene node.
-type t
+type t = host
 
 /// Create a unit cube centered at the origin.
 let cube : () => t

@@ -122,6 +122,13 @@ let otherOf = (e) =>
      | true => e.a
      | false => noTag)
 
+// A `Physics.tag` is a brand over a STRING, so it compares structurally —
+// the whole contact router above rests on that, and on nothing else.
+expect ballTag == Physics.tag("ball")
+expect ballTag != groundTag
+expect otherOf({ started: true, a: ballTag, b: crateTag(2.0), sensor: false }) == crateTag(2.0)
+expect otherOf({ started: true, a: groundTag, b: crateTag(0.0), sensor: false }) == noTag
+
 let subscriptions = (model) => Physics.events(Contact)
 
 // One update, two message kinds. GotHit: the raycast result, post-step

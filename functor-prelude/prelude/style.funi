@@ -4,7 +4,7 @@
 //! 3D APIs. Use `Html.style` for selectors, pseudo-classes, and keyframes.
 
 /// An opaque inline CSS declaration.
-type t
+type t = host
 
 /// Use horizontal flexbox layout.
 let flexRow : () => t

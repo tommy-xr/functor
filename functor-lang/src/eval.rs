@@ -550,7 +550,7 @@ pub struct Session {
 pub(crate) type BrandOps = Rc<HashMap<String, BrandOpRow>>;
 
 /// One brand's declared operators, indexed by [`op_slot`].
-pub(crate) type BrandOpRow = [Option<OpImpl>; 4];
+pub(crate) type BrandOpRow = [Option<OpImpl>; 6];
 
 /// A declared operator's implementation, kept SYMBOLIC wherever resolving it
 /// could need something this interpreter does not have.
@@ -573,24 +573,25 @@ pub(crate) enum OpImpl {
     Global(String),
 }
 
-/// Which slot of a [`BrandOpRow`] an operator owns — `None` for the
-/// comparisons, which are not declarable.
-fn op_slot(op: crate::ast::BinOp) -> Option<usize> {
+/// Which slot of a [`BrandOpRow`] an operator owns. A DERIVED comparison
+/// shares its base's slot — `>`, `<=`, and `>=` all read the brand's `<`, and
+/// `!=` reads its `==` — so one implementation answers every spelling.
+fn op_slot(op: crate::ast::BinOp) -> usize {
     use crate::ast::BinOp;
-    match op {
-        BinOp::Add => Some(0),
-        BinOp::Sub => Some(1),
-        BinOp::Mul => Some(2),
-        BinOp::Div => Some(3),
-        _ => None,
+    match op.declarable() {
+        BinOp::Add => 0,
+        BinOp::Sub => 1,
+        BinOp::Mul => 2,
+        BinOp::Div => 3,
+        BinOp::Eq => 4,
+        _ => 5,
     }
 }
 
 /// The operator a [`BrandOpRow`] slot holds — the inverse of [`op_slot`],
 /// for the "declares `+`, `*`, but not `-`" teaching error.
 fn slot_op(slot: usize) -> crate::ast::BinOp {
-    use crate::ast::BinOp;
-    [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div][slot]
+    crate::ast::BinOp::DECLARABLE[slot]
 }
 
 impl Session {
@@ -1036,9 +1037,7 @@ impl Interp<'_> {
                     tag
                 }
             };
-            let Some(slot) = op_slot(unit_op.op) else {
-                continue;
-            };
+            let slot = op_slot(unit_op.op);
             // Names stay symbolic: a global resolves at call time (the defs
             // may not have run), and a HOST external must not be looked up
             // here at all — these same declarations load under a hostless
@@ -1628,16 +1627,22 @@ evaluation depth."
             // Division follows IEEE-754 (x/0 is ±inf/NaN, printed as
             // `inf`/`NaN`) — one number type, no checked division.
             BinOp::Div => self.arith(op, lhs, rhs, span, |a, b| a / b),
-            BinOp::Lt => self.compare(lhs, rhs, span, |a, b| a < b),
-            BinOp::Gt => self.compare(lhs, rhs, span, |a, b| a > b),
+            BinOp::Lt => self.compare(op, lhs, rhs, span, |a, b| a < b),
+            BinOp::Gt => self.compare(op, lhs, rhs, span, |a, b| a > b),
             // IEEE ordering, like `<`/`>`: every comparison with NaN is false.
-            BinOp::Le => self.compare(lhs, rhs, span, |a, b| a <= b),
-            BinOp::Ge => self.compare(lhs, rhs, span, |a, b| a >= b),
+            BinOp::Le => self.compare(op, lhs, rhs, span, |a, b| a <= b),
+            BinOp::Ge => self.compare(op, lhs, rhs, span, |a, b| a >= b),
             // `!=` is the exact negation of `==`: the SAME structural walk,
             // so it errors on functions/host values on exactly the inputs
             // `==` does (and `NaN != NaN` is true, since `NaN == NaN` is
             // false — the IEEE behaviour `<`/`<=` already have).
             BinOp::Eq | BinOp::Ne => {
+                // A brand that declares `==` answers for its own values —
+                // the only way an opaque host value (`Angle.t`) can compare
+                // at all, and what the checker resolved this node to.
+                if let Some(value) = self.brand_compare(op, &lhs, &rhs, span)? {
+                    return Ok(value);
+                }
                 // Charge AFTER the walk (the count isn't known up front):
                 // one comparison can overshoot the budget by at most the
                 // value's size — itself budget-bounded to build — so total
@@ -1679,9 +1684,7 @@ evaluation depth."
         span: Span,
     ) -> Result<Value, RunError> {
         use crate::ast::BinOp;
-        let Some(slot) = op_slot(op) else {
-            unreachable!("only arithmetic reaches brand dispatch")
-        };
+        let slot = op_slot(op);
         let declared = |ops: &BrandOps, value: &Value| {
             brand_tag(value)
                 .and_then(|tag| ops.get(tag))
@@ -1769,22 +1772,98 @@ its definition (a top-level initializer may only use globals defined above it)",
 
     fn compare(
         &mut self,
+        op: crate::ast::BinOp,
         lhs: Value,
         rhs: Value,
         span: Span,
-        op: fn(f64, f64) -> bool,
+        float_compare: fn(f64, f64) -> bool,
     ) -> Result<Value, RunError> {
         match (lhs, rhs) {
-            (Value::Number(a), Value::Number(b)) => Ok(Value::Bool(op(a, b))),
-            (a, b) => Err(RunError {
-                message: format!(
-                    "comparison needs numbers, got {} and {}",
-                    a.kind_name(),
-                    b.kind_name()
-                ),
-                span,
-            }),
+            (Value::Number(a), Value::Number(b)) => Ok(Value::Bool(float_compare(a, b))),
+            // Not two numbers: a branded operand may still declare `<`.
+            (a, b) => match self.brand_compare(op, &a, &b, span)? {
+                Some(value) => Ok(value),
+                None => Err(RunError {
+                    message: format!(
+                        "comparison needs numbers, got {} and {}{}",
+                        a.kind_name(),
+                        b.kind_name(),
+                        self.brand_arith_hint(op, &a, &b)
+                    ),
+                    span,
+                }),
+            },
         }
+    }
+
+    /// A comparison where a BRAND may claim the node: the runtime half of
+    /// `unit <suffix> (==)` / `(<)`.
+    ///
+    /// Only `==` and `<` are declared, so the other four spellings are
+    /// derived from them here — `>` swaps the declared `<`'s operands, `<=`
+    /// and `>=` negate it, and `!=` negates `==`. One implementation
+    /// therefore answers every spelling, and a brand's ordering cannot
+    /// disagree with itself.
+    ///
+    /// `None` means no brand claims the node (every plain-data comparison),
+    /// which leaves the float / structural behaviour exactly as it was.
+    fn brand_compare(
+        &mut self,
+        op: crate::ast::BinOp,
+        lhs: &Value,
+        rhs: &Value,
+        span: Span,
+    ) -> Result<Option<Value>, RunError> {
+        use crate::ast::BinOp;
+        // The overwhelmingly common path: no operator declared anywhere, or
+        // an operand that carries no brand tag at all (a number, string,
+        // record, list…). Neither touches the table.
+        if self.brand_ops.is_empty() {
+            return Ok(None);
+        }
+        let slot = op_slot(op);
+        let Some(implementation) = brand_tag(lhs)
+            .or_else(|| brand_tag(rhs))
+            .and_then(|tag| self.brand_ops.get(tag))
+            .and_then(|row| row[slot].clone())
+        else {
+            return Ok(None);
+        };
+        let implementation = match implementation {
+            OpImpl::Value(value) => value,
+            // Late-bound, exactly like the arithmetic operators.
+            OpImpl::Global(name) => match self.globals.get(&name) {
+                Some(value) => value.clone(),
+                None => {
+                    return Err(RunError {
+                        message: format!(
+                            "`{}` on this branded value calls `{name}`, which is used before its \
+definition (a top-level initializer may only use globals defined above it)",
+                            op.symbol()
+                        ),
+                        span,
+                    })
+                }
+            },
+        };
+        // `>` is the declared `<` with its operands swapped; `<=` and `>=`
+        // are its negations (`a <= b` is `not (b < a)`), and `!=` negates
+        // `==`.
+        let swapped = matches!(op, BinOp::Gt | BinOp::Le);
+        let negated = matches!(op, BinOp::Le | BinOp::Ge | BinOp::Ne);
+        let args = if swapped {
+            vec![rhs.clone(), lhs.clone()]
+        } else {
+            vec![lhs.clone(), rhs.clone()]
+        };
+        let answer = self.call(
+            implementation,
+            args,
+            format!("({})", op.declarable().symbol()),
+            span,
+            None,
+        )?;
+        Ok(Some(Value::Bool(as_bool(&answer, span)? != negated)))
     }
 
     /// Call a value. `label` is the callee's source-level name for the trace

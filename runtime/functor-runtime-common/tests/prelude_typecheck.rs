@@ -341,6 +341,71 @@ fn prelude_brands_carry_their_declared_arithmetic() {
     assert!(diags.is_empty(), "{diags:?}");
 }
 
+/// Branded COMPARISON under the real prelude: `angle.funi` / `time.funi`
+/// declare `==` and `<`, and the four derived spellings follow — across
+/// suffixes, since an operator belongs to the brand.
+#[test]
+fn prelude_brands_compare_and_order() {
+    let diags = check(
+        "let a: bool = 90deg == 90deg\n\
+         let b: bool = 90deg != 45deg\n\
+         let c: bool = 45deg < 1.5rad\n\
+         let d: bool = 90deg > 45deg\n\
+         let e: bool = 45deg <= 45deg\n\
+         let f: bool = 90deg >= 45deg\n\
+         let g: bool = 1.5s < 2000ms\n\
+         let h: bool = 1s == 1000ms\n\
+         let i: bool = 2min > 90s\n\
+         let j: bool = (90deg + 45deg) > 90deg\n",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+    // Brands still do not mix: an angle is not a duration.
+    let diags = check("let bad: bool = 90deg < 1.5s\n");
+    assert!(!diags.is_empty(), "an angle below a duration must not check");
+}
+
+/// Half 2: an ENGINE value has no structural equality — the runtime refuses
+/// it — so `==` on one is a CHECK-time error naming the type.
+#[test]
+fn equality_on_an_engine_value_is_a_check_error() {
+    for (src, ty) in [
+        ("let bad: bool = Scene.cube() == Scene.cube()\n", "Scene.t"),
+        (
+            "let bad: bool = Color.rgb(1.0, 0.0, 0.0) == Color.rgb(1.0, 0.0, 0.0)\n",
+            "Color.t",
+        ),
+        (
+            "let bad: bool = Vec3.make(0.0, 0.0, 0.0) != Vec3.make(1.0, 0.0, 0.0)\n",
+            "Vec3.t",
+        ),
+    ] {
+        let diags = check(src);
+        assert!(
+            diags
+                .iter()
+                .any(|m| m.contains("engine values are opaque") && m.contains(ty)),
+            "{src}: {diags:?}"
+        );
+    }
+}
+
+/// …but the brands that DECLARE `==` are exempt, which is the whole point of
+/// declaring it — and `Physics.tag`, a brand over a STRING, was never opaque
+/// and keeps comparing structurally. Games read collision events that way
+/// (`examples/physics`, `examples/physics-controller`), so this is the
+/// regression that must never fire.
+#[test]
+fn brands_and_tags_still_compare() {
+    let diags = check(
+        "let angles: bool = 90deg == 90deg\n\
+         let times: bool = 1s != 500ms\n\
+         let ball = Physics.tag(\"ball\")\n\
+         let hit: bool = ball == Physics.tag(\"ball\")\n\
+         let miss: bool = ball != Physics.tag(\"wall\")\n",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
 /// …and what they do NOT declare still teaches, now naming what exists.
 #[test]
 fn an_undeclared_prelude_operator_names_the_declared_ones() {

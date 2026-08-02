@@ -417,9 +417,20 @@ fn an_operator_declaration_takes_a_lambda() {
 
 #[test]
 fn malformed_operator_declarations_are_targeted_parse_errors() {
-    // Comparisons are deliberately not declarable (yet).
-    let message = parse_err("unit px (==) = eq\n");
-    assert!(message.contains("`+`, `-`, `*`, or `/`"), "{message}");
+    // Six operators are declarable — the four arithmetic ones, `==`, and `<`.
+    let message = parse_err("unit px (&&) = both\n");
+    assert!(
+        message.contains("`+`, `-`, `*`, `/`, `==`, or `<`"),
+        "{message}"
+    );
+    // The DERIVED comparisons name the base they come from rather than
+    // listing everything again.
+    let message = parse_err("unit px (!=) = ne\n");
+    assert!(message.contains("`!=` is derived from `==`"), "{message}");
+    for src in ["unit px (>) = gt\n", "unit px (<=) = le\n", "unit px (>=) = ge\n"] {
+        let message = parse_err(src);
+        assert!(message.contains("are derived from `<`"), "{message}");
+    }
     let message = parse_err("unit px (+ = add\n");
     assert!(message.contains("`)` after the operator"), "{message}");
     let message = parse_err("unit px (+)\n");
@@ -760,4 +771,108 @@ fn the_interpreter_teaches_when_no_implementation_exists() {
         "{}",
         failure.error.message
     );
+}
+
+// ------------------------------------------------------ comparison on brands
+
+/// A brand that declares the two COMPARISON bases. `unwrap` is the seam every
+/// implementation goes through — the point being that a brand's comparison is
+/// ordinary code, not a privileged builtin.
+const ORD: &str = "type Px = | Px(value: float)\n\
+                   unit px = Px\n\
+                   let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+                   unit px (==) = (a, b) => unwrap(a) == unwrap(b)\n\
+                   unit px (<) = (a, b) => unwrap(a) < unwrap(b)\n";
+
+/// The headline: `==` and `<` resolve on a brand, and the four DERIVED
+/// spellings come from them — `>` swaps `<`, `<=`/`>=` negate it, `!=`
+/// negates `==`. All six are checked AND evaluated here, so a derivation that
+/// disagreed with its base would show up as a wrong answer.
+#[test]
+fn a_brand_compares_and_orders_through_two_declarations() {
+    let src = format!(
+        "{ORD}let main = () => \
+(16px == 16px, 16px == 4px, 16px != 4px, 4px < 16px, 16px > 4px, 4px <= 4px, 4px >= 16px)\n"
+    );
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(
+        main_result(&src),
+        "(true, false, true, true, true, true, false)"
+    );
+}
+
+/// A comparison answers `bool` whichever way it resolves, so a branded one
+/// flows into `if` with no ceremony and does not infect the surrounding type.
+#[test]
+fn a_branded_comparison_is_an_ordinary_bool() {
+    let src = format!("{ORD}let main = () => if 4px < 16px then 1.0 else 2.0\n");
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(main_result(&src), "1");
+}
+
+/// Ordering is refused on a brand that declares only equality — with the same
+/// teaching arithmetic gets, naming the DECLARABLE base (`<`, never the
+/// derived `>` the user actually wrote).
+#[test]
+fn an_undeclared_ordering_names_the_declarable_base() {
+    let diags = check_src(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+         unit px (==) = (a, b) => unwrap(a) == unwrap(b)\n\
+         let bad = 16px > 4px\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("`Px` declares `==`, but not `<`")),
+        "{diags:?}"
+    );
+}
+
+/// A fully unannotated comparison is ambiguous once a brand declares `<` —
+/// the same rule arithmetic has, for the same reason. A comparison's RESULT
+/// is `bool` either way, so only an operand can decide it.
+#[test]
+fn an_unresolvable_comparison_asks_for_an_annotation() {
+    let diags = check_src(&format!("{ORD}let less = (a, b) => a < b\n"));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("could be float comparison") && d.contains("annotate an operand")),
+        "{diags:?}"
+    );
+    // …and every ordinary way of pinning ONE operand resolves it. A side
+    // already known to be a non-brand settles the node on the spot, which is
+    // what keeps `Math.abs(d) < step` (and the `rate * dt` behind `step`)
+    // decidable without any annotation at all.
+    for tail in [
+        "let less = (a: float, b) => a < b\n",
+        "let less = (a, b: float) => a < b\n",
+        "let less = (a) => a < 1.0\n",
+        "let less = (a: Px, b) => a < b\n",
+    ] {
+        let src = format!("{ORD}{tail}");
+        assert!(check_src(&src).is_empty(), "{tail}: {:?}", check_src(&src));
+    }
+}
+
+/// The interpreter derives the same four spellings from the same two
+/// implementations — `run` skips the checker, so this is the gradual seam
+/// agreeing with the static one.
+#[test]
+fn the_interpreter_derives_the_orderings_too() {
+    let src = format!("{ORD}let main = () => (16px > 4px, 4px <= 4px, 16px != 4px)\n");
+    assert_eq!(main_result(&src), "(true, true, true)");
+}
+
+/// A brand with NO declared `==` keeps STRUCTURAL equality: a plain-data
+/// variant compares as it always did, and nothing about `unit` changed that.
+#[test]
+fn a_brand_without_an_equality_declaration_stays_structural() {
+    let src = "type Px = | Px(value: float)\n\
+               unit px = Px\n\
+               let main = () => (16px == 16px, 16px == 4px)\n";
+    assert!(check_src(src).is_empty(), "{:?}", check_src(src));
+    assert_eq!(main_result(src), "(true, false)");
 }

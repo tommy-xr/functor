@@ -1,7 +1,7 @@
 //! Center-origin, Y-up cameras for `Sprite` scenes.
 
 /// An opaque 2D camera description.
-type t
+type t = host
 
 /// Create a camera with the visible world width and height at zoom 1.
 ///

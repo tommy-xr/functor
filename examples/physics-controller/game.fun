@@ -30,6 +30,11 @@ let ledgeTag = Physics.tag("ledge")
 let wallTag = Physics.tag("wall")
 let deckTag = Physics.tag("deck")
 
+// `tick` decides `onDeck` by comparing the ground probe's tag against this
+// one, so tag equality is load-bearing here — pinned rather than assumed.
+expect deckTag == Physics.tag("deck")
+expect deckTag != playerTag
+
 // The capsule: half-height 0.5 plus radius 0.4, so the feet sit 0.9 below the
 // body's center. The ground probe's length follows from exactly that number.
 let capsuleHalfHeight = 0.5

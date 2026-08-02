@@ -1,7 +1,7 @@
 //! Cameras for viewing a Y-up, right-handed 3D scene.
 
 /// An opaque camera description.
-type t
+type t = host
 
 /// Create a camera from an eye position and target with a fixed 45° field of view.
 let lookAt : (Vec3.t, Vec3.t) => t

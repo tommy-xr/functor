@@ -25,7 +25,7 @@
 //! rather than an infinity that becomes a NaN and silently blanks the scene.
 
 /// An opaque 3D vector.
-type t
+type t = host
 
 /// Construct a vector from X, Y, and Z components.
 let make : (float, float, float) => t

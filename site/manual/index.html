@@ -821,7 +821,9 @@ functor docs --format json         # the machine-readable shape</pre>
             <code>Physics.tag("ball")</code>, <code>RenderTarget.named("feed")</code> — so a
             mixed-up unit is a check-time error instead of a puzzling frame. Angles and
             durations also read as unit-suffixed literals (<code>90deg</code>,
-            <code>0.5s</code>), which build exactly the same branded values.
+            <code>0.5s</code>), which build exactly the same branded values — and they do
+            arithmetic and comparison without leaving the brand
+            (<code>90deg + 45deg</code>, <code>1.5s &lt; 2000ms</code>).
           </p>
         </section>
 
@@ -858,9 +860,11 @@ functor docs --format json         # the machine-readable shape</pre>
               <strong>Engine values are opaque.</strong> <code>&lt;Scene></code>,
               <code>&lt;Frame></code>, <code>&lt;Camera3D></code> and friends can be passed around
               and composed, but not taken apart, and <code>==</code> on one is a
-              <em>runtime</em> error (the checker does not catch it) — compare the numbers you
-              derived instead.
-              (<code>Sprite.t</code> is the deliberate exception: it is plain data underneath.)
+              <em>check-time</em> error — compare the numbers you derived instead.
+              Branded values do compare: <code>90deg == 90deg</code>,
+              <code>1.5s &lt; 2000ms</code>, and physics tags, all fine.
+              (<code>Sprite.t</code> is the other deliberate exception: it is plain data
+              underneath.)
             </li>
           </ul>
           <p class="docs-footnote">

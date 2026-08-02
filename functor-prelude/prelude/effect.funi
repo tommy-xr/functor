@@ -4,7 +4,7 @@
 //! Effects remain outside the game's pure functional core.
 
 /// An opaque effect command.
-type t
+type t = host
 
 /// Produce no command.
 let none : () => t

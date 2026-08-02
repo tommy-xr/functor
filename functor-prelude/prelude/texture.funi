@@ -1,7 +1,7 @@
 //! Texture values accepted by scene material functions.
 
 /// An opaque texture value.
-type t
+type t = host
 
 /// Load an image texture from a path relative to the game directory.
 let file : (string) => t
