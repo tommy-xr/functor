@@ -53,6 +53,17 @@ pub fn note_inbound_delivered() {
     });
 }
 
+/// Hand one inbound event to the shell's frame loop over `tx`, counting it in
+/// the gauge — the ONE way a shell should queue inbound work, so a transport
+/// added later cannot forget to count. A send that fails (the loop is gone)
+/// counts straight back down, since nothing will ever deliver it.
+pub fn send_inbound<T>(tx: &std::sync::mpsc::Sender<T>, event: T) {
+    note_inbound_queued();
+    if tx.send(event).is_err() {
+        note_inbound_delivered();
+    }
+}
+
 /// The current inbound queue depth, for `GET /state`'s `pending_net`.
 pub fn inbound_pending() -> u64 {
     INBOUND_PENDING.load(Ordering::Relaxed)

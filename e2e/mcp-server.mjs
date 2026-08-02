@@ -37,10 +37,9 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const BIN = process.env.FUNCTOR_BIN ?? `${ROOT}target/debug/functor`;
+// The raw JSON-RPC client is shared with e2e/mcp-step-all.mjs.
+import { BIN, check, failures, Rpc, ROOT } from "./mcp-rpc.mjs";
 
 /** Every tool the server must advertise (docs/mcp.md). */
 const EXPECTED_TOOLS = [
@@ -66,89 +65,6 @@ const EXPECTED_TOOLS = [
   "init_game",
   "save_project",
 ];
-
-/** A line-delimited JSON-RPC client over a child's stdio. */
-class Rpc {
-  constructor(proc) {
-    this.proc = proc;
-    this.pending = new Map();
-    this.nextId = 1;
-    this.buffer = "";
-    this.stderr = "";
-    proc.stdout.setEncoding("utf8");
-    proc.stdout.on("data", (chunk) => this.#onData(chunk));
-    proc.stderr.on("data", (chunk) => (this.stderr += chunk));
-  }
-
-  #onData(chunk) {
-    this.buffer += chunk;
-    let index;
-    while ((index = this.buffer.indexOf("\n")) >= 0) {
-      const line = this.buffer.slice(0, index).trim();
-      this.buffer = this.buffer.slice(index + 1);
-      if (!line) continue;
-      const message = JSON.parse(line);
-      const waiter = this.pending.get(message.id);
-      if (waiter) {
-        this.pending.delete(message.id);
-        clearTimeout(waiter.timer);
-        message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result);
-      }
-    }
-  }
-
-  notify(method, params) {
-    this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
-  }
-
-  beginRequest(method, params) {
-    const id = this.nextId++;
-    const result = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${method} timed out\nstderr:\n${this.stderr}`));
-      }, 60000);
-      this.pending.set(id, { resolve, reject, timer });
-    });
-    this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    return { id, result };
-  }
-
-  request(method, params) {
-    return this.beginRequest(method, params).result;
-  }
-
-  cancelRequest(id, reason) {
-    this.notify("notifications/cancelled", { requestId: id, reason });
-    // MCP deliberately sends no response for a cancelled request. Settle the
-    // local waiter while the state assertion below proves the server did not
-    // execute the queued mutation after dropping that response.
-    const waiter = this.pending.get(id);
-    if (waiter) {
-      this.pending.delete(id);
-      clearTimeout(waiter.timer);
-      waiter.resolve({ cancelled: true });
-    }
-  }
-
-  /** Call a tool and return its single text content block, parsed if it is JSON. */
-  async call(name, args = {}) {
-    const result = await this.request("tools/call", { name, arguments: args });
-    const text = result.content.map((block) => block.text ?? "").join("");
-    if (result.isError) throw new Error(`${name} failed: ${text}`);
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-}
-
-const failures = [];
-const check = (ok, what) => {
-  console.log(`  ${ok ? "✓" : "✗"} ${what}`);
-  if (!ok) failures.push(what);
-};
 
 const proc = spawn(BIN, ["mcp"], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
 const rpc = new Rpc(proc);

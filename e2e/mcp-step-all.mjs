@@ -28,87 +28,20 @@
 //   node e2e/mcp-step-all.mjs
 //
 // Set FUNCTOR_BIN when the build uses a shared CARGO_TARGET_DIR.
-import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const BIN = process.env.FUNCTOR_BIN ?? `${ROOT}target/debug/functor`;
+// The raw JSON-RPC client is shared with e2e/mcp-server.mjs.
+import { check, failures, ROOT, sleep, startMcp } from "./mcp-rpc.mjs";
+
 const DIR = "examples/orbs";
 /** The ws port `examples/orbs` binds (`let bind = "127.0.0.1:9101"`). */
 const WS_PORT = 9101;
 /** Lockstep rounds per run. Enough to see the world move, short enough to run twice. */
 const ROUNDS = 12;
 const DTS = 0.016;
-
-/** A line-delimited JSON-RPC client over a child's stdio. */
-class Rpc {
-  constructor(proc) {
-    this.proc = proc;
-    this.pending = new Map();
-    this.nextId = 1;
-    this.buffer = "";
-    this.stderr = "";
-    proc.stdout.setEncoding("utf8");
-    proc.stdout.on("data", (chunk) => this.#onData(chunk));
-    proc.stderr.on("data", (chunk) => (this.stderr += chunk));
-  }
-
-  #onData(chunk) {
-    this.buffer += chunk;
-    let index;
-    while ((index = this.buffer.indexOf("\n")) >= 0) {
-      const line = this.buffer.slice(0, index).trim();
-      this.buffer = this.buffer.slice(index + 1);
-      if (!line) continue;
-      const message = JSON.parse(line);
-      const waiter = this.pending.get(message.id);
-      if (waiter) {
-        this.pending.delete(message.id);
-        clearTimeout(waiter.timer);
-        message.error ? waiter.reject(new Error(JSON.stringify(message.error))) : waiter.resolve(message.result);
-      }
-    }
-  }
-
-  notify(method, params) {
-    this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
-  }
-
-  request(method, params) {
-    const id = this.nextId++;
-    const result = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`${method} timed out\nstderr:\n${this.stderr}`));
-      }, 60000);
-      this.pending.set(id, { resolve, reject, timer });
-    });
-    this.proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    return result;
-  }
-
-  async call(name, args = {}) {
-    const result = await this.request("tools/call", { name, arguments: args });
-    const text = result.content.map((block) => block.text ?? "").join("");
-    if (result.isError) throw new Error(`${name} failed: ${text}`);
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
-}
-
-const failures = [];
-const check = (ok, what) => {
-  console.log(`  ${ok ? "✓" : "✗"} ${what}`);
-  if (!ok) failures.push(what);
-};
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Poll `get_state` until `predicate` holds, or fail loudly with the last state. */
 async function waitForState(rpc, session, predicate, what, timeoutMs = 20000) {
@@ -242,17 +175,9 @@ async function lockstepRun(rpc, label) {
   };
 }
 
-const proc = spawn(BIN, ["mcp"], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"] });
-const rpc = new Rpc(proc);
+const { proc, rpc } = await startMcp("functor-e2e-step-all");
 
 try {
-  await rpc.request("initialize", {
-    protocolVersion: "2025-06-18",
-    capabilities: {},
-    clientInfo: { name: "functor-e2e-step-all", version: "0" },
-  });
-  rpc.notify("notifications/initialized", {});
-
   console.log("▸ step_all validates the group before anything steps");
   let empty = null;
   try {
@@ -261,6 +186,14 @@ try {
     empty = error.message;
   }
   check(empty !== null && /producer/.test(empty), "an empty session list is a teaching error naming the order");
+
+  let unknown = null;
+  try {
+    await rpc.call("step_all", { sessions: ["s99"] });
+  } catch (error) {
+    unknown = error.message;
+  }
+  check(unknown !== null && !/already advanced/.test(unknown), "an unresolvable session fails before anything steps");
 
   console.log("\n▸ run 1: three roles of examples/orbs, stepped in order");
   const first = await lockstepRun(rpc, "run-1");
@@ -288,7 +221,11 @@ try {
   console.log("\n▸ run 2: the same run, from scratch");
   const second = await lockstepRun(rpc, "run-2");
   const same = first.trace.join(" | ") === second.trace.join(" | ");
-  check(same, "ORDERED stepping is exactly reproducible: both runs produced the same world trace");
+  // Reproducibility here is EVIDENCE, not a proof: ordering removes the
+  // stepping race, but nothing can fence a packet still on the wire (see
+  // docs/mcp.md, "What it does not promise"). This is the regression guard for
+  // the ordering — a concurrent stepAll fails it.
+  check(same, "the ordered lockstep reproduced the identical world trace across two fresh runs");
   if (!same) {
     console.log(`    run-1: ${first.trace.join(" | ")}`);
     console.log(`    run-2: ${second.trace.join(" | ")}`);

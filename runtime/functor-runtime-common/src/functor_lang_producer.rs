@@ -1206,10 +1206,12 @@ impl FrameCtx<'_> {
     /// (docs/functor-lang.md B6). Every producer path that runs game code funnels through
     /// here, so effects work uniformly from tick, input, mouse, and messages.
     ///
-    /// It is therefore also the producer's single model ASSIGNMENT, and where
-    /// `model_revision` is counted: every replacement, whatever ran the game
-    /// code — a stepped `tick`, an injected input, or an inbound network
-    /// message folding through `update` while the clock is paused.
+    /// It is therefore also the producer's single model ASSIGNMENT BY GAME
+    /// LOGIC, and where `model_revision` is counted: a stepped `tick`, an
+    /// injected input, or an inbound network message folding through `update`
+    /// while the clock is paused. The producers' own replacements (reload,
+    /// project load, timeline seek) go around it and deliberately do not
+    /// count — see [`crate::protocol::GameProducer::model_revision`].
     pub fn absorb(&mut self, returned: Value) {
         let (model, effects) = split_model_effect(returned);
         *self.model = model;

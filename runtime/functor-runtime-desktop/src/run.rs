@@ -888,10 +888,9 @@ fn dispatch_net_ws(
                     let client = http_client.clone();
                     tokio::spawn(async move {
                         let result = net_dispatch::perform_http(&client, cmd).await;
-                        functor_runtime_common::net::note_inbound_queued();
-                        if tx.send(result).is_err() {
-                            functor_runtime_common::net::note_inbound_delivered();
-                        }
+                        // The same counted hand-off `ws_host` uses: an HTTP
+                        // response is inbound network work like any other.
+                        functor_runtime_common::net::send_inbound(&tx, result);
                     });
                 }
             }

@@ -167,9 +167,12 @@ seated three players. `model_revision` is the label to use instead:
 - **`model_revision`** counts how many times the model has been REPLACED by
   game logic since the program loaded — every entry point's return and every
   effect or network fold, counted at the producer's single model assignment.
-  Monotone, never reset (a hot reload *rebinds* the model rather than replacing
-  it, and does not count). Compare it against a previous read to answer "did
-  anything land", whether or not the clock moved.
+  Monotone, never reset. Compare it against a previous read to answer "did
+  anything land", whether or not the clock moved. Replacing the model from
+  *outside* the game does not count — a hot reload (which rebinds it),
+  `/load-project`, `/rewind`, a timeline seek — because those are operations
+  the driver itself just performed and each answers with fresh state to
+  re-baseline from.
 - **`pending_net`** is how many inbound network events the shell has accepted
   from its transport but not yet delivered to the game — connection events and
   completed HTTP responses. **Poll until it is 0 to know a session is

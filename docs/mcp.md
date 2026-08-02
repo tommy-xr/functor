@@ -383,25 +383,42 @@ step_all { "sessions": ["s2", "s1", "s3"] }      // one lockstep round
 
 **The ordering law: step producer → authority → observer.** `step_all` steps the
 sessions strictly sequentially in the order given — each session's steps land
-fully (`pending_steps` back to 0) before the next session starts — and returns
-every session's post-step summary in that order. The order is the semantics, not
-a convenience: a client's input has to reach the authority *before* the
-authority steps, and the authority's broadcast has to exist *before* an observer
-steps, or every round lands its work an arbitrary number of rounds late.
-**Concurrent stepping is not reproducible**: whether a packet arrives before or
-after its receiver's step is a race, so two identical runs disagree. Sessions
-are resolved and de-duplicated before anything steps, so a typo cannot leave the
-group half-advanced — but a failure *partway through* means earlier sessions
-already advanced, with no rollback.
+fully (`pending_steps` back to 0) before the next session starts, and each
+session's already-received network events are drained (`pending_net` back to 0)
+before *it* steps — and returns every session's post-step summary in that order.
+The order is the semantics, not a convenience: a client's input has to reach the
+authority *before* the authority steps, and the authority's broadcast has to
+exist *before* an observer steps, or every round lands its work an arbitrary
+number of rounds late. **Concurrent stepping is not reproducible**: whether a
+packet arrives before or after its receiver's step is a race, so two identical
+runs disagree. Sessions are resolved and de-duplicated — by runtime URL, so two
+ids aliasing one game are refused — before anything steps, so a typo cannot
+leave the group half-advanced; a failure *partway through* means earlier
+sessions already advanced, with no rollback. The whole call shares one
+120-second deadline.
+
+**What it does not promise.** `step_all` orders the *stepping* and drains what
+has already arrived. It is **not a transport barrier**: a packet still on the
+wire between two processes is invisible to every process (which is exactly what
+`pending_net` says it cannot see), so nothing here can force delivery to happen
+within a given round. A game whose correctness depends on that needs its own
+convergence check between rounds — poll `get_state` for the game-level fact
+("the authority has seated both clients", "the observer's world matches"), the
+same way you would wait for any distributed condition.
 
 **Pause freezes the CLOCK, not the network.** A paused role keeps accepting
 inbound messages and folding them through `update`, so its model changes while
 `frame` and `tts` stand still. Two consequences for a driver:
 
 - `frame` is **not** a version label for a networked model. `model_revision`
-  is: it counts every replacement of the model, whatever caused it, so
-  comparing it against an earlier read answers "did anything land" even with
-  the clock stopped.
+  is: it counts every replacement of the model **by game logic** — a tick, an
+  injected input, an effect fold, a network delivery — so comparing it against
+  an earlier read answers "did anything land" even with the clock stopped.
+  (Operations that replace the model *from outside* the game — a hot reload, a
+  `load_project`, a `rewind` — deliberately do not count. Those are things the
+  driver itself just did, and each returns fresh state to re-baseline from; a
+  counter that also moved for them would not distinguish "the network changed
+  my model" from "I rewound it".)
 - Before snapshotting a baseline, wait for **`pending_net` to reach 0** on
   every role. That is the shell's inbound queue depth; zero means nothing
   already received is still unprocessed. (It cannot see a packet still on the

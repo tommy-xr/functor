@@ -59,10 +59,7 @@ struct EventTx(Sender<HostNetEvent>);
 
 impl EventTx {
     fn send(&self, event: HostNetEvent) {
-        functor_runtime_common::net::note_inbound_queued();
-        if self.0.send(event).is_err() {
-            functor_runtime_common::net::note_inbound_delivered();
-        }
+        functor_runtime_common::net::send_inbound(&self.0, event);
     }
 }
 

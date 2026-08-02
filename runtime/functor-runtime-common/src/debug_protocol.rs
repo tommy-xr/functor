@@ -242,8 +242,14 @@ pub struct RuntimeState {
     /// pausing pins the CLOCK, not the transport, so a paused session keeps
     /// folding inbound messages through `update` while `frame` stands still.
     /// A driver that wants "did anything land since my snapshot" compares this.
-    /// A hot reload REBINDS the model rather than replacing it and does not
-    /// count. `default` because a pre-v10 runtime omits it.
+    ///
+    /// It counts replacements BY GAME LOGIC. Replacing the model from OUTSIDE
+    /// the game deliberately does not count: a hot reload (which rebinds it),
+    /// a whole-project load, a `/rewind` or a timeline seek. Those are things
+    /// the driver itself just performed, and each hands back fresh state to
+    /// re-baseline from — a counter that moved for them too could not tell
+    /// "the network changed my model" from "I rewound it". `default` because a
+    /// pre-v10 runtime omits it.
     #[serde(default)]
     pub model_revision: u64,
     /// Inbound network events the shell has accepted from its transport and

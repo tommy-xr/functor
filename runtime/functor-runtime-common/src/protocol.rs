@@ -412,7 +412,10 @@ pub trait GameProducer {
     ///
     /// It exists because `frame` is not a version label for a NETWORKED
     /// model: pausing pins the clock, not the transport, so inbound messages
-    /// keep folding through `update` while `frame` stands still. The default,
+    /// keep folding through `update` while `frame` stands still. It counts
+    /// replacements by GAME LOGIC only — a reload, a project load, and a
+    /// timeline rewind replace the model without counting, because the driver
+    /// performing one already knows it did. The default,
     /// `0`, is the honest answer for a producer whose model never changes
     /// under it (the replay producer replays recorded frames).
     fn model_revision(&self) -> u64 {
