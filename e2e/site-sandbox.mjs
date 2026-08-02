@@ -379,6 +379,16 @@ const playerFrame = (page) => {
     JSON.stringify(bar)
   );
   check("staged hero pulses attention on 🔮", bar.attention, JSON.stringify(bar));
+  // Staging loads the program and replays a script; the peek reports the
+  // VISITOR's edits, so the baseline must arrive without one.
+  check(
+    "hero staging lands without peeking the extrapolation",
+    await heroPlayer.evaluate(
+      () =>
+        !window.__scrub.peeking() &&
+        !document.getElementById("scrub-extrapolate").classList.contains("peeking")
+    )
+  );
 
   // Game input against a paused clock says so instead of doing nothing — but
   // only for keys that would have reached the game. A nudge on the timeline
@@ -712,6 +722,156 @@ const playerFrame = (page) => {
     afterRunReset.paused &&
       afterRunReset.jumps.some((jump) => afterRunReset.frame === Math.max(0, jump - 2)),
     JSON.stringify(afterRunReset)
+  );
+
+  // --- The peek: an edit on a parked timeline glimpses its own future. -------
+  // The discovery path for extrapolation. A visitor who never touches 🔮 edits a
+  // tunable and the future materializes for a beat, then gets out of the way.
+  // Put the demo back in exactly that state: parked, extrapolation OFF.
+  await heroPlayer.evaluate(() => {
+    if (window.__scrub.model().preview.enabled) {
+      document.getElementById("scrub-extrapolate").click();
+    }
+  });
+  await heroPlayer.waitForFunction(
+    () => window.__scrub.paused() && !window.__scrub.model().preview.enabled,
+    { timeout: 8000 }
+  );
+  await sleep(700); // let the trail's presence ramp finish fading out
+  const quietHash = await regionHash(heroPlayer);
+
+  // Push an edit and return the moment the runtime accepts it, with the hold
+  // still running: the glimpse is transient, so this deliberately skips
+  // applyHeroRegion's settle sleep.
+  const peekEdit = async (src) => {
+    const before = await heroPlayer.evaluate(
+      () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
+    );
+    await page.evaluate((s) => window.__hero.setRegion(s), src);
+    await heroPlayer.waitForFunction(
+      (b) => window.__scrub.events().filter((event) => event.kind === "reload-ok").length > b,
+      before,
+      { timeout: 8000 }
+    );
+  };
+  const peekState = () =>
+    heroPlayer.evaluate(() => {
+      const button = document.getElementById("scrub-extrapolate");
+      return {
+        peeking: window.__scrub.peeking(),
+        pressed: button.classList.contains("peeking"),
+        on: button.classList.contains("on"),
+        ariaPressed: button.getAttribute("aria-pressed"),
+        enabled: window.__scrub.model().preview.enabled,
+        previewFrames: window.__scrub.view().previewFrames,
+        railFuture: document.getElementById("scrub-future").getAttribute("width"),
+      };
+    });
+
+  const softRegion = region.replace("let jumpVelocity = 13.0", "let jumpVelocity = 9.0");
+  await peekEdit(softRegion);
+  const peekHash = await regionHash(heroPlayer);
+  const duringPeek = await peekState();
+  check(
+    "an accepted edit on the parked hero peeks the extrapolation",
+    duringPeek.peeking && duringPeek.pressed && peekHash !== quietHash,
+    JSON.stringify({ ...duringPeek, quietHash, peekHash })
+  );
+  // The glimpse is engine-only by design: the reducer never learns about it, so
+  // every piece of chrome that reads the real setting stays at rest.
+  check(
+    "the peek leaves the timeline chrome quiet",
+    !duringPeek.on &&
+      duringPeek.ariaPressed === "false" &&
+      !duringPeek.enabled &&
+      duringPeek.previewFrames === 0 &&
+      duringPeek.railFuture === "0",
+    JSON.stringify(duringPeek)
+  );
+
+  // A second edit mid-glimpse EXTENDS the hold rather than letting the first
+  // expire underneath it. "Still peeking afterwards" alone can't tell an
+  // extension from a fresh glimpse that started after the first one lapsed, so
+  // sample continuously across the second edit: the glimpse must never drop.
+  await sleep(250);
+  await heroPlayer.evaluate(() => {
+    window.__peekDropped = false;
+    window.__peekSampler = window.setInterval(() => {
+      if (!window.__scrub.peeking()) window.__peekDropped = true;
+    }, 16);
+  });
+  const stillRegion = region.replace("let jumpVelocity = 13.0", "let jumpVelocity = 8.0");
+  await peekEdit(stillRegion);
+  const dropped = await heroPlayer.evaluate(() => {
+    window.clearInterval(window.__peekSampler);
+    return window.__peekDropped;
+  });
+  await sleep(900); // past the FIRST hold's 1.5s expiry, inside the extended one
+  const extended = await peekState();
+  const extendedHash = await regionHash(heroPlayer);
+  check(
+    "a second hero edit extends the peek's hold",
+    extended.peeking && extended.pressed && !dropped,
+    JSON.stringify({ ...extended, dropped })
+  );
+
+  // Then it retires itself: the trail fades out and the button's glow goes.
+  await sleep(1600);
+  const afterHold = await peekState();
+  const retiredHash = await regionHash(heroPlayer);
+  check(
+    "the peek retires its glimpse and its glow after the hold",
+    // Same source as `extendedHash`, so the only difference is the trail.
+    !afterHold.peeking && !afterHold.pressed && !afterHold.enabled && retiredHash !== extendedHash,
+    JSON.stringify({ ...afterHold, extendedHash, retiredHash })
+  );
+
+  // A rejected edit has no new future to show, so it never peeks.
+  await page.evaluate((s) => window.__hero.setRegion(s), `${stillRegion}\n(`);
+  await page.waitForFunction(() => window.__hero.status().state === "error", { timeout: 8000 });
+  await sleep(600);
+  const afterBroken = await peekState();
+  check(
+    "a rejected hero edit does not peek",
+    !afterBroken.peeking && !afterBroken.pressed && !afterBroken.enabled,
+    JSON.stringify(afterBroken)
+  );
+
+  // Reaching for 🔮 mid-glimpse ADOPTS it: the glimpse becomes the real setting
+  // instead of reading as a toggle that turns off what the visitor just saw.
+  await peekEdit(region);
+  const beforeAdopt = await peekState();
+  await heroPlayer.evaluate(() => document.getElementById("scrub-extrapolate").click());
+  const adopted = await peekState();
+  await sleep(1800); // well past the hold the click cancelled
+  const afterAdoptHold = await peekState();
+  check(
+    "clicking 🔮 mid-peek adopts the glimpse as the real setting",
+    beforeAdopt.peeking &&
+      adopted.enabled &&
+      adopted.on &&
+      !adopted.peeking &&
+      afterAdoptHold.enabled &&
+      afterAdoptHold.previewFrames > 0,
+    JSON.stringify({ beforeAdopt, adopted, afterAdoptHold })
+  );
+
+  // Resuming the clock ends a glimpse on the spot: the peek is a parked-timeline
+  // affordance, and a trail over a running sim reads as a rendering glitch.
+  await heroPlayer.evaluate(() => document.getElementById("scrub-extrapolate").click());
+  await heroPlayer.waitForFunction(() => !window.__scrub.model().preview.enabled, {
+    timeout: 3000,
+  });
+  await peekEdit(softRegion);
+  const beforeResume = await peekState();
+  await heroPlayer.evaluate(() => window.__scrub.togglePause());
+  await heroPlayer.waitForFunction(() => !window.__scrub.paused(), { timeout: 8000 });
+  await sleep(200);
+  const afterResume = await peekState();
+  check(
+    "resuming the clock ends the peek immediately",
+    beforeResume.peeking && !afterResume.peeking && !afterResume.pressed && !afterResume.enabled,
+    JSON.stringify({ beforeResume, afterResume })
   );
 
   await page.close();
