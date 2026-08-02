@@ -4,7 +4,7 @@
 //! owns no hidden animation clock and poses rewind and replay deterministically.
 
 /// An opaque animation pose expression.
-type t
+type t = host
 
 /// Sample a named glTF clip at a playhead in seconds.
 ///

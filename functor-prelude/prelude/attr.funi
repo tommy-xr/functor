@@ -3,7 +3,7 @@
 //! Event attributes deliver messages through the game's `update` function.
 
 /// An opaque HTML attribute.
-type t
+type t = host
 
 /// Set the element's CSS class string.
 let class : (string) => t

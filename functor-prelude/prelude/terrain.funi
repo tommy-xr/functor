@@ -4,7 +4,7 @@
 //! minimum height and white maps to the maximum height.
 
 /// An immutable terrain descriptor.
-type t
+type t = host
 
 /// Create a terrain centered on the origin and spanning `width` by `depth` in XZ.
 let heightmap : (Asset.Texture, float, float, float, float) => t

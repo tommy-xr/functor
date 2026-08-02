@@ -4,7 +4,7 @@
 //! being mixed accidentally.
 
 /// An opaque duration.
-type t
+type t = host
 
 /// Construct a duration from seconds.
 let seconds : (float) => t
@@ -26,6 +26,18 @@ let sub : (t, t) => t
 /// most of the prelude it is not written to be piped into.
 let scale : (t, float) => t
 
+/// Are two durations the same? This is what `1s == 1000ms` calls.
+///
+/// Durations are stored in seconds, so this is FLOAT equality on that number:
+/// `1s == 1000ms` is true, but a duration accumulated through arithmetic may
+/// miss an exact literal by a rounding step. A duration is one-way (there is
+/// no way back to a number), so where a tolerance matters, keep the plain
+/// float you built it from and compare THAT.
+let equals : (t, t) => bool
+/// Is the first duration shorter than the second? This is what
+/// `200ms < 1.5s` calls, and — swapped or negated — `>`, `<=`, and `>=` too.
+let less : (t, t) => bool
+
 /// Seconds as a literal suffix: `0.5s` is exactly `Time.seconds(0.5)`.
 unit s = Time.seconds
 /// Milliseconds as a literal suffix: `500ms` is exactly `Time.millis(500.0)`.
@@ -46,3 +58,11 @@ unit s (-) = Time.sub
 /// `*` scales a duration by a number, on either side: `0.5s * 2.0` and
 /// `2.0 * 0.5s` are both `Time.scale(0.5s, 2.0)`.
 unit s (*) = Time.scale
+/// `==` on durations: `1s == 1000ms` is `Time.equals(1s, 1000ms)`, and `!=`
+/// is its negation. Underneath it is FLOAT equality on seconds — see
+/// `Time.equals`.
+unit s (==) = Time.equals
+/// `<` on durations: `200ms < 1.5s` is `Time.less(200ms, 1.5s)`. `>`, `<=`,
+/// and `>=` derive from it (swapped and/or negated), so all four orderings
+/// come from this one declaration.
+unit s (<) = Time.less

@@ -111,7 +111,7 @@ let input = (model, key, isDown) =>
   | Key.B => fireBang(model, isDown)
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
-let clamp = (v, lo, hi) =>
+let clamp = (v: float, lo, hi) =>
   match v < lo with
   | true => lo
   | false => (match hi < v with | true => hi | false => v)

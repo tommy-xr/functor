@@ -3,7 +3,7 @@
 /// An opaque RGB color.
 ///
 /// Channels are normally in `0..1`; emissive and HDR uses may exceed `1`.
-type t
+type t = host
 
 /// Construct a color from red, green, and blue channels.
 let rgb : (float, float, float) => t

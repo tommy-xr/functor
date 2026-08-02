@@ -231,12 +231,23 @@ fn brand_name(ty: &Type) -> Option<String> {
     }
 }
 
-/// The type an operator's SECOND operand takes on a given brand: the brand
-/// itself for `+` and `-`, a plain float for the scalar `*` and `/`.
+/// The type an operator's SECOND operand takes on a given brand: a plain
+/// float for the scalar `*` and `/`, and the brand itself for everything else
+/// (`+`/`-` stay inside the brand, and a comparison compares like with like).
 fn operand_type(op: BinOp, brand: &Type) -> Type {
     match op {
-        BinOp::Add | BinOp::Sub => brand.clone(),
-        _ => Type::Float,
+        BinOp::Mul | BinOp::Div => Type::Float,
+        _ => brand.clone(),
+    }
+}
+
+/// What an operator on a brand ANSWERS: `bool` for the comparisons, the brand
+/// itself for arithmetic.
+fn result_type(op: BinOp, brand: &Type) -> Type {
+    if op.is_comparison() {
+        Type::Bool
+    } else {
+        brand.clone()
     }
 }
 
@@ -803,8 +814,10 @@ fn check_impl(
         def_param_names: HashMap::new(),
         match_scrutinees: Vec::new(),
         unit_hints: HashMap::new(),
+        host_types: HashSet::new(),
         brand_ops: HashMap::new(),
         pending_ops: Vec::new(),
+        pending_eq: Vec::new(),
     };
 
     // Record type names first (nominal references may be forward), then
@@ -832,6 +845,16 @@ fn check_impl(
                 checker
                     .variants
                     .insert(decl.name.clone(), (decl.params.len(), Vec::new()));
+            }
+            // `type t = host` — abstract, PLUS the one fact the checker
+            // cannot infer: its values are host values, which structural
+            // equality refuses at run time. Recorded so `==` on one is a
+            // check-time error (see `Checker::host_opaque`).
+            TypeBody::Host => {
+                checker
+                    .variants
+                    .insert(decl.name.clone(), (decl.params.len(), Vec::new()));
+                checker.host_types.insert(decl.name.clone());
             }
         }
     }
@@ -870,7 +893,7 @@ fn check_impl(
                 }
             }
             // Nothing to resolve — an abstract type has no fields or ctors.
-            TypeBody::Abstract => {}
+            TypeBody::Abstract | TypeBody::Host => {}
         }
     }
 
@@ -1150,7 +1173,7 @@ suffix of `{name}` shares one implementation"
         let Some(brand) = brand.clone() else { continue };
         let want = Type::Fn(
             vec![brand.clone(), operand_type(unit_op.op, &brand)],
-            Box::new(brand),
+            Box::new(result_type(unit_op.op, &brand)),
         );
         checker.expect(
             &unit_op.target,
@@ -1352,6 +1375,11 @@ struct Checker<'s> {
     /// diagnostic side channel — it turns "expected Angle.t, got float" into
     /// a message that teaches both spellings.
     unit_hints: HashMap<String, Vec<(String, String)>>,
+    /// Types declared `type t = host` — abstract nominals whose values are
+    /// opaque HOST values. Structural equality on one is a runtime error, so
+    /// `==`/`!=` on one is refused at CHECK time instead (unless the brand
+    /// declares its own `==` — see [`Checker::brand_ops`]).
+    host_types: HashSet<String>,
     /// Declared unit OPERATORS, indexed by the branded type they act on and
     /// the operator: `("Angle.t", BinOp::Add)` → the `unit deg (+)`
     /// declaration. Unlike [`Self::unit_hints`] this is not a side channel —
@@ -1365,6 +1393,11 @@ struct Checker<'s> {
     /// and after each expect/unit target). Ad-hoc overloading is resolved
     /// AFTER inference, never during unification.
     pending_ops: Vec<PendingOp>,
+    /// `==`/`!=` nodes whose operand type was still unsolved when they were
+    /// seen: equality types the same either way (it answers `bool`), so
+    /// nothing about INFERENCE is deferred — only the host-opacity verdict,
+    /// which needs the solved type. Flushed beside [`Self::pending_ops`].
+    pending_eq: Vec<(BinOp, Type, Span)>,
 }
 
 /// A deferred arithmetic node: its operands, the fresh variable standing for
@@ -3108,14 +3141,18 @@ is {other}"
         node_span: Span,
     ) -> Type {
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                self.arithmetic(op, lhs, lhs_span, rhs, rhs_span, node_span)
-            }
-            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                self.require_float(op, lhs, lhs_span);
-                self.require_float(op, rhs, rhs_span);
-                Type::Bool
-            }
+            // Ordering goes through the SAME ad-hoc overloading arithmetic
+            // does: a brand that declares `<` claims all four (`>` is `<`
+            // swapped; `<=` and `>=` are the negations), and everything else
+            // is float arithmetic/ordering exactly as before.
+            BinOp::Add
+            | BinOp::Sub
+            | BinOp::Mul
+            | BinOp::Div
+            | BinOp::Lt
+            | BinOp::Gt
+            | BinOp::Le
+            | BinOp::Ge => self.arithmetic(op, lhs, lhs_span, rhs, rhs_span, node_span),
             // `==` is an error only where the runtime outcome is certain:
             // comparing functions always fails at runtime, and operands whose
             // known types cannot be equal always yield `false`. Runtime
@@ -3149,7 +3186,19 @@ is {other}"
                 free_vars_of(rhs, &mut vars);
                 if !vars.is_empty() {
                     self.unify(lhs, rhs, node_span, &format!("`{sym}` operands"));
+                    // Whether the settled type is an OPAQUE engine value is
+                    // not knowable yet, so that verdict alone is deferred
+                    // (inference is not — equality answers `bool` either way).
+                    self.pending_eq.push((op, lhs.clone(), node_span));
                     return Type::Bool;
+                }
+                // An engine value has no structural equality — the runtime
+                // refuses it — so `myScene == other` is an error HERE. One
+                // report per node: both operands are usually the same type.
+                if self.opaque_engine_type(lhs).is_none() {
+                    self.reject_host_equality(op, rhs, node_span);
+                } else {
+                    self.reject_host_equality(op, lhs, node_span);
                 }
                 match (lhs, rhs) {
                     // One known function operand is enough: the runtime
@@ -3244,14 +3293,21 @@ is {other}"
         }
     }
 
-    /// An arithmetic node (`+`, `-`, `*`, `/`) — the ad-hoc overloading seam.
+    /// A node over NUMBERS by default — the four arithmetic operators and
+    /// the four orderings — which is the ad-hoc overloading seam.
     ///
     /// A brand with a declared implementation for this operator wins; a node
-    /// with no brand in sight is plain float arithmetic, exactly as before.
-    /// The in-between case — an operand still unsolved while SOME brand
-    /// declares the operator — cannot be decided yet, so it is DEFERRED to
-    /// [`Self::flush_pending_ops`] (resolution runs after inference, never
+    /// with no brand in sight is plain float arithmetic/ordering, exactly as
+    /// before. The in-between case — an operand still unsolved while SOME
+    /// brand declares the operator — cannot be decided yet, so it is DEFERRED
+    /// to [`Self::flush_pending_ops`] (resolution runs after inference, never
     /// during unification, so it can't make inference order-dependent).
+    ///
+    /// Ordering rides the same path as arithmetic because the ambiguity is
+    /// identical: with `<` declared on a brand, an unannotated `(a, b) => a <
+    /// b` could be either reading. Only its ANSWER differs — a comparison is
+    /// `bool` whichever way it resolves, so its deferred node carries `bool`
+    /// as its result rather than a fresh variable.
     fn arithmetic(
         &mut self,
         op: BinOp,
@@ -3266,10 +3322,37 @@ is {other}"
         if let Some(ty) = self.brand_binary(op, &lhs, lhs_span, &rhs, rhs_span, node_span) {
             return ty;
         }
-        if (matches!(lhs, Type::Var(_)) || matches!(rhs, Type::Var(_)))
-            && self.brand_ops.keys().any(|(_, declared)| *declared == op)
+        let declarable = op.declarable();
+        // Deferring is only worth it while a BRANDED reading is still
+        // possible. `brand_binary` has already tried the solved sides, so
+        // what remains is which unsolved side could still become a brand:
+        //
+        // - `*` puts the brand on either side (scaling commutes), so one
+        //   unsolved operand is enough.
+        // - `/` divides a brand BY a float, so only an unsolved LEFT counts.
+        // - everything else — `+`, `-`, and the orderings — combines or
+        //   compares like with like, so a side already solved to a non-brand
+        //   settles the node as float RIGHT HERE. That matters: `Math.abs(d)
+        //   < step` pins `step` immediately instead of leaving it (and the
+        //   `rate * dt` that produced it) undecided until the flush.
+        let branded_reading_possible = match op {
+            BinOp::Mul => matches!(lhs, Type::Var(_)) || matches!(rhs, Type::Var(_)),
+            BinOp::Div => matches!(lhs, Type::Var(_)),
+            _ => matches!(lhs, Type::Var(_)) && matches!(rhs, Type::Var(_)),
+        };
+        if branded_reading_possible
+            && self
+                .brand_ops
+                .keys()
+                .any(|(_, declared)| *declared == declarable)
         {
-            let result = self.fresh();
+            // A comparison's result is settled (`bool`) even while its
+            // operands are not, so only arithmetic needs a fresh variable.
+            let result = if op.is_comparison() {
+                Type::Bool
+            } else {
+                self.fresh()
+            };
             self.pending_ops.push(PendingOp {
                 op,
                 lhs,
@@ -3283,7 +3366,7 @@ is {other}"
         }
         self.require_float(op, &lhs, lhs_span);
         self.require_float(op, &rhs, rhs_span);
-        Type::Float
+        result_type(op, &Type::Float)
     }
 
     /// Resolve an arithmetic node against the declared unit operators.
@@ -3299,10 +3382,13 @@ is {other}"
         rhs_span: Span,
         node_span: Span,
     ) -> Option<Type> {
+        // A derived comparison resolves through the operator it is
+        // implemented BY: `>`/`<=`/`>=` all look up the brand's `<`.
+        let declarable = op.declarable();
         // The brand on the LEFT is the declared form: `45deg + 45deg`,
         // `45deg * 2.0`.
         if let Some(name) = brand_name(lhs) {
-            if self.brand_ops.contains_key(&(name.clone(), op)) {
+            if self.brand_ops.contains_key(&(name.clone(), declarable)) {
                 let want = operand_type(op, lhs);
                 self.unify(
                     rhs,
@@ -3310,14 +3396,26 @@ is {other}"
                     rhs_span,
                     &format!("the right operand of `{}` on `{name}`", op.symbol()),
                 );
-                return Some(lhs.clone());
+                return Some(result_type(op, lhs));
             }
         }
         let name = brand_name(rhs)?;
-        if !self.brand_ops.contains_key(&(name.clone(), op)) {
+        if !self.brand_ops.contains_key(&(name.clone(), declarable)) {
             return None;
         }
         match op {
+            // An ordering compares like with like, in either direction: the
+            // derived `>` is the declared `<` with its operands swapped, so a
+            // brand on the RIGHT is just as resolvable as one on the left.
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                self.unify(
+                    lhs,
+                    rhs,
+                    lhs_span,
+                    &format!("the left operand of `{}` on `{name}`", op.symbol()),
+                );
+                Some(Type::Bool)
+            }
             // `+`/`-` stay inside the brand, so the left operand is one too.
             BinOp::Add | BinOp::Sub => {
                 self.unify(
@@ -3403,46 +3501,132 @@ is {other}"
             let one_operand_twice = matches!((&lhs, &rhs), (Type::Var(a), Type::Var(b)) if a == b);
             let branded_reading_exists =
                 !(one_operand_twice && matches!(node.op, BinOp::Mul | BinOp::Div));
-            // Nothing about the node — neither operand, nor the type its
-            // result flows into — says which arithmetic this is.
+            // Nothing about the node — neither operand, nor (for arithmetic)
+            // the type its result flows into — says which reading this is. A
+            // comparison's result is `bool` either way, so it never carries
+            // evidence and only the operands can decide it.
+            let result_undecided = node.op.is_comparison()
+                || matches!(self.zonk(&node.result), Type::Var(_));
             if branded_reading_exists
                 && matches!(lhs, Type::Var(_))
                 && matches!(rhs, Type::Var(_))
-                && matches!(self.zonk(&node.result), Type::Var(_))
+                && result_undecided
             {
+                let declarable = node.op.declarable();
                 let mut brands: Vec<&str> = self
                     .brand_ops
                     .keys()
-                    .filter(|(_, declared)| *declared == node.op)
+                    .filter(|(_, declared)| *declared == declarable)
                     .map(|(brand, _)| brand.as_str())
                     .collect();
                 brands.sort_unstable();
                 let symbol = node.op.symbol();
+                let kind = if node.op.is_comparison() {
+                    "comparison"
+                } else {
+                    "arithmetic"
+                };
                 self.diag(
                     node.node_span,
                     format!(
-                        "`{symbol}` here could be float arithmetic or {} — annotate an operand \
+                        "`{symbol}` here could be float {kind} or {} — annotate an operand \
 (e.g. `(a: {})`) so the operator can be resolved",
                         brands
                             .iter()
-                            .map(|brand| format!("`{brand}` arithmetic"))
+                            .map(|brand| format!("`{brand}` {kind}"))
                             .collect::<Vec<_>>()
                             .join(" or "),
                         brands.first().copied().unwrap_or("float"),
                     ),
                 );
             }
-            // Either way the node is float arithmetic from here on: the
+            // Either way the node is the float reading from here on: the
             // ambiguous case has already been reported, so this keeps one
             // unannotated operand from cascading through the rest of the def.
             self.require_float(node.op, &lhs, node.lhs_span);
             self.require_float(node.op, &rhs, node.rhs_span);
             self.unify(
-                &Type::Float,
+                &result_type(node.op, &Type::Float),
                 &node.result,
                 node.node_span,
                 &format!("the result of `{}`", node.op.symbol()),
             );
+        }
+        self.flush_pending_eq();
+    }
+
+    /// Resolve every deferred `==`/`!=` node's HOST-OPACITY verdict, now that
+    /// its operand type is known. Nothing about inference waited on this —
+    /// equality answers `bool` regardless — so this only reports.
+    fn flush_pending_eq(&mut self) {
+        for (op, ty, span) in std::mem::take(&mut self.pending_eq) {
+            let ty = self.zonk(&ty);
+            // Still unsolved (a generic helper's `a == b`): equality is
+            // polymorphic, so there is nothing to say.
+            self.reject_host_equality(op, &ty, span);
+        }
+    }
+
+    /// `==`/`!=` on a type whose values are opaque ENGINE values is a runtime
+    /// error, so it is refused here — unless the brand declares its own `==`
+    /// (`Angle.t` and `Time.t` do), which is exactly what makes them
+    /// comparable.
+    fn reject_host_equality(&mut self, op: BinOp, ty: &Type, span: Span) {
+        let Some(name) = self.opaque_engine_type(ty) else {
+            return;
+        };
+        self.diag(
+            span,
+            format!(
+                "`{}` on `{name}`: engine values are opaque — compare the numbers you derived \
+from them instead (`{name}` supports no `==`)",
+                op.symbol()
+            ),
+        );
+    }
+
+    /// The name of an opaque ENGINE type this operand would compare, if any.
+    ///
+    /// It walks exactly what [`contains_fn`] walks — the type itself, map
+    /// keys/values, tuple elements, and a nominal's type ARGUMENTS — because
+    /// the two are the same rule about the same question: runtime `==` has
+    /// precisely two refusals (a function value and a `HostData`), and each
+    /// certainty rule reports one of them at check time. Anywhere a compared
+    /// function is certainly an error, a compared host value is too. They
+    /// stay separate functions only because they answer differently: a bool
+    /// versus the NAME the diagnostic teaches with.
+    ///
+    /// A record's FIELDS are not walked (neither rule walks them), so a host
+    /// value buried in a model still meets the runtime error — the
+    /// gradual-seam backstop.
+    ///
+    /// `declares_eq` is the ONE asymmetry between the top level and the walk,
+    /// and it is load-bearing. A brand that declares its own `==` is not
+    /// opaque *as an operand*, because the operator node dispatches to that
+    /// implementation. NESTED, it is opaque again: the structural walk
+    /// (`value_eq`) recurses on its own and never consults the brand table,
+    /// so `(90deg, 1.0) == (90deg, 1.0)` really is a certain runtime error
+    /// even though `90deg == 90deg` is fine. [xreview: Claude High]
+    fn opaque_engine_type(&self, ty: &Type) -> Option<String> {
+        self.opaque_engine_type_at(ty, true)
+    }
+
+    fn opaque_engine_type_at(&self, ty: &Type, operand: bool) -> Option<String> {
+        let nested = |ty: &Type| self.opaque_engine_type_at(ty, false);
+        match ty {
+            Type::Map(key, value) => nested(key).or_else(|| nested(value)),
+            Type::List(element) => nested(element),
+            Type::Tuple(elements) => elements.iter().find_map(nested),
+            Type::Record(_, args) | Type::Variant(_, args) => {
+                // The type's OWN name first — a nominal is opaque before its
+                // (empty, for every host handle) arguments matter.
+                let name = brand_name(ty).filter(|name| {
+                    self.host_types.contains(name)
+                        && !(operand && self.brand_ops.contains_key(&(name.clone(), BinOp::Eq)))
+                });
+                name.or_else(|| args.iter().find_map(nested))
+            }
+            _ => None,
         }
     }
 
@@ -3454,7 +3638,7 @@ is {other}"
         };
         // Operator order, not alphabetical — and the same order the
         // interpreter's twin message uses.
-        let declared: Vec<&str> = BinOp::ARITHMETIC
+        let declared: Vec<&str> = BinOp::DECLARABLE
             .into_iter()
             .filter(|declared| self.brand_ops.contains_key(&(name.clone(), *declared)))
             .map(|declared| declared.symbol())

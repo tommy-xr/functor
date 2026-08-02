@@ -1,7 +1,7 @@
 //! Declarative audio scenes returned by the optional `soundScape` hook.
 
 /// An opaque audio scene.
-type t
+type t = host
 
 /// Create an audio scene from continuous sources.
 let create : (List<AudioSource.t>) => t

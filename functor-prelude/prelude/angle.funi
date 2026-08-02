@@ -5,7 +5,7 @@
 //! `Angle.radians`.
 
 /// An opaque angle value.
-type t
+type t = host
 
 /// Construct an angle from degrees.
 let degrees : (float) => t
@@ -20,6 +20,22 @@ let sub : (t, t) => t
 /// It takes the angle FIRST — the shape every declared `*` has — so unlike
 /// most of the prelude it is not written to be piped into.
 let scale : (t, float) => t
+
+/// Are two angles the same? This is what `90deg == 90deg` calls.
+///
+/// It is float equality on the underlying radians, with every consequence
+/// that implies: `90deg == 90deg` is true because both sides build the same
+/// number, but `90deg == 1.5708rad` is false, and an angle accumulated
+/// through arithmetic may miss an exact literal by a rounding step. An angle
+/// is one-way (there is no way back to a number), so where a tolerance
+/// matters, keep the plain float you built it from and compare THAT.
+let equals : (t, t) => bool
+/// Is the first angle smaller than the second? This is what `45deg < 90deg`
+/// calls, and — swapped or negated — `>`, `<=`, and `>=` too.
+///
+/// Angles are ordered by their raw radians, so this is signed magnitude, NOT
+/// a direction on the circle: `-270deg < 90deg` is true.
+let less : (t, t) => bool
 
 /// Degrees as a literal suffix: `90deg` is exactly `Angle.degrees(90.0)`.
 unit deg = Angle.degrees
@@ -36,3 +52,11 @@ unit deg (-) = Angle.sub
 /// `2.0 * 45deg` are both `Angle.scale(45deg, 2.0)`. (Multiplying two angles
 /// would be a different kind of thing — Functor Lang does not model that.)
 unit deg (*) = Angle.scale
+/// `==` on angles: `90deg == 90deg` is `Angle.equals(90deg, 90deg)`, and
+/// `!=` is its negation. Underneath it is FLOAT equality on radians — see
+/// `Angle.equals`.
+unit deg (==) = Angle.equals
+/// `<` on angles: `45deg < 90deg` is `Angle.less(45deg, 90deg)`. `>`, `<=`,
+/// and `>=` derive from it (swapped and/or negated), so all four orderings
+/// come from this one declaration.
+unit deg (<) = Angle.less

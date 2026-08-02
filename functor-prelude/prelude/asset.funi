@@ -15,11 +15,11 @@
 //! stay plain strings.)
 
 /// A model asset locator.
-type Model
+type Model = host
 /// A texture asset locator.
-type Texture
+type Texture = host
 /// A sound asset locator.
-type Sound
+type Sound = host
 
 /// Construct a model locator from a relative path or URL.
 let model : (string) => Model

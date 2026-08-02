@@ -30,11 +30,11 @@
 //! above 60fps) it waits for the next simulated frame.
 
 /// An opaque collision shape.
-type shape
+type shape = host
 /// An opaque rigid body description.
-type body
+type body = host
 /// An opaque physics world description.
-type world
+type world = host
 /// A stable, branded body identity used throughout the physics API.
 type tag
 

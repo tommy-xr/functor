@@ -2152,3 +2152,103 @@ fn a_duplicate_unit_across_files_names_both() {
     assert!(message.contains("duplicate unit `px`"), "{message}");
     assert!(message.contains("game.fun"), "{message}");
 }
+
+// ------------------------------------------ `type t = host` (opaque values)
+
+/// `type t = host` marks an abstract type whose values are opaque HOST
+/// values. Everything about it types exactly like a plain `type t` — it is
+/// still an abstract nominal handed around by host functions — EXCEPT that
+/// `==`/`!=` on one is refused at check time rather than at run time.
+#[test]
+fn a_host_type_refuses_equality_at_check_time() {
+    let project = load(
+        "host-type-eq",
+        &[
+            (
+                "game.fun",
+                "let same = (): bool => Widget.make() == Widget.make()\n",
+            ),
+            (
+                "widget.funi",
+                "type Handle = host\n\
+                 let make : () => Handle\n\
+                 let size : (Handle) => float",
+            ),
+        ],
+    );
+    let diags = project.check();
+    assert!(
+        diags.iter().any(|d| d.message.contains("engine values are opaque")
+            && d.message.contains("`Widget.Handle` supports no `==`")),
+        "{diags:?}"
+    );
+    // `!=` is the exact negation, so it is refused identically…
+    let project = load(
+        "host-type-ne",
+        &[
+            (
+                "game.fun",
+                "let differ = (): bool => Widget.make() != Widget.make()\n",
+            ),
+            (
+                "widget.funi",
+                "type Handle = host\nlet make : () => Handle",
+            ),
+        ],
+    );
+    assert!(
+        project
+            .check()
+            .iter()
+            .any(|d| d.message.contains("`!=` on `Widget.Handle`")),
+        "`!=` should be refused too"
+    );
+    // …while everything ELSE about the type is unchanged: it still passes
+    // through host signatures with no complaint.
+    let project = load(
+        "host-type-ok",
+        &[
+            (
+                "game.fun",
+                "let big = (): bool => Widget.size(Widget.make()) > 1.0\n",
+            ),
+            (
+                "widget.funi",
+                "type Handle = host\n\
+                 let make : () => Handle\n\
+                 let size : (Handle) => float",
+            ),
+        ],
+    );
+    assert!(project.check().is_empty(), "{:?}", project.check());
+}
+
+/// A plain `type t` stays comparable. Not every abstract prelude type is a
+/// host handle — `Sprite.t` and `Physics.tag` are ordinary Functor Lang data
+/// behind an opaque name — so the marker is what distinguishes them, and its
+/// absence must change nothing.
+#[test]
+fn a_plain_abstract_type_still_compares() {
+    let project = load(
+        "abstract-type-eq",
+        &[
+            (
+                "game.fun",
+                "let same = (): bool => Widget.make() == Widget.make()\n",
+            ),
+            ("widget.funi", "type Handle\nlet make : () => Handle"),
+        ],
+    );
+    assert!(project.check().is_empty(), "{:?}", project.check());
+}
+
+/// The marker says something only the HOST can be responsible for, so a `.fun`
+/// may not claim it — its types are ordinary data.
+#[test]
+fn a_host_type_is_rejected_in_an_implementation_file() {
+    let message = load_err(
+        "host-type-in-fun",
+        &[("game.fun", "type Handle = host\nlet main = () => 1.0\n")],
+    );
+    assert!(message.contains("belongs in an interface (.funi) file"), "{message}");
+}

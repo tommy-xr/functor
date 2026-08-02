@@ -1,7 +1,7 @@
 //! Lights used by `Frame.createLit`.
 
 /// An opaque light description.
-type t
+type t = host
 
 /// Create uniform ambient light.
 let ambient : (Color.t) => t

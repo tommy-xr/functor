@@ -24,8 +24,9 @@ The habits that break first, in one place. Each is expanded below.
 - **Operators are exhaustive**: `+ - * /`, `< > <= >= == !=`, `&& || not`.
   There is no `<>` (inequality is `!=` only), no `%` (`Math.mod`), no `^`
   (`Math.pow`), and no string-concatenation operator (use `$"…"`).
-  `+ - * /` also work on BRANDS that declare them — `90deg + 45deg`,
-  `1.5s - 200ms`, `45deg * 2.0` (see Units below); comparisons do not.
+  `+ - * /` and `== != < > <= >=` also work on BRANDS that declare them —
+  `90deg + 45deg`, `1.5s - 200ms`, `45deg * 2.0`, `90deg == 90deg`,
+  `1.5s < 2000ms` (see Units below).
 - **No loops** — iterate with `List.map` / `List.filter` / `List.fold`.
 - **All numbers are `float`** (f64); primitive type names are lowercase
   (`float`, `string`, `bool`), while generic containers are `List<…>` and
@@ -126,6 +127,7 @@ unit px = Px                                  // …with a literal SUFFIX: `16px
 let width = 16px                              //   the suffix must TOUCH the digits (`16 px` is
                                               //   two tokens); `-2.5px` == `Px(-2.5)`
 unit px (+) = addPx                           // …and arithmetic on the brand: `16px + 4px`
+unit px (<) = lessPx                          // …and ordering: `4px < 16px`, plus > <= >=
 let origin: Position = { x: 0.0, y: 0.0 }     // OPTIONAL binding annotation `let name: Type = …`
                                               //   (checked against the value; also on `let … in`)
 let scores = [1.0, 2.0, 3.0]                  // list literal; [x, ..xs] prepends
@@ -592,16 +594,19 @@ that's what `functor test` is for.
 - Expects may freely call engine externals under `functor test`
   (`Scene.*`, `Color.*`, …): no external performs IO or touches GL, and
   `Effect.*` only builds a *descriptor* — nothing is performed. Note that
-  engine values are `HostData`, so `==` on them is a runtime error;
-  assert on numbers/records you derive instead. The highest-value tests
-  are pure logic anyway: model/`tick`/`update` math.
+  opaque engine values (`Scene.t`, `Frame.t`, `Effect.t`, `Color.t`,
+  `Vec3.t`, …) support no `==` — the CHECKER rejects it now, naming the
+  type — so assert on numbers/records you derive instead. Brands DO
+  compare: angles, durations (`90deg == 90deg`, `1.5s < 2000ms`), and
+  `Physics.tag`. The highest-value tests are pure logic anyway:
+  model/`tick`/`update` math.
 
 ## Units: suffixed literals and their operators (`unit`)
 
 A numeric literal may carry a **unit suffix** — `90deg`, `0.5s`, `16px` — which
 is exactly the call the suffix's `unit` declaration names, and a brand may
-declare **arithmetic** on itself (`90deg + 45deg`). Full design:
-`docs/functor-lang-units.md`.
+declare **arithmetic and comparison** on itself (`90deg + 45deg`,
+`1.5s < 2000ms`). Full design: `docs/functor-lang-units.md`.
 
 ```functor
 unit deg = Angle.degrees            // a top-level ITEM, in `.fun` and `.funi`
@@ -641,16 +646,26 @@ let beat = Sub.every(0.5s, Tick)    // == Sub.every(Time.seconds(0.5), Tick)
 ```functor
 type Px = | Px(value: float)
 unit px = Px
-unit px (+) = (a, b) => Px(unwrap(a) + unwrap(b))   // (Px, Px) => Px
-unit px (*) = (a, k) => Px(unwrap(a) * k)           // (Px, float) => Px
+unit px (+)  = (a, b) => Px(unwrap(a) + unwrap(b))  // (Px, Px) => Px
+unit px (*)  = (a, k) => Px(unwrap(a) * k)          // (Px, float) => Px
+unit px (==) = (a, b) => unwrap(a) == unwrap(b)     // (Px, Px) => bool
+unit px (<)  = (a, b) => unwrap(a) < unwrap(b)      // (Px, Px) => bool
 
 let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
+let ordered = 4px < 16px            // …and >, <=, >=, ==, != (all derived)
 ```
 
-- **Only `+` `-` `*` `/`.** `+` and `-` are typechecked as `('t, 't) => 't`;
-  `*` and `/` as the SCALAR `('t, float) => 't` (a brand times a brand would be a different
-  type — Functor Lang does not do dimensional analysis). Comparisons
-  (`==`, `<`, `>`) are NOT declarable.
+- **Six declarable operators: `+` `-` `*` `/` `==` `<`.** `+` and `-` are
+  typechecked as `('t, 't) => 't`; `*` and `/` as the SCALAR `('t, float) => 't`
+  (a brand times a brand would be a different
+  type — Functor Lang does not do dimensional analysis); `==` and `<` as
+  `('t, 't) => bool`. The other four comparisons are **DERIVED**, never
+  declared — `a != b` is `not equals(a, b)`; `a > b` is `less(b, a)`;
+  `a <= b` is `not less(b, a)`; `a >= b` is `not less(a, b)`. Writing
+  `unit px (>) = …` is a parse error naming the base to declare instead. (One
+  honest consequence: for a BRAND, `<=` is the negation of `<`, so a NaN-built
+  brand compares as an ordinary value under `<=`/`>=` where a raw float would
+  be false. Float comparison itself is unchanged.)
 - **The operator belongs to the BRAND, not the suffix.** `s`/`ms`/`us`/`min`/
   `hr` are all `Time.t`, so one declaration serves them all and `1.5s - 200ms`
   works. Declaring the same brand + operator twice — through ANY suffix — is a
@@ -678,12 +693,28 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   decides it for `+`/`-`), `(a, b): float => a + b`,
   `(a) => a + 1.0`, and `(v) => v * v` (the scalar form's operands have
   DIFFERENT types, so one operand twice can only be float) do not.
+  A side already solved to a NON-brand settles the node on the spot, since
+  only `*` (either side) and `/` (left side) can still take a brand there —
+  which is why `Math.abs(d) < step` decides `step` with no annotation.
+- **A comparison is the same, minus the result evidence**: `a < b` answers
+  `bool` whichever way it resolves, so ONLY an operand can decide it and
+  `(a, b) => a < b` asks for an annotation once a brand declares `<`
+  (```<` here could be float comparison or `Angle.t` comparison — annotate an
+  operand``). `(v: float, lo, hi) => …` is the fix. A brand with NO declared
+  `==` keeps structural equality exactly as before.
 - **A brand with no implementation** keeps the old error, now naming what it
   has: ```-` needs float operands, got Angle.t — `Angle.t` declares `+`, `*`, but
-  not `-```. The interpreter says the same thing on the same inputs.
-- **Built-in operators (engine prelude only)**: `+`, `-`, and scalar `*` on
-  BOTH `Angle.t` and `Time.t` (`Angle.add`/`sub`/`scale`, `Time.add`/`sub`/
-  `scale` — all public API in the generated reference). Neither declares `/`.
+  not `-```. It names the DECLARABLE base, so `>` on a brand that lacks `<`
+  reports ``but not `<` ``. The interpreter says the same thing on the same inputs.
+- **Built-in operators (engine prelude only)**: `+`, `-`, scalar `*`, `==`,
+  and `<` on BOTH `Angle.t` and `Time.t` (`Angle.add`/`sub`/`scale`/`equals`/
+  `less`, `Time.add`/`sub`/`scale`/`equals`/`less` — all public API in the
+  generated reference). Neither declares `/`. So `90deg == 90deg`,
+  `45deg < 90deg`, `1.5s < 2000ms`, and `2min > 90s` all work — but note that
+  `==` on an angle or duration is **float equality** on the underlying
+  radians/seconds, so an accumulated value may miss an exact literal by a
+  rounding step (and there is no way back out of the brand to compare with a
+  tolerance — keep the plain float where that matters).
 
 ## Semantics rules that WILL bite you
 
@@ -706,6 +737,19 @@ let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
   run time. `!=` behaves identically in every respect — it IS `==`
   negated, so it rejects the same operands with the same (reworded)
   errors.
+- **Engine values are opaque and refuse `==` at CHECK time.**
+  ``` `==` on `Scene.t`: engine values are opaque — compare the numbers you
+  derived from them instead ```. That covers every host handle the prelude
+  declares `type t = host` (scenes, frames, cameras, effects, subs, lights,
+  colors, vec3s, render targets, assets, physics shapes/bodies/worlds, UI
+  nodes…) — the runtime error stays as the gradual-seam backstop. Brands
+  over data are NOT affected: `Physics.tag` (a string underneath) and
+  `Sprite.t` compare structurally, and `Angle.t`/`Time.t` compare because
+  they DECLARE `==` (see Units). Two limits: the rule walks tuples, map
+  keys/values, and a nominal's type ARGUMENTS but not a record's fields (a
+  host value buried in a model still fails at run time), and it is
+  DIRECT-only — equality is polymorphic, so `let same = (a, b) => a == b`
+  called with two scenes checks clean and fails at run time.
 - **Comparisons are IEEE**, so NaN (`0.0 / 0.0`) is false against
   everything — including itself — under `<`, `>`, `<=`, `>=`, and `==`;
   `nan != nan` is therefore `true`.

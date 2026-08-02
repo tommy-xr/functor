@@ -5,7 +5,7 @@
 //! otherwise. A skybox is never fogged.
 
 /// An opaque fog description.
-type t
+type t = host
 
 /// Create linear fog between near and far distances.
 ///

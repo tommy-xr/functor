@@ -1140,8 +1140,10 @@ with `unit {suffix} = SomeFn` (a `(float) => 't` function), or write the call it
                 .collect()
         };
         Ok(match body {
-            // No fields to canonicalize — an abstract type is opaque.
+            // No fields to canonicalize — an abstract type is opaque, and a
+            // host-valued one is abstract plus one fact for the checker.
             ast::TypeBody::Abstract => ast::TypeBody::Abstract,
+            ast::TypeBody::Host => ast::TypeBody::Host,
             ast::TypeBody::Record(fields) => ast::TypeBody::Record(canon_fields(self, fields)?),
             ast::TypeBody::Variants(variants) => ast::TypeBody::Variants(
                 variants

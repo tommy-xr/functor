@@ -7,7 +7,7 @@
 //! rendered into shows the PREVIOUS frame's image.
 
 /// An opaque render target identity and size.
-type t
+type t = host
 
 /// Create a stable, named 512×512 render target.
 let named : (string) => t
