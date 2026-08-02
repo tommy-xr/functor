@@ -7,8 +7,8 @@
 // board deals a fresh round. The server owns the world; a client sends what
 // it is doing and draws the snapshots it gets back.
 //
-// BOTH roles are inline modules of this ONE file — `module Client` at the
-// bottom and `module Server` under it, each block's members ARE that role's
+// BOTH roles are inline modules of this ONE file — `module Client` near the
+// end and `module Server` after it; each block's members ARE that role's
 // contract (`Client.init`/`Client.tick`/…). functor.json maps the roles to
 // them; everything above the blocks is shared by both. One buffer, one atomic
 // hot reload, and the protocol declared exactly once.

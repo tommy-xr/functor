@@ -1028,15 +1028,20 @@ try {
       "both orbs clients were seated by the authority (a pid off the wire)",
       String(models.c1).slice(0, 120)
     );
+    // A SEAT, not just a pilot: the world's pilots carry a `pid` too, so only
+    // the cid→pid pairing proves the authority bound each connection.
     check(
       typeof models.server === "string" &&
-        (models.server.match(/cid: /g) ?? []).length === 2 &&
-        (models.server.match(/pid: /g) ?? []).length >= 2,
+        (models.server.match(/cid: \d+, pid: \d+/g) ?? []).length === 2,
       "the authority holds a seat for each client pane",
       String(models.server).slice(0, 160)
     );
+    // A boot failure can surface as an uncaught exception rather than a
+    // `[functor-lang]` line, so the pageerror relay counts too.
     const errors = consoleLog.filter(
-      (line) => line.includes("[functor-lang]") && line.includes("error")
+      (line) =>
+        line.startsWith("pageerror:") ||
+        (line.includes("[functor-lang]") && line.includes("error"))
     );
     check(errors.length === 0, "no orbs pane reported a runtime error", errors.slice(0, 3).join(" | "));
     await page.close();
