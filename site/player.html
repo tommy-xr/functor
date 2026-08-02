@@ -8,7 +8,7 @@
        sync when the runtime's functor_lang_* exports change. -->
   <head>
     <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -557,37 +557,63 @@
         // Touch contacts (mobile): forwarded into the sampled-input touch
         // domain with page-assigned small ordinals (browsers hand out
         // arbitrary Touch.identifiers). CSS pixels relative to the canvas,
-        // like the visible-pointer path. preventDefault keeps a game drag
-        // from scrolling/zooming and suppresses the synthesized
-        // compatibility mouse events.
-        const touchOrdinals = new Map(); // Touch.identifier -> small ordinal
-        const touchOrdinal = (identifier) => {
+        // like the visible-pointer path. No preventDefault: the canvas's
+        // `touch-action: none` already stops scrolling/zooming, while the
+        // browser's compatibility mouse events stay alive so `Ui.*` widgets
+        // and mouse-driven games remain tappable on touch devices (a
+        // touch-aware game simply ignores the synthesized mouse input).
+        const touchOrdinals = new Map(); // Touch.identifier -> { ordinal, x, y }
+        const touchEntry = (identifier) => {
           if (touchOrdinals.has(identifier)) return touchOrdinals.get(identifier);
-          const used = new Set(touchOrdinals.values());
+          const used = new Set([...touchOrdinals.values()].map((e) => e.ordinal));
           let ordinal = 0;
           while (used.has(ordinal)) ordinal++;
-          touchOrdinals.set(identifier, ordinal);
-          return ordinal;
+          const entry = { ordinal, x: 0, y: 0 };
+          touchOrdinals.set(identifier, entry);
+          return entry;
         };
-        // Phases mirror functor_lang_touch_event: 0 begin, 1 move, 2 end, 3 cancel.
+        // Phases mirror TouchPhase::from_i32: 0 begin, 1 move, 2 end, 3 cancel.
         const forwardTouches = (e, phase, release) => {
-          e.preventDefault();
+          if (debugCameraOwnsInput()) return;
           const rect = canvas.getBoundingClientRect();
           for (const touch of e.changedTouches) {
-            const ordinal = touchOrdinal(touch.identifier);
-            functor_lang_touch_event(
-              phase,
-              ordinal,
-              touch.clientX - rect.left,
-              touch.clientY - rect.top,
-            );
+            const entry = touchEntry(touch.identifier);
+            entry.x = touch.clientX - rect.left;
+            entry.y = touch.clientY - rect.top;
+            functor_lang_touch_event(phase, entry.ordinal, entry.x, entry.y);
             if (release) touchOrdinals.delete(touch.identifier);
           }
         };
-        canvas.addEventListener("touchstart", (e) => forwardTouches(e, 0, false), { passive: false });
-        canvas.addEventListener("touchmove", (e) => forwardTouches(e, 1, false), { passive: false });
-        canvas.addEventListener("touchend", (e) => forwardTouches(e, 2, true), { passive: false });
-        canvas.addEventListener("touchcancel", (e) => forwardTouches(e, 3, true), { passive: false });
+        // `?touch=passive` opts a decorative embed out of the game touch
+        // domain entirely: the landing page's hero iframe sits where a
+        // phone's first scroll swipe lands, and `touch-action: none` there
+        // would turn it into a scroll trap. Passive embeds keep native
+        // scrolling and receive no touch domain.
+        const passiveTouch = params.get("touch") === "passive";
+        if (passiveTouch) {
+          canvas.style.touchAction = "pan-y";
+          canvas.style.overscrollBehavior = "auto";
+        } else {
+          canvas.addEventListener("touchstart", (e) => forwardTouches(e, 0, false));
+          canvas.addEventListener("touchmove", (e) => forwardTouches(e, 1, false));
+          canvas.addEventListener("touchend", (e) => forwardTouches(e, 2, true));
+          canvas.addEventListener("touchcancel", (e) => forwardTouches(e, 3, true));
+        }
+        // The touch twin of releaseGameButtons: a contact whose touchend the
+        // page never sees (tab switch, system gesture, incoming call) must
+        // not stay held forever — sweep every active contact as CANCELLED
+        // (the platform stole it) and free its ordinal.
+        const releaseTouches = () => {
+          for (const entry of touchOrdinals.values()) {
+            functor_lang_touch_event(3, entry.ordinal, entry.x, entry.y);
+          }
+          touchOrdinals.clear();
+        };
+        window.addEventListener("blur", releaseTouches);
+        window.addEventListener("pagehide", releaseTouches);
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) releaseTouches();
+        });
 
         // Interactive game UI (docs/ui-interaction.md U3): while the pointer
         // is FREE (not look mode), its canvas position + primary button drive

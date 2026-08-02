@@ -4,9 +4,25 @@
 // sampled (a quick tap can put them in the same snapshot), echoing the press
 // position so the test can assert canvas-relative CSS coordinates.
 
-type Model = { surfaced: bool, taps: float, rels: float, x: float, y: float, logged: bool }
+type Model = {
+  surfaced: bool,
+  taps: float,
+  rels: float,
+  x: float,
+  y: float,
+  logged: bool,
+  multiLogged: bool
+}
 
-let init = { surfaced: false, taps: 0.0, rels: 0.0, x: 0.0, y: 0.0, logged: false }
+let init = {
+  surfaced: false,
+  taps: 0.0,
+  rels: 0.0,
+  x: 0.0,
+  y: 0.0,
+  logged: false,
+  multiLogged: false
+}
 
 let sampledInput = (m: Model, snap: Input.snapshot) =>
   match snap.touch with
@@ -25,11 +41,19 @@ let sampledInput = (m: Model, snap: Input.snapshot) =>
       |> Option.defaultValue(m) in
     let counted =
       { pressed with surfaced: surfaced, rels: pressed.rels + List.length(t.released) } in
-    if not counted.logged && counted.taps > 0.0 && counted.rels > 0.0 then
-      let line: string =
-        Debug.log("e2e-touch", $"tap x={counted.x} y={counted.y} rels={counted.rels}") in
-      { counted with logged: Text.length(line) > 0.0 }
-    else counted
+    let tapped =
+      if not counted.logged && counted.taps > 0.0 && counted.rels > 0.0 then
+        let line: string =
+          Debug.log("e2e-touch", $"tap x={counted.x} y={counted.y} rels={counted.rels}") in
+        { counted with logged: Text.length(line) > 0.0 }
+      else counted in
+    // Two simultaneous held contacts: log once, so the e2e can assert the
+    // page bridge assigned distinct ordinals (one shared ordinal would fold
+    // both fingers into a single contact).
+    if not tapped.multiLogged && List.length(t.touches) >= 2.0 then
+      let line: string = Debug.log("e2e-touch", "multi n=2") in
+      { tapped with multiLogged: Text.length(line) > 0.0 }
+    else tapped
   | Option.None => m
 
 let tick = (m: Model, dt, tts) => m
