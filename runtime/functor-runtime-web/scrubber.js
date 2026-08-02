@@ -423,7 +423,7 @@ const HTML = `
          future, so "preview the future" was wrong, and the hero excerpt's
          comment does the teaching. -->
     <button id="scrub-extrapolate" data-tip="Extrapolate"
-      aria-label="Extrapolate the game into the future">🔮</button>
+      aria-label="Extrapolate — see past and future states">🔮</button>
   </div>
   <!-- ▶, not ⏸: the notice only ever shows while paused, and the transport
        button reads ▶ then. It must name the glyph actually on the bar. -->
