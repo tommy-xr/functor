@@ -14,6 +14,7 @@ import {
   functor_lang_scrub_paused,
   functor_lang_scrub_set_preview,
   functor_lang_scrub_set_preview_config,
+  functor_lang_scrub_set_preview_presence,
   functor_lang_timeline_events,
   functor_lang_timeline_events_gen,
   functor_lang_ui_wants_keyboard,
@@ -447,6 +448,9 @@ export function mountScrubber({ hidden = false } = {}) {
   // this only forwards the wire value). Seam-only config with no chrome, so it
   // is NOT part of the reducer's state.
   let previewMode = 3;
+  // Seam-only presence pin; -1 = "no pin", the runtime eases the overlay in
+  // and out itself (see `setPreview`).
+  let previewPresence = -1;
 
   let state = createTimelineState();
   let pendingSeek = null;
@@ -499,6 +503,9 @@ export function mountScrubber({ hidden = false } = {}) {
     const config = canonicalConfig();
     functor_lang_scrub_set_preview_config(config.seconds, config.rate);
   };
+  // Presence is seam-only: the chrome never pins it, so the toggle keeps its
+  // runtime fade. `-1` is the documented "resume easing" value.
+  const pushPresence = () => functor_lang_scrub_set_preview_presence(previewPresence);
 
   const requestSeek = (frame) => {
     const id = nextSeekId++;
@@ -1219,12 +1226,20 @@ export function mountScrubber({ hidden = false } = {}) {
       );
     },
     // Accepts the timeline-model preview fields plus `mode` (1 trail /
-    // 2 strobe / 3 both; any other index is Off, per `PreviewMode::from_index`).
-    // The mode has no chrome — it is seam-only config — so it lives beside the
-    // reducer's state, not in it.
-    setPreview: ({ mode: nextMode, ...preview }) => {
+    // 2 strobe / 3 both; any other index is Off, per `PreviewMode::from_index`)
+    // and `presence`. Neither has chrome — they are seam-only config — so they
+    // live beside the reducer's state, not in it.
+    //
+    // `presence` PINS the overlay's fade (0 = faded out, 1 = fully drawn),
+    // skipping the runtime's ease so a script can capture an exact mid-fade
+    // frame; a NEGATIVE value clears the pin and resumes easing.
+    setPreview: ({ mode: nextMode, presence: nextPresence, ...preview }) => {
       if (nextMode !== undefined && Number.isFinite(Number(nextMode))) {
         previewMode = Number(nextMode);
+      }
+      if (nextPresence !== undefined && Number.isFinite(Number(nextPresence))) {
+        previewPresence = Number(nextPresence);
+        pushPresence();
       }
       dispatch({ type: "preview-changed", preview });
       pushPreview();

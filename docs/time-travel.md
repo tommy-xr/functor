@@ -417,8 +417,8 @@ the right edge.
 
 Both scrubbers grow a mirrored endpoint handle, and **either handle sets the one
 shared window** — drag one side and both resize. The seam is unchanged:
-`setPreview({ enabled, seconds, rate, mode })` still takes one `seconds`, now
-read as the per-side window.
+`setPreview({ enabled, seconds, rate, mode, presence })` still takes one
+`seconds`, now read as the per-side window.
 
 **Cost.** The past half runs one `draw` per division and never advances the
 *model* — but for a physics game it is not free: restoring a recorded world seeks
@@ -476,6 +476,68 @@ first and re-records the jump when the anchor has aged out. The click latches
 while that is in flight, since a second pause toggle would leave the demo
 running. The sandbox and IDE pass no
 handler and keep ⏭ unchanged.
+
+### The presence ramp — the overlay arrives, it doesn't pop
+
+Toggling 🔮 used to swap a dense field of marks and copies in or out between two
+consecutive frames. That reads as a glitch rather than a state change, and it
+gives no sense that the overlay is *additional* to the scene. So the whole
+preview now fades: presence eases 0 → 1 (and back) over **0.28 s**, smoothstep
+shaped, driving a multiply on every overlay material's alpha.
+
+**Where presence lives is the load-bearing decision.** Both shells cache a
+*built* `FramePreview` downstream of the forward sim and clone it per frame.
+Presence is therefore:
+
+- **not** in `PreviewOptions`, and **not** in either shell's cache key — it
+  applies to the per-frame clone at apply time (`FramePreview::apply_all_with_presence`),
+  so animating it never re-runs `ghost_frames` / `history_frames`;
+- **not** in the overlay *builders* — a trail mark is still built at alpha 1.0
+  and the walk scales it afterwards, for the same reason;
+- runtime-*loop* state in each shell (`preview_presence` + the last on-mode).
+  The wanted-flags don't move during a fade — the shell keeps computing and
+  applying the **last on-mode** while presence is still above zero, because
+  fading out needs geometry after the toggle already flipped — so the cache
+  stays warm across the whole ramp.
+
+At presence 0 the overlay is *absent*, not transparent: an alpha-0 subtree would
+still write depth and occlude the scene behind it.
+
+**Translucent 3D materials.** The 3D forward pass is otherwise fully opaque, so
+fading needed a blend. A material whose constant color alpha is below 1 enables
+straight-alpha blending for its own subtree and restores after; passes that
+already own the blend state (2D sprites — which have always blended — and the
+transparent-debug mode) are left alone. This is safe to key on because the
+Functor Lang prelude *cannot express* a translucent 3D material (`Color.rgb` has
+no alpha channel), so a translucent 3D material means the runtime's own overlay.
+
+Two known limits are accepted at this tier:
+
+1. **Overlapping overlay parts double-blend.** There is no depth prepass or
+   back-to-front sort, so a mark's crossed arrowheads and its sphere core read
+   slightly denser where they overlap.
+2. **3D marks still cast shadows while fading.** Overlays ride the shared shadow
+   pass, which has no notion of presence.
+
+Both have the same fix, deferred as a follow-up: give the overlay its own
+**constant-alpha pass** after the scene, modeled on the transparent-debug recipe
+(depth prepass with the color mask off, then blend the nearest surface at a
+constant alpha), and exclude the overlay subtree from the shadow pass. That
+removes the double-blend and the shadows together, and makes presence a single
+`glBlendColor` instead of a material walk.
+
+**Overrides.** Tooling can PIN presence and skip the ease, for deterministic
+mid-fade captures: `--preview-presence <f32>` natively and
+`window.__scrub.setPreview({ presence })` on the web. In both, a **negative**
+value means "no pin — resume the runtime's easing".
+
+The ease itself runs on WALL-CLOCK delta and is deliberately *not* suppressed by
+`--fixed-time` / `?fixed-time`, which pin the game's **pose**, not real time.
+Captures stay reproducible anyway: the ramp is 0.28s and `--capture-time`
+defaults to 2s, so the fade is long finished when the shot is taken. Keeping the
+two independent is what makes the ease observable headlessly — sweeping
+`--capture-time` across the ramp with `--fixed-time` held constant renders the
+fade curve against a frozen pose.
 
 ## Deferred follow-ups: keep and reconstruct the old future
 

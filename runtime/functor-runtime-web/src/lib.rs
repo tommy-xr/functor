@@ -1410,6 +1410,21 @@ async fn run_async() -> Result<(), JsValue> {
         )> = None;
         let mut preview_refresh: u32 = 0;
         let mut next_live_preview_refresh: f32 = 0.0;
+        // The PRESENCE RAMP — the overlay eases in/out over
+        // `PRESENCE_RAMP_SECONDS` when 🔮 toggles, instead of popping.
+        //
+        // Runtime-loop state, exactly as on the desktop shell: presence is NOT
+        // in `PreviewOptions` and NOT in the cache key above. It multiplies the
+        // alpha of the CACHED preview's per-frame clone at apply time, so
+        // animating it never re-runs the forward sim, and the wanted-flags hold
+        // still during a fade so the cache stays warm.
+        let mut preview_presence: f32 = 0.0;
+        // What the preview last selected while ON: fading OUT needs geometry
+        // after the toggle has already cleared the wanted-flags.
+        let mut preview_last_on = functor_runtime_common::InteractivePreview::default();
+        // `window.__scrub.setPreview({ presence })` PINS presence and skips the
+        // ease (deterministic captures / demo scripts); negative resumes easing.
+        let mut preview_presence_override: Option<f32> = None;
 
         *g.borrow_mut() = Some(Closure::new(move || {
             // The frame's exclusive borrow of the shared producer.
@@ -1494,6 +1509,9 @@ async fn run_async() -> Result<(), JsValue> {
                         preview_window = window.clamp(0.5, 5.0);
                         preview_rate = rate.clamp(1, 30);
                     }
+                    functor_lang_game::ScrubControl::SetPreviewPresence(presence) => {
+                        preview_presence_override = (presence >= 0.0).then(|| presence.min(1.0));
+                    }
                     functor_lang_game::ScrubControl::SeekTo {
                         frame: f,
                         request_id,
@@ -1541,7 +1559,10 @@ async fn run_async() -> Result<(), JsValue> {
             // capture unchanged); a queued step yields one; paused yields none.
             // `frame_time` is the RENDER frame time — the settled `tts` the frame
             // is drawn / soundscaped / scrub-published at (its `dts` is unused).
-            let sub_frames = clock.fixed_frames((now - last_time) / 1000.0);
+            // Wall-clock seconds since the previous rAF — the sim uses it for
+            // fixed steps, and the preview's presence ramp eases by it.
+            let real_delta = (now - last_time) / 1000.0;
+            let sub_frames = clock.fixed_frames(real_delta);
             last_time = now;
             let frame_time = FrameTime {
                 dts: 0.0,
@@ -1673,11 +1694,59 @@ async fn run_async() -> Result<(), JsValue> {
             // forward-sim per frame would throttle the catch-up to a crawl);
             // it snaps back in on arrival.
             let catching_up = clock.pending_frames() > 0;
-            let selected =
-                functor_runtime_common::interactive_preview(preview_mode, true, catching_up);
-            let trail_wanted = selected.trail;
-            let strobe_wanted = selected.strobe;
-            let preview = if trail_wanted || strobe_wanted {
+            // The ramp follows the SELECTION only, with catch-up suppression
+            // kept out of it — a catch-up must not read as "the user turned the
+            // preview off" and start a fade. Suppression is a separate term on
+            // the recompute guard below (mirroring the desktop shell), so
+            // presence holds where it is and the overlay snaps back on arrival
+            // instead of fading out and back in.
+            let selected = functor_runtime_common::interactive_preview(preview_mode, true, false);
+            // Advance the presence ramp toward whether the preview selects
+            // anything, then keep driving the LAST ON mode while it fades out —
+            // otherwise the toggle would take the geometry away in the same
+            // frame it started the fade.
+            //
+            // The ease runs on WALL-CLOCK delta, independent of `?fixed-time`
+            // (which pins the game's POSE, not real time). The golden capture is
+            // unaffected: it screenshots long after the 0.28s ramp, and the web
+            // player starts with the preview OFF anyway.
+            let preview_selects = selected.trail || selected.strobe;
+            if preview_selects {
+                preview_last_on = selected;
+            }
+            let display_presence = match preview_presence_override {
+                // A pin HOLDS the phase at the opacity it names, so clearing it
+                // resumes the ease from what was on screen rather than from
+                // wherever a free-running phase had drifted to.
+                Some(pinned) => {
+                    preview_presence = functor_runtime_common::presence_phase(pinned);
+                    // A pin overrides the RAMP, not the SELECTION: with the
+                    // preview toggled off there is nothing to show, so a pin
+                    // must not keep the overlay (and its forward sim) alive.
+                    if preview_selects {
+                        pinned
+                    } else {
+                        0.0
+                    }
+                }
+                None => {
+                    preview_presence = functor_runtime_common::presence_step(
+                        preview_presence,
+                        if preview_selects { 1.0 } else { 0.0 },
+                        real_delta,
+                    );
+                    functor_runtime_common::presence_ease(preview_presence)
+                }
+            };
+            let active = if preview_selects {
+                selected
+            } else {
+                preview_last_on
+            };
+            let trail_wanted = active.trail;
+            let strobe_wanted = active.strobe;
+            let preview = if (trail_wanted || strobe_wanted) && display_presence > 0.0 && !catching_up
+            {
                 let key = (
                     game.current_scene_frame(),
                     frame_time.tts.to_bits(),
@@ -1807,7 +1876,7 @@ async fn run_async() -> Result<(), JsValue> {
 
             // Preview overlays go on the live frame.
             if let Some(p) = &preview {
-                p.apply_all(&mut frame);
+                p.apply_all_with_presence(&mut frame, display_presence);
             }
             // Shadow + forward passes, shared with the desktop runtime.
             functor_runtime_common::render_frame_with_view(

@@ -74,6 +74,21 @@ impl MaterialDescription {
         MaterialDescription::Texture(tex)
     }
 
+    /// The material's CONSTANT color alpha, when it has a color channel at all
+    /// (a bare `Texture` does not — its opacity lives in the image). The 3D
+    /// forward pass reads this to decide whether a subtree needs blending; a
+    /// texture's per-texel alpha is deliberately not consulted, since that
+    /// would mean blending every textured surface.
+    pub fn color_alpha(&self) -> Option<f32> {
+        match self {
+            MaterialDescription::Color(color)
+            | MaterialDescription::Emissive { color, .. }
+            | MaterialDescription::Lit { color, .. }
+            | MaterialDescription::SpriteTexture { color, .. } => Some(color.w),
+            MaterialDescription::Texture(_) => None,
+        }
+    }
+
     /// A solid self-lit color (neon / UI), no texture.
     pub fn emissive(r: f32, g: f32, b: f32, a: f32) -> MaterialDescription {
         MaterialDescription::Emissive {

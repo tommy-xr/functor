@@ -81,6 +81,8 @@ interface ScrubSeam {
     rate?: number;
     /** 1 trail / 2 strobe / 3 both (scrubber.js seam extension). */
     mode?: number;
+    /** Pin the overlay's fade (0..1); negative resumes the runtime's easing. */
+    presence?: number;
   }): void;
 }
 

@@ -565,6 +565,11 @@ pub enum ScrubControl {
         window: f32,
         rate: usize,
     },
+    /// PIN the preview overlay's presence (0 = faded out, 1 = fully drawn),
+    /// skipping the runtime's fade ease — deterministic mid-fade captures and
+    /// demo scripts. A NEGATIVE value clears the pin and resumes easing (the
+    /// same convention as the desktop `--preview-presence` flag).
+    SetPreviewPresence(f32),
 }
 
 #[derive(Default)]
@@ -1107,6 +1112,17 @@ pub fn functor_lang_scrub_set_preview(mode: u32) {
 #[wasm_bindgen]
 pub fn functor_lang_scrub_set_preview_config(window: f32, rate: usize) {
     push_scrub(ScrubControl::SetPreviewConfig { window, rate });
+}
+
+/// Page → runtime: pin the preview overlay's presence, skipping the fade ease
+/// (`window.__scrub.setPreview({ presence })`). 0 = faded out, 1 = fully drawn;
+/// a NEGATIVE value clears the pin and resumes the runtime's easing.
+#[wasm_bindgen]
+pub fn functor_lang_scrub_set_preview_presence(presence: f32) {
+    if !presence.is_finite() {
+        return;
+    }
+    push_scrub(ScrubControl::SetPreviewPresence(presence));
 }
 
 /// Page → runtime: non-destructively scrub to a rendered frame (slider drag).

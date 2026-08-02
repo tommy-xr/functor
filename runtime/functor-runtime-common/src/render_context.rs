@@ -122,6 +122,22 @@ pub struct RenderContext<'a> {
     pub lights: &'a [Light],
     /// Which pass is rendering (forward vs. a depth-only shadow pass).
     pub render_pass: RenderPass,
+    /// Whether the ENCLOSING pass already has GL blending configured — the 2D
+    /// sprite pass (straight alpha over) and the transparent-debug pass
+    /// (constant alpha) both do. The ordinary 3D forward pass does not, so a
+    /// translucent material there has to switch blending on for its own
+    /// subtree and switch it back off after. This flag is what stops that
+    /// restore from clobbering a pass that wanted blending all along.
+    pub pass_blends: bool,
+    /// Whether an ANCESTOR node in this pass already turned blending on for the
+    /// subtree currently being drawn. `Material` nodes nest, so without this a
+    /// translucent inner material would `disable(BLEND)` on the way out and
+    /// leave its outer material's remaining siblings drawing unblended. Only
+    /// the node that actually transitioned blending off→on restores it.
+    ///
+    /// A `Cell` because scene rendering walks an immutably-borrowed context on
+    /// one thread; nothing here is shared across threads.
+    pub blend_active: std::cell::Cell<bool>,
     /// The directional shadow map + light matrix, when shadows are active.
     /// `None` during the depth pass and when no light casts shadows.
     pub shadow: Option<ShadowUniforms>,
