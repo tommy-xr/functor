@@ -34,9 +34,17 @@ const clientStatus = (model: string): string =>
 const clientWorldCount = (model: string): number =>
   (model.match(/pid:/g) ?? []).length;
 
+// Every wait below is condition-based with a GENEROUS ceiling rather than a
+// tight window: it returns the moment its condition holds (costing nothing on a
+// healthy run) and absorbs runner/load variance otherwise. CI run 30731090273
+// (job 91451547356) failed exactly there — "server to track 2 players" hit a 20s
+// inner deadline on a macOS runner booting three GL processes on one shared box,
+// while the TEST's own budget was 180s and nine tenths of it went unused. The
+// budget leads the inner ceilings so a real hang still reports as the described
+// wait, not as an opaque test timeout.
 test(
   "two clients connect to a server and converge on a shared world",
-  { skip: !e2eEnabled, timeout: 180_000 },
+  { skip: !e2eEnabled, timeout: 300_000 },
   async () => {
     const repoRoot = findRepoRoot(process.cwd());
     assert.ok(repoRoot, "must run from within the functor workspace");
@@ -51,7 +59,7 @@ test(
         repoRoot,
         functorLangPath: join(gameDir, entry),
         port,
-        launchTimeoutMs: 30_000,
+        launchTimeoutMs: 60_000,
         headless,
       });
     };
@@ -61,7 +69,7 @@ test(
     // that races ahead of the listener would land in "error" and never converge.
     await using server = await launch("server.fun", base);
     await waitForPort("127.0.0.1", 9001, {
-      timeoutMs: 15_000,
+      timeoutMs: 60_000,
       description: "mp server ws listener",
     });
 
@@ -69,7 +77,7 @@ test(
     await using clientA = await launch("client.fun", base + 1);
     await using clientB = await launch("client.fun", base + 2);
 
-    const waitOpts = { timeoutMs: 20_000, intervalMs: 200 };
+    const waitOpts = { timeoutMs: 90_000, intervalMs: 200 };
 
     // The server should accept both connections and track a player for each.
     const serverState = await server.waitForState(

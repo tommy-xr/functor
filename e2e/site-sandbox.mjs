@@ -211,11 +211,14 @@ const playerFrame = (page) => {
   const consoleLog = [];
   page.on("console", (m) => consoleLog.push(m.text()));
   await page.goto(BASE);
+  // Generous ceiling on a condition poll: the loop exits the instant the load
+  // line appears, so the only thing a bigger bound changes is how much runner
+  // load the wait can absorb (this one polls a page deliberately stalled above).
   for (let i = 0; !consoleLog.some((m) => m.includes("[functor-lang] loaded")); i++) {
-    if (i > 100) throw new Error(`hero never loaded:\n${consoleLog.join("\n")}`);
+    if (i > 400) throw new Error(`hero never loaded:\n${consoleLog.join("\n")}`);
     await sleep(200);
   }
-  await page.waitForFunction(() => window.__hero?.staged(), null, { timeout: 15000 });
+  await page.waitForFunction(() => window.__hero?.staged(), null, { timeout: 60000 });
   await page.evaluate(() => window.clearInterval(window.__heroFrameStall));
   const heroPlayer = playerFrame(page);
   const pixel = await centerPixel(heroPlayer);
@@ -965,6 +968,12 @@ for (const example of examples) {
 }
 
 // --- 9. Time-travel scrubber drives/observes the player via __scrub. ----------
+// Waits here are condition-based with GENEROUS ceilings, never tight fixed
+// windows: a wait that returns the moment its condition holds costs nothing on
+// a healthy run and absorbs load variance on a busy one. This block flaked 4x
+// under local load ~40-110 (identically with unrelated changes stashed; clean
+// at load 17) purely because 3s/5s ceilings and bare sleeps assumed a quiet
+// machine — the conditions themselves were never weakened.
 {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const scrubConsole = [];
@@ -1028,7 +1037,9 @@ for (const example of examples) {
 
   // The recorded range grows while running.
   const r0 = await player.evaluate(() => window.__scrub.range());
-  await sleep(500);
+  await player
+    .waitForFunction((hi) => window.__scrub.range()[1] > hi, r0[1], { timeout: 20000 })
+    .catch(() => {});
   const r1 = await player.evaluate(() => window.__scrub.range());
   check("scrubber range grows while running", r1[1] > r0[1], `${r0} -> ${r1}`);
 
@@ -1040,10 +1051,16 @@ for (const example of examples) {
   await page.waitForFunction(
     () => getComputedStyle(document.getElementById("mp-preview-handle")).display === "block",
     null,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   const livePreview0 = await player.evaluate(() => window.__scrub.view());
-  await sleep(300);
+  await player
+    .waitForFunction(
+      (frame) => window.__scrub.view().selectedFrame > frame,
+      livePreview0.selectedFrame,
+      { timeout: 20000 }
+    )
+    .catch(() => {});
   const livePreview1 = {
     view: await player.evaluate(() => window.__scrub.view()),
     ...(await page.evaluate(() => ({
@@ -1074,11 +1091,11 @@ for (const example of examples) {
   });
   await player.waitForFunction(
     () => window.__scrub.events().some((event) => event.kind === "key-down"),
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   const inputMarker = await page
     .waitForFunction(() => !!document.querySelector("#mp-markers .mp-evt.input"), null, {
-      timeout: 3000,
+      timeout: 20000,
     })
     .then(() => true)
     .catch(() => false);
@@ -1097,11 +1114,11 @@ for (const example of examples) {
   );
   await player.waitForFunction(
     () => window.__scrub.events().some((event) => event.kind === "reload-ok"),
-    { timeout: 5000 }
+    { timeout: 20000 }
   );
   const reloadMarker = await page
     .waitForFunction(() => !!document.querySelector("#mp-markers .mp-evt.reload"), null, {
-      timeout: 3000,
+      timeout: 20000,
     })
     .then(() => true)
     .catch(() => false);
@@ -1112,7 +1129,7 @@ for (const example of examples) {
   const sandboxFlash = await player
     .waitForFunction(
       () => document.querySelector(".scrub-reload-juice")?.classList.contains("live"),
-      { timeout: 5000 }
+      { timeout: 20000 }
     )
     .then(() => true)
     .catch(() => false);
@@ -1141,12 +1158,12 @@ for (const example of examples) {
       const range = window.__scrub.range();
       return range.length === 2 && range[1] - range[0] >= 30;
     },
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
 
   // Pause freezes both the frame counter AND the pixels.
   await player.evaluate(() => window.__scrub.togglePause());
-  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 20000 });
   const f0 = await player.evaluate(() => window.__scrub.frame());
   const h0 = await regionHash(player);
   await sleep(300);
@@ -1201,7 +1218,7 @@ for (const example of examples) {
   await player.waitForFunction(
     (frame) => window.__scrub.frame() === frame + 1,
     frozenBeforeStep.selectedFrame,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   const frozenAfterStep = await player.evaluate(() => window.__scrub.view());
   check(
@@ -1234,7 +1251,7 @@ for (const example of examples) {
   await player.waitForFunction(
     (frame) => Math.abs(window.__scrub.frame() - frame) <= 1,
     selectedMarkerFrame,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   check(
     "selecting a marker seeks to its frame",
@@ -1246,7 +1263,9 @@ for (const example of examples) {
   const rng = await player.evaluate(() => window.__scrub.range());
   const target = Math.round((rng[0] + rng[1]) / 2);
   await player.evaluate((f) => window.__scrub.seek(f), target);
-  await sleep(150);
+  await player
+    .waitForFunction((f) => Math.abs(window.__scrub.frame() - f) <= 1, target, { timeout: 20000 })
+    .catch(() => {});
   const seeked = await player.evaluate(() => window.__scrub.frame());
   check(
     "seek snaps to a frame within range",
@@ -1257,7 +1276,9 @@ for (const example of examples) {
   // Step advances the frame by exactly 1 while paused.
   const before = await player.evaluate(() => window.__scrub.frame());
   await player.evaluate(() => window.__scrub.step());
-  await sleep(150);
+  await player
+    .waitForFunction((f) => window.__scrub.frame() === f + 1, before, { timeout: 20000 })
+    .catch(() => {});
   const after = await player.evaluate(() => window.__scrub.frame());
   const afterStepView = await player.evaluate(() => window.__scrub.view());
   check(
@@ -1274,7 +1295,9 @@ for (const example of examples) {
   // Resume: frames advance again.
   await player.evaluate(() => window.__scrub.togglePause());
   const rf0 = await player.evaluate(() => window.__scrub.frame());
-  await sleep(400);
+  await player
+    .waitForFunction((f) => window.__scrub.frame() > f, rf0, { timeout: 20000 })
+    .catch(() => {});
   const rf1 = await player.evaluate(() => window.__scrub.frame());
   check("resume advances frames again", rf1 > rf0, `${rf0} -> ${rf1}`);
 
@@ -1286,7 +1309,7 @@ for (const example of examples) {
   });
   await player.waitForFunction(
     () => window.__scrub.events().some((event) => event.label === "Space down"),
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   const oldBranchFrame = await player.evaluate(
     () => window.__scrub.events().findLast((event) => event.label === "Space down").frame
@@ -1294,15 +1317,15 @@ for (const example of examples) {
   await player.waitForFunction(
     (frame) => window.__scrub.range()[1] >= frame + 4,
     oldBranchFrame,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   await player.evaluate(() => window.__scrub.togglePause());
-  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 20000 });
   await player.evaluate((frame) => window.__scrub.seek(frame - 1), oldBranchFrame);
   await player.waitForFunction(
     (frame) => window.__scrub.frame() === frame - 1,
     oldBranchFrame,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   await player.evaluate(() => {
     window.__scrub.togglePause();
@@ -1312,7 +1335,7 @@ for (const example of examples) {
     (frame) =>
       window.__scrub.events().some((event) => event.frame === frame && event.label === "Space up"),
     oldBranchFrame,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   const branchMarkersAreAuthoritative = await player.evaluate(
     (frame) => {
@@ -1331,13 +1354,13 @@ for (const example of examples) {
 
   // A safe reload while scrubbed is non-destructive: it keeps the selected
   // cursor AND the complete recorded future. Step/Resume branches later.
-  await player.waitForFunction(() => !window.__scrub.paused(), { timeout: 3000 });
+  await player.waitForFunction(() => !window.__scrub.paused(), { timeout: 20000 });
   await player.waitForFunction(() => {
     const range = window.__scrub.range();
     return range.length === 2 && range[1] - range[0] >= 4;
   });
   await player.evaluate(() => window.__scrub.togglePause());
-  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 20000 });
   // Capture the domain only after Pause has taken effect. Frames can still be
   // published between the earlier running-state probe and this boundary.
   const reloadWhileScrubbed = await player.evaluate(() => ({
@@ -1350,7 +1373,7 @@ for (const example of examples) {
   await player.waitForFunction(
     (hi) => window.__scrub.frame() === hi - 2,
     reloadWhileScrubbed.hi,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   const selectedBeforeReload = reloadWhileScrubbed.hi - 2;
   await page.evaluate(() =>
@@ -1362,7 +1385,7 @@ for (const example of examples) {
         .events()
         .some((event) => event.id > lastId && event.kind === "reload-ok"),
     reloadWhileScrubbed.lastId,
-    { timeout: 5000 }
+    { timeout: 20000 }
   );
   const scrubbedReloadMarker = await player.evaluate(
     (lastId) =>
@@ -1392,7 +1415,11 @@ for (const example of examples) {
     JSON.stringify(safeReloadView)
   );
   await page.locator("#mp-step").click();
-  await sleep(500);
+  await player
+    .waitForFunction((f) => window.__scrub.range()[1] === f + 1, selectedBeforeReload, {
+      timeout: 20000,
+    })
+    .catch(() => {});
   const postReloadStep = await player.evaluate(() => ({
     paused: window.__scrub.paused(),
     frame: window.__scrub.frame(),
@@ -1442,7 +1469,7 @@ for (const example of examples) {
     { timeout: 10000 }
   );
   await player.evaluate(() => window.__scrub.togglePause());
-  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 3000 });
+  await player.waitForFunction(() => window.__scrub.paused(), { timeout: 20000 });
   await player.evaluate(() => window.__scrub.setPreview({ enabled: true, seconds: 2 }));
   const reloadTarget = await player.evaluate(() => {
     const [lo, hi] = window.__scrub.range();
@@ -1452,7 +1479,7 @@ for (const example of examples) {
   await player.waitForFunction(
     (frame) => window.__scrub.frame() === frame,
     reloadTarget,
-    { timeout: 3000 }
+    { timeout: 20000 }
   );
   const beforeReload = await player.evaluate(() => ({
     frame: window.__scrub.frame(),
@@ -1469,7 +1496,7 @@ for (const example of examples) {
         (event) => event.id > lastId && event.kind === "reload-ok"
       ),
     beforeReload.lastId,
-    { timeout: 5000 }
+    { timeout: 20000 }
   );
   // Let the host chrono bar's rAF paint catch up to the post-reload view
   // before sampling its stripes/label (the seam is already settled).
@@ -1477,7 +1504,7 @@ for (const example of examples) {
     .waitForFunction(
       () => parseFloat(document.getElementById("mp-unavailable").style.width) > 0,
       null,
-      { timeout: 3000 }
+      { timeout: 20000 }
     )
     .catch(() => {});
   const afterReloadSeam = await player.evaluate(() => ({
