@@ -231,8 +231,9 @@ only be driven this way. `held_keys` and `mouse` stay live alongside it.
 level state (no entry point call, recorded, replayable), a whole-sample
 replacement whose omitted fields take their defaults (centered sticks,
 released triggers/buttons), `deny_unknown_fields`, and `{"type":"gamepad_clear"}`
-as the release half — restoring a physically connected pad, or no `gamepad`
-domain at all. The body is the snake_case [`gamepad` sample]
+as the release half — today restoring no `gamepad` domain at all (no shell
+polls a physical pad yet, so injection is the domain's only source). The
+body is the snake_case [`gamepad` sample]
 (#sampled-input-in-get-state) `GET /state` reports: `left_stick`/`right_stick`
 (`[-1..1]`, up-positive Y), `left_trigger`/`right_trigger` (`0..1`), and the
 positional booleans `south`/`east`/`west`/`north`, `left_bumper`/`right_bumper`,
@@ -301,7 +302,8 @@ needs a two-coordinate line shape rather than this `<control> <down|up>` triple.
 
 `input` is runtime-owned data sampled for one fixed simulation step. Keyboard and
 mouse keep their existing event entry points while also exposing deterministic
-held and pressed/released sets. Quest adds `xr` while head tracking is valid:
+held and pressed/released sets. Quest adds `xr` while head tracking is valid;
+`gamepad` appears while a pad sample is live (today: injected):
 
 These edge fields were added in debug protocol v6. Against an older runtime,
 clients should treat absent edge arrays/button sets as empty.
@@ -347,6 +349,26 @@ clients should treat absent edge arrays/button sets as empty.
       "thumbstick_pressed": false,
       "menu_pressed": false
     }
+  },
+  "gamepad": {
+    "left_stick": [0.0, 0.0],
+    "right_stick": [0.0, 0.0],
+    "left_trigger": 0.0,
+    "right_trigger": 0.0,
+    "south": false,
+    "east": false,
+    "west": false,
+    "north": false,
+    "left_bumper": false,
+    "right_bumper": false,
+    "left_stick_pressed": false,
+    "right_stick_pressed": false,
+    "dpad_up": false,
+    "dpad_down": false,
+    "dpad_left": false,
+    "dpad_right": false,
+    "start": false,
+    "select": false
   }
 }
 ```
@@ -362,11 +384,13 @@ Analog values are normalized to `0..1`; thumbstick axes to `-1..1`.
 
 Non-XR runtimes omit `xr`, and padless runtimes omit `gamepad` — each domain
 is a typed sibling field, present only when its device is live. `gamepad`
-carries the primary connected (or injected) pad's held state: sticks as
-`[x, y]` in `-1..1` with up-positive Y, triggers in `0..1`, positional face
-buttons (`south` is the bottom one), bumpers, stick clicks, dpad, and
-`start`/`select`. Future mobile-touch support should add another typed sibling
-field rather than target-specific endpoints or string-keyed capability bags.
+carries the pad's held state: sticks as `[x, y]` in `-1..1` with up-positive
+Y, triggers in `0..1`, positional face buttons (`south` is the bottom one),
+bumpers, stick clicks, dpad, and `start`/`select`. No shell polls a physical
+pad yet, so today the domain appears only while a sample is injected
+(`{"type":"gamepad"}` above). Future mobile-touch support should add another
+typed sibling field rather than target-specific endpoints or string-keyed
+capability bags.
 
 ### `POST /time` — frame-loop control
 

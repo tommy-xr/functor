@@ -294,12 +294,14 @@ pub enum InputCommand {
     /// The `Xr` contract exactly: level state until the next `gamepad` command
     /// replaces it, a WHOLE-sample replacement (an omitted field takes its
     /// default), no entry-point call — the sample reaches the game through the
-    /// same `sampled_input` path a real pad takes, which is what makes it land
-    /// in the recorded input log and replay identically.
-    Gamepad(Box<GamepadSnapshot>),
+    /// same `sampled_input` path a real pad would take, which is what makes it
+    /// land in the recorded input log and replay identically. Unboxed, unlike
+    /// `Xr`: the sample is a few words of `Copy` scalars, not an order of
+    /// magnitude above the other commands.
+    Gamepad(GamepadSnapshot),
     /// Drop an injected gamepad sample, restoring whatever the runtime would
-    /// sample on its own — a physically connected pad, or no `gamepad` domain
-    /// at all. The release half of `Gamepad`'s held-key contract.
+    /// sample on its own — today no `gamepad` domain at all (no shell polls a
+    /// physical pad yet). The release half of `Gamepad`'s held-key contract.
     GamepadClear,
 }
 
@@ -863,7 +865,7 @@ mod tests {
         assert!(!sample.select);
 
         let bare = serde_json::from_str::<InputCommand>(r#"{"type":"gamepad"}"#).unwrap();
-        assert_eq!(bare, InputCommand::Gamepad(Box::default()));
+        assert_eq!(bare, InputCommand::Gamepad(GamepadSnapshot::default()));
 
         assert_eq!(
             serde_json::from_str::<InputCommand>(r#"{"type":"gamepad_clear"}"#).unwrap(),

@@ -1567,9 +1567,16 @@ let init = {
   released: 0.0,
   mousePressed: false,
   mouseReleased: false,
-  mouseX: 0.0
+  mouseX: 0.0,
+  padX: 0.0,
+  padSouth: false,
+  padTrigger: 0.0
 }
 let sampledInput = (model, snapshot: Input.snapshot) =>
+  let (padX, padSouth, padTrigger) =
+    (match snapshot.gamepad with
+     | Option.Some(pad) => (pad.leftStick.x, pad.south, pad.rightTrigger)
+     | Option.None => (0.0, false, 0.0)) in
   match snapshot.xr with
   | Option.Some(xr) => {
       trigger: xr.right.trigger,
@@ -1578,7 +1585,10 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
       released: List.length(snapshot.releasedKeys),
       mousePressed: snapshot.mouse.pressed.left,
       mouseReleased: snapshot.mouse.released.right,
-      mouseX: snapshot.mouse.x
+      mouseX: snapshot.mouse.x,
+      padX: padX,
+      padSouth: padSouth,
+      padTrigger: padTrigger
     }
   | Option.None => model
 let tick = (model, dt, tts) => model
@@ -1619,6 +1629,12 @@ let draw = (model, tts) =>
                 },
                 ..crate::XrInputSnapshot::default()
             }),
+            gamepad: Some(crate::GamepadSnapshot {
+                left_stick: [-0.5, 1.0],
+                south: true,
+                right_trigger: 0.25,
+                ..crate::GamepadSnapshot::default()
+            }),
             ..crate::InputSnapshot::default()
         };
         game.sampled_input(&snapshot);
@@ -1632,6 +1648,9 @@ let draw = (model, tts) =>
         assert!(model.contains("mousePressed: true"), "{model}");
         assert!(model.contains("mouseReleased: true"), "{model}");
         assert!(model.contains("mouseX: 42"), "{model}");
+        assert!(model.contains("padX: -0.5"), "{model}");
+        assert!(model.contains("padSouth: true"), "{model}");
+        assert!(model.contains("padTrigger: 0.25"), "{model}");
         assert!(matches!(
             game.recorded_inputs_at(0).as_slice(),
             [crate::RecordedInput::Snapshot(recorded)] if recorded.as_ref() == &snapshot

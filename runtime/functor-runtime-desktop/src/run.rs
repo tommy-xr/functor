@@ -1138,7 +1138,7 @@ fn service_debug_request(
                     // game through the same `sampled_input` path a real pad
                     // takes, so it lands in the recorded input log and
                     // replays identically.
-                    *gamepad_override = Some(*snapshot);
+                    *gamepad_override = Some(snapshot);
                     Ok(())
                 }
                 debug_server::InputCommand::GamepadClear => {
