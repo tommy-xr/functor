@@ -110,7 +110,7 @@ const STYLE = `
 /* A landing reload glows on the rail and settles. The color property mirrors
    the fill so the drop-shadow takes the marker's own hue (violet ok / red
    error), and fill-box keeps the widen centered on the 3px tick, not the viewBox.
-   The class is applied by hand (see reglowMarkerNearest): marker nodes are
+   The class is applied by hand (see reglowMarkerCluster): marker nodes are
    reused, so an insertion-time animation would only ever run once. */
 .scrub-event.reload { color: #b994ff; }
 .scrub-event.reload-error { color: #ff6b7d; }
@@ -372,6 +372,16 @@ const HTML = `
     <button id="scrub-debug-reset" type="button">Reset</button>
   </section>`;
 
+// Install a stylesheet once per document, keyed by id. Two callers: the bar's
+// chrome (visible mounts only) and the viewport flash (any mount).
+const ensureStyle = (id, css) => {
+  if (document.getElementById(id)) return;
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent = css;
+  document.head.appendChild(style);
+};
+
 // `hidden: true` mounts the SEAM without the chrome: the timeline model, the
 // runtime poll loop, and `window.__scrub` all run exactly as usual, but the
 // bar's DOM is never attached to the document — so nothing renders and
@@ -379,12 +389,7 @@ const HTML = `
 // their own transport UI over the seam (the sandbox's chrono bar) — an
 // honest replacement for hiding the bar with injected CSS.
 export function mountScrubber({ hidden = false } = {}) {
-  if (!hidden && !document.getElementById("functor-scrubber-style")) {
-    const style = document.createElement("style");
-    style.id = "functor-scrubber-style";
-    style.textContent = STYLE;
-    document.head.appendChild(style);
-  }
+  if (!hidden) ensureStyle("functor-scrubber-style", STYLE);
 
   // The element is always BUILT (every internal lookup and render targets
   // it); when hidden it simply stays detached.
@@ -621,12 +626,7 @@ export function mountScrubber({ hidden = false } = {}) {
   // answering the edit rather than a widget lighting up.
   const flashReloadJuice = (kind) => {
     if (!juiceOverlay) {
-      if (!document.getElementById("functor-scrubber-juice-style")) {
-        const style = document.createElement("style");
-        style.id = "functor-scrubber-juice-style";
-        style.textContent = JUICE_STYLE;
-        document.head.appendChild(style);
-      }
+      ensureStyle("functor-scrubber-juice-style", JUICE_STYLE);
       juiceOverlay = document.createElement("div");
       juiceOverlay.className = "scrub-reload-juice";
       juiceOverlay.setAttribute("aria-hidden", "true");
@@ -639,35 +639,29 @@ export function mountScrubber({ hidden = false } = {}) {
     juiceOverlay.classList.add(kind === "reload-error" ? "rejected" : "live");
   };
 
-  // Layer 2 — the rail marker glows and settles. Finding the node by geometry
-  // is deliberate: same-frame reloads CLUSTER into one marker, so the new
-  // reload may carry an id this cluster does not expose. Its rail position is
-  // the reliable handle — match the group's translate-x against where this
-  // frame falls in the current viewport, in the same 0..1000 viewBox units
-  // renderMarkers writes.
-  const reglowMarkerNearest = (frame) => {
-    const range = functor_lang_scene_range();
-    if (range.length !== 2 || range[1] <= range[0]) return;
-    const targetX = ((frame - range[0]) / (range[1] - range[0])) * 1000;
-    let best = null;
-    let bestDist = Infinity;
-    for (const tick of el.querySelectorAll(
-      ".scrub-event.reload, .scrub-event.reload-error"
-    )) {
-      const group = tick.closest("[transform]");
-      const m = group && /translate\(([-\d.]+)/.exec(group.getAttribute("transform"));
-      const dist = m ? Math.abs(Number(m[1]) - targetX) : Infinity;
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = tick;
-      }
-    }
-    if (!best) return;
+  // Layer 2 — the rail marker glows and settles. The cluster this reload landed
+  // in has to be found rather than assumed: same-frame reloads FOLD into an
+  // existing marker, whose `id` stays that of the first event in the bucket.
+  // `lastFrame` is the handle — clustering records the most recent event's
+  // frame, and this reload is by definition the newest, so the cluster carrying
+  // our frame is exactly ours. A reload outside the viewport has no cluster at
+  // all (clustering drops it), and correctly glows nothing.
+  const reglowMarkerCluster = (frame) => {
+    const marker = view().eventMarkers.find(
+      (candidate) => candidate.category === "reload" && candidate.lastFrame === frame
+    );
+    const tick = marker && markerNodes.get(marker.id)?.querySelector(".scrub-event");
+    if (!tick) return;
     // Same restart trick as the flash: a reused node never re-runs an
-    // insertion-time animation on its own.
-    best.classList.remove("born");
-    void best.getBoundingClientRect();
-    best.classList.add("born");
+    // insertion-time animation on its own. Clear it when the glow finishes so a
+    // later DOM move (renderMarkers re-parents groups when clustering order
+    // changes) can't replay a stale marker's animation.
+    tick.classList.remove("born");
+    void tick.getBoundingClientRect();
+    tick.classList.add("born");
+    tick.addEventListener("animationend", () => tick.classList.remove("born"), {
+      once: true,
+    });
   };
 
   // Ticks along the rail: one per second (TIMELINE_FPS frames), heavier every
@@ -1296,15 +1290,20 @@ export function mountScrubber({ hidden = false } = {}) {
         );
         const newest = reloads.length > 0 ? reloads[reloads.length - 1] : null;
         const seeded = lastReloadJuiceId !== null;
-        const newReload = seeded && newest && newest.id !== lastReloadJuiceId ? newest : null;
-        if (newest) lastReloadJuiceId = newest.id;
+        // Strictly GREATER, and the high-water mark only ever rises: marker ids
+        // come from a counter that never decreases, but the log is pruned, not
+        // append-only (seeking back and resuming truncates markers ahead of the
+        // branch point). Comparing for inequality would then see an older
+        // surviving reload as "new" and flash for an edit made long ago.
+        const newReload = seeded && newest && newest.id > lastReloadJuiceId ? newest : null;
+        if (newest) lastReloadJuiceId = Math.max(lastReloadJuiceId ?? -1, newest.id);
         else if (!seeded) lastReloadJuiceId = -1;
         dispatch({ type: "events-published", events: parsed });
         // After the dispatch, so the marker node exists (or has been updated in
         // place) before the glow is re-triggered on it.
         if (newReload) {
           flashReloadJuice(newReload.kind);
-          reglowMarkerNearest(newReload.frame);
+          reglowMarkerCluster(newReload.frame);
         }
       } catch {
         // A malformed marker payload must not stop the runtime poll loop.
@@ -1346,6 +1345,11 @@ export function mountScrubber({ hidden = false } = {}) {
       clearTimeout(toastTimer);
       window.removeEventListener("keydown", onPausedGameKey);
       el.remove();
+      // The flash overlay lives on the document, not inside the bar, so it has
+      // to be taken down by hand — otherwise a remount stacks a second one and
+      // leaves a stale node for `.scrub-reload-juice` lookups to find first.
+      juiceOverlay?.remove();
+      juiceOverlay = null;
       document.documentElement.style.removeProperty("--functor-scrubber-h");
       if (window.__scrub === seam) delete window.__scrub;
     },

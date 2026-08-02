@@ -515,13 +515,31 @@ const playerFrame = (page) => {
   // gravity is editable in the same region: it must move the projection too.
   const heavyRegion = weakRegion.replace("let gravity = 30.0", "let gravity = 45.0");
   await applyHeroRegion(heavyRegion);
-  const reglow = await heroPlayer.evaluate(() => ({
-    born: document.querySelectorAll(".scrub-event.born").length,
-    markers: document.querySelectorAll(".scrub-event.reload").length,
-  }));
+  const reglow = await heroPlayer.evaluate(() => {
+    const born = [...document.querySelectorAll(".scrub-event.born")];
+    // The glow must land on the cluster holding the newest reload, not merely
+    // on some reload marker: with one marker on the rail a "nearest" search
+    // can't be wrong, so pin the identity explicitly.
+    const reloads = window.__scrub.events().filter((event) => event.kind.startsWith("reload-"));
+    const newestFrame = reloads.length ? reloads[reloads.length - 1].frame : null;
+    const cluster = window.__scrub
+      .view()
+      .eventMarkers.find((m) => m.category === "reload" && m.lastFrame === newestFrame);
+    const glowedId = born[0]?.closest("[data-event-id]")?.dataset.eventId;
+    return {
+      born: born.length,
+      markers: document.querySelectorAll(".scrub-event.reload").length,
+      newestFrame,
+      clusterId: cluster ? String(cluster.id) : null,
+      glowedId: glowedId ?? null,
+    };
+  });
   check(
     "a repeat hero edit re-glows its clustered reload marker",
-    reglow.born > 0 && reglow.markers === markersBeforeReglow,
+    reglow.born === 1 &&
+      reglow.markers === markersBeforeReglow &&
+      reglow.clusterId !== null &&
+      reglow.glowedId === reglow.clusterId,
     JSON.stringify({ markersBeforeReglow, ...reglow })
   );
   const heavyJumpHash = await regionHash(heroPlayer);
