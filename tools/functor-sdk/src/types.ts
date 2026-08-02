@@ -131,8 +131,9 @@ export interface InputSnapshot {
    * polling — rest levels while unfocused/pinned) or a sample is injected;
    * absent on headless, which polls nothing. */
   gamepad?: GamepadSnapshot;
-  /** Present while a touch surface exists (or a touch was injected); empty
-   * lists while idle. Absent on targets with no touch input at all. */
+  /** Present while a touch surface exists (web declares it up front on
+   * touch-capable devices; desktop only while injected); empty lists while
+   * idle. Absent on targets with no touch input at all. */
   touch?: TouchSnapshot;
 }
 

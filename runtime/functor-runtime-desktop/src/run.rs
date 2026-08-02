@@ -406,8 +406,10 @@ fn apply_scripted_events(
             }
             // Listed rather than `_`, so adding a scriptable line shape (e.g.
             // wheel motion) has to be wired here instead of compiling to a
-            // silent no-op.
+            // silent no-op. `parse_input_script` has no touch line shape yet,
+            // so `Touch` is unreachable here.
             RecordedInput::MouseWheel { .. }
+            | RecordedInput::Touch { .. }
             | RecordedInput::Snapshot(_)
             | RecordedInput::UiEvent(_)
             | RecordedInput::WebviewEvent(_) => {}

@@ -383,9 +383,10 @@ let grab = (s) =>
   coordinate space, a quick tap can appear in both edge lists, and a
   platform-cancelled contact reports through `released`. `Option.Some` with
   empty lists = a touch surface exists but is idle (the cue to show touch
-  UI). No shell produces the domain from hardware yet on ANY target — debug
-  injection (`POST /input` `{"type":"touch","phase":"begin",…}`) is its only
-  source until the web touch-event wiring lands.
+  UI). The web runtime supplies the domain from real touch events
+  (capability declared up front on touch-capable devices); desktop has no
+  touch hardware, so there debug injection
+  (`POST /input` `{"type":"touch","phase":"begin",…}`) is its only source.
 - **Bundled modules use the ordinary module semantics.** The language-owned
   `Net.fun` / `Key.fun` / `Mouse.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory

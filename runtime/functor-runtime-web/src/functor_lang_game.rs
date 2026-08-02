@@ -284,6 +284,22 @@ pub fn functor_lang_mouse_button(button: i32, is_down: bool) {
     push_input(InputEvent::MouseButton { button, is_down });
 }
 
+/// One touch-contact transition from the page's touch listeners. `phase` is
+/// 0=begin, 1=move, 2=end, 3=cancel (anything else is dropped); `id` is the
+/// page-assigned small ordinal (the page remaps the browser's arbitrary
+/// `Touch.identifier`s); `x`/`y` are CSS pixels relative to the canvas.
+#[wasm_bindgen]
+pub fn functor_lang_touch_event(phase: u32, id: u32, x: f32, y: f32) {
+    let phase = match phase {
+        0 => functor_runtime_common::TouchPhase::Begin,
+        1 => functor_runtime_common::TouchPhase::Move,
+        2 => functor_runtime_common::TouchPhase::End,
+        3 => functor_runtime_common::TouchPhase::Cancel,
+        _ => return,
+    };
+    push_input(InputEvent::Touch { phase, id, x, y });
+}
+
 thread_local! {
     /// The page's UNLOCKED pointer over the canvas — `(pos in CSS px,
     /// primary button down, press latched since last sample)` — for the
@@ -501,6 +517,44 @@ pub fn drain_input(
                 }
                 if deliver {
                     game.mouse_button(button, is_down);
+                }
+            }
+            InputEvent::Touch { phase, id, x, y } => {
+                let point = functor_runtime_common::TouchPoint { id, x, y };
+                match phase {
+                    functor_runtime_common::TouchPhase::Begin
+                    | functor_runtime_common::TouchPhase::Move => {
+                        if deliver {
+                            functor_runtime_common::apply_touch_transition(
+                                &mut snapshot.touch,
+                                edges,
+                                phase,
+                                point,
+                            );
+                        }
+                    }
+                    functor_runtime_common::TouchPhase::End
+                    | functor_runtime_common::TouchPhase::Cancel => {
+                        if deliver {
+                            functor_runtime_common::apply_touch_transition(
+                                &mut snapshot.touch,
+                                edges,
+                                phase,
+                                point,
+                            );
+                        } else if recover_releases {
+                            // Physical recovery while input is suppressed
+                            // (paused/pinned): the level must clear so a
+                            // contact lifted during a scrub can't stick, but
+                            // no model-visible edge — the game never saw the
+                            // suppressed press either. The key/mouse
+                            // recovery rule, applied at the shell (the
+                            // reducer itself has no silent mode).
+                            if let Some(touch) = snapshot.touch.as_mut() {
+                                touch.touches.retain(|p| p.id != id);
+                            }
+                        }
+                    }
                 }
             }
             // Only the time-travel recorder creates snapshots; the page input
@@ -726,6 +780,15 @@ fn input_marker(input: &InputEvent) -> Option<(&'static str, String)> {
                 format!("mouse {name} {edge}"),
             ))
         }
+        InputEvent::Touch { phase, id, .. } => Some((
+            match phase {
+                functor_runtime_common::TouchPhase::Begin => "touch-begin",
+                functor_runtime_common::TouchPhase::Move => "touch-move",
+                functor_runtime_common::TouchPhase::End
+                | functor_runtime_common::TouchPhase::Cancel => "touch-end",
+            },
+            format!("touch {id} {phase:?}"),
+        )),
         InputEvent::Snapshot(_) => None,
         InputEvent::UiEvent(event) => Some(("ui-input", format!("UI {event:?}"))),
         InputEvent::WebviewEvent(event) => Some(("webview-input", format!("webview {event:?}"))),
