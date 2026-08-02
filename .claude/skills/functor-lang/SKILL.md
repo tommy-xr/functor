@@ -239,9 +239,15 @@ error listing the blocks the file does declare). The transitional form names
 a binding **prefix** — `"server": { "file": "game.fun", "prefix": "server" }`
 — resolving every canonical entry binding through the prefix as camelCase
 (`serverInit`/`serverTick`/…). A role declares at most one of the two.
-`examples/orbs` is the same-file reference: its `client` role is the file's
-plain top-level contract and its `server` role is the `server` PREFIX — the
-form its sandbox server pane shipped with. **Both forms run on native and
+The two multiplayer samples are the deliberate pair of shapes:
+`examples/orbs` is the SAME-FILE reference — one `game.fun` whose `client`
+and `server` roles are BOTH inline modules of it (`module Client { … }` /
+`module Server { … }`), with the protocol, the world step and the renderer
+shared bare above them, so one buffer hot-reloads both roles atomically (its
+sandbox client and server panes boot the same source at `?module=Client` /
+`?module=Server`). `examples/mp` is the roles-as-FILES reference — the shape
+to reach for once roles outgrow one buffer or want independent deploy units.
+**Both forms run on native and
 wasm**: `run wasm`/`build wasm` bake the
 role into the served/exported page's boot config (`window.__functorLangEntryModule`
 / `…EntryPrefix`; the site player takes `?module=<Ident>` or `?prefix=<ident>`,
@@ -447,6 +453,17 @@ let tick = (m, dt, tts) => Server.step(Server.Spawn(1.0), m)
   `"server": { "file": "game.fun", "module": "Server" }` resolves
   `Server.init`/`Server.tick`/… (see `entries` above). Such a role runs on
   native and wasm; only vr still refuses it.
+- **The shadowing trap when a role moves into a block.** A block's own names
+  shadow the file's, so `module Client { let init = init }` is
+  **self-referential**, not an alias of a top-level `init` — you get
+  `error: global Client.init used before its definition`, and the same goes
+  for any `tick`/`draw`/`update` the file also defines at top level. Give
+  shared values names the contract does not use (`initialGame`, `board`) and
+  let each block reference those. The same rule holds for TYPES: a
+  `module Client` may not sit next to a top-level `type Client` (a module
+  name occupies its file's value and type namespaces — that is a collision
+  load error, not shadowing), so move the role's model type INTO the block
+  (`Client.Model`).
 - **Hot reload**: canonical names are the rebind identity, so an inline
   module's closures rebind normally — but MOVING a def into (or out of) a
   module renames it (`step` → `Server.step`), which the rebinder treats

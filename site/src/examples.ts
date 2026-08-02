@@ -70,10 +70,10 @@ export interface Example {
    * example's own entry, which is copied and listed already.
    *
    * The server pane derives its params from the client's, so the server
-   * ROLE must be stated here rather than inherited: `prefix` when the role
-   * resolves prefixed bindings in a shared file (orbs: `serverInit`/…,
-   * carried as `?prefix=`), or `module` when it is an inline entry module
-   * (`{ "file": …, "module": "Server" }`, carried as `?module=`). At most
+   * ROLE must be stated here rather than inherited: `module` when it is an
+   * inline entry module in a shared file (orbs: `{ "file": …, "module":
+   * "Server" }`, carried as `?module=`), or `prefix` for the transitional
+   * prefixed-binding form (`serverInit`/…, carried as `?prefix=`). At most
    * one of the two.
    */
   server?: { file: string; module?: string; prefix?: string };
@@ -151,18 +151,20 @@ export const EXAMPLES: Example[] = [
   // Named `bounce` (not `physics`): the flat copy makes `file = module`, and a
   // module literally named `Physics` collides with the builtin/prelude namespace.
   { id: "bounce", label: "Physics", source: "examples/physics/game.fun" },
-  // The minimal multiplayer-mechanics sample in ONE module (banner sections:
-  // PROTOCOL / SERVER / CLIENT / SERVER ROLE), so the wire ADT and the
-  // authoritative claim resolution are right there in the editable buffer.
+  // The minimal multiplayer-mechanics sample in ONE file (banner sections:
+  // PROTOCOL / THE WORLD / PRESENTATION / CLIENT / SERVER — the last two the
+  // roles' own `module` blocks), so the wire ADT and the authoritative claim
+  // resolution are right there in the editable buffer.
   {
     id: "orbs",
     label: "Orbs (multiplayer)",
     source: "examples/orbs/game.fun",
     multiplayer: true,
-    // Both roles are in the ONE editable buffer: the sandbox plays the
-    // `client` role (the file's ordinary top-level contract, so no `prefix`),
-    // and the server pane re-enters the same file through the `server` prefix.
-    server: { file: exampleEntryPath("orbs"), prefix: "server" },
+    // Both roles are inline MODULES of the ONE editable buffer: the sandbox
+    // plays `module Client` (`?module=Client`), and the server pane re-enters
+    // the same file at `module Server` (`?module=Server`).
+    module: "Client",
+    server: { file: exampleEntryPath("orbs"), module: "Server" },
   },
   // The client/server sample: two ROLES over a shared typed protocol, run
   // end-to-end in the pane grid — the client panes and a server pane, wired to

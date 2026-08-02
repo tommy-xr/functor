@@ -374,10 +374,12 @@ functor -d . run native --entry server  # the same world, seen from the authorit
           <p class="docs-callout">
             This is the one step with no <strong>▶ try it</strong> button — that path pastes a
             program in and boots it against the <em>unprefixed</em> contract, which a
-            prefixed role by definition doesn't answer. The sandbox can still play a prefixed
-            role when it knows the prefix up front:
+            prefixed role by definition doesn't answer. The sandbox can still play a declared
+            role when it knows it up front:
             <a href="../sandbox.html?example=orbs">open Orbs in the sandbox</a> to see this same
-            one-file, two-role shape at full size, with an authoritative claim-resolution rule.
+            one-file, two-role shape at full size — both roles as inline
+            <code>module Client</code> / <code>module Server</code> blocks, over a real wire,
+            with an authoritative claim-resolution rule.
           </p>
         </section>
 

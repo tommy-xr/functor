@@ -707,11 +707,9 @@ snapshots — no GPU, fully agent-verifiable.
       naming the role, the file, and the blocks it does declare — re-resolved
       on every hot reload, so deleting the block fails loudly and keeps the
       old program instead of reporting every binding missing. Module roles
-      landed native-only here; Part 9 lifted that to wasm. `examples/orbs`
-      is the same-file reference: its `client` role is the file's plain
-      top-level contract (so the sandbox and the docs teach the same
-      `init`/`tick`/`draw`) and its `server` role stays on the PREFIX form,
-      the one its sandbox server pane shipped with. *Verify:* config-shape tests
+      landed native-only here; Part 9 lifted that to wasm, and Part 10 moved
+      `examples/orbs` — the same-file reference — onto blocks for BOTH of its
+      roles. *Verify:* config-shape tests
       (module form, module+prefix refusal, non-string/non-Capitalized names,
       unknown keys), contract tests naming `Server.tick`, an unknown-block
       error test, a desktop load + hot-reload test for a module role, the
@@ -736,6 +734,30 @@ snapshots — no GPU, fully agent-verifiable.
       block lists the file's blocks), CLI tests for the lifted guards and the
       page's baked boot config, and a headless `run wasm` browser smoke of a
       `module Server` role.
+      **Part 10 — the samples adopt the two canonical shapes — done:**
+      `examples/orbs` is now fully symmetric — its functor.json maps BOTH
+      roles to blocks of the one `game.fun`
+      (`{"client": {"file": "game.fun", "module": "Client"},
+      "server": {"file": "game.fun", "module": "Server"}}`), with the
+      protocol, the world step and the renderer shared bare above them.
+      Nothing at the file's top level answers a plain entry any more, and the
+      sandbox plays both ends of it over the REAL transport: the client panes
+      boot `?module=Client`, the authority pane `?module=Server`, one buffer,
+      one atomic hot reload. `examples/mp` is deliberately NOT migrated — it
+      is the roles-as-FILES shape (`client.fun` + `server.fun` over a shared
+      `protocol.fun`), the one to reach for once roles outgrow a buffer or
+      want independent deploy units. Two traps the migration documents at the
+      trap (SKILL.md's inline-module section): a block's own `init` shadows
+      the file's, so `let init = init` inside the block is self-referential
+      rather than an alias, and a `module Client` may not sit beside a
+      top-level `type Client` — the role's model type moves into the block
+      (`Client.Model`). With orbs migrated, **no role anywhere in the repo
+      uses the `prefix` form** — the precondition for deprecating it.
+      *Verify:* per-role native captures byte-identical to the pre-migration
+      project at the same fixed time, `test`/`build`/`build wasm` on the
+      project (the exported page carries `__functorLangEntryModule`), and the
+      sandbox e2e pinning the module-form panes plus live packet flow between
+      the client panes and the authority.
 - [x] **Language: string interpolation** (done 2026-07-23). An explicit
       F#-style `$"score: {score}"` literal accepts full Functor expressions
       in each `{…}` hole and evaluates them left-to-right. String values

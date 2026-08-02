@@ -6,6 +6,12 @@
 // claim it: it takes your color, and your score is the orbs you own. A full
 // board deals a fresh round. The server owns the world; a client sends what
 // it is doing and draws the snapshots it gets back.
+//
+// BOTH roles are inline modules of this ONE file — `module Client` at the
+// bottom and `module Server` under it, each block's members ARE that role's
+// contract (`Client.init`/`Client.tick`/…). functor.json maps the roles to
+// them; everything above the blocks is shared by both. One buffer, one atomic
+// hot reload, and the protocol declared exactly once.
 
 // ==========================  PROTOCOL  ================================
 // What both roles agree on — exactly what `Effect.sendMsg` carries (no string
@@ -61,10 +67,10 @@ let claimRange = 1.8
 let overOrb = (ship: Ship, o: Orb): bool =>
   dist2(ship.x, ship.y, o.x, o.y) < claimRange * claimRange
 
-// ===========================  SERVER  =================================
+// ========================  THE WORLD (shared)  ========================
 // PURE functions over the protocol types: `join` seats a pilot, `recv` folds
 // one arriving message in, `step` advances a tick and settles claims. The
-// role that puts them behind a socket is at the bottom of the file.
+// role that puts them behind a socket is `module Server` at the bottom.
 
 let turnSpeed = 3.2       // radians/second
 let moveSpeed = 9.0       // units/second while thrusting
@@ -156,11 +162,9 @@ let step = (dt: float, w: World): World =>
 let scoreOf = (pid: float, orbs: List<Orb>): float =>
   orbs |> List.filter((o) => o.owner == pid) |> List.length
 
-// ===========================  CLIENT  =================================
-// The `client` role is this file's ordinary top-level contract
-// (init/subscriptions/update/sampledInput/tick/draw). It holds NO authority:
-// it dials the server, says what it is doing, and draws the last Snapshot it
-// was sent. Your pid arrives in the Welcome — identity comes from the server.
+// =====================  PRESENTATION (shared)  ========================
+// Both roles draw the same board from the same two lists — the client from
+// the last Snapshot it was sent, the authority from the world it owns.
 
 // Palette: zero-arg functions, not top-level values — the sandbox's lang-intel
 // evaluates this module under the plain prelude, where Color.* doesn't exist.
@@ -173,55 +177,6 @@ let bg = () => Color.rgb(0.02, 0.025, 0.06)
 // Color carries IDENTITY, not "me": a pid looks the same in every pane.
 let inkFor = (pid: float) => if Math.mod(pid, 2.0) == 0.0 then cyan() else pink()
 
-type Client = { conn: Option.t<float>, myPid: float,
-                ships: List<Ship>, orbs: List<Orb>, intent: Intent }
-
-let init: Client = { conn: Option.None, myPid: 0.0 - 1.0,
-                     ships: [], orbs: [], intent: coast }
-
-// Declaring the connection in `subscriptions` keeps the socket open.
-let subscriptions = (m: Client) => Sub.connect(serverUrl, toMsg)
-
-let update = (m: Client, msg: Msg) =>
-  match msg with
-  | Opened(id) => ({ m with conn: Option.Some(id) }, Effect.sendMsg(id, Join))
-  | Packet(_, wire) =>
-      (match wire with
-       | Welcome(pid) => { m with myPid: pid }
-       | Snapshot(ships, orbs) => { m with ships: ships, orbs: orbs }
-       | _ => m)          // Join/Steer/Claim are client -> server only
-  | Closed(_) => { m with conn: Option.None, ships: [], orbs: [] }
-  | Noise(_) => m       // a hiccup is not a disconnect: keep playing
-
-// Held LEVELS, read once per tick — exactly what the Steer forwards.
-let sampledInput = (m: Client, snap: Input.snapshot) =>
-  let held = (k: Key.t) => snap.heldKeys |> List.any((h) => h == k) in
-  { m with intent: {
-      turn: (if held(Key.Left) || held(Key.A) then 1.0 else 0.0)
-          - (if held(Key.Right) || held(Key.D) then 1.0 else 0.0),
-      thrust: held(Key.Up) || held(Key.W),
-      claim: held(Key.Space) } }
-
-// One burst per tick — and nothing at all before the server has seated us.
-// `Steer` reports the input we are holding right now; a `Claim` rides along
-// only when the last Snapshot we were sent puts us over a free orb. Both are
-// PROPOSALS — neither is a fact until the server re-checks it.
-let tick = (m: Client, dt: float, tts: float) =>
-  match m.conn with
-  | Option.None => m
-  | Option.Some(id) =>
-    (match m.ships |> List.find((s) => s.pid == m.myPid) with
-     | Option.None => m
-     | Option.Some(s) =>
-       let claim =
-         if not m.intent.claim then []
-         else (match m.orbs |> List.find((o) => o.owner < 0.0 && overOrb(s, o)) with
-               | Option.Some(o) => [Claim(o.id)]
-               | Option.None => []) in
-       (m, Effect.batch([Steer(m.intent), ..claim]
-                          |> List.map((w) => Effect.sendMsg(id, w)))))
-
-// ---------- rendering ----------
 // Unclaimed orbs glow dim white; a claimed orb burns its owner's color.
 let orbSprite = (o: Orb) =>
   let claimed = o.owner >= 0.0 in
@@ -267,61 +222,120 @@ let board = (me: float, alone: string, ships: List<Ship>, orbs: List<Orb>) =>
         |> List.append([hud(alone, ships, orbs)])))
     |> Frame.withClearColor(bg())
 
-let draw = (m: Client, tts: float) =>
-  board(m.myPid, "waiting for the server...", m.ships, m.orbs)
+// ===========================  CLIENT  =================================
+// The `client` role: functor.json maps it to { "file": "game.fun",
+// "module": "Client" }, so this block's members ARE the contract —
+// Client.init/Client.tick/Client.draw/… It holds NO authority: it dials the
+// server, says what it is doing, and draws the last Snapshot it was sent.
+// Your pid arrives in the Welcome — identity comes from the server.
 
-// ========================  SERVER ROLE  ===============================
-// The same file is ALSO the `server` entry: functor.json maps the role to
-// { "file": "game.fun", "prefix": "server" }, so the runner resolves this
-// section's bindings as the contract — serverInit/serverTick/serverDraw/…
+module Client {
+  type Model = { conn: Option.t<float>, myPid: float,
+                 ships: List<Ship>, orbs: List<Orb>, intent: Intent }
+
+  let init: Model = { conn: Option.None, myPid: 0.0 - 1.0,
+                      ships: [], orbs: [], intent: coast }
+
+  // Declaring the connection in `subscriptions` keeps the socket open.
+  let subscriptions = (m: Model) => Sub.connect(serverUrl, toMsg)
+
+  let update = (m: Model, msg: Msg) =>
+    match msg with
+    | Opened(id) => ({ m with conn: Option.Some(id) }, Effect.sendMsg(id, Join))
+    | Packet(_, wire) =>
+        (match wire with
+         | Welcome(pid) => { m with myPid: pid }
+         | Snapshot(ships, orbs) => { m with ships: ships, orbs: orbs }
+         | _ => m)          // Join/Steer/Claim are client -> server only
+    | Closed(_) => { m with conn: Option.None, ships: [], orbs: [] }
+    | Noise(_) => m       // a hiccup is not a disconnect: keep playing
+
+  // Held LEVELS, read once per tick — exactly what the Steer forwards.
+  let sampledInput = (m: Model, snap: Input.snapshot) =>
+    let held = (k: Key.t) => snap.heldKeys |> List.any((h) => h == k) in
+    { m with intent: {
+        turn: (if held(Key.Left) || held(Key.A) then 1.0 else 0.0)
+            - (if held(Key.Right) || held(Key.D) then 1.0 else 0.0),
+        thrust: held(Key.Up) || held(Key.W),
+        claim: held(Key.Space) } }
+
+  // One burst per tick — and nothing at all before the server has seated us.
+  // `Steer` reports the input we are holding right now; a `Claim` rides along
+  // only when the last Snapshot we were sent puts us over a free orb. Both are
+  // PROPOSALS — neither is a fact until the server re-checks it.
+  let tick = (m: Model, dt: float, tts: float) =>
+    match m.conn with
+    | Option.None => m
+    | Option.Some(id) =>
+      (match m.ships |> List.find((s) => s.pid == m.myPid) with
+       | Option.None => m
+       | Option.Some(s) =>
+         let claim =
+           if not m.intent.claim then []
+           else (match m.orbs |> List.find((o) => o.owner < 0.0 && overOrb(s, o)) with
+                 | Option.Some(o) => [Claim(o.id)]
+                 | Option.None => []) in
+         (m, Effect.batch([Steer(m.intent), ..claim]
+                            |> List.map((w) => Effect.sendMsg(id, w)))))
+
+  let draw = (m: Model, tts: float) =>
+    board(m.myPid, "waiting for the server...", m.ships, m.orbs)
+}
+
+// ===========================  SERVER  =================================
+// The `server` role, the same file's other block: functor.json maps it to
+// { "file": "game.fun", "module": "Server" }, so the runner resolves
+// Server.init/Server.tick/Server.draw/… as the contract
 // (functor -d examples/orbs run native --entry server). One buffer, both
 // roles, one hot reload.
 
-type Seat = { cid: float, pid: float }   // connection -> the pilot it steers
+module Server {
+  type Seat = { cid: float, pid: float }   // connection -> the pilot it steers
 
-// An empty arena: every pilot arrives over a wire, so the board starts with
-// five unclaimed orbs and nobody in it.
-let serverInit = { world: newWorld(), seats: [] }
+  // An empty arena: every pilot arrives over a wire, so the board starts with
+  // five unclaimed orbs and nobody in it.
+  let init = { world: newWorld(), seats: [] }
 
-// Declaring the listener in `subscriptions` keeps the server bound.
-let serverSubscriptions = (m) => Sub.listen(bind, toMsg)
+  // Declaring the listener in `subscriptions` keeps the server bound.
+  let subscriptions = (m) => Sub.listen(bind, toMsg)
 
-let seatPid = (cid: float, m): Option.t<float> =>
-  m.seats |> List.find((s) => s.cid == cid) |> Option.map((s) => s.pid)
+  let seatPid = (cid: float, m): Option.t<float> =>
+    m.seats |> List.find((s) => s.cid == cid) |> Option.map((s) => s.pid)
 
-let serverUpdate = (m, msg: Msg) =>
-  match msg with
-  | Opened(_) => m        // a socket, not yet a pilot: the Join seats it
-  | Packet(cid, wire) =>
-      (match wire with
-       // The handshake: seat a pilot for this connection, answer its identity.
-       // A re-Join is answered from the seat it already has — one connection
-       // is one pilot, however many times it asks.
-       | Join =>
-         (match seatPid(cid, m) with
-          | Option.Some(pid) => (m, Effect.sendMsg(cid, Welcome(pid)))
-          | Option.None =>
-            let (w, pid) = join(m.world) in
-            ({ m with world: w, seats: [{ cid: cid, pid: pid }, ..m.seats] },
-             Effect.sendMsg(cid, Welcome(pid))))
-       // Everything else is keyed by the connection, never by the wire value.
-       | _ =>
-         (match seatPid(cid, m) with
-          | Option.Some(pid) => { m with world: m.world |> recv(pid, wire) }
-          | Option.None => m))
-  | Noise(_) => m
-  | Closed(cid) =>
-      (match seatPid(cid, m) with
-       | Option.Some(pid) => { m with world: m.world |> leave(pid),
-                               seats: m.seats |> List.filter((s) => not s.cid == cid) }
-       | Option.None => m)
+  let update = (m, msg: Msg) =>
+    match msg with
+    | Opened(_) => m        // a socket, not yet a pilot: the Join seats it
+    | Packet(cid, wire) =>
+        (match wire with
+         // The handshake: seat a pilot for this connection, answer its identity.
+         // A re-Join is answered from the seat it already has — one connection
+         // is one pilot, however many times it asks.
+         | Join =>
+           (match seatPid(cid, m) with
+            | Option.Some(pid) => (m, Effect.sendMsg(cid, Welcome(pid)))
+            | Option.None =>
+              let (w, pid) = join(m.world) in
+              ({ m with world: w, seats: [{ cid: cid, pid: pid }, ..m.seats] },
+               Effect.sendMsg(cid, Welcome(pid))))
+         // Everything else is keyed by the connection, never by the wire value.
+         | _ =>
+           (match seatPid(cid, m) with
+            | Option.Some(pid) => { m with world: m.world |> recv(pid, wire) }
+            | Option.None => m))
+    | Noise(_) => m
+    | Closed(cid) =>
+        (match seatPid(cid, m) with
+         | Option.Some(pid) => { m with world: m.world |> leave(pid),
+                                 seats: m.seats |> List.filter((s) => not s.cid == cid) }
+         | Option.None => m)
 
-let serverTick = (m, dt: float, tts: float) =>
-  let stepped = m.world |> step(dt) in
-  let snap = Snapshot(stepped.pilots |> List.map((p) => p.ship), stepped.orbs) in
-  ({ m with world: stepped },
-   Effect.batch(m.seats |> List.map((s) => Effect.sendMsg(s.cid, snap))))
+  let tick = (m, dt: float, tts: float) =>
+    let stepped = m.world |> step(dt) in
+    let snap = Snapshot(stepped.pilots |> List.map((p) => p.ship), stepped.orbs) in
+    ({ m with world: stepped },
+     Effect.batch(m.seats |> List.map((s) => Effect.sendMsg(s.cid, snap))))
 
-let serverDraw = (m, tts: float) =>   // the authority holds no seat of its own
-  board(0.0 - 1.0, "waiting for a pilot...",
-        m.world.pilots |> List.map((p) => p.ship), m.world.orbs)
+  let draw = (m, tts: float) =>   // the authority holds no seat of its own
+    board(0.0 - 1.0, "waiting for a pilot...",
+          m.world.pilots |> List.map((p) => p.ship), m.world.orbs)
+}
