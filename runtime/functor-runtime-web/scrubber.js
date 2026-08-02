@@ -196,25 +196,27 @@ const STYLE = `
   50% { box-shadow: 0 0 0 1px var(--sb-future), 0 0 14px 2px rgba(232, 88, 184, 0.45); }
 }
 /* Peek: while an edit-triggered glimpse of the extrapolation plays, the button
-   presses in and glows brighter than the steady "on" state, easing back over
-   the hold. It is the glimpse's only chrome — it says "the future you just saw
-   lives HERE". Declared after the attention pulse so the press wins if both
-   classes land on the button at once. */
+   presses once and then SHINES for the whole glimpse — it is the glimpse's only
+   chrome, saying "the future you just saw lives HERE". The class is removed when
+   the peek ends, so the infinite shine retires with the trail's fade-out and the
+   two read as one gesture. The filled background is what makes this categorically
+   different from the resting attention ring rather than merely brighter.
+   Declared after the attention pulse so the press wins if both classes land on
+   the button at once. */
 #scrub-extrapolate.peeking {
-  animation: scrub-peek-press 1.5s ease-out;
+  animation: scrub-peek-press 0.3s ease-out, scrub-peek-shine 2s ease-in-out 0.3s infinite;
+  border-color: var(--sb-future);
+  background: rgba(232, 88, 184, 0.22);
+  box-shadow: 0 0 0 2px var(--sb-future), 0 0 18px 3px rgba(232, 88, 184, 0.75);
 }
 @keyframes scrub-peek-press {
   0% { transform: translateY(0); }
-  8% {
-    transform: translateY(1px);
-    border-color: var(--sb-future);
-    box-shadow: 0 0 0 2px var(--sb-future), 0 0 16px rgba(232, 88, 184, 0.85);
-  }
-  55% {
-    border-color: var(--sb-future);
-    box-shadow: 0 0 0 1px var(--sb-future), 0 0 10px rgba(232, 88, 184, 0.5);
-  }
+  35% { transform: translateY(1px); box-shadow: 0 0 0 2px var(--sb-future), 0 0 16px rgba(232, 88, 184, 0.85); }
   100% { transform: none; }
+}
+@keyframes scrub-peek-shine {
+  0%, 100% { box-shadow: 0 0 0 2px var(--sb-future), 0 0 18px 3px rgba(232, 88, 184, 0.75); }
+  50% { box-shadow: 0 0 0 2px var(--sb-future), 0 0 13px 2px rgba(232, 88, 184, 0.55); }
 }
 #scrub-toast {
   /* Docked under the bar's right edge: the frame label sits centered under the
@@ -237,7 +239,9 @@ const STYLE = `
     box-shadow: 0 0 0 2px var(--sb-future), 0 2px 10px rgba(232, 88, 184, 0.35);
   }
   /* The glimpse still reads through the trail itself; a steady ring marks the
-     button for the duration without the press. */
+     button for the duration without the press or the shine. The filled
+     background carries over from the rule above, so the peek stays
+     categorically distinct from the resting ring here too. */
   #scrub-extrapolate.peeking {
     animation: none;
     border-color: var(--sb-future);
@@ -1112,7 +1116,11 @@ export function mountScrubber({ hidden = false } = {}) {
   //      animation and no timeline state to unwind afterwards.
   // Leaving the peek OUT of the timeline state also keeps it out of the recorded,
   // replayable model: a glimpse is a hint about the UI, never part of the run.
-  const PEEK_HOLD_MS = 1500; // matches the button's press animation
+  // How long the future stays on screen. The button's shine is INFINITE and
+  // retires when the class comes off at the end of the hold, so this duration
+  // alone decides the gesture's length — there is no animation length to keep
+  // it in step with.
+  const PEEK_HOLD_MS = 1500;
   let peekTimer = null;
   const peekActive = () => peekTimer !== null;
   // Retire the glimpse's chrome without touching the engine preview.
