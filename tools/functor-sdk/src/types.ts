@@ -222,7 +222,11 @@ export interface LaunchOptions {
   /** Game directory (the runner's cwd, for resolving assets).
    * e.g. an absolute path to `examples/hello`. */
   gameDir: string;
-  /** Debug-runtime HTTP port (default 8077). */
+  /** Debug-runtime HTTP port. Default 0 = OS-assigned: the runtime binds a
+   * free port and reports it on its `[debug-server] listening` line, which
+   * launch parses — read the actual port from `runner.port`. Pass a fixed
+   * port only when something external must find the server at a known
+   * address. */
   port?: number;
   /** Path to the `functor` CLI binary (default `<repoRoot>/target/debug/functor`). */
   runnerBin?: string;

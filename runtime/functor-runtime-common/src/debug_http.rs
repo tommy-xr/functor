@@ -23,10 +23,17 @@ const MAX_COMMAND_BYTES: usize = 64 * 1024;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNTIME_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Bind `address`, start the transport thread, and return the frame loop's
-/// request receiver. Runtime shells choose their own bind/error policy.
-pub fn spawn(address: impl ToSocketAddrs) -> std::io::Result<mpsc::Receiver<DebugRequest>> {
-    spawn_listener(TcpListener::bind(address)?)
+/// Bind `address`, start the transport thread, and return the actually-bound
+/// address plus the frame loop's request receiver. Port 0 binds an
+/// OS-assigned free port — the returned address carries the real one, which
+/// callers must report (automation reads it to find the server). Runtime
+/// shells choose their own bind/error policy.
+pub fn spawn(
+    address: impl ToSocketAddrs,
+) -> std::io::Result<(std::net::SocketAddr, mpsc::Receiver<DebugRequest>)> {
+    let listener = TcpListener::bind(address)?;
+    let bound = listener.local_addr()?;
+    Ok((bound, spawn_listener(listener)?))
 }
 
 fn spawn_listener(listener: TcpListener) -> std::io::Result<mpsc::Receiver<DebugRequest>> {

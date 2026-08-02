@@ -14,14 +14,19 @@ pub use functor_runtime_common::debug_protocol::{
 /// There is no authentication, so wide binds are appropriate only on trusted
 /// networks where arbitrary game-code pushes are acceptable.
 ///
+/// Port 0 binds an OS-assigned free port; the "listening" notice below always
+/// reports the ACTUAL bound port, which automation (the functor-sdk harness)
+/// parses to find the server — collision-free parallel sessions by
+/// construction.
+///
 /// A failed bind is fatal for an explicitly requested port (the caller asked
 /// for *that* port and automation is waiting on it). With `optional` — how
 /// `functor develop` asks for its default well-known port — it instead logs
 /// and returns `None`, so a second concurrent session still runs the game.
 pub fn spawn(bind: &str, port: u16, optional: bool) -> Option<Receiver<DebugRequest>> {
     let address = format!("{bind}:{port}");
-    let receiver = match functor_runtime_common::debug_http::spawn((bind, port)) {
-        Ok(receiver) => receiver,
+    let (bound, receiver) = match functor_runtime_common::debug_http::spawn((bind, port)) {
+        Ok(bound_and_receiver) => bound_and_receiver,
         // Only a TAKEN port degrades: any other bind failure (a bad interface,
         // a permission denial) is a misconfiguration the fatal arm should
         // report accurately rather than blame on another session.
@@ -40,7 +45,9 @@ debug server; pass `--debug-port <PORT>` to pick another"
     };
 
     // Stderr, not stdout: `--debug-port` is a common `--json` automation combo,
-    // so this notice must not land in the CLI's ndjson stream.
-    eprintln!("[debug-server] listening on http://{address}");
+    // so this notice must not land in the CLI's ndjson stream. The bound
+    // address (never the requested one) — with port 0 this line is the only
+    // place the real port is reported.
+    eprintln!("[debug-server] listening on http://{bound}");
     Some(receiver)
 }

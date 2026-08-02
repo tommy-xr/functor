@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   findRepoRoot,
   formatCrashOutput,
+  parseListeningPort,
   FunctorClient,
   HttpClient,
   stepAll,
@@ -383,4 +384,20 @@ test("project load and reload use distinct lifecycle routes", async () => {
     { path: "/load-project", body: files },
     { path: "/reload-project", body: files },
   ]);
+});
+
+test("parseListeningPort reads the runtime's listening line, nothing else", () => {
+  // IPv4, wildcard, IPv6 (SocketAddr renders v6 bracketed), and a trailing
+  // \r (a Windows-piped runtime leaves one after the \n split).
+  assert.equal(parseListeningPort("[debug-server] listening on http://127.0.0.1:60641"), 60641);
+  assert.equal(parseListeningPort("[debug-server] listening on http://0.0.0.0:8077"), 8077);
+  assert.equal(parseListeningPort("[debug-server] listening on http://[::1]:9000"), 9000);
+  assert.equal(parseListeningPort("[debug-server] listening on http://127.0.0.1:8096\r"), 8096);
+  // Non-matches: chatty runtime lines, the bind-failure line, and a port-less URL.
+  assert.equal(parseListeningPort("✓ checked game.fun (+31 modules)"), undefined);
+  assert.equal(
+    parseListeningPort("[debug-server] failed to bind 127.0.0.1:8096: Address already in use"),
+    undefined,
+  );
+  assert.equal(parseListeningPort("[debug-server] listening on http://127.0.0.1"), undefined);
 });

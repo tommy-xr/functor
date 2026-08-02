@@ -19,6 +19,14 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      repeats:
+        description: >
+          Run the suite this many times back-to-back (flake stress:
+          `gh workflow run e2e.yml --ref <branch> -f repeats=5`). The suite
+          runs to the first failing iteration.
+        required: false
+        default: "1"
 
 jobs:
   e2e-headless:
@@ -56,5 +64,20 @@ jobs:
         working-directory: tools/functor-sdk
 
       - name: Run headless e2e
-        run: npm run test:e2e:headless
+        # The input goes through env (never interpolated into the script —
+        # dispatch inputs are attacker-controlled text), and is validated so a
+        # bad value fails LOUDLY instead of `seq` erroring inside a command
+        # substitution and the empty loop passing green having run nothing.
+        env:
+          REPEATS: ${{ github.event.inputs.repeats || '1' }}
+        run: |
+          if ! [[ "$REPEATS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "invalid repeats input: $REPEATS" >&2
+            exit 1
+          fi
+          for ((i = 1; i <= REPEATS; i++)); do
+            echo "::group::e2e iteration $i of $REPEATS"
+            npm run test:e2e:headless
+            echo "::endgroup::"
+          done
         working-directory: tools/functor-sdk

@@ -1082,7 +1082,7 @@ pub fn android_main(app: AndroidApp) {
     // browser reach it through `adb forward tcp:8123 tcp:8123` (see README).
     // A bind failure degrades to a standalone boot scene, loudly.
     let debug_rx = match functor_runtime_common::debug_http::spawn(("127.0.0.1", RELOAD_PORT)) {
-        Ok(rx) => {
+        Ok((_bound, rx)) => {
             log::info!("debug endpoint: http://127.0.0.1:{RELOAD_PORT}");
             Some(rx)
         }

@@ -19,7 +19,6 @@ test(
         gameDir: join(repoRoot, "examples", "hello"),
         repoRoot,
         functorLangPath: join(repoRoot, "does", "not", "exist.fun"),
-        port: Number(process.env.FUNCTOR_E2E_PORT ?? 8091),
       }),
       (error: Error) => {
         assert.match(error.message, /functor-lang game source not found/);
