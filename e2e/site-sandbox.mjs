@@ -457,7 +457,11 @@ const playerFrame = (page) => {
 
   // Push an edited region and wait for the runtime to accept it (a fresh
   // reload-ok marker) and the panel to report live again.
-  const applyHeroRegion = async (src) => {
+  //
+  // `settle: false` returns the instant the reload lands, skipping the panel
+  // wait and the quiet period — the peek checks below need the hold still
+  // running, and settling would spend a third of it.
+  const applyHeroRegion = async (src, { settle = true } = {}) => {
     const reloadsBefore = await heroPlayer.evaluate(
       () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
     );
@@ -468,6 +472,7 @@ const playerFrame = (page) => {
       reloadsBefore,
       { timeout: 8000 }
     );
+    if (!settle) return;
     await page.waitForFunction(() => window.__hero.status().state === "live", null, {
       timeout: 8000,
     });
@@ -740,20 +745,8 @@ const playerFrame = (page) => {
   await sleep(700); // let the trail's presence ramp finish fading out
   const quietHash = await regionHash(heroPlayer);
 
-  // Push an edit and return the moment the runtime accepts it, with the hold
-  // still running: the glimpse is transient, so this deliberately skips
-  // applyHeroRegion's settle sleep.
-  const peekEdit = async (src) => {
-    const before = await heroPlayer.evaluate(
-      () => window.__scrub.events().filter((event) => event.kind === "reload-ok").length
-    );
-    await page.evaluate((s) => window.__hero.setRegion(s), src);
-    await heroPlayer.waitForFunction(
-      (b) => window.__scrub.events().filter((event) => event.kind === "reload-ok").length > b,
-      before,
-      { timeout: 8000 }
-    );
-  };
+  // Land an edit with the hold still running.
+  const peekEdit = (src) => applyHeroRegion(src, { settle: false });
   const peekState = () =>
     heroPlayer.evaluate(() => {
       const button = document.getElementById("scrub-extrapolate");
@@ -770,6 +763,8 @@ const playerFrame = (page) => {
 
   const softRegion = region.replace("let jumpVelocity = 13.0", "let jumpVelocity = 9.0");
   await peekEdit(softRegion);
+  const firstPeekAt = Date.now();
+  await sleep(200); // let the presence ramp fade the trail in before sampling
   const peekHash = await regionHash(heroPlayer);
   const duringPeek = await peekState();
   check(
@@ -790,10 +785,12 @@ const playerFrame = (page) => {
   );
 
   // A second edit mid-glimpse EXTENDS the hold rather than letting the first
-  // expire underneath it. "Still peeking afterwards" alone can't tell an
-  // extension from a fresh glimpse that started after the first one lapsed, so
-  // sample continuously across the second edit: the glimpse must never drop.
-  await sleep(250);
+  // expire underneath it. Two things have to be true, and neither alone is
+  // enough: the glimpse must never DROP across the second edit (otherwise it
+  // restarted rather than extended), and it must still be up PAST the first
+  // edit's 1.5s deadline (otherwise the first hold simply hadn't run out yet).
+  // So sample continuously, and hold the sampler open until the first deadline
+  // is provably behind us.
   await heroPlayer.evaluate(() => {
     window.__peekDropped = false;
     window.__peekSampler = window.setInterval(() => {
@@ -802,17 +799,26 @@ const playerFrame = (page) => {
   });
   const stillRegion = region.replace("let jumpVelocity = 13.0", "let jumpVelocity = 8.0");
   await peekEdit(stillRegion);
+  const secondPeekAt = Date.now();
+  // Past the FIRST hold's expiry (and still inside the extended one, which runs
+  // 1.5s from the second edit).
+  await sleep(Math.max(0, firstPeekAt + 1800 - Date.now()));
+  const extended = await peekState();
+  const extendedHash = await regionHash(heroPlayer);
   const dropped = await heroPlayer.evaluate(() => {
     window.clearInterval(window.__peekSampler);
     return window.__peekDropped;
   });
-  await sleep(900); // past the FIRST hold's 1.5s expiry, inside the extended one
-  const extended = await peekState();
-  const extendedHash = await regionHash(heroPlayer);
   check(
     "a second hero edit extends the peek's hold",
-    extended.peeking && extended.pressed && !dropped,
-    JSON.stringify({ ...extended, dropped })
+    extended.peeking &&
+      extended.pressed &&
+      !dropped &&
+      // The sample really was past the first deadline, and not yet past the
+      // second — otherwise the check proved nothing about extension.
+      Date.now() > firstPeekAt + 1500 &&
+      Date.now() < secondPeekAt + 1500,
+    JSON.stringify({ ...extended, dropped, firstPeekAt, secondPeekAt, now: Date.now() })
   );
 
   // Then it retires itself: the trail fades out and the button's glow goes.

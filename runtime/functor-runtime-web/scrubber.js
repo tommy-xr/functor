@@ -1123,13 +1123,14 @@ export function mountScrubber({ hidden = false } = {}) {
     pushPreview();
   };
   const startPeek = () => {
-    if (peekActive()) {
-      // Another edit mid-glimpse extends the hold: the future stays on screen
-      // and the press replays, so a run of edits reads as one continuous look.
-      clearTimeout(peekTimer);
-    } else {
-      functor_lang_scrub_set_preview(previewMode);
-    }
+    // Unconditional on purpose: a second edit mid-glimpse extends the hold (the
+    // future stays on screen and the press replays, so a run of edits reads as
+    // one continuous look), and re-asserting the mode also recovers the trail if
+    // something pushed the preview off underneath us. Setting the same mode is
+    // idempotent and does NOT restart the overlay's presence ramp, so extending
+    // never re-fades what is already on screen.
+    clearTimeout(peekTimer);
+    functor_lang_scrub_set_preview(previewMode);
     // The glimpse IS the invitation, delivered. Retire the one-shot attention
     // pulse rather than layering two glows on the same button.
     dismissAttention();
@@ -1140,14 +1141,12 @@ export function mountScrubber({ hidden = false } = {}) {
   };
   extrapolate.addEventListener("click", () => {
     dismissAttention();
-    if (peekActive()) {
-      // Reaching for 🔮 during the glimpse means "keep this" — adopt it as the
-      // real setting instead of reading as a toggle that turns it back off.
-      cancelPeek();
-      dispatch({ type: "preview-changed", preview: { enabled: true } });
-      pushPreview();
-      return;
-    }
+    // Reaching for 🔮 during the glimpse means "keep this", and the ordinary
+    // toggle below already delivers exactly that: a peek only starts while the
+    // real setting is off, so the toggle turns it on and the glimpse becomes
+    // permanent. Retiring the hold first is what makes it stick — otherwise the
+    // pending timer would hand the engine back and fade out what was adopted.
+    cancelPeek();
     dispatch({ type: "preview-changed", preview: { enabled: !state.preview.enabled } });
     pushPreview();
   });
@@ -1323,6 +1322,10 @@ export function mountScrubber({ hidden = false } = {}) {
     // skipping the runtime's ease so a script can capture an exact mid-fade
     // frame; a NEGATIVE value clears the pin and resumes easing.
     setPreview: ({ mode: nextMode, presence: nextPresence, ...preview }) => {
+      // An explicit host push is the real setting; a transient glimpse must not
+      // outlive it. Without this the hold would keep reporting `peeking()` and
+      // holding the glow over a preview this call already changed.
+      cancelPeek();
       if (nextMode !== undefined && Number.isFinite(Number(nextMode))) {
         previewMode = Number(nextMode);
       }
@@ -1419,11 +1422,18 @@ export function mountScrubber({ hidden = false } = {}) {
           // Only an ACCEPTED edit earns a glimpse — a rejected one has no new
           // future to show. Parked-and-off is the whole audience for it: playing
           // already shows the consequence, and enabled is already showing it.
-          if (
-            newReload.kind === "reload-ok" &&
-            state.runtime?.paused &&
-            !state.preview.enabled
-          ) {
+          //
+          // `pausedNow` is this frame's read, NOT `state.runtime.paused`: the
+          // runtime snapshot is dispatched further down, so the reducer still
+          // holds the PREVIOUS frame's pause state here. A resume landing on the
+          // same frame as a reload would otherwise start a glimpse over a
+          // running sim, with no later pause edge to cut it short.
+          //
+          // A `hidden` mount has no bar to press: it is the seam-only mode for
+          // hosts that dock their own chrome (the sandbox), which reads the
+          // reducer the peek deliberately leaves alone. Peeking there would drop
+          // an unexplained trail into the viewport and glow a detached button.
+          if (!hidden && newReload.kind === "reload-ok" && pausedNow && !state.preview.enabled) {
             startPeek();
           }
         }
@@ -1465,6 +1475,11 @@ export function mountScrubber({ hidden = false } = {}) {
     destroy() {
       cancelAnimationFrame(raf);
       clearTimeout(toastTimer);
+      // Tearing down mid-glimpse would otherwise leave the engine preview on
+      // with nothing left to turn it off, and the pending hold would later fire
+      // against a dead mount and push THIS mount's stale state at the engine.
+      // End it now: the trail goes with the bar that explained it.
+      if (peekActive()) endPeek();
       window.removeEventListener("keydown", onPausedGameKey);
       el.remove();
       // The flash overlay lives on the document, not inside the bar, so it has
