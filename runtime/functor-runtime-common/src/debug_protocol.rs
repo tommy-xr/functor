@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ui::UiEventKind, InputSnapshot, XrInputSnapshot};
+use crate::{ui::UiEventKind, GamepadSnapshot, InputSnapshot, XrInputSnapshot};
 
 /// Stable name returned by the discovery endpoint on every runtime target.
 pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
@@ -53,7 +53,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// contract (so `functor run vr` refuses to push a role to one), and a v9
 /// runtime treats a push with no role query as "the role already in force
 /// stands".
-pub const DEBUG_PROTOCOL_VERSION: u32 = 9;
+///
+/// 10 adds gamepad injection — `POST /input` `{"type":"gamepad",…}` /
+/// `{"type":"gamepad_clear"}` (the `xr`/`xr_clear` contract for the gamepad
+/// domain) — and the optional `gamepad` field on `GET /state`'s input
+/// snapshot.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 10;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -107,7 +112,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
+        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -122,7 +127,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/input",
-        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device)",
+        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device) | {\"type\":\"gamepad\",\"left_stick\":[0.0,1.0],\"south\":true,...} (desktop only; level state until the next gamepad command) | {\"type\":\"gamepad_clear\"} (drop it, restoring the physical pad or no device)",
     },
     DebugRoute {
         method: "POST",
@@ -283,6 +288,19 @@ pub enum InputCommand {
     /// one-way door: the first `xr` command would disable the emulator and make
     /// a game's "no XR device" branch unreachable for the rest of the process.
     XrClear,
+    /// Set the gamepad sample the next fixed step's `sampledInput` sees, so
+    /// stick/trigger/button state is scriptable without a physical pad.
+    ///
+    /// The `Xr` contract exactly: level state until the next `gamepad` command
+    /// replaces it, a WHOLE-sample replacement (an omitted field takes its
+    /// default), no entry-point call — the sample reaches the game through the
+    /// same `sampled_input` path a real pad takes, which is what makes it land
+    /// in the recorded input log and replay identically.
+    Gamepad(Box<GamepadSnapshot>),
+    /// Drop an injected gamepad sample, restoring whatever the runtime would
+    /// sample on its own — a physically connected pad, or no `gamepad` domain
+    /// at all. The release half of `Gamepad`'s held-key contract.
+    GamepadClear,
 }
 
 /// A clock command sent through `POST /time`.
@@ -816,6 +834,55 @@ mod tests {
             .expect("a well-formed body still decodes");
     }
 
+    /// The gamepad command follows the `xr` contract: a partial body defaults
+    /// what it omits, a misspelled field is a 400 (same silent-success trap —
+    /// an all-default sample would flip a game from "no pad" to "pad present,
+    /// nothing held" and pin it there), and the minimal body is a fully
+    /// default sample.
+    #[test]
+    fn a_gamepad_command_decodes_partially_and_rejects_typos() {
+        let command = serde_json::from_str::<InputCommand>(
+            r#"{"type":"gamepad",
+                "left_stick": [-0.5, 1.0],
+                "right_trigger": 0.25,
+                "south": true,
+                "dpad_left": true}"#,
+        )
+        .expect("gamepad command decodes");
+        let InputCommand::Gamepad(sample) = command else {
+            panic!("expected a gamepad command");
+        };
+        assert_eq!(sample.left_stick, [-0.5, 1.0]);
+        assert_eq!(sample.right_trigger, 0.25);
+        assert!(sample.south);
+        assert!(sample.dpad_left);
+        // Omitted controls take their defaults.
+        assert_eq!(sample.right_stick, [0.0, 0.0]);
+        assert_eq!(sample.left_trigger, 0.0);
+        assert!(!sample.east);
+        assert!(!sample.select);
+
+        let bare = serde_json::from_str::<InputCommand>(r#"{"type":"gamepad"}"#).unwrap();
+        assert_eq!(bare, InputCommand::Gamepad(Box::default()));
+
+        assert_eq!(
+            serde_json::from_str::<InputCommand>(r#"{"type":"gamepad_clear"}"#).unwrap(),
+            InputCommand::GamepadClear
+        );
+
+        for body in [
+            r#"{"type":"gamepad","lstick":[0.0,0.0]}"#, // misspelled stick
+            r#"{"type":"gamepad","suoth":true}"#,       // misspelled button
+        ] {
+            let err = serde_json::from_str::<InputCommand>(body)
+                .expect_err(&format!("{body} must be rejected"));
+            assert!(
+                err.to_string().contains("unknown field"),
+                "{body} rejected for the wrong reason: {err}"
+            );
+        }
+    }
+
     #[test]
     fn routes_are_unique_complete_and_drive_discovery() {
         let labels: BTreeSet<_> = DEBUG_ROUTES.iter().map(|route| route.label()).collect();
@@ -858,6 +925,6 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 9);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 10);
     }
 }

@@ -1,5 +1,7 @@
 import type { HttpClient } from "./client.js";
 import type {
+  GamepadInputSample,
+  GamepadSnapshot,
   InputCommand,
   KeyName,
   MouseButtonName,
@@ -67,6 +69,12 @@ export class FunctorClient {
    * targets and while XR tracking is unavailable. */
   async xrInput(): Promise<XrInputSnapshot | undefined> {
     return (await this.state()).input.xr;
+  }
+
+  /** Latest gamepad snapshot, or undefined while no pad is connected (or
+   * injected). */
+  async gamepadInput(): Promise<GamepadSnapshot | undefined> {
+    return (await this.state()).input.gamepad;
   }
 
   /** Capture the next rendered frame as PNG bytes. */
@@ -209,6 +217,21 @@ export class FunctorClient {
    * {@link xr}'s held-key contract. */
   xrClear(): Promise<void> {
     return this.input({ type: "xr_clear" });
+  }
+
+  /** Set the gamepad sample the next fixed step's `sampledInput` sees —
+   * sticks, triggers, and buttons without a physical pad (desktop runtimes
+   * only). The {@link xr} contract: level state until replaced, a whole-sample
+   * replacement whose omitted fields take their defaults. */
+  gamepad(sample: GamepadInputSample): Promise<void> {
+    return this.input({ type: "gamepad", ...sample });
+  }
+
+  /** Drop an injected gamepad sample, restoring what the runtime samples on
+   * its own — a physically connected pad, or no `gamepad` domain at all. The
+   * release half of {@link gamepad}'s held-key contract. */
+  gamepadClear(): Promise<void> {
+    return this.input({ type: "gamepad_clear" });
   }
 
   /** Click an interactive UI slot (`Clicked` in the runtime's UI protocol). */

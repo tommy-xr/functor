@@ -166,6 +166,8 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"ui_event","slot":2,"kind":{"TextChanged":"hi"}}       // edit text input slot 2
 {"type":"xr","left":{...},"right":{...},"head":{...}}          // set the XR device sample
 {"type":"xr_clear"}                                            // drop it again
+{"type":"gamepad","left_stick":[0.0,1.0],"south":true}         // set the gamepad sample
+{"type":"gamepad_clear"}                                       // drop it again
 ```
 
 `mouse_button` is both an edge and level state, exactly like `key`: it calls the
@@ -224,6 +226,18 @@ without it. That is the point: the mouse/keyboard emulator pins both hands to
 `z = -0.55` with identity orientations, so gestures like pulling a hand back
 toward your face, or aiming with a rotated grip, are inexpressible there and can
 only be driven this way. `held_keys` and `mouse` stay live alongside it.
+
+`{"type":"gamepad"}` is the same contract for the gamepad domain: sampled
+level state (no entry point call, recorded, replayable), a whole-sample
+replacement whose omitted fields take their defaults (centered sticks,
+released triggers/buttons), `deny_unknown_fields`, and `{"type":"gamepad_clear"}`
+as the release half — restoring a physically connected pad, or no `gamepad`
+domain at all. The body is the snake_case [`gamepad` sample]
+(#sampled-input-in-get-state) `GET /state` reports: `left_stick`/`right_stick`
+(`[-1..1]`, up-positive Y), `left_trigger`/`right_trigger` (`0..1`), and the
+positional booleans `south`/`east`/`west`/`north`, `left_bumper`/`right_bumper`,
+`left_stick_pressed`/`right_stick_pressed`, `dpad_up`/`dpad_down`/`dpad_left`/
+`dpad_right`, `start`/`select`.
 
 Pair it with `POST /time` to step one frame per pose — and **wait for `frame` to
 increment before sending the next pose**. Advances accumulate (one advance is
@@ -346,9 +360,13 @@ source is available for that hand. Grip and aim are independently nullable
 because buttons can remain available during a temporary pose-tracking loss.
 Analog values are normalized to `0..1`; thumbstick axes to `-1..1`.
 
-Non-XR runtimes omit `xr`, preserving the previous desktop JSON shape. Future
-gamepad and mobile-touch support should add typed sibling fields rather than
-target-specific endpoints or string-keyed capability bags.
+Non-XR runtimes omit `xr`, and padless runtimes omit `gamepad` — each domain
+is a typed sibling field, present only when its device is live. `gamepad`
+carries the primary connected (or injected) pad's held state: sticks as
+`[x, y]` in `-1..1` with up-positive Y, triggers in `0..1`, positional face
+buttons (`south` is the bottom one), bumpers, stick clicks, dpad, and
+`start`/`select`. Future mobile-touch support should add another typed sibling
+field rather than target-specific endpoints or string-keyed capability bags.
 
 ### `POST /time` — frame-loop control
 

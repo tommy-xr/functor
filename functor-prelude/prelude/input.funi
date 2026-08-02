@@ -1,9 +1,9 @@
 //! Target-neutral continuously sampled input.
 //!
 //! The optional `sampledInput(model, snapshot)` game hook receives one
-//! `Input.snapshot` immediately before every fixed simulation step. XR is the first
-//! typed device domain; future gamepad and mobile-touch records belong beside
-//! `xr` on the snapshot.
+//! `Input.snapshot` immediately before every fixed simulation step. XR and
+//! gamepad are typed device domains; a future mobile-touch record belongs
+//! beside them on the snapshot.
 
 /// A plain two-dimensional point or axis pair.
 type point2 = { x: float, y: float }
@@ -33,6 +33,34 @@ type xr = {
   head: Option.t<pose>,
   left: controller,
   right: controller
+}
+
+/// The primary connected gamepad's held state, aligned to the standard
+/// mapping desktop and web pads share. Face buttons are POSITIONAL — `south`
+/// is the bottom face button (A on Xbox, Cross on PlayStation, B on
+/// Nintendo) — because letter names swap between vendors. Sticks are `-1..1`
+/// with up-positive `y` (the XR thumbstick convention); triggers are `0..1`.
+/// Values are raw — apply your own deadzone. Levels only: detect edges
+/// against your model, as XR games do.
+type gamepad = {
+  leftStick: point2,
+  rightStick: point2,
+  leftTrigger: float,
+  rightTrigger: float,
+  south: bool,
+  east: bool,
+  west: bool,
+  north: bool,
+  leftBumper: bool,
+  rightBumper: bool,
+  leftStickPressed: bool,
+  rightStickPressed: bool,
+  dpadUp: bool,
+  dpadDown: bool,
+  dpadLeft: bool,
+  dpadRight: bool,
+  start: bool,
+  select: bool
 }
 
 /// A fixed set of mouse buttons. `mouse.buttons` uses it for held levels;
@@ -65,5 +93,6 @@ type snapshot = {
   pressedKeys: List<Key.t>,
   releasedKeys: List<Key.t>,
   mouse: mouse,
-  xr: Option.t<xr>
+  xr: Option.t<xr>,
+  gamepad: Option.t<gamepad>
 }
