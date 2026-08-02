@@ -10,6 +10,8 @@ let sampledInput = (m: Model, snap: Input.snapshot) =>
   match snap.gamepad with
   | Option.Some(pad) =>
     if pad.south && not m.logged then
+      // The length test is only a sequencing device: Debug.log returns its
+      // value, and binding it forces the log before `logged` flips.
       let line: string =
         Debug.log(
           "e2e-gamepad",

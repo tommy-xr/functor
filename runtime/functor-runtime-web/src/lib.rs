@@ -1635,17 +1635,27 @@ async fn run_async() -> Result<(), JsValue> {
             // connected, and controls read rest level while the clock is
             // pinned or the document unfocused (the pad twin of the page's
             // blur key sweep). Disconnect is `None` next frame, never stale.
-            let document_focused = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.has_focus().ok())
-                .unwrap_or(true);
-            input_snapshot.gamepad = web_gamepad::sample().map(|pad| {
-                if suspended || !document_focused {
-                    functor_runtime_common::GamepadSnapshot::default()
-                } else {
-                    pad
-                }
-            });
+            // Gated on `samples_input()`: a game without `sampledInput` never
+            // sees the snapshot, so it must not pay the ~40 JS crossings the
+            // poll costs. Note for `?fixed-time` captures: a live pad still
+            // reads as PRESENT (at rest) — presence, unlike controls, is
+            // hardware state, and browsers hide pads until an in-page button
+            // press anyway, so automated capture contexts see none.
+            input_snapshot.gamepad = if game.samples_input() {
+                let document_focused = window
+                    .document()
+                    .and_then(|d| d.has_focus().ok())
+                    .unwrap_or(true);
+                web_gamepad::sample().map(|pad| {
+                    if suspended || !document_focused {
+                        functor_runtime_common::GamepadSnapshot::default()
+                    } else {
+                        pad
+                    }
+                })
+            } else {
+                None
+            };
             functor_lang_game::drain_input(
                 &mut **game,
                 &mut input_snapshot,

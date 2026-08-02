@@ -21,11 +21,14 @@ pub fn sample() -> Option<GamepadSnapshot> {
     let navigator = web_sys::window()?.navigator();
     let pads = navigator.get_gamepads().ok()?;
     pads.iter()
-        // Unchecked rather than `dyn_into`: web-sys accessors are structural
-        // (plain property reads), and an `instanceof Gamepad` check would
-        // reject the duck-typed pads test harnesses install over
-        // `navigator.getGamepads`. Null slots (disconnected indices) are
-        // filtered first.
+        // Unchecked rather than `dyn_into`: an `instanceof Gamepad` check
+        // would reject the duck-typed pads test harnesses install over
+        // `navigator.getGamepads`. That works because wasm-bindgen emits a
+        // plain property read (`arg0.connected`) for these getters even
+        // though web-sys does not mark them `structural` — an implementation
+        // detail of the codegen that `e2e/gamepad-wasm.mjs` pins, so a
+        // toolchain bump that broke it would fail the e2e, not silently
+        // misread pads. Null slots (disconnected indices) are filtered first.
         .filter(|entry| !entry.is_null() && !entry.is_undefined())
         .map(|entry| entry.unchecked_into::<web_sys::Gamepad>())
         .find(|pad| {
@@ -40,15 +43,18 @@ pub fn sample() -> Option<GamepadSnapshot> {
                 (!entry.is_null() && !entry.is_undefined())
                     .then(|| entry.unchecked_into::<web_sys::GamepadButton>())
             };
-            let pressed = |i: u32| button(i).is_some_and(|b| b.pressed());
-            let value = |i: u32| button(i).map_or(0.0, |b| b.value() as f32);
             let mut held = [false; 16];
             for (i, slot) in held.iter_mut().enumerate() {
-                *slot = pressed(i as u32);
+                // 6/7 are the analog triggers' digital shadows — the
+                // conversion ignores them, so skip their boundary crossings.
+                if i != 6 && i != 7 {
+                    *slot = button(i as u32).is_some_and(|b| b.pressed());
+                }
             }
+            let trigger = |i: u32| button(i).map_or(0.0, |b| b.value() as f32);
             GamepadSnapshot::from_standard_mapping(
                 [axis(0), axis(1), axis(2), axis(3)],
-                [value(6), value(7)],
+                [trigger(6), trigger(7)],
                 held,
             )
         })

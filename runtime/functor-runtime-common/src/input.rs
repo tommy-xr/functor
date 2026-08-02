@@ -331,24 +331,41 @@ pub struct GamepadSnapshot {
     pub select: bool,
 }
 
+/// Clamp one device-reported stick pair into the domain convention: `-1..1`,
+/// up-positive Y (both GLFW and the browser report down-positive, so `y` is
+/// negated here — the ONE statement of that rule). NaN (a duck-typed or
+/// broken device value) reads as centered rather than poisoning the model.
+fn stick_pair(x: f32, y: f32) -> [f32; 2] {
+    let axis = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(-1.0, 1.0) };
+    [axis(x), axis(-y)]
+}
+
+/// Clamp one trigger into `0..1`; NaN reads as released.
+fn unit_trigger(v: f32) -> f32 {
+    if v.is_nan() {
+        0.0
+    } else {
+        v.clamp(0.0, 1.0)
+    }
+}
+
 impl GamepadSnapshot {
     /// Build a snapshot from the W3C Gamepad API's `"standard"` mapping — the
-    /// web shell's conversion, kept here (IO-free) so it unit-tests natively
-    /// while the wasm-only shell just gathers the raw arrays.
+    /// web shell's conversion, kept here (IO-free) beside its GLFW twin so
+    /// both unit-test natively while the shells just gather raw arrays.
     ///
     /// `axes` are the four standard stick axes with the browser's
-    /// down-positive Y (negated here to the domain's up-positive convention).
+    /// down-positive Y (negated to the domain's up-positive convention).
     /// `triggers` are standard buttons 6/7's ANALOG `value`s, already `0..1`.
     /// `buttons` are the 16 standard buttons' `pressed` booleans — indices
     /// 6/7 (the triggers' digital shadows) are ignored in favor of the analog
     /// values, and 16 (guide) has no snapshot field.
     pub fn from_standard_mapping(axes: [f32; 4], triggers: [f32; 2], buttons: [bool; 16]) -> Self {
-        let stick = |x: f32, y: f32| [x.clamp(-1.0, 1.0), (-y).clamp(-1.0, 1.0)];
         GamepadSnapshot {
-            left_stick: stick(axes[0], axes[1]),
-            right_stick: stick(axes[2], axes[3]),
-            left_trigger: triggers[0].clamp(0.0, 1.0),
-            right_trigger: triggers[1].clamp(0.0, 1.0),
+            left_stick: stick_pair(axes[0], axes[1]),
+            right_stick: stick_pair(axes[2], axes[3]),
+            left_trigger: unit_trigger(triggers[0]),
+            right_trigger: unit_trigger(triggers[1]),
             south: buttons[0],
             east: buttons[1],
             west: buttons[2],
@@ -363,6 +380,48 @@ impl GamepadSnapshot {
             dpad_down: buttons[13],
             dpad_left: buttons[14],
             dpad_right: buttons[15],
+        }
+    }
+
+    /// Build a snapshot from `glfwGetGamepadState` raw arrays — the desktop
+    /// shell's conversion. Axes in GLFW order (left X/Y, right X/Y,
+    /// left/right trigger), buttons in GLFW order (A, B, X, Y, bumpers, back,
+    /// start, guide, thumbs, dpad up/right/down/left); guide is dropped.
+    ///
+    /// GLFW triggers are `-1..1` with rest at `-1` — but `glfwGetGamepadState`
+    /// zero-initializes its axis array and only writes axes the pad's SDL
+    /// mapping actually binds, so a pad WITHOUT analog triggers leaves them at
+    /// `0.0`, which naive midpoint normalization would report as permanently
+    /// half-pulled. An exact `0.0` is therefore treated as rest (a real
+    /// mid-pull landing on exactly `0.0` is a measure-zero coincidence
+    /// costing at most one frame).
+    pub fn from_glfw_mapping(axes: [f32; 6], buttons: [bool; 15]) -> Self {
+        let trigger = |v: f32| {
+            if v == 0.0 {
+                0.0
+            } else {
+                unit_trigger((v + 1.0) / 2.0)
+            }
+        };
+        GamepadSnapshot {
+            left_stick: stick_pair(axes[0], axes[1]),
+            right_stick: stick_pair(axes[2], axes[3]),
+            left_trigger: trigger(axes[4]),
+            right_trigger: trigger(axes[5]),
+            south: buttons[0],
+            east: buttons[1],
+            west: buttons[2],
+            north: buttons[3],
+            left_bumper: buttons[4],
+            right_bumper: buttons[5],
+            select: buttons[6],
+            start: buttons[7],
+            left_stick_pressed: buttons[9],
+            right_stick_pressed: buttons[10],
+            dpad_up: buttons[11],
+            dpad_right: buttons[12],
+            dpad_down: buttons[13],
+            dpad_left: buttons[14],
         }
     }
 }
@@ -1233,36 +1292,143 @@ mod tests {
         );
     }
 
+    /// The mapping tables' ONLY failure mode is a wrong index, so each entry
+    /// is checked one-hot: exactly the expected field lights up, every other
+    /// field stays false — a transposition anywhere fails.
+    fn assert_one_hot(pad: &GamepadSnapshot, lit: Option<usize>, source: &str) {
+        let fields: [(&str, bool); 14] = [
+            ("south", pad.south),
+            ("east", pad.east),
+            ("west", pad.west),
+            ("north", pad.north),
+            ("left_bumper", pad.left_bumper),
+            ("right_bumper", pad.right_bumper),
+            ("select", pad.select),
+            ("start", pad.start),
+            ("left_stick_pressed", pad.left_stick_pressed),
+            ("right_stick_pressed", pad.right_stick_pressed),
+            ("dpad_up", pad.dpad_up),
+            ("dpad_down", pad.dpad_down),
+            ("dpad_left", pad.dpad_left),
+            ("dpad_right", pad.dpad_right),
+        ];
+        for (index, (name, value)) in fields.iter().enumerate() {
+            assert_eq!(
+                *value,
+                lit == Some(index),
+                "{source}: field `{name}` wrong"
+            );
+        }
+    }
+
     #[test]
-    fn standard_mapping_converts_axes_triggers_and_positional_buttons() {
-        let mut buttons = [false; 16];
-        buttons[0] = true; // south
-        buttons[6] = true; // left trigger's digital shadow — ignored
-        buttons[8] = true; // select
-        buttons[15] = true; // dpad right
+    fn standard_mapping_converts_axes_triggers_and_every_button_index() {
+        // Field order of `assert_one_hot` for each standard button index;
+        // None = no snapshot field (trigger shadows 6/7, guide 16).
+        let expected: [Option<usize>; 16] = [
+            Some(0),  // 0 south
+            Some(1),  // 1 east
+            Some(2),  // 2 west
+            Some(3),  // 3 north
+            Some(4),  // 4 left bumper
+            Some(5),  // 5 right bumper
+            None,     // 6 left trigger's digital shadow
+            None,     // 7 right trigger's digital shadow
+            Some(6),  // 8 select
+            Some(7),  // 9 start
+            Some(8),  // 10 left stick click
+            Some(9),  // 11 right stick click
+            Some(10), // 12 dpad up
+            Some(11), // 13 dpad down
+            Some(12), // 14 dpad left
+            Some(13), // 15 dpad right
+        ];
+        for (index, lit) in expected.into_iter().enumerate() {
+            let mut buttons = [false; 16];
+            buttons[index] = true;
+            let pad = GamepadSnapshot::from_standard_mapping([0.0; 4], [0.0; 2], buttons);
+            assert_one_hot(&pad, lit, &format!("standard button {index}"));
+        }
+
+        // Browser Y is down-positive: stick pushed UP reads negative.
         let pad = GamepadSnapshot::from_standard_mapping(
-            // Browser Y is down-positive: stick pushed UP reads negative.
             [0.25, -1.0, -0.5, 1.0],
             [0.75, 0.0],
-            buttons,
+            [false; 16],
         );
         assert_eq!(pad.left_stick, [0.25, 1.0]);
         assert_eq!(pad.right_stick, [-0.5, -1.0]);
         assert_eq!(pad.left_trigger, 0.75);
         assert_eq!(pad.right_trigger, 0.0);
-        assert!(pad.south && pad.select && pad.dpad_right);
-        assert!(!pad.east && !pad.west && !pad.north && !pad.start);
-        assert!(!pad.dpad_up && !pad.dpad_down && !pad.dpad_left);
-        assert!(!pad.left_bumper && !pad.right_bumper);
-        assert!(!pad.left_stick_pressed && !pad.right_stick_pressed);
 
-        // Out-of-range values clamp instead of leaking.
+        // Out-of-range values clamp, and NaN (a duck-typed pad missing a
+        // numeric value) reads as rest instead of poisoning the model.
         let wild = GamepadSnapshot::from_standard_mapping(
-            [2.0, 2.0, 0.0, 0.0],
-            [3.0, -1.0],
+            [2.0, 2.0, f32::NAN, f32::NAN],
+            [3.0, f32::NAN],
             [false; 16],
         );
         assert_eq!(wild.left_stick, [1.0, -1.0]);
+        assert_eq!(wild.right_stick, [0.0, 0.0]);
+        assert_eq!(wild.left_trigger, 1.0);
+        assert_eq!(wild.right_trigger, 0.0);
+    }
+
+    #[test]
+    fn glfw_mapping_converts_axes_triggers_and_every_button_index() {
+        let expected: [Option<usize>; 15] = [
+            Some(0),  // 0 A → south
+            Some(1),  // 1 B → east
+            Some(2),  // 2 X → west
+            Some(3),  // 3 Y → north
+            Some(4),  // 4 left bumper
+            Some(5),  // 5 right bumper
+            Some(6),  // 6 back → select
+            Some(7),  // 7 start
+            None,     // 8 guide (dropped)
+            Some(8),  // 9 left thumb
+            Some(9),  // 10 right thumb
+            Some(10), // 11 dpad up
+            Some(13), // 12 dpad RIGHT (GLFW order differs from standard)
+            Some(11), // 13 dpad down
+            Some(12), // 14 dpad left
+        ];
+        for (index, lit) in expected.into_iter().enumerate() {
+            let mut buttons = [false; 15];
+            buttons[index] = true;
+            let pad = GamepadSnapshot::from_glfw_mapping([0.0; 6], buttons);
+            assert_one_hot(&pad, lit, &format!("glfw button {index}"));
+        }
+
+        // GLFW: stick pushed UP reads negative Y; triggers rest at -1.0.
+        let pad = GamepadSnapshot::from_glfw_mapping([0.25, -1.0, -0.5, 1.0, -1.0, 1.0], [false; 15]);
+        assert_eq!(pad.left_stick, [0.25, 1.0]);
+        assert_eq!(pad.right_stick, [-0.5, -1.0]);
+        assert_eq!(pad.left_trigger, 0.0);
+        assert_eq!(pad.right_trigger, 1.0);
+
+        // An exact 0.0 is an UNMAPPED trigger axis (GLFW zero-initializes and
+        // only writes mapped axes) and must read as rest — midpoint
+        // normalization would report it permanently half-pulled. A REAL
+        // near-center trigger still normalizes continuously.
+        assert_eq!(
+            GamepadSnapshot::from_glfw_mapping([0.0; 6], [false; 15]).left_trigger,
+            0.0
+        );
+        let near = GamepadSnapshot::from_glfw_mapping(
+            [0.0, 0.0, 0.0, 0.0, 0.001, -0.001],
+            [false; 15],
+        );
+        assert!((near.left_trigger - 0.5005).abs() < 1e-4);
+        assert!((near.right_trigger - 0.4995).abs() < 1e-4);
+
+        // Clamps and NaN guards, as with the standard mapping.
+        let wild = GamepadSnapshot::from_glfw_mapping(
+            [2.0, 2.0, f32::NAN, f32::NAN, 3.0, f32::NAN],
+            [false; 15],
+        );
+        assert_eq!(wild.left_stick, [1.0, -1.0]);
+        assert_eq!(wild.right_stick, [0.0, 0.0]);
         assert_eq!(wild.left_trigger, 1.0);
         assert_eq!(wild.right_trigger, 0.0);
     }
