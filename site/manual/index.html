@@ -273,26 +273,27 @@ let draw = (model, tts: float) =>
           <p>
             A multiplayer game is two <strong>roles</strong> over one world. Functor lets both
             roles live in a single file: <code>functor.json</code> declares
-            <code>entries</code> instead of one <code>entry</code>, and each role names a binding
-            <strong>prefix</strong>. The runner then resolves the canonical contract through that
-            prefix as camelCase — the <code>client</code> role reads
-            <code>clientInit</code> / <code>clientTick</code> / <code>clientDraw</code>, the
-            <code>server</code> role reads <code>serverInit</code> / <code>serverTick</code> /
-            <code>serverDraw</code> — so one edit hot-reloads both roles atomically.
+            <code>entries</code> instead of one <code>entry</code>, and each role names an inline
+            <strong><code>module</code></strong> block in that file. The block's members
+            <em>are</em> that role's contract — the <code>client</code> role reads
+            <code>Client.init</code> / <code>Client.tick</code> / <code>Client.draw</code>, the
+            <code>server</code> role reads <code>Server.init</code> / <code>Server.tick</code> /
+            <code>Server.draw</code>.
           </p>
           <pre class="shell"># functor.json
 {
   "language": "functor-lang",
   "entries": {
-    "client": { "file": "game.fun", "prefix": "client" },
-    "server": { "file": "game.fun", "prefix": "server" }
+    "client": { "file": "game.fun", "module": "Client" },
+    "server": { "file": "game.fun", "module": "Server" }
   }
 }</pre>
           <p>
-            Everything above the role sections is <em>shared</em>: the protocol type both roles
-            agree on, and the authoritative rules written as pure functions. That sharing is the
-            point — one declaration of the protocol, so a typo on either side is a check-time
-            error.
+            Everything above the two blocks is <em>shared</em>: the protocol type both roles agree
+            on, and the authoritative rules written as pure functions. That sharing is the point —
+            one declaration of the protocol, so a typo on either side is a check-time error. And
+            because it is one buffer, one save hot-reloads both roles atomically; delete a block a
+            role names and the reload fails loudly, keeping the old program running.
           </p>
           <p class="docs-callout">
             <strong>This step is the role structure, not the wire.</strong> To keep it runnable in
@@ -308,7 +309,7 @@ let draw = (model, tts: float) =>
 type Ship = { pid: float, x: float, dx: float }
 type Wire = | Steer(dx: float)
 
-// ===== SERVER — pure functions over the world =====
+// ===== THE WORLD — the authoritative rules, as pure functions =====
 let world0: List&lt;Ship> = [
   { pid: 0.0, x: -4.0, dx: 0.0 },
   { pid: 1.0, x: 4.0, dx: 0.0 }]
@@ -337,49 +338,72 @@ let render = (myPid: float, ships: List&lt;Ship>) =>
       Sprite.circle(if s.pid == myPid then mine() else theirs(), 1.0)
         |> Sprite.move(s.x, 0.0))))
 
-// ===== CLIENT ROLE — clientInit / clientTick / clientDraw =====
-let clientInit = { myPid: 0.0, botPid: 1.0, ships: world0, dx: 0.0 }
+// ===== CLIENT ROLE — Client.init / Client.tick / Client.draw =====
+module Client {
+  type Model = { myPid: float, botPid: float, ships: List&lt;Ship>, dx: float }
 
-let clientSampledInput = (m, snapshot: Input.snapshot) =>
-  let held = (k: Key.t) => snapshot.heldKeys |> List.any((key) => key == k) in
-  { m with dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0) }
+  let init: Model = { myPid: 0.0, botPid: 1.0, ships: world0, dx: 0.0 }
 
-let clientTick = (m, dt: float, tts: float) =>
-  { m with ships:
-      m.ships
-        |> recv(m.myPid, Steer(m.dx))
-        |> recv(m.botPid, Steer(botDx(m.botPid, tts)))
-        |> step(dt) }
+  let sampledInput = (m: Model, snapshot: Input.snapshot) =>
+    let held = (k: Key.t) => snapshot.heldKeys |> List.any((key) => key == k) in
+    { m with dx: (if held(Key.D) then 1.0 else 0.0) - (if held(Key.A) then 1.0 else 0.0) }
 
-let clientDraw = (m, tts: float) => render(m.myPid, m.ships)
+  let tick = (m: Model, dt: float, tts: float) =>
+    { m with ships:
+        m.ships
+          |> recv(m.myPid, Steer(m.dx))
+          |> recv(m.botPid, Steer(botDx(m.botPid, tts)))
+          |> step(dt) }
 
-// ===== SERVER ROLE — serverInit / serverTick / serverDraw =====
-let serverInit = clientInit
+  let draw = (m: Model, tts: float) => render(m.myPid, m.ships)
+}
 
-let serverTick = (m, dt: float, tts: float) =>
-  { m with ships:
-      m.ships
-        |> recv(m.myPid, Steer(botDx(m.myPid, tts)))
-        |> recv(m.botPid, Steer(botDx(m.botPid, tts)))
-        |> step(dt) }
+// ===== SERVER ROLE — Server.init / Server.tick / Server.draw =====
+module Server {
+  type Model = { ships: List&lt;Ship> }
 
-let serverDraw = clientDraw</pre>
+  let init: Model = { ships: world0 }
+
+  let tick = (m: Model, dt: float, tts: float) =>
+    { m with ships:
+        m.ships
+          |> recv(0.0, Steer(botDx(0.0, tts)))
+          |> recv(1.0, Steer(botDx(1.0, tts)))
+          |> step(dt) }
+
+  // The authority holds no seat of its own, so nothing renders as "mine".
+  let draw = (m: Model, tts: float) => render(-1.0, m.ships)
+}</pre>
+          <p>
+            Two rules to know when a role moves into a block. A block's own names
+            <em>shadow</em> the file's, so <code>module Client { let init = init }</code> is
+            self-referential rather than an alias — give shared values names the contract never
+            uses (<code>world0</code>, <code>render</code>) and let each block call those. And a
+            module name occupies its file's <em>type</em> namespace too, so
+            <code>module Client</code> may not sit beside a top-level <code>type Client</code>;
+            the role's model type goes inside the block, as <code>Client.Model</code>.
+          </p>
           <p>
             <code>--entry</code> picks the role, and <code>build</code> validates
-            <em>every</em> declared role's contract under its own prefixed names:
+            <em>every</em> declared role's contract under its own block:
           </p>
           <pre class="shell">functor -d . build                      # checks both roles
 functor -d . run native --entry client  # you steer, with A and D
 functor -d . run native --entry server  # the same world, seen from the authority</pre>
+          <p>
+            A role is not native-only. <code>run wasm</code> and <code>build wasm</code> bake it
+            into the served or exported page's boot config, this site's player takes
+            <code>?module=Server</code> on its URL, and <code>run vr</code> declares the role in
+            every push to the headset.
+          </p>
           <p class="docs-callout">
             This is the one step with no <strong>▶ try it</strong> button — that path pastes a
-            program in and boots it against the <em>unprefixed</em> contract, which a
-            prefixed role by definition doesn't answer. The sandbox can still play a declared
-            role when it knows it up front:
-            <a href="../sandbox.html?example=orbs">open Orbs in the sandbox</a> to see the
-            one-file, two-role shape at full size in its preferred form — each role an inline
-            <code>module Client</code> / <code>module Server</code> block instead of a prefix,
-            over a real wire, with an authoritative claim-resolution rule.
+            program in and boots the file's bare <code>init</code> / <code>tick</code> /
+            <code>draw</code>, which a role living in a block by definition doesn't answer. The
+            sandbox can play a declared role when it knows it up front:
+            <a href="../sandbox.html?example=orbs">open Orbs in the sandbox</a> to see the same
+            two-block shape at full size — over a real wire, with an authoritative
+            claim-resolution rule.
           </p>
         </section>
 
@@ -532,7 +556,9 @@ let area = (s: Shape): float =>
           <p>
             Constructors resolve <em>bare</em> and live in the value namespace
             (<code>Shape.Circle</code> does <strong>not</strong> work), so constructor names must
-            be unique across all variant types in the file. Variants from a <em>module</em> are the
+            be unique across all variant types in the module — a file, or an inline
+            <code>module</code> block, each of which is its own namespace. Variants from a
+            <em>module</em> are the
             other way around — <code>Option.Some</code>, never bare <code>Some</code> (see
             <a href="../docs/#api-option">Option and Result</a>). Unapplied constructors are
             first-class: <code>xs |> List.map(Circle)</code>. When the scrutinee's type is known,

@@ -12,6 +12,7 @@ const KEYWORDS = new Set([
   "type",
   "match",
   "with",
+  "module",
   "mut",
   "in",
   "if",
