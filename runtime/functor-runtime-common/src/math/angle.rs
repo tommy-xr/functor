@@ -17,6 +17,12 @@ impl Angle {
             ang: cgmath::Rad(angle),
         }
     }
+
+    /// The angle in radians — the canonical scalar it is stored as, and what
+    /// angle arithmetic (`Angle.add` / `sub` / `scale`) works in.
+    pub fn radians(self) -> f32 {
+        self.ang.0
+    }
 }
 
 impl Into<Rad<f32>> for Angle {

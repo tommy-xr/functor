@@ -85,6 +85,11 @@ pub struct Module {
     /// `(float) => 't` function and can teach the suffix form in
     /// branded-value errors. Evaluation ignores them.
     pub units: Vec<UnitDef>,
+    /// `unit deg (+) = Angle.add` declarations, in file order — the arithmetic
+    /// operators declared on unit BRANDS. Read by the checker (which resolves
+    /// a branded `+` to the implementation here) and by the interpreter (which
+    /// dispatches on a branded operand value).
+    pub unit_ops: Vec<UnitOpDef>,
 }
 
 /// One lowered `unit <suffix> = <name>` declaration: the suffix, and the
@@ -94,6 +99,27 @@ pub struct Module {
 pub struct UnitDef {
     pub suffix: String,
     pub target: Expr,
+    pub span: Span,
+}
+
+/// One lowered `unit <suffix> (<op>) = <target>` declaration: which suffix's
+/// BRAND gains the operator, and the implementation as an ordinary expression
+/// (a resolved name, or a lambda). Unlike a suffixed literal, an operator use
+/// is NOT desugared at lowering — the operand types are not known there — so
+/// both the checker (which resolves `90deg + 45deg` to this implementation)
+/// and the interpreter (which dispatches on a branded operand value) read
+/// these.
+#[derive(Debug)]
+pub struct UnitOpDef {
+    pub suffix: String,
+    pub op: crate::ast::BinOp,
+    /// The declaring module's canonical prefix (`"Utils"`; empty for the
+    /// entry) — the checker scopes the implementation's bare record literals
+    /// by it, exactly as it does a def's or an expect's.
+    pub module: String,
+    pub target: Expr,
+    /// The `(<op>)` span — what an operator diagnostic points at.
+    pub op_span: Span,
     pub span: Span,
 }
 

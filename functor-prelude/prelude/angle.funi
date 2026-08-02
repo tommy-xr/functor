@@ -12,7 +12,27 @@ let degrees : (float) => t
 /// Construct an angle from radians.
 let radians : (float) => t
 
+/// Add two angles. This is what `90deg + 45deg` calls.
+let add : (t, t) => t
+/// Subtract one angle from another. This is what `90deg - 45deg` calls.
+let sub : (t, t) => t
+/// Scale an angle by a plain number. This is what `45deg * 2.0` calls.
+/// It takes the angle FIRST — the shape every declared `*` has — so unlike
+/// most of the prelude it is not written to be piped into.
+let scale : (t, float) => t
+
 /// Degrees as a literal suffix: `90deg` is exactly `Angle.degrees(90.0)`.
 unit deg = Angle.degrees
 /// Radians as a literal suffix: `0.5rad` is exactly `Angle.radians(0.5)`.
 unit rad = Angle.radians
+
+/// `+` on angles: `90deg + 45deg` is `Angle.add(90deg, 45deg)`. An operator
+/// belongs to the BRAND, so it covers every angle suffix — `90deg + 1.5rad`
+/// adds too.
+unit deg (+) = Angle.add
+/// `-` on angles: `90deg - 45deg` is `Angle.sub(90deg, 45deg)`.
+unit deg (-) = Angle.sub
+/// `*` scales an angle by a number, on either side: `45deg * 2.0` and
+/// `2.0 * 45deg` are both `Angle.scale(45deg, 2.0)`. (Multiplying two angles
+/// would be a different kind of thing — Functor Lang does not model that.)
+unit deg (*) = Angle.scale

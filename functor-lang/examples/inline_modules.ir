@@ -433,4 +433,5 @@ Module {
     signatures: [],
     expects: [],
     units: [],
+    unit_ops: [],
 }

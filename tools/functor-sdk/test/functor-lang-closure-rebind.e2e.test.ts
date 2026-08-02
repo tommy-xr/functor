@@ -17,7 +17,10 @@ import { findRepoRoot, FunctorRunner, waitFor } from "../src/index.js";
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
-const game = (body: string) => `let makeSpin = (k) => (dt) => ${body}
+// `k` is annotated because the engine prelude declares `*` on `Angle.t` and
+// `Time.t`: an operator whose operands inference never pins down asks for an
+// annotation rather than silently guessing float (docs/functor-lang-units.md).
+const game = (body: string) => `let makeSpin = (k: float) => (dt) => ${body}
 let init = { vel: makeSpin(2.0), x: 0.0 }
 let tick = (m, dt, tts) => { m with x: m.x + m.vel(dt) }
 let draw = (m, tts) =>

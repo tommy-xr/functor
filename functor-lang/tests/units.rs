@@ -382,3 +382,382 @@ fn a_plain_function_target_works() {
                let main = () => 21x\n";
     assert_eq!(main_result(src), "42");
 }
+
+// -------------------------------------------------- operators (`unit px (+)`)
+
+/// The declaration form: a suffix, an operator in parens, and an
+/// implementation (a name, or — in a `.fun` — a lambda).
+#[test]
+fn an_operator_declaration_parses_with_a_name_target() {
+    let program = functor_lang::parse("unit deg (+) = Angle.add\n").expect("parses");
+    let Item::UnitOp(decl) = &program.items[0] else {
+        panic!("expected a unit operator item, got {:?}", program.items[0]);
+    };
+    assert_eq!((decl.suffix.as_str(), decl.op.symbol()), ("deg", "+"));
+}
+
+#[test]
+fn all_four_arithmetic_operators_are_declarable() {
+    for symbol in ["+", "-", "*", "/"] {
+        let src = format!("unit px ({symbol}) = f\n");
+        let program = functor_lang::parse(&src).expect("parses");
+        let Item::UnitOp(decl) = &program.items[0] else {
+            panic!("expected a unit operator item");
+        };
+        assert_eq!(decl.op.symbol(), symbol);
+    }
+}
+
+/// A lambda implementation is an ordinary expression, so it parses like one.
+#[test]
+fn an_operator_declaration_takes_a_lambda() {
+    let program = functor_lang::parse("unit px (+) = (a, b) => a\n").expect("parses");
+    assert!(matches!(&program.items[0], Item::UnitOp(_)));
+}
+
+#[test]
+fn malformed_operator_declarations_are_targeted_parse_errors() {
+    // Comparisons are deliberately not declarable (yet).
+    let message = parse_err("unit px (==) = eq\n");
+    assert!(message.contains("`+`, `-`, `*`, or `/`"), "{message}");
+    let message = parse_err("unit px (+ = add\n");
+    assert!(message.contains("`)` after the operator"), "{message}");
+    let message = parse_err("unit px (+)\n");
+    assert!(
+        message.contains("`=` after the declared operator"),
+        "{message}"
+    );
+}
+
+/// An operator on a suffix nobody declared fails at the declaration, with the
+/// same teaching the literal gets.
+#[test]
+fn an_operator_on_an_unknown_suffix_is_a_lowering_error() {
+    let message = lower_err(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         unit em (+) = Px\n",
+    );
+    assert!(message.contains("unknown unit `em`"), "{message}");
+}
+
+const PX: &str = "type Px = | Px(value: float)\n\
+                  unit px = Px\n\
+                  let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+                  unit px (+) = (a, b) => Px(unwrap(a) + unwrap(b))\n\
+                  unit px (*) = (a, k) => Px(unwrap(a) * k)\n";
+
+/// The headline: a declared operator resolves on both operand positions and
+/// evaluates to exactly the implementation's call.
+#[test]
+fn a_declared_operator_resolves_and_evaluates() {
+    let src = format!("{PX}let main = () => 16px + 4px\n");
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(main_result(&src), "Px(20)");
+}
+
+/// The scalar form takes the brand on the left; multiplication also commutes,
+/// so a bare number may lead.
+#[test]
+fn the_scalar_form_works_from_either_side_of_a_product() {
+    let src = format!("{PX}let main = () => (3px * 2.0, 2.0 * 3px)\n");
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(main_result(&src), "(Px(6), Px(6))");
+}
+
+/// A branded operand keeps its brand: the result flows into a branded
+/// position with no unwrapping.
+#[test]
+fn an_operator_result_keeps_the_brand() {
+    let diags = check_src(&format!("{PX}let total: Px = 1px + 2px\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    let diags = check_src(&format!("{PX}let total: float = 1px + 2px\n"));
+    assert!(
+        diags.iter().any(|d| d.contains("expected float, got Px")),
+        "{diags:?}"
+    );
+}
+
+/// An operator the brand does NOT declare keeps the old teaching error, now
+/// naming what the brand does have.
+#[test]
+fn an_undeclared_operator_names_the_declared_ones() {
+    let diags = check_src(&format!("{PX}let bad = 1px - 2px\n"));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("`Px` declares `+`, `*`, but not `-`")),
+        "{diags:?}"
+    );
+}
+
+/// The operator belongs to the BRAND, not the suffix — so two suffixes of one
+/// brand share one implementation, and declaring it twice is an error.
+#[test]
+fn one_brand_declares_each_operator_once() {
+    let diags = check_src(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         unit em = Px\n\
+         unit px (+) = add\n\
+         unit em (+) = add\n\
+         let add = (a: Px, b: Px): Px => a\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("duplicate operator") && d.contains("through `unit px`")),
+        "{diags:?}"
+    );
+
+    // …and the OTHER suffix of that brand uses the one declaration.
+    let diags = check_src(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         unit em = Px\n\
+         unit px (+) = add\n\
+         let add = (a: Px, b: Px): Px => a\n\
+         let total: Px = 1px + 2em\n",
+    );
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+/// The implementation is checked against the operator's declared SHAPE, so a
+/// wrong one is an error at the declaration rather than a puzzle at a use.
+#[test]
+fn a_wrong_shaped_implementation_is_rejected() {
+    let diags = check_src(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         unit px (+) = scale\n\
+         let scale = (a: Px, k: float): Px => a\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.contains("`unit px (+)`")),
+        "{diags:?}"
+    );
+
+    // The scalar form is the mirror image: `*` does NOT take two brands.
+    let diags = check_src(
+        "type Px = | Px(value: float)\n\
+         unit px = Px\n\
+         unit px (*) = add\n\
+         let add = (a: Px, b: Px): Px => a\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.contains("`unit px (*)`")),
+        "{diags:?}"
+    );
+}
+
+/// Ad-hoc overloading has one hard rule: a node whose operands inference
+/// never pinned down is a teaching error asking for an annotation — never a
+/// silent float guess.
+#[test]
+fn an_unresolvable_operator_asks_for_an_annotation() {
+    let diags = check_src(&format!("{PX}let add = (a, b) => a + b\n"));
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("could be float arithmetic or `Px` arithmetic")
+                && d.contains("annotate an operand")),
+        "{diags:?}"
+    );
+
+    // The annotation the message asks for fixes it, on either operand.
+    let diags = check_src(&format!("{PX}let add = (a: Px, b) => a + b\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    let diags = check_src(&format!("{PX}let add = (a, b: Px) => a + b\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    // …and so does anything else that pins a type — an annotated result, or
+    // a float operand — so ordinary float code stays untouched.
+    let diags = check_src(&format!("{PX}let add = (a, b): float => a + b\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    let diags = check_src(&format!("{PX}let add = (a) => a + 1.0\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+/// `v * v` is not ambiguous even with a scalar `*` declared: the scalar form's
+/// operands have DIFFERENT types, so one unsolved operand used twice can only
+/// be float. (`v + v` genuinely could be either, and still asks.)
+#[test]
+fn squaring_one_unsolved_operand_is_not_ambiguous() {
+    let diags = check_src(&format!("{PX}let sq = (v) => v * v\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    let diags = check_src(&format!("{PX}let double = (v) => v + v\n"));
+    assert!(
+        diags.iter().any(|d| d.contains("annotate an operand")),
+        "{diags:?}"
+    );
+}
+
+/// With no operator declared anywhere, arithmetic infers exactly as it always
+/// has: the ambiguity error can only fire where an ambiguity exists.
+#[test]
+fn unannotated_arithmetic_is_untouched_without_unit_operators() {
+    let diags = check_src("let add = (a, b) => a + b\nlet main = () => add(1.0, 2.0)\n");
+    assert!(diags.is_empty(), "{diags:?}");
+}
+
+/// Top-level constants are evaluated EAGERLY, before anything else runs, so
+/// the dispatch table has to exist by then: branded arithmetic in a top-level
+/// initializer must work, not die at load. [xreview: Critical]
+#[test]
+fn a_top_level_constant_may_use_branded_arithmetic() {
+    let src = format!("{PX}let total = 16px + 4px\nlet main = () => unwrap(total)\n");
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(main_result(&src), "20");
+}
+
+/// …including when the implementation is a top-level NAME rather than a
+/// lambda: like every other global reference it stays late-bound, so it obeys
+/// exactly the same "an initializer may only use globals defined above it"
+/// rule — and says so when it doesn't.
+#[test]
+fn a_named_implementation_is_late_bound_like_any_global() {
+    let px = "type Px = | Px(value: float)\n\
+              unit px = Px\n\
+              unit px (+) = addPx\n\
+              let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+              let addPx = (a: Px, b: Px): Px => Px(unwrap(a) + unwrap(b))\n";
+    let src = format!("{px}let total = 16px + 4px\nlet main = () => unwrap(total)\n");
+    assert!(check_src(&src).is_empty(), "{:?}", check_src(&src));
+    assert_eq!(main_result(&src), "20");
+
+    // The implementation defined BELOW the constant that uses it: the
+    // language's ordinary eager-initializer rule, with a message that says so.
+    let src = "type Px = | Px(value: float)\n\
+               unit px = Px\n\
+               unit px (+) = addPx\n\
+               let total = 16px + 4px\n\
+               let addPx = (a: Px, b: Px): Px => a\n";
+    let program = functor_lang::parse(src).expect("parses");
+    let module = functor_lang::lower(program).expect("lowers");
+    let failure = functor_lang::run(&module, Tracing::Off)
+        .err()
+        .expect("`addPx` is not defined yet");
+    assert!(
+        failure.error.message.contains("used before its definition"),
+        "{}",
+        failure.error.message
+    );
+}
+
+/// An annotated RESULT decides the node on its own: `+` stays inside its
+/// brand, so `(a, b): Px => a + b` needs no operand annotation. [xreview:
+/// High]
+#[test]
+fn an_annotated_result_resolves_the_operands() {
+    let diags = check_src(&format!("{PX}let add = (a, b): Px => a + b\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    // A binding annotation on the def works the same way.
+    let diags = check_src(&format!("{PX}let add: (Px, Px) => Px = (a, b) => a + b\n"));
+    assert!(diags.is_empty(), "{diags:?}");
+    // (A helper whose type is only pinned by a LATER call site is still
+    // ambiguous — it generalizes first, the ordinary let-polymorphism rule.)
+}
+
+/// A unit whose own constructor is a top-level `let` cannot be probed before
+/// the defs run — the table is completed as the defs land, so an initializer
+/// below the constructor still gets its operators. [xreview: High]
+#[test]
+fn a_unit_built_by_a_top_level_function_still_dispatches() {
+    let src = "type Px = | Px(value: float)\n\
+               let make = (n: float): Px => Px(n)\n\
+               unit px = make\n\
+               let unwrap = (p: Px): float => match p with | Px(n) => n\n\
+               unit px (+) = (a, b) => make(unwrap(a) + unwrap(b))\n\
+               let total = 1px + 2px\n\
+               let main = () => unwrap(total)\n";
+    assert!(check_src(src).is_empty(), "{:?}", check_src(src));
+    assert_eq!(main_result(src), "3");
+}
+
+/// The interpreter dispatches on a value's runtime TAG, so a brand whose
+/// values carry none (a record) or carry several (a multi-constructor type)
+/// is refused at the declaration instead of checking clean and failing at
+/// run time. [xreview: High]
+#[test]
+fn a_brand_must_be_distinguishable_at_run_time() {
+    let diags = check_src(
+        "type Length = | Px(value: float) | Em(value: float)\n\
+         unit px = Px\n\
+         unit px (+) = add\n\
+         let add = (a: Length, b: Length): Length => a\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("distinguishable at run time") && d.contains("`Length`")),
+        "{diags:?}"
+    );
+
+    let diags = check_src(
+        "type Px = { value: float }\n\
+         let px = (n: float): Px => { value: n }\n\
+         unit px2 = px\n\
+         unit px2 (+) = add\n\
+         let add = (a: Px, b: Px): Px => a\n",
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.contains("distinguishable at run time")),
+        "{diags:?}"
+    );
+}
+
+/// A brand's operator is dispatched by the INTERPRETER too (`run` does not
+/// typecheck), and it produces the same value the handwritten call does.
+#[test]
+fn the_interpreter_dispatches_on_a_branded_operand() {
+    let src = format!("{PX}let main = () => 16px + 4px\n");
+    assert_eq!(
+        main_result(&src),
+        main_result(&format!(
+            "{PX}let main = () => Px(unwrap(16px) + unwrap(4px))\n"
+        ))
+    );
+}
+
+/// The unchecked path refuses a duplicate declaration too, rather than
+/// silently picking whichever came last. [xreview: Medium]
+#[test]
+fn the_interpreter_refuses_a_duplicate_declaration() {
+    let src = "type Px = | Px(value: float)\n\
+               unit px = Px\n\
+               unit em = Px\n\
+               let add = (a: Px, b: Px): Px => a\n\
+               unit px (+) = add\n\
+               unit em (+) = add\n";
+    let program = functor_lang::parse(src).expect("parses");
+    let module = functor_lang::lower(program).expect("lowers");
+    let failure = functor_lang::run(&module, Tracing::Off)
+        .err()
+        .expect("`+` is declared twice for one brand");
+    assert!(
+        failure.error.message.contains("duplicate operator"),
+        "{}",
+        failure.error.message
+    );
+}
+
+/// …and a brand with no implementation for the operator errors at runtime
+/// with the same teaching the checker gives.
+#[test]
+fn the_interpreter_teaches_when_no_implementation_exists() {
+    let src = format!("{PX}let main = () => 16px - 4px\n");
+    let program = functor_lang::parse(&src).expect("parses");
+    let module = functor_lang::lower(program).expect("lowers");
+    let failure = functor_lang::run(&module, Tracing::Off)
+        .err()
+        .expect("`-` is not declared for Px");
+    assert!(
+        failure
+            .error
+            .message
+            .contains("`Px` declares `+`, `*`, but not `-`"),
+        "{}",
+        failure.error.message
+    );
+}

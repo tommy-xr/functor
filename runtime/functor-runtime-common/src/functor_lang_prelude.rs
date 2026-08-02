@@ -974,6 +974,7 @@ impl HostData for FunctorLangAnim {
 /// discipline, carried across the boundary).
 pub struct FunctorLangAngle(pub Angle);
 
+
 /// An RGB color as an opaque Functor Lang value — made by `Color.rgb(r, g, b)`.
 /// Material/light/fog/UI color parameters accept ONLY this, never three bare
 /// floats, so channel swaps and argument miscounts are unrepresentable (the
@@ -1473,7 +1474,47 @@ fn register_branded_constructors(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Angle.radians", "Angle.radians(n)", |n: f64| {
         FunctorLangAngle(Angle::from_radians(n as f32))
     });
+    // Angle arithmetic — what `unit deg (+)` / `(-)` / `(*)` in `angle.funi`
+    // resolve to, so `90deg + 45deg` is exactly `Angle.add(90deg, 45deg)`.
+    reg.fn2(
+        "Angle.add",
+        "Angle.add(a, b)",
+        |a: FunctorLangAngle, b: FunctorLangAngle| {
+            FunctorLangAngle(Angle::from_radians(a.0.radians() + b.0.radians()))
+        },
+    );
+    reg.fn2(
+        "Angle.sub",
+        "Angle.sub(a, b)",
+        |a: FunctorLangAngle, b: FunctorLangAngle| {
+            FunctorLangAngle(Angle::from_radians(a.0.radians() - b.0.radians()))
+        },
+    );
+    reg.fn2(
+        "Angle.scale",
+        "Angle.scale(angle, factor)",
+        |a: FunctorLangAngle, factor: f64| {
+            FunctorLangAngle(Angle::from_radians(a.0.radians() * factor as f32))
+        },
+    );
     reg.fn1("Time.seconds", "Time.seconds(n)", FunctorLangDuration);
+    // Duration arithmetic — `unit s (+)` / `(-)` / `(*)` in `time.funi`.
+    // Durations are stored in seconds, so every suffix shares these.
+    reg.fn2(
+        "Time.add",
+        "Time.add(a, b)",
+        |a: FunctorLangDuration, b: FunctorLangDuration| FunctorLangDuration(a.0 + b.0),
+    );
+    reg.fn2(
+        "Time.sub",
+        "Time.sub(a, b)",
+        |a: FunctorLangDuration, b: FunctorLangDuration| FunctorLangDuration(a.0 - b.0),
+    );
+    reg.fn2(
+        "Time.scale",
+        "Time.scale(duration, factor)",
+        |a: FunctorLangDuration, factor: f64| FunctorLangDuration(a.0 * factor),
+    );
     reg.fn1("Time.millis", "Time.millis(n)", |n: f64| {
         FunctorLangDuration(n / 1000.0)
     });
@@ -5570,6 +5611,108 @@ mod tests {
             "the prelude's unit suffixes changed — update the Angle/Duration teaching errors \
 in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list together"
         );
+    }
+
+    /// Evaluate a `main` under the prelude WITH the engine's `.funi`
+    /// interfaces linked, so unit suffixes and their operators resolve —
+    /// `eval` above lowers one bare source, where no `unit` is declared.
+    fn eval_with_prelude(src: &str) -> Result<Value, String> {
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            vec![(std::path::PathBuf::from("game.fun"), src.to_string())],
+            &functor_prelude::bundled_modules(),
+        )
+        .map_err(|e| e.message)?;
+        let diags = functor_lang::check(&project.module);
+        if let Some(first) = diags.first() {
+            return Err(first.message.clone());
+        }
+        let record = functor_lang::run_with_host(&project.module, Tracing::Off, &mut FunctorHost)
+            .map_err(|f| f.error.message)?;
+        match record.outcome {
+            functor_lang::RunOutcome::Main(value) => Ok(value),
+            _ => Err("expected a main result".to_string()),
+        }
+    }
+
+    fn radians(value: &Value) -> f32 {
+        angle_of(value, "an Angle", Span::new(0, 0))
+            .expect("an Angle")
+            .radians()
+    }
+
+    fn seconds(value: &Value) -> f64 {
+        duration_of(value, "a Duration", Span::new(0, 0)).expect("a Duration")
+    }
+
+    /// The headline: branded arithmetic, resolved through the `unit deg (+)`
+    /// declaration in `angle.funi`, is exactly the handwritten call.
+    #[test]
+    fn angles_add_and_subtract_through_their_declared_operators() {
+        let sum = eval_with_prelude("let main = () => 90deg + 45deg\n").expect("runs");
+        assert!((radians(&sum) - radians(&
+            eval_with_prelude("let main = () => Angle.add(Angle.degrees(90.0), Angle.degrees(45.0))\n")
+                .expect("runs"))).abs() < 1e-6);
+        let difference = eval_with_prelude("let main = () => 90deg - 1.5rad\n").expect("runs");
+        assert!(
+            (radians(&difference) - (std::f32::consts::FRAC_PI_2 - 1.5)).abs() < 1e-6,
+            "mixed suffixes share one brand, so they subtract"
+        );
+    }
+
+    /// Every suffix of one brand shares the operator: seconds and
+    /// milliseconds are both `Time.t`, so they add and subtract directly.
+    #[test]
+    fn durations_of_different_suffixes_share_one_operator() {
+        let value = eval_with_prelude("let main = () => 1.5s - 200ms\n").expect("runs");
+        assert!((seconds(&value) - 1.3).abs() < 1e-9, "{}", seconds(&value));
+        let value = eval_with_prelude("let main = () => 2min + 30s\n").expect("runs");
+        assert_eq!(seconds(&value), 150.0);
+    }
+
+    /// Scaling commutes, so the brand may sit on either side of `*`.
+    #[test]
+    fn scaling_works_from_either_side() {
+        for src in [
+            "let main = () => 45deg * 2.0\n",
+            "let main = () => 2.0 * 45deg\n",
+        ] {
+            let value = eval_with_prelude(src).expect("runs");
+            assert!((radians(&value) - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "{src}");
+        }
+        let value = eval_with_prelude("let main = () => 0.5s * 3.0\n").expect("runs");
+        assert_eq!(seconds(&value), 1.5);
+    }
+
+    /// A branded value still refuses arithmetic nobody declared — with a
+    /// message that names what the brand DOES have.
+    #[test]
+    fn an_undeclared_operator_on_a_brand_teaches_what_exists() {
+        let error = eval_with_prelude("let main = () => 90deg / 2.0\n")
+            .err()
+            .expect("`/` is not declared on angles");
+        assert!(error.contains("`Angle.t` declares"), "{error}");
+        assert!(error.contains("but not `/`"), "{error}");
+    }
+
+    /// Top-level constants evaluate eagerly, before anything else runs, so
+    /// branded arithmetic has to work there too — the shape a game's tuning
+    /// constants and `init` actually take. [xreview: Critical]
+    #[test]
+    fn a_top_level_constant_may_use_branded_arithmetic() {
+        let value = eval_with_prelude(
+            "let quarter: Angle.t = 90deg + 45deg\n\
+             let main = () => quarter\n",
+        )
+        .expect("runs");
+        assert!((radians(&value) - std::f32::consts::FRAC_PI_2 * 1.5).abs() < 1e-6);
+    }
+
+    /// The branded result flows on into the APIs that take it — the whole
+    /// point of keeping arithmetic inside the brand.
+    #[test]
+    fn a_branded_sum_flows_into_a_branded_parameter() {
+        eval_with_prelude("let main = () => Scene.cube() |> Scene.rotateY(90deg + 45deg)\n")
+            .expect("a summed angle is still an Angle");
     }
 
     // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`

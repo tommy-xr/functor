@@ -24,6 +24,8 @@ The habits that break first, in one place. Each is expanded below.
 - **Operators are exhaustive**: `+ - * /`, `< > <= >= == !=`, `&& || not`.
   There is no `<>` (inequality is `!=` only), no `%` (`Math.mod`), no `^`
   (`Math.pow`), and no string-concatenation operator (use `$"…"`).
+  `+ - * /` also work on BRANDS that declare them — `90deg + 45deg`,
+  `1.5s - 200ms`, `45deg * 2.0` (see Units below); comparisons do not.
 - **No loops** — iterate with `List.map` / `List.filter` / `List.fold`.
 - **All numbers are `float`** (f64); primitive type names are lowercase
   (`float`, `string`, `bool`), while generic containers are `List<…>` and
@@ -123,6 +125,7 @@ type Px = | Px(value: float)                  // a single-ctor brand…
 unit px = Px                                  // …with a literal SUFFIX: `16px` == `Px(16.0)`
 let width = 16px                              //   the suffix must TOUCH the digits (`16 px` is
                                               //   two tokens); `-2.5px` == `Px(-2.5)`
+unit px (+) = addPx                           // …and arithmetic on the brand: `16px + 4px`
 let origin: Position = { x: 0.0, y: 0.0 }     // OPTIONAL binding annotation `let name: Type = …`
                                               //   (checked against the value; also on `let … in`)
 let scores = [1.0, 2.0, 3.0]                  // list literal; [x, ..xs] prepends
@@ -576,11 +579,12 @@ that's what `functor test` is for.
   assert on numbers/records you derive instead. The highest-value tests
   are pure logic anyway: model/`tick`/`update` math.
 
-## Unit-suffix literals (`unit`)
+## Units: suffixed literals and their operators (`unit`)
 
 A numeric literal may carry a **unit suffix** — `90deg`, `0.5s`, `16px` — which
-is exactly the call the suffix's `unit` declaration names. Design and the
-Phase 2 (operators) plan: `docs/functor-lang-units.md`.
+is exactly the call the suffix's `unit` declaration names, and a brand may
+declare **arithmetic** on itself (`90deg + 45deg`). Full design:
+`docs/functor-lang-units.md`.
 
 ```functor
 unit deg = Angle.degrees            // a top-level ITEM, in `.fun` and `.funi`
@@ -593,8 +597,8 @@ let beat = Sub.every(0.5s, Tick)    // == Sub.every(Time.seconds(0.5), Tick)
 - **Adjacency is the rule**: the suffix must touch the digits. `90 deg` is
   still a number and a name; `16px2` is one suffix (`px2`), never a split.
 - **A prefix minus folds in**: `-90deg` is `Angle.degrees(-90.0)`, not a
-  negation of the branded value (branded values have no arithmetic — that is
-  Phase 2). Binary subtraction is untouched.
+  negation of the branded value (unary minus on a brand is not declarable).
+  Binary subtraction is untouched.
 - **Units are project-wide**, like constructors: a suffix declared in ANY
   module means the same thing in every module, and declaring one twice
   anywhere in the project is an error.
@@ -614,6 +618,55 @@ let beat = Sub.every(0.5s, Tick)    // == Sub.every(Time.seconds(0.5), Tick)
   under the runner host, not in a plain `functor-lang run`.
 - **`unit` is contextual** (the `open` / `expect` / `module` rule): only item
   position declares one, so the name stays usable everywhere else.
+
+### Operators on a brand (`unit px (+) = …`)
+
+```functor
+type Px = | Px(value: float)
+unit px = Px
+unit px (+) = (a, b) => Px(unwrap(a) + unwrap(b))   // (Px, Px) => Px
+unit px (*) = (a, k) => Px(unwrap(a) * k)           // (Px, float) => Px
+
+let total: Px = 16px + 4px          // …and 3px * 2.0, and 2.0 * 3px
+```
+
+- **Only `+` `-` `*` `/`.** `+` and `-` are typechecked as `('t, 't) => 't`;
+  `*` and `/` as the SCALAR `('t, float) => 't` (a brand times a brand would be a different
+  type — Functor Lang does not do dimensional analysis). Comparisons
+  (`==`, `<`, `>`) are NOT declarable.
+- **The operator belongs to the BRAND, not the suffix.** `s`/`ms`/`us`/`min`/
+  `hr` are all `Time.t`, so one declaration serves them all and `1.5s - 200ms`
+  works. Declaring the same brand + operator twice — through ANY suffix — is a
+  duplicate error.
+- **The implementation is an expression**: a name, or a lambda (the prelude's
+  `.funi` declarations name host externals). It is checked against the shape
+  above at the DECLARATION, and RESOLVED only when the operator dispatches — a
+  name is late-bound like any global (so it must be defined above any top-level
+  constant that uses the operator), and a host external is looked up at the use
+  site, so these declarations still load under the plain, hostless
+  interpreter.
+- **The brand must be distinguishable at run time** — a single-constructor
+  variant, or a host type like `Angle.t`. A record brand or a multi-constructor
+  type is a check error at the declaration (the interpreter dispatches on a
+  value's tag).
+- **Scaling commutes, division does not**: `2.0 * 45deg` works (same call,
+  arguments swapped); `2.0 / 45deg` is an error.
+- **Resolution is ad-hoc overloading AFTER inference**: a node whose operand
+  resolves to a brand with that operator becomes that call; everything else is
+  float arithmetic exactly as before. A node whose operands AND result all stay
+  unsolved is a teaching error asking for an annotation, never a silent float
+  guess — ```+` here could be float arithmetic or `Px` arithmetic — annotate an
+  operand (e.g. `(a: Px)`)``. So `(a, b) => a + b` needs an annotation in a
+  project that declares `+` on a brand, while `(a, b): Px => a + b` (the RESULT
+  decides it for `+`/`-`), `(a, b): float => a + b`,
+  `(a) => a + 1.0`, and `(v) => v * v` (the scalar form's operands have
+  DIFFERENT types, so one operand twice can only be float) do not.
+- **A brand with no implementation** keeps the old error, now naming what it
+  has: ```-` needs float operands, got Angle.t — `Angle.t` declares `+`, `*`, but
+  not `-```. The interpreter says the same thing on the same inputs.
+- **Built-in operators (engine prelude only)**: `+`, `-`, and scalar `*` on
+  BOTH `Angle.t` and `Time.t` (`Angle.add`/`sub`/`scale`, `Time.add`/`sub`/
+  `scale` — all public API in the generated reference). Neither declares `/`.
 
 ## Semantics rules that WILL bite you
 

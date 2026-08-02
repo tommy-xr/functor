@@ -26,6 +26,9 @@ pub enum Item {
     /// `unit deg = Angle.degrees` — declares the literal suffix `deg`, so
     /// `90deg` desugars to `Angle.degrees(90.0)` (see [`UnitDecl`]).
     Unit(UnitDecl),
+    /// `unit deg (+) = Angle.add` — an OPERATOR implementation for the brand
+    /// the suffix builds (see [`UnitOpDecl`]).
+    UnitOp(UnitOpDecl),
 }
 
 /// `unit <suffix> = <name>` — a unit-suffixed literal's meaning: which
@@ -43,6 +46,31 @@ pub struct UnitDecl {
     pub target: Vec<String>,
     /// The target name's own span (what a resolution error points at).
     pub target_span: Span,
+    /// The whole declaration.
+    pub span: Span,
+}
+
+/// `unit <suffix> (<op>) = <target>` — an arithmetic operator on the BRAND a
+/// unit builds. The op attaches to the brand TYPE (resolved through the
+/// suffix's declared target), so every suffix of one brand shares it: `s` and
+/// `ms` are both `Time.t`, so `1.5s - 200ms` uses the one `(-)` declared for
+/// `Time`. Declaring the same brand + operator twice (through any suffix) is
+/// an error.
+///
+/// `+` and `-` take `('t, 't) => 't`; `*` and `/` take the SCALAR form
+/// `('t, float) => 't`. The target is an ordinary expression — a name (what
+/// the prelude's `.funi` interfaces use, naming a host external) or a
+/// lambda.
+#[derive(Debug)]
+pub struct UnitOpDecl {
+    /// The suffix whose brand this operator belongs to (`deg`, `px`).
+    pub suffix: String,
+    pub suffix_span: Span,
+    /// The operator — only `+`, `-`, `*`, `/` (comparisons are not declarable).
+    pub op: BinOp,
+    pub op_span: Span,
+    /// The implementation.
+    pub target: Expr,
     /// The whole declaration.
     pub span: Span,
 }
@@ -354,7 +382,7 @@ pub struct Param {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -371,6 +399,11 @@ pub enum BinOp {
 }
 
 impl BinOp {
+    /// The arithmetic operators, in declaration order — the ONE list of what
+    /// a `unit <suffix> (<op>)` may declare, shared by the parser, the
+    /// typechecker, and the interpreter's dispatch table.
+    pub const ARITHMETIC: [BinOp; 4] = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div];
+
     /// The operator's source spelling — the single source of truth for
     /// diagnostics in the typechecker and the interpreter.
     pub fn symbol(self) -> &'static str {
@@ -387,6 +420,31 @@ impl BinOp {
             BinOp::Ne => "!=",
         }
     }
+}
+
+/// What a "this needs float operands" / "arithmetic needs numbers" error adds
+/// once a UNIT BRAND is in play: which operators that brand does declare, or
+/// how to declare one. Written once so the typechecker's and the interpreter's
+/// twin messages cannot drift (they differ only in how the brand is named:
+/// the checker knows the type, `Angle.t`; the interpreter knows the runtime
+/// tag, `Angle`).
+pub(crate) fn declared_operators_hint(brand: &str, declared: &[&str], op: BinOp) -> String {
+    if declared.is_empty() {
+        return format!(
+            " — `{brand}` is a branded value with no arithmetic; declare it with \
+`unit <suffix> ({}) = …`",
+            op.symbol()
+        );
+    }
+    format!(
+        " — `{brand}` declares {}, but not `{}`",
+        declared
+            .iter()
+            .map(|symbol| format!("`{symbol}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        op.symbol()
+    )
 }
 
 /// The short-circuiting boolean operators. `And` binds tighter than `Or`;

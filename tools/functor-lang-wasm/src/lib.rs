@@ -896,6 +896,25 @@ mod tests {
         assert_eq!(rows[0]["state"], "pass");
     }
 
+    // The gutter runs the defs under the PLAIN interpreter (`NoHost`) while
+    // the engine prelude's `.funi` interfaces are linked, so nothing the
+    // prelude DECLARES may need a host merely to load. `unit deg (+) =
+    // Angle.add` is the case that broke this: resolving the operator's brand
+    // or its implementation eagerly made every expect in every project report
+    // `defs failed to load: unknown external \`Angle.degrees\``.
+    #[test]
+    fn prelude_unit_operators_do_not_break_a_hostless_defs_load() {
+        let files = files_json(&[(
+            "game.fun",
+            "let area = (w, h) => w * h\nexpect area(3.0, 4.0) == 12.0\n",
+        )]);
+        let out = parse(&expects_project_json(&files, "game.fun", 1_000_000));
+        let rows = out["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{out}");
+        assert_eq!(rows[0]["state"], "pass", "{out}");
+        assert!(rows[0]["detail"].is_null(), "{out}");
+    }
+
     // Unloadable input is `rows: null` (keep the previous gutter), never an
     // exception; a loadable project with no expects is an EMPTY rows array
     // (authoritative clear).

@@ -371,6 +371,8 @@ pub fn run_with_host(
         depth: 0,
         call_depth: 0,
         fuel: None,
+        brand_ops: BrandOps::default(),
+        brand_ops_complete: true,
         host,
     };
     match interp.run_module(module) {
@@ -497,9 +499,15 @@ pub fn run_expects_budgeted(
         depth: 0,
         call_depth: 0,
         fuel: budget.map(Fuel::new),
+        brand_ops: BrandOps::default(),
+        brand_ops_complete: true,
         host,
     };
-    if let Err(error) = interp.eval_defs(module) {
+    if let Err(error) = interp
+        .load_unit_operators(module)
+        .and_then(|_| interp.eval_defs(module))
+        .and_then(|_| interp.settle_unit_operators(module))
+    {
         return Err(RunFailure {
             error,
             trace: interp.trace,
@@ -526,6 +534,63 @@ pub fn run_expects_budgeted(
 /// swap the session and keep the model; docs/functor-lang.md C3).
 pub struct Session {
     globals: HashMap<String, Value>,
+    brand_ops: BrandOps,
+}
+
+/// Declared unit operators, resolved to callable VALUES and keyed by the
+/// runtime tag of the brand they act on ([`brand_tag`]) — one row of four
+/// slots, `+` `-` `*` `/`, so dispatch is a BORROWED lookup that allocates
+/// nothing on the operand path.
+///
+/// The checker resolves `90deg + 45deg` statically, but the interpreter must
+/// dispatch too: `check` is not on every path (`functor-lang run` skips it),
+/// and a value can reach an operator through a gradual `unknown` seam. Both
+/// roads lead to exactly the call the declaration names — under a fake or
+/// plain prelude the behaviour is the handwritten call's, precisely.
+pub(crate) type BrandOps = Rc<HashMap<String, BrandOpRow>>;
+
+/// One brand's declared operators, indexed by [`op_slot`].
+pub(crate) type BrandOpRow = [Option<OpImpl>; 4];
+
+/// A declared operator's implementation, kept SYMBOLIC wherever resolving it
+/// could need something this interpreter does not have.
+///
+/// Nothing here is resolved at defs-load time. A top-level NAME is late-bound
+/// exactly like every other global reference; a HOST external is looked up
+/// only when the operator actually dispatches — because the very same defs
+/// (the engine prelude's `.funi` interfaces, `unit deg (+) = Angle.add`
+/// included) are loaded under the PLAIN, hostless interpreter by the editor's
+/// expect gutter, where `Angle.add` has no implementation and must not be an
+/// error until something tries to use it.
+#[derive(Clone)]
+pub(crate) enum OpImpl {
+    /// A constructor or a lambda — self-contained, and building it needs no
+    /// host, so it is resolved once at load.
+    Value(Value),
+    /// A host external (`Angle.add`), resolved at dispatch.
+    External(Vec<String>),
+    /// A top-level `let`, resolved from the globals at dispatch.
+    Global(String),
+}
+
+/// Which slot of a [`BrandOpRow`] an operator owns — `None` for the
+/// comparisons, which are not declarable.
+fn op_slot(op: crate::ast::BinOp) -> Option<usize> {
+    use crate::ast::BinOp;
+    match op {
+        BinOp::Add => Some(0),
+        BinOp::Sub => Some(1),
+        BinOp::Mul => Some(2),
+        BinOp::Div => Some(3),
+        _ => None,
+    }
+}
+
+/// The operator a [`BrandOpRow`] slot holds — the inverse of [`op_slot`],
+/// for the "declares `+`, `*`, but not `-`" teaching error.
+fn slot_op(slot: usize) -> crate::ast::BinOp {
+    use crate::ast::BinOp;
+    [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div][slot]
 }
 
 impl Session {
@@ -542,10 +607,17 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: BrandOps::default(),
+            brand_ops_complete: true,
             host,
         };
-        match interp.eval_defs(module) {
-            Ok(_) => Ok(Session {
+        let loaded = interp
+            .load_unit_operators(module)
+            .and_then(|_| interp.eval_defs(module))
+            .and_then(|_| interp.settle_unit_operators(module));
+        match loaded {
+            Ok(()) => Ok(Session {
+                brand_ops: interp.brand_ops.clone(),
                 globals: interp.globals,
             }),
             Err(error) => Err(RunFailure {
@@ -581,6 +653,8 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         interp.call(callee, args, name.to_string(), Span::new(0, 0), None)
@@ -605,6 +679,8 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         interp.call(callee, args, label.to_string(), Span::new(0, 0), None)
@@ -636,6 +712,8 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
@@ -676,6 +754,8 @@ impl Session {
             depth: 0,
             call_depth: 0,
             fuel: None,
+            brand_ops: self.brand_ops.clone(),
+            brand_ops_complete: true,
             host,
         };
         let result = interp.call(callee, args, name.to_string(), Span::new(0, 0), None)?;
@@ -760,6 +840,15 @@ struct Interp<'h> {
     /// norm — every game-loop path) means zero cost beyond one branch per
     /// eval step, the same hot-path cost class as `recorder`.
     fuel: Option<Fuel>,
+    /// Declared unit operators, keyed by an operand's runtime brand tag
+    /// (see [`brand_tag`]). Empty for every program that declares none, and
+    /// consulted ONLY when an arithmetic operand is not a number — so plain
+    /// float math costs exactly what it did before.
+    brand_ops: BrandOps,
+    /// Whether every declared operator in [`Self::brand_ops`] found its brand.
+    /// False only while a unit's own constructor is still an unevaluated def
+    /// (see [`Interp::load_brand_ops`]).
+    brand_ops_complete: bool,
     host: &'h mut dyn Host,
 }
 
@@ -772,6 +861,16 @@ impl Interp<'_> {
             let value = self.eval(&def.value, &Env::empty())?;
             self.globals.insert(def.name.clone(), value.clone());
             bindings.push((def.name.clone(), value));
+            // A unit whose own constructor is a top-level `let` could not be
+            // probed before the defs ran; retry as soon as more globals exist,
+            // so the very next initializer can use its operators. Normal
+            // programs (every prelude unit) resolve up front and never enter
+            // this branch.
+            if !self.brand_ops_complete {
+                let (ops, complete) = self.load_brand_ops(module)?;
+                self.brand_ops = ops;
+                self.brand_ops_complete = complete;
+            }
         }
         Ok(bindings)
     }
@@ -827,11 +926,174 @@ impl Interp<'_> {
         }
     }
 
+    /// Build the operator table before the defs run (see
+    /// [`Interp::load_brand_ops`]).
+    fn load_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
+        let (ops, complete) = self.load_brand_ops(module)?;
+        self.brand_ops = ops;
+        self.brand_ops_complete = complete;
+        Ok(())
+    }
+
+    /// The final attempt, once every def exists — needed only when something
+    /// could not be resolved earlier. Like every other pass it cannot fail the
+    /// load: an operator that stays unresolved is absent, and reports itself
+    /// at its use site.
+    fn settle_unit_operators(&mut self, module: &Module) -> Result<(), RunError> {
+        if self.brand_ops_complete {
+            return Ok(());
+        }
+        let (ops, complete) = self.load_brand_ops(module)?;
+        self.brand_ops = ops;
+        self.brand_ops_complete = complete;
+        Ok(())
+    }
+
     fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
+        self.load_unit_operators(module)?;
         let bindings = self.eval_defs(module)?;
+        self.settle_unit_operators(module)?;
         match module.defs.iter().find(|def| def.name == "main") {
             Some(main_def) => Ok(RunOutcome::Main(self.call_main(main_def)?)),
             None => Ok(RunOutcome::Bindings(bindings)),
+        }
+    }
+
+    /// Resolve every `unit <suffix> (<op>) = <impl>` declaration into the
+    /// dispatch table.
+    ///
+    /// A brand's runtime identity is taken from a value it actually BUILDS:
+    /// the suffix's own constructor is applied to `1.0` and the result's tag
+    /// ([`brand_tag`]) becomes the key. That works for every unit target
+    /// shape — a host function (`Angle.degrees`), a variant constructor
+    /// (`Px`), or an ordinary Functor Lang function — with no type
+    /// information, which the interpreter does not have.
+    ///
+    /// It is built BEFORE the module's defs are evaluated, so a top-level
+    /// constant may itself use branded arithmetic
+    /// (`let turn: Angle.t = 90deg + 45deg`). A unit whose own constructor is
+    /// a top-level `let` cannot be probed that early; the build reports
+    /// itself INCOMPLETE and [`Interp::eval_defs`] retries as the defs land,
+    /// so such a unit works from the first initializer that could use it.
+    ///
+    /// **An operator that cannot be RESOLVED here never fails the load.** A
+    /// brand whose constructor this interpreter cannot run — the engine
+    /// prelude's units under a HOSTLESS interpreter, which is exactly what the
+    /// editor's expect gutter loads through `functor-lang-wasm` — simply gets
+    /// no entry: with no host there is no way to build one of its values
+    /// either, so nothing can dispatch on it. What is genuinely wrong surfaces
+    /// at the operator's use site, where the teaching errors live. (A
+    /// DUPLICATE declaration is different: it is a program error that needs no
+    /// host to detect, and it still refuses the load.)
+    ///
+    /// Returns the table and whether every declared operator found its brand.
+    fn load_brand_ops(&mut self, module: &Module) -> Result<(BrandOps, bool), RunError> {
+        if module.unit_ops.is_empty() {
+            return Ok((BrandOps::default(), true));
+        }
+        let mut complete = true;
+        let mut tags: HashMap<&str, String> = HashMap::new();
+        let mut ops: HashMap<String, BrandOpRow> = HashMap::new();
+        for unit_op in &module.unit_ops {
+            let tag = match tags.get(unit_op.suffix.as_str()) {
+                Some(tag) => tag.clone(),
+                None => {
+                    let Some(unit) = module
+                        .units
+                        .iter()
+                        .find(|unit| unit.suffix == unit_op.suffix)
+                    else {
+                        // Lowering refuses an operator on an undeclared
+                        // suffix, so this is unreachable in a loaded project.
+                        continue;
+                    };
+                    let probed = self
+                        .eval(&unit.target, &Env::empty())
+                        .and_then(|ctor| {
+                            self.call(
+                                ctor,
+                                vec![Value::Number(1.0)],
+                                unit.suffix.clone(),
+                                unit_op.span,
+                                None,
+                            )
+                        })
+                        .map(|probe| brand_tag(&probe).map(str::to_string));
+                    let tag = match probed {
+                        Ok(Some(tag)) => tag,
+                        // Untagged (a record brand — the CHECKER refuses that
+                        // declaration), not buildable YET (its constructor is
+                        // a def that has not been evaluated), or not buildable
+                        // AT ALL in this interpreter (a host constructor with
+                        // no host). Leave it out and mark the build
+                        // incomplete, so `eval_defs` retries as globals land.
+                        Ok(None) | Err(_) => {
+                            complete = false;
+                            continue;
+                        }
+                    };
+                    tags.insert(unit_op.suffix.as_str(), tag.clone());
+                    tag
+                }
+            };
+            let Some(slot) = op_slot(unit_op.op) else {
+                continue;
+            };
+            // Names stay symbolic: a global resolves at call time (the defs
+            // may not have run), and a HOST external must not be looked up
+            // here at all — these same declarations load under a hostless
+            // interpreter. A lambda or constructor needs neither, so it is
+            // built once; if even that fails, the entry is skipped rather than
+            // failing the load.
+            let implementation = match &unit_op.target.kind {
+                ExprKind::Global(name) => OpImpl::Global(name.clone()),
+                ExprKind::External(path) => OpImpl::External(path.clone()),
+                _ => match self.eval(&unit_op.target, &Env::empty()) {
+                    Ok(value) => OpImpl::Value(value),
+                    Err(_) => {
+                        complete = false;
+                        continue;
+                    }
+                },
+            };
+            let row = ops.entry(tag.clone()).or_default();
+            // The checker rejects a second declaration for one brand and
+            // operator; `run` skips the checker, so refuse it here too rather
+            // than silently picking the last one.
+            if row[slot].is_some() {
+                return Err(RunError {
+                    message: format!(
+                        "duplicate operator: `{}` is declared more than once for the brand \
+`{tag}` builds — an operator belongs to the brand, so every suffix of it shares one \
+implementation",
+                        unit_op.op.symbol()
+                    ),
+                    span: unit_op.span,
+                });
+            }
+            row[slot] = Some(implementation);
+        }
+        Ok((Rc::new(ops), complete))
+    }
+
+    /// Resolve an [`ExprKind::External`] path to its value: a builtin, or the
+    /// host's function. Shared with unit-operator dispatch, which resolves its
+    /// implementation the same way — and, crucially, only when it dispatches
+    /// (see [`OpImpl`]).
+    fn external_value(&mut self, path: &[String], span: Span) -> Result<Value, RunError> {
+        let joined = path.join(".");
+        match builtin(path) {
+            // `Math.pi` is a constant, not a callable — resolve it straight to
+            // its value (every other builtin is a function).
+            Some(Builtin::MathPi) => Ok(Value::Number(std::f64::consts::PI)),
+            Some(b) => Ok(Value::Builtin(b)),
+            None if self.host.provides(&joined) => Ok(Value::HostFn(Rc::from(joined.as_str()))),
+            // `#[cold]` helper: the message formatting must not enlarge this
+            // hot frame (eval recursion sits near the stack budget at the
+            // 128-depth cap — the call_curried rule; adding the formatting
+            // inline here overflowed the deep-recursion test's 2MB stack in
+            // debug).
+            None => Err(unknown_external_error(path, joined, span)),
         }
     }
 
@@ -1035,24 +1297,7 @@ evaluation depth."
                 self.record_ref(name, expr.span, &value);
                 Ok(value)
             }
-            ExprKind::External(path) => {
-                let joined = path.join(".");
-                match builtin(path) {
-                    // `Math.pi` is a constant, not a callable — resolve it
-                    // straight to its value (every other builtin is a function).
-                    Some(Builtin::MathPi) => Ok(Value::Number(std::f64::consts::PI)),
-                    Some(b) => Ok(Value::Builtin(b)),
-                    None if self.host.provides(&joined) => {
-                        Ok(Value::HostFn(Rc::from(joined.as_str())))
-                    }
-                    // `#[cold]` helper: the message formatting must not
-                    // enlarge this hot frame (eval recursion sits near the
-                    // stack budget at the 128-depth cap — the call_curried
-                    // rule; adding the formatting inline here overflowed the
-                    // deep-recursion test's 2MB stack in debug).
-                    None => Err(unknown_external_error(path, joined, expr.span)),
-                }
-            }
+            ExprKind::External(path) => self.external_value(path, expr.span),
             // Container CONSTRUCTION charges one step (the depth invariant
             // behind run_expects_budgeted's stack contract: every level of a
             // value's nesting was constructed once, so value depth ≤ budget.
@@ -1377,12 +1622,12 @@ evaluation depth."
     ) -> Result<Value, RunError> {
         use crate::ast::BinOp;
         match op {
-            BinOp::Add => self.arith(lhs, rhs, span, |a, b| a + b),
-            BinOp::Sub => self.arith(lhs, rhs, span, |a, b| a - b),
-            BinOp::Mul => self.arith(lhs, rhs, span, |a, b| a * b),
+            BinOp::Add => self.arith(op, lhs, rhs, span, |a, b| a + b),
+            BinOp::Sub => self.arith(op, lhs, rhs, span, |a, b| a - b),
+            BinOp::Mul => self.arith(op, lhs, rhs, span, |a, b| a * b),
             // Division follows IEEE-754 (x/0 is ±inf/NaN, printed as
             // `inf`/`NaN`) — one number type, no checked division.
-            BinOp::Div => self.arith(lhs, rhs, span, |a, b| a / b),
+            BinOp::Div => self.arith(op, lhs, rhs, span, |a, b| a / b),
             BinOp::Lt => self.compare(lhs, rhs, span, |a, b| a < b),
             BinOp::Gt => self.compare(lhs, rhs, span, |a, b| a > b),
             // IEEE ordering, like `<`/`>`: every comparison with NaN is false.
@@ -1408,22 +1653,118 @@ evaluation depth."
 
     fn arith(
         &mut self,
+        op: crate::ast::BinOp,
         lhs: Value,
         rhs: Value,
         span: Span,
-        op: fn(f64, f64) -> f64,
+        arith: fn(f64, f64) -> f64,
     ) -> Result<Value, RunError> {
         match (lhs, rhs) {
-            (Value::Number(a), Value::Number(b)) => Ok(Value::Number(op(a, b))),
-            (a, b) => Err(RunError {
+            (Value::Number(a), Value::Number(b)) => Ok(Value::Number(arith(a, b))),
+            // Not two numbers: a branded operand may still have a declared
+            // implementation for this operator.
+            (a, b) => self.brand_arith(op, a, b, span),
+        }
+    }
+
+    /// Arithmetic where at least one operand is not a number — the runtime
+    /// half of unit operators. The implementation is exactly the one the
+    /// `unit … (<op>) = …` declaration names, called with the operands in the
+    /// declared order.
+    fn brand_arith(
+        &mut self,
+        op: crate::ast::BinOp,
+        lhs: Value,
+        rhs: Value,
+        span: Span,
+    ) -> Result<Value, RunError> {
+        use crate::ast::BinOp;
+        let Some(slot) = op_slot(op) else {
+            unreachable!("only arithmetic reaches brand dispatch")
+        };
+        let declared = |ops: &BrandOps, value: &Value| {
+            brand_tag(value)
+                .and_then(|tag| ops.get(tag))
+                .and_then(|row| row[slot].clone())
+        };
+        // The declared form takes the branded value FIRST. Scaling commutes,
+        // so `2.0 * 45deg` is the same call with its arguments swapped —
+        // matching what the checker resolves (`/` deliberately does not).
+        let found = match declared(&self.brand_ops, &lhs) {
+            Some(implementation) => Some((implementation, lhs.clone(), rhs.clone())),
+            None if matches!(op, BinOp::Mul) && matches!(lhs, Value::Number(_)) => {
+                declared(&self.brand_ops, &rhs)
+                    .map(|implementation| (implementation, rhs.clone(), lhs.clone()))
+            }
+            None => None,
+        };
+        let mut call = None;
+        if let Some((implementation, first, second)) = found {
+            match implementation {
+                OpImpl::Value(value) => call = Some((value, first, second)),
+                // A host external is looked up HERE, so a missing host is the
+                // ordinary unknown-external error at the use site rather than
+                // a load failure.
+                OpImpl::External(path) => {
+                    call = Some((self.external_value(&path, span)?, first, second))
+                }
+                // A named implementation is late-bound like any global, so it
+                // obeys the same rule: a top-level initializer may only use
+                // globals defined ABOVE it.
+                OpImpl::Global(name) => match self.globals.get(&name) {
+                    Some(value) => call = Some((value.clone(), first, second)),
+                    None => {
+                        return Err(RunError {
+                            message: format!(
+                                "`{}` on this branded value calls `{name}`, which is used before \
+its definition (a top-level initializer may only use globals defined above it)",
+                                op.symbol()
+                            ),
+                            span,
+                        })
+                    }
+                },
+            }
+        }
+        match call {
+            Some((implementation, first, second)) => self.call(
+                implementation,
+                vec![first, second],
+                format!("({})", op.symbol()),
+                span,
+                None,
+            ),
+            None => Err(RunError {
                 message: format!(
-                    "arithmetic needs numbers, got {} and {}",
-                    a.kind_name(),
-                    b.kind_name()
+                    "arithmetic needs numbers, got {} and {}{}",
+                    lhs.kind_name(),
+                    rhs.kind_name(),
+                    self.brand_arith_hint(op, &lhs, &rhs)
                 ),
                 span,
             }),
         }
+    }
+
+    /// What a failed branded arithmetic adds to its error: which operators
+    /// the brand DOES declare, or how to declare one — the same teaching the
+    /// checker gives, for the paths that reach the interpreter first.
+    fn brand_arith_hint(&self, op: crate::ast::BinOp, lhs: &Value, rhs: &Value) -> String {
+        let Some(tag) = brand_tag(lhs).or_else(|| brand_tag(rhs)) else {
+            return String::new();
+        };
+        let declared: Vec<&str> = self
+            .brand_ops
+            .get(tag)
+            .into_iter()
+            .flat_map(|row| {
+                row.iter()
+                    .enumerate()
+                    .filter(|(_, implementation)| implementation.is_some())
+                    .map(|(slot, _)| slot_op(slot).symbol())
+            })
+            .collect();
+        crate::ast::declared_operators_hint(tag, &declared, op)
     }
 
     fn compare(
@@ -2794,6 +3135,18 @@ got edge0 {edge0} and edge1 {edge1}"
                 ),
             },
         }
+    }
+}
+
+/// A value's BRAND identity for unit-operator dispatch: a variant's
+/// constructor, or an opaque host value's type name (`Angle`, `Duration`).
+/// Everything else — numbers, strings, records, collections — carries no tag
+/// an operator could be declared against, so it never dispatches.
+pub(crate) fn brand_tag(value: &Value) -> Option<&str> {
+    match value {
+        Value::Variant { ctor, .. } => Some(ctor),
+        Value::HostData(host) => Some(host.type_name()),
+        _ => None,
     }
 }
 

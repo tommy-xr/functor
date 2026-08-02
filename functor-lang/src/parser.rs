@@ -234,7 +234,7 @@ impl Parser {
                 // …and `unit` (a literal-suffix declaration). Contextual too:
                 // `unit` stays usable as an ordinary name.
                 TokenKind::Ident(name) if name == "unit" => {
-                    items.push(Item::Unit(self.unit_decl()?))
+                    items.push(self.unit_item()?)
                 }
                 _ => {
                     return self
@@ -316,10 +316,12 @@ project-wide, so declare them at the top level of the file"
         })
     }
 
-    /// `unit deg = Angle.degrees` — a literal-suffix declaration. The target
-    /// is a possibly module-qualified NAME (never an arbitrary expression):
-    /// the function or constructor a suffixed literal calls.
-    fn unit_decl(&mut self) -> Result<UnitDecl, ParseError> {
+    /// `unit deg = Angle.degrees` — a literal-suffix declaration — or
+    /// `unit deg (+) = Angle.add`, an operator on the brand that suffix
+    /// builds. A literal's target is a possibly module-qualified NAME (never
+    /// an arbitrary expression); an operator's is an ordinary expression (a
+    /// name, or a lambda in a `.fun`).
+    fn unit_item(&mut self) -> Result<Item, ParseError> {
         let kw = self.bump();
         let (suffix, suffix_span) = match self.peek_kind() {
             TokenKind::Ident(name) => {
@@ -342,6 +344,11 @@ project-wide, so declare them at the top level of the file"
                 span: suffix_span,
             });
         }
+        // `unit deg (…)` — an operator declaration rather than the suffix's
+        // own target.
+        if self.peek_kind() == &TokenKind::LParen {
+            return Ok(Item::UnitOp(self.unit_op_decl(kw.span, suffix, suffix_span)?));
+        }
         self.expect(TokenKind::Eq, "`=` after the unit suffix")?;
         let (mut segment, mut span) =
             self.expect_ident("the name a unit literal calls (e.g. `Angle.degrees`)")?;
@@ -353,11 +360,48 @@ project-wide, so declare them at the top level of the file"
             span = span.to(next_span);
             target.push(segment);
         }
-        Ok(UnitDecl {
+        Ok(Item::Unit(UnitDecl {
             suffix,
             target,
             target_span: span,
             span: kw.span.to(span),
+        }))
+    }
+
+    /// The tail of `unit <suffix> (<op>) = <target>`, from the `(`. Only the
+    /// four arithmetic operators are declarable — comparisons are deliberately
+    /// not (see `docs/functor-lang-units.md`).
+    fn unit_op_decl(
+        &mut self,
+        kw: Span,
+        suffix: String,
+        suffix_span: Span,
+    ) -> Result<UnitOpDecl, ParseError> {
+        self.bump();
+        let op_token = self.peek();
+        let op_span = op_token.span;
+        let op = match op_token.kind {
+            TokenKind::Plus => BinOp::Add,
+            TokenKind::Minus => BinOp::Sub,
+            TokenKind::Star => BinOp::Mul,
+            TokenKind::Slash => BinOp::Div,
+            _ => {
+                return self
+                    .error("an operator to declare: `+`, `-`, `*`, or `/` (e.g. `unit deg (+) = Angle.add`)")
+            }
+        };
+        self.bump();
+        self.expect(TokenKind::RParen, "`)` after the operator")?;
+        self.expect(TokenKind::Eq, "`=` after the declared operator")?;
+        let target = self.expr()?;
+        let span = kw.to(target.span);
+        Ok(UnitOpDecl {
+            suffix,
+            suffix_span,
+            op,
+            op_span,
+            target,
+            span,
         })
     }
 

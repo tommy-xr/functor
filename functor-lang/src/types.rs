@@ -221,6 +221,25 @@ pub fn compatible(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// The nominal name a BRAND could be declared on — a declared record or
+/// variant type (an opaque `type t` is a variant with no constructors, which
+/// is exactly what `Angle.t` is). Everything else can carry no unit operator.
+fn brand_name(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Record(name, _) | Type::Variant(name, _) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The type an operator's SECOND operand takes on a given brand: the brand
+/// itself for `+` and `-`, a plain float for the scalar `*` and `/`.
+fn operand_type(op: BinOp, brand: &Type) -> Type {
+    match op {
+        BinOp::Add | BinOp::Sub => brand.clone(),
+        _ => Type::Float,
+    }
+}
+
 /// Does this type (or, for products, any element) denote a function?
 /// Runtime `==` errors on functions at any depth it actually compares, so a
 /// known function anywhere in a compared tuple is a certain runtime error.
@@ -784,6 +803,8 @@ fn check_impl(
         def_param_names: HashMap::new(),
         match_scrutinees: Vec::new(),
         unit_hints: HashMap::new(),
+        brand_ops: HashMap::new(),
+        pending_ops: Vec::new(),
     };
 
     // Record type names first (nominal references may be forward), then
@@ -915,42 +936,136 @@ fn check_impl(
     // signature's return type, or a constructor's owning type); the units
     // themselves are TYPE-CHECKED after inference, once their targets have
     // real types.
+    //
+    // The brand TYPE (not just its name) is kept per suffix, because operator
+    // declarations resolve through it: `unit deg (+)` acts on whatever
+    // `Angle.degrees` returns.
+    let mut unit_brands: HashMap<String, Type> = HashMap::new();
     for unit in &module.units {
-        // Only the branded type's NAME is needed (the hint keys on it), so
-        // this reads the declared shape rather than inferring anything.
-        let named = |ty: &Type| match ty {
-            Type::Variant(name, _) | Type::Record(name, _) => Some(name.clone()),
+        // The declared shape is read here rather than inferred: a branded
+        // type is nominal, so a `.funi` signature's return type or a
+        // constructor's owning type already says which brand it is.
+        let branded = |ty: &Type| match ty {
+            Type::Variant(_, args) | Type::Record(_, args) if args.is_empty() => {
+                brand_name(ty).map(|name| (name, ty.clone()))
+            }
             _ => None,
         };
         let (result, call) = match &unit.target.kind {
             ExprKind::External(path) => {
                 let call = path.join(".");
                 let result = match checker.signatures.get(&call).map(|s| &s.ty) {
-                    Some(Type::Fn(_, ret)) => named(ret),
+                    Some(Type::Fn(_, ret)) => branded(ret),
                     _ => None,
                 };
                 (result, call)
             }
-            ExprKind::Ctor { name, .. } => (
-                checker.ctors.get(name).map(|(owner, _, _)| owner.clone()),
-                name.clone(),
-            ),
+            // A constructor's brand is its own (non-generic) variant type.
+            ExprKind::Ctor { name, .. } => {
+                let result = checker.ctors.get(name).and_then(|(owner, params, _)| {
+                    (*params == 0).then(|| (owner.clone(), Type::Variant(owner.clone(), Vec::new())))
+                });
+                (result, name.clone())
+            }
             ExprKind::Global(name) => {
                 let result = match checker.globals.get(name) {
-                    Some(Type::Fn(_, ret)) => named(ret),
+                    Some(Type::Fn(_, ret)) => branded(ret),
                     _ => None,
                 };
                 (result, name.clone())
             }
             _ => (None, String::new()),
         };
-        if let Some(name) = result {
+        if let Some((name, brand)) = result {
+            unit_brands.insert(unit.suffix.clone(), brand);
             checker
                 .unit_hints
                 .entry(name)
                 .or_default()
                 .push((unit.suffix.clone(), call));
         }
+    }
+
+    // Declared unit OPERATORS, indexed by (brand, operator) — also before any
+    // def is inferred, so `90deg + 45deg` resolves while the body containing
+    // it is being checked. An operator attaches to the BRAND, so every suffix
+    // of one brand shares it, and a second declaration of the same brand +
+    // operator (through any suffix) is a duplicate.
+    //
+    // `op_brands` runs alongside `module.unit_ops` (None where a declaration
+    // was rejected here), so the implementation check further down uses
+    // exactly the brand resolution recorded now.
+    let mut op_brands: Vec<Option<Type>> = Vec::with_capacity(module.unit_ops.len());
+    for unit_op in &module.unit_ops {
+        op_brands.push(None);
+        let Some(brand) = unit_brands.get(&unit_op.suffix).cloned() else {
+            // The suffix exists (lowering checked that) but its target's
+            // brand is not knowable from a declaration — an unannotated
+            // function target, or a generic type.
+            checker.diag(
+                unit_op.span,
+                format!(
+                    "`unit {} ({})` cannot tell which type `{}` builds — an operator attaches \
+to a branded type, so the unit's target must be a constructor or a function with a declared \
+(non-generic) return type",
+                    unit_op.suffix,
+                    unit_op.op.symbol(),
+                    unit_op.suffix
+                ),
+            );
+            continue;
+        };
+        let Some(name) = brand_name(&brand) else {
+            continue;
+        };
+        // The interpreter dispatches on a VALUE's runtime tag — a variant's
+        // constructor, or an opaque host value's type name. A record carries
+        // no tag, and a multi-constructor type carries a different one per
+        // constructor while the brand (and so the operator) is one. Both are
+        // refused here rather than checking clean and failing at run time.
+        let dispatchable = match &brand {
+            Type::Variant(_, _) => match checker.variants.get(&name) {
+                Some((_, ctors)) => ctors.len() <= 1,
+                // Not a variant declared in this project — an opaque `.funi`
+                // type like `Angle.t`, whose values the host tags itself.
+                None => true,
+            },
+            _ => false,
+        };
+        if !dispatchable {
+            checker.diag(
+                unit_op.span,
+                format!(
+                    "`unit {} ({})` needs a brand whose values are distinguishable at run time — \
+`{name}` is a record, or has several constructors, so an operator on it could not be dispatched; \
+use a single-constructor variant (`type Px = | Px(value: float)`)",
+                    unit_op.suffix,
+                    unit_op.op.symbol()
+                ),
+            );
+            continue;
+        }
+        if let Some(previous) = checker.brand_ops.get(&(name.clone(), unit_op.op)) {
+            let previous = format!(
+                "`{}` already declares `{}` (through `unit {}`)",
+                name,
+                unit_op.op.symbol(),
+                previous
+            );
+            // Point at the `(<op>)` itself — the part that is the duplicate.
+            checker.diag(
+                unit_op.op_span,
+                format!(
+                    "duplicate operator: {previous} — an operator belongs to the BRAND, so every \
+suffix of `{name}` shares one implementation"
+                ),
+            );
+            continue;
+        }
+        *op_brands.last_mut().expect("pushed above") = Some(brand.clone());
+        checker
+            .brand_ops
+            .insert((name, unit_op.op), unit_op.suffix.clone());
     }
 
     // Infer in dependency order, one strongly-connected component at a
@@ -990,6 +1105,10 @@ fn check_impl(
                 );
             }
         }
+        // Inference for this group has settled — resolve its deferred
+        // operators BEFORE generalization, so a brand that only became known
+        // through a sibling def still reaches the node that needs it.
+        checker.flush_pending_ops();
         for &i in &group {
             let def = &module.defs[i];
             let ty = checker
@@ -1020,6 +1139,27 @@ fn check_impl(
         );
     }
 
+    // `unit … (<op>)` declarations: the implementation must have exactly the
+    // operator's shape for that brand — `('t, 't) => 't` for `+` and `-`, the
+    // scalar `('t, float) => 't` for `*` and `/`. Checked against the DECLARED
+    // shape (not the implementation's inferred type), so which implementation
+    // an operator resolves to never depends on inference order.
+    for (unit_op, brand) in module.unit_ops.iter().zip(&op_brands) {
+        checker.annot_vars.clear();
+        checker.current_module = unit_op.module.clone();
+        let Some(brand) = brand.clone() else { continue };
+        let want = Type::Fn(
+            vec![brand.clone(), operand_type(unit_op.op, &brand)],
+            Box::new(brand),
+        );
+        checker.expect(
+            &unit_op.target,
+            &want,
+            &format!("`unit {} ({})`", unit_op.suffix, unit_op.op.symbol()),
+        );
+    }
+    checker.flush_pending_ops();
+
     // `expect` tests: each must be a bool. Checked after every def has
     // generalized, so an expect instantiates the same schemes a later def
     // would (`expect id(1.0) == 1.0` beside `id` used at string elsewhere).
@@ -1027,6 +1167,7 @@ fn check_impl(
         checker.annot_vars.clear();
         checker.current_module = exp.module.clone();
         checker.expect(&exp.expr, &Type::Bool, "an `expect` test");
+        checker.flush_pending_ops();
     }
 
     checker.diags.sort_by_key(|d| d.span.start);
@@ -1211,6 +1352,31 @@ struct Checker<'s> {
     /// diagnostic side channel — it turns "expected Angle.t, got float" into
     /// a message that teaches both spellings.
     unit_hints: HashMap<String, Vec<(String, String)>>,
+    /// Declared unit OPERATORS, indexed by the branded type they act on and
+    /// the operator: `("Angle.t", BinOp::Add)` → the `unit deg (+)`
+    /// declaration. Unlike [`Self::unit_hints`] this is not a side channel —
+    /// it is what resolves `90deg + 45deg` (see [`Checker::brand_binary`]).
+    /// The value is the SUFFIX the operator was declared through (`deg`),
+    /// which only diagnostics need — brands are shared across suffixes.
+    brand_ops: HashMap<(String, BinOp), String>,
+    /// Arithmetic nodes whose operands were still unsolved when they were
+    /// first seen, deferred to [`Checker::flush_pending_ops`] (which runs at
+    /// every point where inference has settled: the end of each SCC group,
+    /// and after each expect/unit target). Ad-hoc overloading is resolved
+    /// AFTER inference, never during unification.
+    pending_ops: Vec<PendingOp>,
+}
+
+/// A deferred arithmetic node: its operands, the fresh variable standing for
+/// its result, and the spans its diagnostics need.
+struct PendingOp {
+    op: BinOp,
+    lhs: Type,
+    lhs_span: Span,
+    rhs: Type,
+    rhs_span: Span,
+    result: Type,
+    node_span: Span,
 }
 
 /// An under-applied call's provenance: enough to say `` `shift` is applied to
@@ -2943,9 +3109,7 @@ is {other}"
     ) -> Type {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                self.require_float(op, lhs, lhs_span);
-                self.require_float(op, rhs, rhs_span);
-                Type::Float
+                self.arithmetic(op, lhs, lhs_span, rhs, rhs_span, node_span)
             }
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                 self.require_float(op, lhs, lhs_span);
@@ -3072,11 +3236,235 @@ is {other}"
             return;
         }
         if !compatible(&ty, &Type::Float) {
+            let teaching = self.brand_operator_hint(op, &ty);
             self.diag(
                 span,
-                format!("`{}` needs float operands, got {ty}", op.symbol()),
+                format!("`{}` needs float operands, got {ty}{teaching}", op.symbol()),
             );
         }
+    }
+
+    /// An arithmetic node (`+`, `-`, `*`, `/`) — the ad-hoc overloading seam.
+    ///
+    /// A brand with a declared implementation for this operator wins; a node
+    /// with no brand in sight is plain float arithmetic, exactly as before.
+    /// The in-between case — an operand still unsolved while SOME brand
+    /// declares the operator — cannot be decided yet, so it is DEFERRED to
+    /// [`Self::flush_pending_ops`] (resolution runs after inference, never
+    /// during unification, so it can't make inference order-dependent).
+    fn arithmetic(
+        &mut self,
+        op: BinOp,
+        lhs: &Type,
+        lhs_span: Span,
+        rhs: &Type,
+        rhs_span: Span,
+        node_span: Span,
+    ) -> Type {
+        let lhs = self.zonk(lhs);
+        let rhs = self.zonk(rhs);
+        if let Some(ty) = self.brand_binary(op, &lhs, lhs_span, &rhs, rhs_span, node_span) {
+            return ty;
+        }
+        if (matches!(lhs, Type::Var(_)) || matches!(rhs, Type::Var(_)))
+            && self.brand_ops.keys().any(|(_, declared)| *declared == op)
+        {
+            let result = self.fresh();
+            self.pending_ops.push(PendingOp {
+                op,
+                lhs,
+                lhs_span,
+                rhs,
+                rhs_span,
+                result: result.clone(),
+                node_span,
+            });
+            return result;
+        }
+        self.require_float(op, &lhs, lhs_span);
+        self.require_float(op, &rhs, rhs_span);
+        Type::Float
+    }
+
+    /// Resolve an arithmetic node against the declared unit operators.
+    /// `Some` means a brand claimed it (and the other operand has been
+    /// constrained to the implementation's signature); `None` means no brand
+    /// declares this operator for either operand's type.
+    fn brand_binary(
+        &mut self,
+        op: BinOp,
+        lhs: &Type,
+        lhs_span: Span,
+        rhs: &Type,
+        rhs_span: Span,
+        node_span: Span,
+    ) -> Option<Type> {
+        // The brand on the LEFT is the declared form: `45deg + 45deg`,
+        // `45deg * 2.0`.
+        if let Some(name) = brand_name(lhs) {
+            if self.brand_ops.contains_key(&(name.clone(), op)) {
+                let want = operand_type(op, lhs);
+                self.unify(
+                    rhs,
+                    &want,
+                    rhs_span,
+                    &format!("the right operand of `{}` on `{name}`", op.symbol()),
+                );
+                return Some(lhs.clone());
+            }
+        }
+        let name = brand_name(rhs)?;
+        if !self.brand_ops.contains_key(&(name.clone(), op)) {
+            return None;
+        }
+        match op {
+            // `+`/`-` stay inside the brand, so the left operand is one too.
+            BinOp::Add | BinOp::Sub => {
+                self.unify(
+                    lhs,
+                    rhs,
+                    lhs_span,
+                    &format!("the left operand of `{}` on `{name}`", op.symbol()),
+                );
+                Some(rhs.clone())
+            }
+            // Scaling commutes, so `2.0 * 45deg` is the declared call with
+            // its arguments swapped…
+            BinOp::Mul => {
+                self.unify(
+                    lhs,
+                    &Type::Float,
+                    lhs_span,
+                    &format!("the scalar operand of `*` on `{name}`"),
+                );
+                Some(rhs.clone())
+            }
+            // …but division does not: the scalar form divides a branded value
+            // BY a number, and `2.0 / 45deg` is a different (dimensional)
+            // thing Functor Lang deliberately does not model.
+            BinOp::Div => {
+                self.diag(
+                    node_span,
+                    format!(
+                        "`/` on `{name}` divides a branded value by a float — write \
+`x / 2.0`, not `2.0 / x`"
+                    ),
+                );
+                Some(Type::Unknown)
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve every deferred arithmetic node, now that inference has
+    /// settled. A node whose operands are ALL still unsolved is genuinely
+    /// ambiguous — it asks for an annotation rather than silently guessing
+    /// float (the rule that makes `unit` operators safe to add).
+    fn flush_pending_ops(&mut self) {
+        for node in std::mem::take(&mut self.pending_ops) {
+            let mut lhs = self.zonk(&node.lhs);
+            let mut rhs = self.zonk(&node.rhs);
+            // The RESULT can decide the node on its own: an annotated
+            // `(a, b): Px => a + b` says the operands are `Px`, because `+`
+            // stays inside its brand. (`*`//` cannot be decided this way —
+            // which SIDE is the brand would still be unknown.)
+            let result = self.zonk(&node.result);
+            if matches!(node.op, BinOp::Add | BinOp::Sub) {
+                if let Some(name) = brand_name(&result) {
+                    if self.brand_ops.contains_key(&(name.clone(), node.op)) {
+                        let what = format!("an operand of `{}` on `{name}`", node.op.symbol());
+                        self.unify(&lhs, &result, node.lhs_span, &what);
+                        self.unify(&rhs, &result, node.rhs_span, &what);
+                        lhs = self.zonk(&node.lhs);
+                        rhs = self.zonk(&node.rhs);
+                    }
+                }
+            }
+            if let Some(ty) = self.brand_binary(
+                node.op,
+                &lhs,
+                node.lhs_span,
+                &rhs,
+                node.rhs_span,
+                node.node_span,
+            ) {
+                self.unify(
+                    &ty,
+                    &node.result,
+                    node.node_span,
+                    &format!("the result of `{}`", node.op.symbol()),
+                );
+                continue;
+            }
+            // `v * v` (the SAME unsolved operand twice) can only be float:
+            // the scalar form's operands have different types, so no brand
+            // reading exists to be ambiguous with. `v + v` has one, and stays
+            // ambiguous.
+            let one_operand_twice = matches!((&lhs, &rhs), (Type::Var(a), Type::Var(b)) if a == b);
+            let branded_reading_exists =
+                !(one_operand_twice && matches!(node.op, BinOp::Mul | BinOp::Div));
+            // Nothing about the node — neither operand, nor the type its
+            // result flows into — says which arithmetic this is.
+            if branded_reading_exists
+                && matches!(lhs, Type::Var(_))
+                && matches!(rhs, Type::Var(_))
+                && matches!(self.zonk(&node.result), Type::Var(_))
+            {
+                let mut brands: Vec<&str> = self
+                    .brand_ops
+                    .keys()
+                    .filter(|(_, declared)| *declared == node.op)
+                    .map(|(brand, _)| brand.as_str())
+                    .collect();
+                brands.sort_unstable();
+                let symbol = node.op.symbol();
+                self.diag(
+                    node.node_span,
+                    format!(
+                        "`{symbol}` here could be float arithmetic or {} — annotate an operand \
+(e.g. `(a: {})`) so the operator can be resolved",
+                        brands
+                            .iter()
+                            .map(|brand| format!("`{brand}` arithmetic"))
+                            .collect::<Vec<_>>()
+                            .join(" or "),
+                        brands.first().copied().unwrap_or("float"),
+                    ),
+                );
+            }
+            // Either way the node is float arithmetic from here on: the
+            // ambiguous case has already been reported, so this keeps one
+            // unannotated operand from cascading through the rest of the def.
+            self.require_float(node.op, &lhs, node.lhs_span);
+            self.require_float(node.op, &rhs, node.rhs_span);
+            self.unify(
+                &Type::Float,
+                &node.result,
+                node.node_span,
+                &format!("the result of `{}`", node.op.symbol()),
+            );
+        }
+    }
+
+    /// What a branded type adds to a "needs float operands" diagnostic: which
+    /// operators that brand DOES declare, or how to declare one.
+    fn brand_operator_hint(&self, op: BinOp, ty: &Type) -> String {
+        let Some(name) = brand_name(ty) else {
+            return String::new();
+        };
+        // Operator order, not alphabetical — and the same order the
+        // interpreter's twin message uses.
+        let declared: Vec<&str> = BinOp::ARITHMETIC
+            .into_iter()
+            .filter(|declared| self.brand_ops.contains_key(&(name.clone(), *declared)))
+            .map(|declared| declared.symbol())
+            .collect();
+        // A type nothing knows as a brand gets no unit advice at all — only
+        // declared units (which the hint table indexes) can carry operators.
+        if declared.is_empty() && !self.unit_hints.contains_key(&name) {
+            return String::new();
+        }
+        crate::ast::declared_operators_hint(&name, &declared, op)
     }
 
     /// Constrain an operand of a boolean operator (`&&`, `||`, `not`) to

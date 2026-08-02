@@ -149,8 +149,9 @@ pub(crate) fn exports_of(items: &[ast::Item]) -> Exports {
             // An expect binds nothing.
             ast::Item::Expect(_) => {}
             // A unit declares a literal SUFFIX, not a name — units are
-            // project-wide and collected separately (see `unit_decls`).
-            ast::Item::Unit(_) => {}
+            // project-wide and collected separately (see `unit_decls`). An
+            // operator declaration binds nothing at all.
+            ast::Item::Unit(_) | ast::Item::UnitOp(_) => {}
             // An inline module's members belong to ITS namespace, not the
             // file's: the caller calls `exports_of` again on its own items.
             ast::Item::Module(_) => {}
@@ -310,8 +311,9 @@ fn collect_names(items: &[ast::Item]) -> Result<Names, LowerError> {
             ast::Item::Open(_) => {}
             // An expect declares no names.
             ast::Item::Expect(_) => {}
-            // A unit declares a suffix, not a name (no namespace collision).
-            ast::Item::Unit(_) => {}
+            // A unit declares a suffix, not a name (no namespace collision);
+            // an operator declaration declares no name either.
+            ast::Item::Unit(_) | ast::Item::UnitOp(_) => {}
             // Inline modules are their own namespaces, collected separately
             // (and checked against these names by the caller).
             ast::Item::Module(_) => {}
@@ -421,6 +423,7 @@ are project-wide, like constructors)"
         signatures: Vec::new(),
         expects: Vec::new(),
         units: Vec::new(),
+        unit_ops: Vec::new(),
     };
     for item in program.items {
         match item {
@@ -444,6 +447,7 @@ are project-wide, like constructors)"
         signatures,
         expects,
         units,
+        unit_ops,
     } = out;
     let bases = IdBases {
         def: next_def,
@@ -457,6 +461,7 @@ are project-wide, like constructors)"
             signatures,
             expects,
             units,
+            unit_ops,
         },
         bases,
         lowerer.deps,
@@ -670,6 +675,7 @@ struct Lowered {
     signatures: Vec<Signature>,
     expects: Vec<ExpectDef>,
     units: Vec<UnitDef>,
+    unit_ops: Vec<UnitOpDef>,
 }
 
 /// Which module a dotted reference's leading segments named.
@@ -1019,6 +1025,32 @@ with `unit {suffix} = SomeFn` (a `(float) => 't` function), or write the call it
                 out.units.push(UnitDef {
                     suffix: decl.suffix,
                     target,
+                    span: decl.span,
+                });
+            }
+            // An operator on a unit's brand: the suffix must be declared
+            // (project-wide, like any unit use), and the implementation
+            // lowers as an ordinary expression — a name, or a lambda. Which
+            // BRAND it lands on, and whether the implementation has the right
+            // shape, are the checker's job (both need types).
+            ast::Item::UnitOp(decl) => {
+                if !self.units.contains_key(&decl.suffix) {
+                    return Err(LowerError {
+                        message: self.unknown_unit(&decl.suffix),
+                        span: decl.suffix_span,
+                    });
+                }
+                let module = self
+                    .current_path()
+                    .map(|path| self.canonical_prefix(&path))
+                    .unwrap_or_default();
+                let target = self.expr(decl.target)?;
+                out.unit_ops.push(UnitOpDef {
+                    suffix: decl.suffix,
+                    op: decl.op,
+                    module,
+                    target,
+                    op_span: decl.op_span,
                     span: decl.span,
                 });
             }
