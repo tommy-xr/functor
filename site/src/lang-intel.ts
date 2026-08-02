@@ -1384,13 +1384,22 @@ const intelTheme = EditorView.theme({
   ".cm-expect-error": { border: "1.5px solid #e05561" },
   ".cm-expect-running": { border: "1.5px dashed #d8a657" },
   ".cm-expect-unrunnable": { border: "1.5px solid rgba(233, 230, 242, 0.35)" },
-  // Codelenses: a dimmed signature line above the def.
+  // Codelenses: a dimmed signature line above the def, set INTO the surface —
+  // a darker cut of the editor's own violet with a crisp dark top lip, a soft
+  // shadow falling from it, and a faint catch-light on the bottom edge, so the
+  // strip reads as a recessed channel separate from the code. Box-shadow only:
+  // the row keeps exactly its unstyled height (no reflow vs. a plain line).
   ".cm-lens": {
     fontFamily: mono,
     fontSize: "0.82em",
     color: "#6c6685",
     fontStyle: "italic",
     lineHeight: "1.5",
+    background: "rgba(8, 5, 18, 0.45)",
+    boxShadow:
+      "inset 0 1px 0 rgba(0, 0, 0, 0.55), " +
+      "inset 0 4px 5px -3px rgba(0, 0, 0, 0.5), " +
+      "inset 0 -1px 0 rgba(233, 230, 242, 0.05)",
   },
   // Autocomplete popup: the same calm dark panel as the hover tooltip.
   ".cm-tooltip.cm-tooltip-autocomplete": {
