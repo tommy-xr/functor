@@ -3,22 +3,23 @@
 // coordinator (site/src/net-coordinator.ts) over the embedder seam, with NO
 // sockets and no server process.
 //
-// This runs examples/mp the way the sandbox will: three independent
+// This runs examples/orbs the way the sandbox does: three independent
 // `player.html?net=embedder` runtimes, each with its own model and its own
 // render loop, whose packets cross the postMessage boundary and are routed by
-// the host.
+// the host. Orbs keeps BOTH roles in one `game.fun` as inline `module Client` /
+// `module Server` blocks, so a pane's role travels as `?module=`.
 //
 // It asserts:
 //
 //   1. every pane boots and ticks (a dead pane would make the rest vacuous);
 //   2. the coordinator routes the connect handshake — both clients get
 //      `connected`, and so does the server, twice;
-//   3. traffic flows BOTH ways (client -> server Move, server -> client
+//   3. traffic flows BOTH ways (client -> server Steer, server -> client
 //      Snapshot broadcasts);
-//   4. the server's model tracks two players, and each client's world contains
-//      BOTH players — i.e. client 1's state reached client 2 through the server;
-//   5. input propagates: a keydown in client 1 produces a client-1 -> server
-//      packet that client 2 does not produce.
+//   4. the server's model seats two pilots, and each client's board contains
+//      BOTH ships — i.e. client 1's state reached client 2 through the server;
+//   5. input propagates: holding `w` in client 1 reaches the server as THAT
+//      pilot's intent, and only that pilot's.
 //
 // A pane's model is read through its PAUSED inspector trace: pausing makes the
 // player relay `functor-inspector-trace`, whose replayed bindings carry the
@@ -49,7 +50,8 @@ const check = (ok, what, detail = "") => {
 
 // Build the site, then add the three things this host page needs that the
 // site itself does not ship: the coordinator as a standalone ES module, a copy
-// of examples/mp (not one of the sandbox's examples), and the host page.
+// of examples/orbs at its own path (not the sandbox's flattened copy), and the
+// host page.
 const build = spawnSync("node", ["site/build.mjs"], { cwd: ROOT, stdio: "inherit" });
 if (build.status !== 0) process.exit(build.status ?? 1);
 
@@ -60,10 +62,8 @@ await esbuild.build({
   format: "esm",
   logLevel: "warning",
 });
-await mkdir(`${DIST}/examples/mp`, { recursive: true });
-for (const file of ["server.fun", "client.fun", "protocol.fun", "view.fun"]) {
-  await cp(`${ROOT}examples/mp/${file}`, `${DIST}/examples/mp/${file}`);
-}
+await mkdir(`${DIST}/examples/orbs`, { recursive: true });
+await cp(`${ROOT}examples/orbs/game.fun`, `${DIST}/examples/orbs/game.fun`);
 await cp(`${ROOT}e2e/fixtures/net-host.html`, `${DIST}/net-host.html`);
 
 try {
@@ -146,25 +146,15 @@ try {
     `${toServer.length} packets from ${[...new Set(toServer.map((p) => p.from))].join(", ")}`
   );
 
-  // 5a. Input path: `w` in client 1 sends a Move — and only from client 1.
-  // The server then integrates that player's z, which is what 5b reads back
-  // out of the OTHER client's world.
-  const sendsFrom = (id, log) => log.filter((p) => p.kind === "message" && p.from === id).length;
-  const before = { c1: sendsFrom("client 1", packets), c2: sendsFrom("client 2", packets) };
+  // Input path: HOLD `w` in client 1. Orbs' client streams a Steer every tick
+  // whichever keys are down, so — unlike a game that only sends on an input
+  // CHANGE — a packet count cannot tell the two clients apart. What can is the
+  // content, so the assertions move to the paused models below: the server
+  // must carry that thrust against exactly one pilot, and it must be client
+  // 1's (5a), and the thrust must have moved that ship in the OTHER client's
+  // board (5b).
   await page.evaluate(() => window.__netHost.key("client 1", "KeyW", true));
   await sleep(600);
-  const afterLog = await page.evaluate(() => window.__netHost.packets());
-  const after = { c1: sendsFrom("client 1", afterLog), c2: sendsFrom("client 2", afterLog) };
-  check(
-    after.c1 > before.c1 && after.c2 === before.c2,
-    "a keydown in client 1 sends to the server, and only from client 1",
-    `client 1 ${before.c1}->${after.c1}, client 2 ${before.c2}->${after.c2}`
-  );
-  // Release the key: the held `w` is a velocity, and the server integrates and
-  // WRAPS it at the arena edge, so a mover left running would eventually wrap
-  // back past its spawn lane. The release pins its z for 5b below.
-  await page.evaluate(() => window.__netHost.key("client 1", "KeyW", false));
-  await sleep(200);
 
   // 4. Model state, read from each pane's paused inspector trace.
   await page.evaluate((ids) => ids.forEach((id) => window.__netHost.pause(id)), PANES);
@@ -181,75 +171,91 @@ try {
     "every pane's paused model is readable",
     JSON.stringify(models["client 1"])
   );
+  // The handshake did its job at the CLIENT end: `myPid` starts at -1 and only
+  // a Welcome off the wire replaces it, so a seated pid is the server's answer.
+  const myPidOf = (text) => Number(text.match(/myPid: (-?[\d.]+)/)?.[1] ?? NaN);
   check(
-    models["client 1"].includes('status: "in-world"') &&
-      models["client 2"].includes('status: "in-world"'),
-    "both clients joined the server's world",
-    `${models["client 1"]}`
+    myPidOf(models["client 1"]) >= 0 && myPidOf(models["client 2"]) >= 0,
+    "both clients were seated by the server (a pid off the wire)",
+    `client 1 myPid ${myPidOf(models["client 1"])}, client 2 myPid ${myPidOf(models["client 2"])}`
   );
   check(
     (models["server"].match(/cid: /g) ?? []).length === 2,
-    "the server tracks both players",
+    "the server holds a seat for each client",
     models["server"]
   );
-  // 5b. Cross-client propagation. Each client's world must hold BOTH rows,
-  // and the row for the player that pressed `w` must have moved in z in the
-  // OTHER client's copy — client 1's input reached client 2 through the
-  // server.
-  //
-  // Which pid that is depends on JOIN ORDER, which nothing here sequences:
+  // Which pid client 1 is depends on JOIN ORDER, which nothing here sequences:
   // the three panes boot as independent iframes, the coordinator hands out
   // connection ids in arrival order (site/src/net-coordinator.ts), and the
-  // server assigns `pid = nextPid` per Joined (examples/mp/server.fun). So
+  // server allocates `pid = nextPid` per Join (examples/orbs' `join`). So
   // client 1 is pid 0 only when it wins the boot race. Read the mover's
   // identity out of the data instead: the coordinator's log says which
-  // connection is client 1's, and the server's model maps that cid to a pid.
-  const rowsOf = (text) =>
-    [...text.matchAll(/\{ pid: (-?[\d.]+), x: (-?[\d.]+), z: (-?[\d.]+) \}/g)].map((m) => ({
-      pid: Number(m[1]),
-      x: Number(m[2]),
-      z: Number(m[3]),
-    }));
-  const worlds = { 1: rowsOf(models["client 1"]), 2: rowsOf(models["client 2"]) };
+  // connection is client 1's, and the server's SEATS map that cid to a pid.
+  const connOfClient1 = connected.find((p) => p.to === "client 1")?.conn;
+  const seats = [...models["server"].matchAll(/cid: (-?[\d.]+), pid: (-?[\d.]+)/g)].map((m) => ({
+    cid: Number(m[1]),
+    pid: Number(m[2]),
+  }));
+  const moverPid = seats.find((s) => s.cid === connOfClient1)?.pid;
+
+  // How a Ship renders in a model's Debug text — spelled ONCE, because both
+  // probes below read it and a field-order change must break them together.
+  const SHIP = String.raw`\{ pid: (-?[\d.]+), x: (-?[\d.]+), y: (-?[\d.]+), rot: (-?[\d.]+) \}`;
+  const shipOf = (m) => ({ pid: Number(m[1]), x: Number(m[2]), y: Number(m[3]) });
+
+  // 5a. The held `w` arrived at the server as client 1's INTENT — and only
+  // client 1's. A pilot renders as its ship beside the intent the server last
+  // folded in for it, so one regex carries both the identity and the thrust.
+  const pilotsOf = (text) =>
+    [
+      ...text.matchAll(
+        new RegExp(`ship: ${SHIP}, intent: \\{ turn: (-?[\\d.]+), thrust: (true|false)`, "g")
+      ),
+    ].map((m) => ({ ...shipOf(m), thrust: m[6] === "true" }));
+  const pilots = pilotsOf(models["server"]);
+  const thrusting = pilots.filter((p) => p.thrust);
+  check(
+    moverPid !== undefined &&
+      pilots.length === 2 &&
+      thrusting.length === 1 &&
+      thrusting[0].pid === moverPid,
+    "holding `w` in client 1 reaches the server as THAT pilot's intent, and only its",
+    `client 1 is conn ${connOfClient1} = pid ${moverPid}; server pilots ${JSON.stringify(pilots)}`
+  );
+
+  // 5b. Cross-client propagation. Each client's board must hold BOTH ships,
+  // and the ship of the pilot holding `w` must have moved in y in the OTHER
+  // client's copy — client 1's input reached client 2 through the server.
+  const shipsOf = (text) => [...text.matchAll(new RegExp(SHIP, "g"))].map(shipOf);
+  const boards = { 1: shipsOf(models["client 1"]), 2: shipsOf(models["client 2"]) };
   // The two joiners are pids 0 and 1 whichever pane won the race — join order
   // decides WHO owns which, not which pids exist.
-  const pidsOf = (rows) => [...rows.map((r) => r.pid)].sort().join(",");
+  const pidsOf = (ships) => [...ships.map((s) => s.pid)].sort().join(",");
   check(
-    pidsOf(worlds[1]) === "0,1" && pidsOf(worlds[2]) === "0,1",
-    "each client's world contains both players",
-    `client 1: [${pidsOf(worlds[1])}], client 2: [${pidsOf(worlds[2])}]`
+    pidsOf(boards[1]) === "0,1" && pidsOf(boards[2]) === "0,1",
+    "each client's board contains both ships",
+    `client 1: [${pidsOf(boards[1])}], client 2: [${pidsOf(boards[2])}]`
   );
-  // Client 1's connection id, then the pid the server gave that cid.
-  const connOfClient1 = connected.find((p) => p.to === "client 1")?.conn;
-  const serverPlayers = [...models["server"].matchAll(/cid: (-?[\d.]+), pid: (-?[\d.]+)/g)].map(
-    (m) => ({ cid: Number(m[1]), pid: Number(m[2]) })
-  );
-  const moverPid = serverPlayers.find((p) => p.cid === connOfClient1)?.pid;
-  // Each player spawns on its own z-lane: `z = pid * 1.8 - 1.8` (server.fun).
-  // The other player never moves in z (its auto-move is +x only, and the
-  // server's integration of a zero velocity is exact), so its z is its spawn.
-  const spawnZ = (pid) => pid * 1.8 - 1.8;
-  const moved = worlds[2].find((r) => r.pid === moverPid);
-  const untouched = worlds[2].find((r) => r.pid !== moverPid);
+  // Every ship spawns at y = 0 and thrust at rot 0 is straight up (+y, clamped
+  // at the arena wall), so the mover's y is strictly positive while the ship
+  // nobody is steering sits exactly on its spawn.
+  const moved = boards[2].find((s) => s.pid === moverPid);
+  const untouched = boards[2].find((s) => s.pid !== moverPid);
   check(
     moverPid !== undefined &&
       !!moved &&
-      moved.z > spawnZ(moverPid) &&
+      moved.y > 0 &&
       !!untouched &&
-      untouched.z === spawnZ(untouched.pid),
-    "client 1's `w` moved its player in CLIENT 2's world (client -> server -> client)",
-    `client 1 is conn ${connOfClient1} = pid ${moverPid} (spawn z ${spawnZ(
-      moverPid
-    )}); client 2's world ${JSON.stringify(worlds[2])}; server players ${JSON.stringify(
-      serverPlayers
-    )}`
+      untouched.y === 0,
+    "client 1's `w` moved its ship in CLIENT 2's board (client -> server -> client)",
+    `client 2's board ${JSON.stringify(boards[2])}; server seats ${JSON.stringify(seats)}`
   );
 
   // 6. Teardown: reloading a pane closes its connection at BOTH ends — proved
   // in the SERVER's model, not just in the packet log. After client 2 reloads,
-  // its reboot rejoins as a third player id; the server must hold TWO players
-  // (the old one dropped) with a `pid: 2` among them. A disconnect that was
-  // logged but never delivered would leave three.
+  // its reboot Joins as a third pid; the server must hold TWO seats (the old
+  // one released) with a `pid: 2` among them. A disconnect that was logged but
+  // never delivered would leave three.
   const connOfClient2 = connected.find((p) => p.to === "client 2")?.conn;
   await page.evaluate(() => ["server", "client 2"].forEach((id) => window.__netHost.resume(id)));
   await page.evaluate(() => window.__netHost.reload("client 2"));
@@ -266,7 +272,7 @@ try {
   const rejoined = await page.evaluate(() => window.__netHost.model("server"));
   check(
     (rejoined.match(/cid: /g) ?? []).length === 2 && rejoined.includes("pid: 2"),
-    "the server dropped the reloaded pane's player and accepted its rejoin",
+    "the server released the reloaded pane's seat and accepted its rejoin",
     rejoined
   );
 

@@ -71,7 +71,6 @@ async function waitPortFree(timeoutMs) {
 const EXCLUDE = new Set([
   "loading",
   "lobby",
-  "mp",
   "wsdemo",
   "wsserverdemo",
 ]);

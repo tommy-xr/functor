@@ -232,8 +232,8 @@ A project may instead declare named **`entries`** (`{"entries": {"client":
 SAME directory of sibling modules; `functor --entry <name>` picks one
 (default `client`, or the sole entry). Each entry is its own program (its
 bindings are the bare `init`/`tick`/`draw` roots; the other entry is just a
-qualified sibling module), so roles share code — `examples/mp`'s client and
-server share a `protocol.fun` wire codec — without drifting. A role may also
+qualified sibling module), so roles share code — a `client.fun` and a
+`server.fun` share a `protocol.fun` wire codec — without drifting. A role may also
 be an object pointing at a **shared file**, so two roles live in ONE file and
 hot-reload atomically. The preferred form on native names an **inline module**
 —
@@ -244,14 +244,15 @@ error listing the blocks the file does declare). The transitional form names
 a binding **prefix** — `"server": { "file": "game.fun", "prefix": "server" }`
 — resolving every canonical entry binding through the prefix as camelCase
 (`serverInit`/`serverTick`/…). A role declares at most one of the two.
-The two multiplayer samples are the deliberate pair of shapes:
-`examples/orbs` is the SAME-FILE reference — one `game.fun` whose `client`
-and `server` roles are BOTH inline modules of it (`module Client { … }` /
-`module Server { … }`), with the protocol, the world step and the renderer
-shared bare above them, so one buffer hot-reloads both roles atomically (its
-sandbox client and server panes boot the same source at `?module=Client` /
-`?module=Server`). `examples/mp` is the roles-as-FILES reference — the shape
-to reach for once roles outgrow one buffer or want independent deploy units.
+`examples/orbs` is the multiplayer reference and the SAME-FILE shape — one
+`game.fun` whose `client` and `server` roles are BOTH inline modules of it
+(`module Client { … }` / `module Server { … }`), with the protocol, the world
+step and the renderer shared bare above them, so one buffer hot-reloads both
+roles atomically (its sandbox client and server panes boot the same source at
+`?module=Client` / `?module=Server`). The roles-as-FILES form — one `.fun` per
+role over shared siblings — is the shape to reach for once roles outgrow one
+buffer or want independent deploy units; it is equally supported but ships with
+no bundled example.
 **Both forms run on every shell.**
 `run wasm`/`build wasm` bake the
 role into the served/exported page's boot config (`window.__functorLangEntryModule`
@@ -1092,7 +1093,7 @@ across the whole webview tree. All of them require an `update` hook, and — lik
 `examples/counter` (Ui + update) · `examples/ui` (every widget) ·
 `examples/webview` (Html/Attr/Style) · `examples/loading` (`Sub.assets`,
 `Effect.preloadThen`) · `examples/physics` and `examples/physics-controller`
-(the `physics` hook) · `examples/orbs` and `examples/mp` (multi-role entries).
+(the `physics` hook) · `examples/orbs` (multi-role entries).
 Prose docs: `docs/ui-interaction.md` (widget interaction and headless driving),
 `docs/physics.md`, `docs/time-travel.md`.
 

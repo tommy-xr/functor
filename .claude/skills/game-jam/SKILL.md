@@ -365,7 +365,7 @@ Candidates, chosen to cover surfaces the corpus doesn't yet exercise:
 - **Card game (solitaire/memory)** — drag-and-drop mouse interaction,
   UI-dominant rendering, animation tweens between board positions.
 - **Multiplayer tag / pong** — the `entries` client/server split beyond
-  `examples/mp`: prediction, interpolation, authoritative physics.
+  `examples/orbs`: prediction, interpolation, authoritative physics.
 - **Idle/incremental clicker** — save/load persistence effects (does the
   engine have any? that's the point), big-number formatting, offline progress.
 - **Stealth vignette** — AI state machines in a pure model, vision cones,

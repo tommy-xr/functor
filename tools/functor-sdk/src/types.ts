@@ -229,6 +229,12 @@ export interface LaunchOptions {
   /** Path to the `.fun` game source: launches the runner with `--functor-lang` (the Functor Lang
    * interpreter — docs/functor-lang.md Track C2/C3). `gameDir` stays the runner's cwd. */
   functorLangPath: string;
+  /** Which ROLE of a multi-entry project (functor.json `entries`) to launch,
+   * forwarded as the CLI's `--entry <name>`. Required when two roles share one
+   * file (the `{ "file": …, "module": … }` form, as in `examples/orbs`), since
+   * `functorLangPath` alone cannot say which of them you meant; optional for
+   * roles-as-files, where the path picks the role. */
+  entry?: string;
   /** Cargo workspace root (default: walk up from `gameDir`). */
   repoRoot?: string;
   /** Max time to wait for the runtime to be ready, ms (default 60_000). */
