@@ -1,5 +1,7 @@
 use cgmath::Matrix4;
 
+use crate::math::normal_matrix;
+
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
@@ -21,6 +23,9 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         uniform mat4 jointTransforms[MAX_JOINTS];
         uniform mat4 world;
+        // transpose(inverse(mat3(world))) — the same normal transform the lit
+        // materials use, so this debug view matches what shading sees.
+        uniform mat3 normalMatrix;
         uniform mat4 view;
         uniform mat4 projection;
 
@@ -33,7 +38,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
                 inWeights.z * jointTransforms[int(inJointIndices.z)] +
                 inWeights.w * jointTransforms[int(inJointIndices.w)];
 
-            worldNormal = mat3(world) * mat3(skinMatrix) * inNormal;
+            worldNormal = normalMatrix * mat3(skinMatrix) * inNormal;
 
             vec4 skinnedPos = skinMatrix * vec4(inPos, 1.0);
             gl_Position = projection * view * world * skinnedPos;
@@ -53,6 +58,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
 struct Uniforms {
     world_loc: UniformLocation,
+    normal_matrix_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     joint_transforms_loc: UniformLocation,
@@ -92,6 +98,7 @@ impl Material for SkinnedNormalDebugMaterial {
 
                 let uniforms = Uniforms {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
+                    normal_matrix_loc: shader.get_uniform_location(ctx.gl, "normalMatrix"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
@@ -117,6 +124,11 @@ impl Material for SkinnedNormalDebugMaterial {
                 p.use_program(ctx.gl);
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
+                p.set_uniform_matrix3(
+                    ctx.gl,
+                    &uniforms.normal_matrix_loc,
+                    &normal_matrix(world_matrix),
+                );
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
 

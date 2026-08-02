@@ -1,15 +1,17 @@
 use cgmath::Matrix4;
 
+use crate::math::normal_matrix;
+
 use crate::shader_program::ShaderProgram;
 use crate::shader_program::UniformLocation;
 use crate::RenderContext;
 
 use super::Material;
 
-// Visualizes world-space normals as color. `mat3(world)` rotates the
-// object-space normal into world space; for the uniform scales used by the
-// primitives that's adequate (a proper normal matrix would be the
-// inverse-transpose), and normalizing absorbs uniform scale. Used by
+// Visualizes world-space normals as color. The object-space normal goes to
+// world space through the normal matrix (the inverse-transpose of the world
+// transform), the same one the lit materials use — so this view shows exactly
+// the normals shading sees, including under a non-uniform scale. Used by
 // `DebugRenderMode::Normals` as a global override.
 const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
@@ -17,13 +19,16 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 2) in vec3 inNormal;
 
         uniform mat4 world;
+        // transpose(inverse(mat3(world))) — the same normal transform the lit
+        // materials use, so this debug view matches what shading sees.
+        uniform mat3 normalMatrix;
         uniform mat4 view;
         uniform mat4 projection;
 
         out vec3 worldNormal;
 
         void main() {
-            worldNormal = mat3(world) * inNormal;
+            worldNormal = normalMatrix * inNormal;
             gl_Position = projection * view * world * vec4(inPos, 1.0);
         }
 "#;
@@ -41,6 +46,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
 struct Uniforms {
     world_loc: UniformLocation,
+    normal_matrix_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
 }
@@ -79,6 +85,7 @@ impl Material for NormalDebugMaterial {
 
                 let uniforms = Uniforms {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
+                    normal_matrix_loc: shader.get_uniform_location(ctx.gl, "normalMatrix"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                 };
@@ -103,6 +110,11 @@ impl Material for NormalDebugMaterial {
                 p.use_program(ctx.gl);
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
+                p.set_uniform_matrix3(
+                    ctx.gl,
+                    &uniforms.normal_matrix_loc,
+                    &normal_matrix(world_matrix),
+                );
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
             }
