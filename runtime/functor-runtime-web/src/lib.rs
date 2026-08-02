@@ -1694,8 +1694,13 @@ async fn run_async() -> Result<(), JsValue> {
             // forward-sim per frame would throttle the catch-up to a crawl);
             // it snaps back in on arrival.
             let catching_up = clock.pending_frames() > 0;
-            let selected =
-                functor_runtime_common::interactive_preview(preview_mode, true, catching_up);
+            // The ramp follows the SELECTION only, with catch-up suppression
+            // kept out of it — a catch-up must not read as "the user turned the
+            // preview off" and start a fade. Suppression is a separate term on
+            // the recompute guard below (mirroring the desktop shell), so
+            // presence holds where it is and the overlay snaps back on arrival
+            // instead of fading out and back in.
+            let selected = functor_runtime_common::interactive_preview(preview_mode, true, false);
             // Advance the presence ramp toward whether the preview selects
             // anything, then keep driving the LAST ON mode while it fades out —
             // otherwise the toggle would take the geometry away in the same
@@ -1715,7 +1720,14 @@ async fn run_async() -> Result<(), JsValue> {
                 // wherever a free-running phase had drifted to.
                 Some(pinned) => {
                     preview_presence = functor_runtime_common::presence_phase(pinned);
-                    pinned
+                    // A pin overrides the RAMP, not the SELECTION: with the
+                    // preview toggled off there is nothing to show, so a pin
+                    // must not keep the overlay (and its forward sim) alive.
+                    if preview_selects {
+                        pinned
+                    } else {
+                        0.0
+                    }
                 }
                 None => {
                     preview_presence = functor_runtime_common::presence_step(
@@ -1733,7 +1745,8 @@ async fn run_async() -> Result<(), JsValue> {
             };
             let trail_wanted = active.trail;
             let strobe_wanted = active.strobe;
-            let preview = if (trail_wanted || strobe_wanted) && display_presence > 0.0 {
+            let preview = if (trail_wanted || strobe_wanted) && display_presence > 0.0 && !catching_up
+            {
                 let key = (
                     game.current_scene_frame(),
                     frame_time.tts.to_bits(),

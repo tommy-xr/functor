@@ -1064,6 +1064,16 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
             // Scaling every color's alpha by k is EXACTLY the sprite onion-skin
             // fade with no direction tint, so reuse it rather than growing a
             // third copy of the five-variant material rewrite.
+            //
+            // INVARIANT this relies on: no overlay node carries a bare
+            // `MaterialDescription::Texture`. Every overlay material is freshly
+            // produced by `faded_material` / `alpha_faded_material` /
+            // `trail_mark`, none of which emit one. It matters because
+            // `alpha_faded_material` rewrites a bare `Texture` to `Emissive`,
+            // which changes the lighting model — and `apply` skips this walk
+            // entirely at presence 1.0, so such a node would render lit at 1.0
+            // and emissive at 0.999: a pop at exactly the boundary the ramp
+            // exists to remove.
             let faded = alpha_faded_material(Some(material), presence, None);
             if let Some(faded) = faded {
                 *material = faded;

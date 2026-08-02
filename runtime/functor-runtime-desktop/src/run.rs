@@ -2529,7 +2529,14 @@ Escape again to quit"
                 // wherever a free-running phase had drifted to.
                 Some(pinned) => {
                     preview_presence = functor_runtime_common::presence_phase(pinned);
-                    pinned
+                    // A pin overrides the RAMP, not the SELECTION: with the
+                    // preview toggled off there is nothing to show, so a pin
+                    // must not keep the overlay (and its forward sim) alive.
+                    if preview_selects {
+                        pinned
+                    } else {
+                        0.0
+                    }
                 }
                 None => {
                     preview_presence = functor_runtime_common::presence_step(
