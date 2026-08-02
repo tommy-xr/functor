@@ -380,6 +380,49 @@ impl Camera {
             })
     }
 
+    /// Intersect the ray through a logical surface point with the horizontal
+    /// plane `y = ground_y`.
+    ///
+    /// Shares every coordinate and degeneracy rule with
+    /// [`to_world_ray`](Self::to_world_ray) — position and surface extent live
+    /// in one top-left-origin logical space, so a device-pixel ratio scales
+    /// out. Returns `None` when the ray misses the plane: a parallel (or
+    /// near-parallel) ray, an intersection behind the eye, a non-finite
+    /// `ground_y`, or any case where `to_world_ray` itself declines.
+    pub fn to_ground_point(
+        &self,
+        x: f32,
+        y: f32,
+        surface_width: f32,
+        surface_height: f32,
+        ground_y: f32,
+    ) -> Option<[f32; 3]> {
+        if !ground_y.is_finite() {
+            return None;
+        }
+        let ray = self.to_world_ray(x, y, surface_width, surface_height)?;
+        let dir_y = ray.direction[1];
+        // A near-parallel ray would place the hit arbitrarily far away; treat it
+        // as a miss rather than emitting a huge (or infinite) coordinate.
+        if !dir_y.is_finite() || dir_y.abs() < 1e-6 {
+            return None;
+        }
+        let distance = (ground_y - ray.origin[1]) / dir_y;
+        // Strictly in front of the eye: the eye exactly on the plane, or the
+        // plane behind the camera, is a miss.
+        if !(distance.is_finite() && distance > 0.0) {
+            return None;
+        }
+        let hit = [
+            ray.origin[0] + ray.direction[0] * distance,
+            // Pinned rather than recomputed so the result lies exactly on the
+            // authored plane regardless of floating-point drift.
+            ground_y,
+            ray.origin[2] + ray.direction[2] * distance,
+        ];
+        (hit[0].is_finite() && hit[2].is_finite()).then_some(hit)
+    }
+
     /// Build an asymmetric perspective projection from four view-space field-
     /// of-view angles. This is the projection form supplied per eye by XR
     /// runtimes, where the optical center usually does not sit at the middle
@@ -593,6 +636,104 @@ mod tests {
                 .to_world_ray(50.0, 50.0, 100.0, 100.0)
                 .is_none());
         }
+    }
+
+    // The camera the ground-point tests share: 10 up, 10 back, gazing at the
+    // world origin, so the center surface point hits the ground exactly there.
+    fn overhead_camera() -> Camera {
+        Camera::look_at(
+            [0.0, 10.0, -10.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(45.0),
+        )
+    }
+
+    #[test]
+    fn ground_point_hits_the_plane_under_the_gaze() {
+        let hit = overhead_camera()
+            .to_ground_point(800.0, 450.0, 1600.0, 900.0, 0.0)
+            .unwrap();
+        assert!(approx(hit[0], 0.0));
+        assert!(approx(hit[1], 0.0));
+        assert!(approx(hit[2], 0.0));
+    }
+
+    // Every hit must lie on the world ray through the same surface point:
+    // toGroundPoint is exactly toWorldRay plus the plane intersection.
+    #[test]
+    fn ground_point_lies_on_the_world_ray_through_the_same_point() {
+        let camera = overhead_camera();
+        for (x, y) in [(120.0, 90.0), (800.0, 450.0), (1490.0, 700.0)] {
+            let ray = camera.to_world_ray(x, y, 1600.0, 900.0).unwrap();
+            let hit = camera.to_ground_point(x, y, 1600.0, 900.0, 0.0).unwrap();
+            let offset = Vector3::from(hit) - Vector3::from(ray.origin);
+            let distance = offset.magnitude();
+            assert!(distance > 0.0);
+            assert!(offset.normalize().dot(Vector3::from(ray.direction)) > 0.99999);
+        }
+    }
+
+    #[test]
+    fn ground_point_honors_a_nonzero_ground_plane() {
+        let camera = overhead_camera();
+        // The eye is 10 up and 10 back gazing at the origin, so the plane 4
+        // units up is crossed 6/10ths of the way along that span.
+        let hit = camera
+            .to_ground_point(800.0, 450.0, 1600.0, 900.0, 4.0)
+            .unwrap();
+        assert!(approx(hit[0], 0.0));
+        assert_eq!(hit[1], 4.0, "the hit is pinned exactly onto the plane");
+        assert!(approx(hit[2], -4.0), "hit: {hit:?}");
+    }
+
+    #[test]
+    fn ground_point_is_logical_scale_invariant() {
+        let camera = overhead_camera();
+        let one_x = camera.to_ground_point(300.0, 200.0, 900.0, 1000.0, 0.0).unwrap();
+        let retina = camera
+            .to_ground_point(600.0, 400.0, 1800.0, 2000.0, 0.0)
+            .unwrap();
+        for i in 0..3 {
+            assert!(approx(one_x[i], retina[i]));
+        }
+    }
+
+    #[test]
+    fn ground_point_rejects_parallel_behind_and_degenerate_rays() {
+        // A level gaze never reaches the ground plane.
+        let level = Camera::look_at(
+            [0.0, 5.0, 0.0],
+            [0.0, 5.0, 10.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(45.0),
+        );
+        assert!(level.to_ground_point(800.0, 450.0, 1600.0, 900.0, 0.0).is_none());
+
+        // Gazing up from above the plane puts the intersection behind the eye.
+        let upward = Camera::look_at(
+            [0.0, 5.0, 0.0],
+            [0.0, 15.0, 5.0],
+            [0.0, 1.0, 0.0],
+            Angle::from_degrees(45.0),
+        );
+        assert!(upward.to_ground_point(800.0, 450.0, 1600.0, 900.0, 0.0).is_none());
+
+        let camera = overhead_camera();
+        // The eye exactly on the plane is a zero-distance miss, not the eye.
+        assert!(camera
+            .to_ground_point(800.0, 450.0, 1600.0, 900.0, 10.0)
+            .is_none());
+        assert!(camera
+            .to_ground_point(800.0, 450.0, 1600.0, 900.0, f32::NAN)
+            .is_none());
+        assert!(camera
+            .to_ground_point(800.0, 450.0, 1600.0, 900.0, f32::INFINITY)
+            .is_none());
+        // Everything toWorldRay declines is declined here too.
+        assert!(camera.to_ground_point(-1.0, 450.0, 1600.0, 900.0, 0.0).is_none());
+        assert!(camera.to_ground_point(800.0, 900.0, 1600.0, 900.0, 0.0).is_none());
+        assert!(camera.to_ground_point(800.0, 450.0, 0.0, 900.0, 0.0).is_none());
     }
 
     #[test]

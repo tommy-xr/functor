@@ -965,7 +965,7 @@ The generated modules:
 | --- | --- |
 | `Scene` | 3D scene nodes: primitives, models, terrain, materials, transforms |
 | `Sprite` | pure 2D picture values: shapes, text, images, transforms |
-| `Camera3D` | 3D cameras (`lookAt`, `firstPerson`), clip planes, screen→world rays |
+| `Camera3D` | 3D cameras (`lookAt`, `firstPerson`), clip planes, screen→world rays and ground-plane picks (`toWorldRay`, `toGroundPoint`) |
 | `Camera2D` | center-origin 2D camera: pan, zoom, screen→world |
 | `Frame` | what `draw` returns: 3D / lit / 2D frames, fog, skybox, clear color, render targets, 2D layers |
 | `Light` | ambient / directional / point / spot lights and shadow casting |

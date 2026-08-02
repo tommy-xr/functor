@@ -44,6 +44,9 @@
 //! Camera3D.toWorldRay(mouse, camera)                         -> Option<{ origin, direction }>
 //!   (top-left logical mouse coordinates through the authored perspective;
 //!    both fields are Vec3 values and direction is normalized)
+//! Camera3D.toGroundPoint(mouse, groundY, camera)             -> Option<Vec3>
+//!   (that ray intersected with the horizontal plane y = groundY; None when
+//!    the ray is parallel to it or would hit behind the eye)
 //! Anim.lookAt(joint, target, maxDeflection, weight, anim)  -> Anim
 //!   (post-pass aim of local +Z at a model-space Vec3 target)
 //! Anim.reach(root, middle, end, target, weight, anim)      -> Anim
@@ -2304,6 +2307,24 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
                             ("direction".to_string(), vec3(ray.direction)),
                         ]))
                     }),
+            )
+        },
+    );
+    reg.fn3(
+        "Camera3D.toGroundPoint",
+        "Camera3D.toGroundPoint(mouse, groundY, camera)",
+        |mouse: FunctorLangMouse, ground_y: f64, camera: FunctorLangCamera| {
+            crate::input::option_value(
+                camera
+                    .0
+                    .to_ground_point(
+                        mouse.x,
+                        mouse.y,
+                        mouse.surface_width,
+                        mouse.surface_height,
+                        ground_y as f32,
+                    )
+                    .map(|[x, y, z]| Value::HostData(Rc::new(FunctorLangVec3((x, y, z))))),
             )
         },
     );
@@ -6013,6 +6034,59 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             Value::Variant { ref ctor, ref args }
                 if ctor.as_ref() == "Option.None" && args.is_empty()
         ));
+    }
+
+    // The ground pick a top-down/tactics game reaches for: the center of the
+    // surface under an overhead camera lands exactly under the gaze, as a Vec3
+    // that pipes straight back into Vec3.x / Vec3.z.
+    #[test]
+    fn camera_ground_point_intersects_the_authored_plane() {
+        let value = eval(
+            "let main = () => Camera3D.toGroundPoint(\n\
+               { x: 400.0, y: 300.0, surfaceWidth: 800.0, surfaceHeight: 600.0 }, 0.0,\n\
+               Camera3D.lookAt(Vec3.make(0.0, 10.0, -10.0), Vec3.make(0.0, 0.0, 0.0)))",
+        );
+        let Value::Variant { ctor, args } = value else {
+            panic!("the ground point should return an Option");
+        };
+        assert_eq!(ctor.as_ref(), "Option.Some");
+        let [hit] = args.as_slice() else {
+            panic!("Some should carry the hit");
+        };
+        let (x, y, z) = vec3_of(hit, "ground hit", Span::new(0, 0)).unwrap();
+        assert!(x.abs() < 1e-5 && y.abs() < 1e-5 && z.abs() < 1e-5, "{x} {y} {z}");
+    }
+
+    // A level gaze never reaches the ground, and the plane is game-chosen.
+    #[test]
+    fn camera_ground_point_returns_none_for_a_parallel_ray() {
+        let value = eval(
+            "let main = () => Camera3D.toGroundPoint(\n\
+               { x: 400.0, y: 300.0, surfaceWidth: 800.0, surfaceHeight: 600.0 }, 0.0,\n\
+               Camera3D.lookAt(Vec3.make(0.0, 5.0, 0.0), Vec3.make(0.0, 5.0, 10.0)))",
+        );
+        assert!(matches!(
+            value,
+            Value::Variant { ref ctor, ref args }
+                if ctor.as_ref() == "Option.None" && args.is_empty()
+        ));
+    }
+
+    #[test]
+    fn camera_ground_point_honors_a_raised_plane() {
+        let value = eval(
+            "let main = () => Camera3D.toGroundPoint(\n\
+               { x: 400.0, y: 300.0, surfaceWidth: 800.0, surfaceHeight: 600.0 }, 4.0,\n\
+               Camera3D.lookAt(Vec3.make(0.0, 10.0, -10.0), Vec3.make(0.0, 0.0, 0.0)))",
+        );
+        let Value::Variant { ctor, args } = value else {
+            panic!("the ground point should return an Option");
+        };
+        assert_eq!(ctor.as_ref(), "Option.Some");
+        let (x, y, z) = vec3_of(&args[0], "ground hit", Span::new(0, 0)).unwrap();
+        // 6/10ths of the way along the eye→origin span, pinned onto the plane.
+        assert_eq!(y, 4.0);
+        assert!(x.abs() < 1e-5 && (z + 4.0).abs() < 1e-5, "{x} {z}");
     }
 
     #[test]
