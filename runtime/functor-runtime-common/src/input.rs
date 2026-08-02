@@ -6,9 +6,10 @@ use crate::TrackingPose;
 ///
 /// Keyboard and mouse retain their event entry points, while this plain-data
 /// snapshot exposes both levels and de-duplicated transitions through the
-/// extensible shell → producer seam. XR and gamepad are typed device domains;
-/// mobile touch can add a sibling field without turning device capabilities
-/// into stringly-typed maps or adding target-specific producer methods.
+/// extensible shell → producer seam. XR, gamepad, and touch are typed device
+/// domains; further devices add sibling fields without turning device
+/// capabilities into stringly-typed maps or adding target-specific producer
+/// methods.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InputSnapshot {
     /// Keys currently held, in canonical discriminant order.
@@ -37,6 +38,60 @@ pub struct InputSnapshot {
     /// Omitted rather than serialized as `null` when absent, like `xr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gamepad: Option<GamepadSnapshot>,
+    /// Live touch contacts when the target supplies them. `Some` signals
+    /// touch CAPABILITY (a touch surface exists — the web shell sets it on
+    /// touch-capable devices before any contact), so a game can decide to
+    /// show touch UI; an idle touchscreen is `Some` with empty lists, and
+    /// `None` means no touch surface at all.
+    ///
+    /// Omitted rather than serialized as `null` when absent, like `xr`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touch: Option<TouchSnapshot>,
+}
+
+/// One touch contact in the same top-left-origin logical coordinate space as
+/// [`MouseSnapshot`] (window points natively, CSS pixels on web). `id` is a
+/// small shell-assigned ordinal stable for the contact's lifetime — shells
+/// remap the platform's arbitrary identifiers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TouchPoint {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Touch levels and this step's de-duplicated transitions.
+///
+/// `touches` are the active contacts at their current positions — the level
+/// complement of the edge lists, exactly the keyboard's
+/// `held`/`pressed`/`released` contract: `pressed`/`released` survive render
+/// frames with no simulation step, are consumed by the first catch-up step,
+/// and are empty on later substeps. A quick tap can appear in both edge
+/// lists while `touches` no longer carries the contact. A cancelled contact
+/// (the platform stole the gesture) reports through `released` — a touch
+/// never leaks held.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TouchSnapshot {
+    pub touches: Vec<TouchPoint>,
+    pub pressed: Vec<TouchPoint>,
+    pub released: Vec<TouchPoint>,
+}
+
+/// One touch contact transition at the shell boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchPhase {
+    /// A new contact landed.
+    Begin,
+    /// An active contact moved.
+    Move,
+    /// A contact lifted normally.
+    End,
+    /// The platform stole the contact (gesture navigation, an alert…).
+    /// Delivered to games as a release — never a silently vanished contact.
+    Cancel,
 }
 
 /// Last known mouse position in logical shell coordinates, the matching
@@ -116,12 +171,14 @@ impl MouseButtons {
 /// repeat it. Each control is a set, not an event count — a down/up/down burst
 /// may appear in both halves while the separately sampled held level records
 /// the final state.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InputEdges {
     pressed_keys: Vec<Key>,
     released_keys: Vec<Key>,
     pressed_mouse: MouseButtons,
     released_mouse: MouseButtons,
+    pressed_touches: Vec<TouchPoint>,
+    released_touches: Vec<TouchPoint>,
 }
 
 impl InputEdges {
@@ -153,12 +210,40 @@ impl InputEdges {
         }
     }
 
+    /// Record a touch-contact edge. De-duplicated by id: a repeated begin (or
+    /// end) for a contact already in the list updates its position instead of
+    /// duplicating the entry.
+    fn touch_transition(&mut self, point: TouchPoint, is_down: bool) {
+        let edges = if is_down {
+            &mut self.pressed_touches
+        } else {
+            &mut self.released_touches
+        };
+        match edges.iter_mut().find(|p| p.id == point.id) {
+            Some(existing) => *existing = point,
+            None => edges.push(point),
+        }
+    }
+
     /// Copy the pending transitions into a step snapshot.
     pub fn apply_to(&self, snapshot: &mut InputSnapshot) {
         snapshot.pressed_keys.clone_from(&self.pressed_keys);
         snapshot.released_keys.clone_from(&self.released_keys);
         snapshot.mouse.pressed = self.pressed_mouse;
         snapshot.mouse.released = self.released_mouse;
+        // Touch edges land inside the optional domain. A tap that began and
+        // ended between steps still must reach the game, so pending edges
+        // materialize the domain even when no contact is currently held.
+        if let Some(touch) = snapshot.touch.as_mut() {
+            touch.pressed.clone_from(&self.pressed_touches);
+            touch.released.clone_from(&self.released_touches);
+        } else if !self.pressed_touches.is_empty() || !self.released_touches.is_empty() {
+            snapshot.touch = Some(TouchSnapshot {
+                touches: Vec::new(),
+                pressed: self.pressed_touches.clone(),
+                released: self.released_touches.clone(),
+            });
+        }
     }
 
     /// Clear consumed transitions while retaining key-vector capacity for the
@@ -168,6 +253,8 @@ impl InputEdges {
         self.released_keys.clear();
         self.pressed_mouse = MouseButtons::default();
         self.released_mouse = MouseButtons::default();
+        self.pressed_touches.clear();
+        self.released_touches.clear();
     }
 }
 
@@ -179,6 +266,10 @@ impl InputSnapshot {
         self.released_keys.clear();
         self.mouse.pressed = MouseButtons::default();
         self.mouse.released = MouseButtons::default();
+        if let Some(touch) = self.touch.as_mut() {
+            touch.pressed.clear();
+            touch.released.clear();
+        }
     }
 }
 
@@ -240,6 +331,63 @@ pub fn apply_mouse_transition_to_snapshot(
         edges.mouse_transition(button, was_down, is_down);
     }
     true
+}
+
+/// Fold one touch-contact transition into shell-held touch level state.
+///
+/// The ONE reducer every shell (web events, debug injection) shares, so live
+/// input and replay cannot drift. `touch` is the shell's persistent level
+/// state: `Begin` upserts the contact (materializing the domain — receiving a
+/// touch event IS the capability signal), `Move` repositions it, `End` and
+/// `Cancel` remove it. Edges record like keyboard edges — de-duplicated, a
+/// `Cancel` reporting through `released` so a stolen gesture never leaks a
+/// held contact. `record_edge` follows
+/// [`apply_key_transition_to_snapshot`]'s recovery-only semantics. Returns
+/// whether the level state actually changed.
+pub fn apply_touch_transition(
+    touch: &mut Option<TouchSnapshot>,
+    edges: &mut InputEdges,
+    phase: TouchPhase,
+    point: TouchPoint,
+    record_edge: bool,
+) -> bool {
+    match phase {
+        TouchPhase::Begin => {
+            let touch = touch.get_or_insert_with(TouchSnapshot::default);
+            let was_down = touch.touches.iter().any(|p| p.id == point.id);
+            match touch.touches.iter_mut().find(|p| p.id == point.id) {
+                Some(existing) => *existing = point,
+                None => touch.touches.push(point),
+            }
+            if !was_down && record_edge {
+                edges.touch_transition(point, true);
+            }
+            true
+        }
+        TouchPhase::Move => match touch
+            .as_mut()
+            .and_then(|t| t.touches.iter_mut().find(|p| p.id == point.id))
+        {
+            Some(existing) => {
+                *existing = point;
+                true
+            }
+            None => false,
+        },
+        TouchPhase::End | TouchPhase::Cancel => {
+            let Some(levels) = touch.as_mut() else {
+                return false;
+            };
+            let Some(index) = levels.touches.iter().position(|p| p.id == point.id) else {
+                return false;
+            };
+            levels.touches.remove(index);
+            if record_edge {
+                edges.touch_transition(point, false);
+            }
+            true
+        }
+    }
 }
 
 /// One frame of XR input in the tracking rig's local coordinates.
@@ -899,6 +1047,28 @@ fn gamepad_value(pad: &GamepadSnapshot) -> functor_lang::Value {
     ])
 }
 
+fn touch_value(touch: &TouchSnapshot) -> functor_lang::Value {
+    let points = |points: &[TouchPoint]| {
+        functor_lang::Value::List(std::rc::Rc::new(
+            points
+                .iter()
+                .map(|point| {
+                    record([
+                        ("id", functor_lang::Value::Number(point.id as f64)),
+                        ("x", functor_lang::Value::Number(point.x as f64)),
+                        ("y", functor_lang::Value::Number(point.y as f64)),
+                    ])
+                })
+                .collect(),
+        ))
+    };
+    record([
+        ("touches", points(&touch.touches)),
+        ("pressed", points(&touch.pressed)),
+        ("released", points(&touch.released)),
+    ])
+}
+
 /// Convert the shared shell snapshot into the typed, plain-data
 /// `Input.snapshot` record delivered to a Functor Lang game's optional
 /// `sampledInput` hook.
@@ -951,16 +1121,21 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
             "gamepad",
             option_value(snapshot.gamepad.as_ref().map(gamepad_value)),
         ),
+        (
+            "touch",
+            option_value(snapshot.touch.as_ref().map(touch_value)),
+        ),
     ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_key_transition_to_snapshot, apply_mouse_transition_to_snapshot, input_snapshot_value,
-        mouse_button_input_value, tracking_pose_from_value, tracking_pose_value, GamepadSnapshot,
-        InputEdges, InputSnapshot, Key, MouseButton, MouseButtons, MouseSnapshot, RecordedInput,
-        XrControllerSnapshot, XrInputSnapshot,
+        apply_key_transition_to_snapshot, apply_mouse_transition_to_snapshot,
+        apply_touch_transition, input_snapshot_value, mouse_button_input_value,
+        tracking_pose_from_value, tracking_pose_value, GamepadSnapshot, InputEdges, InputSnapshot,
+        Key, MouseButton, MouseButtons, MouseSnapshot, RecordedInput, TouchPhase, TouchPoint,
+        TouchSnapshot, XrControllerSnapshot, XrInputSnapshot,
     };
     use crate::TrackingPose;
 
@@ -1189,10 +1364,10 @@ mod tests {
         let encoded = serde_json::to_string(&xr).unwrap();
         assert_eq!(serde_json::from_str::<InputSnapshot>(&encoded).unwrap(), xr);
 
-        // The gamepad domain follows the same wire contract: omitted when
-        // absent (asserted by the exact desktop JSON above), round-tripped
-        // when present.
-        let pad = InputSnapshot {
+        // The gamepad and touch domains follow the same wire contract:
+        // omitted when absent (asserted by the exact desktop JSON above),
+        // round-tripped when present.
+        let devices = InputSnapshot {
             gamepad: Some(GamepadSnapshot {
                 left_stick: [0.5, -0.5],
                 left_trigger: 1.0,
@@ -1200,12 +1375,25 @@ mod tests {
                 select: true,
                 ..GamepadSnapshot::default()
             }),
+            touch: Some(TouchSnapshot {
+                touches: vec![TouchPoint {
+                    id: 2,
+                    x: 10.5,
+                    y: 20.0,
+                }],
+                pressed: vec![],
+                released: vec![TouchPoint {
+                    id: 0,
+                    x: 1.0,
+                    y: 2.0,
+                }],
+            }),
             ..InputSnapshot::default()
         };
-        let encoded = serde_json::to_string(&pad).unwrap();
+        let encoded = serde_json::to_string(&devices).unwrap();
         assert_eq!(
             serde_json::from_str::<InputSnapshot>(&encoded).unwrap(),
-            pad
+            devices
         );
     }
 
@@ -1252,6 +1440,23 @@ mod tests {
                 dpad_left: true,
                 ..GamepadSnapshot::default()
             }),
+            touch: Some(TouchSnapshot {
+                touches: vec![TouchPoint {
+                    id: 0,
+                    x: 120.0,
+                    y: 48.5,
+                }],
+                pressed: vec![TouchPoint {
+                    id: 0,
+                    x: 118.0,
+                    y: 50.0,
+                }],
+                released: vec![TouchPoint {
+                    id: 1,
+                    x: 300.0,
+                    y: 200.0,
+                }],
+            }),
         };
         let rendered = input_snapshot_value(&snapshot).to_string();
         assert!(
@@ -1283,13 +1488,144 @@ mod tests {
         assert!(rendered.contains("dpadLeft: true"), "{rendered}");
         assert!(rendered.contains("select: false"), "{rendered}");
 
-        // Without a pad the domain is an explicit None, never a zeroed record.
-        let no_pad = InputSnapshot::default();
+        assert!(rendered.contains("touch: Option.Some("), "{rendered}");
         assert!(
-            input_snapshot_value(&no_pad)
-                .to_string()
-                .contains("gamepad: Option.None"),
+            rendered.contains("touches: [{ id: 0, x: 120, y: 48.5 }]"),
+            "{rendered}"
         );
+        assert!(
+            rendered.contains("pressed: [{ id: 0, x: 118, y: 50 }]"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("released: [{ id: 1, x: 300, y: 200 }]"),
+            "{rendered}"
+        );
+
+        // Without a device the domains are explicit None, never zeroed records.
+        let bare = input_snapshot_value(&InputSnapshot::default()).to_string();
+        assert!(bare.contains("gamepad: Option.None"), "{bare}");
+        assert!(bare.contains("touch: Option.None"), "{bare}");
+    }
+
+    #[test]
+    fn touch_transitions_fold_like_keyboard_edges() {
+        let mut touch: Option<TouchSnapshot> = None;
+        let mut edges = InputEdges::default();
+        let point = |id, x, y| TouchPoint { id, x, y };
+
+        // Begin materializes the domain, records a press, and holds the level.
+        assert!(apply_touch_transition(
+            &mut touch,
+            &mut edges,
+            TouchPhase::Begin,
+            point(0, 10.0, 20.0),
+            true,
+        ));
+        // Move repositions the level without a new edge; moving an unknown
+        // contact is a no-op.
+        assert!(apply_touch_transition(
+            &mut touch,
+            &mut edges,
+            TouchPhase::Move,
+            point(0, 15.0, 25.0),
+            true,
+        ));
+        assert!(!apply_touch_transition(
+            &mut touch,
+            &mut edges,
+            TouchPhase::Move,
+            point(7, 0.0, 0.0),
+            true,
+        ));
+        // A second contact, then a quick tap of it before the step: both its
+        // edges survive while the level is already gone.
+        assert!(apply_touch_transition(
+            &mut touch,
+            &mut edges,
+            TouchPhase::Begin,
+            point(1, 100.0, 100.0),
+            true,
+        ));
+        assert!(apply_touch_transition(
+            &mut touch,
+            &mut edges,
+            TouchPhase::End,
+            point(1, 101.0, 99.0),
+            true,
+        ));
+
+        let mut snapshot = InputSnapshot {
+            touch: touch.clone(),
+            ..InputSnapshot::default()
+        };
+        edges.apply_to(&mut snapshot);
+        let sampled = snapshot.touch.as_ref().unwrap();
+        assert_eq!(sampled.touches, vec![point(0, 15.0, 25.0)]);
+        assert_eq!(
+            sampled.pressed,
+            vec![point(0, 10.0, 20.0), point(1, 100.0, 100.0)]
+        );
+        assert_eq!(sampled.released, vec![point(1, 101.0, 99.0)]);
+
+        // Consumed edges clear from both accumulator and snapshot; levels stay.
+        edges.clear();
+        snapshot.clear_edges();
+        let sampled = snapshot.touch.as_ref().unwrap();
+        assert!(sampled.pressed.is_empty() && sampled.released.is_empty());
+        assert_eq!(sampled.touches, vec![point(0, 15.0, 25.0)]);
+
+        // Cancel reports through released — a stolen gesture never leaks a
+        // held contact — and a recovery-only sweep (record_edge: false)
+        // clears the level without inventing a model-visible edge.
+        assert!(apply_touch_transition(
+            &mut touch,
+            &mut edges,
+            TouchPhase::Cancel,
+            point(0, 15.0, 25.0),
+            true,
+        ));
+        let mut cancelled = InputSnapshot {
+            touch: touch.clone(),
+            ..InputSnapshot::default()
+        };
+        edges.apply_to(&mut cancelled);
+        let sampled = cancelled.touch.as_ref().unwrap();
+        assert!(sampled.touches.is_empty());
+        assert_eq!(sampled.released, vec![point(0, 15.0, 25.0)]);
+        // Ending an already-gone contact is a no-op.
+        assert!(!apply_touch_transition(
+            &mut touch,
+            &mut edges,
+            TouchPhase::End,
+            point(0, 15.0, 25.0),
+            true,
+        ));
+
+        // A tap landing entirely between steps still reaches the game even
+        // when no level state existed: pending edges materialize the domain.
+        let mut edges = InputEdges::default();
+        let mut fresh: Option<TouchSnapshot> = None;
+        apply_touch_transition(
+            &mut fresh,
+            &mut edges,
+            TouchPhase::Begin,
+            point(3, 5.0, 5.0),
+            true,
+        );
+        apply_touch_transition(
+            &mut fresh,
+            &mut edges,
+            TouchPhase::End,
+            point(3, 5.0, 5.0),
+            true,
+        );
+        let mut bare = InputSnapshot::default();
+        edges.apply_to(&mut bare);
+        let sampled = bare.touch.as_ref().unwrap();
+        assert!(sampled.touches.is_empty());
+        assert_eq!(sampled.pressed, vec![point(3, 5.0, 5.0)]);
+        assert_eq!(sampled.released, vec![point(3, 5.0, 5.0)]);
     }
 
     /// The mapping tables' ONLY failure mode is a wrong index, so each entry

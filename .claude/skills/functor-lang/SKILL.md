@@ -376,8 +376,15 @@ let grab = (s) =>
   poll); an unfocused window/document or a pinned clock reads rest-level
   controls, not `Option.None`, so presence stays a reliable capability
   signal. Browsers hide pads until a button is first pressed; headless polls
-  nothing (`Option.None` unless injected). A future mobile-touch domain
-  belongs as another typed sibling on the snapshot.
+  nothing (`Option.None` unless injected). The snapshot also contains
+  `touch: Option.t<Input.touch>` — active contacts plus one-step
+  `pressed`/`released` transition lists (the keyboard edge contract for
+  fingers): `touches` are `{id, x, y}` levels in the mouse's logical
+  coordinate space, a quick tap can appear in both edge lists, and a
+  platform-cancelled contact reports through `released`. `Option.Some` with
+  empty lists = a touch surface exists but is idle (the cue to show touch
+  UI); native supplies the domain via debug injection only
+  (`POST /input` `{"type":"touch","phase":"begin",…}`).
 - **Bundled modules use the ordinary module semantics.** The language-owned
   `Net.fun` / `Key.fun` / `Mouse.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory

@@ -1725,12 +1725,14 @@ MCP server before reconnecting or reusing that runtime URL.",
     /// `{"SliderChanged":0.5}` / `{"TextChanged":"hi"}`),
     /// `{"type":"xr", "head":…, "left":…, "right":…}`, `{"type":"xr_clear"}`,
     /// `{"type":"gamepad", "left_stick":[0,1], "south":true}`,
-    /// `{"type":"gamepad_clear"}`.
+    /// `{"type":"gamepad_clear"}`,
+    /// `{"type":"touch", "phase":"begin", "id":0, "x":10, "y":20}` (phases
+    /// `begin`/`move`/`end`/`cancel`).
     /// The list mirrors `POST /input` and is not exhaustive; an unrecognized
     /// shape comes back as the runtime's own 400, which names the problem.
-    /// Keys, held buttons, XR and gamepad samples are LEVEL state: they stay
-    /// in force across steps until released, which is how a paused session is
-    /// scripted.
+    /// Keys, held buttons, XR and gamepad samples, and begun touch contacts
+    /// are LEVEL state: they stay in force across steps until released, which
+    /// is how a paused session is scripted.
     #[tool]
     async fn send_input(
         &self,
@@ -3438,6 +3440,26 @@ still be alive; stop an owned session, or restart both an attached runtime and t
                 .await?;
                 Ok(nothing())
             }
+            "touch" => {
+                require_arity(method, args, 4)?;
+                let phase = args[0]
+                    .as_str()
+                    .ok_or_else(|| "touch phase must be a string".to_string())?;
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({
+                        "type": "touch",
+                        "phase": phase,
+                        "id": u32_arg(method, args, 1)?,
+                        "x": f64_arg(method, args, 2)?,
+                        "y": f64_arg(method, args, 3)?,
+                    })
+                    .to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
             "uiClick" => {
                 require_arity(method, args, 1)?;
                 let slot = u32_arg(method, args, 0)?;
@@ -4129,6 +4151,12 @@ fn u64_arg(method: &str, args: &[Value], index: usize) -> Result<u64, String> {
 fn u32_arg(method: &str, args: &[Value], index: usize) -> Result<u32, String> {
     u32::try_from(u64_arg(method, args, index)?)
         .map_err(|_| format!("{method} argument {} exceeds u32", index + 1))
+}
+
+fn f64_arg(method: &str, args: &[Value], index: usize) -> Result<f64, String> {
+    args.get(index)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("{method} argument {} must be a number", index + 1))
 }
 
 fn i32_arg(method: &str, args: &[Value], index: usize) -> Result<i32, String> {

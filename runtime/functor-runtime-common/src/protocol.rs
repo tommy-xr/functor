@@ -71,6 +71,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v15: the touch device domain — [`crate::InputSnapshot::touch`], defaulted
+/// (and omitted when absent) when decoding older samples, so retained
+/// recordings remain readable.
+///
 /// v14: generalized scene instancing — the `SceneObject::Instanced` variant,
 /// carrying a template subtree plus one compact channel record per copy
 /// (position, quaternion rotation, per-axis scale, tint). Only scenes that
