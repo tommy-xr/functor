@@ -89,12 +89,32 @@ export interface Packet {
   kind: DeliveredEvent["kind"];
   /** Payload bytes for a message; 0 for the lifecycle kinds. */
   size: number;
+  /**
+   * The message's wire TEXT, exactly as the receiving runtime sees it — kept so
+   * a reader can decode it into the value the game actually sent (wire-value.ts)
+   * rather than showing bytes. Undefined for the lifecycle kinds.
+   *
+   * It costs nothing to route (the coordinator already decodes the payload for
+   * delivery, so this is the same string) and it is what bounds the log's
+   * memory: the cap is a packet count, so a chatty snapshot protocol holds
+   * roughly `PACKET_LOG_CAP × payload` bytes of text. Decoding is deliberately
+   * NOT done here — only the handful of rows a panel shows are ever parsed.
+   */
+  text?: string;
 }
 
 /** Newest entries win: an hour-long session must not grow without bound. The
  * trim runs in blocks so it is not an O(n) memmove per packet at the cap. */
 const PACKET_LOG_CAP = 10_000;
 const PACKET_LOG_SLACK = 1_000;
+
+/**
+ * …and a second bound, on the payload TEXT the log retains: a count alone is
+ * not a memory bound, because a game chooses how big a message is. 8 MB holds
+ * the whole 10k-packet cap for an ordinary protocol (orbs' snapshots are ~800
+ * bytes) and sheds oldest-first for a chatty one.
+ */
+const PACKET_LOG_BYTES = 8 << 20;
 
 /**
  * How long a `Connect` with no listener waits for its server pane before it
@@ -172,6 +192,8 @@ export class NetCoordinator {
   private readonly conns = new Map<number, Conn>();
   private readonly pending: PendingConnect[] = [];
   private readonly log: Packet[] = [];
+  /** Payload text the log is holding, in characters (see PACKET_LOG_BYTES). */
+  private logBytes = 0;
   private readonly watchers = new Set<(packet: Packet) => void>();
   private nextConn = 1;
   private raf = 0;
@@ -238,6 +260,18 @@ export class NetCoordinator {
   /** Every packet routed so far, oldest first (capped at the last 10k). */
   packets(): readonly Packet[] {
     return this.log;
+  }
+
+  /**
+   * Forget every routed packet. A new PROGRAM is a new session: its panes
+   * restart their clocks from zero, so the previous program's rows would
+   * otherwise share frame numbers with the new one's and reappear under the
+   * playhead as traffic that never happened (and, on a quiet link, as another
+   * protocol's decoded messages).
+   */
+  clearLog(): void {
+    this.log.length = 0;
+    this.logBytes = 0;
   }
 
   /**
@@ -430,10 +464,20 @@ export class NetCoordinator {
       conn: event.conn,
       kind: event.kind,
       size,
+      ...(event.kind === "message" ? { text: event.text } : {}),
     };
     this.log.push(packet);
+    this.logBytes += packet.text?.length ?? 0;
     if (this.log.length > PACKET_LOG_CAP + PACKET_LOG_SLACK) {
-      this.log.splice(0, this.log.length - PACKET_LOG_CAP);
+      for (const dropped of this.log.splice(0, this.log.length - PACKET_LOG_CAP)) {
+        this.logBytes -= dropped.text?.length ?? 0;
+      }
+    }
+    // The byte bound sheds one packet at a time: it only bites for a protocol
+    // whose messages are large, and there the newest few are what a reader is
+    // looking at anyway.
+    while (this.logBytes > PACKET_LOG_BYTES && this.log.length > 1) {
+      this.logBytes -= this.log.shift()?.text?.length ?? 0;
     }
     for (const watcher of this.watchers) watcher(packet);
   }

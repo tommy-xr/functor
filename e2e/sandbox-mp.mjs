@@ -122,6 +122,37 @@ const installProbe = (page) =>
           (conn) => `${conn.hidden ? "hidden" : conn.dataset.linked}:${conn.title.slice(0, 20)}`
         ),
       pill: () => document.getElementById("status").textContent.trim(),
+      /** The chrono rail's own label — reference-clock frames, the axis the
+       * packet log is keyed to. */
+      railFrame: () => document.getElementById("mp-frame").textContent.trim(),
+      /** The pinned wire log: what it says it is showing, and what it shows. */
+      wireLog: () => {
+        const panel = document.querySelector(".mp-wirelog");
+        const selected = document.querySelectorAll(".mp-wire.selected").length;
+        if (!panel || panel.hidden) return { pinned: false, rows: [], selected };
+        const box = panel.getBoundingClientRect();
+        return {
+          pinned: true,
+          selected,
+          link: panel.querySelector(".mp-wl-link").textContent.trim(),
+          footer: panel.querySelector(".mp-wl-ft").textContent.trim(),
+          tethered: !document.querySelector(".mp-tether").hasAttribute("visibility"),
+          box: {
+            x: Math.round(box.x),
+            y: Math.round(box.y),
+            w: Math.round(box.width),
+            h: Math.round(box.height),
+          },
+          rows: [...panel.querySelectorAll(".mp-wl")].map((row) => ({
+            frame: Number((row.querySelector(".f").textContent.match(/-?\d+/) ?? [NaN])[0]),
+            dir: row.querySelector(".d").textContent.trim(),
+            payload: row.querySelector(".payload").textContent.trim(),
+            bytes: row.querySelector(".n").textContent.trim(),
+            at: row.classList.contains("at"),
+          })),
+        };
+      },
+      clickEdge: (index) => document.querySelectorAll(".mp-edge-chip")[index].click(),
       pauseAll: () => document.getElementById("mp-pause").click(),
       layout: () => ({
         view: document.querySelector(".mp-grid").dataset.view,
@@ -1077,6 +1108,43 @@ try {
       .catch(() => false);
     check(flowed, "orbs' authority traffic reaches the wires live");
 
+    // --- the pinned wire log: click a link, read its traffic as VALUES -------
+    await page.evaluate(() => window.__mpProbe.clickEdge(0));
+    await sleep(400);
+    const pinned = await page.evaluate(() => window.__mpProbe.wireLog());
+    const boxes = await page.evaluate(() => window.__mpProbe.boxes());
+    check(
+      pinned.pinned && pinned.link === "c1 ↔ srv" && pinned.selected === 1 && pinned.tethered,
+      "clicking a link pins its wire log, tethered, with that wire selected",
+      JSON.stringify({ link: pinned.link, selected: pinned.selected, tether: pinned.tethered })
+    );
+    // orbs' protocol is a typed ADT, so the rows must read as its constructors —
+    // the whole point of decoding rather than showing bytes.
+    const decoded = pinned.rows.filter((row) => /Snapshot|Steer|Welcome|Join|Claim/.test(row.payload));
+    check(
+      pinned.rows.length > 0 && decoded.length > 0,
+      "the rows are decoded Wire values, not bytes",
+      `${pinned.rows.length} rows; e.g. "${pinned.rows.at(-1)?.payload ?? ""}"`
+    );
+    check(
+      pinned.rows.some((row) => row.dir === "c1→srv") &&
+        pinned.rows.some((row) => row.dir === "srv→c1"),
+      "both directions are interleaved in one list",
+      pinned.rows.map((row) => row.dir).join(" ")
+    );
+    // The panel parks in a free quadrant: it may not cover the hub it describes.
+    // The overlap arithmetic is written out here rather than imported: this is
+    // the check ON the production placement, so it must not share its maths.
+    const hub = boxes[2];
+    const overlaps = (a, b) =>
+      Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)) *
+      Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+    check(
+      overlaps(pinned.box, hub) === 0,
+      "the panel never covers the hub",
+      `${JSON.stringify(pinned.box)} vs hub ${JSON.stringify([hub.x, hub.y, hub.w, hub.h])}`
+    );
+
     await page.evaluate(() => window.__mpProbe.pauseAll());
     await sleep(600);
     await page.focus("#mp-playhead");
@@ -1092,6 +1160,37 @@ try {
       `replay=${head.replay} live=${head.live} at #f ${head.label}`
     );
 
+    // SCRUB-LOCKED: parked, the panel's viewport sits at the playhead and marks
+    // the nearest row — the rail and the log are one instrument.
+    const parkedLog = await page.evaluate(() => window.__mpProbe.wireLog());
+    const playhead = Number(head.label.match(/-?\d+/)?.[0] ?? NaN);
+    const marked = parkedLog.rows.find((row) => row.at);
+    check(
+      !!marked && Math.abs(marked.frame - playhead) <= 60,
+      "parked, the log marks the row nearest the playhead",
+      `playhead #f ${playhead}; marked ${JSON.stringify(marked ?? null)}`
+    );
+
+    // Resuming FROM THE HEAD hands the wires back to the live feed, and the
+    // replayed dots go with the mode rather than lingering as traffic that is
+    // not happening. (From the head deliberately: resuming from a rewound frame
+    // is a live session again, but the panes' connections do not survive the
+    // rewind — a coordinator-barrier problem, not this view's.)
+    await page.evaluate(() => window.__mpProbe.pauseAll());
+    const resumed = await page
+      .waitForFunction(() => window.__mpProbe.network().live > 0, null, { timeout: 15000 })
+      .then(() => page.evaluate(() => window.__mpProbe.network()))
+      .catch(() => page.evaluate(() => window.__mpProbe.network()));
+    check(
+      resumed.live > 0 && resumed.replay === 0,
+      "resuming returns the wires to the live feed",
+      `live=${resumed.live} replay=${resumed.replay}`
+    );
+
+    // Park again and scrub to the very start of the recording.
+    await page.evaluate(() => window.__mpProbe.pauseAll());
+    await sleep(600);
+    await page.focus("#mp-playhead");
     await page.keyboard.press("Home");
     await sleep(400);
     const start = await page.evaluate(() => ({
@@ -1108,17 +1207,34 @@ try {
       `${start.dots} dots (${start.replay} replay, ${start.live} live) at #f ${start.label}`
     );
 
-    // Resuming hands the wires back to the live feed — and the replayed dots go
-    // with the mode, rather than lingering as traffic that is not happening.
-    await page.evaluate(() => window.__mpProbe.pauseAll());
-    const resumed = await page
-      .waitForFunction(() => window.__mpProbe.network().live > 0, null, { timeout: 15000 })
-      .then(() => page.evaluate(() => window.__mpProbe.network()))
-      .catch(() => page.evaluate(() => window.__mpProbe.network()));
+    // Scrubbing sweeps the rows with the dots: the window at the start of the
+    // recording is not the window at the head.
+    const startLog = await page.evaluate(() => window.__mpProbe.wireLog());
     check(
-      resumed.live > 0 && resumed.replay === 0,
-      "resuming returns the wires to the live feed",
-      `live=${resumed.live} replay=${resumed.replay}`
+      startLog.pinned &&
+        (startLog.rows.length === 0 ||
+          startLog.rows.at(-1).frame < (parkedLog.rows.at(-1)?.frame ?? Infinity)),
+      "scrubbing back sweeps the log's viewport with the playhead",
+      `head ended at #f ${parkedLog.rows.at(-1)?.frame}, start ends at #f ${startLog.rows.at(-1)?.frame}`
+    );
+
+    // Escape clears the pin (the last layer in the cascade — no popover is open
+    // and no event is selected here), and another link re-pins in place.
+    await page.keyboard.press("Escape");
+    await sleep(200);
+    const cleared = await page.evaluate(() => window.__mpProbe.wireLog());
+    check(
+      !cleared.pinned && cleared.selected === 0,
+      "esc clears the pinned panel and deselects the wire",
+      JSON.stringify(cleared)
+    );
+    await page.evaluate(() => window.__mpProbe.clickEdge(1));
+    await sleep(300);
+    const repinned = await page.evaluate(() => window.__mpProbe.wireLog());
+    check(
+      repinned.pinned && repinned.link === "c2 ↔ srv" && repinned.selected === 1,
+      "clicking another link re-pins the panel to it",
+      `${repinned.link} — ${repinned.selected} selected`
     );
     await page.close();
   }

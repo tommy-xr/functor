@@ -3579,6 +3579,204 @@ a:hover {
   }
 }
 
+/* ---- the pinned wire log (Addendum 5, rule 3) ----
+
+   Clicking a wire pins that link's traffic beside it. The panel takes the
+   SELECTED CLIENT'S ink (--pc, set inline by mp-network.ts) for its frame, its
+   header and its intent rows, so "which link am I reading" is answered by color
+   before any text is parsed — the same rule the dots follow. */
+
+/* The click target: the visible wire is 1.4px, which is not something to aim
+   at. A transparent stroke ten times that width takes the clicks, and only it
+   takes them — the layer itself stays click-through. */
+.mp-wire-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+/* The selected wire steps forward, but the WIRE must not thicken much: its
+   packets ride the same currentColor, so a bright fat stroke swallows exactly
+   the traffic you pinned it to read (it did — the first attempt added a
+   drop-shadow glow and the dots vanished into it). Instead the line goes to
+   full ink at a hair more weight, and the depth comes from a soft halo BEHIND
+   the dots — the hit path, already the right shape and already there. */
+.mp-wire.selected {
+  opacity: 1;
+  stroke-width: 1.8;
+}
+
+.mp-wire-hit.selected {
+  stroke: currentColor;
+  opacity: 0.13;
+}
+
+.mp-edge-chip {
+  cursor: pointer;
+}
+
+.mp-edge-chip.selected {
+  border-color: color-mix(in srgb, currentColor 45%, var(--line));
+  color: var(--text);
+}
+
+.mp-edge-chip:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+/* The leader line, dashed so it reads as an annotation rather than as another
+   wire, with a nub where it grips the edge. */
+.mp-tether path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  opacity: 0.5;
+}
+
+.mp-tether circle {
+  fill: var(--bg);
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+
+.mp-wirelog {
+  --pc: var(--cyan);
+  position: absolute;
+  width: 330px;
+  max-width: calc(100% - 20px);
+  pointer-events: auto;
+  background: rgba(17, 13, 32, 0.97);
+  border: 1px solid color-mix(in srgb, var(--pc) 42%, var(--line));
+  border-radius: 5px;
+  box-shadow:
+    0 0 24px color-mix(in srgb, var(--pc) 14%, transparent),
+    0 18px 40px rgba(0, 0, 0, 0.6);
+}
+
+.mp-wirelog[hidden] {
+  display: none;
+}
+
+.mp-wl-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font: 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--pc) 7%, transparent);
+  border-bottom: 1px solid var(--line);
+  border-radius: 4px 4px 0 0;
+}
+
+.mp-wl-hd b {
+  font-weight: 500;
+  color: var(--pc);
+}
+
+.mp-wl-x {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.mp-wl-x:hover {
+  color: var(--text);
+}
+
+.mp-wl-rows {
+  padding: 5px 0;
+}
+
+/* Four columns, fixed where the content is fixed-width (frame, direction,
+   bytes) so the payload — the only column whose width is a judgement call —
+   gets everything left over. */
+.mp-wl {
+  display: grid;
+  grid-template-columns: 54px 62px 1fr 46px;
+  gap: 8px;
+  padding: 3px 10px;
+  font: 10.5px/1.5 var(--font-mono);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  border-left: 2px solid transparent;
+}
+
+.mp-wl:hover {
+  background: color-mix(in srgb, var(--pc) 6%, transparent);
+}
+
+/* The row at the playhead. This is the panel's one loud moment, and it earns
+   it: it is what makes the log and the rail visibly the same instrument. */
+.mp-wl.at {
+  border-left-color: var(--pc);
+  background: color-mix(in srgb, var(--pc) 14%, transparent);
+}
+
+.mp-wl .f {
+  color: var(--text-dim);
+}
+
+/* Direction takes the ink of whoever SENT it: the client's own color going up,
+   the authority's slate coming down. */
+.mp-wl .d.up {
+  color: var(--pc);
+}
+
+.mp-wl .d.dn {
+  color: var(--scrub-server);
+}
+
+.mp-wl .payload {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Constructor first and lit, arguments after and quiet — the row is scanned for
+   WHICH message this is. */
+.mp-wl .payload b {
+  font-weight: 500;
+}
+
+.mp-wl .payload em {
+  font-style: normal;
+  color: var(--text-dim);
+  margin-left: 5px;
+}
+
+.mp-wl .n {
+  text-align: right;
+  color: var(--text-dim);
+}
+
+.mp-wl-empty {
+  margin: 0;
+  padding: 6px 12px;
+  font: 10px/1.5 var(--font-mono);
+  color: var(--text-dim);
+}
+
+.mp-wl-ft {
+  padding: 5px 10px;
+  border-top: 1px solid var(--line);
+  font: 9.5px/1.4 var(--font-mono);
+  color: var(--text-dim);
+}
+
 /* ---- the network status strip (Addendum 5a.3) ----
 
    The legend, and the readouts the pane headers drop when they clip to

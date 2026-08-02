@@ -17,9 +17,13 @@
 //      range, so the per-frame snapshot stream never dominates the picture.
 //   2. PACE is a measurement. See FLIGHT_MS.
 //
-// The wire log (click an edge → a pinned, scrub-locked panel) is the NEXT PR.
+// The third rule is the WIRE LOG: clicking an edge pins a panel, tethered to
+// that wire with a dashed leader, showing that link's traffic as DECODED VALUES
+// (`Steer {turn:1}`) rather than as bytes — and locked to the chrono rail, so
+// scrubbing sweeps the rows the same way it sweeps the dots.
 
 import type { NetCoordinator, Packet } from "./net-coordinator.js";
+import { decodeWire, fullWire } from "./wire-value.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -58,12 +62,40 @@ const MAX_DOTS = 260;
  *
  * The live feed keeps `FLIGHT_MS` of traffic in the air at once; parking the
  * session must show the same picture at the same density, so the window is that
- * flight time expressed in frames (600ms at the timeline's 60fps). A packet
- * routed AT the playhead is at the start of its flight and one a full window
+ * flight time expressed in frames (the timeline's fixed 60fps), DERIVED rather
+ * than written down so the two cannot drift apart. A packet routed AT the
+ * playhead is at the start of its flight and one a full window
  * back is arriving — so scrubbing sweeps the traffic along the wires exactly as
  * running it would, in either direction.
  */
-const REPLAY_WINDOW_FRAMES = 36;
+const REPLAY_WINDOW_FRAMES = Math.round((FLIGHT_MS / 1000) * 60);
+
+/**
+ * Rows in the pinned wire log's viewport.
+ *
+ * Not a scroll buffer: the panel is a WINDOW onto the log at the playhead, and
+ * the rail is how you move it. A dozen rows is what a 16:9 stage has room for
+ * beside the cards without the panel becoming a second layout.
+ */
+const WIRE_LOG_ROWS = 12;
+
+/** Rows of context kept AFTER the playhead's row, so the parked frame does not
+ * sit on the panel's last line with nothing following it. */
+const WIRE_LOG_LEAD = 3;
+
+/** The panel's margin from the stage's edge when it parks in a free quadrant. */
+const PANEL_MARGIN = 10;
+
+/**
+ * How often the LIVE tail repaints its rows, in ms.
+ *
+ * A tail that turns over sixty times a second is not a log, it is a blur — and
+ * each repaint decodes a dozen payloads and rebuilds the rows, on a page that
+ * is already running three games. Ten a second reads as live and costs a sixth
+ * as much. Parked, there is no throttle at all: the panel must answer the rail
+ * on the frame the playhead moves.
+ */
+const LIVE_ROW_MS = 100;
 
 /**
  * Payload bytes at which a dot reaches its largest size, per direction.
@@ -127,6 +159,8 @@ export interface NetworkGraph {
   /** Zero the per-edge packet totals — a new program is a new session, and the
    * reduced-motion badge must not carry the previous example's traffic. */
   resetCounts(): void;
+  /** Pin the wire log to a link (a client pane id), or clear it with null. */
+  selectEdge(id: string | null): void;
   destroy(): void;
 }
 
@@ -135,11 +169,17 @@ type Direction = "up" | "down";
 interface Edge {
   node: NetworkNode;
   path: SVGPathElement;
-  chip: HTMLElement;
+  /** The same curve, drawn invisibly and fat: a 1.4px wire is not a click
+   * target, and widening the visible one would make every wire shout. */
+  hit: SVGPathElement;
+  chip: HTMLButtonElement;
   chipLabel: HTMLElement;
   chipCount: HTMLElement;
   length: number;
   count: number;
+  /** The curve's midpoint, in layer coordinates — where the chip sits, and
+   * where the pinned panel's tether attaches. */
+  mid: Point;
 }
 
 interface Dot {
@@ -157,6 +197,11 @@ interface Point {
   x: number;
   y: number;
 }
+
+/** A measured box in the WIRE LAYER's coordinates — what every geometry in this
+ * module is expressed in (the layer shares the stage's box). */
+const toLocal = (box: DOMRect, origin: DOMRect): DOMRect =>
+  new DOMRect(box.left - origin.left, box.top - origin.top, box.width, box.height);
 
 /** A cubic's point at t = 0.5 — where the edge chip sits. */
 const midpoint = (p0: Point, c0: Point, c1: Point, p1: Point): Point => ({
@@ -184,8 +229,34 @@ export function initNetworkGraph({
   svg.setAttribute("aria-hidden", "true");
   const wires = document.createElementNS(SVG_NS, "g");
   const packets = document.createElementNS(SVG_NS, "g");
-  svg.append(wires, packets);
+  // The pinned panel's leader line. Last, so it draws over the wires it points
+  // at rather than under them.
+  const tether = document.createElementNS(SVG_NS, "g");
+  tether.setAttribute("class", "mp-tether");
+  const tetherLine = document.createElementNS(SVG_NS, "path");
+  const tetherNub = document.createElementNS(SVG_NS, "circle");
+  tetherNub.setAttribute("r", "3");
+  tether.append(tetherLine, tetherNub);
+  svg.append(wires, packets, tether);
   layer.appendChild(svg);
+
+  // The pinned wire log. It rides the CHIPS layer, which sits after the grid in
+  // the DOM: a panel of text under a pane card is a panel you cannot read.
+  const panel = document.createElement("aside");
+  panel.className = "mp-wirelog";
+  panel.hidden = true;
+  panel.innerHTML = `
+    <header class="mp-wl-hd">
+      <b class="mp-wl-link"></b>
+      <span class="mp-wl-what">wire log</span>
+      <button type="button" class="mp-wl-x" title="Clear the pinned wire log">esc to clear ✕</button>
+    </header>
+    <div class="mp-wl-rows" role="log" aria-label="Wire log"></div>
+    <footer class="mp-wl-ft"></footer>`;
+  chips.appendChild(panel);
+  const panelLink = panel.querySelector(".mp-wl-link") as HTMLElement;
+  const panelRows = panel.querySelector(".mp-wl-rows") as HTMLElement;
+  const panelFoot = panel.querySelector(".mp-wl-ft") as HTMLElement;
 
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   const edges = new Map<string, Edge>();
@@ -201,6 +272,12 @@ export function initNetworkGraph({
   /** The frame the replay is currently drawn for, so a held playhead rebuilds
    * nothing. `null` = nothing drawn yet. */
   let replayFrame: number | null = null;
+  /** The link whose wire log is pinned (a client pane id), or null. */
+  let selected: string | null = null;
+  /** What the panel's rows currently say, so a steady session rewrites nothing. */
+  let rowKey = "";
+  /** When the rows last repainted — the live tail's throttle (LIVE_ROW_MS). */
+  let lastRowPaint = 0;
 
   const addEdge = (node: NetworkNode): Edge => {
     const path = document.createElementNS(SVG_NS, "path");
@@ -208,19 +285,28 @@ export function initNetworkGraph({
     // The player color rides on `color`, so the wire's stroke and the dot's
     // fill and glow can all be one `currentColor` in the stylesheet.
     path.style.color = node.color;
-    wires.appendChild(path);
-    const chip = document.createElement("span");
+    const hit = document.createElementNS(SVG_NS, "path");
+    hit.setAttribute("class", "mp-wire-hit");
+    hit.addEventListener("click", () => selectEdge(node.id === selected ? null : node.id));
+    wires.append(path, hit);
+    // A real button: the chip is the wire's label AND its accessible click
+    // target — the SVG curve is reachable by pointer only.
+    const chip = document.createElement("button");
+    chip.type = "button";
     chip.className = "mp-edge-chip";
     chip.innerHTML = `<b></b><i></i>`;
+    chip.addEventListener("click", () => selectEdge(node.id === selected ? null : node.id));
     chips.appendChild(chip);
     const edge: Edge = {
       node,
       path,
+      hit,
       chip,
       chipLabel: chip.querySelector("b")!,
       chipCount: chip.querySelector("i")!,
       length: 0,
       count: 0,
+      mid: { x: 0, y: 0 },
     };
     edges.set(node.id, edge);
     return edge;
@@ -228,8 +314,12 @@ export function initNetworkGraph({
 
   const dropEdge = (edge: Edge, id: string) => {
     edge.path.remove();
+    edge.hit.remove();
     edge.chip.remove();
     edges.delete(id);
+    // A link that is gone cannot stay pinned — its rows would freeze on a
+    // client that is no longer in the session.
+    if (selected === id) selectEdge(null);
     for (let i = dots.length - 1; i >= 0; i--) {
       if (dots[i].edge === edge) {
         dots[i].el.remove();
@@ -254,14 +344,14 @@ export function initNetworkGraph({
     if (origin.width === 0 || origin.height === 0) return;
     svg.setAttribute("viewBox", `0 0 ${origin.width} ${origin.height}`);
     const boxOf = (node: NetworkNode) => {
-      const box = node.shell.getBoundingClientRect();
+      const box = toLocal(node.shell.getBoundingClientRect(), origin);
       return {
-        left: box.left - origin.left,
-        top: box.top - origin.top,
+        left: box.left,
+        top: box.top,
         width: box.width,
         height: box.height,
-        cx: box.left - origin.left + box.width / 2,
-        cy: box.top - origin.top + box.height / 2,
+        cx: box.left + box.width / 2,
+        cy: box.top + box.height / 2,
       };
     };
     const hubBox = boxOf(hub);
@@ -303,11 +393,12 @@ export function initNetworkGraph({
       const edge = edges.get(node.id) ?? addEdge(node);
       edge.node = node;
       edge.path.style.color = node.color;
-      edge.path.setAttribute(
-        "d",
-        `M${from.x},${from.y} C${c0.x},${c0.y} ${c1.x},${c1.y} ${to.x},${to.y}`
-      );
+      edge.hit.style.color = node.color;
+      const d = `M${from.x},${from.y} C${c0.x},${c0.y} ${c1.x},${c1.y} ${to.x},${to.y}`;
+      edge.path.setAttribute("d", d);
+      edge.hit.setAttribute("d", d);
       const mid = midpoint(from, c0, c1, to);
+      edge.mid = mid;
       edge.chip.style.left = `${mid.x}px`;
       edge.chip.style.top = `${mid.y}px`;
       written.push(edge);
@@ -316,6 +407,7 @@ export function initNetworkGraph({
     // with the `d` writes above would flush per edge instead of once.
     for (const edge of written) edge.length = edge.path.getTotalLength();
     paintChips();
+    placePanel();
   };
 
   // Every write is change-guarded, so this is a couple of string compares per
@@ -330,12 +422,275 @@ export function initNetworkGraph({
         // measurement the coordinator cannot make yet.
         edge.chip.title =
           `${label} — this client's configured link profile. Impairment is ` +
-          `recorded, not applied yet, so every packet crosses at the same pace.`;
+          `recorded, not applied yet, so every packet crosses at the same pace. ` +
+          `Click to pin this link's wire log.`;
       }
       const count = `${edge.count} pkt`;
       if (edge.chipCount.textContent !== count) edge.chipCount.textContent = count;
     }
   };
+
+  // ---------------------------------------------------------- the wire log
+  // Clicking a wire pins this panel to it (design addendum 5, rule 3): that
+  // link's traffic, both directions interleaved by frame, as the VALUES the
+  // game sent. It is a panel rather than a hover tooltip precisely because it
+  // has to stay readable while the other hand is scrubbing.
+
+  /** `client 2` → `c2`, `server` → `srv`: a direction column has to fit. */
+  const shortName = (id: string): string =>
+    id === "server" ? "srv" : id.startsWith("client ") ? `c${id.slice(7)}` : id;
+
+  /**
+   * Is this packet traffic on the pinned link?
+   *
+   * A link is a PANE PAIR, not a connection id: a game that opened two
+   * connections to the same authority would interleave both here. Nothing in
+   * the samples does, and the pane pair is what the wire on screen represents.
+   */
+  const onLink = (packet: Packet, id: string): boolean =>
+    packet.kind === "message" &&
+    ((packet.from === id && packet.to === "server") ||
+      (packet.from === "server" && packet.to === id));
+
+  /**
+   * The first index in the log whose frame is after `at` — the playhead's place
+   * in the record, by binary search.
+   *
+   * The log is sorted by frame because the reference clock only ever advances;
+   * an unframed packet (the boot handshake, routed before the reference pane
+   * had recorded a frame) sorts before everything, which is also where it
+   * belongs on the timeline.
+   */
+  const indexAfter = (log: readonly Packet[], at: number): number => {
+    let lo = 0;
+    let hi = log.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((log[mid].frame ?? -Infinity) <= at) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  const selectEdge = (id: string | null) => {
+    if (id !== null && !edges.has(id)) return;
+    if (selected === id) return;
+    selected = id;
+    rowKey = "";
+    for (const [edgeId, edge] of edges) {
+      const on = edgeId === id;
+      edge.path.classList.toggle("selected", on);
+      // The fat hit path doubles as the selection HALO — see the stylesheet.
+      edge.hit.classList.toggle("selected", on);
+      edge.chip.classList.toggle("selected", on);
+      edge.chip.setAttribute("aria-pressed", String(on));
+    }
+    renderPanel();
+    // A new link is a new tether and a new free quadrant to find, even when the
+    // row count happens to match (which is what renderPanel re-places on).
+    placePanel();
+  };
+
+  /**
+   * The panel's viewport onto the log: this link's message traffic, oldest
+   * first, both directions in one list (which is what "interleaved by frame"
+   * means when the log is already in routing order), plus which row the
+   * playhead is on.
+   *
+   * SCRUB-LOCKED: parked, the window ends a few rows PAST the playhead's row so
+   * the parked frame is not the last line on the panel; live, it tails the
+   * newest traffic. One time axis, two representations (design §5).
+   *
+   * Costs a screenful, not a session: the log is ordered by frame (the
+   * reference clock only advances), so the playhead's position is found by
+   * BINARY SEARCH and the walk starts there. A linear scan from the end would
+   * traverse all ten thousand packets every time the rail is parked in the
+   * past — exactly the state this feature exists for.
+   */
+  const viewportRows = (
+    id: string,
+    at: number | null
+  ): { rows: Packet[]; highlight: number } => {
+    const log = net.packets();
+    const before: Packet[] = [];
+    const after: Packet[] = [];
+    // The lead rows first, walking FORWARD from the playhead: the ones nearest
+    // it, not the newest in the session.
+    const pivot = at === null ? log.length : indexAfter(log, at);
+    for (let i = pivot; i < log.length && after.length < WIRE_LOG_LEAD; i++) {
+      if (onLink(log[i], id)) after.push(log[i]);
+    }
+    for (let i = pivot - 1; i >= 0 && before.length < WIRE_LOG_ROWS; i--) {
+      if (onLink(log[i], id)) before.push(log[i]);
+    }
+    before.reverse();
+    const rows = before.slice(Math.max(0, before.length - (WIRE_LOG_ROWS - after.length)));
+    const highlight = at === null || rows.length === 0 ? -1 : rows.length - 1;
+    rows.push(...after);
+    return { rows, highlight };
+  };
+
+  const renderPanel = () => {
+    if (!selected || !active) {
+      panel.hidden = true;
+      tether.setAttribute("visibility", "hidden");
+      return;
+    }
+    const edge = edges.get(selected);
+    if (!edge) return;
+    const { parked, frame } = clock();
+    // LIVE the rows are a tail, and a tail that turns over sixty times a second
+    // is not readable — so it repaints at a rate a reader can follow, and the
+    // work (decode + rebuild) happens at that rate too. PARKED there is no
+    // throttle: the panel must answer the rail immediately.
+    const now = performance.now();
+    if (!parked && now - lastRowPaint < LIVE_ROW_MS) return;
+    const { rows: shown, highlight } = viewportRows(
+      selected,
+      parked && frame !== null ? frame : null
+    );
+    const key =
+      `${selected}|${highlight}|` +
+      // `at` disambiguates two packets that share a frame, a direction and a
+      // size — a fixed-width intent (`Steer {turn:0}` vs `{turn:1}`) otherwise
+      // hashes the same and the rows would go stale.
+      shown.map((packet) => `${packet.frame}:${packet.from}:${packet.size}:${packet.at}`).join(",");
+    if (key === rowKey) return;
+    const rowCount = panelRows.childElementCount;
+    lastRowPaint = now;
+    rowKey = key;
+
+    panel.hidden = false;
+    panelLink.textContent = `${shortName(selected)} ↔ srv`;
+    panel.style.setProperty("--pc", edge.node.color);
+    let anyPlain = false;
+    panelRows.replaceChildren(
+      ...shown.map((packet, index) => {
+        const up = packet.from !== "server";
+        const decoded = decodeWire(packet.text);
+        if (!decoded.typed) anyPlain = true;
+        const row = document.createElement("div");
+        row.className = `mp-wl${index === highlight ? " at" : ""}`;
+        // The full rendering is built ON HOVER, once: rendering every row's
+        // whole payload unelided (a world snapshot, per row, per repaint) to
+        // fill a tooltip nobody has asked for yet is the most expensive thing
+        // this panel could do.
+        row.addEventListener(
+          "mouseenter",
+          () => {
+            row.title = fullWire(packet.text);
+          },
+          { once: true }
+        );
+        const frameCell = document.createElement("span");
+        frameCell.className = "f";
+        frameCell.textContent = `#f ${packet.frame ?? "—"}`;
+        const dirCell = document.createElement("span");
+        dirCell.className = `d ${up ? "up" : "dn"}`;
+        dirCell.textContent = up
+          ? `${shortName(packet.from)}→srv`
+          : `srv→${shortName(packet.to)}`;
+        // textContent, never innerHTML: this is a running game's own data.
+        const payload = document.createElement("span");
+        payload.className = "payload";
+        if (decoded.head) {
+          const ctor = document.createElement("b");
+          ctor.textContent = decoded.head;
+          const args = document.createElement("em");
+          args.textContent = decoded.body;
+          payload.append(ctor, args);
+        } else {
+          payload.textContent = decoded.body;
+        }
+        const bytes = document.createElement("span");
+        bytes.className = "n";
+        bytes.textContent = `${packet.size} B`;
+        row.append(frameCell, dirCell, payload, bytes);
+        return row;
+      })
+    );
+    if (shown.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "mp-wl-empty";
+      empty.textContent = parked
+        ? "nothing had crossed this link yet at this frame"
+        : "no traffic on this link yet";
+      panelRows.appendChild(empty);
+    }
+    panelFoot.textContent = anyPlain
+      ? "Effect.send text — shown exactly as sent"
+      : "Effect.sendMsg — decoded as values, never bytes";
+    // Only a change in the panel's SIZE can move it, and only the row count
+    // changes that. Re-placing on every repaint would mean five forced layouts
+    // per repaint (the panel's box, the cards' boxes, the wire's bbox) directly
+    // after writing the rows — the read-after-write flush this file avoids
+    // everywhere else.
+    if (panelRows.childElementCount !== rowCount) placePanel();
+  };
+
+  /** Overlap area of two boxes, in px². Zero when they miss each other. */
+  const overlap = (a: DOMRect, b: DOMRect): number =>
+    Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
+    Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+
+  /**
+   * Park the panel in the free quadrant, and run its tether to the wire.
+   *
+   * MEASURED, not placed: the stage's layout changes with the client count and
+   * the window size, so the panel scores the four corners against what is
+   * actually on the stage — every pane card, plus the selected wire's own
+   * bounding box — and takes the one that covers the least. Distance to the
+   * wire breaks ties, so among clear corners it sits near what it describes.
+   */
+  const placePanel = () => {
+    if (!selected || panel.hidden) {
+      tether.setAttribute("visibility", "hidden");
+      return;
+    }
+    const edge = edges.get(selected);
+    if (!edge) return;
+    const origin = layer.getBoundingClientRect();
+    if (origin.width === 0 || origin.height === 0) return;
+    const size = panel.getBoundingClientRect();
+    const hub = server();
+    const obstacles = [...clients(), ...(hub ? [hub] : [])].map((node) =>
+      toLocal(node.shell.getBoundingClientRect(), origin)
+    );
+    const bbox = edge.path.getBBox();
+    obstacles.push(new DOMRect(bbox.x, bbox.y, bbox.width, bbox.height));
+    const maxX = Math.max(PANEL_MARGIN, origin.width - size.width - PANEL_MARGIN);
+    const maxY = Math.max(PANEL_MARGIN, origin.height - size.height - PANEL_MARGIN);
+    let best: { x: number; y: number; score: number } | null = null;
+    for (const x of [PANEL_MARGIN, maxX]) {
+      for (const y of [PANEL_MARGIN, maxY]) {
+        const box = new DOMRect(x, y, size.width, size.height);
+        const covered = obstacles.reduce((total, other) => total + overlap(box, other), 0);
+        const reach = Math.hypot(x + size.width / 2 - edge.mid.x, y + size.height / 2 - edge.mid.y);
+        // Area dominates: being clear of the cards and the wire is the rule,
+        // being near the wire is only the tie-break.
+        const score = covered * 1000 + reach;
+        if (!best || score < best.score) best = { x, y, score };
+      }
+    }
+    if (!best) return;
+    panel.style.left = `${best.x}px`;
+    panel.style.top = `${best.y}px`;
+    // The tether lands on the panel's nearest edge, so it never crosses the
+    // panel to reach it.
+    const anchor = {
+      x: Math.max(best.x, Math.min(edge.mid.x, best.x + size.width)),
+      y: Math.max(best.y, Math.min(edge.mid.y, best.y + size.height)),
+    };
+    tether.removeAttribute("visibility");
+    tether.style.color = edge.node.color;
+    tetherLine.setAttribute("d", `M${edge.mid.x},${edge.mid.y} L${anchor.x},${anchor.y}`);
+    tetherNub.setAttribute("cx", String(edge.mid.x));
+    tetherNub.setAttribute("cy", String(edge.mid.y));
+  };
+
+  (panel.querySelector(".mp-wl-x") as HTMLButtonElement).addEventListener("click", () =>
+    selectEdge(null)
+  );
 
   const spawn = (
     edge: Edge,
@@ -366,6 +721,21 @@ export function initNetworkGraph({
   };
 
   /**
+   * Which wire a packet travelled, and which way — the one rule the live feed
+   * and the replay share, so the two can never disagree about what a packet is.
+   *
+   * Null for a packet that is not traffic (the connected/disconnected lifecycle
+   * events — the pane headers already say who is linked; dots are payload) or
+   * whose wire is not on the stage.
+   */
+  const linkOf = (packet: Packet): { edge: Edge; dir: Direction } | null => {
+    if (packet.kind !== "message") return null;
+    const dir: Direction = packet.from === "server" ? "down" : "up";
+    const edge = edges.get(dir === "up" ? packet.from : packet.to);
+    return edge ? { edge, dir } : null;
+  };
+
+  /**
    * Draw the log's window at `frame`: one dot per edge per direction per frame
    * of recorded traffic, held at the position that frame's age gives it.
    *
@@ -378,23 +748,20 @@ export function initNetworkGraph({
     replayFrame = frame;
     if (reduceMotion.matches) return;
     const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number; age: number }>();
-    // Newest first: the log is chronological, and the window is at its end
-    // whenever the session is live-parked, so walking back leaves early.
+    // Straight to the playhead by binary search, then back one window — the
+    // walk costs the window, never the session (same rule as viewportRows).
     const log = net.packets();
-    for (let i = log.length - 1; i >= 0; i--) {
+    for (let i = indexAfter(log, frame) - 1; i >= 0; i--) {
       const packet = log[i];
-      if (packet.frame === null) continue;
+      if (packet.frame === null) break;
       const age = frame - packet.frame;
-      if (age < 0) continue;
       if (age >= REPLAY_WINDOW_FRAMES) break;
-      if (packet.kind !== "message") continue;
-      const dir: Direction = packet.from === "server" ? "down" : "up";
-      const edge = edges.get(dir === "up" ? packet.from : packet.to);
-      if (!edge) continue;
-      const key = `${edge.node.id}|${dir}|${packet.frame}`;
+      const link = linkOf(packet);
+      if (!link) continue;
+      const key = `${link.edge.node.id}|${link.dir}|${packet.frame}`;
       const carried = batched.get(key);
       if (carried) carried.bytes += packet.size;
-      else batched.set(key, { edge, dir, bytes: packet.size, age });
+      else batched.set(key, { edge: link.edge, dir: link.dir, bytes: packet.size, age });
     }
     for (const { edge, dir, bytes, age } of batched.values()) {
       spawn(edge, dir, bytes, now, age / REPLAY_WINDOW_FRAMES);
@@ -429,12 +796,9 @@ export function initNetworkGraph({
     if (!replay) {
       const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number }>();
       for (const packet of seen) {
-        // Lifecycle events (connected/disconnected) are not traffic — the pane
-        // headers already say who is linked. Dots are payload.
-        if (packet.kind !== "message") continue;
-        const dir: Direction = packet.from === "server" ? "down" : "up";
-        const edge = edges.get(dir === "up" ? packet.from : packet.to);
-        if (!edge) continue;
+        const link = linkOf(packet);
+        if (!link) continue;
+        const { edge, dir } = link;
         edge.count += 1;
         // Reduced motion: no flying dots at all. The edge keeps a static packet
         // COUNT badge instead, so the traffic is still legible without animation.
@@ -471,6 +835,9 @@ export function initNetworkGraph({
       el.setAttribute("transform", `translate(${point.x.toFixed(2)},${point.y.toFixed(2)})`);
     }
     paintChips();
+    // The pinned log follows the same clock the dots do — live it tails, parked
+    // it sits at the playhead. Both are change-guarded (`rowKey`).
+    renderPanel();
   };
 
   const clearDots = () => {
@@ -485,8 +852,12 @@ export function initNetworkGraph({
   const setActive = (on: boolean) => {
     if (on === active) return;
     active = on;
-    if (!on) clearDots();
-    else relayout();
+    if (!on) {
+      clearDots();
+      // The pin belongs to the view: leaving it and coming back should show the
+      // topology, not a panel pinned to whatever was interesting minutes ago.
+      selectEdge(null);
+    } else relayout();
   };
 
   const unsubscribe = net.onPacket((packet) => {
@@ -510,7 +881,10 @@ export function initNetworkGraph({
     resetCounts() {
       for (const edge of edges.values()) edge.count = 0;
       paintChips();
+      // A new program is a new protocol: the pinned rows are the old one's.
+      selectEdge(null);
     },
+    selectEdge,
     destroy() {
       observer.disconnect();
       unsubscribe();
