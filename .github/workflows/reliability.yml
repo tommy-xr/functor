@@ -1,0 +1,298 @@
+name: Reliability runs
+
+# Flake hunting: run the browser (wasm-smoke) and native (e2e-headless) suites
+# N times over and report a pass rate, so an intermittent failure shows up as
+# "9/10" instead of as a lucky green tick.
+#
+# OPT-IN, AND ~10x THE COST OF A NORMAL RUN. Two ways to start one:
+#
+#   1. Add the `reliability` label to a pull request. Pushes to an
+#      already-labelled PR re-run it (the `synchronize` path below), so the
+#      label stays meaningful as the branch evolves. Remove the label to stop
+#      paying for it.
+#   2. `workflow_dispatch` — pick the iteration count (default 10, max 25) and
+#      optionally narrow to a single suite.
+#
+# A re-label supersedes the in-flight run (concurrency, cancel-in-progress),
+# so toggling the label doesn't stack runs on top of each other.
+#
+# WHY THE SETUP STEPS ARE DUPLICATED HERE. The `wasm-smoke` job below mirrors
+# `.github/workflows/wasm-smoke.yml` and the `e2e-headless` job mirrors
+# `.github/workflows/e2e.yml`. They are deliberately COPIES rather than a
+# reusable `workflow_call`/composite action: the two source workflows order
+# their steps for fail-fast on different things (wasm-smoke runs `npm ci` +
+# `check:site` BEFORE the expensive Rust/wasm builds; e2e builds the CLI first,
+# then installs SDK deps), and collapsing that into one parameterised action
+# would either lose the fail-fast property or need enough inputs to be worse
+# than the duplication. A reliability workflow also should not be the thing
+# that edits two green, load-bearing CI workflows.
+#
+#   >>> If you change setup steps in wasm-smoke.yml or e2e.yml, change them
+#   >>> here too, or this workflow silently stops reproducing the real job. <<<
+
+on:
+  pull_request:
+    # `labeled` starts a run when the `reliability` label is applied;
+    # `synchronize` re-runs it on every push to a PR that already carries the
+    # label. Both are filtered in the `gate` job below — workflows cannot
+    # filter on a label name at the trigger level.
+    types: [labeled, synchronize]
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "How many times to run each suite (1-25)"
+        required: false
+        default: "10"
+      suite:
+        description: "Which suite to run"
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - wasm-smoke
+          - e2e-headless
+
+concurrency:
+  group: reliability-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # The summary job reads this run's own job results to count pass/fail per
+  # iteration (a matrix's aggregate `needs.*.result` cannot tell 9/10 from 0/10).
+  actions: read
+
+jobs:
+  # Decides whether this event should run anything at all, and expands the
+  # iteration count into the JSON list the matrices below consume. GitHub
+  # matrices cannot be sized from an expression directly, so the list is built
+  # here and passed through `fromJSON`.
+  gate:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'reliability') ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'reliability'))
+    runs-on: ubuntu-latest
+    outputs:
+      iterations: ${{ steps.plan.outputs.iterations }}
+      count: ${{ steps.plan.outputs.count }}
+      run_wasm_smoke: ${{ steps.plan.outputs.run_wasm_smoke }}
+      run_e2e_headless: ${{ steps.plan.outputs.run_e2e_headless }}
+    steps:
+      - name: Plan the run
+        id: plan
+        env:
+          # The label path is always 10 iterations; only a dispatch can choose.
+          RAW_ITERATIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.iterations || '10' }}
+          SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'all' }}
+        run: |
+          set -euo pipefail
+
+          count="${RAW_ITERATIONS}"
+          case "$count" in
+            ''|*[!0-9]*)
+              echo "iterations must be a positive integer, got '${count}'" >&2
+              exit 1
+              ;;
+          esac
+          if [ "$count" -lt 1 ]; then count=1; fi
+          if [ "$count" -gt 25 ]; then count=25; fi
+
+          list="$(seq 1 "$count" | paste -sd, -)"
+          echo "iterations=[${list}]" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+          case "$SUITE" in
+            all)           wasm=true;  e2e=true  ;;
+            wasm-smoke)    wasm=true;  e2e=false ;;
+            e2e-headless)  wasm=false; e2e=true  ;;
+            *) echo "unknown suite '${SUITE}'" >&2; exit 1 ;;
+          esac
+          echo "run_wasm_smoke=${wasm}" >> "$GITHUB_OUTPUT"
+          echo "run_e2e_headless=${e2e}" >> "$GITHUB_OUTPUT"
+
+          echo "Running suite(s) '${SUITE}' x ${count}" >> "$GITHUB_STEP_SUMMARY"
+
+  # === MIRROR OF .github/workflows/wasm-smoke.yml — keep in sync ===
+  wasm-smoke:
+    needs: gate
+    if: needs.gate.outputs.run_wasm_smoke == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        iteration: ${{ fromJSON(needs.gate.outputs.iterations) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install GL/X11 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libglfw3 \
+            libglfw3-dev \
+            libasound2-dev \
+            libfontconfig-dev
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Typecheck the site
+        run: npm run check:site
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build web runtime bundle
+        run: wasm-pack build --target=web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build language analysis wasm
+        run: npm run build:lang-wasm
+
+      - name: Build functor CLI
+        run: cargo build --bin functor
+
+      - name: Run wasm smoke
+        run: npm run test:wasm-smoke
+
+      - name: Run net-coordinator e2e
+        run: npm run test:net-coordinator
+
+      - name: Run sandbox multiplayer e2e
+        run: npm run test:sandbox-mp
+
+      - name: Run wasm remote-asset e2e
+        run: npm run test:wasm-remote-assets
+
+      - name: Run scrubber model tests
+        run: npm run test:scrubber
+
+      - name: Run detached-camera browser test
+        run: npm run test:detached-camera
+
+      - name: Run site sandbox browser tests
+        run: npm run test:site
+
+      - name: Run IDE page browser tests
+        run: npm run test:ide-page
+
+      - name: Run editor keybindings browser tests
+        run: npm run test:editor-keybindings
+
+      - name: Run browser runtime-target tests
+        run: npm run test:runtime-target
+
+  # === MIRROR OF .github/workflows/e2e.yml — keep in sync ===
+  e2e-headless:
+    needs: gate
+    if: needs.gate.outputs.run_e2e_headless == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        iteration: ${{ fromJSON(needs.gate.outputs.iterations) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v6
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Build web runtime bundle
+        run: wasm-pack build --target=web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build functor CLI
+        run: cargo build --bin functor
+
+      - name: Install SDK dependencies
+        run: npm install
+        working-directory: tools/functor-sdk
+
+      - name: Run headless e2e
+        run: npm run test:e2e:headless
+        working-directory: tools/functor-sdk
+
+  summary:
+    needs: [gate, wasm-smoke, e2e-headless]
+    if: always() && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tally pass rates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # A matrix's aggregate result cannot distinguish 9/10 from 0/10, so
+          # count this run's own jobs. Matrix job names look like
+          # "wasm-smoke (3)"; the leading token is the suite.
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+            --jq '.jobs[] | [.name, .conclusion] | @tsv' > jobs.tsv
+
+          {
+            echo "## Reliability run"
+            echo
+            echo "| suite | passed | total | verdict |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed=0
+          for suite in wasm-smoke e2e-headless; do
+            total=$(awk -F'\t' -v s="$suite" 'index($1, s " (") == 1' jobs.tsv | wc -l | tr -d ' ')
+            if [ "$total" -eq 0 ]; then continue; fi
+            passed=$(awk -F'\t' -v s="$suite" 'index($1, s " (") == 1 && $2 == "success"' jobs.tsv | wc -l | tr -d ' ')
+            if [ "$passed" -eq "$total" ]; then
+              verdict="OK"
+            else
+              verdict="FLAKY"
+              failed=1
+            fi
+            echo "| ${suite} | ${passed} | ${total} | ${verdict} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "${suite}: ${passed}/${total} — ${verdict}"
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo "At least one iteration failed — this is a flake, not a pass." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
