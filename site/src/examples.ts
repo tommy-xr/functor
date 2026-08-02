@@ -173,20 +173,20 @@ export const EXAMPLES: Example[] = [
     ],
   },
   {
-    id: "mario",
+    id: "platformer",
     label: "Platformer",
-    source: "examples/mario/game.fun",
+    source: "examples/platformer/game.fun",
     siblings: [
-      { source: "examples/mario/assets.fun", output: "examples/assets.fun" },
+      { source: "examples/platformer/assets.fun", output: "examples/assets.fun" },
     ],
     assets: [
-      { source: "examples/mario/ground.png", output: "ground.png" },
-      { source: "examples/mario/hero-atlas.png", output: "hero-atlas.png" },
+      { source: "examples/platformer/ground.png", output: "ground.png" },
+      { source: "examples/platformer/hero-atlas.png", output: "hero-atlas.png" },
     ],
     siteFiles: [
       // The landing hero replays this exact desktop verification drive behind
       // its boot loader. It is site orchestration, not a runtime game asset.
-      { source: "examples/mario/jump.script", output: "examples/mario.jump.script" },
+      { source: "examples/platformer/jump.script", output: "examples/platformer.jump.script" },
     ],
   },
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm

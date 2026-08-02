@@ -998,7 +998,7 @@ impl Game for FunctorLangGame {
     /// window of `divisions` divisions, each `dt` wide, from `start_tts` (a dry
     /// run over throwaway state — the live producer is untouched), then `draw`
     /// each stepped model at its division-boundary time and return the frames for
-    /// the shell to composite. To keep velocity-integrated motion (mario's jump)
+    /// the shell to composite. To keep velocity-integrated motion (the platformer's jump)
     /// faithful, each division is advanced in FINE `sub_dt = 1/60` sub-steps
     /// (`steps_per_division ≈ dt / sub_dt`) and sampled only at the boundary, so
     /// the strobe still has `divisions` frames but each is accurate integration.
@@ -2541,14 +2541,14 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     }
 
     /// The frame-indexed input log payoff (docs/time-travel.md T6b): forward-
-    /// stepping the REAL `examples/mario` game while REPLAYING its recorded input
+    /// stepping the REAL `examples/platformer` game while REPLAYING its recorded input
     /// log reproduces a scripted jump exactly, and the projected character clears
-    /// the chasm. Mario has no `physics` hook (`has_physics = false`), so the
+    /// the chasm. The platformer has no `physics` hook (`has_physics = false`), so the
     /// projection is exact — the whole state forward-steps in `tick`, driven only
     /// by the replayed inputs. This is the "record a jump, replay it forward"
     /// demo, runtime-verified headlessly.
     #[test]
-    fn mario_forward_step_replays_recorded_jump_and_clears_chasm() {
+    fn platformer_forward_step_replays_recorded_jump_and_clears_chasm() {
         use functor_runtime_common::Key;
 
         fn field(v: &Value, name: &str) -> f64 {
@@ -2568,9 +2568,9 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             }
         }
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
-        let mut game = FunctorLangGame::create(mario);
-        assert!(!game.has_physics, "mario must have no physics hook");
+        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let mut game = FunctorLangGame::create(platformer);
+        assert!(!game.has_physics, "platformer must have no physics hook");
 
         const SUB_DT: f32 = 1.0 / 60.0; // fine sub-step (one rendered frame)
         const K: usize = 10; // pre-jump fork point (still running left of the edge)
@@ -2690,12 +2690,12 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     /// frame, then resolve the fork exactly as `functor_lang_producer::ghost_frames` does —
     /// `k = current_scene_frame()`, `inputs_from(k + 1)`, forward-step from the
     /// scrubbed `model` — and assert the strobe's per-division models reproduce the
-    /// RECORDED future exactly. Unlike `mario_forward_step_...` (which hand-picks a
+    /// RECORDED future exactly. Unlike `platformer_forward_step_...` (which hand-picks a
     /// fork model + input slice) this exercises `seek_scene_to` +
     /// `current_scene_frame` + `inputs_from` integration — the alignment the live
     /// scrubber+ghost actually depends on.
     #[test]
-    fn mario_interactive_ghost_from_scrubbed_frame_matches_recorded_future() {
+    fn platformer_interactive_ghost_from_scrubbed_frame_matches_recorded_future() {
         use functor_runtime_common::Key;
 
         fn field(v: &Value, name: &str) -> f64 {
@@ -2709,8 +2709,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             }
         }
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
-        let mut game = FunctorLangGame::create(mario);
+        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let mut game = FunctorLangGame::create(platformer);
 
         const SUB_DT: f32 = 1.0 / 60.0;
         const N: usize = 90; // run to the edge, jump, land, run on the right
@@ -2908,7 +2908,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     /// jump constant. The old future contributes inputs only, never model
     /// snapshots or outcomes.
     #[test]
-    fn mario_hot_reload_recomputes_the_entire_extrapolated_future() {
+    fn platformer_hot_reload_recomputes_the_entire_extrapolated_future() {
         use functor_runtime_common::Key;
 
         fn field(v: &Value, name: &str) -> f64 {
@@ -2922,8 +2922,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             }
         }
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
-        let source = std::fs::read_to_string(mario).expect("read mario source");
+        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let source = std::fs::read_to_string(platformer).expect("read platformer source");
         // `jumpVelocity` is the example's tuning knob, so read the CURRENT value
         // out of the source and weaken it, rather than hardcoding the literal:
         // a hardcoded needle silently stops matching the moment the example is
@@ -2932,7 +2932,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let jump_line = source
             .lines()
             .find(|line| line.starts_with(JUMP_BINDING))
-            .expect("mario source must define `let jumpVelocity = <number>`");
+            .expect("platformer source must define `let jumpVelocity = <number>`");
         let tuned_jump: f64 = jump_line[JUMP_BINDING.len()..]
             .split_whitespace()
             .next()
@@ -2952,7 +2952,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             "test must rewrite the jump constant (looked for {jump_line:?})"
         );
 
-        let mut game = FunctorLangGame::create(mario);
+        let mut game = FunctorLangGame::create(platformer);
         const SUB_DT: f32 = 1.0 / 60.0;
         let mut tts = 0.0f32;
         // Match the browser workflow after the old ~15-second retention cliff:
@@ -3071,9 +3071,9 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
                 .collect()
         }
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
-        let source = std::fs::read_to_string(mario).expect("read mario source");
-        let mut game = FunctorLangGame::create(mario);
+        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let source = std::fs::read_to_string(platformer).expect("read platformer source");
+        let mut game = FunctorLangGame::create(platformer);
         const SUB_DT: f32 = 1.0 / 60.0;
 
         // Exercise the real shell bootstrap: this zero-delta tick is not a
@@ -3123,8 +3123,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     fn scrub_drops_input_buffered_on_a_zero_substep_frame() {
         use functor_runtime_common::Key;
 
-        let mario = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/mario/game.fun");
-        let mut game = FunctorLangGame::create(mario);
+        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let mut game = FunctorLangGame::create(platformer);
 
         // Record a few frames of history at the fixed step (each tick records).
         let sub_dt = 1.0 / 60.0;

@@ -57,7 +57,7 @@ consolidated roadmap, and promotion.
    their dedicated fixer worktrees.
 5. Skim `examples/` and recent `jam/*` branches first so briefs do not duplicate
    existing or just-completed samples (e.g.
-   `mario` is already a 2D sprite platformer; `asteroids` is top-down 3D).
+   `platformer` is already a 2D sprite platformer; `asteroids` is top-down 3D).
 
 ## Phase 1 — one agent per game
 

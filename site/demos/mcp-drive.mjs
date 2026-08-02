@@ -9,8 +9,8 @@
 //
 // The loop it shows is the documented one: launch_game → pause → get_state →
 // send_input → step → capture_frame. It is reproducible by construction: the
-// clock is pinned to an explicit tts (so even the walk-cycle phase mario draws
-// from it is fixed), every step advances a fixed dts, and the two values that
+// clock is pinned to an explicit tts (so even the hero's walk-cycle phase, which
+// is derived from it, is fixed), every step advances a fixed dts, and the two values that
 // could not be reproduced — the launch `port` and the `frame` counter, which
 // count from wherever the game got to before it was paused — are the two the
 // transcript does not show. Everything shown is the server's own answer,
@@ -32,7 +32,7 @@ import { Buffer } from "node:buffer";
 import { chromium } from "@playwright/test";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const GAME = process.env.DEMO_GAME || "examples/mario";
+const GAME = process.env.DEMO_GAME || "examples/platformer";
 const OUT = resolve(process.argv[2] || join(ROOT, "site/media/feature-mcp-drive.gif"));
 if (!OUT.endsWith(".gif")) {
   console.error(`the output path must end in .gif (got ${OUT})`);
@@ -45,11 +45,11 @@ const GIF_WIDTH = 560; // the committed feature-GIF width on the landing page
 const FPS = Number(process.env.DEMO_FPS || 14);
 const DTS = 0.016; // the step size every `step` call advances, per frame
 const STRIDE = 4; // frames per `step` call — one captured frame per call
-// mario's chasm spans x ∈ [-3, 3] and its default jump carries ~6.9 units.
+// The platformer's chasm spans x ∈ [-3, 3] and its default jump carries ~6.9 units.
 // Running right at 8 units/s, a STRIDE of 4 moves 0.512 per call, so the walk
 // loop stops at x = -3.44 and the jump lands around x = 3.5 — clear of the far
 // lip, with the guard below to catch it if a retune breaks that
-// (examples/mario/game.fun).
+// (examples/platformer/game.fun).
 const JUMP_FROM = -3.6;
 
 const BIN = existsSync(join(ROOT, "target/debug/functor"))
@@ -313,8 +313,8 @@ try {
   // --- 2. Pause: the clock is the agent's now --------------------------------
   await caption("Pin the clock — <b>pause</b>. Nothing advances unless the agent asks.");
   // An explicit tts, rather than "wherever it happens to be": the clock is then
-  // the same on every capture, and so is the walk animation phase mario draws
-  // from it.
+  // the same on every capture, and so is the hero's walk animation phase, which
+  // is derived from it.
   const paused = await call("pause", { session, tts: 0 });
   await res(String(paused.json));
   await stage(`session ${session} — paused`, true);
@@ -360,7 +360,7 @@ try {
     const path = await snap();
     if (airborne === 4) stillFrame = path;
   }
-  // mario respawns on the left platform if it falls in, and that also reads as
+  // The hero respawns on the left platform if it falls in, and that also reads as
   // `grounded: true` — so the far side is what proves the jump cleared.
   if (!state.model.grounded || state.model.x < 3) {
     throw new Error(

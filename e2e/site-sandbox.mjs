@@ -280,7 +280,7 @@ const playerFrame = (page) => {
   check(
     "hero editor clearly labels a real world-building excerpt",
     excerptHeading.toLowerCase().includes("live excerpt") &&
-      excerptHeading.includes("examples/mario/game.fun") &&
+      excerptHeading.includes("examples/platformer/game.fun") &&
       region.includes("let runSpeed") &&
       region.includes("let jumpVelocity") &&
       region.includes("let gravity") &&
@@ -300,8 +300,8 @@ const playerFrame = (page) => {
   });
   check(
     "hero excerpt label deep-links into the sandbox with this example",
-    sourceLink?.href === "sandbox.html?example=mario" &&
-      sourceLink.text === "examples/mario/game.fun" &&
+    sourceLink?.href === "sandbox.html?example=platformer" &&
+      sourceLink.text === "examples/platformer/game.fun" &&
       sourceLink.title.length > 0,
     JSON.stringify(sourceLink)
   );

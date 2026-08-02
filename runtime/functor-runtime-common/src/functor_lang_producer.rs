@@ -886,7 +886,7 @@ impl FrameCtx<'_> {
     /// state, snapshotting the stepped `(model, world-snapshot)` at each of
     /// `divisions` division boundaries — the headless forward-step that feeds
     /// forward-ghosting (docs/time-travel.md T6b). To keep velocity-integrated
-    /// motion (e.g. `examples/mario`'s Euler-integrated jump) FAITHFUL, the sim
+    /// motion (e.g. `examples/platformer`'s Euler-integrated jump) FAITHFUL, the sim
     /// is advanced at a FINE `sub_dt` (`steps_per_division` sub-ticks per
     /// snapshot) but sampled only at the boundaries: `divisions` snapshots,
     /// `divisions * steps_per_division` fine ticks total, over a window of
@@ -1882,7 +1882,7 @@ pub fn forward_step_scene(
 
 /// Rebuild the complete retained pure-model timeline under the currently loaded
 /// program after a plain-data hot reload. Retained snapshots are old data: using
-/// them directly would preserve derived state from the old program (Mario's
+/// them directly would preserve derived state from the old program (the platformer's
 /// already-launched `vy`, for example), so a changed constant could alter only
 /// the beginning of a preview and then converge on the old outcome.
 ///
@@ -1956,7 +1956,7 @@ pub fn materialize_counterfactual_history(
 /// [`FrameTime`] it was drawn at (`dts = 0`: a still of the future), for the
 /// shell to composite — each at its own time, so render-time animation (the
 /// skinned-skeleton pose) advances through the strobe. To keep velocity-integrated
-/// motion (mario's jump) faithful, each division is advanced in FINE
+/// motion (the platformer's jump) faithful, each division is advanced in FINE
 /// `sub_dt = 1/60` sub-steps (`steps_per_division ≈ dt / sub_dt`) and sampled
 /// only at the boundary, so the strobe still has `divisions` frames but each is
 /// accurate integration. Division `div` draws at

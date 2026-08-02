@@ -1,5 +1,5 @@
 // The landing hero's live code panel: a small editor mounted over a real excerpt
-// of examples/mario/game.fun (jump tuning + the world-composition function).
+// of examples/platformer/game.fun (jump tuning + the world-composition function).
 // Behind the boot loader, the page queues the checked-in jump.script at the
 // browser runtime's fixed-step input boundary, waits for its authoritative
 // timeline markers, then pauses and seeks just before takeoff. The visitor's
@@ -66,8 +66,8 @@ interface HeroScrubSeam {
 
 type HeroPlayerWindow = Window & { __scrub?: HeroScrubSeam };
 
-const HERO_URL = "examples/mario.fun";
-const JUMP_SCRIPT_URL = "examples/mario.jump.script";
+const HERO_URL = "examples/platformer.fun";
+const JUMP_SCRIPT_URL = "examples/platformer.jump.script";
 const OPEN = "// <editable>";
 const CLOSE = "// </editable>";
 const COLD_START_SETTLE_MS = 300;

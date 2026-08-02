@@ -193,7 +193,7 @@ window.addEventListener("hashchange", () => {
   }
 });
 // The sandbox edits only the entry buffer, but some examples also load sibling
-// modules (for example Mario's generated assets.fun manifest). Keep those
+// modules (for example the platformer's generated assets.fun manifest). Keep those
 // fetched sources so an external runtime receives the same complete project as
 // the in-page wasm preview.
 let siblingSources: [string, string][] = [];

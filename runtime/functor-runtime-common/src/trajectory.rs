@@ -1501,10 +1501,10 @@ mod tests {
 
     #[test]
     fn sprite_trail_radius_tracks_camera_world_scale() {
-        let mario_scale = sprite_trail_radius(&Camera2D::new(24.0, 13.5));
+        let platformer_scale = sprite_trail_radius(&Camera2D::new(24.0, 13.5));
         let pixel_scale = sprite_trail_radius(&Camera2D::new(320.0, 180.0));
-        assert!((mario_scale - TRAIL_RADIUS_3D).abs() < 1e-6);
-        assert!((pixel_scale / mario_scale - 180.0 / 13.5).abs() < 1e-4);
+        assert!((platformer_scale - TRAIL_RADIUS_3D).abs() < 1e-6);
+        assert!((pixel_scale / platformer_scale - 180.0 / 13.5).abs() < 1e-4);
     }
 
     #[test]
@@ -1801,7 +1801,7 @@ mod tests {
     #[test]
     fn trail_stops_at_a_teleport() {
         // A node steps smoothly (0 → 0.5 → 1.0) then RESPAWNS to a far position
-        // (a mario-style reset). The trail must cover the smooth run only — 3
+        // (a platformer-style reset). The trail must cover the smooth run only — 3
         // dots — and NOT draw the snap-back streak.
         let step = |x: f32| Scene3D {
             obj: SceneObject::Group(vec![ball_at(x, 0.0)]),

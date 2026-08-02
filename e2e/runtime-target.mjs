@@ -358,27 +358,27 @@ try {
     );
 
     cursor = requests.length;
-    await page.selectOption("#example-picker", "mario");
-    const marioLoad = await nextRequest("/load-project", cursor);
-    const marioFiles = JSON.parse(marioLoad.body);
-    const marioAssetUploads = requests
+    await page.selectOption("#example-picker", "platformer");
+    const platformerLoad = await nextRequest("/load-project", cursor);
+    const platformerFiles = JSON.parse(platformerLoad.body);
+    const platformerAssetUploads = requests
       .slice(cursor)
       .filter((request) => request.path === "/reload-asset");
-    const marioManifest = await nextRequest("/sync-assets", cursor);
+    const platformerManifest = await nextRequest("/sync-assets", cursor);
     check(
       "sandbox example push includes sibling modules",
-      marioFiles.map(([path]) => path).join(",") === "game.fun,assets.fun" &&
-        marioFiles[1][1].includes("Asset.texture"),
-      marioFiles.map(([path]) => path).join(",")
+      platformerFiles.map(([path]) => path).join(",") === "game.fun,assets.fun" &&
+        platformerFiles[1][1].includes("Asset.texture"),
+      platformerFiles.map(([path]) => path).join(",")
     );
     check(
       "sandbox uploads assets before source and finalizes its manifest after",
-      marioAssetUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",") ===
+      platformerAssetUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",") ===
         "ground.png,hero-atlas.png" &&
-        JSON.parse(marioManifest?.body ?? "[]").join(",") === "ground.png,hero-atlas.png" &&
-        marioAssetUploads.every((request) => requests.indexOf(request) < requests.indexOf(marioLoad)) &&
-        requests.indexOf(marioLoad) < requests.indexOf(marioManifest),
-      marioAssetUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",")
+        JSON.parse(platformerManifest?.body ?? "[]").join(",") === "ground.png,hero-atlas.png" &&
+        platformerAssetUploads.every((request) => requests.indexOf(request) < requests.indexOf(platformerLoad)) &&
+        requests.indexOf(platformerLoad) < requests.indexOf(platformerManifest),
+      platformerAssetUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",")
     );
 
     await page.waitForFunction(
@@ -389,7 +389,7 @@ try {
     rejectNextProjectStatus = 413;
     cursor = requests.length;
     await page.click("#reset");
-    const rejectedMarioLoad = await nextRequest("/load-project", cursor);
+    const rejectedPlatformerLoad = await nextRequest("/load-project", cursor);
     const rollbackUploads = await nextRequests("/reload-asset", cursor, 4);
     const rollbackManifest = await nextRequest("/sync-assets", cursor);
     await page.waitForFunction(
@@ -405,7 +405,7 @@ try {
       "sandbox restores overwritten assets when replacement source is rejected",
       rollbackUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",") ===
         "ground.png,hero-atlas.png,ground.png,hero-atlas.png" &&
-        requests.indexOf(rejectedMarioLoad) < requests.indexOf(rollbackUploads[2]) &&
+        requests.indexOf(rejectedPlatformerLoad) < requests.indexOf(rollbackUploads[2]) &&
         JSON.parse(rollbackManifest.body).join(",") === "ground.png,hero-atlas.png",
       rollbackUploads.map((request) => uploadedAssetPath(request.rawBody)).join(",")
     );
@@ -465,7 +465,7 @@ try {
     check("sandbox labels every HTTP project rejection as a sync error", true);
 
     cursor = requests.length;
-    await page.selectOption("#example-picker", "mario");
+    await page.selectOption("#example-picker", "platformer");
     await nextRequest("/load-project", cursor);
     await page.waitForFunction(
       () => document.querySelector("[data-runtime-status]")?.dataset.state === "live",
