@@ -289,13 +289,9 @@ pub fn functor_lang_mouse_button(button: i32, is_down: bool) {
 /// page-assigned small ordinal (the page remaps the browser's arbitrary
 /// `Touch.identifier`s); `x`/`y` are CSS pixels relative to the canvas.
 #[wasm_bindgen]
-pub fn functor_lang_touch_event(phase: u32, id: u32, x: f32, y: f32) {
-    let phase = match phase {
-        0 => functor_runtime_common::TouchPhase::Begin,
-        1 => functor_runtime_common::TouchPhase::Move,
-        2 => functor_runtime_common::TouchPhase::End,
-        3 => functor_runtime_common::TouchPhase::Cancel,
-        _ => return,
+pub fn functor_lang_touch_event(phase: i32, id: u32, x: f32, y: f32) {
+    let Some(phase) = functor_runtime_common::TouchPhase::from_i32(phase) else {
+        return;
     };
     push_input(InputEvent::Touch { phase, id, x, y });
 }
@@ -520,41 +516,23 @@ pub fn drain_input(
                 }
             }
             InputEvent::Touch { phase, id, x, y } => {
-                let point = functor_runtime_common::TouchPoint { id, x, y };
-                match phase {
-                    functor_runtime_common::TouchPhase::Begin
-                    | functor_runtime_common::TouchPhase::Move => {
-                        if deliver {
-                            functor_runtime_common::apply_touch_transition(
-                                &mut snapshot.touch,
-                                edges,
-                                phase,
-                                point,
-                            );
-                        }
-                    }
+                // The key/mouse level/edge split: presses and moves only when
+                // delivering; releases also as recovery while suppressed
+                // (level cleared, no model-visible edge — `record_edge` is
+                // `deliver`, the shared reducers' recovery contract).
+                let is_release = matches!(
+                    phase,
                     functor_runtime_common::TouchPhase::End
-                    | functor_runtime_common::TouchPhase::Cancel => {
-                        if deliver {
-                            functor_runtime_common::apply_touch_transition(
-                                &mut snapshot.touch,
-                                edges,
-                                phase,
-                                point,
-                            );
-                        } else if recover_releases {
-                            // Physical recovery while input is suppressed
-                            // (paused/pinned): the level must clear so a
-                            // contact lifted during a scrub can't stick, but
-                            // no model-visible edge — the game never saw the
-                            // suppressed press either. The key/mouse
-                            // recovery rule, applied at the shell (the
-                            // reducer itself has no silent mode).
-                            if let Some(touch) = snapshot.touch.as_mut() {
-                                touch.touches.retain(|p| p.id != id);
-                            }
-                        }
-                    }
+                        | functor_runtime_common::TouchPhase::Cancel
+                );
+                if deliver || (is_release && recover_releases) {
+                    functor_runtime_common::apply_touch_transition(
+                        &mut snapshot.touch,
+                        edges,
+                        phase,
+                        functor_runtime_common::TouchPoint { id, x, y },
+                        deliver,
+                    );
                 }
             }
             // Only the time-travel recorder creates snapshots; the page input
@@ -780,15 +758,11 @@ fn input_marker(input: &InputEvent) -> Option<(&'static str, String)> {
                 format!("mouse {name} {edge}"),
             ))
         }
-        InputEvent::Touch { phase, id, .. } => Some((
-            match phase {
-                functor_runtime_common::TouchPhase::Begin => "touch-begin",
-                functor_runtime_common::TouchPhase::Move => "touch-move",
-                functor_runtime_common::TouchPhase::End
-                | functor_runtime_common::TouchPhase::Cancel => "touch-end",
-            },
-            format!("touch {id} {phase:?}"),
-        )),
+        // Touch is never recorded as a sparse event (only inside `Snapshot`,
+        // which this marker log doesn't unpack), so no timeline marker can
+        // fire for it — returning a label here would advertise a feature
+        // that cannot appear.
+        InputEvent::Touch { .. } => None,
         InputEvent::Snapshot(_) => None,
         InputEvent::UiEvent(event) => Some(("ui-input", format!("UI {event:?}"))),
         InputEvent::WebviewEvent(event) => Some(("webview-input", format!("webview {event:?}"))),

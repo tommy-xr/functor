@@ -1150,19 +1150,12 @@ impl FrameCtx<'_> {
                                     );
                                 }
                             }
-                            RecordedInput::Touch { phase, id, x, y } => {
-                                let sample = sampled_input.get_or_insert_with(Default::default);
-                                crate::apply_touch_transition(
-                                    &mut sample.touch,
-                                    &mut projected_edges,
-                                    *phase,
-                                    crate::TouchPoint {
-                                        id: *id,
-                                        x: *x,
-                                        y: *y,
-                                    },
-                                );
-                            }
+                            // `Touch` is never recorded as a sparse event —
+                            // the web queue merely reuses this enum as its
+                            // transport, and touch reaches the recorded log
+                            // only inside `Snapshot` (which replaces the
+                            // carried sample wholesale). Folding it here too
+                            // would be a latent double-apply.
                             _ => {}
                         }
                         self.replay_input(event.clone(), &ui_handlers, &webview_handlers);
@@ -1266,9 +1259,9 @@ impl FrameCtx<'_> {
                 self.deliver_sampled_input(&snapshot, false);
                 return;
             }
-            // Touch has no event entry point — it reaches games only through
-            // the sampled snapshot, which the projection fold above already
-            // rebuilt from this event.
+            // Touch has no event entry point and is never recorded as a
+            // sparse event (it reaches the log only inside `Snapshot`); the
+            // variant exists as the web input queue's transport.
             RecordedInput::Touch { .. } => return,
             RecordedInput::UiEvent(event) => {
                 self.deliver_ui_event(ui_handlers, &event);

@@ -1324,6 +1324,7 @@ fn service_debug_request(
                         edges,
                         phase,
                         functor_runtime_common::TouchPoint { id, x, y },
+                        true,
                     );
                     Ok(())
                 }
@@ -4235,6 +4236,7 @@ mod tests {
             &mut edges,
             TouchPhase::Begin,
             point(0, 40.0, 30.0),
+            true,
         );
 
         // The builder sets levels BEFORE applying edges, so the same
@@ -4264,6 +4266,7 @@ mod tests {
             &mut edges,
             TouchPhase::Move,
             point(0, 60.0, 70.0),
+            true,
         );
         refresh_fixed_input_levels(
             &mut fixed,
