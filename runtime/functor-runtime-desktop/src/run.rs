@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::net::DeliveredEvent;
 use functor_runtime_common::viewer::{camera_frustum_lines, DebugCamera, DebugPresentation};
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, MouseButtons, MouseSnapshot,
@@ -549,6 +550,22 @@ pub enum CursorPolicyArg {
     Visible,
 }
 
+/// Where this runtime's persistent-connection networking goes.
+///
+/// The desktop analog of the web runtime's `window.__functorNetTransport`
+/// (`runtime/functor-runtime-web/src/lib.rs`): natively, "the embedder" is the
+/// process driving the debug server — `functor mcp`'s coordinator.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NetTransportArg {
+    /// Real sockets, via the tungstenite host (`ws_host`). The default.
+    #[default]
+    Sockets,
+    /// No socket is ever opened. The game's drained `ConnCommand`s stay queued
+    /// for `GET /net/outbound`, and inbound events arrive over
+    /// `POST /net/deliver` — so the debug-server CLIENT is the network.
+    Embedder,
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -620,6 +637,15 @@ pub struct Args {
     /// Pointer policy selected by the project's `functor.json`.
     #[arg(long, value_enum, default_value_t = CursorPolicyArg::Captured)]
     cursor: CursorPolicyArg,
+
+    /// Where `Sub.connect` / `Sub.listen` traffic goes: real `sockets`
+    /// (default) or the `embedder` — the process on the other side of the
+    /// debug server, which then drains `GET /net/outbound` and delivers over
+    /// `POST /net/deliver`. `embedder` opens NO socket, which is how
+    /// `functor mcp`'s coordinator runs a whole client/server session inside
+    /// one host process with a readable wire log.
+    #[arg(long, value_enum, default_value_t = NetTransportArg::Sockets)]
+    net_transport: NetTransportArg,
 
     /// Write a PNG of the rendered frame to this path, then exit. The capture
     /// happens on the first frame after --capture-time seconds of wall-clock
@@ -873,11 +899,19 @@ fn deliver_net_ws(
 
 /// Perform the HTTP + WebSocket commands this frame's tick queued. HTTP requests
 /// run on tokio tasks (results return via `net_tx`); WS commands go to the manager.
+///
+/// Under [`NetTransportArg::Embedder`] the connection half is SKIPPED entirely:
+/// the commands stay in the shared queue until the debug server's
+/// `GET /net/outbound` takes them, which is what makes the embedder path cost
+/// nothing per frame beyond the branch — and, more importantly, means no
+/// socket is ever opened. The HTTP half is untouched either way: `Effect.http`
+/// is not connection traffic and has no coordinator to route it.
 fn dispatch_net_ws(
     game: &mut dyn Game,
     net_tx: &std::sync::mpsc::Sender<net_dispatch::NetResult>,
     http_client: &reqwest::Client,
     ws_manager: &mut ws_host::WsManager,
+    net_transport: NetTransportArg,
 ) {
     let commands_json = game.net_drain_commands();
     if commands_json != "[]" {
@@ -898,6 +932,10 @@ fn dispatch_net_ws(
         }
     }
 
+    if net_transport == NetTransportArg::Embedder {
+        return;
+    }
+
     let conn_json = game.net_drain_conn_commands();
     if conn_json != "[]" {
         match serde_json::from_str::<Vec<functor_runtime_common::net::ConnCommand>>(&conn_json) {
@@ -910,6 +948,14 @@ fn dispatch_net_ws(
         }
     }
 }
+
+/// Refusal both embedder-transport endpoints answer under the default socket
+/// transport. Draining there would steal the real dispatcher's commands and
+/// delivering there would inject events no peer sent — so this is a 409, not a
+/// quiet empty answer a coordinator would read as "the game sent nothing".
+const EMBEDDER_TRANSPORT_REQUIRED: &str =
+    "this runtime is on the socket transport — start it with `--net-transport embedder` \
+for the host process to be its network";
 
 /// Service one debug-server request. `capture` produces the PNG (or a
 /// `CaptureError`) for `POST /capture` — a framebuffer readback in the windowed
@@ -945,6 +991,9 @@ fn service_debug_request(
     // instead of reaching the game. Always `None` in the headless loop, which
     // has no webview overlay.
     mut webview_keyboard: Option<&mut Vec<crate::webview_keys::WebviewKey>>,
+    // Which transport owns the game's connection queues, so `/net/outbound`
+    // and `/net/deliver` refuse rather than fight the real dispatcher.
+    net_transport: NetTransportArg,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) -> bool {
     let mut sampled_input_changed = false;
@@ -1038,6 +1087,39 @@ fn service_debug_request(
                 }
             }
             let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::NetOutbound(resp) => {
+            let _ = resp.send(if net_transport == NetTransportArg::Embedder {
+                Ok(game.net_drain_conn_commands())
+            } else {
+                Err(EMBEDDER_TRANSPORT_REQUIRED.to_string())
+            });
+        }
+        debug_server::DebugRequest::NetDeliver(events, resp) => {
+            let _ = resp.send(if net_transport == NetTransportArg::Embedder {
+                let count = events.len();
+                // Each push folds the event through `update` synchronously
+                // (`deliver_net_event`), so a 200 means the model has already
+                // absorbed the batch — the property the coordinator's
+                // step-ordering relies on.
+                for event in events {
+                    match event {
+                        DeliveredEvent::Connected { key, conn } => game.net_push_connected(key, conn),
+                        DeliveredEvent::Message { key, conn, text } => {
+                            game.net_push_conn_message(key, conn, text)
+                        }
+                        DeliveredEvent::Disconnected { key, conn } => {
+                            game.net_push_disconnected(key, conn)
+                        }
+                        DeliveredEvent::Error { key, conn, message } => {
+                            game.net_push_conn_error(key, conn, message)
+                        }
+                    }
+                }
+                Ok(format!("delivered {count} net event(s)"))
+            } else {
+                Err(EMBEDDER_TRANSPORT_REQUIRED.to_string())
+            });
         }
         debug_server::DebugRequest::Input(cmd, resp) => {
             sampled_input_changed = matches!(
@@ -1163,6 +1245,7 @@ fn run_headless(
     emulate_xr: bool,
     input_script: Option<HashMap<u64, Vec<RecordedInput>>>,
     script_dt: f32,
+    net_transport: NetTransportArg,
 ) {
     // Stderr, not stdout: keep the CLI's `--json` ndjson stream (stdout) clean
     // even under `--headless`. This is an out-of-band notice, not an event.
@@ -1254,7 +1337,7 @@ fn run_headless(
             game.tick(sub.clone());
             frame_count += 1;
         }
-        dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
+        dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager, net_transport);
 
         // The frame is pure data (no GL); it powers GET /scene. Drain and drop
         // audio commands so they do not pile up. Preloads and physics terrain
@@ -1294,6 +1377,7 @@ fn run_headless(
                     &scene_context,
                     None,
                     None, // no webview overlay in headless
+                    net_transport,
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -1415,6 +1499,7 @@ then restart the runner"
             args.emulate_xr,
             input_script,
             args.script_dt,
+            args.net_transport,
         );
         return;
     }
@@ -2491,7 +2576,13 @@ Escape again to quit"
 
             // Perform the HTTP + WebSocket commands this frame's tick queued
             // (shared with the headless loop).
-            dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
+            dispatch_net_ws(
+                &mut *game,
+                &net_tx,
+                &http_client,
+                &mut ws_manager,
+                args.net_transport,
+            );
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
@@ -3292,6 +3383,7 @@ Escape again to quit"
                         } else {
                             None
                         },
+                        args.net_transport,
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
