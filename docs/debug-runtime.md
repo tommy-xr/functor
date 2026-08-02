@@ -273,8 +273,9 @@ only be driven this way. `held_keys` and `mouse` stay live alongside it.
 level state (no entry point call, recorded, replayable), a whole-sample
 replacement whose omitted fields take their defaults (centered sticks,
 released triggers/buttons), `deny_unknown_fields`, and `{"type":"gamepad_clear"}`
-as the release half — restoring the GLFW-polled pad on desktop, or no
-`gamepad` domain at all when none is connected. The
+as the release half — restoring the windowed runtime's GLFW-polled pad, or no
+`gamepad` domain at all when none is connected (headless has no GLFW
+instance, so clearing there always restores "no pad"). The
 body is the snake_case [`gamepad` sample]
 (#sampled-input-in-get-state) `GET /state` reports: `left_stick`/`right_stick`
 (`[-1..1]`, up-positive Y), `left_trigger`/`right_trigger` (`0..1`), and the
@@ -368,7 +369,8 @@ make the preview and the real run disagree.
 `input` is runtime-owned data sampled for one fixed simulation step. Keyboard and
 mouse keep their existing event entry points while also exposing deterministic
 held and pressed/released sets. Quest adds `xr` while head tracking is valid;
-`gamepad` appears while a pad sample is live (today: injected):
+`gamepad` appears while a pad sample is live (a desktop-polled pad or an
+injection):
 
 These edge fields were added in debug protocol v6. Against an older runtime,
 clients should treat absent edge arrays/button sets as empty.
@@ -459,9 +461,12 @@ Non-XR runtimes omit `xr`, and padless runtimes omit `gamepad` — each domain
 is a typed sibling field, present only when its device is live. `gamepad`
 carries the pad's held state: sticks as `[x, y]` in `-1..1` with up-positive
 Y, triggers in `0..1`, positional face buttons (`south` is the bottom one),
-bumpers, stick clicks, dpad, and `start`/`select`. Desktop polls the first
-standard-mapping pad each frame (an injected sample wins over the poll); the
-web runtime does not sample pads yet. Future mobile-touch support should add
+bumpers, stick clicks, dpad, and `start`/`select`. Desktop's windowed runtime
+polls the first standard-mapping pad each frame (an injected sample wins over
+the poll); presence is sticky while the pad is connected, with controls at
+rest level while the window is unfocused or the clock is pinned. `--headless`
+has no GLFW instance, so there (and on web, which does not sample pads yet)
+injection is the domain's only source. Future mobile-touch support should add
 another typed sibling field rather than target-specific endpoints or
 string-keyed capability bags.
 

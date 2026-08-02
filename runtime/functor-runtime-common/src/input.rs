@@ -292,11 +292,13 @@ pub struct XrControllerSnapshot {
 /// and the browser's down-positive axes at its boundary. Triggers are
 /// `0..1`. Values are raw (no deadzone shaping); games apply their own.
 ///
-/// The desktop shell polls the first standard-mapping pad via GLFW
+/// The desktop windowed shell polls the first standard-mapping pad via GLFW
 /// (`desktop_gamepad` in `functor-runtime-desktop`), with debug injection
-/// (`POST /input` `{"type":"gamepad",…}`) winning over the poll; the web
-/// shell does not sample the browser Gamepad API yet, so on wasm the domain
-/// is absent.
+/// (`POST /input` `{"type":"gamepad",…}`) winning over the poll. Presence is
+/// sticky: while input is gated (window unfocused, clock pinned) a connected
+/// pad reads rest-level controls rather than vanishing. Headless has no GLFW
+/// instance and the web shell does not sample the browser Gamepad API yet —
+/// there the domain exists only while injected.
 ///
 /// Levels only, no edge sets: pads are polled, so a press always spans at
 /// least one render frame and shows up in at least one sample — games detect

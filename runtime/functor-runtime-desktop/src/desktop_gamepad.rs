@@ -7,6 +7,11 @@
 //! (GLFW reports down-positive; the domain is up-positive, matching the XR
 //! thumbstick), and triggers are normalized from GLFW's `-1..1` (rest = `-1`)
 //! to `0..1`. Values stay raw otherwise — no deadzone shaping.
+//!
+//! "Primary pad" is re-resolved every scan as the lowest-id mapped joystick,
+//! so if two pads are connected and the first disconnects, the game continues
+//! on the second with no discontinuity signal — a deliberate consequence of
+//! the single-pad contract, not an accident.
 
 use functor_runtime_common::GamepadSnapshot;
 
@@ -23,9 +28,22 @@ pub type RawButtons = [bool; 15];
 ///
 /// Pure — the unit tests drive the axis conventions through this seam
 /// directly. The guide button has no snapshot field and is dropped.
+///
+/// Trigger caveat: `glfwGetGamepadState` zero-initializes its axis array and
+/// only writes axes the pad's SDL mapping actually binds, so a pad WITHOUT
+/// analog triggers leaves them at `0.0` — which naive `-1..1 → 0..1`
+/// normalization would report as permanently half-pulled. An exact `0.0` is
+/// therefore treated as rest (a real mid-pull landing on exactly `0.0` is a
+/// measure-zero coincidence costing at most one frame).
 pub fn map_gamepad(axes: RawAxes, buttons: RawButtons) -> GamepadSnapshot {
     let stick = |x: f32, y: f32| [x.clamp(-1.0, 1.0), (-y).clamp(-1.0, 1.0)];
-    let trigger = |v: f32| ((v + 1.0) / 2.0).clamp(0.0, 1.0);
+    let trigger = |v: f32| {
+        if v == 0.0 {
+            0.0
+        } else {
+            ((v + 1.0) / 2.0).clamp(0.0, 1.0)
+        }
+    };
     GamepadSnapshot {
         left_stick: stick(axes[0], axes[1]),
         right_stick: stick(axes[2], axes[3]),
@@ -54,24 +72,6 @@ pub fn map_gamepad(axes: RawAxes, buttons: RawButtons) -> GamepadSnapshot {
 /// signal the snapshot contract requires, never a zeroed record.
 pub fn sample(glfw: &glfw::Glfw) -> Option<GamepadSnapshot> {
     use glfw::{Action, GamepadAxis, GamepadButton, JoystickId};
-    const IDS: [JoystickId; 16] = [
-        JoystickId::Joystick1,
-        JoystickId::Joystick2,
-        JoystickId::Joystick3,
-        JoystickId::Joystick4,
-        JoystickId::Joystick5,
-        JoystickId::Joystick6,
-        JoystickId::Joystick7,
-        JoystickId::Joystick8,
-        JoystickId::Joystick9,
-        JoystickId::Joystick10,
-        JoystickId::Joystick11,
-        JoystickId::Joystick12,
-        JoystickId::Joystick13,
-        JoystickId::Joystick14,
-        JoystickId::Joystick15,
-        JoystickId::Joystick16,
-    ];
     const AXES: [GamepadAxis; 6] = [
         GamepadAxis::AxisLeftX,
         GamepadAxis::AxisLeftY,
@@ -97,12 +97,11 @@ pub fn sample(glfw: &glfw::Glfw) -> Option<GamepadSnapshot> {
         GamepadButton::ButtonDpadDown,
         GamepadButton::ButtonDpadLeft,
     ];
-    IDS.into_iter().find_map(|id| {
-        let joystick = glfw.get_joystick(id);
-        if !joystick.is_present() || !joystick.is_gamepad() {
-            return None;
-        }
-        let state = joystick.get_gamepad_state()?;
+    // `get_gamepad_state` itself answers `None` for an absent, mapless, or
+    // mid-scan-disconnected joystick, so no presence pre-checks are needed —
+    // one platform poll per candidate instead of three.
+    (0..16).filter_map(JoystickId::from_i32).find_map(|id| {
+        let state = glfw.get_joystick(id).get_gamepad_state()?;
         let axes = AXES.map(|axis| state.get_axis(axis));
         let buttons = BUTTONS.map(|button| state.get_button_state(button) == Action::Press);
         Some(map_gamepad(axes, buttons))
@@ -122,13 +121,15 @@ mod tests {
         // GLFW triggers rest at -1.0 and saturate at 1.0.
         assert_eq!(pad.left_trigger, 0.0);
         assert_eq!(pad.right_trigger, 1.0);
-        // Half-pulled: -1..1 midpoint 0.0 → 0.5.
-        assert_eq!(
-            map_gamepad([0.0; 6], [false; 15]).left_trigger,
-            0.5,
-            "GLFW's rest-at-zero would read as half-pulled — the adapter must \
-             see raw -1..1 trigger values"
-        );
+        // An exact 0.0 is an UNMAPPED trigger axis (GLFW zero-initializes and
+        // only writes mapped axes), so it must read as rest — naive midpoint
+        // normalization would report a pad without analog triggers as
+        // permanently half-pulled.
+        assert_eq!(map_gamepad([0.0; 6], [false; 15]).left_trigger, 0.0);
+        // A nearly-centered REAL trigger still normalizes continuously.
+        let near = map_gamepad([0.0, 0.0, 0.0, 0.0, 0.001, -0.001], [false; 15]);
+        assert!((near.left_trigger - 0.5005).abs() < 1e-4);
+        assert!((near.right_trigger - 0.4995).abs() < 1e-4);
         // Out-of-range hardware values clamp instead of leaking.
         let wild = map_gamepad([2.0, 2.0, 0.0, 0.0, 3.0, -3.0], [false; 15]);
         assert_eq!(wild.left_stick, [1.0, -1.0]);
