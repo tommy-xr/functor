@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  entryRoleFile,
   findRepoRoot,
   formatCrashOutput,
   parseListeningPort,
   FunctorClient,
   HttpClient,
+  resolveEntryArgs,
   stepAll,
   waitFor,
 } from "../src/index.js";
@@ -26,6 +29,125 @@ test("findRepoRoot walks up to the cargo workspace root", () => {
 
 test("findRepoRoot returns undefined when there's no workspace above", () => {
   assert.equal(findRepoRoot("/"), undefined);
+});
+
+// Entry-role resolution, against a REAL manifest on disk: `test/fixtures/
+// same-file-roles` is the orbs shape — two roles pointing at ONE game.fun via
+// the object form `{ "file": …, "module": … }`. (Compiled tests run from
+// dist/test, so the fixture is located relative to this file, not the cwd.)
+const sdkDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const sameFileRolesDir = join(sdkDir, "test", "fixtures", "same-file-roles");
+const sameFileRolesCfg = JSON.parse(
+  readFileSync(join(sameFileRolesDir, "functor.json"), "utf8"),
+);
+const sameFileRolesGame = join(sameFileRolesDir, "game.fun");
+
+test("entryRoleFile reads the object form's file rather than stringifying it", () => {
+  // What this pins: the role object is READ, never stringified. The pre-#649
+  // SDK resolved `String(entries[k])` — "[object Object]" for the object form,
+  // a path no entry can match — so every inline-module (same-file multiplayer)
+  // project was unlaunchable. #649 fixed it with no test; this is that test.
+  assert.equal(entryRoleFile({ file: "game.fun", module: "Server" }), "game.fun");
+  assert.equal(entryRoleFile("server.fun"), "server.fun");
+});
+
+test("resolveEntryArgs selects an object-shaped (inline-module) role", () => {
+  for (const entry of ["client", "server"]) {
+    assert.deepEqual(
+      resolveEntryArgs(sameFileRolesCfg, {
+        gameDir: sameFileRolesDir,
+        gamePath: sameFileRolesGame,
+        entry,
+      }),
+      ["--entry", entry],
+      `${entry} should be forwarded as --entry ${entry}`,
+    );
+  }
+  // Paths may be relative to the cwd (launch resolves its own; a direct caller
+  // need not) — the comparison normalizes both sides.
+  assert.deepEqual(
+    resolveEntryArgs(sameFileRolesCfg, {
+      gameDir: relative(process.cwd(), sameFileRolesDir),
+      gamePath: relative(process.cwd(), sameFileRolesGame),
+      entry: "server",
+    }),
+    ["--entry", "server"],
+  );
+});
+
+test("resolveEntryArgs refuses to guess between two roles in one file", () => {
+  assert.throws(
+    () =>
+      resolveEntryArgs(sameFileRolesCfg, {
+        gameDir: sameFileRolesDir,
+        gamePath: sameFileRolesGame,
+      }),
+    /maps \{client, server\} to the same file .*pass `entry` to name the role/s,
+  );
+});
+
+test("resolveEntryArgs rejects a role that names a different file", () => {
+  assert.throws(
+    () =>
+      resolveEntryArgs(
+        { entries: { client: { file: "client.fun" }, server: "server.fun" } },
+        {
+          gameDir: "/proj",
+          gamePath: "/proj/client.fun",
+          entry: "server",
+        },
+      ),
+    /maps entry "server" to "server\.fun"/,
+  );
+});
+
+test("resolveEntryArgs picks a roles-as-files role by path, and rejects unknown names", () => {
+  const cfg = { entries: { client: "client.fun", server: "server.fun" } };
+  assert.deepEqual(
+    resolveEntryArgs(cfg, { gameDir: "/proj", gamePath: "/proj/server.fun" }),
+    ["--entry", "server"],
+  );
+  assert.throws(
+    () =>
+      resolveEntryArgs(cfg, {
+        gameDir: "/proj",
+        gamePath: "/proj/server.fun",
+        entry: "referee",
+      }),
+    /declares entries \{client, server\}.*entry "referee"/s,
+  );
+});
+
+test("resolveEntryArgs handles single-entry and config-less projects", () => {
+  assert.deepEqual(
+    resolveEntryArgs(
+      { entry: "game.fun" },
+      { gameDir: "/proj", gamePath: "/proj/game.fun" },
+    ),
+    [],
+  );
+  assert.throws(
+    () =>
+      resolveEntryArgs(
+        { entry: "other.fun" },
+        { gameDir: "/proj", gamePath: "/proj/game.fun" },
+      ),
+    /points at entry "other\.fun"/,
+  );
+  // No functor.json at all: nothing to select, and a role request is a lie.
+  assert.deepEqual(
+    resolveEntryArgs(undefined, { gameDir: "/proj", gamePath: "/proj/game.fun" }),
+    [],
+  );
+  assert.throws(
+    () =>
+      resolveEntryArgs(undefined, {
+        gameDir: "/proj",
+        gamePath: "/proj/game.fun",
+        entry: "server",
+      }),
+    /declares no `entries` map/,
+  );
 });
 
 test("formatCrashOutput keeps the panic and its context", () => {

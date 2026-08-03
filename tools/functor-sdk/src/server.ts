@@ -64,6 +64,105 @@ export function findRepoRoot(startDir: string): string | undefined {
   }
 }
 
+/** A role in a project's `entries` map: either a bare path (roles-as-files) or
+ * an object naming the file plus the inline `module`/`prefix` its contract
+ * resolves in — two roles in ONE file, as in `examples/orbs`. (Named `…Spec`
+ * because it is the raw manifest VALUE, not the CLI's `EntryRole` binding
+ * scheme.) The object's fields are optional because a hand-written manifest is
+ * untrusted input, not because the CLI accepts a role without a file. */
+export type EntryRoleSpec = string | { file?: string; module?: string; prefix?: string };
+
+/** The `.fun` file a role points at (`""` when the object form has no usable
+ * `file`, which then matches no path and reports as a role/path disagreement).
+ * The role object must be READ, never stringified: `String({ file, module })`
+ * is `"[object Object]"` — the pre-#649 SDK did exactly that and could not
+ * launch any inline-module (same-file multiplayer) project at all. */
+export function entryRoleFile(role: EntryRoleSpec): string {
+  if (typeof role === "string") {
+    return role;
+  }
+  return typeof role?.file === "string" ? role.file : "";
+}
+
+/** Resolve the CLI args that select a project's entry role: `["--entry", name]`
+ * for a multi-entry project, `[]` otherwise. Throws when the request cannot be
+ * honoured (unknown role, ambiguous path, or a role/path disagreement) rather
+ * than silently launching a different game.
+ *
+ * `cfg` is the parsed `functor.json`, or `undefined` when the project has none.
+ * Relative `gameDir`/`gamePath` resolve against the current working directory.
+ */
+export function resolveEntryArgs(
+  cfg: { entry?: string; entries?: Record<string, EntryRoleSpec> } | undefined,
+  opts: { gameDir: string; gamePath: string; entry?: string },
+): string[] {
+  // Both sides of every comparison below are absolute, so a caller may pass
+  // either form (`launch` has already resolved its own).
+  const gameDir = resolve(opts.gameDir);
+  const gamePath = resolve(opts.gamePath);
+  const entries =
+    cfg?.entries && typeof cfg.entries === "object" ? cfg.entries : undefined;
+  if (!entries) {
+    // `entry` names a role out of an `entries` map. A project without one has
+    // no role to select, so honouring the request is impossible — say so
+    // rather than silently launching its sole entry.
+    if (opts.entry) {
+      throw new Error(
+        `the project in ${gameDir} declares no \`entries\` map, but launch ` +
+          `requested entry "${opts.entry}" — \`entry\` selects one of a ` +
+          "multi-entry project's roles.",
+      );
+    }
+    if (cfg === undefined) {
+      return [];
+    }
+    // Since the CLI launches the configured entry (not `functorLangPath`),
+    // verify they agree, or the SDK would silently run a DIFFERENT game.
+    const cfgEntry: string = cfg.entry ?? "game.fun";
+    if (resolve(gameDir, cfgEntry) !== gamePath) {
+      throw new Error(
+        `functor.json in ${gameDir} points at entry "${cfgEntry}", but launch ` +
+          `requested functorLangPath ${gamePath}. They must match — \`functor run native\` ` +
+          `launches the functor.json entry.`,
+      );
+    }
+    return [];
+  }
+
+  // Multi-entry project: select the role explicitly (the CLI's default would
+  // be `client`). Same-file roles are indistinguishable by path, so the caller
+  // must name one; otherwise the path picks it.
+  const matches = Object.keys(entries).filter(
+    (k) => resolve(gameDir, entryRoleFile(entries[k])) === gamePath,
+  );
+  if (!opts.entry && matches.length > 1) {
+    throw new Error(
+      `functor.json in ${gameDir} maps {${matches.join(", ")}} to the same ` +
+        `file ${gamePath} (roles as inline modules of one file), so the path ` +
+        "cannot say which you meant — pass `entry` to name the role.",
+    );
+  }
+  const name = opts.entry ?? matches[0];
+  if (!name || !Object.keys(entries).includes(name)) {
+    throw new Error(
+      `functor.json in ${gameDir} declares entries ` +
+        `{${Object.keys(entries).join(", ")}}, but launch requested ` +
+        `${opts.entry ? `entry "${opts.entry}"` : `functorLangPath ${gamePath}`}, ` +
+        `which matches none of them.`,
+    );
+  }
+  // Whichever way the role was chosen, it must be the file the caller asked
+  // for — otherwise the SDK would silently run a different source.
+  if (resolve(gameDir, entryRoleFile(entries[name])) !== gamePath) {
+    throw new Error(
+      `functor.json in ${gameDir} maps entry "${name}" to ` +
+        `"${entryRoleFile(entries[name])}", but launch requested functorLangPath ` +
+        `${gamePath}. They must match.`,
+    );
+  }
+  return ["--entry", name];
+}
+
 const MAX_LOG_LINES = 2000;
 const MAX_ERROR_LOG_LINES = 120;
 
@@ -175,79 +274,17 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
     // For a multi-entry project, the role selected out of `entries` via the
     // CLI's `--entry <name>` flag (placed before the subcommand, ahead of the
     // trailing runner args).
-    const entryArgs: string[] = [];
-    // `entry` names a role out of an `entries` map. A project without one has
-    // no role to select, so honouring the request is impossible — say so
-    // rather than silently launching its sole entry.
-    const noRoles = () => {
-      if (options.entry) {
-        throw new Error(
-          `the project in ${gameDir} declares no \`entries\` map, but launch ` +
-            `requested entry "${options.entry}" — \`entry\` selects one of a ` +
-            "multi-entry project's roles.",
-        );
-      }
-    };
-    if (existsSync(functorJson)) {
-      // Don't clobber a real project's config — but since the CLI launches its
-      // entry (not `functorLangPath`), verify they agree, or the SDK would silently run
-      // a DIFFERENT game than the caller asked for.
-      const cfg = JSON.parse(readFileSync(functorJson, "utf8"));
-      // A role is either a bare path (roles-as-files) or an object naming the
-      // file plus the inline `module`/`prefix` it resolves the contract in
-      // (two roles in ONE file — examples/orbs).
-      const entries =
-        cfg.entries && typeof cfg.entries === "object"
-          ? (cfg.entries as Record<string, string | { file?: string }>)
-          : undefined;
-      const fileOf = (role: string | { file?: string }): string =>
-        typeof role === "string" ? role : String(role?.file ?? "");
-      if (entries) {
-        // Multi-entry project: select the role explicitly (the CLI's default
-        // would be `client`). Same-file roles are indistinguishable by path,
-        // so the caller must name one; otherwise the path picks it.
-        const matches = Object.keys(entries).filter(
-          (k) => resolve(gameDir, fileOf(entries[k])) === gamePath,
-        );
-        if (!options.entry && matches.length > 1) {
-          throw new Error(
-            `functor.json in ${gameDir} maps {${matches.join(", ")}} to the same ` +
-              `file ${gamePath} (roles as inline modules of one file), so the path ` +
-              "cannot say which you meant — pass `entry` to name the role.",
-          );
-        }
-        const name = options.entry ?? matches[0];
-        if (!name || !Object.keys(entries).includes(name)) {
-          throw new Error(
-            `functor.json in ${gameDir} declares entries ` +
-              `{${Object.keys(entries).join(", ")}}, but launch requested ` +
-              `${options.entry ? `entry "${options.entry}"` : `functorLangPath ${gamePath}`}, ` +
-              `which matches none of them.`,
-          );
-        }
-        // Whichever way the role was chosen, it must be the file the caller
-        // asked for — otherwise the SDK would silently run a different source.
-        if (resolve(gameDir, fileOf(entries[name])) !== gamePath) {
-          throw new Error(
-            `functor.json in ${gameDir} maps entry "${name}" to ` +
-              `"${fileOf(entries[name])}", but launch requested functorLangPath ` +
-              `${gamePath}. They must match.`,
-          );
-        }
-        entryArgs.push("--entry", name);
-      } else {
-        noRoles();
-        const cfgEntry: string = cfg.entry ?? "game.fun";
-        if (resolve(gameDir, cfgEntry) !== gamePath) {
-          throw new Error(
-            `functor.json in ${gameDir} points at entry "${cfgEntry}", but launch ` +
-              `requested functorLangPath ${gamePath}. They must match — \`functor run native\` ` +
-              `launches the functor.json entry.`,
-          );
-        }
-      }
-    } else {
-      noRoles();
+    // Don't clobber a real project's config; a synthetic/temp game dir without
+    // one gets a minimal config pointing at the entry.
+    const cfg = existsSync(functorJson)
+      ? (JSON.parse(readFileSync(functorJson, "utf8")) ?? undefined)
+      : undefined;
+    const entryArgs = resolveEntryArgs(cfg, {
+      gameDir,
+      gamePath,
+      entry: options.entry,
+    });
+    if (cfg === undefined) {
       writeFileSync(functorJson, JSON.stringify({ language: "functor-lang", entry: wantEntry }));
     }
 
