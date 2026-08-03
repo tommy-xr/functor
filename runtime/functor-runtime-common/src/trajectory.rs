@@ -1089,11 +1089,16 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
                 scale_presence(item, presence);
             }
         }
-        // A translucent subtree fades by scaling its OWN alpha (the presence
-        // ramp is the same multiplication the material rewrite performs); its
-        // materials are then walked as usual.
-        SceneObject::Opacity(alpha, items) => {
-            *alpha *= presence;
+        // KNOWN LIMITATION: an overlay subtree can never actually CONTAIN an
+        // `Opacity` node — `collect_anchor` / `collect_sample_leaves` keep only
+        // each leaf and its innermost material, so `strobe_leaf` rebuilds copies
+        // out of `Group` / `Material` / leaf and the authored `Scene.opacity`
+        // wrapper is dropped. The consequence is that the extrapolation ghost
+        // of a TRANSLUCENT object renders at the overlay's own fade rather than
+        // at the object's authored alpha. Carrying the accumulated opacity into
+        // `AnchorLeaf` / `SampleLeaf` is the fix when that matters; this arm
+        // exists only so the match stays exhaustive and honest if it ever does.
+        SceneObject::Opacity(_, items) => {
             for item in items {
                 scale_presence(item, presence);
             }

@@ -2173,11 +2173,17 @@ row 0 has {cols} heights, row {r} has {}",
                     "Scene.opacity alpha must be between 0 and 1, got {alpha}"
                 ));
             }
+            // Narrow FIRST, then test for the identity: an alpha of
+            // 0.999_999_999 narrows to exactly 1.0 at 32-bit precision, and
+            // wrapping it would build an `Opacity` node whose alpha is 1 —
+            // contradicting the variant's invariant and paying for a
+            // transparent pass that changes no pixel.
+            let alpha = alpha as f32;
             if alpha == 1.0 {
                 return Ok(scene);
             }
             Ok(FunctorLangScene(Scene3D {
-                obj: SceneObject::Opacity(alpha as f32, vec![scene.0]),
+                obj: SceneObject::Opacity(alpha, vec![scene.0]),
                 xform: Matrix4::from_scale(1.0),
             }))
         },
@@ -7736,6 +7742,18 @@ Vec3.make(x, y, z)"
         assert_eq!(
             scene_of(&with).expect("a Scene"),
             scene_of(&without).expect("a Scene")
+        );
+    }
+
+    /// The identity test happens AFTER narrowing to 32-bit, so an alpha that
+    /// rounds to 1 is the identity too — the `Opacity` variant's invariant is
+    /// "alpha is strictly below 1", and nothing may build a counterexample.
+    #[test]
+    fn an_alpha_that_narrows_to_one_is_also_the_identity() {
+        let value = eval("let main = () => Scene.cube() |> Scene.opacity(0.999999999)");
+        assert_eq!(
+            scene_of(&value).expect("a Scene"),
+            scene_of(&eval("let main = () => Scene.cube()")).expect("a Scene")
         );
     }
 

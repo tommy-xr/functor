@@ -1024,6 +1024,30 @@ pub struct TransparentDraw<'a> {
     pub centroid: cgmath::Vector3<f32>,
 }
 
+/// Order translucent draws BACK-TO-FRONT for source-over compositing.
+///
+/// The key is VIEW-SPACE depth, not distance from the eye. Distance is wrong
+/// for compositing: a large off-axis foreground node can be farther from the
+/// eye than a background node it overlaps on screen, which reverses the blend
+/// order exactly where it is visible. View z is also what the depth test
+/// agrees with, and using the pass's own view matrix means each stereo eye
+/// sorts by its own view.
+///
+/// The view is right-handed (`look_at_rh`), so the camera looks down `-z` and
+/// FARTHER is MORE NEGATIVE — ascending z is back-to-front. `total_cmp` is a
+/// genuine total order, so a non-finite centroid (a game built a NaN transform)
+/// lands somewhere deterministic instead of making the comparator intransitive,
+/// which `sort_by` is allowed to panic on.
+///
+/// Free of GL, so the ordering is testable headlessly.
+pub fn sort_back_to_front(draws: &mut [TransparentDraw<'_>], view_matrix: &Matrix4<f32>) {
+    let view_depth = |draw: &TransparentDraw<'_>| {
+        let c = draw.centroid;
+        (view_matrix * cgmath::vec4(c.x, c.y, c.z, 1.0)).z
+    };
+    draws.sort_by(|a, b| view_depth(a).total_cmp(&view_depth(b)));
+}
+
 impl Scene3D {
     pub fn cube() -> Self {
         Scene3D {
@@ -1125,24 +1149,31 @@ impl Scene3D {
     /// Accumulate the world-space origins of this subtree's drawable leaves.
     ///
     /// `world` is the PARENT's accumulated matrix; this node's own `xform`
-    /// composes on the way in, matching [`Scene3D::render`].
+    /// composes on the way in, matching [`Scene3D::render`] — INCLUDING its
+    /// quirk that a `Material` node ignores its own `xform` (which is why the
+    /// prelude wraps every transform in a `Group`). Composing it here would
+    /// sort a translucent subtree by a position the opaque pass never draws it
+    /// at.
     fn accumulate_leaf_origins(
         &self,
         world: &Matrix4<f32>,
         sum: &mut cgmath::Vector3<f32>,
         count: &mut u32,
     ) {
-        let w = world * self.xform;
         match &self.obj {
-            SceneObject::Group(items)
-            | SceneObject::Material(_, items)
-            | SceneObject::Opacity(_, items) => {
+            SceneObject::Material(_, items) => {
+                for item in items {
+                    item.accumulate_leaf_origins(world, sum, count);
+                }
+            }
+            SceneObject::Group(items) | SceneObject::Opacity(_, items) => {
+                let w = world * self.xform;
                 for item in items {
                     item.accumulate_leaf_origins(&w, sum, count);
                 }
             }
             SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
-                *sum += w.w.truncate();
+                *sum += (world * self.xform).w.truncate();
                 *count += 1;
             }
         }
@@ -1197,10 +1228,11 @@ impl Scene3D {
                     item.collect_transparent(&w, material, out);
                 }
             }
+            // A `Material` node's own `xform` is ignored by `Scene3D::render`
+            // (see `accumulate_leaf_origins`), so it must be ignored here too.
             SceneObject::Material(next_material, items) => {
-                let w = world * self.xform;
                 for item in items {
-                    item.collect_transparent(&w, Some(next_material), out);
+                    item.collect_transparent(world, Some(next_material), out);
                 }
             }
             SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
@@ -1539,10 +1571,21 @@ so the reach is ignored"
                 // KNOWN LIMITATION (Tier A): there is no depth prepass or
                 // back-to-front sort, so overlapping translucent overlay parts
                 // — a mark's crossed arrowheads and its sphere core — blend
-                // twice and read slightly denser where they overlap. The Tier B
-                // follow-up (a dedicated constant-alpha overlay pass, modeled
-                // on the transparent-debug recipe in `renderer.rs`) removes
-                // both that and the overlay's shadow-pass contribution.
+                // twice and read slightly denser where they overlap.
+                //
+                // The Tier B pass the earlier note promised now EXISTS as
+                // `renderer::transparent_pass` (deferred, sorted, shadowless),
+                // but it is reached only through `SceneObject::Opacity`, and
+                // Tier A deliberately stays: this path is the ALPHA-IN-THE-
+                // MATERIAL route, which is what the extrapolation overlay
+                // builds (`trajectory::faded_material` rewrites each copy's own
+                // material) and what the age fade varies PER LEAF. Routing it
+                // through `Opacity` would mean one alpha for a whole subtree,
+                // losing the per-copy ramp the overlay is made of. The two
+                // mechanisms therefore compose rather than compete — inside a
+                // `Scene.opacity` subtree the transparent pass owns the blend
+                // state (`pass_blends`), so this branch stands down and the
+                // node's constant alpha wins.
                 // Only the node that transitions blending OFF→ON restores it:
                 // `Material` nodes nest, so an inner translucent material must
                 // not disable blending out from under the outer subtree's
@@ -1619,6 +1662,12 @@ so the reach is ignored"
                 if blend {
                     // Nested opacities multiply.
                     let accumulated = previous * alpha;
+                    // Fully transparent: every fragment would blend to a no-op
+                    // write, so skip the subtree instead of rasterizing it. A
+                    // fade-out that reaches zero costs nothing to keep drawing.
+                    if accumulated == 0.0 {
+                        return;
+                    }
                     render_context.opacity.set(accumulated);
                     unsafe {
                         render_context
@@ -2177,6 +2226,13 @@ mod opacity_tests {
         }
     }
 
+    fn cube_at_z(z: f32) -> Scene3D {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Cube),
+            xform: Matrix4::from_translation(vec3(0.0, 0.0, z)),
+        }
+    }
+
     fn opacity(alpha: f32, child: Scene3D) -> Scene3D {
         Scene3D {
             obj: SceneObject::Opacity(alpha, vec![child]),
@@ -2224,12 +2280,16 @@ mod opacity_tests {
     #[test]
     fn collect_takes_the_outermost_node_and_carries_its_material_and_parent_matrix() {
         let material = MaterialDescription::color(0.25, 0.5, 0.75, 1.0);
-        // A translate ABOVE the opacity node, and a nested opacity below it.
+        // A translate ABOVE the opacity node — as a Group, which is the shape
+        // the prelude builds for every transform — and a nested opacity below.
         let scene = Scene3D {
-            obj: SceneObject::Material(
-                material.clone(),
-                vec![opacity(0.5, opacity(0.5, cube_at(0.0)))],
-            ),
+            obj: SceneObject::Group(vec![Scene3D {
+                obj: SceneObject::Material(
+                    material.clone(),
+                    vec![opacity(0.5, opacity(0.5, cube_at(0.0)))],
+                ),
+                xform: Matrix4::identity(),
+            }]),
             xform: Matrix4::from_translation(vec3(3.0, 0.0, 0.0)),
         };
 
@@ -2279,6 +2339,91 @@ mod opacity_tests {
             xform: Matrix4::from_translation(vec3(0.0, 7.0, 0.0)),
         };
         assert_eq!(node.leaf_centroid(&Matrix4::identity()), vec3(0.0, 7.0, 0.0));
+    }
+
+    /// A camera at +Z looking back toward the origin (`look_at_rh`), matching
+    /// how `Camera::view_matrix` builds one.
+    fn view_from_z(z: f32) -> Matrix4<f32> {
+        Matrix4::look_at_rh(
+            cgmath::Point3::new(0.0, 0.0, z),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+        )
+    }
+
+    /// The sort is the whole correctness claim of the transparent pass, so it
+    /// is tested WITHOUT a GL context: farthest first, whatever order the game
+    /// declared them in.
+    #[test]
+    fn the_sort_puts_the_farthest_draw_first_regardless_of_declaration_order() {
+        // Declared NEAREST-first, the wrong painter's order on purpose.
+        let scene = group(vec![
+            opacity(0.5, cube_at_z(4.0)),
+            opacity(0.5, cube_at_z(-6.0)),
+            opacity(0.5, cube_at_z(-1.0)),
+        ]);
+        let mut draws = Vec::new();
+        scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
+        sort_back_to_front(&mut draws, &view_from_z(10.0));
+
+        let order: Vec<f32> = draws.iter().map(|d| d.centroid.z).collect();
+        assert_eq!(order, vec![-6.0, -1.0, 4.0], "farthest from the eye first");
+    }
+
+    /// Distance from the eye is NOT the key: a big off-axis node can be farther
+    /// away than a node it overlaps on screen, which would reverse the blend
+    /// exactly where it shows. View depth is what the depth test agrees with.
+    #[test]
+    fn the_sort_uses_view_depth_not_distance_from_the_eye() {
+        let near_but_far_off_axis = Scene3D {
+            obj: SceneObject::Opacity(0.5, vec![cube_at_z(0.0)]),
+            xform: Matrix4::from_translation(vec3(40.0, 0.0, 0.0)),
+        };
+        let scene = group(vec![near_but_far_off_axis, opacity(0.5, cube_at_z(-5.0))]);
+        let mut draws = Vec::new();
+        scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
+        sort_back_to_front(&mut draws, &view_from_z(10.0));
+
+        // By straight-line distance the off-axis node (~41 away) is FARTHER
+        // than the on-axis one (15) and would sort first; by view depth it is
+        // nearer, and draws last.
+        assert_eq!(draws[0].centroid.z, -5.0);
+        assert_eq!(draws[1].centroid.x, 40.0);
+    }
+
+    /// A non-finite centroid must not make the comparator intransitive —
+    /// `sort_by` is allowed to PANIC on that, which would take the renderer
+    /// down over one bad transform.
+    #[test]
+    fn a_non_finite_centroid_does_not_panic_the_sort() {
+        let scene = group(vec![
+            opacity(0.5, cube_at_z(1.0)),
+            opacity(0.5, cube_at_z(f32::NAN)),
+            opacity(0.5, cube_at_z(-3.0)),
+        ]);
+        let mut draws = Vec::new();
+        scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
+        sort_back_to_front(&mut draws, &view_from_z(10.0));
+        assert_eq!(draws.len(), 3);
+    }
+
+    /// A `Material` node's own `xform` is ignored by `Scene3D::render`, so the
+    /// sort key must ignore it too — otherwise a translucent subtree sorts by a
+    /// position nothing is ever drawn at.
+    #[test]
+    fn a_material_nodes_own_transform_is_ignored_like_the_renderer_ignores_it() {
+        let scene = Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::color(1.0, 1.0, 1.0, 1.0),
+                vec![opacity(0.5, cube_at_z(0.0))],
+            ),
+            // Never applied by the renderer.
+            xform: Matrix4::from_translation(vec3(100.0, 0.0, 0.0)),
+        };
+        let mut draws = Vec::new();
+        scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
+        assert_eq!(draws[0].centroid, vec3(0.0, 0.0, 0.0));
+        assert_eq!(draws[0].parent_world, Matrix4::identity());
     }
 
     #[test]

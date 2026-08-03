@@ -660,6 +660,48 @@ fn shadow_pass(
         })
 }
 
+/// Turn on the constant-alpha over-blend with depth writes off — the state both
+/// translucency passes want: [`transparent_pass`] (per-node alpha from
+/// `Scene.opacity`) and the `DebugRenderMode::Transparent` recipe below (one
+/// constant for the whole scene). The alpha itself comes from `glBlendColor`,
+/// which each caller programs, and the destination alpha uses straight
+/// source-over so captures and render targets stay opaque.
+///
+/// # Safety
+/// The caller must hold a current GL context.
+unsafe fn begin_constant_alpha_blend(gl: &glow::Context) {
+    gl.enable(glow::BLEND);
+    gl.blend_equation(glow::FUNC_ADD);
+    gl.blend_func_separate(
+        glow::CONSTANT_ALPHA,
+        glow::ONE_MINUS_CONSTANT_ALPHA,
+        glow::ONE,
+        glow::ONE_MINUS_SRC_ALPHA,
+    );
+    gl.depth_mask(false);
+}
+
+/// Undo [`begin_constant_alpha_blend`]: blending off, depth writes back on, and
+/// the blend constant returned to opaque so no later pass inherits a stale one.
+///
+/// # Safety
+/// The caller must hold a current GL context.
+unsafe fn end_constant_alpha_blend(gl: &glow::Context) {
+    gl.disable(glow::BLEND);
+    // Put the factors back to plain source-over as well. Every site that
+    // enables BLEND today programs its own first, so this is belt-and-braces —
+    // but leaving CONSTANT_ALPHA armed is a trap for the next one that assumes
+    // the default, and the constant itself must not leak either.
+    gl.blend_func_separate(
+        glow::SRC_ALPHA,
+        glow::ONE_MINUS_SRC_ALPHA,
+        glow::ONE,
+        glow::ONE_MINUS_SRC_ALPHA,
+    );
+    gl.blend_color(0.0, 0.0, 0.0, 1.0);
+    gl.depth_mask(true);
+}
+
 /// Forward pass: `Scene3D::render` from `camera` with `lights` + the shadow map
 /// into whatever framebuffer/viewport the caller bound and cleared.
 #[allow(clippy::too_many_arguments)]
@@ -787,22 +829,13 @@ fn forward_pass(
         unsafe {
             gl.color_mask(true, true, true, true);
             gl.depth_func(glow::EQUAL);
-            gl.enable(glow::BLEND);
-            gl.blend_equation(glow::FUNC_ADD);
+            begin_constant_alpha_blend(gl);
             gl.blend_color(0.0, 0.0, 0.0, TRANSPARENT_DEBUG_ALPHA);
-            gl.blend_func_separate(
-                glow::CONSTANT_ALPHA,
-                glow::ONE_MINUS_CONSTANT_ALPHA,
-                glow::ONE,
-                glow::ONE_MINUS_SRC_ALPHA,
-            );
-            gl.depth_mask(false);
         }
         render_scene();
         unsafe {
-            gl.depth_mask(true);
+            end_constant_alpha_blend(gl);
             gl.depth_func(glow::LESS);
-            gl.disable(glow::BLEND);
             gl.clear(glow::DEPTH_BUFFER_BIT);
         }
     } else {
@@ -811,7 +844,6 @@ fn forward_pass(
             gl,
             scene_context,
             scene,
-            camera,
             &make_context,
             &world_matrix,
             &projection_matrix,
@@ -830,9 +862,9 @@ fn forward_pass(
 /// [`SceneObject::Opacity`](crate::scene3d::SceneObject::Opacity) — so the alpha
 /// applies to any material, textured or lit, with no shader variants.
 ///
-/// Sorting is per outermost `Scene.opacity` node, by the distance of its
-/// [`Scene3D::leaf_centroid`] from the eye; see [`TransparentDraw`] for what
-/// that granularity does and does not fix.
+/// Sorting is per outermost `Scene.opacity` node, by the VIEW-SPACE depth of
+/// its [`Scene3D::leaf_centroid`]; see [`TransparentDraw`] for what that
+/// granularity does and does not fix.
 ///
 /// COST WHEN UNUSED: one short-circuiting `has_opacity()` bool walk, no
 /// allocation, no GL calls. A scene that never calls `Scene.opacity` renders
@@ -842,7 +874,6 @@ fn transparent_pass<'a>(
     gl: &glow::Context,
     scene_context: &SceneContext,
     scene: &'a Scene3D,
-    camera: &Camera,
     make_context: &dyn Fn(bool, OpacityStage) -> RenderContext<'a>,
     world_matrix: &Matrix4<f32>,
     projection_matrix: &Matrix4<f32>,
@@ -856,18 +887,7 @@ fn transparent_pass<'a>(
     let mut draws: Vec<TransparentDraw<'a>> = Vec::new();
     scene.collect_transparent(world_matrix, None, &mut draws);
 
-    let eye = cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]);
-    let distance2 = |draw: &TransparentDraw<'_>| {
-        let d = draw.centroid - eye;
-        d.x * d.x + d.y * d.y + d.z * d.z
-    };
-    // Farthest first. A NaN centroid (a game built a non-finite transform)
-    // sorts as equal rather than panicking the renderer.
-    draws.sort_by(|a, b| {
-        distance2(b)
-            .partial_cmp(&distance2(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    crate::scene3d::sort_back_to_front(&mut draws, view_matrix);
 
     // `pass_blends: true` — this pass owns the blend state, so a translucent
     // runtime overlay nested inside must not switch it back off on the way out.
@@ -876,17 +896,7 @@ fn transparent_pass<'a>(
     root_material.initialize(&context);
 
     unsafe {
-        gl.depth_mask(false);
-        gl.enable(glow::BLEND);
-        gl.blend_equation(glow::FUNC_ADD);
-        gl.blend_func_separate(
-            glow::CONSTANT_ALPHA,
-            glow::ONE_MINUS_CONSTANT_ALPHA,
-            // Straight source-over for the destination alpha, matching the
-            // sprite pass — captures and render targets stay opaque.
-            glow::ONE,
-            glow::ONE_MINUS_SRC_ALPHA,
-        );
+        begin_constant_alpha_blend(gl);
     }
 
     for draw in &draws {
@@ -905,9 +915,7 @@ fn transparent_pass<'a>(
     }
 
     unsafe {
-        gl.disable(glow::BLEND);
-        gl.blend_color(0.0, 0.0, 0.0, 1.0);
-        gl.depth_mask(true);
+        end_constant_alpha_blend(gl);
     }
 }
 
