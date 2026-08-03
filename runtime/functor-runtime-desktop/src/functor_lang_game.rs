@@ -430,6 +430,10 @@ impl FunctorLangGame {
         // per process; survives hot-reload's Session rebuild — the sink is
         // installed on the process, not the Session). See functor_lang_prelude.
         functor_runtime_common::functor_lang_prelude::install_debug_log_sink();
+        // `Effect.save`/`Effect.load` slots belong to the PROJECT, not the
+        // process's working directory: point the store at the game dir before
+        // the first frame can issue a load.
+        functor_runtime_common::storage::set_project_root(std::path::PathBuf::from(path));
         // Stat BEFORE reading: an edit that lands mid-load then compares
         // unequal on the next frame and triggers a reload, instead of being
         // silently absorbed into a stale session.
