@@ -489,10 +489,11 @@ functor -d . run native --entry server  # the same world, seen from the authorit
           </p>
           <ul>
             <li>
-              <strong>A stored closure adopts the edited code.</strong> Its identity is the name
-              of the <em>enclosing definition</em> it was made in, not where it sits in the model,
-              so closures nested in records, lists, tuples, variants, and maps all rebind. The
-              reload log says how many: <code>4 stored closure(s) rebound</code>.
+              <strong>A stored closure adopts the edited code.</strong> Its identity is the
+              <em>enclosing definition</em>'s name plus where the lambda sits in that
+              definition's source — hence <code>firebolt/fn</code> — never where it sits in the
+              model, so closures nested in records, lists, tuples, variants, and maps all rebind.
+              The reload log counts them: <code>model preserved; 1 stored closure(s) rebound</code>.
             </li>
             <li>
               <strong>Its captured values carry over.</strong> The saved environment is
@@ -501,11 +502,12 @@ functor -d . run native --entry server  # the same world, seen from the authorit
               formula with it.
             </li>
             <li>
-              <strong>A renamed or deleted definition keeps its old body, loudly.</strong>
+              <strong>An edit it can't be matched to keeps its old body, loudly.</strong>
               <code>[functor-lang] reload: stored closure `firebolt/fn` has no match after the
-              edit (renamed, deleted, or moved); keeping its old body</code> — the same happens
-              when the edited body captures a name the saved environment doesn't have. Nothing
-              breaks; that value simply stops tracking your edits until it is remade.
+              edit (renamed, deleted, or moved); keeping its old body</code>. Changing the
+              lambda's parameter count, or making it capture names the old one didn't, gets its
+              own warning and the same treatment. Nothing breaks; that value simply stops
+              tracking your edits until the code remakes it.
             </li>
           </ul>
           <p>
@@ -523,8 +525,8 @@ let init = { spells: [firebolt(10.0)] }   // this 10.0 changes on RESTART only
 // Reforging does: it makes new closures from the current factory.
 let reforge = (model) => { model with spells: [firebolt(10.0)] }</pre>
           <p>
-            Closures created fresh each frame store nothing, so they always run current code —
-            this contract only concerns functions the model holds between frames.
+            A closure built and used inside one frame never crosses a reload, so it always runs
+            current code — this contract only concerns functions the model holds between frames.
           </p>
         </section>
 
