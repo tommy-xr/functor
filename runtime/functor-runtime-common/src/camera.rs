@@ -386,9 +386,10 @@ impl Camera {
     /// Shares every coordinate and degeneracy rule with
     /// [`to_world_ray`](Self::to_world_ray) — position and surface extent live
     /// in one top-left-origin logical space, so a device-pixel ratio scales
-    /// out. Returns `None` when the ray misses the plane: a parallel (or
-    /// near-parallel) ray, an intersection behind the eye, a non-finite
-    /// `ground_y`, or any case where `to_world_ray` itself declines.
+    /// out. Returns `None` when the ray misses the plane: a grazing or parallel
+    /// ray, an intersection at or behind the eye, or any case where
+    /// `to_world_ray` itself declines. A non-finite `ground_y` also yields
+    /// `None`; the prelude rejects that at the boundary as a usage error.
     pub fn to_ground_point(
         &self,
         x: f32,
@@ -397,14 +398,12 @@ impl Camera {
         surface_height: f32,
         ground_y: f32,
     ) -> Option<[f32; 3]> {
-        if !ground_y.is_finite() {
-            return None;
-        }
         let ray = self.to_world_ray(x, y, surface_width, surface_height)?;
+        // `to_world_ray` already guarantees a finite, normalized direction.
         let dir_y = ray.direction[1];
-        // A near-parallel ray would place the hit arbitrarily far away; treat it
-        // as a miss rather than emitting a huge (or infinite) coordinate.
-        if !dir_y.is_finite() || dir_y.abs() < 1e-6 {
+        // A grazing ray puts the hit a million eye-heights away, well past
+        // anything the game meant to pick; cut it off rather than report it.
+        if dir_y.abs() < 1e-6 {
             return None;
         }
         let distance = (ground_y - ray.origin[1]) / dir_y;

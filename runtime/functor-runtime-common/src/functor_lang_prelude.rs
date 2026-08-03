@@ -2312,7 +2312,9 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
     );
     reg.fn3(
         "Camera3D.toGroundPoint",
-        "Camera3D.toGroundPoint(mouse, groundY, camera)",
+        "Camera3D.toGroundPoint(mouse, groundY, camera) — a finite ground-plane height",
+        // A NaN/infinite plane is rejected by the `f64` argument conversion
+        // before the body runs, so the body handles only real geometry.
         |mouse: FunctorLangMouse, ground_y: f64, camera: FunctorLangCamera| {
             crate::input::option_value(
                 camera
@@ -6072,21 +6074,24 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         ));
     }
 
+    // The plane height is game data, so a nonsense one is taught by the shared
+    // number conversion, not silently reported as "the pointer isn't over the
+    // ground" — a NaN plane is game math gone wrong, not a pointer miss.
     #[test]
-    fn camera_ground_point_honors_a_raised_plane() {
-        let value = eval(
-            "let main = () => Camera3D.toGroundPoint(\n\
-               { x: 400.0, y: 300.0, surfaceWidth: 800.0, surfaceHeight: 600.0 }, 4.0,\n\
-               Camera3D.lookAt(Vec3.make(0.0, 10.0, -10.0), Vec3.make(0.0, 0.0, 0.0)))",
-        );
-        let Value::Variant { ctor, args } = value else {
-            panic!("the ground point should return an Option");
-        };
-        assert_eq!(ctor.as_ref(), "Option.Some");
-        let (x, y, z) = vec3_of(&args[0], "ground hit", Span::new(0, 0)).unwrap();
-        // 6/10ths of the way along the eye→origin span, pinned onto the plane.
-        assert_eq!(y, 4.0);
-        assert!(x.abs() < 1e-5 && (z + 4.0).abs() < 1e-5, "{x} {z}");
+    fn camera_ground_point_rejects_a_non_finite_plane() {
+        let module = functor_lang::lower(
+            functor_lang::parse(
+                "let main = () => Camera3D.toGroundPoint(\n\
+                   { x: 400.0, y: 300.0, surfaceWidth: 800.0, surfaceHeight: 600.0 }, 0.0 / 0.0,\n\
+                   Camera3D.lookAt(Vec3.make(0.0, 10.0, -10.0), Vec3.make(0.0, 0.0, 0.0)))",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("a non-finite ground plane should fail");
+        assert_eq!(failure.error.message, "expected a finite number, got NaN");
     }
 
     #[test]
