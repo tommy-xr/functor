@@ -480,6 +480,52 @@ functor -d . run native --entry server  # the same world, seen from the authorit
             see the previous frame's — so on the very first frame declared bodies don't exist
             yet. Keep physics reads in <code>draw</code>.
           </p>
+
+          <h3 id="stored-closures">Closures in the model across a reload</h3>
+          <p>
+            MVU invites you to put <em>functions</em> in the model — a spell's behavior, an
+            enemy's steering, a per-entity callback made by a factory. Hot reload keeps those
+            closures alive under three rules:
+          </p>
+          <ul>
+            <li>
+              <strong>A stored closure adopts the edited code.</strong> Its identity is the name
+              of the <em>enclosing definition</em> it was made in, not where it sits in the model,
+              so closures nested in records, lists, tuples, variants, and maps all rebind. The
+              reload log says how many: <code>4 stored closure(s) rebound</code>.
+            </li>
+            <li>
+              <strong>Its captured values carry over.</strong> The saved environment is
+              re-attached to the new body — new code, old data. A closure made as
+              <code>firebolt(10.0)</code> keeps <code>power = 10</code> and runs your edited
+              formula with it.
+            </li>
+            <li>
+              <strong>A renamed or deleted definition keeps its old body, loudly.</strong>
+              <code>[functor-lang] reload: stored closure `firebolt/fn` has no match after the
+              edit (renamed, deleted, or moved); keeping its old body</code> — the same happens
+              when the edited body captures a name the saved environment doesn't have. Nothing
+              breaks; that value simply stops tracking your edits until it is remade.
+            </li>
+          </ul>
+          <p>
+            <strong>The edge to know first: editing the creation site does nothing to closures
+            that already exist.</strong> Captured arguments were evaluated when the closure was
+            made, and a reload does not re-evaluate them — nor does it re-run <code>init</code>.
+            Edit the <em>body</em> to change live behavior; to change a captured value, rebuild
+            the closures from the current factory (an explicit "reforge" the game can run):
+          </p>
+          <pre class="functor-lang">let firebolt = (power: float) => (charge: float) => power * charge
+
+let init = { spells: [firebolt(10.0)] }   // this 10.0 changes on RESTART only
+
+// Editing the body above re-aims every stored spell; editing the 10.0 does not.
+// Reforging does: it makes new closures from the current factory.
+let reforge = (model) => { model with spells: [firebolt(10.0)] }</pre>
+          <p>
+            Closures created fresh each frame store nothing, so they always run current code —
+            this contract only concerns functions the model holds between frames.
+          </p>
         </section>
 
         <section id="debug-camera">
@@ -895,6 +941,13 @@ functor docs --format json         # the machine-readable shape</pre>
               <code>1.5s &lt; 2000ms</code>, and physics tags, all fine.
               (<code>Sprite.t</code> is the other deliberate exception: it is plain data
               underneath.)
+            </li>
+            <li>
+              <strong>A closure in the model adopts edited code, but not edited captures.</strong>
+              On reload a stored closure re-points at the new body of the definition it came from
+              and keeps the values it captured — so changing <code>firebolt(10.0)</code> to
+              <code>firebolt(25.0)</code> leaves every spell already in the model at 10. See
+              <a href="#stored-closures">closures in the model across a reload</a>.
             </li>
           </ul>
           <p class="docs-footnote">
