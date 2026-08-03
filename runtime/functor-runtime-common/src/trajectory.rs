@@ -134,7 +134,9 @@ fn collect_transforms(
 ) {
     let w = world * scene.xform;
     match &scene.obj {
-        SceneObject::Group(children) | SceneObject::Material(_, children) => {
+        SceneObject::Group(children)
+        | SceneObject::Material(_, children)
+        | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -166,7 +168,7 @@ fn collect_anchor(
 ) {
     let w = world * scene.xform;
     match &scene.obj {
-        SceneObject::Group(children) => {
+        SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -311,7 +313,7 @@ fn collect_sample_leaves<'a>(
 ) {
     let w = world * scene.xform;
     match &scene.obj {
-        SceneObject::Group(children) => {
+        SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -1083,6 +1085,15 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
             }
         }
         SceneObject::Group(items) => {
+            for item in items {
+                scale_presence(item, presence);
+            }
+        }
+        // A translucent subtree fades by scaling its OWN alpha (the presence
+        // ramp is the same multiplication the material rewrite performs); its
+        // materials are then walked as usual.
+        SceneObject::Opacity(alpha, items) => {
+            *alpha *= presence;
             for item in items {
                 scale_presence(item, presence);
             }
@@ -2077,7 +2088,7 @@ mod tests {
                     material_alphas(item, out);
                 }
             }
-            SceneObject::Group(items) => {
+            SceneObject::Group(items) | SceneObject::Opacity(_, items) => {
                 for item in items {
                     material_alphas(item, out);
                 }

@@ -7,8 +7,8 @@ use crate::asset::AssetCache;
 use crate::material::BasicMaterial;
 use crate::shadow::{self, ShadowMap};
 use crate::{
-    Camera, Camera2D, DebugRenderMode, Frame, FrameTime, Light, RenderContext, RenderPass, Scene3D,
-    SceneContext, ShadowUniforms, Viewport,
+    Camera, Camera2D, DebugRenderMode, Frame, FrameTime, Light, OpacityStage, RenderContext,
+    RenderPass, Scene3D, SceneContext, ShadowUniforms, TransparentDraw, Viewport,
 };
 
 /// Enough authored color to keep the scene readable while opaque diagnostic
@@ -696,18 +696,21 @@ fn forward_pass(
     } else {
         terrain_frusta[..lod_frustum_count].copy_from_slice(&supplied_frusta[..lod_frustum_count]);
     }
-    let render_context = RenderContext {
+    // The forward pass may need TWO contexts (opaque, then transparent), which
+    // differ only in how they treat blending and `Scene.opacity`. Everything
+    // else is frame-constant, so build them from one recipe.
+    let make_context = |pass_blends: bool, opacity_stage: OpacityStage| RenderContext {
         gl,
         shader_version,
-        asset_cache,
+        asset_cache: asset_cache.clone(),
         frame_time,
         debug_render_mode,
         lights,
         render_pass: RenderPass::Forward,
-        // The transparent-debug pass owns the blend state for the whole scene
-        // (constant alpha); leave it alone there too.
-        pass_blends: caller_blends || debug_render_mode == DebugRenderMode::Transparent,
+        pass_blends,
         blend_active: std::cell::Cell::new(false),
+        opacity_stage,
+        opacity: std::cell::Cell::new(1.0),
         shadow,
         fog,
         camera_pos: cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]),
@@ -722,6 +725,26 @@ fn forward_pass(
             .unwrap_or_else(|| default_lod_projection.y.y.abs()),
         viewport_height: lod_viewport_height.unwrap_or(viewport_height),
     };
+
+    // The transparent debug material deliberately reuses authored shading.
+    // Populate depth first, then blend only the nearest surface: blending every
+    // backface and overlapping triangle would make dense meshes nearly opaque.
+    // Clearing depth afterward keeps collider/frustum lines visible through
+    // the scene without cloning every shader just to multiply its alpha.
+    let transparent_debug = debug_render_mode == DebugRenderMode::Transparent;
+    // The transparent-debug pass owns the blend state for the whole scene
+    // (constant alpha); the 2D sprite pass owns it too. Leave both alone —
+    // including their `Scene.opacity` handling, which becomes a no-op modifier
+    // rather than a second, conflicting blend configuration.
+    let pass_blends = caller_blends || transparent_debug;
+    let render_context = make_context(
+        pass_blends,
+        if pass_blends {
+            OpacityStage::Ignore
+        } else {
+            OpacityStage::Defer
+        },
+    );
 
     // The game supplies the camera; derive its ordinary projection from the
     // aspect unless a platform shell (XR) supplied an exact projection.
@@ -754,12 +777,6 @@ fn forward_pass(
         );
     };
 
-    // The transparent debug material deliberately reuses authored shading.
-    // Populate depth first, then blend only the nearest surface: blending every
-    // backface and overlapping triangle would make dense meshes nearly opaque.
-    // Clearing depth afterward keeps collider/frustum lines visible through
-    // the scene without cloning every shader just to multiply its alpha.
-    let transparent_debug = debug_render_mode == DebugRenderMode::Transparent;
     if transparent_debug {
         unsafe {
             gl.disable(glow::BLEND);
@@ -790,6 +807,107 @@ fn forward_pass(
         }
     } else {
         render_scene();
+        transparent_pass(
+            gl,
+            scene_context,
+            scene,
+            camera,
+            &make_context,
+            &world_matrix,
+            &projection_matrix,
+            &view_matrix,
+            pass_blends,
+        );
+    }
+}
+
+/// Draw the frame's `Scene.opacity` subtrees, back-to-front, after the opaque
+/// forward walk.
+///
+/// State: depth TEST on (translucent surfaces are hidden by opaque geometry in
+/// front of them), depth WRITE off (they don't occlude each other or later
+/// draws), constant-alpha blending programmed per node by
+/// [`SceneObject::Opacity`](crate::scene3d::SceneObject::Opacity) — so the alpha
+/// applies to any material, textured or lit, with no shader variants.
+///
+/// Sorting is per outermost `Scene.opacity` node, by the distance of its
+/// [`Scene3D::leaf_centroid`] from the eye; see [`TransparentDraw`] for what
+/// that granularity does and does not fix.
+///
+/// COST WHEN UNUSED: one short-circuiting `has_opacity()` bool walk, no
+/// allocation, no GL calls. A scene that never calls `Scene.opacity` renders
+/// exactly the draw calls it did before.
+#[allow(clippy::too_many_arguments)]
+fn transparent_pass<'a>(
+    gl: &glow::Context,
+    scene_context: &SceneContext,
+    scene: &'a Scene3D,
+    camera: &Camera,
+    make_context: &dyn Fn(bool, OpacityStage) -> RenderContext<'a>,
+    world_matrix: &Matrix4<f32>,
+    projection_matrix: &Matrix4<f32>,
+    view_matrix: &Matrix4<f32>,
+    pass_blends: bool,
+) {
+    if pass_blends || !scene.has_opacity() {
+        return;
+    }
+
+    let mut draws: Vec<TransparentDraw<'a>> = Vec::new();
+    scene.collect_transparent(world_matrix, None, &mut draws);
+
+    let eye = cgmath::Vector3::new(camera.eye[0], camera.eye[1], camera.eye[2]);
+    let distance2 = |draw: &TransparentDraw<'_>| {
+        let d = draw.centroid - eye;
+        d.x * d.x + d.y * d.y + d.z * d.z
+    };
+    // Farthest first. A NaN centroid (a game built a non-finite transform)
+    // sorts as equal rather than panicking the renderer.
+    draws.sort_by(|a, b| {
+        distance2(b)
+            .partial_cmp(&distance2(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // `pass_blends: true` — this pass owns the blend state, so a translucent
+    // runtime overlay nested inside must not switch it back off on the way out.
+    let context = make_context(true, OpacityStage::Draw);
+    let mut root_material = BasicMaterial::create();
+    root_material.initialize(&context);
+
+    unsafe {
+        gl.depth_mask(false);
+        gl.enable(glow::BLEND);
+        gl.blend_equation(glow::FUNC_ADD);
+        gl.blend_func_separate(
+            glow::CONSTANT_ALPHA,
+            glow::ONE_MINUS_CONSTANT_ALPHA,
+            // Straight source-over for the destination alpha, matching the
+            // sprite pass — captures and render targets stay opaque.
+            glow::ONE,
+            glow::ONE_MINUS_SRC_ALPHA,
+        );
+    }
+
+    for draw in &draws {
+        let material = draw
+            .material
+            .map(|description| description.get(&context, scene_context));
+        Scene3D::render(
+            draw.node,
+            &context,
+            scene_context,
+            &draw.parent_world,
+            projection_matrix,
+            view_matrix,
+            material.as_ref().unwrap_or(&root_material),
+        );
+    }
+
+    unsafe {
+        gl.disable(glow::BLEND);
+        gl.blend_color(0.0, 0.0, 0.0, 1.0);
+        gl.depth_mask(true);
     }
 }
 

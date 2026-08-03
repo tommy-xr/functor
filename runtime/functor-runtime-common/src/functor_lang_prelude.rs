@@ -2158,6 +2158,30 @@ row 0 has {cols} heights, row {r} has {}",
             )
         },
     );
+    // Translucency (scene-last, so it pipes). At alpha 1 this is the IDENTITY —
+    // it returns the scene untouched rather than wrapping it — so a game that
+    // never asks for translucency (or asks for none this frame) produces the
+    // exact same scene value, and the renderer's transparent pass never arms.
+    // Out of range is an error, matching `Sprite.fade`: silently clamping a
+    // computed fade hides the bug that produced 1.4.
+    reg.fn2(
+        "Scene.opacity",
+        "Scene.opacity(alpha, scene)",
+        |alpha: f64, scene: FunctorLangScene| {
+            if !(0.0..=1.0).contains(&alpha) {
+                return Err(format!(
+                    "Scene.opacity alpha must be between 0 and 1, got {alpha}"
+                ));
+            }
+            if alpha == 1.0 {
+                return Ok(scene);
+            }
+            Ok(FunctorLangScene(Scene3D {
+                obj: SceneObject::Opacity(alpha as f32, vec![scene.0]),
+                xform: Matrix4::from_scale(1.0),
+            }))
+        },
+    );
     // Attach an animation expression to the Model node(s) in a scene
     // (scene-last, so it pipes right after `Scene.model`). Without it a
     // skinned model keeps the zero-config default: its first clip auto-plays
@@ -6652,6 +6676,14 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
                 "Sprite.fade alpha must be between 0 and 1",
             ),
             (
+                "Scene.cube() |> Scene.opacity(1.5)",
+                "Scene.opacity alpha must be between 0 and 1",
+            ),
+            (
+                "Scene.cube() |> Scene.opacity(-0.1)",
+                "Scene.opacity alpha must be between 0 and 1",
+            ),
+            (
                 "Camera2D.create(16.0, 0.0)",
                 "Camera2D.create width and height must be positive",
             ),
@@ -7670,6 +7702,52 @@ Vec3.make(x, y, z)"
 
     // Scene.animate pipes after Scene.model and lands the expression on the
     // Model node — the declarative "what pose" seam the renderer evaluates.
+    #[test]
+    fn scene_opacity_wraps_the_subtree_and_nested_opacities_stay_nested() {
+        let value = eval(
+            "let main = () => Scene.cube() |> Scene.opacity(0.5) |> Scene.opacity(0.5)",
+        );
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::Opacity(outer, outer_items) = &scene.obj else {
+            panic!("expected an Opacity node, got {:?}", scene.obj);
+        };
+        assert_eq!(*outer, 0.5);
+        let SceneObject::Opacity(inner, inner_items) = &outer_items[0].obj else {
+            panic!("expected a nested Opacity node, got {:?}", outer_items[0].obj);
+        };
+        assert_eq!(*inner, 0.5);
+        // The multiplication is the RENDERER's (0.25 at the leaf); the scene
+        // value keeps both nodes so `Scene.equals` and `/scene` show what the
+        // game actually said.
+        assert!(matches!(
+            inner_items[0].obj,
+            SceneObject::Geometry(Shape::Cube)
+        ));
+    }
+
+    /// Full opacity is the IDENTITY, not a wrapper: this is what makes the
+    /// feature free for every scene that does not use it, and it is the
+    /// property `Scene.equals` and the golden images both depend on.
+    #[test]
+    fn scene_opacity_of_one_is_the_identity() {
+        let with = eval("let main = () => Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.opacity(1.0)");
+        let without =
+            eval("let main = () => Scene.cube() |> Scene.color(Color.rgb(1.0, 0.0, 0.0))");
+        assert_eq!(
+            scene_of(&with).expect("a Scene"),
+            scene_of(&without).expect("a Scene")
+        );
+    }
+
+    /// Zero is legal and distinct from "not drawn" — it is an invisible node,
+    /// so a fade to nothing does not have to branch in game code.
+    #[test]
+    fn scene_opacity_of_zero_is_a_node() {
+        let value = eval("let main = () => Scene.cube() |> Scene.opacity(0.0)");
+        let scene = scene_of(&value).expect("a Scene");
+        assert!(matches!(scene.obj, SceneObject::Opacity(a, _) if a == 0.0));
+    }
+
     #[test]
     fn scene_animate_sets_clip_on_model() {
         let value = eval(
