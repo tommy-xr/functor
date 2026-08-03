@@ -38,9 +38,16 @@ let save : (string, 'a) => t
 /// Read a local save slot back and tag it as a message.
 ///
 /// The tagger receives `Option.Some(value)` — the value exactly as saved —
-/// or `Option.None` when the slot has never been written, or when what is
-/// there cannot be read (a save from an incompatible version, a corrupt
-/// file): a broken save degrades to "no save", it never stops the game.
+/// or `Option.None` when the slot has never been written or what is there
+/// cannot be read at all (a corrupt or hand-mangled file): an unreadable
+/// save degrades to "no save", it never stops the game.
+///
+/// A save that reads back fine but was written by an OLDER MODEL SHAPE is
+/// still `Option.Some` — nothing checks the shape for you. Handle that the
+/// way you would any external data: change the slot name when the model
+/// changes incompatibly, or save a record carrying your own version field
+/// and match on it.
+///
 /// Usually issued once at boot from the first `tick`.
 let load : (string, (Option.t<'a>) => 'msg) => t
 /// Perform an HTTP GET and tag its `Net.HttpResponse` as a message.

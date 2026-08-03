@@ -1150,16 +1150,19 @@ let tick = (m, dt, tts) =>
 ```
 
 `load`'s tagger receives `Option.Some(value)` or `Option.None` — absent OR
-unreadable (a save from an incompatible model shape degrades to "no save", it
-never stops the game). A slot key is a NAME, not a path: letters, digits, `_`
-and `-`, 1–64 characters. Natively a slot is
+unreadable (a corrupt file degrades to "no save", it never stops the game).
+A save written by an OLDER MODEL SHAPE still arrives as `Option.Some`: nothing
+checks the shape, so version it yourself (a new slot name, or a version field
+you match on) exactly as you would any external data. A slot key is a NAME,
+not a path: letters, digits, `_` and `-`, 1–64 characters. Natively a slot is
 `<project>/.functor/saves/<slot>.json`, written atomically; on the web it is
 one project-scoped `localStorage` key. Both are ordinary effects — they drain
 through the broker, land in the structured effect log (`storage.save` /
 `storage.load`), and are canned by the fake/replay runners, so a saving game
 still replays deterministically. Hot-reload preserves the model in dev, which
 HIDES the absence of a save: reach for these as soon as progress must survive
-quitting.
+quitting. (Desktop and web today — the Quest shell's store follows the process
+working directory, so treat slots there as unsupported for now.)
 
 **Interactive widgets are numbered by SLOT in construction order**, which is how
 they are driven headlessly through the debug server —
