@@ -124,6 +124,7 @@
 //! Physics.at/velocity(v, body)                        -> Body
 //! Physics.rotateX/rotateY/rotateZ(angle, body)              -> Body
 //! Physics.mass/friction/restitution(n, body)                -> Body
+//! Physics.linearDamping/angularDamping(n, body)             -> Body
 //! Physics.sensor(body)                                      -> Body
 //! Physics.upright(body)                                     -> Body
 //! Physics.scene(Vec3.make(gx, gy, gz), [body, …])                      -> PhysicsScene
@@ -2760,6 +2761,24 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
             ))
         },
     );
+    reg.fn2(
+        "Physics.linearDamping",
+        "Physics.linearDamping(n, body)",
+        |n: f64, body: FunctorLangBody| {
+            Ok(FunctorLangBody(body.0.with_linear_damping(
+                non_negative(n, "Physics.linearDamping")? as f32,
+            )))
+        },
+    );
+    reg.fn2(
+        "Physics.angularDamping",
+        "Physics.angularDamping(n, body)",
+        |n: f64, body: FunctorLangBody| {
+            Ok(FunctorLangBody(body.0.with_angular_damping(
+                non_negative(n, "Physics.angularDamping")? as f32,
+            )))
+        },
+    );
     reg.fn1("Physics.sensor", "Physics.sensor(body)", |body: FunctorLangBody| {
         FunctorLangBody(body.0.as_sensor())
     });
@@ -4831,7 +4850,8 @@ fn positive(n: f64, what: &str) -> Result<f64, String> {
     }
 }
 
-/// Friction/restitution are coefficients: zero is meaningful, negative is not.
+/// Friction/restitution/damping are coefficients: zero is meaningful, negative
+/// is not (a negative damping would inject energy every step).
 fn non_negative(n: f64, what: &str) -> Result<f64, String> {
     if n >= 0.0 {
         Ok(n)
@@ -8575,6 +8595,8 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
              |> Physics.velocity(Vec3.make(1.0, 0.0, 0.0))\n\
              |> Physics.mass(2.0)\n\
              |> Physics.restitution(0.5)\n\
+             |> Physics.linearDamping(0.55)\n\
+             |> Physics.angularDamping(1.25)\n\
              let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [\n\
                Physics.fixed(\"ground\", Physics.box(20.0, 0.2, 20.0)),\n\
                crate1,\n\
@@ -8589,6 +8611,11 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         assert_eq!(scene.bodies[1].velocity, [1.0, 0.0, 0.0]);
         assert_eq!(scene.bodies[1].mass, Some(2.0));
         assert_eq!(scene.bodies[1].restitution, 0.5);
+        assert_eq!(scene.bodies[1].linear_damping, 0.55);
+        assert_eq!(scene.bodies[1].angular_damping, 1.25);
+        // Undeclared damping is 0.0 — no drag, the pre-existing behavior.
+        assert_eq!(scene.bodies[0].linear_damping, 0.0);
+        assert_eq!(scene.bodies[0].angular_damping, 0.0);
         assert!(scene.bodies[2].sensor);
     }
 
@@ -9141,6 +9168,14 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             (
                 "Physics.dynamic(\"x\", Physics.sphere(0.5)) |> Physics.friction(-1.0)",
                 "Physics.friction must not be negative",
+            ),
+            (
+                "Physics.dynamic(\"x\", Physics.sphere(0.5)) |> Physics.linearDamping(-0.1)",
+                "Physics.linearDamping must not be negative",
+            ),
+            (
+                "Physics.dynamic(\"x\", Physics.sphere(0.5)) |> Physics.angularDamping(-0.1)",
+                "Physics.angularDamping must not be negative",
             ),
         ] {
             let module =

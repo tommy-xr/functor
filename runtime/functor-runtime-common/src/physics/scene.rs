@@ -82,6 +82,17 @@ pub struct Body {
     pub mass: Option<f32>,
     pub friction: f32,
     pub restitution: f32,
+    /// Per-second linear velocity decay (rapier `linear_damping`). `0.0` — the
+    /// default — is no drag, so existing games are unchanged. Rapier integrates
+    /// damping only for `Dynamic` bodies; on a kinematic or fixed body it is
+    /// recorded and inert.
+    #[serde(default)]
+    pub linear_damping: f32,
+    /// Per-second angular velocity decay (rapier `angular_damping`). `0.0` —
+    /// the default — is no rolling resistance, so existing games are unchanged.
+    /// `Dynamic`-only, like `linear_damping`.
+    #[serde(default)]
+    pub angular_damping: f32,
     /// A sensor detects overlaps but produces no contact forces.
     pub sensor: bool,
     /// Rotation is locked on all three axes: the body translates but never
@@ -105,6 +116,8 @@ impl Body {
             // Rapier's collider defaults.
             friction: 0.5,
             restitution: 0.0,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
             sensor: false,
             rotation_locked: false,
             authority: Authority::Local,
@@ -154,6 +167,16 @@ impl Body {
 
     pub fn with_restitution(mut self, restitution: f32) -> Body {
         self.restitution = restitution;
+        self
+    }
+
+    pub fn with_linear_damping(mut self, damping: f32) -> Body {
+        self.linear_damping = damping;
+        self
+    }
+
+    pub fn with_angular_damping(mut self, damping: f32) -> Body {
+        self.angular_damping = damping;
         self
     }
 
