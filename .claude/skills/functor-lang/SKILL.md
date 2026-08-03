@@ -1138,6 +1138,29 @@ need no declaration, and these are the variants to match:
 structurally (usually a shared-module ADT), with no string codec; functions and
 opaque host values in the payload are teaching errors.
 
+**Durable local state is `Effect.save` / `Effect.load`** — the same plain-data
+codec, aimed at a named SLOT instead of a connection:
+
+```functor
+let tick = (m, dt, tts) =>
+  if m.booted then (m, Effect.none())
+  else (m, Effect.load("autosave", (loaded) => Restored(loaded)))   // Option.t<Model>
+
+| Saved => (m, Effect.save("autosave", m))                          // in `update`
+```
+
+`load`'s tagger receives `Option.Some(value)` or `Option.None` — absent OR
+unreadable (a save from an incompatible model shape degrades to "no save", it
+never stops the game). A slot key is a NAME, not a path: letters, digits, `_`
+and `-`, 1–64 characters. Natively a slot is
+`<project>/.functor/saves/<slot>.json`, written atomically; on the web it is
+one project-scoped `localStorage` key. Both are ordinary effects — they drain
+through the broker, land in the structured effect log (`storage.save` /
+`storage.load`), and are canned by the fake/replay runners, so a saving game
+still replays deterministically. Hot-reload preserves the model in dev, which
+HIDES the absence of a save: reach for these as soon as progress must survive
+quitting.
+
 **Interactive widgets are numbered by SLOT in construction order**, which is how
 they are driven headlessly through the debug server —
 `Ui.button`/`slider`/`textInput` via
