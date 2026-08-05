@@ -23,7 +23,8 @@
 // scrubbing sweeps the rows the same way it sweeps the dots.
 
 import type { NetCoordinator, Packet } from "./net-coordinator.js";
-import { decodeWire, fullWire } from "./wire-value.js";
+import { hasTree, mountValueTree } from "./value-tree.js";
+import { decodeWire, fullWire, type WireValue } from "./wire-value.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -278,6 +279,34 @@ export function initNetworkGraph({
   let rowKey = "";
   /** When the rows last repainted — the live tail's throttle (LIVE_ROW_MS). */
   let lastRowPaint = 0;
+  /**
+   * The row opened into a value tree, if any: which packet it is, the tree's
+   * own DOM (kept across repaints, so the nodes the reader opened stay open),
+   * and — when it opened on a LIVE tail — the viewport to hold there.
+   *
+   * The packet is held BY IDENTITY, not by a hash: the panel and the log share
+   * the same `Packet` objects, and the row hash (frame/sender/size/arrival) can
+   * genuinely collide — `at` is a clamped `performance.now()`, so two
+   * same-sized intents routed in one turn of the loop can carry the same stamp,
+   * and two rows would then both claim the one tree.
+   *
+   * Holding the viewport is the point of `held`. A live tail turns a twelve-row
+   * window over in a fraction of a second at snapshot rates, so a row that
+   * opened and kept tailing would scroll off before it could be read: opening a
+   * row IS the pause. Parked, the rail stays in charge (scrub-lock is the
+   * panel's promise), `held` is null, and the tree simply travels with its row
+   * until the row leaves the window.
+   */
+  let opened: { packet: Packet; host: HTMLElement; held: Packet[] | null } | null = null;
+  /** The packet whose payload button should take focus after the next repaint —
+   * a repaint rebuilds every row, and the button the reader just pressed with
+   * the keyboard is one of the ones it destroys. */
+  let refocus: Packet | null = null;
+
+  /** A row's cache key — the four fields that make two rows different. Identity
+   * is the `Packet` itself (see `opened`); this is only for the change hash. */
+  const packetKey = (packet: Packet): string =>
+    `${packet.frame}:${packet.from}:${packet.size}:${packet.at}`;
 
   const addEdge = (node: NetworkNode): Edge => {
     const path = document.createElementNS(SVG_NS, "path");
@@ -477,6 +506,8 @@ export function initNetworkGraph({
     if (selected === id) return;
     selected = id;
     rowKey = "";
+    // Another link is other traffic: the open row is not in it.
+    opened = null;
     for (const [edgeId, edge] of edges) {
       const on = edgeId === id;
       edge.path.classList.toggle("selected", on);
@@ -530,6 +561,37 @@ export function initNetworkGraph({
     return { rows, highlight };
   };
 
+  /**
+   * Open a row into a value tree — or close the one that is open.
+   *
+   * One row at a time: the panel is a narrow column beside a running game, and
+   * two open snapshots would be a scroll, not a reading. Opening rebuilds the
+   * rows immediately (bypassing the live throttle) so the aria state of every
+   * payload button matches the DOM in the same tick, and re-places the panel,
+   * whose height just changed.
+   */
+  const openRow = (packet: Packet, value: WireValue, shown: readonly Packet[]) => {
+    if (opened?.packet === packet) {
+      opened = null;
+    } else {
+      const host = document.createElement("div");
+      host.className = "mp-wl-tree";
+      // The rows are a `role="log"` live region; a tree opening inside one
+      // would otherwise be read out in full on every repaint that re-parents
+      // it. It is a thing to explore, not an announcement.
+      host.setAttribute("aria-live", "off");
+      mountValueTree(host, value, placePanel);
+      opened = { packet, host, held: clock().parked ? null : [...shown] };
+    }
+    // The reader may have pressed this button with the keyboard, and the
+    // repaint below destroys it — hand the focus to its replacement.
+    refocus = packet;
+    rowKey = "";
+    lastRowPaint = 0;
+    renderPanel();
+    placePanel();
+  };
+
   const renderPanel = () => {
     if (!selected || !active) {
       panel.hidden = true;
@@ -545,16 +607,20 @@ export function initNetworkGraph({
     // throttle: the panel must answer the rail immediately.
     const now = performance.now();
     if (!parked && now - lastRowPaint < LIVE_ROW_MS) return;
-    const { rows: shown, highlight } = viewportRows(
-      selected,
-      parked && frame !== null ? frame : null
-    );
+    const live = viewportRows(selected, parked && frame !== null ? frame : null);
+    // An open row holds the LIVE viewport (see `opened`); parked, the rail
+    // keeps deciding the window and the tree travels with its row.
+    const held = opened?.held;
+    const shown = held && !parked ? held : live.rows;
+    const { highlight } = live;
+    // A row that scrubbed out of the window takes its tree with it.
+    if (opened && !shown.includes(opened.packet)) opened = null;
     const key =
-      `${selected}|${highlight}|` +
+      `${selected}|${highlight}|${opened ? packetKey(opened.packet) : ""}|` +
       // `at` disambiguates two packets that share a frame, a direction and a
       // size — a fixed-width intent (`Steer {turn:0}` vs `{turn:1}`) otherwise
       // hashes the same and the rows would go stale.
-      shown.map((packet) => `${packet.frame}:${packet.from}:${packet.size}:${packet.at}`).join(",");
+      shown.map(packetKey).join(",");
     if (key === rowKey) return;
     const rowCount = panelRows.childElementCount;
     lastRowPaint = now;
@@ -564,24 +630,29 @@ export function initNetworkGraph({
     panelLink.textContent = `${shortName(selected)} ↔ srv`;
     panel.style.setProperty("--pc", edge.node.color);
     let anyPlain = false;
+    let focusTarget: HTMLElement | null = null;
     panelRows.replaceChildren(
       ...shown.map((packet, index) => {
         const up = packet.from !== "server";
         const decoded = decodeWire(packet.text);
         if (!decoded.typed) anyPlain = true;
+        const isOpen = opened?.packet === packet;
         const row = document.createElement("div");
         row.className = `mp-wl${index === highlight ? " at" : ""}`;
         // The full rendering is built ON HOVER, once: rendering every row's
         // whole payload unelided (a world snapshot, per row, per repaint) to
         // fill a tooltip nobody has asked for yet is the most expensive thing
-        // this panel could do.
-        row.addEventListener(
-          "mouseenter",
-          () => {
-            row.title = fullWire(packet.text);
-          },
-          { once: true }
-        );
+        // this panel could do. An OPEN row skips it: the tooltip would cover
+        // the tree that already says the same thing, better.
+        if (!isOpen) {
+          row.addEventListener(
+            "mouseenter",
+            () => {
+              row.title = fullWire(packet.text);
+            },
+            { once: true }
+          );
+        }
         const frameCell = document.createElement("span");
         frameCell.className = "f";
         frameCell.textContent = `#f ${packet.frame ?? "—"}`;
@@ -590,8 +661,26 @@ export function initNetworkGraph({
         dirCell.textContent = up
           ? `${shortName(packet.from)}→srv`
           : `srv→${shortName(packet.to)}`;
+        // The payload cell is the disclosure control when there is something to
+        // disclose: a typed payload WITH structure, whose whole value the page
+        // already holds (the frame is decoded client-side, so opening it costs
+        // nothing but the DOM). A plain `Effect.send` text — or a bare
+        // `Welcome(2)`, which the row already shows completely — stays a plain
+        // cell rather than a control that opens the line you are looking at.
+        //
         // textContent, never innerHTML: this is a running game's own data.
-        const payload = document.createElement("span");
+        const value = decoded.value && hasTree(decoded.value) ? decoded.value : null;
+        let payload: HTMLElement;
+        if (value) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.setAttribute("aria-expanded", String(isOpen));
+          button.addEventListener("click", () => openRow(packet, value, shown));
+          if (refocus === packet) focusTarget = button;
+          payload = button;
+        } else {
+          payload = document.createElement("span");
+        }
         payload.className = "payload";
         if (decoded.head) {
           const ctor = document.createElement("b");
@@ -606,9 +695,20 @@ export function initNetworkGraph({
         bytes.className = "n";
         bytes.textContent = `${packet.size} B`;
         row.append(frameCell, dirCell, payload, bytes);
+        // The tree is the SAME element across repaints, moved into the rebuilt
+        // row: every node the reader opened inside it stays open, because its
+        // state never left the DOM.
+        if (isOpen && opened) {
+          row.classList.add("open");
+          row.append(opened.host);
+        }
         return row;
       })
     );
+    // The rebuild threw away the element the keyboard was on; put the focus on
+    // its replacement, and only for the repaint the press caused.
+    if (focusTarget) (focusTarget as HTMLElement).focus();
+    refocus = null;
     if (shown.length === 0) {
       const empty = document.createElement("p");
       empty.className = "mp-wl-empty";
@@ -617,9 +717,12 @@ export function initNetworkGraph({
         : "no traffic on this link yet";
       panelRows.appendChild(empty);
     }
-    panelFoot.textContent = anyPlain
-      ? "Effect.send text — shown exactly as sent"
-      : "Effect.sendMsg — decoded as values, never bytes";
+    panelFoot.textContent =
+      opened && !parked
+        ? "the tail is held while a row is open — close it to resume"
+        : anyPlain
+          ? "Effect.send text — shown exactly as sent"
+          : "Effect.sendMsg — decoded as values, never bytes";
     // Only a change in the panel's SIZE can move it, and only the row count
     // changes that. Re-placing on every repaint would mean five forced layouts
     // per repaint (the panel's box, the cards' boxes, the wire's bbox) directly

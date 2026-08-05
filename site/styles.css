@@ -3758,9 +3758,156 @@ a:hover {
   margin-left: 5px;
 }
 
+/* A typed payload is a disclosure control: same line, same ink, but it opens.
+   The button resets to the span it replaced so the row's rhythm is unchanged
+   until it is actually used. */
+button.payload {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.payload:hover b,
+button.payload[aria-expanded="true"] b {
+  color: var(--pc);
+}
+
+button.payload:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
 .mp-wl .n {
   text-align: right;
   color: var(--text-dim);
+}
+
+/* ---- the value tree (Addendum 8.1) ----
+
+   An open row keeps its one line and grows a tree beneath it, across all four
+   columns. Bounded height, not unbounded: a world snapshot is taller than the
+   stage, and a panel that grows past the window would push its own placement
+   off screen — so the deep end scrolls inside the row instead. */
+.mp-wl.open {
+  background: color-mix(in srgb, var(--pc) 8%, transparent);
+}
+
+.mp-wl-tree {
+  grid-column: 1 / -1;
+  max-height: 220px;
+  overflow: auto;
+  margin: 3px 0 5px;
+  padding: 3px 0;
+  border-top: 1px solid color-mix(in srgb, var(--pc) 20%, var(--line));
+}
+
+.mp-vt {
+  font: 10.5px/1.55 var(--font-mono);
+}
+
+.mp-vt-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: var(--text);
+}
+
+button.mp-vt-row {
+  cursor: pointer;
+}
+
+button.mp-vt-row:hover {
+  background: color-mix(in srgb, var(--pc) 10%, transparent);
+}
+
+button.mp-vt-row:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
+}
+
+/* The twisty holds its column on leaf rows too, so names line up down the
+   level rather than stepping in and out with the disclosures. */
+.mp-vt-tw {
+  flex: none;
+  width: 9px;
+  color: var(--pc);
+  opacity: 0.8;
+}
+
+.mp-vt-k {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.mp-vt-k::after {
+  content: ":";
+  opacity: 0.5;
+}
+
+/* Composites are dim (they are structure, and their contents are one click
+   below); scalars carry the data ink. */
+.mp-vt-v {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
+.mp-vt-v.num {
+  color: var(--cyan);
+}
+
+.mp-vt-v.str {
+  color: var(--amber);
+}
+
+.mp-vt-v.bool {
+  color: var(--green);
+}
+
+/* One hairline per level: the indent is measurable rather than guessed, which
+   is what makes a deep snapshot readable at ten pixels. */
+.mp-vt-kids {
+  margin-left: 6px;
+  padding-left: 8px;
+  border-left: 1px solid color-mix(in srgb, var(--pc) 22%, transparent);
+}
+
+.mp-vt-kids[hidden] {
+  display: none;
+}
+
+.mp-vt-text {
+  display: block;
+  padding: 2px 3px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--amber);
+}
+
+.mp-vt-more {
+  padding: 1px 3px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-style: italic;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.mp-vt-more:hover {
+  color: var(--text);
 }
 
 .mp-wl-empty {
