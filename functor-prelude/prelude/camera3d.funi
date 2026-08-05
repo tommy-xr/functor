@@ -23,6 +23,17 @@ type ray = { origin: Vec3.t, direction: Vec3.t }
 /// into `Physics.cast` / `Physics.raycast`. Returns `Option.None` while the
 /// pointer is outside the surface or the camera is degenerate.
 let toWorldRay : (Input.mouse, t) => Option.t<ray>
+/// Intersect the pointer ray with the horizontal plane `y = groundY`.
+///
+/// The "what did I click on the ground" primitive: the same mapping as
+/// `toWorldRay` (one top-left-origin logical space, so Retina/device-pixel
+/// ratio scales out), intersected with the ground plane for you. The camera is
+/// last for piping. Returns `Option.None` when the ray never usefully reaches
+/// the plane — grazing or parallel to it, or meeting it at or behind the eye —
+/// as well as whenever `toWorldRay` itself declines. A non-finite `groundY` is
+/// a teaching error rather than a miss. Quantizing the point into tiles or
+/// cells stays game-owned.
+let toGroundPoint : (Input.mouse, float, t) => Option.t<Vec3.t>
 /// A tracked pose mapped into world space through an authored camera.
 type mappedPose = { position: Input.point3, forward: Input.point3, up: Input.point3 }
 /// Map a rig-local tracked pose through the authored camera.

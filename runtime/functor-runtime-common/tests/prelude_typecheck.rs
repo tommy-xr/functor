@@ -83,6 +83,26 @@ fn camera_world_ray_checks_as_physics_cast_input() {
     );
 }
 
+/// The ground pick is one call: a grid game quantizes the returned Vec3 into
+/// tiles itself, with no hand-rolled ray/plane intersection in between.
+#[test]
+fn camera_ground_point_checks_as_a_tile_pick() {
+    let diags = check(
+        "let camera = Camera3D.lookAt(\n\
+           Vec3.make(0.0, 10.0, -10.0), Vec3.make(0.0, 0.0, 0.0))\n\
+         type Tile = { gx: float, gz: float }\n\
+         let pickTile = (mouse: Input.mouse): Option.t<Tile> =>\n\
+           match Camera3D.toGroundPoint(mouse, 0.08, camera) with\n\
+           | Option.Some(hit) =>\n\
+             Option.Some({ gx: Math.floor(Vec3.x(hit) + 3.5), gz: Math.floor(Vec3.z(hit) + 3.5) })\n\
+           | Option.None => Option.None",
+    );
+    assert!(
+        diags.is_empty(),
+        "Camera3D.toGroundPoint should quantize into tiles directly: {diags:?}"
+    );
+}
+
 /// Cursor rays can become model-space targets for the pure animation
 /// post-pass without unpacking the Vec3 at the animation boundary.
 #[test]
