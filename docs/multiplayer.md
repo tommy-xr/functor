@@ -99,6 +99,16 @@ Effect.send(connId, text)     // send on an open connection
 Effect.sendMsg(connId, msg)   // send a plain-data VALUE; received as Net.Data(id, value)
 ```
 
+`Sub.connect` is a desired connection, not a one-shot dial. A failed attempt
+delivers `Net.Error` and retries forever on the deterministic game-time clock:
+250 ms initially, doubling to 500 ms, 1 s, 2 s, 4 s, then capped at 8 s.
+Every failed attempt delivers an error so a game's diagnostics stay honest;
+`Net.Connected` resets the next retry to 250 ms. Events retain transport order,
+and dropping the subscription cancels both the live socket and any pending
+retry. Because the schedule uses frame `tts` rather than wall time or an effect
+read, fake and replay runners issue the same retries for the same recorded
+frames and network events.
+
 `Net` is a built-in module, always in scope:
 `type NetEvent = | Connected(id: float) | Message(id: float, text: string) |
 Data(id: float, value: unknown) | Disconnected(id: float) |

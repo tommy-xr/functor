@@ -31,8 +31,8 @@ use crate::functor_lang_prelude::{
     EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
-    journal_arm, journal_swap, validate_contract, EntryNames, EntryRole, FrameCtx, JournalEntry,
-    Reporter, SpanSource,
+    journal_arm, journal_swap, validate_contract, ConnectRetryState, EntryNames, EntryRole,
+    FrameCtx, JournalEntry, Reporter, SpanSource,
 };
 use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
@@ -182,6 +182,7 @@ pub struct FunctorLangEmbeddedGame {
     /// Declared connection keys (`Sub.connect`/`Sub.listen`), reconciled each
     /// frame — see the desktop producer.
     live_conn_keys: std::collections::HashSet<String>,
+    connect_retries: std::collections::HashMap<String, ConnectRetryState>,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -368,6 +369,7 @@ impl FunctorLangEmbeddedGame {
             recorder: SceneRecorder::new(),
             input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
+            connect_retries: std::collections::HashMap::new(),
             asset_progress: None,
             delivered_asset_progress: None,
             has_physics: loaded.has_physics,
@@ -584,6 +586,7 @@ impl FunctorLangEmbeddedGame {
             deferred_queries: &mut self.deferred_queries,
             pending_events: &mut self.pending_events,
             live_conn_keys: &mut self.live_conn_keys,
+            connect_retries: &mut self.connect_retries,
             prev_tts: &mut self.prev_tts,
             input_buf: &mut self.input_buf,
             has_physics: self.has_physics,

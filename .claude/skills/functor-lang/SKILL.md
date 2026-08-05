@@ -328,6 +328,10 @@ let grab = (s) =>
   and falls through the peer's catch-all silently: share ONE module.
   Non-finite numbers (NaN/Infinity) in a payload are teaching errors at
   the `sendMsg` call site (JSON cannot carry them).
+  `Sub.connect` describes a desired connection: every failed attempt delivers
+  `Net.Error`, then retries forever on the deterministic game-time clock after
+  250ms, doubling through 500ms, 1s, 2s, 4s, and at most 8s. `Connected`
+  resets the next delay to 250ms; dropping the subscription cancels the retry.
 - **`Key` is a built-in module**: `Key.t`, the variant the `input` hook's
   `key` parameter carries — `Key.A`..`Key.Z`, `Key.Up`/`Down`/`Left`/`Right`,
   `Key.Space`/`Enter`/`Escape`, and the digit row as `Key.Num0`..`Key.Num9`

@@ -301,7 +301,9 @@ let draw = (model, tts: float) =>
             is the <em>shape</em> a networked game has, with the transport left out. The real
             transport is <code>Sub.connect</code> / <code>Sub.listen</code> and
             <code>Effect.sendMsg</code>, whose events arrive as the built-in <code>Net</code>
-            module's variants;
+            module's variants. <code>Sub.connect</code> is a desired connection: it reports each
+            failed attempt as <code>Net.Error</code> and retries forever with bounded exponential
+            backoff (250 ms initially, at most 8 s), resetting after <code>Net.Connected</code>;
             <a href="https://github.com/tommy-xr/functor/tree/main/examples/orbs"><code>examples/orbs</code></a>
             is a client and an authoritative server actually talking over it.
           </p>

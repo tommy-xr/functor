@@ -40,8 +40,8 @@ use functor_runtime_common::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
-    journal_arm, journal_push, journal_swap, validate_contract, EntryNames, EntryRole, FrameCtx,
-    JournalEntry, Provenance, Reporter, SpanSource,
+    journal_arm, journal_push, journal_swap, validate_contract, ConnectRetryState, EntryNames,
+    EntryRole, FrameCtx, JournalEntry, Provenance, Reporter, SpanSource,
 };
 use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
@@ -192,6 +192,7 @@ pub struct FunctorLangGame {
     /// key set (kept across hot reload, like the model — Connect is
     /// idempotent).
     live_conn_keys: std::collections::HashSet<String>,
+    connect_retries: std::collections::HashMap<String, ConnectRetryState>,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -485,6 +486,7 @@ impl FunctorLangGame {
             recorder: SceneRecorder::new(),
             input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
+            connect_retries: std::collections::HashMap::new(),
             asset_progress: None,
             delivered_asset_progress: None,
             last_frame: empty_frame(),
@@ -529,6 +531,7 @@ impl FunctorLangGame {
             deferred_queries: &mut self.deferred_queries,
             pending_events: &mut self.pending_events,
             live_conn_keys: &mut self.live_conn_keys,
+            connect_retries: &mut self.connect_retries,
             prev_tts: &mut self.prev_tts,
             input_buf: &mut self.input_buf,
             has_physics: self.has_physics,
