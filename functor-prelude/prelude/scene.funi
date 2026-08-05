@@ -63,6 +63,36 @@ let litNormalMapped : (Color.t, 'texture, t) => t
 /// feed reads mirrored.
 let screen : (RenderTarget.t, t) => t
 
+/// Make a subtree TRANSLUCENT — alpha from 0 (invisible) to 1 (unchanged); the
+/// scene is last for piping.
+///
+/// The alpha applies uniformly to everything below it, whatever material each
+/// node uses — solid colors, textures, lit models, terrain — so a ghost copy of
+/// a craft is `craftScene(...) |> Scene.opacity(0.35)`. Nested opacities
+/// multiply. An alpha outside `0..1` is an error, not a clamp.
+///
+/// HOW IT RENDERS, so the caveats are predictable:
+///
+/// - Translucent subtrees draw in a pass AFTER all opaque geometry, with depth
+///   testing on and depth WRITING off — opaque things in front hide them; they
+///   never hide each other.
+/// - They are sorted back-to-front by the VIEW-SPACE depth of the average world
+///   position of the leaves under each `Scene.opacity` node. That is the whole
+///   sorting granularity:
+///   there is no per-triangle sort, so within ONE translucent subtree
+///   overlapping surfaces (including the back faces of a closed mesh) read
+///   denser where they overlap, and two INTERPENETRATING translucent objects
+///   sort by their averages, which is wrong for the overlapping sliver.
+/// - A translucent subtree casts no shadow.
+/// - `Scene.opacity(1.0, scene)` is exactly `scene` — the identity. Nothing
+///   that never calls this changes in cost or appearance. The flip side is a
+///   STEP at that boundary: the instant alpha drops below 1 the subtree leaves
+///   the opaque pass, stops writing depth AND stops casting a shadow, so a fade
+///   beginning at exactly 1.0 pops on its first frame rather than easing.
+/// - An alpha of 0 draws nothing at all — the subtree is skipped rather than
+///   rasterized — so fading fully out costs nothing.
+let opacity : (float, t) => t
+
 /// Attach an animation pose to model nodes; the scene is last for piping.
 ///
 /// Without an attached pose, a skinned model plays its FIRST clip on the game

@@ -206,6 +206,10 @@ pub fn render_shadow_pass(
         // translucent-material blend is skipped outright under `DepthOnly`.
         pass_blends: false,
         blend_active: std::cell::Cell::new(false),
+        // The depth pass DEFERS `Scene.opacity` subtrees and never comes back
+        // for them: translucent geometry casts no shadow.
+        opacity_stage: crate::OpacityStage::Defer,
+        opacity: std::cell::Cell::new(1.0),
         shadow: None,
         // Fog is a forward-pass concern; the depth pass renders no color.
         fog: None,

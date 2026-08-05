@@ -112,6 +112,28 @@ mod tests {
     }
 }
 
+/// What the current pass does when it walks into a
+/// [`SceneObject::Opacity`](crate::scene3d::SceneObject::Opacity) subtree.
+///
+/// The ordinary 3D forward pass splits: it walks the scene once with
+/// [`Defer`](OpacityStage::Defer) (opaque geometry only), then walks the
+/// collected translucent nodes back-to-front with [`Draw`](OpacityStage::Draw).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpacityStage {
+    /// Skip the subtree — it is drawn later by the transparent pass, or (in the
+    /// shadow/depth pass) not at all, so translucent geometry casts no shadow.
+    Defer,
+    /// Draw the subtree now, with the pass's constant-alpha blending set from
+    /// the accumulated opacity.
+    Draw,
+    /// Draw the subtree inline as a plain group, IGNORING its alpha. Used by
+    /// passes that already own the blend state for their own reason: the
+    /// transparent-debug mode (the whole scene is uniformly translucent there)
+    /// and the 2D sprite pass (straight-alpha painter's order; an `Opacity`
+    /// node cannot occur there anyway — `Scene.opacity` builds a `Scene.t`).
+    Ignore,
+}
+
 pub struct RenderContext<'a> {
     pub gl: &'a glow::Context,
     pub shader_version: &'a str,
@@ -138,6 +160,13 @@ pub struct RenderContext<'a> {
     /// A `Cell` because scene rendering walks an immutably-borrowed context on
     /// one thread; nothing here is shared across threads.
     pub blend_active: std::cell::Cell<bool>,
+    /// How this pass treats `Scene.opacity` subtrees.
+    pub opacity_stage: OpacityStage,
+    /// The opacity accumulated by enclosing `Opacity` nodes during an
+    /// [`OpacityStage::Draw`] walk — the value currently programmed into
+    /// `glBlendColor`. Nested opacities multiply into it and restore it on the
+    /// way out. A `Cell` for the same reason as `blend_active`.
+    pub opacity: std::cell::Cell<f32>,
     /// The directional shadow map + light matrix, when shadows are active.
     /// `None` during the depth pass and when no light casts shadows.
     pub shadow: Option<ShadowUniforms>,

@@ -134,7 +134,9 @@ fn collect_transforms(
 ) {
     let w = world * scene.xform;
     match &scene.obj {
-        SceneObject::Group(children) | SceneObject::Material(_, children) => {
+        SceneObject::Group(children)
+        | SceneObject::Material(_, children)
+        | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -166,7 +168,7 @@ fn collect_anchor(
 ) {
     let w = world * scene.xform;
     match &scene.obj {
-        SceneObject::Group(children) => {
+        SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -311,7 +313,7 @@ fn collect_sample_leaves<'a>(
 ) {
     let w = world * scene.xform;
     match &scene.obj {
-        SceneObject::Group(children) => {
+        SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -1083,6 +1085,20 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
             }
         }
         SceneObject::Group(items) => {
+            for item in items {
+                scale_presence(item, presence);
+            }
+        }
+        // KNOWN LIMITATION: an overlay subtree can never actually CONTAIN an
+        // `Opacity` node — `collect_anchor` / `collect_sample_leaves` keep only
+        // each leaf and its innermost material, so `strobe_leaf` rebuilds copies
+        // out of `Group` / `Material` / leaf and the authored `Scene.opacity`
+        // wrapper is dropped. The consequence is that the extrapolation ghost
+        // of a TRANSLUCENT object renders at the overlay's own fade rather than
+        // at the object's authored alpha. Carrying the accumulated opacity into
+        // `AnchorLeaf` / `SampleLeaf` is the fix when that matters; this arm
+        // exists only so the match stays exhaustive and honest if it ever does.
+        SceneObject::Opacity(_, items) => {
             for item in items {
                 scale_presence(item, presence);
             }
@@ -2077,7 +2093,7 @@ mod tests {
                     material_alphas(item, out);
                 }
             }
-            SceneObject::Group(items) => {
+            SceneObject::Group(items) | SceneObject::Opacity(_, items) => {
                 for item in items {
                     material_alphas(item, out);
                 }

@@ -71,6 +71,11 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v12: translucent subtrees — the `SceneObject::Opacity` variant (a v11 reader
+/// cannot decode a frame carrying one). Only scenes that call `Scene.opacity`
+/// produce it: full opacity is the identity, so every other frame keeps its
+/// v11 shape.
+///
 /// v11: the `AnimExpr::Reach` two-bone IK variant nested in
 /// `ModelDescription.animation`.
 ///
@@ -106,7 +111,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -620,7 +625,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -647,7 +652,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
@@ -663,11 +668,35 @@ mod tests {
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
+    /// The translucent-subtree node carries its alpha inline, so its wire shape
+    /// is pinned like the variants above — `GET /scene`, `Scene.equals` and the
+    /// extrapolation copies all read it.
+    #[test]
+    fn opacity_subtree_wire_is_pinned() {
+        use crate::{Scene3D, SceneObject, Shape};
+
+        assert_eq!(PROTOCOL_VERSION, 12);
+        let scene = SceneObject::Opacity(
+            0.35,
+            vec![Scene3D {
+                obj: SceneObject::Geometry(Shape::Cube),
+                xform: cgmath::Matrix4::from_scale(1.0),
+            }],
+        );
+        let json = serde_json::to_string(&scene).expect("serialize opacity subtree");
+        assert_eq!(
+            json,
+            r#"{"Opacity":[0.35,[{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}]]}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize opacity subtree");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
     #[test]
     fn two_bone_reach_animation_wire_is_pinned() {
         use crate::anim::AnimExpr;
 
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         let reach = AnimExpr::Reach {
             root: "upper".to_string(),
             middle: "lower".to_string(),
