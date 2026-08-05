@@ -405,6 +405,23 @@ pub trait GameProducer {
         serde_json::Value::Null
     }
 
+    /// How many times the live model has been REPLACED since the program
+    /// loaded (the debug server's `GET /state` `model_revision`, protocol
+    /// v10) — every entry point's return and every effect or network fold,
+    /// counted at the producer's single model assignment.
+    ///
+    /// It exists because `frame` is not a version label for a NETWORKED
+    /// model: pausing pins the clock, not the transport, so inbound messages
+    /// keep folding through `update` while `frame` stands still. It counts
+    /// replacements by GAME LOGIC only — a reload, a project load, and a
+    /// timeline rewind replace the model without counting, because the driver
+    /// performing one already knows it did. The default,
+    /// `0`, is the honest answer for a producer whose model never changes
+    /// under it (the replay producer replays recorded frames).
+    fn model_revision(&self) -> u64 {
+        0
+    }
+
     /// The paused-inspector trace (visual-debugger PR2): the wire-contract JSON
     /// for the last real frame's entry-point invocations, replayed on demand
     /// while paused (the debug server's `GET /trace`). `paused` is the shell's

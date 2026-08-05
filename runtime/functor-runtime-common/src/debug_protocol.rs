@@ -53,7 +53,16 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// contract (so `functor run vr` refuses to push a role to one), and a v9
 /// runtime treats a push with no role query as "the role already in force
 /// stands".
-pub const DEBUG_PROTOCOL_VERSION: u32 = 9;
+///
+/// 10 added `model_revision` and `pending_net` to `GET /state`, the two facts
+/// a driver of a NETWORKED session cannot derive from `frame`: pausing freezes
+/// the clock, not the transport, so a paused game's model still changes as
+/// inbound messages fold through `update`. `model_revision` counts model
+/// replacements and `pending_net` reports the shell's undelivered inbound
+/// events. Additive — a pre-v10 runtime simply omits both, which deserializes
+/// as `0`; a client that waits on either must gate on the version rather than
+/// read a constant zero as "quiescent".
+pub const DEBUG_PROTOCOL_VERSION: u32 = 10;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -107,7 +116,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
+        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -224,6 +233,34 @@ pub struct RuntimeState {
     /// every requested step has been simulated, which is how a harness knows a
     /// batched advance has fully landed without guessing a frame target.
     pub pending_steps: u32,
+    /// How many times the game's model has been REPLACED by game logic since
+    /// the program loaded — every `tick`/`input`/`update` return and every
+    /// effect or network fold, counted at the producer's single model
+    /// assignment.
+    ///
+    /// This is the version label for a networked model, and `frame` is not:
+    /// pausing pins the CLOCK, not the transport, so a paused session keeps
+    /// folding inbound messages through `update` while `frame` stands still.
+    /// A driver that wants "did anything land since my snapshot" compares this.
+    ///
+    /// It counts replacements BY GAME LOGIC. Replacing the model from OUTSIDE
+    /// the game deliberately does not count: a hot reload (which rebinds it),
+    /// a whole-project load, a `/rewind` or a timeline seek. Those are things
+    /// the driver itself just performed, and each hands back fresh state to
+    /// re-baseline from — a counter that moved for them too could not tell
+    /// "the network changed my model" from "I rewound it". `default` because a
+    /// pre-v10 runtime omits it.
+    #[serde(default)]
+    pub model_revision: u64,
+    /// Inbound network events the shell has accepted from its transport and
+    /// not yet delivered into the game
+    /// ([`crate::net::inbound_pending`]) — connection events and completed
+    /// HTTP responses. Zero is the quiescence signal a harness waits on before
+    /// snapshotting a baseline; it cannot see a packet still on the wire, so it
+    /// is a lower bound on outstanding network work. `default` because a
+    /// pre-v10 runtime omits it.
+    #[serde(default)]
+    pub pending_net: u64,
     pub viewport: RuntimeViewport,
     pub views: Vec<RuntimeView>,
     /// The structured JSON view of the model
@@ -609,6 +646,8 @@ mod tests {
             frame: 42,
             tts: 1.5,
             pending_steps: 3,
+            model_revision: 17,
+            pending_net: 2,
             viewport: RuntimeViewport::new(1920, 1080),
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: json!({ "label": "hello" }),
@@ -634,6 +673,8 @@ mod tests {
                 "frame": 42,
                 "tts": 1.5,
                 "pending_steps": 3,
+                "model_revision": 17,
+                "pending_net": 2,
                 "viewport": { "width": 1920, "height": 1080 },
                 "views": [{
                     "name": "main",
@@ -858,6 +899,27 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 9);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 10);
+    }
+
+    /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
+    /// still deserializes, reading `0` for both. That is exactly why a client
+    /// waiting on either must gate on `protocol_version` first — a constant
+    /// zero from an old runtime is indistinguishable from real quiescence.
+    #[test]
+    fn a_pre_v10_state_payload_still_decodes_with_zeroed_v10_fields() {
+        let state: RuntimeState = serde_json::from_value(json!({
+            "frame": 7,
+            "tts": 0.5,
+            "pending_steps": 0,
+            "viewport": { "width": 8, "height": 8 },
+            "views": [],
+            "model": null,
+            "model_debug": "",
+            "input": serde_json::to_value(InputSnapshot::default()).unwrap(),
+        }))
+        .expect("a pre-v10 /state payload decodes");
+        assert_eq!(state.model_revision, 0);
+        assert_eq!(state.pending_net, 0);
     }
 }

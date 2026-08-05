@@ -498,6 +498,7 @@ impl FunctorLangProject {
             .saturating_sub(1);
         emit(Event::FunctorLangLoaded {
             entry: self.entry.clone(),
+            role: self.role.clone(),
             sibling_count,
         });
         Ok(project)

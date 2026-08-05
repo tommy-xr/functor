@@ -95,6 +95,11 @@ pub struct FunctorLangGame {
     module: functor_lang::ir::Module,
     session: Session,
     model: Value,
+    /// How many times [`Self::model`] has been replaced by game logic — the
+    /// debug protocol's `model_revision`. Counted by `FrameCtx::absorb`, and
+    /// deliberately NOT reset by a hot reload (which rebinds the model rather
+    /// than replacing it), so it stays monotone for the life of the process.
+    model_revision: u64,
     has_input: bool,
     has_sampled_input: bool,
     /// The shell samples physical state before a fixed simulation step. Hold
@@ -453,6 +458,7 @@ impl FunctorLangGame {
             module: loaded.module,
             session: loaded.session,
             model: loaded.init,
+            model_revision: 0,
             has_input: loaded.has_input,
             has_sampled_input: loaded.has_sampled_input,
             pending_sampled_input: None,
@@ -514,6 +520,7 @@ impl FunctorLangGame {
             session: &self.session,
             names: &self.names,
             model: &mut self.model,
+            model_revision: &mut self.model_revision,
             physics_rt: &mut self.physics_rt,
             physics_frame: &mut self.physics_frame,
             recorder: &mut self.recorder,
@@ -1377,6 +1384,10 @@ AudioScene.empty), got {}",
         functor_runtime_common::functor_lang_prelude::value_to_json(&self.model)
     }
 
+    fn model_revision(&self) -> u64 {
+        self.model_revision
+    }
+
     /// The paused-inspector trace (visual-debugger PR2). When NOT paused, a
     /// cheap early-out: `paused: false` with empty invocations — and NO
     /// `frame`/`tts`, which change every frame: the LSP's idle poll dedups on
@@ -1706,6 +1717,68 @@ mod tests {
         assert!(cmds
             .iter()
             .any(|c| matches!(c, ConnCommand::Send { conn: 22, payload } if payload == b"ping")));
+    }
+
+    /// `model_revision` is the version label a NETWORKED session needs, and
+    /// `frame` is not: an inbound message folds through `update` with no tick
+    /// at all — which is exactly what a paused authority does, since pausing
+    /// pins the clock and not the transport. So a delivery with no step must
+    /// still move the revision, and a delivery the game ignores must not.
+    #[test]
+    fn model_revision_counts_network_folds_that_no_tick_ran() {
+        let _guard = NET_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use functor_runtime_common::net::drain_conn_commands;
+        const BIND: &str = "127.0.0.1:9002";
+        let dir = std::env::temp_dir().join(format!("functor-lang-net-rev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("game.fun"),
+            "type Model = { clients: Float }\n\
+             type Msg = | Joined(id: Float) | Other\n\
+             let toMsg = (ev: Net.NetEvent): Msg =>\n\
+               match ev with\n\
+               | Net.Connected(id) => Joined(id)\n\
+               | Net.Message(id, text) => Other\n\
+               | Net.Disconnected(id) => Other\n\
+               | Net.Error(id, e) => Other\n\
+             let init = { clients: 0.0 }\n\
+             let update = (m: Model, msg: Msg) =>\n\
+               match msg with\n\
+               | Joined(id) => { m with clients: m.clients + 1.0 }\n\
+               | Other => m\n\
+             let subscriptions = (m: Model) => Sub.listen(\"127.0.0.1:9002\", toMsg)\n\
+             let tick = (m: Model, dt: Float, tts: Float) => m\n\
+             let draw = (m: Model, tts: Float) =>\n\
+               Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+        )
+        .unwrap();
+        let _ = drain_conn_commands();
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().unwrap());
+        game.tick(FrameTime {
+            tts: 0.0,
+            dts: 0.016,
+        });
+        let _ = drain_conn_commands();
+
+        // No tick from here on: every later revision is network-driven.
+        let quiet = game.model_revision();
+        game.net_push_connected(BIND.to_string(), 11);
+        let after_join = game.model_revision();
+        assert!(
+            after_join > quiet,
+            "a fold with no tick must move the revision ({quiet} -> {after_join})"
+        );
+        assert!(
+            game.state_debug().contains("clients: 1"),
+            "{}",
+            game.state_debug()
+        );
+
+        // Monotone, and it counts the FOLD rather than the change: a second
+        // client is a second revision.
+        game.net_push_connected(BIND.to_string(), 22);
+        assert!(game.model_revision() > after_join);
     }
 
     /// Write `src` as `game.fun` in its own temp directory (a directory is

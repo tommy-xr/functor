@@ -121,6 +121,16 @@ export interface RuntimeState {
   /** Clock steps queued by `advance` that have not run yet. `0` means every
    * requested step has been simulated. */
   pending_steps: number;
+  /** How many times the model has been REPLACED by game logic since load —
+   * the version label for a NETWORKED model, since pausing pins the clock and
+   * not the transport, so a paused game keeps folding inbound messages while
+   * `frame` stands still. Protocol v10+; a pre-v10 runtime omits it. */
+  model_revision?: number;
+  /** Inbound network events the shell has accepted but not yet delivered to
+   * the game. Poll until `0` for quiescence before snapshotting a baseline.
+   * Protocol v10+; a pre-v10 runtime omits it, so gate on `protocol_version`
+   * rather than reading a missing field as quiescent. */
+  pending_net?: number;
   /** Combined/legacy output extent. Use `views` when view identity matters. */
   viewport: RuntimeViewport;
   views: RuntimeView[];
