@@ -131,7 +131,8 @@ no pixels).
 
 ## Multiplayer simulation
 
-Launch N runners on separate debug ports, networked via `Sub.connect`/`Sub.listen`,
+Launch N runners — each gets its own OS-assigned debug port (the `launch()`
+default; read it from `runner.port`) — networked via `Sub.connect`/`Sub.listen`,
 and drive them together — the out-of-process counterpart to the in-process
 browser-hosted multiplayer panes. `waitFor(poll, predicate, opts)` (and the
 `client.waitForState(predicate, opts)` shorthand) polls until an async condition
@@ -145,15 +146,14 @@ Orbs' two roles are inline modules of ONE `game.fun`, so the role is named with
 `entry` (the CLI's `--entry`) rather than inferred from the path.
 
 ```ts
-const launch = (entry: "client" | "server", port: number) =>
+const launch = (entry: "client" | "server") =>
   FunctorRunner.launch({
     gameDir: "examples/orbs",
     functorLangPath: "examples/orbs/game.fun",
     entry,
-    port,
   });
-await using a = await launch("server", 8077);
-await using b = await launch("client", 8078);
+await using a = await launch("server");
+await using b = await launch("client");
 await Promise.all([a.pause(), b.pause()]);
 for (let frame = 0; frame < 600; frame++) {
   await a.keyDown("up");        // per-client input

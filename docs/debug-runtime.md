@@ -27,9 +27,16 @@ If 8077 is already taken — a second `functor develop`, or a stale process —
 `develop` logs one line and runs the game **without** a debug server rather than
 failing to start; pass `--debug-port <PORT>` for a second session, or `--no-debug`
 to skip the listener entirely. An explicit `--debug-port` that can't bind is still
-a fatal error (a driver asked for *that* port and is waiting on it). Tooling that
-hard-codes 8077 — the TS SDK's `launch()`, the VS Code inspector's default — should
-therefore be pointed at its own port while a `develop` session is up.
+a fatal error (a driver asked for *that* port and is waiting on it).
+
+`--debug-port 0` binds an **OS-assigned free port**; the `[debug-server]
+listening on http://…` stderr line always reports the ACTUAL bound port, so
+automation parses it instead of assuming the requested one. This is the TS
+SDK `launch()` default — parallel sessions can't collide, and the actual port
+is on `runner.port`. Hard-code a port only when something external must find
+the server at a known address (e.g. `adb forward` on device, or the VS Code
+inspector, whose default is 8077 — point it at its own port while a `develop`
+session is up).
 
 The server binds **localhost by default** (`127.0.0.1:<PORT>`); `--debug-bind 0.0.0.0`
 exposes it to the LAN for remote develop (see `POST /reload-source`) — there is no auth,

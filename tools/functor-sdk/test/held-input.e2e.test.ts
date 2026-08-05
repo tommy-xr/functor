@@ -42,7 +42,6 @@ test(
       gameDir,
       repoRoot,
       functorLangPath: join(gameDir, "game.fun"),
-      port: Number(process.env.FUNCTOR_E2E_PORT ?? 8090),
       headless,
     });
 

@@ -89,13 +89,17 @@ export function formatCrashOutput(logLines: string[]): string {
  * ```
  */
 export class FunctorRunner extends FunctorClient implements AsyncDisposable {
-  /** Set if the spawned child emitted an 'error' (e.g. it couldn't be spawned). */
-  private spawnError?: Error;
-
   private constructor(
     http: HttpClient,
+    /** The debug server's actual TCP port (with dynamic allocation — the
+     * default — this is the OS-assigned port parsed from the runtime's own
+     * "listening" line, not the requested one). */
+    public readonly port: number,
     private readonly child: ChildProcess | undefined,
     private readonly logLines: string[],
+    /** Shared with the spawn-time 'error' listener (attached before the
+     * runner exists), so a spawn failure is visible however early it lands. */
+    private readonly spawnErrorRef: { current?: Error },
   ) {
     super(http);
   }
@@ -107,7 +111,9 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
 
   /** Connect to an already-running debug runtime; does not own the process. */
   static async connect(baseUrl = "http://127.0.0.1:8077"): Promise<FunctorRunner> {
-    const runner = new FunctorRunner(new HttpClient(baseUrl), undefined, []);
+    const url = new URL(baseUrl);
+    const port = Number(url.port) || (url.protocol === "https:" ? 443 : 80);
+    const runner = new FunctorRunner(new HttpClient(baseUrl), port, undefined, [], {});
     await runner.state();
     return runner;
   }
@@ -118,7 +124,10 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
    * (`cargo build --bin functor`). Post-E3 there is a single `functor` binary;
    * the game source is the project's `functor.json` entry. */
   static async launch(options: LaunchOptions): Promise<FunctorRunner> {
-    const port = options.port ?? 8077;
+    // Port 0 (the default) = OS-assigned: the runtime binds a free port and
+    // reports it on its "[debug-server] listening" line, which launch parses.
+    // Collision-free under parallel test files / sessions by construction.
+    const port = options.port ?? 0;
     // Resolve the game dir to an absolute path up front, so the spawn cwd and
     // repo-root discovery are consistent regardless of the caller's process cwd.
     const gameDir = isAbsolute(options.gameDir)
@@ -273,59 +282,79 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
       },
     );
 
+    // Resolved with the ACTUAL bound port when the child's own debug server
+    // reports in. Watching the stream (not polling the ring buffer) can't
+    // lose the line, and gating readiness on it means launch never adopts a
+    // FOREIGN process that happens to answer on the requested port.
+    let reportListening: (port: number) => void;
+    const listening = new Promise<number>((r) => {
+      reportListening = r;
+    });
+
     // Decode stdout/stderr line-by-line, holding any trailing partial line (and
     // any split multibyte char) until the rest arrives, so log lines — and the
-    // panic line formatCrashOutput looks for — aren't fragmented across chunks.
-    const decoder = new StringDecoder("utf8");
-    let residual = "";
-    const capture = (chunk: Buffer) => {
-      const lines = (residual + decoder.write(chunk)).split("\n");
-      residual = lines.pop() ?? "";
-      for (const line of lines) {
-        logLines.push(line);
-        if (logLines.length > MAX_LOG_LINES) logLines.shift();
-        if (options.echoLogs) process.stderr.write(`[functor] ${line}\n`);
-      }
+    // listening/panic lines the SDK watches for — aren't fragmented across
+    // chunks. PER STREAM: sharing one decoder/residual would let interleaved
+    // stdout/stderr chunks splice each other's lines (the listening line lands
+    // on stderr while the runtime chats on stdout).
+    const makeCapture = () => {
+      const decoder = new StringDecoder("utf8");
+      let residual = "";
+      return (chunk: Buffer) => {
+        const lines = (residual + decoder.write(chunk)).split("\n");
+        residual = lines.pop() ?? "";
+        for (const line of lines) {
+          logLines.push(line);
+          if (logLines.length > MAX_LOG_LINES) logLines.shift();
+          if (options.echoLogs) process.stderr.write(`[functor] ${line}\n`);
+          const bound = parseListeningPort(line);
+          if (bound !== undefined) reportListening(bound);
+        }
+      };
     };
-    child.stdout?.on("data", capture);
-    child.stderr?.on("data", capture);
+    child.stdout?.on("data", makeCapture());
+    child.stderr?.on("data", makeCapture());
 
-    const runner = new FunctorRunner(
-      new HttpClient(`http://127.0.0.1:${port}`),
-      child,
-      logLines,
-    );
     // A spawn failure (e.g. EACCES, ENOMEM — not caught by the existsSync checks
     // above, which are also TOCTOU) emits 'error' with no other signal; without
     // a listener Node rethrows it as a fatal uncaught exception. Record it so
     // readiness fails fast. ('error' is emitted asynchronously, so attaching
     // here — before the first await — cannot miss it.)
+    const spawnErrorRef: { current?: Error } = {};
     child.once("error", (err) => {
-      runner.spawnError = err;
+      spawnErrorRef.current = err;
     });
 
+    const timeoutMs = options.launchTimeoutMs ?? 60_000;
+    const deadline = Date.now() + timeoutMs;
     try {
-      await runner.waitUntilReady(options.launchTimeoutMs ?? 60_000);
+      const boundPort = await waitForListeningLine(child, spawnErrorRef, listening, deadline);
+      const runner = new FunctorRunner(
+        new HttpClient(`http://127.0.0.1:${boundPort}`),
+        boundPort,
+        child,
+        logLines,
+        spawnErrorRef,
+      );
+      await runner.waitUntilReady(Math.max(1, deadline - Date.now()));
+      return runner;
     } catch (error) {
-      await runner.shutdown();
+      // Covers both phases: runner.shutdown() is shutdownChild(child), so the
+      // pre-runner path needs no separate wrapper.
+      await shutdownChild(child);
       throw new Error(
         `functor failed to start: ${error}\nRecent output:\n${formatCrashOutput(logLines)}`,
       );
     }
-
-    return runner;
   }
 
   private async waitUntilReady(timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      if (this.spawnError) {
-        throw this.spawnError;
+      if (this.spawnErrorRef.current) {
+        throw this.spawnErrorRef.current;
       }
-      if (
-        this.child &&
-        (this.child.exitCode !== null || this.child.signalCode !== null)
-      ) {
+      if (this.child && hasExited(this.child)) {
         throw new Error(
           `process exited early (code ${this.child.exitCode}, signal ${this.child.signalCode})`,
         );
@@ -348,30 +377,106 @@ export class FunctorRunner extends FunctorClient implements AsyncDisposable {
   /** Stop the spawned runtime (SIGTERM, escalating to SIGKILL). No-op if this
    * runner connected to an externally-owned process. */
   async shutdown(): Promise<void> {
-    const child = this.child;
-    if (child === undefined || hasExited(child)) {
-      return;
+    if (this.child !== undefined) {
+      await shutdownChild(this.child);
     }
-    await new Promise<void>((settle) => {
-      // Re-check inside the promise: the child may have exited between the guard
-      // above and attaching the listener — otherwise we'd await an 'exit' that
-      // already fired and hang forever (a signal-killed child has exitCode null).
-      if (hasExited(child)) {
-        settle();
-        return;
-      }
-      const killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
-      child.once("exit", () => {
-        clearTimeout(killTimer);
-        settle();
-      });
-      child.kill("SIGTERM");
-    });
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.shutdown();
   }
+}
+
+/** SIGTERM the child, escalating to SIGKILL. Shared by `shutdown()` and the
+ * pre-runner launch failure path (listening never reported). */
+async function shutdownChild(child: ChildProcess): Promise<void> {
+  if (hasExited(child)) {
+    return;
+  }
+  await new Promise<void>((settle) => {
+    // Re-check inside the promise: the child may have exited between the guard
+    // above and attaching the listener — otherwise we'd await an 'exit' that
+    // already fired and hang forever (a signal-killed child has exitCode null).
+    if (hasExited(child)) {
+      settle();
+      return;
+    }
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    child.once("exit", () => {
+      clearTimeout(killTimer);
+      settle();
+    });
+    child.kill("SIGTERM");
+  });
+}
+
+/** The bound port from a runtime `[debug-server] listening on http://…:PORT`
+ * line, or undefined for any other line. Tolerant of IPv6 bracket rendering
+ * and a trailing `\r` (a Windows-piped runtime would leave one after the
+ * `\n` split). */
+export function parseListeningPort(line: string): number | undefined {
+  const bound = line.match(/\[debug-server\] listening on http:\/\/.*:(\d+)\s*$/);
+  return bound ? Number(bound[1]) : undefined;
+}
+
+/** Wait for the child's own `[debug-server] listening on …` line and return
+ * the bound port it reports. This is the only trustworthy source of the port
+ * (with port 0 it's OS-assigned), and requiring OUR child to report it means
+ * a foreign process squatting a requested port can never be silently adopted
+ * as the launched game — the child exits with "Address already in use"
+ * instead, which surfaces here as an early exit. */
+function waitForListeningLine(
+  child: ChildProcess,
+  spawnErrorRef: { current?: Error },
+  listening: Promise<number>,
+  deadline: number,
+): Promise<number> {
+  return new Promise<number>((resolvePort, reject) => {
+    let settled = false;
+    const onExit = () =>
+      fail(
+        new Error(
+          `process exited early (code ${child.exitCode}, signal ${child.signalCode})`,
+        ),
+      );
+    const cleanup = () => {
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      child.removeListener("error", fail);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      cleanup();
+      reject(error);
+    };
+    const timer = setTimeout(
+      () =>
+        fail(
+          new Error(
+            "debug server never reported listening (no `[debug-server] listening on …` line)",
+          ),
+        ),
+      Math.max(1, deadline - Date.now()),
+    );
+    // Pre-checks: an 'exit'/'error' that already fired will not fire again
+    // for the listeners below.
+    if (spawnErrorRef.current) {
+      fail(spawnErrorRef.current);
+      return;
+    }
+    if (hasExited(child)) {
+      onExit();
+      return;
+    }
+    child.once("exit", onExit);
+    child.once("error", fail);
+    void listening.then((port) => {
+      if (settled) return;
+      cleanup();
+      resolvePort(port);
+    });
+  });
 }
 
 function runnerExe(): string {
