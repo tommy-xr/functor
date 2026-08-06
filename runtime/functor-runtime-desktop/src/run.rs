@@ -329,6 +329,8 @@ fn refresh_fixed_input_levels(
 
 fn apply_scripted_events(
     game: &mut dyn Game,
+    mouse_pos: &mut (i32, i32),
+    emulate_xr: bool,
     held_keys: &mut BTreeSet<InputKey>,
     held_buttons: &mut MouseButtons,
     edges: &mut InputEdges,
@@ -356,11 +358,19 @@ fn apply_scripted_events(
                     apply_mouse_button_edge(game, held_buttons, edges, b, *is_down);
                 }
             }
+            RecordedInput::MouseMove { x, y } => {
+                *mouse_pos = (*x, *y);
+                // Match POST /input: under the desktop XR emulator the
+                // pointer drives the synthesized controller sample instead of
+                // also reaching the game's legacy 2D mouse hook.
+                if !emulate_xr {
+                    game.mouse_move(*x, *y);
+                }
+            }
             // Listed rather than `_`, so adding a scriptable line shape (e.g.
-            // pointer motion) has to be wired here instead of compiling to a
+            // wheel motion) has to be wired here instead of compiling to a
             // silent no-op.
-            RecordedInput::MouseMove { .. }
-            | RecordedInput::MouseWheel { .. }
+            RecordedInput::MouseWheel { .. }
             | RecordedInput::Snapshot(_)
             | RecordedInput::UiEvent(_)
             | RecordedInput::WebviewEvent(_) => {}
@@ -371,7 +381,8 @@ fn apply_scripted_events(
 /// Parse an `--input-script` file into a frame → events map for deterministic
 /// scripted playback (docs/time-travel.md T6b). Each non-blank, non-comment
 /// line is `<frame:int> <control> <down|up>` — e.g. `0 Right down`,
-/// `18 Up down`, `4 Mouse.Left down`. `#` starts a comment (to end of line).
+/// `18 Up down`, `4 Mouse.Left down` — or `<frame:int> Mouse.Move <x> <y>`.
+/// `#` starts a comment (to end of line).
 ///
 /// A `<control>` is either a KEY name, which goes through the same
 /// [`InputKey::from_name`] map the debug server's POST /input uses, or a MOUSE
@@ -386,11 +397,13 @@ fn apply_scripted_events(
 /// (`MouseButton::ctor_tag`), and no key name contains a `.`, so the two
 /// namespaces cannot collide.
 ///
-/// Events are stored as raw `RecordedInput::Key` / `RecordedInput::MouseButton`
-/// so playback re-runs the identical live input path.
+/// Pointer coordinates are signed logical window points — the same top-left-
+/// origin space as `Input.mouse.x` / `.y`, not framebuffer pixels. They are
+/// deliberately not clamped: live pointer events and `POST /input` preserve
+/// out-of-surface coordinates too, and games decide how to handle a miss.
 ///
-/// Pointer MOTION (`RecordedInput::MouseMove`) is not scriptable yet — it needs
-/// a two-coordinate line shape rather than this `<control> <down|up>` triple.
+/// Events are stored as raw `RecordedInput` values so playback re-runs the
+/// identical live input path.
 fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read input script {path}: {e}"))?;
@@ -402,9 +415,33 @@ fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, St
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
+        let is_mouse_move = parts
+            .get(1)
+            .is_some_and(|control| control.eq_ignore_ascii_case("Mouse.Move"));
+        if is_mouse_move {
+            if parts.len() != 4 {
+                return Err(format!(
+                    "{path}:{lineno}: expected `<frame> Mouse.Move <x> <y>`, got `{raw}`"
+                ));
+            }
+            let frame: u64 = parts[0]
+                .parse()
+                .map_err(|_| format!("{path}:{lineno}: bad frame number `{}`", parts[0]))?;
+            let x: i32 = parts[2].parse().map_err(|_| {
+                format!("{path}:{lineno}: bad logical x coordinate `{}`", parts[2])
+            })?;
+            let y: i32 = parts[3].parse().map_err(|_| {
+                format!("{path}:{lineno}: bad logical y coordinate `{}`", parts[3])
+            })?;
+            map.entry(frame)
+                .or_default()
+                .push(RecordedInput::MouseMove { x, y });
+            continue;
+        }
         if parts.len() != 3 {
             return Err(format!(
-                "{path}:{lineno}: expected `<frame> <Key|Mouse.Button> <down|up>`, got `{raw}`"
+                "{path}:{lineno}: expected `<frame> <Key|Mouse.Button> <down|up>` or \
+                 `<frame> Mouse.Move <x> <y>`, got `{raw}`"
             ));
         }
         let frame: u64 = parts[0]
@@ -647,11 +684,14 @@ pub struct Args {
     fixed_time: Option<f32>,
 
     /// Drive the game deterministically from a scripted input file instead of
-    /// live window input (docs/time-travel.md T6b). Each line is
+    /// live window input (docs/time-travel.md T6b). Each line is either
     /// `<frame:int> <control> <down|up>` — a KeyName like `Right`, `Up`, `A`,
     /// `Space`, or a mouse button with an explicit `Mouse.` prefix
     /// (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`; the prefix is required
-    /// because `Left`/`Right`/`Middle` are also key names).
+    /// because `Left`/`Right`/`Middle` are also key names) — or
+    /// `<frame:int> Mouse.Move <x> <y>`. Pointer coordinates are signed LOGICAL
+    /// window points in the same top-left-origin space as `Input.mouse.x/y`,
+    /// not framebuffer pixels; out-of-surface values are preserved.
     /// `#` starts a comment. The sim advances by a FIXED `--script-dt`
     /// per rendered frame (not wall-clock), and each frame's scripted events are
     /// fed before that frame's tick, so frame N is always the same sim state —
@@ -1231,6 +1271,8 @@ fn run_headless(
             {
                 apply_scripted_events(
                     &mut *game,
+                    &mut mouse_pos,
+                    emulate_xr,
                     &mut held_keys,
                     &mut held_buttons,
                     &mut input_edges,
@@ -2454,6 +2496,8 @@ Escape again to quit"
                     if let Some(events) = script.get(&frame_count) {
                         apply_scripted_events(
                             &mut *game,
+                            &mut game_mouse_pos,
+                            args.emulate_xr,
                             &mut held_keys,
                             &mut held_buttons,
                             &mut input_edges,
@@ -3464,6 +3508,54 @@ mod tests {
             map[&9][0],
             RecordedInput::MouseButton { button, is_down: false } if button == Btn::Right as i32
         ));
+    }
+
+    #[test]
+    fn parse_input_script_maps_logical_pointer_motion() {
+        let path = write_tmp(
+            "functor-test-pointer.script",
+            "0 Mouse.Move 400 300\n7 mouse.move -12 640  # outside is preserved\n",
+        );
+        let map = parse_input_script(path.to_str().unwrap()).unwrap();
+
+        assert!(matches!(
+            map[&0][0],
+            RecordedInput::MouseMove { x: 400, y: 300 }
+        ));
+        assert!(matches!(
+            map[&7][0],
+            RecordedInput::MouseMove { x: -12, y: 640 }
+        ));
+    }
+
+    #[test]
+    fn parse_input_script_teaches_pointer_shape_and_coordinate_range() {
+        let short = write_tmp("functor-test-pointer-short.script", "0 Mouse.Move 400\n");
+        let err = parse_input_script(short.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("<frame> Mouse.Move <x> <y>"),
+            "the arity error must teach the pointer line shape: {err}"
+        );
+
+        let non_number = write_tmp(
+            "functor-test-pointer-number.script",
+            "0 Mouse.Move center 300\n",
+        );
+        let err = parse_input_script(non_number.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("bad logical x coordinate `center`"),
+            "the coordinate error must name the bad axis and value: {err}"
+        );
+
+        // The script stores the same i32 coordinates as live/debug input. A
+        // value outside that representable range is rejected at parse time;
+        // negative or merely out-of-surface i32 values remain valid.
+        let out_of_range = write_tmp(
+            "functor-test-pointer-range.script",
+            "0 Mouse.Move 2147483648 300\n",
+        );
+        let err = parse_input_script(out_of_range.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("bad logical x coordinate `2147483648`"));
     }
 
     /// `Left`/`Right`/`Middle` name a KEY and a MOUSE BUTTON. The `Mouse.`

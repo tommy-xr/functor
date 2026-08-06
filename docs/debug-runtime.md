@@ -294,13 +294,21 @@ regression capture — use `--input-script <file>` instead: the runner replays t
 file against a fixed `--script-dt` per frame, so frame N is always the same sim
 state, and `--capture-at-frame N` grabs a byte-identical still every time.
 
-Each non-blank line is `<frame> <control> <down|up>`; `#` starts a comment.
-A `<control>` is either a KEY name (`Right`, `Up`, `A`, `Space` — the same
-`Key::from_name` spelling `POST /input` uses) or a MOUSE BUTTON written with an
-explicit `Mouse.` prefix:
+Each non-blank line is one of these two forms; `#` starts a comment:
+
+```text
+<frame> <Key|Mouse.Button> <down|up>
+<frame> Mouse.Move <x> <y>
+```
+
+A control is either a KEY name (`Right`, `Up`, `A`, `Space` — the same
+`Key::from_name` spelling `POST /input` uses), a MOUSE BUTTON written with an
+explicit `Mouse.` prefix, or the special `Mouse.Move` pointer form:
 
 ```
 0  Right       down     # hold the right arrow key from frame 0
+0  Mouse.Move  400 300  # establish the pointer at a logical point
+1  Mouse.Move  560 220  # aim by moving before this frame's tick
 4  Mouse.Left  down     # press and hold the left mouse button
 28 Mouse.Left  up
 ```
@@ -315,13 +323,28 @@ updates for later `sampledInput` steps, so holding one scripts full-auto fire
 The scripted transition also appears once in `mouse.pressed` or
 `mouse.released` on that frame's sampled snapshot.
 
+`Mouse.Move` coordinates are signed **logical points** with a top-left origin,
+in exactly the same space as `Input.mouse.x` / `.y` and the debug state's
+`input.mouse.surface_width` / `surface_height`. They are not framebuffer
+pixels: on a Retina window the logical surface may be 800×600 while `viewport`
+is 1600×1200. Motion is delivered before the named frame's `sampledInput` and
+`tick`, and the new position is carried into that sampled snapshot and replay
+history.
+
+With `--emulate-xr`, the position drives the synthesized controller sample and
+does not also invoke the legacy `mouseMove` hook, matching `POST /input`.
+
+Scripts and `POST /input` intentionally preserve negative and out-of-surface
+coordinates instead of rejecting them. Native pointer events can report the
+same transient values, and clamping only one injection path would make replay
+diverge from live input. A mapping API such as `Camera3D.toWorldRay` therefore
+continues to return `None` outside the half-open logical surface; drivers can
+read the published surface extent and choose or validate an in-range point.
+
 A `Mouse.* up` with no preceding press is a **parse error**, not a silently
 dropped line: live playback would suppress it while the forward-step trajectory
 preview would replay it, so a stray release is rejected rather than allowed to
 make the preview and the real run disagree.
-
-Pointer MOTION is not scriptable yet — `mouse_move` is injection-only, since it
-needs a two-coordinate line shape rather than this `<control> <down|up>` triple.
 
 ### Sampled input in `GET /state`
 
@@ -340,6 +363,8 @@ clients should treat absent edge arrays/button sets as empty.
   "mouse": {
     "x": 0,
     "y": 0,
+    "surface_width": 800,
+    "surface_height": 600,
     "buttons": { "left": false, "right": false, "middle": false },
     "pressed": { "left": false, "right": false, "middle": false },
     "released": { "left": false, "right": false, "middle": false }
@@ -376,6 +401,12 @@ clients should treat absent edge arrays/button sets as empty.
   }
 }
 ```
+
+`surface_width` and `surface_height` were added in debug protocol v7. They are
+the logical pointer surface in the same coordinate space as `x` and `y`, not
+the framebuffer dimensions in top-level `viewport` (which are `0×0` in
+headless mode). A client that needs resize-correct pointer mapping must require
+v7 or newer rather than infer the logical extent from `viewport`.
 
 Tracked poses use OpenXR's rig-local convention: +X right, +Y up, -Z forward;
 quaternions are `[x, y, z, w]`. Head and controller poses are relative to the
