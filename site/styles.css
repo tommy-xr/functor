@@ -2481,12 +2481,55 @@ a:hover {
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: 0.78rem;
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   width: 100%;
   text-align: left;
   padding: 2px 4px;
   cursor: pointer;
   border-radius: 3px;
+}
+
+/* The row's twisty column — a fixed width so labels align whether or not the
+   execution returned something with structure to open. */
+.exec-tw {
+  width: 0.7em;
+  flex: none;
+  color: var(--text-dim);
+}
+
+/* The execution itself — never wrapped: a long provenance (an `update`
+   carrying a big message) elides, so a row stays one line. */
+.exec-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What the call RETURNED, one line — the summary the tree below expands. It
+   yields the row's width first: which execution this is matters more than
+   what it answered. */
+.exec-result {
+  color: var(--text-dim);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.exec-row.selected .exec-result {
+  opacity: 0.95;
+}
+
+/* The expanded value tree, indented under its row and scrolling on its own —
+   a world snapshot must not push the tab's other rows out of reach. */
+.exec-tree {
+  margin: 0 4px 4px 1.3em;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .exec-row:hover {

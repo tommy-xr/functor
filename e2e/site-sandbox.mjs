@@ -2264,14 +2264,45 @@ for (const example of examples) {
   const tabText = ((await execTab.textContent()) || "").trim();
   check("executions tab counts the paused frame's runs", /⏸ \d+ executions/.test(tabText), tabText);
   await execTab.click();
+  // The LABEL span, not the row: a row also carries its twisty and the value
+  // its call returned (below).
   const rows = await waitFor(
-    () => page.locator(".exec-row").allTextContents(),
+    () => page.locator(".exec-row .exec-label").allTextContents(),
     (rs) => rs.some((r) => r.startsWith("draw"))
   );
   check(
     "executions list includes tick and the synthesized draw",
     rows.some((r) => r.startsWith("tick")) && rows.some((r) => r.startsWith("draw")),
     JSON.stringify(rows)
+  );
+
+  // Structured values: a row shows what its call RETURNED (`result_json` on the
+  // relay, not the Display text), and opening it mounts the same value tree the
+  // wire rows use — expanded to real fields, not an elided summary.
+  const tickRow = page.locator(".exec-item").filter({ hasText: /tick \d+\/\d+/ }).first();
+  const tickSummary = ((await tickRow.locator(".exec-result").textContent()) || "").trim();
+  check(
+    "an execution row shows its returned value",
+    tickSummary.startsWith("→ {") && tickSummary.includes(":"),
+    tickSummary
+  );
+  await tickRow.locator(".exec-row").click();
+  const treeRows = await waitFor(
+    () => tickRow.locator(".exec-tree .mp-vt-row").allTextContents(),
+    (rs) => rs.length > 1
+  );
+  check(
+    "the row expands into the value tree",
+    treeRows.length > 1,
+    JSON.stringify(treeRows.slice(0, 6))
+  );
+  // Untruncated: the tick model's own field names are rows in the tree, and no
+  // row is a bare ellipsis with nothing behind it.
+  const modelKeys = await tickRow.locator(".exec-tree .mp-vt-k").allTextContents();
+  check(
+    "the tree shows the model's fields, keyed",
+    modelKeys.length > 0 && modelKeys.every((k) => k.length > 0),
+    JSON.stringify(modelKeys.slice(0, 8))
   );
 
   // Resuming play clears the overlay (the runtime's unpaused stub bumps the

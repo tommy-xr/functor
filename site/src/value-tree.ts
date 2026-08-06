@@ -12,8 +12,9 @@
 // WHAT IT CAN HONESTLY SHOW. Only what the page actually has. The wire log's
 // payloads are decoded CLIENT-side from the full JSON frame (wire-value.ts), so
 // nothing is lost before this module sees them and every field expands. The
-// paused inspector's trace is a different story — its values arrive as RENDERED
-// TEXT, so it is not wired here; see the note at the end of this file.
+// paused inspector's trace carries structure for each execution's RESULT and
+// text for everything else, so the executions rows open here and the binding
+// sites do not; see the note at the end of this file.
 //
 // DOM-imperative on purpose: its two hosts (the pinned wire log, and the wire
 // tab that will consume it next) are imperative DOM inside a rAF-adjacent
@@ -231,21 +232,20 @@ export const mountValueTree = (
   tree.querySelector<HTMLButtonElement>(":scope > button.mp-vt-row")?.click();
 };
 
-// --- What is NOT wired here, and why -----------------------------------------
+// --- What the trace can and cannot open, and why ------------------------------
 //
-// The paused inspector's trace (the `functor-inspector-trace` relay) carries
-// its values as PRE-RENDERED TEXT, not as data: `RecordedBinding` in
-// functor-lang/src/eval.rs deliberately "owns no `Value`s" — it keeps a
-// `Display` string plus a depth-capped `preview` — so by the time
-// functor_runtime_common::inspector assembles the trace doc, the structure is
-// gone. (The full `value` string is not truncated; only the `preview` is. So
-// the trace's problem is SHAPE, not loss.)
+// The paused inspector's trace used to carry its values as PRE-RENDERED TEXT
+// only, which is why this module shipped without it. Each invocation now also
+// carries its RESULT as structure (`result_json` — the runtime's
+// `value_to_json`, converted by `fromValueJson`), built where the replayed
+// value is already live, so the executions rows expand here like wire rows do.
 //
-// Giving the trace a real tree therefore means shipping structure from the
-// recorder — retaining values (or a `value_to_json`, which the prelude already
-// has for `/state`) through `RecordedInvocation` — a change inside the
-// interpreter's recorder with its own memory budget, not a page-side one.
-// Parsing the `Display` text back into a tree here would be a re-parser for a
-// rendering that was never specified as a format: it would be wrong on strings
-// containing `, ` and silently plausible when wrong. Neither belongs in this
-// PR, so the executions surface is left exactly as it was.
+// Individual BINDING sites still arrive as text. Their values exist only inside
+// the interpreter's recorder (`RecordedBinding` in functor-lang/src/eval.rs
+// "owns no `Value`s"), and every site that observes the model would carry its
+// own copy of it — the doc would grow by the site count for a surface whose
+// full `value` string is already untruncated (only `preview` elides, and the
+// editor's hover shows the whole thing). Parsing that `Display` text into a
+// tree here is still refused: it would be a re-parser for a rendering never
+// specified as a format — wrong on strings containing `, ` and plausible when
+// wrong.

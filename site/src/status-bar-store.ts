@@ -8,6 +8,7 @@
 // `status-bar.ts` until the IDE converted too; that module is gone.)
 
 import type { ConsoleLevel } from "./protocol.js";
+import type { WireValue } from "./wire-value.js";
 
 const MAX_OUTPUT_LINES = 500;
 
@@ -28,9 +29,27 @@ export interface Problem {
 
 /** One row of the paused inspector's entry-point picker. */
 export interface Execution {
+  /** Stable identity across frames — which execution this row is, independent
+   * of the label (which carries the call's per-frame arguments). */
+  key?: string;
   label: string;
   selected: boolean;
   onPick?: () => void;
+  /**
+   * What the call returned, as DATA — the row's value tree.
+   *
+   * Store state rather than an element (unlike `viewStrip` / `wire`): the
+   * executions list is rebuilt on a pause or a frame change, not per frame, so
+   * a re-render of the bar is exactly what should happen when it changes.
+   * Absent when the relay carried no structured result (an older runtime).
+   */
+  result?: WireValue | null;
+  /** The producer's trace budget refused this result: `result` is the
+   * truncation marker, so the row shows `resultPreview` instead. */
+  resultTruncated?: boolean;
+  /** The runtime's own one-line rendering of the result — what a row shows
+   * when the structured copy was refused. */
+  resultPreview?: string;
 }
 
 /**
