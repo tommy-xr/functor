@@ -105,9 +105,11 @@ delivers `Net.Error` and retries forever on the deterministic game-time clock:
 Every failed attempt delivers an error so a game's diagnostics stay honest;
 `Net.Connected` resets the next retry to 250 ms. Events retain transport order,
 and dropping the subscription cancels both the live socket and any pending
-retry. Because the schedule uses frame `tts` rather than wall time or an effect
-read, fake and replay runners issue the same retries for the same recorded
-frames and network events.
+retry. The schedule uses frame `tts`, not wall time or an `EffectRunner` read,
+so fake/replay effect runners cannot perturb it; a live timeline rewind rebases
+the deadline to preserve its remaining delay. Dry counterfactual replay does not
+open, close, or retry real sockets—network commands stay suppressed at that
+side-effect boundary.
 
 `Net` is a built-in module, always in scope:
 `type NetEvent = | Connected(id: float) | Message(id: float, text: string) |
