@@ -113,6 +113,18 @@ pub fn drain_conn_events() -> Vec<KeyedEvent> {
     CONN_IN.drain()
 }
 
+/// Host seam for a transport constructor that can fail synchronously. Returning
+/// the keyed error lets a dispatcher which already owns the game borrow deliver
+/// it without attempting a nested callback borrow (notably browser WebSocket).
+#[doc(hidden)]
+pub fn opened_connection<T, E>(
+    key: String,
+    result: Result<T, E>,
+    message: &str,
+) -> Result<T, (String, String)> {
+    result.map_err(|_| (key, message.to_string()))
+}
+
 // Host (primitive ABI): one helper per event kind so the dylib's exported shim
 // stays plain scalars + bytes.
 pub fn push_connected(key: String, conn: ConnectionId) {
@@ -151,6 +163,22 @@ mod tests {
         ];
         let json = serde_json::to_string(&cmds).unwrap();
         assert_eq!(cmds, serde_json::from_str::<Vec<ConnCommand>>(&json).unwrap());
+    }
+
+    #[test]
+    fn synchronous_open_failure_returns_to_the_owning_dispatcher() {
+        let failure = opened_connection::<(), _>(
+            "ws://blocked".to_string(),
+            Err("denied"),
+            "failed to open WebSocket",
+        );
+        assert_eq!(
+            failure,
+            Err((
+                "ws://blocked".to_string(),
+                "failed to open WebSocket".to_string()
+            ))
+        );
     }
 
     #[test]

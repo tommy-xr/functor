@@ -14,7 +14,8 @@ use functor_runtime_common::functor_lang_producer::EntryRole;
 use functor_runtime_common::geometry::Geometry;
 use functor_runtime_common::io::load_bytes_async;
 use functor_runtime_common::net::{
-    parse_delivered_events, ConnCommand, DeliveredEvent, HttpMethod, NetCommand,
+    opened_connection, parse_delivered_events, ConnCommand, DeliveredEvent, HttpMethod,
+    NetCommand,
 };
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::texture::{
@@ -981,7 +982,7 @@ struct WsClient {
 /// Drain the game's queued connection commands and perform them: with browser
 /// WebSockets (socket events are pushed back into the game from the handlers),
 /// or — under [`NetTransport::Embedder`] — by handing them to the embedding page.
-fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>) {
+fn dispatch_conn_commands(game: &mut dyn GameProducer, state: &Rc<RefCell<WsClient>>) {
     let json = game.net_drain_conn_commands();
     if json == "[]" {
         return;
@@ -999,7 +1000,14 @@ fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>
     };
     for cmd in commands {
         match cmd {
-            ConnCommand::Connect { key, url } => ws_connect(state, key, url),
+            ConnCommand::Connect { key, url } => {
+                if let Err((key, message)) = ws_connect(state, key, url) {
+                    // Dispatch already owns the live game's mutable RefCell borrow.
+                    // Report synchronous constructor failures through that borrow;
+                    // `with_live_game` cannot re-borrow it and would drop the error.
+                    game.net_push_conn_error(key, 0, message);
+                }
+            }
             ConnCommand::Listen { .. } => {
                 web_sys::console::warn_1(
                     &"[net] Sub.listen is unsupported in the browser (client only)".into(),
@@ -1016,11 +1024,18 @@ fn dispatch_conn_commands(game: &dyn GameProducer, state: &Rc<RefCell<WsClient>>
                 }
             }
             ConnCommand::CloseKey { key } => {
-                let id = state.borrow().by_key.get(&key).copied();
-                if let Some(id) = id {
-                    if let Some(ws) = state.borrow().conns.get(&id) {
-                        let _ = ws.close();
-                    }
+                // Remove synchronously before `close()`: a retry deliberately
+                // queues CloseKey + Connect together, while the close event is
+                // asynchronous in browsers.
+                let ws = {
+                    let mut state = state.borrow_mut();
+                    state
+                        .by_key
+                        .remove(&key)
+                        .and_then(|id| state.conns.remove(&id))
+                };
+                if let Some(ws) = ws {
+                    let _ = ws.close();
                 }
             }
         }
@@ -1119,22 +1134,22 @@ pub fn functor_lang_net_deliver(events_json: &str) {
     });
 }
 
-fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
+fn ws_connect(
+    state: &Rc<RefCell<WsClient>>,
+    key: String,
+    url: String,
+) -> Result<(), (String, String)> {
     // Idempotent by key (matches the native host); a re-declared connection
     // reattaches rather than opening a second socket. Event callbacks push into
     // the live producer (the Functor Lang page's FunctorLangEmbeddedGame) via `with_live_game`.
     if state.borrow().by_key.contains_key(&key) {
-        return;
+        return Ok(());
     }
-    let ws = match web_sys::WebSocket::new(&url) {
-        Ok(ws) => ws,
-        Err(_) => {
-            with_live_game(|g| {
-                g.net_push_conn_error(key, 0, "failed to open WebSocket".to_string())
-            });
-            return;
-        }
-    };
+    let ws = opened_connection(
+        key.clone(),
+        web_sys::WebSocket::new(&url),
+        "failed to open WebSocket",
+    )?;
     let id = {
         let mut s = state.borrow_mut();
         s.next_id += 1;
@@ -1170,19 +1185,13 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
         let state = state.clone();
         Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_e: web_sys::CloseEvent| {
             with_live_game(|g| g.net_push_disconnected(key.clone(), iid));
-            // Drop our handle so the key is free to be opened again.
-            //
-            // NB it will not be, today: `reconcile_connections` only emits a
-            // `Connect` for a key ABSENT from the producer's `live_conn_keys`,
-            // and that set is re-seeded from the declared subs every frame — so
-            // a still-declared `Sub.connect` never re-fires and a dropped
-            // connection stays down. (This comment used to claim the reconnect
-            // happened.) Reconnect/backoff is its own change: the shell would
-            // have to retract the key from the producer's live set here.
-            // [xreview]
+            // Drop our handle so the producer's backoff-driven `CloseKey` +
+            // `Connect` retry can open a fresh socket for this key.
             let mut s = state.borrow_mut();
             s.conns.remove(&id);
-            s.by_key.remove(&key);
+            if s.by_key.get(&key) == Some(&id) {
+                s.by_key.remove(&key);
+            }
         })
     };
     ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
@@ -1206,6 +1215,7 @@ fn ws_connect(state: &Rc<RefCell<WsClient>>, key: String, url: String) {
     };
     ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
     on_error.forget();
+    Ok(())
 }
 
 #[wasm_bindgen(start)]
@@ -1671,7 +1681,7 @@ async fn run_async() -> Result<(), JsValue> {
             // Play any one-shot sounds this frame's tick queued (fetch + decode
             // the first time, then from the cache).
             dispatch_audio_commands(&**game);
-            dispatch_conn_commands(&**game, &ws_state);
+            dispatch_conn_commands(&mut **game, &ws_state);
 
             let mut frame: Frame = game.render(frame_time.clone());
             if pending_detach

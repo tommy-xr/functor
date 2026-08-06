@@ -804,6 +804,15 @@ impl ConnectRetryState {
         self.phase = ConnectRetryPhase::Connected(conn);
     }
 
+    /// Preserve the remaining game-time delay when a destructive timeline
+    /// branch moves `tts`. Socket IO stays live and is never replayed, but its
+    /// next deterministic retry must not inherit time discarded by the branch.
+    fn rebase_deadline(&mut self, old_tts: f64, new_tts: f64) {
+        if let ConnectRetryPhase::WaitingUntil(deadline) = &mut self.phase {
+            *deadline += new_tts - old_tts;
+        }
+    }
+
     fn begin_retry_if_due(&mut self, now: f64) -> bool {
         let ConnectRetryPhase::WaitingUntil(deadline) = self.phase else {
             return false;
@@ -850,6 +859,7 @@ impl FrameCtx<'_> {
         // while the draggable bar is parked on an earlier frame, branch the
         // timeline from there BEFORE this frame advances — and drop any in-flight
         // frame work so it doesn't cross the branch (the reload discipline).
+        let retry_tts_before_scrub = *self.prev_tts;
         if frame_time.dts > 0.0
             && self.recorder.commit_scrub_if_resuming(
                 self.model,
@@ -859,6 +869,11 @@ impl FrameCtx<'_> {
                 self.prev_tts,
             )
         {
+            if let (Some(old_tts), Some(new_tts)) = (retry_tts_before_scrub, *self.prev_tts) {
+                for retry in self.connect_retries.values_mut() {
+                    retry.rebase_deadline(old_tts, new_tts);
+                }
+            }
             self.deferred_queries.clear();
             self.pending_events.clear();
             // The restored model predates the current loading snapshot, so
@@ -2379,6 +2394,15 @@ mod tests {
         retry.disconnected(42, 20.0);
         assert!(!retry.begin_retry_if_due(20.249));
         assert!(retry.begin_retry_if_due(20.25));
+    }
+
+    #[test]
+    fn retry_deadline_preserves_remaining_delay_across_timeline_rebase() {
+        let mut retry = ConnectRetryState::pending();
+        retry.failed(10.0);
+        retry.rebase_deadline(10.0, 2.0);
+        assert!(!retry.begin_retry_if_due(2.249));
+        assert!(retry.begin_retry_if_due(2.25));
     }
     use crate::functor_lang_prelude::UiHandler;
     use crate::ui::{UiEvent, UiEventKind};
