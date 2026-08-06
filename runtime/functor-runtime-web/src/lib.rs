@@ -1162,8 +1162,11 @@ fn ws_connect(
 
     let on_open = {
         let key = key.clone();
+        let state = state.clone();
         Closure::<dyn FnMut()>::new(move || {
-            with_live_game(|g| g.net_push_connected(key.clone(), iid))
+            if state.borrow().by_key.get(&key) == Some(&id) {
+                with_live_game(|g| g.net_push_connected(key.clone(), iid));
+            }
         })
     };
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
@@ -1171,9 +1174,12 @@ fn ws_connect(
 
     let on_message = {
         let key = key.clone();
+        let state = state.clone();
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
-            if let Some(text) = e.data().as_string() {
-                with_live_game(|g| g.net_push_conn_message(key.clone(), iid, text));
+            if state.borrow().by_key.get(&key) == Some(&id) {
+                if let Some(text) = e.data().as_string() {
+                    with_live_game(|g| g.net_push_conn_message(key.clone(), iid, text));
+                }
             }
         })
     };
@@ -1184,13 +1190,17 @@ fn ws_connect(
         let key = key.clone();
         let state = state.clone();
         Closure::<dyn FnMut(web_sys::CloseEvent)>::new(move |_e: web_sys::CloseEvent| {
-            with_live_game(|g| g.net_push_disconnected(key.clone(), iid));
             // Drop our handle so the producer's backoff-driven `CloseKey` +
             // `Connect` retry can open a fresh socket for this key.
             let mut s = state.borrow_mut();
             s.conns.remove(&id);
-            if s.by_key.get(&key) == Some(&id) {
+            let was_current = s.by_key.get(&key) == Some(&id);
+            if was_current {
                 s.by_key.remove(&key);
+            }
+            drop(s);
+            if was_current {
+                with_live_game(|g| g.net_push_disconnected(key.clone(), iid));
             }
         })
     };
@@ -1199,6 +1209,7 @@ fn ws_connect(
 
     let on_error = {
         let key = key.clone();
+        let state = state.clone();
         // A WebSocket's `error` event is a PLAIN `Event`, not an `ErrorEvent` —
         // it carries no `message`. Typing it as `ErrorEvent` and calling
         // `.message()` made the generated glue read `length` off `undefined`,
@@ -1208,9 +1219,11 @@ fn ws_connect(
         // there is nothing to recover — and the endpoint is already the `key`
         // this error is reported against. [xreview]
         Closure::<dyn FnMut(web_sys::Event)>::new(move |_e: web_sys::Event| {
-            with_live_game(|g| {
-                g.net_push_conn_error(key.clone(), iid, "connection failed".to_string())
-            });
+            if state.borrow().by_key.get(&key) == Some(&id) {
+                with_live_game(|g| {
+                    g.net_push_conn_error(key.clone(), iid, "connection failed".to_string())
+                });
+            }
         })
     };
     ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
