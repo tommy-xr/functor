@@ -62,7 +62,16 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// events. Additive — a pre-v10 runtime simply omits both, which deserializes
 /// as `0`; a client that waits on either must gate on the version rather than
 /// read a constant zero as "quiescent".
-pub const DEBUG_PROTOCOL_VERSION: u32 = 10;
+///
+/// 11 added the EMBEDDER TRANSPORT's two endpoints — `GET /net/outbound` and
+/// `POST /net/deliver` — through which a host process IS the network for a
+/// runtime started with `--net-transport embedder` (no socket is ever opened).
+/// Additive, and inert unless that argument was passed: under the default
+/// socket transport both routes answer 409, because draining the game's
+/// outbound commands there would steal them from the real dispatcher and
+/// delivering into it would inject events no peer sent. A pre-v11 runtime
+/// answers 404.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 11;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -172,6 +181,16 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/rewind",
         description: "coupled scene rewind — {\"frame\":42} restores model + physics to that rendered frame (pin the clock first); 400 if unrecorded/pruned",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/net/outbound",
+        description: "embedder transport (--net-transport embedder): take-and-consume the game's queued ConnCommands as JSON — the host process is this runtime's network; 409 under the default socket transport",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/net/deliver",
+        description: "embedder transport (--net-transport embedder): deliver inbound network events, a JSON array of {kind:\"connected\"|\"message\"|\"disconnected\"|\"error\", key, conn, text?/message?}; folded through update before the response; 409 under the default socket transport",
     },
 ];
 
@@ -566,6 +585,16 @@ pub enum DebugRequest {
     ReloadAsset(ProjectAsset, Sender<Result<String, String>>),
     SyncAssets(ProjectAssetPaths, Sender<Result<String, String>>),
     Rewind(u64, Sender<Result<String, String>>),
+    /// Embedder transport: take-and-consume the game's queued `ConnCommand`s.
+    /// `Err` when the runtime is on the default socket transport, where the
+    /// real dispatcher owns that queue.
+    NetOutbound(Sender<Result<String, String>>),
+    /// Embedder transport: push inbound events into the game. `Err` for the
+    /// same reason as [`DebugRequest::NetOutbound`].
+    NetDeliver(
+        Vec<crate::net::DeliveredEvent>,
+        Sender<Result<String, String>>,
+    ),
 }
 
 #[cfg(test)]
@@ -877,6 +906,8 @@ mod tests {
             "POST /reload-asset",
             "POST /sync-assets",
             "POST /rewind",
+            "GET /net/outbound",
+            "POST /net/deliver",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -899,7 +930,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 10);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 11);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

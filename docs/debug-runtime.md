@@ -126,6 +126,8 @@ screenshot run has no reason to grab your mouse.
 | `POST /reload-asset` | upload one project-relative texture/model/audio asset as a binary path+bytes envelope |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
+| `GET /net/outbound` | **embedder transport only** — take-and-consume the game's queued `ConnCommand`s (see below) |
+| `POST /net/deliver` | **embedder transport only** — deliver inbound network events into the game (see below) |
 
 ### `model` in `GET /state`
 
@@ -508,6 +510,65 @@ are excluded — by file name. A producer whose logic is not source-shaped
 (`--replay`) answers **501**, and a pre-v5 runtime answers **404**.
 
 `functor mcp`'s `save_project` tool is built on it (docs/mcp.md).
+
+### The embedder transport (protocol v11)
+
+A runtime started with `--net-transport embedder` opens **no socket**. Its
+persistent-connection traffic — everything `Sub.listen`, `Sub.connect`,
+`Effect.send` and `Effect.close` produce — stays queued for the debug client,
+and inbound events arrive from it. **The client is the network.** The default is
+unchanged (`--net-transport sockets`): the runner dispatches to the real
+tungstenite host exactly as before, and both endpoints below answer **409**,
+because draining there would steal the real dispatcher's commands and
+delivering there would inject events no peer sent.
+
+This is the native half of the seam the web runtime already has
+(`window.__functorNetTransport = "embedder"`, and the browser coordinator in
+`site/src/net-coordinator.ts`). Natively, "the embedder" is whatever process
+drives the debug server — for `functor mcp`'s session groups, that is the MCP
+host itself (docs/mcp.md).
+
+**`GET /net/outbound`** returns and CONSUMES the queued commands, as the
+versioned `ConnCommand` JSON every host consumes (serde's externally-tagged
+representation, byte payloads included):
+
+```jsonc
+[ {"Listen":  {"key":"127.0.0.1:9101","addr":"127.0.0.1:9101"}},
+  {"Connect": {"key":"ws://127.0.0.1:9101/orbs","url":"ws://127.0.0.1:9101/orbs"}},
+  {"Send":    {"conn":1,"payload":[102,117,110,58]}},
+  {"CloseConn": {"conn":1}},
+  {"CloseKey":  {"key":"127.0.0.1:9101"}} ]
+```
+
+**`POST /net/deliver`** takes a JSON array of events, the shape mirroring the
+four producer push methods one-for-one (`key` is the routing key of the
+`connect`/`listen` the event belongs to; a message is TEXT, as a real WebSocket
+hands it over):
+
+```jsonc
+[ {"kind":"connected",    "key":"ws://127.0.0.1:9101/orbs","conn":1},
+  {"kind":"message",      "key":"ws://127.0.0.1:9101/orbs","conn":1,"text":"hi"},
+  {"kind":"disconnected", "key":"ws://127.0.0.1:9101/orbs","conn":1},
+  {"kind":"error",        "key":"ws://127.0.0.1:9101/orbs","conn":1,"message":"…"} ]
+```
+
+The two directions use different shapes on purpose: egress is the already
+versioned logic↔shell type, and ingress mirrors the push methods it feeds. A
+negative `conn` is a **400** (it would reach the game as `u64::MAX`), and so is
+a malformed batch — neither reaches the runtime loop.
+
+Delivery is **synchronous**: each event folds through `update` before the
+response, so a `200` means the model has already absorbed the batch. That is
+what lets a driver route a packet and then step, and know the step saw it.
+`pending_net` therefore stays 0 on this transport — nothing waits in a shell
+channel.
+
+`--net-transport embedder` without `--debug-port` is refused at startup: with no
+client there is nothing to drain the queue or deliver into it, so the game's
+network would silently be a black hole with an unbounded backlog behind it.
+
+The device runtime answers 409 for both: a Quest session's network is a real
+socket to a real peer, with no coordinator behind adb.
 
 ### Project asset sync
 

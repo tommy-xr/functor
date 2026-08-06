@@ -6,6 +6,7 @@
 // is it, imported by `mcp-server.mjs` and `mcp-step-all.mjs`.
 //
 // Plain ESM with node builtins only, like every other file in `e2e/`.
+import { connect } from "node:net";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -109,4 +110,43 @@ export async function startMcp(clientName) {
   });
   rpc.notify("notifications/initialized", {});
   return { proc, rpc };
+}
+
+/** Poll `get_state` until `predicate` holds, or fail loudly with the last model.
+ *
+ * Shared by every multiplayer script: a networked assertion is always "wait for
+ * a game-level fact", never "step and hope". */
+export async function waitForState(rpc, session, predicate, what, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  let last;
+  for (;;) {
+    last = await rpc.call("get_state", { session });
+    if (predicate(last)) return last;
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for ${what}; last model: ${JSON.stringify(last.model)}`);
+    }
+    await sleep(100);
+  }
+}
+
+/** Is something listening on a localhost TCP port? */
+export async function portIsBound(port) {
+  return new Promise((resolve) => {
+    const socket = connect({ host: "127.0.0.1", port });
+    socket.once("connect", () => (socket.destroy(), resolve(true)));
+    socket.once("error", () => (socket.destroy(), resolve(false)));
+  });
+}
+
+/** Wait until something IS listening on a localhost TCP port.
+ *
+ * An orbs client dials ONCE with no retry, so a client launched before the
+ * server's `Sub.listen` has bound lands in "error" and never converges. */
+export async function waitForPort(port, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await portIsBound(port)) return;
+    if (Date.now() > deadline) throw new Error(`nothing listening on 127.0.0.1:${port}`);
+    await sleep(100);
+  }
 }

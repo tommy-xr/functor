@@ -22,10 +22,14 @@
 //! which take the routing `key` beside each event and a message as TEXT — so
 //! this type mirrors those signatures one-for-one instead.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One inbound network event handed to the runtime by its embedder.
-#[derive(Debug, PartialEq, Eq, Deserialize)]
+///
+/// `Serialize` because the embedder is not always JavaScript: the native
+/// coordinator (`functor mcp`) BUILDS these and posts them to a runtime's
+/// `POST /net/deliver`, so both ends of the seam speak the one type.
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum DeliveredEvent {
     /// The connection identified by `key` became usable as `conn`.

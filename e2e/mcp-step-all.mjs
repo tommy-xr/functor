@@ -28,13 +28,12 @@
 //   node e2e/mcp-step-all.mjs
 //
 // Set FUNCTOR_BIN when the build uses a shared CARGO_TARGET_DIR.
-import { connect } from "node:net";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The raw JSON-RPC client is shared with e2e/mcp-server.mjs.
-import { check, failures, ROOT, sleep, startMcp } from "./mcp-rpc.mjs";
+import { check, failures, ROOT, sleep, startMcp, waitForPort, waitForState } from "./mcp-rpc.mjs";
 
 const DIR = "examples/orbs";
 /** The ws port `examples/orbs` binds (`let bind = "127.0.0.1:9101"`). */
@@ -42,39 +41,6 @@ const WS_PORT = 9101;
 /** Lockstep rounds per run. Enough to see the world move, short enough to run twice. */
 const ROUNDS = 12;
 const DTS = 0.016;
-
-/** Poll `get_state` until `predicate` holds, or fail loudly with the last state. */
-async function waitForState(rpc, session, predicate, what, timeoutMs = 20000) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  for (;;) {
-    last = await rpc.call("get_state", { session });
-    if (predicate(last)) return last;
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for ${what}; last state: ${JSON.stringify(last.model)}`);
-    }
-    await sleep(100);
-  }
-}
-
-/** Wait until something is listening on a localhost TCP port.
- *
- * An orbs client dials ONCE with no retry, so a client launched before the
- * server's `Sub.listen` has bound lands in "error" and never converges. The
- * SDK's own multiplayer test gates on the same port for the same reason. */
-async function waitForPort(port, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const open = await new Promise((resolve) => {
-      const socket = connect({ host: "127.0.0.1", port });
-      socket.once("connect", () => (socket.destroy(), resolve(true)));
-      socket.once("error", () => (socket.destroy(), resolve(false)));
-    });
-    if (open) return;
-    if (Date.now() > deadline) throw new Error(`nothing listening on 127.0.0.1:${port}`);
-    await sleep(100);
-  }
-}
 
 /** The authority's ships: `world.pilots` is a list of `{ ship, intent }`. */
 const shipsOf = (state) => state.model.world.pilots.map((p) => p.ship);
