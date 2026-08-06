@@ -6,7 +6,7 @@
 //
 //   ┌ chrono bar ─ ⏸ ⏭ ══rail══╪═ 🔮 | ⊞ tiled ▦ grid ▤ tabs ┐ (game side only —
 //   ├ pane grid ──────────────────────────────────────────────┤    the editor keeps
-//   │  ╔ 1 client · cyan  ⇅ Wi-Fi ▾   #f 841 ● ╗  ┌ 2 client ┐│    its full height)
+//   │  ╔ 1 client · cyan  ⇅ LAN ▾     #f 841 ● ╗  ┌ 2 client ┐│    its full height)
 //   │  ║             iframe                    ║  │  iframe   ││
 //   └──╚══════════════════════════════════════╝──└───────────┘┘
 //
@@ -22,9 +22,10 @@
 //  - every pane (the sandbox player included) boots with `?scrubber=hidden`
 //    — the seam without the bar — and the chrono bar is the ONE transport
 //    instrument at every client count, single included;
-//  - the per-pane link chip (LAN / Wi-Fi / mobile / awful) records a
-//    LinkProfile per client but impairs nothing until the transport carries
-//    it. It is labelled as such.
+//  - the per-pane link chip (LAN / Wi-Fi / mobile / awful) IS the client's
+//    link: its latency and jitter schedule that client's packets in the
+//    coordinator (Addendum 8.2). Its loss number is inert on purpose —
+//    `Sub.connect` is reliable-ordered, so loss waits for `Net.Udp`.
 //
 // This module is imperative DOM on purpose: it owns the preview column
 // OUTSIDE the React islands (like CodeMirror owns #editor), and publishes to
@@ -34,8 +35,9 @@ import { PlayerBridge } from "./player-bridge.js";
 import { asPlayerMessage } from "./protocol.js";
 import type { StatusBar } from "./status-bar-store.js";
 import type { PillState } from "./components/StatusPill.js";
-import { NetCoordinator } from "./net-coordinator.js";
+import { NetCoordinator, TIMELINE_FPS } from "./net-coordinator.js";
 import { initNetworkGraph, type NetworkNode } from "./mp-network.js";
+import { initWireTab } from "./wire-tab.js";
 
 /** The shared scrubber's `window.__scrub` seam (runtime/functor-runtime-web/scrubber.js). */
 interface ScrubSeam {
@@ -121,8 +123,16 @@ interface TimelineView {
 
 interface LinkProfile {
   name: string;
+  /** One-way latency, in ms — applied by the coordinator's delivery schedule. */
   ms: number;
+  /** Extra delay drawn per packet, in ms — also applied. */
   jitter: number;
+  /**
+   * Packet loss, in percent — RECORDED ONLY, and the label says so. Dropping a
+   * packet on `Sub.connect` would contradict the reliable-ordered delivery the
+   * game is written against (Addendum 8.2); this number becomes live for
+   * datagrams when `Net.Udp` lands.
+   */
   loss: number;
 }
 
@@ -217,15 +227,23 @@ const PLAYER_COLORS = ["var(--scrub-p1)", "var(--scrub-p2)", "var(--scrub-p3)", 
 /** One clamp for every entry point (the select offers the same range). */
 export const MAX_CLIENTS = 3;
 
-/** The timeline's fixed tick rate (timeline-model.js TIMELINE_FPS). */
-const TIMELINE_FPS = 60;
-
 const LINK_PRESETS: LinkProfile[] = [
   { name: "LAN", ms: 8, jitter: 2, loss: 0 },
   { name: "Wi-Fi", ms: 45, jitter: 12, loss: 1.2 },
   { name: "mobile", ms: 132, jitter: 38, loss: 3.4 },
   { name: "awful", ms: 400, jitter: 120, loss: 12 },
 ];
+
+/**
+ * A new client starts on LAN, and that is a decision the impairment PR had to
+ * take: the chips used to default to Wi-Fi because they impaired NOTHING, and a
+ * default that now silently puts three frames of delay on every session would
+ * change what every sample feels like — and what the coordinator's own e2e
+ * measures — without anyone asking for it. LAN's 8ms rounds to zero frames, so
+ * the default session behaves exactly as it did; slowing a link is the
+ * deliberate act, one chip away.
+ */
+const DEFAULT_LINK = LINK_PRESETS[0];
 
 const seamOf = (iframe: HTMLIFrameElement): ScrubSeam | null => {
   try {
@@ -425,7 +443,8 @@ export function initMultiplayerPanes({
 
   // Every pane's networking routes through ONE coordinator (net-coordinator.ts):
   // the panes boot `?net=embedder`, post their conn commands to this page, and
-  // it routes them between panes on perfect links. This module owns it because
+  // it routes them between panes, delayed by each client's link chip. This
+  // module owns it because
   // it owns every pane — including pane 1, the page's own #player — so no pane
   // can be created outside its view. It is inert for a game that declares no
   // `Sub.connect`/`Sub.listen`: those panes never post a command.
@@ -437,7 +456,14 @@ export function initMultiplayerPanes({
   // (a server pane mounting, a client count going to zero and back).
   // Measured once per frame by `measureClocks` (see the frame-offset block).
   let referenceFrame: number | null = null;
-  const net = new NetCoordinator({ referenceFrame: () => referenceFrame });
+  const net = new NetCoordinator({
+    referenceFrame: () => referenceFrame,
+    // The link chip, made real (Addendum 8.2). Read live and per packet, so a
+    // profile change takes effect on the next thing routed; the coordinator
+    // takes latency and jitter only, and the chip's loss number stays a
+    // datagram setting it does not consume.
+    link: (id) => panes.find((pane) => pane.id === id)?.link ?? null,
+  });
 
   const panes: Pane[] = [];
 
@@ -458,6 +484,7 @@ export function initMultiplayerPanes({
     shell: pane.shell,
     color: pane.color,
     linkLabel: () => `${pane.link.name} · ${pane.link.ms}ms`,
+    linkMs: () => pane.link.ms,
   });
   // Where the SESSION is parked, in reference-clock frames — the one number the
   // rail's label already shows, published for the views that have to agree with
@@ -466,6 +493,17 @@ export function initMultiplayerPanes({
   // Written once per frame by `paint`, read by the graph on the same rAF.
   let sessionClock: { parked: boolean; frame: number | null } = { parked: false, frame: null };
 
+  // The TRAFFIC MONITOR, docked in the status bar's wire tab (wire-tab.ts): the
+  // same rows the pinned panel shows, in every layout rather than only in the
+  // network view, filterable per link. It reads the same coordinator log and
+  // the same session clock — one record, two framings.
+  const wireTab = initWireTab({
+    slot: statusBar.wire,
+    net,
+    links: () => panes.map((pane) => ({ id: pane.id, color: pane.color })),
+    clock: () => sessionClock,
+  });
+
   const graph = initNetworkGraph({
     stage,
     grid,
@@ -473,6 +511,11 @@ export function initMultiplayerPanes({
     clients: () => panes.map(asNode),
     server: () => (serverPane ? asNode(serverPane.pane) : null),
     clock: () => sessionClock,
+    // Pinning a wire aims the docked monitor at the same link (see wire-tab's
+    // note on the selection model). Unpinning is not propagated.
+    onSelect: (id) => {
+      if (id !== null) wireTab.focus(id);
+    },
   });
 
   const makePane = (role: PaneRole, index: number, iframe: HTMLIFrameElement): Pane => {
@@ -493,7 +536,7 @@ export function initMultiplayerPanes({
           client
             ? `<span class="mp-link-host">
           <button class="mp-link-chip"
-            title="Link impairment for this client (prototype — recorded per client; applies once the coordinator's link impairment lands)">⇅ Wi-Fi ▾</button>
+            title="This client's link: latency and jitter delay its packets in the host coordinator">⇅ ${DEFAULT_LINK.name} ▾</button>
         </span>`
             : `<span class="mp-authority">authority</span>`
         }
@@ -540,7 +583,7 @@ export function initMultiplayerPanes({
       tab,
       scope: new AbortController(),
       state: "busy",
-      link: { ...LINK_PRESETS[1] },
+      link: { ...DEFAULT_LINK },
       frameLabels: [
         shell.querySelector(".mp-pf-n") as HTMLElement,
         tab.querySelector(".mp-pf-n") as HTMLElement,
@@ -928,6 +971,11 @@ export function initMultiplayerPanes({
     // thumbnails too), so the frame counters need a home wherever that happens.
     // Only the packet legend is network-scoped, via `data-view` above.
     viewStrip.hidden = single;
+    // The wire tab is present exactly when there is an authority to talk to:
+    // links, and a coordinator log to read. A single-role example has neither,
+    // so the tab is absent rather than empty (the NETWORK view's gate, and the
+    // CLIENTS control's discipline).
+    statusBar.setWirePresent(serverPane !== null);
     const canAdd = !single && panes.length < MAX_CLIENTS;
     addTile.hidden = !canAdd;
     addTab.hidden = !canAdd;
@@ -999,13 +1047,16 @@ export function initMultiplayerPanes({
       <div class="mp-link-presets">
         ${LINK_PRESETS.map(
           (preset) =>
-            `<button data-name="${preset.name}" aria-pressed="${preset.name === "Wi-Fi"}">${preset.name}</button>`
+            `<button data-name="${preset.name}" aria-pressed="${preset.name === DEFAULT_LINK.name}">${preset.name}</button>`
         ).join("")}
       </div>
-      <label>⇅ <input class="mp-l-ms" type="number" min="0" value="45"> ms
-        ± <input class="mp-l-j" type="number" min="0" value="12"></label>
-      <label>✂ <input class="mp-l-loss" type="number" min="0" max="100" step="0.1" value="1.2"> % loss</label>
-      <p class="mp-link-note">prototype: recorded per client, applied when link impairment lands</p>`;
+      <label>⇅ <input class="mp-l-ms" type="number" min="0" value="${DEFAULT_LINK.ms}"> ms
+        ± <input class="mp-l-j" type="number" min="0" value="${DEFAULT_LINK.jitter}"></label>
+      <label class="off">✂ <input class="mp-l-loss" type="number" min="0" max="100" step="0.1" value="${DEFAULT_LINK.loss}"> % loss
+        <b class="mp-link-soon">datagrams</b></label>
+      <p class="mp-link-note">latency and jitter are live — they delay this client's packets from
+        the next one on. Loss applies to datagrams (Net.Udp, coming): Sub.connect is
+        reliable-ordered, so nothing here drops or reorders it.</p>`;
     host.appendChild(menu);
 
     const msInput = menu.querySelector(".mp-l-ms") as HTMLInputElement;
@@ -1014,6 +1065,12 @@ export function initMultiplayerPanes({
 
     const paintChip = () => {
       chip.textContent = `⇅ ${pane.link.name === "custom" ? `${pane.link.ms}ms` : pane.link.name} ▾`;
+      // The chip states what it DOES, in the numbers it is currently set to —
+      // it is a control now, not a label (Addendum 8.2).
+      chip.title =
+        `${pane.link.name}: ${pane.link.ms}ms ± ${pane.link.jitter}ms delays this client's ` +
+        `packets, from the next one routed. Loss (${pane.link.loss}%) applies to datagrams — ` +
+        `Sub.connect is reliable-ordered, so nothing is dropped or reordered.`;
       msInput.value = String(pane.link.ms);
       jitterInput.value = String(pane.link.jitter);
       lossInput.value = String(pane.link.loss);
@@ -1690,8 +1747,8 @@ export function initMultiplayerPanes({
         );
       }
     }
-    // Link state, straight from the coordinator's connection table — the seed
-    // of the link chip becoming real. Only a session that HAS an authority
+    // Link state, straight from the coordinator's connection table (the chip
+    // beside it owns the link's PACE). Only a session that HAS an authority
     // shows it: in a single-player example there is nothing to wait for.
     const links = serverPane ? net.connectionCounts() : null;
     for (const pane of allPanes()) {
@@ -1716,7 +1773,7 @@ export function initMultiplayerPanes({
         pane.conn.dataset.linked = String(count > 0);
         pane.conn.title =
           count > 0
-            ? "Connected through the host net coordinator (perfect link)"
+            ? "Connected through the host net coordinator (this pane's link chip sets the delay)"
             : "No connection yet — waiting for the server pane's Sub.listen";
       }
     }
@@ -1734,8 +1791,10 @@ export function initMultiplayerPanes({
     // the cards.
     if (animating > 0 && grid.dataset.view === "network") graph.relayout();
     // One loop for the whole preview column: the network graph advances its
-    // packets here rather than running a second rAF beside this one.
+    // packets here rather than running a second rAF beside this one, and the
+    // docked monitor repaints on it too (closed, that is one guarded write).
     graph.step();
+    wireTab.step();
     raf = requestAnimationFrame(tickLoop);
   };
   raf = requestAnimationFrame(tickLoop);
@@ -1763,6 +1822,7 @@ export function initMultiplayerPanes({
       // land under the new session's playhead.
       net.clearLog();
       graph.resetCounts();
+      wireTab.reset();
       updateChrome();
       paintAggregate();
     },
@@ -1789,6 +1849,8 @@ export function initMultiplayerPanes({
       cancelAnimationFrame(raf);
       viewStrip.hidden = true;
       viewStrip.replaceChildren();
+      statusBar.setWirePresent(false);
+      wireTab.destroy();
       graph.destroy();
       net.destroy();
       moduleScope.abort();

@@ -28,7 +28,15 @@
 //      and network views, the "+" seat is last in reading order, and the
 //      network wires anchor to the cards rather than to the cells;
 //   8. parked, the wires and the pinned wire log replay the packet LOG at the
-//      playhead rather than showing a frozen live feed.
+//      playhead rather than showing a frozen live feed;
+//   9. the WIRE TAB — the same traffic monitor docked in the status bar — is
+//      present (and counting) in every layout, filters by link and direction,
+//      opens payloads into the value tree, stays scrub-locked, and is absent
+//      from a single-role example;
+//  10. LINK IMPAIRMENT: a pane's link chip really delays that client's packets
+//      (sent → delivered on every row), only that client's, never out of order,
+//      and without breaking convergence — while loss stays a labelled datagram
+//      setting (design Addendum 8.2).
 //
 // Run manually (needs the web-runtime wasm bundle):
 //
@@ -102,6 +110,24 @@ for (let i = 0; ; i++) {
 const installProbe = (page) =>
   page.evaluate(() => {
     const traces = new Map();
+    // One row of traffic, as both surfaces render it: the SENT frame, the
+    // DELIVERED frame beside it (impairment — Addendum 8.2), and whether the
+    // playhead has it mid-flight.
+    const readRow = (row) => {
+      const stamps = [...row.querySelector(".f").textContent.matchAll(/-?\d+/g)].map((m) =>
+        Number(m[0])
+      );
+      return {
+        frame: stamps[0] ?? NaN,
+        delivered: stamps[1] ?? stamps[0] ?? NaN,
+        flight: row.classList.contains("flight"),
+        link: row.querySelector(".l")?.textContent.trim() ?? null,
+        dir: row.querySelector(".d").textContent.trim(),
+        payload: row.querySelector(".payload").textContent.trim(),
+        bytes: row.querySelector(".n").textContent.trim(),
+        at: row.classList.contains("at"),
+      };
+    };
     const shells = () =>
       [...document.querySelectorAll(".mp-pane")].map((shell, index) => ({
         role: shell.classList.contains("server") ? "server" : `client ${index + 1}`,
@@ -147,13 +173,7 @@ const installProbe = (page) =>
             w: Math.round(box.width),
             h: Math.round(box.height),
           },
-          rows: [...panel.querySelectorAll(".mp-wl")].map((row) => ({
-            frame: Number((row.querySelector(".f").textContent.match(/-?\d+/) ?? [NaN])[0]),
-            dir: row.querySelector(".d").textContent.trim(),
-            payload: row.querySelector(".payload").textContent.trim(),
-            bytes: row.querySelector(".n").textContent.trim(),
-            at: row.classList.contains("at"),
-          })),
+          rows: [...panel.querySelectorAll(".mp-wl")].map(readRow),
         };
       },
       /** Open the FATTEST payload on the pinned log — the snapshot, i.e. the
@@ -197,7 +217,9 @@ const installProbe = (page) =>
         return {
           mounted: true,
           openRows: open,
-          footer: document.querySelector(".mp-wl-ft").textContent.trim(),
+          // The pinned panel's footer, when it is the tree's host; the wire tab
+          // has its own (`.wire-ft`, read by wireTab()).
+          footer: document.querySelector(".mp-wl-ft")?.textContent.trim() ?? "",
           nodes: [...tree.querySelectorAll(".mp-vt-row")]
             // A node inside a CLOSED parent is in the DOM but not on screen.
             .filter((row) => !row.closest(".mp-vt-kids[hidden]"))
@@ -215,6 +237,71 @@ const installProbe = (page) =>
         return true;
       },
       clickEdge: (index) => document.querySelectorAll(".mp-edge-chip")[index].click(),
+      /** A client pane's link chip: what it says, and what it promises. */
+      linkChip: (index) => {
+        const chip = document.querySelectorAll(".mp-pane .mp-link-chip")[index];
+        return chip ? { label: chip.textContent.trim(), title: chip.title } : null;
+      },
+      /** Set a client's link from the chip menu — the reader's own path: open
+       * the chip, press a preset, close it again. */
+      setLink: (index, name) => {
+        const chip = document.querySelectorAll(".mp-pane .mp-link-chip")[index];
+        if (!chip) return false;
+        chip.click();
+        const menu = chip.closest(".mp-link-host").querySelector(".mp-link-menu");
+        const preset = [...menu.querySelectorAll(".mp-link-presets button")].find(
+          (one) => one.dataset.name === name
+        );
+        if (!preset) return false;
+        preset.click();
+        chip.click();
+        return true;
+      },
+      /** The link menu's loss field and the label that says who reads it. */
+      lossField: (index) => {
+        const menu = document
+          .querySelectorAll(".mp-pane .mp-link-host")
+          [index]?.querySelector(".mp-link-menu");
+        if (!menu) return null;
+        return {
+          value: menu.querySelector(".mp-l-loss").value,
+          badge: menu.querySelector(".mp-link-soon")?.textContent.trim() ?? "",
+          note: menu.querySelector(".mp-link-note").textContent.replace(/\s+/g, " ").trim(),
+        };
+      },
+      /** The WIRE TAB in the status bar: the docked traffic monitor. Read from
+       * the bar's own chrome, so "present" means the tab a reader can click. */
+      wireTab: () => {
+        const tab = document.querySelector('.statusbar-tab[data-tab="wire"]');
+        const badge = tab?.querySelector(".wire-badge");
+        const list = document.querySelector(".wire-list");
+        return {
+          present: !!tab,
+          active: !!tab?.classList.contains("active"),
+          badge: badge?.textContent?.trim() ?? "",
+          badgeHidden: !badge || badge.hidden,
+          // The panel is toggled with `display`, like every other tab's list.
+          open: !!list && getComputedStyle(list).display !== "none",
+          // Which layout the panes are in — the whole point is that this works
+          // outside the network view.
+          view: document.querySelector(".mp-grid").dataset.view,
+          chips: [...document.querySelectorAll(".wire-filters .wire-chip")].map(
+            (chip) => `${chip.textContent.trim()}:${chip.getAttribute("aria-pressed")}`
+          ),
+          footer: document.querySelector(".wire-ft")?.textContent.trim() ?? "",
+          rows: [...document.querySelectorAll(".wire-rows .mp-wl")].map(readRow),
+        };
+      },
+      openWireTab: () => document.querySelector('.statusbar-tab[data-tab="wire"]').click(),
+      /** Pick a filter chip by its label prefix (`c2`, `intent`, `all`). */
+      pickWireChip: (label) => {
+        const chip = [...document.querySelectorAll(".wire-filters .wire-chip")].find((one) =>
+          one.textContent.trim().startsWith(label)
+        );
+        if (!chip) return false;
+        chip.click();
+        return true;
+      },
       pauseAll: () => document.getElementById("mp-pause").click(),
       layout: () => ({
         view: document.querySelector(".mp-grid").dataset.view,
@@ -906,8 +993,8 @@ try {
       JSON.stringify(ends.map((w) => [Math.round(w.from.x), Math.round(w.from.y), Math.round(w.to.x), Math.round(w.to.y)]))
     );
     check(
-      graph.chips.length === 2 && graph.chips.every((c) => c.includes("Wi-Fi")),
-      "each edge carries its client's link chip mid-wire",
+      graph.chips.length === 2 && graph.chips.every((c) => c.startsWith("LAN · 8ms <1f")),
+      "each edge carries its client's link chip mid-wire, sub-frame pace and all",
       graph.chips.join(" | ")
     );
     check(
@@ -1271,6 +1358,314 @@ try {
     await page.close();
   }
 
+  // --- 4g. The WIRE TAB: the traffic monitor, docked. -------------------------
+  // Addendum 8.2. The pinned panel above lives in the network view and hangs off
+  // one wire; this is the same rows as a permanent tab in the bottom panel, so
+  // the assertions here are the ones the pinned panel cannot make: the tab is
+  // there while the panes are in TILED, its badge counts packets while it is
+  // closed, the link filter narrows the list, and the rows are still
+  // scrub-locked to the rail.
+  {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+
+    // CLOSED, in the default layout: the tab exists and its badge is counting.
+    const counting = await page
+      .waitForFunction(() => Number(window.__mpProbe.wireTab().badge) > 0, null, {
+        timeout: 25000,
+      })
+      .then(() => page.evaluate(() => window.__mpProbe.wireTab()))
+      .catch(() => page.evaluate(() => window.__mpProbe.wireTab()));
+    check(
+      counting.present && counting.view === "tiled" && !counting.open && !counting.badgeHidden,
+      "the wire tab sits in the bottom panel from the start, closed, in TILED",
+      JSON.stringify({ view: counting.view, open: counting.open, badge: counting.badge })
+    );
+    check(
+      Number(counting.badge) > 0,
+      "its badge counts routed packets while the panel is closed",
+      counting.badge
+    );
+
+    // OPEN: rows, in a layout that draws no wires at all — the whole point.
+    await page.evaluate(() => window.__mpProbe.openWireTab());
+    await sleep(400);
+    const opened = await page.evaluate(() => window.__mpProbe.wireTab());
+    check(
+      opened.open && opened.active && opened.view === "tiled" && opened.rows.length > 0,
+      "opening it shows traffic in TILED — no network view needed",
+      `${opened.rows.length} rows in ${opened.view}`
+    );
+    check(
+      opened.badgeHidden,
+      "the count steps aside once the rows are on screen",
+      `badge "${opened.badge}"`
+    );
+    check(
+      opened.rows.some((row) => /Snapshot|Steer|Welcome|Join|Claim/.test(row.payload)) &&
+        opened.rows.every((row) => /^\d+ B$/.test(row.bytes)),
+      "the rows are the same grammar as the pinned panel — decoded values and bytes",
+      `e.g. "${opened.rows.at(-1)?.payload ?? ""}" ${opened.rows.at(-1)?.bytes ?? ""}`
+    );
+    // ALL is the default, so every row names the link it crossed and both
+    // clients are in the one list.
+    const linksSeen = new Set(opened.rows.map((row) => row.link));
+    check(
+      opened.chips[0] === "all links:true" &&
+        opened.rows.every((row) => row.link) &&
+        linksSeen.size > 1,
+      "ALL interleaves every link, each row naming the wire it crossed",
+      `${[...linksSeen].join(", ")} — chips ${opened.chips.join(" | ")}`
+    );
+    check(
+      /showing the last \d+ of \d+ rows|^\d+ rows?/.test(opened.footer),
+      "the footer says how much of the log it is showing",
+      opened.footer
+    );
+
+    // The LINK FILTER narrows the list to one wire (and drops the now-redundant
+    // link column with it).
+    await page.evaluate(() => window.__mpProbe.pickWireChip("c2"));
+    await sleep(400);
+    const filtered = await page.evaluate(() => window.__mpProbe.wireTab());
+    check(
+      filtered.rows.length > 0 &&
+        filtered.rows.every((row) => /c2/.test(row.dir)) &&
+        filtered.rows.every((row) => row.link === null) &&
+        filtered.chips.includes("c2 ↔ srv:true"),
+      "picking a link narrows the monitor to that wire",
+      `${filtered.rows.length} rows: ${[...new Set(filtered.rows.map((r) => r.dir))].join(" ")}`
+    );
+    // ...and the direction filter drops half the conversation.
+    await page.evaluate(() => window.__mpProbe.pickWireChip("intent"));
+    await sleep(400);
+    const intent = await page.evaluate(() => window.__mpProbe.wireTab());
+    check(
+      intent.rows.length > 0 && intent.rows.every((row) => row.dir === "c2→srv"),
+      "the direction filter keeps intent only",
+      [...new Set(intent.rows.map((r) => r.dir))].join(" ")
+    );
+    await page.evaluate(() => window.__mpProbe.pickWireChip("both"));
+    await sleep(300);
+
+    // The value tree opens in the tab exactly as it does in the panel.
+    const compact = await page.evaluate(() => window.__mpProbe.openBiggestRow());
+    await sleep(200);
+    const tree = await page.evaluate(() => window.__mpProbe.valueTree());
+    check(
+      tree.mounted && tree.openRows === 1 && tree.nodes.length > 1,
+      "a payload opens into its value tree inside the tab",
+      `${tree.nodes.length} nodes from "${compact}"`
+    );
+    const heldFooter = (await page.evaluate(() => window.__mpProbe.wireTab())).footer;
+    check(
+      /tail is held/.test(heldFooter),
+      "opening a row holds the tail, and the footer says so",
+      heldFooter
+    );
+    // A held tail is a FROZEN list, so changing the filter under one would keep
+    // showing rows the pressed chip excludes. Changing a filter closes the row.
+    await page.evaluate(() => window.__mpProbe.pickWireChip("intent"));
+    await sleep(400);
+    const refiltered = await page.evaluate(() => ({
+      ...window.__mpProbe.wireTab(),
+      tree: window.__mpProbe.valueTree(),
+    }));
+    check(
+      !refiltered.tree.mounted &&
+        refiltered.tree.openRows === 0 &&
+        refiltered.rows.length > 0 &&
+        refiltered.rows.every((row) => row.dir === "c2→srv"),
+      "changing a filter while a row is open closes it — the held rows are the old filter's",
+      `${refiltered.rows.length} rows: ${[...new Set(refiltered.rows.map((r) => r.dir))].join(" ")}`
+    );
+    await page.evaluate(() => window.__mpProbe.pickWireChip("both"));
+    await sleep(300);
+
+    // SCRUB-LOCKED: parked, the tab's viewport follows the rail and marks the
+    // row nearest the playhead — the same promise the pinned panel makes.
+    await page.evaluate(() => window.__mpProbe.pauseAll());
+    await sleep(600);
+    await page.focus("#mp-playhead");
+    await page.keyboard.press("End");
+    await sleep(500);
+    const head = await page.evaluate(() => ({
+      ...window.__mpProbe.wireTab(),
+      label: window.__mpProbe.railFrame(),
+    }));
+    const playhead = Number(head.label.match(/-?\d+/)?.[0] ?? NaN);
+    const marked = head.rows.find((row) => row.at);
+    check(
+      !!marked && Math.abs(marked.frame - playhead) <= 60,
+      "parked, the tab marks the row nearest the playhead",
+      `playhead #f ${playhead}; marked ${JSON.stringify(marked ?? null)}`
+    );
+    await page.keyboard.press("Home");
+    await sleep(500);
+    const start = await page.evaluate(() => window.__mpProbe.wireTab());
+    check(
+      start.rows.length === 0 ||
+        start.rows.at(-1).frame < (head.rows.at(-1)?.frame ?? Infinity),
+      "seeking sweeps the tab's viewport with the playhead",
+      `head ended at #f ${head.rows.at(-1)?.frame}, start ends at #f ${start.rows.at(-1)?.frame}`
+    );
+    await page.close();
+  }
+
+  // --- 4h. LINK IMPAIRMENT: the chips are controls now. -----------------------
+  // Addendum 8.2. A client's link chip schedules that client's packets in the
+  // coordinator — latency plus a jitter draw, and NOTHING else: `Sub.connect`
+  // is reliable-ordered, so no packet may be dropped or overtaken. The
+  // assertions are exactly those two halves. The delay is REAL (mobile's 132ms
+  // is eight frames of the timeline, and the rows print sent → delivered), and
+  // the guarantees are intact (FIFO per link per direction; the session still
+  // converges; the untouched client is still on LAN, i.e. same-frame).
+  {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    await page.goto(`${BASE}/sandbox.html?example=orbs#clients=2`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+    await page.evaluate(() => window.__mpProbe.openWireTab());
+    await page.waitForFunction(() => window.__mpProbe.wireTab().rows.length > 4, null, {
+      timeout: 25000,
+    });
+
+    // The default is LAN, and LAN is a decision (mp-panes' DEFAULT_LINK): 8ms
+    // rounds to zero frames, so an untouched session behaves exactly as it did
+    // before impairment existed.
+    const before = await page.evaluate(() => window.__mpProbe.wireTab());
+    check(
+      before.rows.length > 4 && before.rows.every((row) => row.delivered === row.frame),
+      "the default LAN link delivers in the frame it was sent — impairment is opt-in",
+      `deltas ${[...new Set(before.rows.map((row) => row.delivered - row.frame))].join(", ")}`
+    );
+
+    // Now slow client 1's link down, through the chip a reader would use.
+    const set = await page.evaluate(() => window.__mpProbe.setLink(0, "mobile"));
+    const chip = await page.evaluate(() => window.__mpProbe.linkChip(0));
+    check(
+      set && chip.label === "⇅ mobile ▾" && /132ms/.test(chip.title),
+      "picking `mobile` on a pane's chip re-labels it with what it now does",
+      `${chip?.label} — "${chip?.title}"`
+    );
+    // Long enough that every row in the 60-row viewport was routed AFTER the
+    // change: orbs puts ~240 packets a second on the wires at two clients.
+    await sleep(2500);
+    const after = await page.evaluate(() => window.__mpProbe.wireTab());
+    const on = (id) => after.rows.filter((row) => row.link === id);
+    const deltas = (id) => on(id).map((row) => row.delivered - row.frame);
+    // 132ms is 7.92 frames of the timeline → 8, and 38ms of jitter is 2 more at
+    // most. Nothing may arrive EARLY: jitter is extra delay, never a head start.
+    const mobile = deltas("c1");
+    check(
+      mobile.length > 4 && mobile.every((d) => d >= 8 && d <= 10),
+      "a mobile link delays client 1's packets by its latency, plus a jitter draw",
+      `${mobile.length} rows, deltas ${[...new Set(mobile)].sort().join(", ")}`
+    );
+    check(
+      new Set(mobile).size > 1,
+      "the jitter draw actually varies packet to packet",
+      `deltas ${[...new Set(mobile)].sort().join(", ")}`
+    );
+    // The other client never changed, and is still same-frame: one chip impairs
+    // one link.
+    const lan = deltas("c2");
+    check(
+      lan.length > 4 && lan.every((d) => d === 0),
+      "client 2's LAN link is untouched — same frame, still sub-frame-ish",
+      `${lan.length} rows, deltas ${[...new Set(lan)].sort().join(", ")}`
+    );
+
+    // FIFO, the invariant impairment may not break: on one link in one
+    // direction, a later-sent packet never lands before an earlier one, however
+    // the jitter drew.
+    const ordered = [];
+    const seen = new Map();
+    for (const row of after.rows) {
+      const key = `${row.link}|${row.dir}`;
+      const previous = seen.get(key);
+      if (previous !== undefined && row.delivered < previous) {
+        ordered.push(`${key}: ${previous} then ${row.delivered}`);
+      }
+      seen.set(key, row.delivered);
+    }
+    check(
+      after.rows.length > 8 && ordered.length === 0,
+      "no packet overtakes an earlier one on its link (FIFO under jitter)",
+      ordered.slice(0, 3).join(" | ") || `${after.rows.length} rows in order`
+    );
+
+    // Loss stays a SETTING, labelled for the channel that will read it.
+    const loss = await page.evaluate(() => window.__mpProbe.lossField(0));
+    check(
+      loss?.badge === "datagrams" && /Net\.Udp/.test(loss.note) && /reliable-ordered/.test(loss.note),
+      "the loss field says it applies to datagrams, and why nothing is dropped here",
+      `badge "${loss?.badge}" — "${loss?.note}"`
+    );
+
+    // PACE IS A MEASUREMENT (Addendum 5a): the impaired edge's dots fly its real
+    // delay, and the LAN edge — whose delay is below the visibility floor — says
+    // on its chip how much it is being stretched.
+    await page.click("#mp-view-network");
+    await settle(page);
+    const chips = await page.evaluate(() => window.__mpProbe.network().chips);
+    check(
+      chips.length === 2 &&
+        /^mobile · 132ms/.test(chips[0]) &&
+        !/<1f/.test(chips[0]) &&
+        /^LAN · 8ms <1f/.test(chips[1]),
+      "the mid-edge chips show the real profile, and flag the edge whose pace is floored",
+      chips.join(" | ")
+    );
+
+    // CONVERGENCE: eight frames of delay is a delay, not a break — both clients
+    // still hold both ships.
+    await page.evaluate(() => window.__mpProbe.pauseAll());
+    await sleep(1500);
+    const boards = await page.evaluate(() => ({
+      c1: window.__mpProbe.model("client 1"),
+      c2: window.__mpProbe.model("client 2"),
+    }));
+    const ships = (text) => (text?.match(/pid: /g) ?? []).length;
+    check(
+      ships(boards.c1) >= 2 && ships(boards.c2) >= 2,
+      "the session still converges over an impaired link — orbs plays, delayed",
+      `client 1 holds ${ships(boards.c1)} ships, client 2 ${ships(boards.c2)}`
+    );
+
+    // Parked, a packet SENT before the playhead but delivered after it is drawn
+    // as what it is: still crossing. The window keys on the sent frame (that is
+    // the row's place on the rail), so the in-flight rows are the newest ones.
+    await page.evaluate(() => window.__mpProbe.openWireTab());
+    await page.focus("#mp-playhead");
+    await page.keyboard.press("End");
+    await sleep(600);
+    const parked = await page.evaluate(() => ({
+      ...window.__mpProbe.wireTab(),
+      label: window.__mpProbe.railFrame(),
+    }));
+    const playhead = Number(parked.label.match(/-?\d+/)?.[0] ?? NaN);
+    const flying = parked.rows.filter((row) => row.flight);
+    check(
+      flying.length > 0 &&
+        flying.every(
+          (row) => row.link === "c1" && row.frame <= playhead && row.delivered > playhead
+        ),
+      "parked, a packet sent before the playhead and delivered after it reads as in flight",
+      `playhead #f ${playhead}; ${flying.length} in flight: ${flying
+        .slice(0, 3)
+        .map((row) => `${row.link} ${row.frame}→${row.delivered}`)
+        .join(", ")}`
+    );
+    await page.close();
+  }
+
   // --- 5. Switching away drops the server pane. -------------------------------
   {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -1297,6 +1692,14 @@ try {
       (await page.evaluate(() => window.__mpProbe.layout().view)) !== "network",
       "losing the authority falls the layout back out of NETWORK",
       await page.evaluate(() => window.__mpProbe.layout().view)
+    );
+    // Same gate for the docked monitor: no authority, no links, no coordinator
+    // log — so the tab is absent rather than an empty panel.
+    const soloWire = await page.evaluate(() => window.__mpProbe.wireTab());
+    check(
+      !soloWire.present && !soloWire.open,
+      "a single-role example has no wire tab at all",
+      JSON.stringify(soloWire)
     );
 
     // No authority, no hub: NETWORK is disabled with a tooltip that says why,

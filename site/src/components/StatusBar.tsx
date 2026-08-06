@@ -9,13 +9,14 @@
 // `display`, exactly as before.
 
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { ReactNode } from "react";
 import { outputPreamble } from "../status-bar-store.js";
 import type { StatusBarStore } from "../status-bar-store.js";
 import { EditorKeybindingsButton } from "./EditorKeybindingsButton.js";
 import type { EditorKeybindingsController } from "../editor-keybindings.js";
 
 /** Which panel a tab opens; also the tab's `data-tab`. */
-type TabName = "problems" | "output" | "executions";
+type TabName = "problems" | "output" | "executions" | "wire";
 
 // The Vim adapter renders its --MODE-- readout, pending keys, and `:`/`/`
 // command input into this segment (imperatively — React never writes children
@@ -57,9 +58,16 @@ export const StatusBar = ({
   store: StatusBarStore;
   editorKeybindings: EditorKeybindingsController;
 }) => {
-  const { problems, output, executions } = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const { problems, output, executions, wirePresent } = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot
+  );
   const [open, setOpen] = useState<TabName | null>(null);
   const outputList = useRef<HTMLDivElement>(null);
+  // The traffic monitor's two nodes (`store.wire`), mounted exactly like the
+  // view strip below: their owner is imperative and repaints per frame.
+  const wireHost = useRef<HTMLDivElement>(null);
+  const wireBadgeHost = useRef<HTMLSpanElement>(null);
   // The view-scoped strip (`store.viewStrip`): a node an imperative surface
   // fills — today the pane grid's NETWORK legend and pane readouts. React
   // mounts it and never renders into it, so its owner can repaint per frame
@@ -95,18 +103,31 @@ export const StatusBar = ({
     if (list && open === "output") list.scrollTop = list.scrollHeight;
   }, [open]);
 
-  // `replaceChildren`, not `appendChild`: React does not manage this node, so a
-  // swapped store would otherwise leave the previous strip mounted beside it.
+  // `replaceChildren`, not `appendChild`: React does not manage these nodes, so
+  // a swapped store would otherwise leave the previous ones mounted beside them.
   useLayoutEffect(() => {
     viewHost.current?.replaceChildren(store.viewStrip);
   }, [store]);
+
+  useLayoutEffect(() => {
+    wireHost.current?.replaceChildren(store.wire.panel);
+    wireBadgeHost.current?.replaceChildren(store.wire.badge);
+  }, [store, wirePresent]);
+
+  // The monitor polls this rather than being pushed to — see `WireSlot`. An
+  // example that drops its authority takes the tab with it, so an open wire
+  // panel closes rather than lingering over a session that no longer has one.
+  useEffect(() => {
+    store.wire.open = open === "wire" && wirePresent;
+    if (open === "wire" && !wirePresent) setOpen(null);
+  }, [store, open, wirePresent]);
 
   const panel = (name: TabName) => ({
     className: `statusbar-list ${name}-list`,
     style: open === name ? undefined : { display: "none" },
   });
 
-  const tab = (name: TabName, label: string, extra = "") => (
+  const tab = (name: TabName, label: ReactNode, extra = "") => (
     <button
       type="button"
       className={`statusbar-tab${open === name ? " active" : ""}${extra}`}
@@ -162,11 +183,37 @@ export const StatusBar = ({
             ))
           )}
         </div>
+        {/* The traffic monitor, filled by wire-tab.ts. Mounted only while the
+            session has an authority, so its rows can never outlive their
+            session's links. */}
+        {wirePresent && <div {...panel("wire")} ref={wireHost} />}
       </div>
       <div className="statusbar-strip">
         {tab("problems", problemsLabel(problems.length, errors), errors > 0 ? " has-problems" : "")}
         {tab("output", "output")}
         {tab("executions", executions.length ? `⏸ ${executions.length} executions` : "executions")}
+        {wirePresent &&
+          tab(
+            "wire",
+            <>
+              wire
+              {/* The live packet count. Hidden while the panel is open — the
+                  rows are the count then, and a number ticking beside them is
+                  noise.
+
+                  `aria-hidden` deliberately: it changes ten times a second, and
+                  a control whose ACCESSIBLE NAME churns at that rate is worse
+                  than one without the number. The tab keeps the stable name
+                  "wire"; the traffic itself is real text once the panel is
+                  open — the rows and the footer's "showing N of M". */}
+              <span
+                className="wire-badge"
+                ref={wireBadgeHost}
+                hidden={open === "wire"}
+                aria-hidden="true"
+              />
+            </>
+          )}
         <div className="statusbar-view-host" ref={viewHost} />
         <EditorKeybindingsButton controller={editorKeybindings} />
         <VimSegment controller={editorKeybindings} />

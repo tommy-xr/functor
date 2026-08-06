@@ -15,7 +15,8 @@
 //   2. the coordinator routes the connect handshake — both clients get
 //      `connected`, and so does the server, twice;
 //   3. traffic flows BOTH ways (client -> server Steer, server -> client
-//      Snapshot broadcasts);
+//      Snapshot broadcasts) — on the DEFAULT LAN link, whose delay rounds to
+//      zero frames, so every packet is delivered in the frame it was sent;
 //   4. the server's model seats two pilots, and each client's board contains
 //      BOTH ships — i.e. client 1's state reached client 2 through the server;
 //   5. input propagates: holding `w` in client 1 reaches the server as THAT
@@ -144,6 +145,20 @@ try {
     toServer.length >= 2,
     "the clients send to the server",
     `${toServer.length} packets from ${[...new Set(toServer.map((p) => p.from))].join(", ")}`
+  );
+
+  // 3b. The DEFAULT link is LAN, and LAN is the decision that keeps every check
+  // above measuring what it used to: 8ms ± 2 rounds to zero frames, so a packet
+  // is delivered in the frame it was sent. Impairment is opt-in, one chip away
+  // (site/src/mp-panes.ts DEFAULT_LINK) — a default that quietly delayed every
+  // session would change what every sample feels like.
+  const scheduled = messages.filter((p) => p.frame !== null && p.deliveredFrame !== null);
+  check(
+    scheduled.length > 10 && scheduled.every((p) => p.deliveredFrame === p.frame),
+    "on the default LAN link a packet is delivered in the frame it was sent",
+    `${scheduled.length} scheduled; deltas ${[
+      ...new Set(scheduled.map((p) => p.deliveredFrame - p.frame)),
+    ].join(", ")}`
   );
 
   // Input path: HOLD `w` in client 1. Orbs' client streams a Steer every tick

@@ -33,6 +33,28 @@ export interface Execution {
   onPick?: () => void;
 }
 
+/**
+ * The wire tab's two nodes and its open flag (the traffic monitor —
+ * `wire-tab.ts`).
+ *
+ * ELEMENTS rather than store state, for the same reason `viewStrip` is one: the
+ * monitor's owner is imperative DOM outside the React islands and repaints off
+ * the pane grid's rAF, and routing a live packet count through the store would
+ * re-render the whole bar — output list included — every frame.
+ */
+export interface WireSlot {
+  /** The tab's panel body. React mounts it and never looks inside. */
+  panel: HTMLElement;
+  /** The packet count on the tab itself, written imperatively. */
+  badge: HTMLElement;
+  /**
+   * Whether the wire panel is the OPEN tab. The view writes it whenever the
+   * open tab changes; the monitor polls it on its own frame, so a tab nobody
+   * opened costs nothing and no read of it can re-render anything.
+   */
+  open: boolean;
+}
+
 /** The handle the producing pages hold. */
 export interface StatusBar {
   setProblems: (items: Problem[]) => void;
@@ -49,6 +71,15 @@ export interface StatusBar {
    * never looks inside it.
    */
   viewStrip: HTMLElement;
+  /** The traffic monitor's nodes (see `WireSlot`). */
+  wire: WireSlot;
+  /**
+   * Show the wire tab at all. A session with an authority has links and a
+   * coordinator log to show; a single-player example has neither, so the tab is
+   * absent rather than empty — the same gating discipline as the CLIENTS
+   * control and the NETWORK view.
+   */
+  setWirePresent: (on: boolean) => void;
 }
 
 /** One rendered output row. `time` is stamped at append, not at flush. */
@@ -65,6 +96,8 @@ export interface StatusBarSnapshot {
   problems: Problem[];
   output: OutputLine[];
   executions: Execution[];
+  /** Whether the wire tab exists in the strip (see `setWirePresent`). */
+  wirePresent: boolean;
 }
 
 export interface StatusBarStore extends StatusBar {
@@ -83,10 +116,20 @@ export const outputPreamble = (frame: number | null, time: string): string =>
   frame == null ? `[${time}]` : `[Frame ${frame} | ${time}]`;
 
 export const createStatusBarStore = (): StatusBarStore => {
-  let snapshot: StatusBarSnapshot = { problems: [], output: [], executions: [] };
+  let snapshot: StatusBarSnapshot = {
+    problems: [],
+    output: [],
+    executions: [],
+    wirePresent: false,
+  };
   const listeners = new Set<() => void>();
   const viewStrip = document.createElement("div");
   viewStrip.className = "statusbar-view";
+  const wirePanel = document.createElement("div");
+  wirePanel.className = "wire-host";
+  const wireBadge = document.createElement("span");
+  wireBadge.className = "wire-count";
+  const wire: WireSlot = { panel: wirePanel, badge: wireBadge, open: false };
 
   const emit = (next: StatusBarSnapshot): void => {
     snapshot = next;
@@ -111,6 +154,12 @@ export const createStatusBarStore = (): StatusBarStore => {
 
   return {
     viewStrip,
+    wire,
+    // Rare (a program load mounts or drops the authority), so plain store state
+    // — unlike the packet count on the same tab, which is a live measurement
+    // and stays on `wire.badge`.
+    setWirePresent: (on) =>
+      on === snapshot.wirePresent ? undefined : emit({ ...snapshot, wirePresent: on }),
     subscribe: (listener) => {
       listeners.add(listener);
       return () => {
