@@ -1,13 +1,14 @@
-// gallery: A living procedural garden whose laws ARE this file — edit a constant, save, and the plants you already grew re-shape without restarting.
-// gallery-controls: Space plant a seed - 1/2/3 pick species (Lantern/Ember/Sunthread) - R replant the garden - the file itself is the main controller
+// gallery: A living procedural garden whose growth laws ARE this file — edit a constant, save, and the plants you already grew re-shape.
+// gallery-controls: Space plant a seed · 1/2/3 pick species (Lantern/Ember/Sunthread) · R replant · editing this file is the real control
 //
 // code-garden — the source file is the game.
 //
-// Everything you can SEE is derived, every frame, from the definitions in the
-// "THE LAWS" block below. Everything that PERSISTS — which plots were sown,
-// what species each holds, and how many seconds each has been alive — lives in
-// the model. Hot-reload keeps the model, so editing a law bends a garden that
-// is already growing instead of rebooting it:
+// Everything you can SEE is derived, every frame, from the constants in this
+// file — chiefly the "THE LAWS" block below. Everything that PERSISTS — which
+// plots were sown, what species each holds, and how many seconds each has been
+// alive (plus which species the next Space will plant) — lives in the model.
+// Hot-reload keeps the model, so editing a law bends a garden that is already
+// growing instead of rebooting it:
 //
 //   functor -d examples/code-garden run native
 //   ... then edit `branchAngle` to 70deg and save. The same plants, the same
@@ -65,7 +66,7 @@ let hash01 = (n: float): float =>
 // ---------------------------------------------------------------------------
 
 // Botany.
-let maxDepth = 4.0          // branch generations; 5 is lush and ~2x the cost
+let maxDepth = 4.0          // branch generations, 1 or more; 5 is lush and ~2x the cost
 let branchAngle = 27deg     // how far a child leans off its parent
 let branchTwist = 137deg    // how far each generation spins around the stem
 let stemLength = 0.95       // length of a first-generation segment
@@ -79,11 +80,14 @@ let jitter = 0.34           // 0 = topiary, 1 = wild
 // into growth, and it is read in `draw` — so editing it re-ages the garden.
 let growthRate = 0.42       // branch generations gained per second of age
 let sproutEvery = 7.0       // seconds between self-seedings
-let maxPlants = 9.0
+let maxPlants = 9.0         // the self-seeding cap; `init` sows 5 regardless,
+                            // so keep it at 5 or more
 
 // Blooms.
 let bloomSize = 0.115
 let petals = 5.0
+let crownLights = 6.0       // how many crowns get a point light — the renderer
+                            // evaluates 8 lights and ambient + sun take two
 let motes = 16.0            // fireflies, out after dusk
 let nightGlow = 1.15         // emissive multiplier at midnight
 let dayGlow = 0.8            // ... and at noon
@@ -227,10 +231,12 @@ let grow = (sp: Species, salt: float, depth: float, t: float, glow: float, tts: 
 // Roughly how tall a plant of `levels` generations stands — the partial sum of
 // the geometric stem lengths. Used to hang a point light in each crown, which
 // is cheaper and steadier than trying to read a position back out of a Scene.
+// The ratio is capped just under 1 so that editing `lengthFalloff` to exactly
+// 1.0 ("no taper", a natural thing to try) can't divide by zero: a NaN reaching
+// a Vec3 aborts the whole `draw`, which would blank the window on save.
 let crownHeight = (sp: Species, levels: float): float =>
-  stemLength * sp.reach
-    * (1.0 - Math.pow(lengthFalloff, levels))
-    / (1.0 - lengthFalloff)
+  let f = Math.min(lengthFalloff, 0.999) in
+  stemLength * sp.reach * (1.0 - Math.pow(f, levels)) / (1.0 - f)
 
 // ---------------------------------------------------------------------------
 // The model — plots, species, ages. This is what survives a save.
@@ -307,7 +313,9 @@ let input = (m: Model, key: Key.t, isDown: bool): Model =>
 // Growth is stored as seconds and converted by a LAW, so the conversion is the
 // thing worth pinning: it is linear in age and saturates at maxDepth.
 expect levelsOf(sow(0.0, 0.0, 0.0)) == 0.0
-expect levelsOf(sow(0.0, 0.0, 1.0 / growthRate)) == 1.0
+// `(1.0 / g) * g` is not exactly 1.0 for many doubles, so this is a tolerance
+// test — editing `growthRate` must not turn the sample's own suite red.
+expect Math.abs(levelsOf(sow(0.0, 0.0, 1.0 / growthRate)) - 1.0) < 0.000000001
 expect levelsOf(sow(0.0, 0.0, 10000.0)) == maxDepth
 
 // tick only ages; it never touches shape.
@@ -339,8 +347,10 @@ expect (
   Math.sqrt(dx * dx + dz * dz) > 0.6
 )
 
-// A keypress that is not a control leaves the garden alone, and R replants it.
-expect List.length(input(init, Key.Q, true).plants) == List.length(init.plants)
+// A keypress that is not a control leaves the whole model alone (not just the
+// plant count — an unhandled key must not disturb `pick` either), and R
+// replants the garden.
+expect input(init, Key.Q, true) == init
 expect input(init, Key.Num1, true).pick == 0.0
 expect (
   let totalAge = (m: Model) => m.plants |> List.map((p: Plant) => p.age) |> List.sum in
@@ -398,8 +408,8 @@ let fireflies = (d: float, tts: float): Scene.t =>
 // A point light hung in a plant's crown, tinted by its own blooms — the reason
 // the stems are visible at all at night. The engine evaluates at most 8 lights
 // per draw and SILENTLY DROPS the rest, so the ambient + sun pair leaves room
-// for exactly 6 of these: `lightsFor` gives them to the six oldest plants and
-// the youngest three glow without lighting their surroundings.
+// for `crownLights` of these: `lightsFor` gives them to the oldest plants and
+// the youngest few glow without lighting their surroundings.
 let crownLight = (tts: float, p: Plant): Light.t =>
   let sp = speciesOf(p.species) in
   let levels = levelsOf(p) in
@@ -424,7 +434,7 @@ let lightsFor = (m: Model, tts: float): List<Light.t> =>
   let crowns =
     m.plants
       |> List.sortBy((p: Plant) => 0.0 - p.age)
-      |> List.take(6.0)
+      |> List.take(crownLights)
       |> List.map((p: Plant) => crownLight(tts, p)) in
   [Light.ambient(toColor(mix(nightAmbient, dayAmbient, d))), key] |> List.append(crowns)
 

@@ -46,7 +46,7 @@
     "test:xr-injection": "cargo build -p functor-cli --no-default-features && node e2e/xr-pose-injection.mjs",
     "test:mcp": "cargo build -p functor-cli --no-default-features && node e2e/mcp-server.mjs",
     "test:mcp-step-all": "cargo build -p functor-cli --no-default-features && node e2e/mcp-step-all.mjs",
-    "test:code-garden": "cargo build --release -p functor-cli --no-default-features && FUNCTOR_BIN=\"$PWD/target/release/functor\" node e2e/code-garden.mjs",
+    "test:code-garden": "cargo build -p functor-cli --no-default-features && node e2e/code-garden.mjs",
     "demo:time-travel": "node site/demos/time-travel.mjs",
     "demo:detached-camera": "node site/demos/detached-camera.mjs",
     "demo:instant-feedback": "node site/demos/instant-feedback.mjs",

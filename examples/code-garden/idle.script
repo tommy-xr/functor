@@ -5,8 +5,10 @@
 #
 # Format: <frame:int> <KeyName> <down|up>; frames advance by --script-dt.
 #
+# `--input-script` resolves against the game dir (`-d`), so name it bare:
+#
 #   functor -d examples/code-garden run native \
-#     --input-script examples/code-garden/idle.script --script-dt 0.0166667 \
+#     --input-script idle.script --script-dt 0.0166667 \
 #     --capture-at-frame 2280 --capture-frame /tmp/noon.png
 #
 # Frames worth capturing: 90 (a young garden at night), 1400 (dawn), 2280 (a
