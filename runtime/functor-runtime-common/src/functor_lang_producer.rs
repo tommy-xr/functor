@@ -825,6 +825,20 @@ impl ConnectRetryState {
     }
 }
 
+/// Preserve every pending retry's remaining delay when a destructive timeline
+/// operation rebases game time. Socket IO itself stays outside replay.
+pub fn rebase_connect_retry_deadlines(
+    retries: &mut HashMap<String, ConnectRetryState>,
+    old_tts: Option<f64>,
+    new_tts: Option<f64>,
+) {
+    if let (Some(old_tts), Some(new_tts)) = (old_tts, new_tts) {
+        for retry in retries.values_mut() {
+            retry.rebase_deadline(old_tts, new_tts);
+        }
+    }
+}
+
 /// Infinite bounded exponential backoff: 250ms through 8s, then 8s forever.
 pub fn connect_retry_delay_seconds(failed_attempts: u32) -> f64 {
     let exponent = failed_attempts.saturating_sub(1).min(5);
@@ -869,11 +883,11 @@ impl FrameCtx<'_> {
                 self.prev_tts,
             )
         {
-            if let (Some(old_tts), Some(new_tts)) = (retry_tts_before_scrub, *self.prev_tts) {
-                for retry in self.connect_retries.values_mut() {
-                    retry.rebase_deadline(old_tts, new_tts);
-                }
-            }
+            rebase_connect_retry_deadlines(
+                self.connect_retries,
+                retry_tts_before_scrub,
+                *self.prev_tts,
+            );
             self.deferred_queries.clear();
             self.pending_events.clear();
             // The restored model predates the current loading snapshot, so
@@ -2398,9 +2412,11 @@ mod tests {
 
     #[test]
     fn retry_deadline_preserves_remaining_delay_across_timeline_rebase() {
-        let mut retry = ConnectRetryState::pending();
+        let mut retries = HashMap::from([("endpoint".to_string(), ConnectRetryState::pending())]);
+        let retry = retries.get_mut("endpoint").unwrap();
         retry.failed(10.0);
-        retry.rebase_deadline(10.0, 2.0);
+        rebase_connect_retry_deadlines(&mut retries, Some(10.0), Some(2.0));
+        let retry = retries.get_mut("endpoint").unwrap();
         assert!(!retry.begin_retry_if_due(2.249));
         assert!(retry.begin_retry_if_due(2.25));
     }

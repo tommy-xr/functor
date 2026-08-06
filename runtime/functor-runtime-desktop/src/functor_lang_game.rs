@@ -40,8 +40,9 @@ use functor_runtime_common::functor_lang_prelude::{
     EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use functor_runtime_common::functor_lang_producer::{
-    journal_arm, journal_push, journal_swap, validate_contract, ConnectRetryState, EntryNames,
-    EntryRole, FrameCtx, JournalEntry, Provenance, Reporter, SpanSource,
+    journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, validate_contract,
+    ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Provenance, Reporter,
+    SpanSource,
 };
 use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
@@ -555,12 +556,18 @@ impl FunctorLangGame {
     /// tick right through a reload. Returns the number of stored closures
     /// rebound, for the status line.
     fn swap_in(&mut self, loaded: Loaded) -> (usize, Option<(usize, f64)>) {
+        let retry_tts_before_reload = self.prev_tts;
         let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_frame,
             self.has_physics,
             &mut self.prev_tts,
+        );
+        rebase_connect_retry_deadlines(
+            &mut self.connect_retries,
+            retry_tts_before_reload,
+            self.prev_tts,
         );
         let (model, report) = functor_lang::rebind_value(&self.model, &self.module, &loaded.module);
         self.model = model;
@@ -951,6 +958,7 @@ impl Game for FunctorLangGame {
     /// the future; exact-or-refused. After a successful branch, drop any
     /// in-flight frame work so it doesn't carry across (the reload discipline).
     fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let retry_tts_before_rewind = self.prev_tts;
         let result = self.recorder.rewind_scene_to(
             target,
             &mut self.model,
@@ -960,6 +968,11 @@ impl Game for FunctorLangGame {
             &mut self.prev_tts,
         );
         if result.is_ok() {
+            rebase_connect_retry_deadlines(
+                &mut self.connect_retries,
+                retry_tts_before_rewind,
+                self.prev_tts,
+            );
             // No in-flight frame work should carry across the branch (matches
             // the reload discipline); between-frame callers have these empty.
             self.deferred_queries.clear();
