@@ -69,9 +69,12 @@ test(
         headless,
       });
 
-    // Server first, and wait for its Sub.listen socket to actually bind before
-    // launching clients — the client connects once with no retry, so a client
-    // that races ahead of the listener would land in "error" and never converge.
+    // Deliberately start client A before any listener exists and leave enough
+    // time for its first connection attempt to fail. `Sub.connect` is a desired
+    // connection, so the same runner must converge after the server appears.
+    await using clientA = await launch("client");
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+
     await using server = await launch("server");
     await waitForPort("127.0.0.1", 9101, {
       timeoutMs: 60_000,
@@ -80,7 +83,6 @@ test(
 
     // The client Joins on connect and streams a Steer every tick from there,
     // so no input injection is needed.
-    await using clientA = await launch("client");
     await using clientB = await launch("client");
 
     const waitOpts = { timeoutMs: 90_000, intervalMs: 200 };

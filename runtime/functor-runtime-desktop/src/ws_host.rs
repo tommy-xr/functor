@@ -75,13 +75,14 @@ struct ConnEntry {
 }
 
 type SharedConns = Arc<Mutex<HashMap<u64, ConnEntry>>>;
+type SharedClientKeys = Arc<Mutex<HashMap<String, u64>>>;
 
 /// Owns the live connections and turns [`ConnCommand`]s into socket operations.
 pub struct WsManager {
     conns: SharedConns,
     /// Connect-initiated client connections: url key -> id (for idempotent connect
     /// and CloseKey). Server-accepted clients are not here (many per listener).
-    client_by_key: HashMap<String, u64>,
+    client_by_key: SharedClientKeys,
     /// Active listeners: bind key -> accept-loop task.
     listeners: HashMap<String, tokio::task::JoinHandle<()>>,
     next_id: Arc<AtomicU64>,
@@ -92,7 +93,7 @@ impl WsManager {
     pub fn new(events: Sender<HostNetEvent>) -> WsManager {
         WsManager {
             conns: Arc::new(Mutex::new(HashMap::new())),
-            client_by_key: HashMap::new(),
+            client_by_key: Arc::new(Mutex::new(HashMap::new())),
             listeners: HashMap::new(),
             next_id: Arc::new(AtomicU64::new(1)),
             events: EventTx(events),
@@ -119,17 +120,18 @@ impl WsManager {
     fn connect(&mut self, key: String, url: String) {
         // Idempotent by key: a re-declared connection (e.g. after a hot reload)
         // reattaches to the live socket instead of opening a second one.
-        if self.client_by_key.contains_key(&key) {
+        if self.client_by_key.lock().unwrap().contains_key(&key) {
             return;
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.client_by_key.insert(key.clone(), id);
+        self.client_by_key.lock().unwrap().insert(key.clone(), id);
         tokio::spawn(run_client(
             key,
             id,
             url,
             self.events.clone(),
             self.conns.clone(),
+            self.client_by_key.clone(),
         ));
     }
 
@@ -149,7 +151,7 @@ impl WsManager {
 
     fn close_key(&mut self, key: &str) {
         // A client connection for this key.
-        if let Some(id) = self.client_by_key.remove(key) {
+        if let Some(id) = self.client_by_key.lock().unwrap().remove(key) {
             self.send_to(id, OutMsg::Close);
         }
         // A listener: stop accepting and close its accepted clients.
@@ -172,19 +174,25 @@ async fn run_client(
     url: String,
     events: EventTx,
     conns: SharedConns,
+    client_by_key: SharedClientKeys,
 ) {
     let ws = match tokio_tungstenite::connect_async(&url).await {
         Ok((ws, _resp)) => ws,
         Err(e) => {
-            events.send(HostNetEvent::Error {
-                key,
-                id,
-                message: e.to_string(),
-            });
+            if client_by_key.lock().unwrap().get(&key) == Some(&id) {
+                events.send(HostNetEvent::Error {
+                    key,
+                    id,
+                    message: e.to_string(),
+                });
+            }
             return;
         }
     };
-    serve(ws, key, id, events, conns).await;
+    if client_by_key.lock().unwrap().get(&key) != Some(&id) {
+        return;
+    }
+    serve(ws, key, id, events, conns, Some(client_by_key)).await;
 }
 
 /// Accept connections until the listener is dropped/aborted; each accepted client
@@ -216,7 +224,7 @@ async fn accept_loop(
                 let conns = conns.clone();
                 tokio::spawn(async move {
                     match tokio_tungstenite::accept_async(stream).await {
-                        Ok(ws) => serve(ws, key, id, events, conns).await,
+                        Ok(ws) => serve(ws, key, id, events, conns, None).await,
                         Err(e) => {
                             events.send(HostNetEvent::Error {
                                 key,
@@ -241,6 +249,7 @@ async fn serve<S>(
     id: u64,
     events: EventTx,
     conns: SharedConns,
+    client_by_key: Option<SharedClientKeys>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -252,10 +261,16 @@ async fn serve<S>(
             key: key.clone(),
         },
     );
-    events.send(HostNetEvent::Connected {
-        key: key.clone(),
-        id,
-    });
+    let is_current = || {
+        client_by_key
+            .as_ref()
+            .is_none_or(|keys| keys.lock().unwrap().get(&key) == Some(&id))
+    };
+    if !is_current() {
+        conns.lock().unwrap().remove(&id);
+        return;
+    }
+    events.send(HostNetEvent::Connected { key: key.clone(), id });
 
     let (mut write, mut read) = ws.split();
     loop {
@@ -278,19 +293,25 @@ async fn serve<S>(
             },
             incoming = read.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
-                    events.send(HostNetEvent::Message { key: key.clone(), id, text });
+                    if is_current() {
+                        events.send(HostNetEvent::Message { key: key.clone(), id, text });
+                    }
                 }
                 Some(Ok(Message::Binary(data))) => {
-                    events.send(HostNetEvent::Message {
-                        key: key.clone(),
-                        id,
-                        text: String::from_utf8_lossy(&data).to_string(),
-                    });
+                    if is_current() {
+                        events.send(HostNetEvent::Message {
+                            key: key.clone(),
+                            id,
+                            text: String::from_utf8_lossy(&data).to_string(),
+                        });
+                    }
                 }
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
-                    events.send(HostNetEvent::Error { key: key.clone(), id, message: e.to_string() });
+                    if is_current() {
+                        events.send(HostNetEvent::Error { key: key.clone(), id, message: e.to_string() });
+                    }
                     break;
                 }
             },
@@ -298,7 +319,9 @@ async fn serve<S>(
     }
 
     conns.lock().unwrap().remove(&id);
-    events.send(HostNetEvent::Disconnected { key, id });
+    if is_current() {
+        events.send(HostNetEvent::Disconnected { key, id });
+    }
 }
 
 #[cfg(test)]
@@ -380,6 +403,37 @@ mod tests {
             HostNetEvent::Error { .. } => {}
             _ => panic!("expected an Error connecting to a dead port"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_key_invalidates_an_in_flight_client_dial() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            let _ = release_rx.await;
+            let _ = tokio_tungstenite::accept_async(stream).await;
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut mgr = WsManager::new(tx);
+        let key = format!("ws://127.0.0.1:{port}/");
+        mgr.handle(ConnCommand::Connect {
+            key: key.clone(),
+            url: key.clone(),
+        });
+        accepted_rx.await.unwrap();
+        mgr.handle(ConnCommand::CloseKey { key });
+        let _ = release_tx.send(());
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "a dial invalidated by CloseKey must not emit a stale event"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

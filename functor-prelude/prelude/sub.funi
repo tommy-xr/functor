@@ -17,7 +17,13 @@ let none : () => t
 let every : (Time.t, 'msg) => t
 /// Combine subscriptions.
 let batch : (List<t>) => t
-/// Maintain a client connection and tag its `Net.NetEvent` values as messages.
+/// Maintain a client connection and tag its ordered `Net.NetEvent` values as messages.
+///
+/// A failed attempt delivers `Net.Error`, then retries forever on the game-time
+/// clock after 250ms, doubling through 500ms, 1s, 2s, 4s, and at most 8s.
+/// Every failed attempt remains observable as an `Error`; `Connected` resets
+/// the next retry to 250ms. Dropping the subscription cancels the connection
+/// and its pending retry.
 let connect : (string, (Net.NetEvent) => 'msg) => t
 /// Maintain a server listener and tag its `Net.NetEvent` values as messages.
 let listen : (string, (Net.NetEvent) => 'msg) => t
