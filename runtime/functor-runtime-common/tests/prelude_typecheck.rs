@@ -65,6 +65,22 @@ fn host_calls_have_real_types() {
     assert!(diags.iter().any(|m| m.contains("Frame.t")), "{diags:?}");
 }
 
+#[test]
+fn cube_instances_have_a_typed_compact_payload() {
+    let diags = check(
+        "let instance: Scene.cubeInstance =\n\
+         { data: (1.0, 2.0, 3.0, 0.5, 1.0, 2.0, 0.2, 0.4, 0.8) }\n\
+         let scene: Scene.t = Scene.cubeInstances([instance])",
+    );
+    assert!(diags.is_empty(), "bulk cube instances should check: {diags:?}");
+
+    let diags = check(
+        "let bad: Scene.cubeInstance =\n\
+         { data: (1.0, 2.0, 3.0, 0.5, 1.0, 2.0, 0.2, 0.4, true) }",
+    );
+    assert!(!diags.is_empty(), "a non-float channel must be rejected");
+}
+
 /// A camera ray is optional at the surface boundary, and its branded origin
 /// and direction feed the existing Physics.cast Vec3 parameters directly.
 #[test]

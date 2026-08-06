@@ -14,6 +14,17 @@
 /// An opaque scene node.
 type t = host
 
+/// One fullbright cube submitted by `cubeInstances`.
+///
+/// One compact `{ data: (x, y, z, sx, sy, sz, r, g, b) }` value. `(x, y, z)`
+/// is the cube center. `(sx, sy, sz)` is its full per-axis size: scales of
+/// `1.0` produce the same unit cube as `Scene.cube()`. `(r, g, b)` is
+/// emissive/fullbright RGB. One flat payload tuple avoids three nested vectors,
+/// colors, or records per copy on this performance path.
+type cubeInstance = {
+  data: (float, float, float, float, float, float, float, float, float)
+}
+
 /// Create a unit cube centered at the origin.
 let cube : () => t
 /// Create a unit sphere centered at the origin.
@@ -24,6 +35,16 @@ let cylinder : () => t
 let quad : () => t
 /// Create a unit plane in the XZ ground plane.
 let plane : () => t
+
+/// Submit colored cubes as one hardware-instanced draw call.
+///
+/// Each value carries a center position (`x/y/z`), per-axis scale
+/// (`sx/sy/sz`), and fullbright RGB (`r/g/b`).
+/// The node is an emissive-only first slice: enclosing `Scene.color`,
+/// `Scene.lit`, and `Scene.emissive` modifiers do not replace its per-instance
+/// colors, and instances do not cast shadows. An empty list draws nothing.
+/// Outer scene transforms and `Scene.opacity` still apply to the whole batch.
+let cubeInstances : (List<cubeInstance>) => t
 
 /// Create a scene node from a model asset.
 ///

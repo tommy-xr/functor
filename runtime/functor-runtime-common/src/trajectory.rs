@@ -147,6 +147,10 @@ fn collect_transforms(
         SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
             out.insert(path.clone(), w);
         }
+        // A bulk node has one outer transform but many internal copies. The
+        // trajectory overlay cannot track or fade those copies independently,
+        // so omitting it is less misleading than strobing the entire batch.
+        SceneObject::CubeInstances(_) => {}
     }
 }
 
@@ -194,6 +198,7 @@ fn collect_anchor(
                 },
             );
         }
+        SceneObject::CubeInstances(_) => {}
     }
 }
 
@@ -264,7 +269,10 @@ pub fn mover_tracks(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Vec<MoverTr
         return Vec::new();
     }
     let anchor = anchor_leaves(scenes[0]);
-    let futures: Vec<_> = scenes[1..].iter().map(|scene| transforms_by_path(scene)).collect();
+    let futures: Vec<_> = scenes[1..]
+        .iter()
+        .map(|scene| transforms_by_path(scene))
+        .collect();
     let eps2 = eps * eps;
     let mut tracks = Vec::new();
     for (path, anchor_leaf) in &anchor {
@@ -287,10 +295,7 @@ pub fn mover_tracks(scenes: &[&Scene3D], eps: f32, max_step: f32) -> Vec<MoverTr
             .any(|w| (world_pos(w) - p0).magnitude2() > eps2);
         // A mover is anything whose world TRANSFORM changes — translation, or
         // an in-place rotation/scale (which only the strobe can depict).
-        let moved = translated
-            || worlds
-                .iter()
-                .any(|w| columns_delta2(w, &worlds[0]) > eps2);
+        let moved = translated || worlds.iter().any(|w| columns_delta2(w, &worlds[0]) > eps2);
         if !moved {
             continue;
         }
@@ -339,6 +344,7 @@ fn collect_sample_leaves<'a>(
                 },
             );
         }
+        SceneObject::CubeInstances(_) => {}
     }
 }
 
@@ -377,9 +383,9 @@ fn sampled_mover_tracks<'a>(
         }) {
             samples.truncate(cut);
         }
-        let moved = samples.iter().any(|sample| {
-            columns_delta2(&sample.world, &samples[0].world) > eps2
-        });
+        let moved = samples
+            .iter()
+            .any(|sample| columns_delta2(&sample.world, &samples[0].world) > eps2);
         if moved {
             tracks.push(SampledMoverTrack { samples });
         }
@@ -478,7 +484,10 @@ fn trail_arrow(
             if planar.magnitude() <= radius * HEADING_EPS_RADII {
                 return None;
             }
-            (vec![head], Matrix4::from_angle_z(Rad(planar.y.atan2(planar.x))))
+            (
+                vec![head],
+                Matrix4::from_angle_z(Rad(planar.y.atan2(planar.x))),
+            )
         }
     };
     Some(trail_mark(
@@ -1103,7 +1112,10 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
                 scale_presence(item, presence);
             }
         }
-        SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+        SceneObject::Geometry(_)
+        | SceneObject::Model(_)
+        | SceneObject::Terrain(_)
+        | SceneObject::CubeInstances(_) => {}
     }
 }
 
@@ -1270,10 +1282,7 @@ fn sprite_scene_overlays(
         let sampled = sampled_mover_tracks(scenes, opts.eps, opts.max_step);
         sampled_strobe_overlay(&sampled, &strobe.for_side(side), StrobeFade::Alpha)
     });
-    SceneOverlays {
-        trail,
-        strobe,
-    }
+    SceneOverlays { trail, strobe }
 }
 
 fn sprite_trail_radius(camera: &Camera2D) -> f32 {
@@ -1382,18 +1391,34 @@ pub fn frame_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Camera, Camera2D, SpriteLayer, SpriteSampling, TextureDescription};
+    use crate::{Camera, Camera2D, CubeInstance, SpriteLayer, SpriteSampling, TextureDescription};
     use cgmath::vec3;
 
     /// The FUTURE side's overlays for an explicit frame sequence — the shape
     /// these tests were written against, before the preview grew a second
     /// direction.
-    fn preview_from_frames(anchor: &Frame, futures: &[&Frame], opts: &PreviewOptions) -> FramePreview {
+    fn preview_from_frames(
+        anchor: &Frame,
+        futures: &[&Frame],
+        opts: &PreviewOptions,
+    ) -> FramePreview {
         side_overlays(anchor, futures, opts, PreviewSide::Future)
     }
 
     fn ball_at(x: f32, y: f32) -> Scene3D {
         Scene3D::sphere().transform(Matrix4::from_translation(vec3(x, y, 0.0)))
+    }
+
+    #[test]
+    fn bulk_instances_are_not_misrepresented_as_one_trajectory_leaf() {
+        let scene = Scene3D::cube_instances(vec![CubeInstance {
+            position: [1.0, 2.0, 3.0],
+            scale: [0.5, 1.0, 2.0],
+            color: [0.2, 0.4, 0.8],
+        }]);
+        assert!(transforms_by_path(&scene).is_empty());
+        assert!(anchor_leaves(&scene).is_empty());
+        assert!(sample_leaves_by_path(&scene).is_empty());
     }
 
     #[test]
@@ -1750,8 +1775,14 @@ mod tests {
         let trail = trajectory_trail(&refs, 0.05, 3.0).expect("a trail");
         let stepped = marks(&trail);
         assert_eq!(stepped.len(), 4);
-        assert!(matches!(mark_shapes(&stepped[0])[0], Shape::ConvexPolygon { .. }));
-        assert!(matches!(mark_shapes(&stepped[1])[0], Shape::ConvexPolygon { .. }));
+        assert!(matches!(
+            mark_shapes(&stepped[0])[0],
+            Shape::ConvexPolygon { .. }
+        ));
+        assert!(matches!(
+            mark_shapes(&stepped[1])[0],
+            Shape::ConvexPolygon { .. }
+        ));
         for resting in &stepped[2..] {
             let shapes = mark_shapes(resting);
             assert_eq!(shapes.len(), 1);
@@ -1918,11 +1949,7 @@ mod tests {
         // sibling counts in the key the changed group stops matching, so the
         // mover keeps its trail up to the despawn and the statics get nothing.
         let f = |x: f32| Scene3D {
-            obj: SceneObject::Group(vec![
-                ball_at(x, 0.0),
-                ball_at(1.0, 0.0),
-                ball_at(2.0, 0.0),
-            ]),
+            obj: SceneObject::Group(vec![ball_at(x, 0.0), ball_at(1.0, 0.0), ball_at(2.0, 0.0)]),
             xform: Matrix4::identity(),
         };
         let last = Scene3D {
@@ -1933,7 +1960,9 @@ mod tests {
         match trail.obj {
             // Two dots: the mover's frames before the despawn. Anything more
             // means a static sibling was aliased onto a neighbor's position.
-            SceneObject::Group(dots) => assert_eq!(dots.len(), 2, "expected only the mover's pre-despawn dots"),
+            SceneObject::Group(dots) => {
+                assert_eq!(dots.len(), 2, "expected only the mover's pre-despawn dots")
+            }
             _ => panic!("expected a group of dots"),
         }
     }
@@ -2008,7 +2037,11 @@ mod tests {
         };
         match mat {
             MaterialDescription::Lit { color, .. } => {
-                assert!((color.x - 0.2).abs() < 1e-4, "expected faded red, got {}", color.x);
+                assert!(
+                    (color.x - 0.2).abs() < 1e-4,
+                    "expected faded red, got {}",
+                    color.x
+                );
             }
             _ => panic!("expected a Lit material"),
         }
@@ -2026,7 +2059,14 @@ mod tests {
             copies: 2,
             ..Default::default()
         };
-        let trail = trail_from_tracks(&tracks, Some(&opts), TRAIL_RADIUS_3D, TrailSpace::Scene3D, PreviewSide::Future).expect("a trail");
+        let trail = trail_from_tracks(
+            &tracks,
+            Some(&opts),
+            TRAIL_RADIUS_3D,
+            TrailSpace::Scene3D,
+            PreviewSide::Future,
+        )
+        .expect("a trail");
         match trail.obj {
             SceneObject::Group(dots) => {
                 assert_eq!(dots.len(), 3, "anchor + the two non-copy samples")
@@ -2053,7 +2093,14 @@ mod tests {
         assert!(!tracks[0].translated);
         assert!(strobe_overlay(&tracks, &StrobeOptions::default()).is_some());
         assert!(
-            trail_from_tracks(&tracks, None, TRAIL_RADIUS_3D, TrailSpace::Scene3D, PreviewSide::Future).is_none(),
+            trail_from_tracks(
+                &tracks,
+                None,
+                TRAIL_RADIUS_3D,
+                TrailSpace::Scene3D,
+                PreviewSide::Future
+            )
+            .is_none(),
             "no dots for pure rotation"
         );
     }
@@ -2098,7 +2145,10 @@ mod tests {
                     material_alphas(item, out);
                 }
             }
-            SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+            SceneObject::Geometry(_)
+            | SceneObject::Model(_)
+            | SceneObject::Terrain(_)
+            | SceneObject::CubeInstances(_) => {}
         }
     }
 
@@ -2141,7 +2191,9 @@ mod tests {
     }
 
     fn moving_preview() -> (Frame, FramePreview) {
-        let frames: Vec<Frame> = (0..=4).map(|i| materialized_frame(i as f32 * 0.5)).collect();
+        let frames: Vec<Frame> = (0..=4)
+            .map(|i| materialized_frame(i as f32 * 0.5))
+            .collect();
         let futures: Vec<&Frame> = frames.iter().skip(1).collect();
         let preview = preview_from_frames(&frames[0], &futures, &preview_options(true, true));
         assert!(!preview.is_empty(), "the fixture must produce overlays");
@@ -2157,16 +2209,25 @@ mod tests {
         for _ in 0..8 {
             let next = presence_step(p, 1.0, dt);
             assert!(next >= p, "presence must not go backwards while rising");
-            assert!((0.0..=1.0).contains(&next), "presence escaped [0, 1]: {next}");
+            assert!(
+                (0.0..=1.0).contains(&next),
+                "presence escaped [0, 1]: {next}"
+            );
             p = next;
         }
-        assert!((p - 1.0).abs() < 1e-5, "one ramp must complete the fade in: {p}");
+        assert!(
+            (p - 1.0).abs() < 1e-5,
+            "one ramp must complete the fade in: {p}"
+        );
 
         // Falling: the mirror image.
         for _ in 0..8 {
             let next = presence_step(p, 0.0, dt);
             assert!(next <= p, "presence must not go forwards while falling");
-            assert!((0.0..=1.0).contains(&next), "presence escaped [0, 1]: {next}");
+            assert!(
+                (0.0..=1.0).contains(&next),
+                "presence escaped [0, 1]: {next}"
+            );
             p = next;
         }
         assert!(p.abs() < 1e-5, "one ramp must complete the fade out: {p}");
@@ -2219,7 +2280,10 @@ mod tests {
         for i in 0..=20 {
             let alpha = i as f32 / 20.0;
             let phase = presence_phase(alpha);
-            assert!((0.0..=1.0).contains(&phase), "phase escaped [0, 1]: {phase}");
+            assert!(
+                (0.0..=1.0).contains(&phase),
+                "phase escaped [0, 1]: {phase}"
+            );
             assert!(
                 (presence_ease(phase) - alpha).abs() < 1e-4,
                 "pin at {alpha} would resume at {} (phase {phase})",
@@ -2288,7 +2352,11 @@ mod tests {
         preview.apply_all_with_presence(&mut half, 0.5);
         let half = frame_material_alphas(&half);
 
-        assert_eq!(own.len(), 2, "the fixture has a 3D scene and one sprite layer");
+        assert_eq!(
+            own.len(),
+            2,
+            "the fixture has a 3D scene and one sprite layer"
+        );
         assert_eq!(full.len(), own.len());
         assert_eq!(half.len(), own.len());
 

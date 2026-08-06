@@ -963,7 +963,7 @@ The generated modules:
 
 | Module | What it is |
 | --- | --- |
-| `Scene` | 3D scene nodes: primitives, models, terrain, materials, transforms |
+| `Scene` | 3D scene nodes: primitives, bulk fullbright cube instances, models, terrain, materials, transforms |
 | `Sprite` | pure 2D picture values: shapes, text, images, transforms |
 | `Camera3D` | 3D cameras (`lookAt`, `firstPerson`), clip planes, screen→world rays |
 | `Camera2D` | center-origin 2D camera: pan, zoom, screen→world |
@@ -1042,6 +1042,14 @@ error, and `Scene.opacity(1.0, s)` is exactly `s` (so it does not perturb
 back-to-front by the average world position of their leaves, with depth writing
 off and no shadow — see the `Scene.opacity` reference for what that granularity
 does and does not fix. The 2D analogue is `Sprite.fade`.
+
+**Bulk cube instances are fullbright** — `Scene.cubeInstances` takes one list
+of typed `{ data: (x, y, z, sx, sy, sz, r, g, b) }` values and submits it as one
+hardware-instanced draw. The compact flat payload avoids nested per-copy
+vectors, colors, and records. Scale is per-axis and gives the cube's full size. The
+batch owns each copy's emissive RGB color; material wrappers do not override it,
+and this first slice casts no shadows. Outer transforms and `Scene.opacity`
+still apply to the batch.
 
 **Zero-argument constructors take their parens** — `Scene.cube()`,
 `Sprite.blank()`, `Anim.rest()`, `Effect.none()`, `Map.empty()`,

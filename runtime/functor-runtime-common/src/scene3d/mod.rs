@@ -37,6 +37,7 @@ use crate::{
     DebugRenderMode, RenderContext, RenderPass,
 };
 
+mod cube_instances;
 mod material_description;
 mod model_description;
 mod texture_description;
@@ -44,6 +45,8 @@ mod texture_description;
 pub use material_description::*;
 pub use model_description::*;
 pub use texture_description::*;
+
+use cube_instances::CubeInstanceRenderer;
 
 pub struct SceneContext {
     model_pipeline: Arc<BuiltAssetPipeline<Model>>,
@@ -56,6 +59,9 @@ pub struct SceneContext {
     sphere: RefCell<Box<dyn Geometry>>,
     quad: RefCell<Box<dyn Geometry>>,
     plane: RefCell<Box<dyn Geometry>>,
+    // Lazily created: scenes without CubeInstances allocate no GPU resources
+    // and execute no instancing-specific renderer work.
+    cube_instances: RefCell<Option<CubeInstanceRenderer>>,
     // One persistent mesh per grid size. Animated terrain (heights change every
     // frame) re-uploads its vertex buffer in place instead of rebuilding a fresh
     // GL mesh each frame; static terrain uploads exactly once. Keyed by
@@ -230,6 +236,7 @@ impl SceneContext {
             cylinder: RefCell::new(geometry::Cylinder::create()),
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
+            cube_instances: RefCell::new(None),
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -964,6 +971,8 @@ pub enum SceneObject {
     Geometry(Shape),
     Model(ModelDescription),
     Terrain(Box<crate::terrain::TerrainDescription>),
+    /// Fullbright colored unit cubes submitted in one hardware-instanced draw.
+    CubeInstances(Vec<CubeInstance>),
     Material(MaterialDescription, Vec<Scene3D>),
     Group(Vec<Scene3D>),
     /// A TRANSLUCENT subtree — `Scene.opacity`. The `f32` is the subtree's
@@ -975,6 +984,17 @@ pub enum SceneObject {
     /// that never calls `Scene.opacity` is bit-for-bit the scene it was before
     /// the variant existed.
     Opacity(f32, Vec<Scene3D>),
+}
+
+/// Per-copy data for [`SceneObject::CubeInstances`]. Each cube is centered at
+/// `position`, scaled independently on each axis, and rendered fullbright with
+/// `color`.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CubeInstance {
+    pub position: [f32; 3],
+    pub scale: [f32; 3],
+    pub color: [f32; 3],
 }
 
 /// A scene node: what it draws, under a transform.
@@ -1098,6 +1118,13 @@ impl Scene3D {
         }
     }
 
+    pub fn cube_instances(instances: Vec<CubeInstance>) -> Self {
+        Scene3D {
+            obj: SceneObject::CubeInstances(instances),
+            xform: Matrix4::identity(),
+        }
+    }
+
     /// Set the animation expression on every `Model` node in this subtree —
     /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
     /// that one model; applying over a group animates each model in it.
@@ -1127,7 +1154,9 @@ impl Scene3D {
                     .map(|item| item.with_animation(expr.clone()))
                     .collect(),
             ),
-            leaf @ (SceneObject::Geometry(_) | SceneObject::Terrain(_)) => leaf,
+            leaf @ (SceneObject::Geometry(_)
+            | SceneObject::Terrain(_)
+            | SceneObject::CubeInstances(_)) => leaf,
         };
         Scene3D { obj, ..self }
     }
@@ -1142,7 +1171,10 @@ impl Scene3D {
             SceneObject::Group(items) | SceneObject::Material(_, items) => {
                 items.iter().any(Scene3D::has_opacity)
             }
-            SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => false,
+            SceneObject::Geometry(_)
+            | SceneObject::Model(_)
+            | SceneObject::Terrain(_)
+            | SceneObject::CubeInstances(_) => false,
         }
     }
 
@@ -1175,6 +1207,20 @@ impl Scene3D {
             SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
                 *sum += (world * self.xform).w.truncate();
                 *count += 1;
+            }
+            SceneObject::CubeInstances(instances) => {
+                let w = world * self.xform;
+                for instance in instances {
+                    let p = w
+                        * cgmath::vec4(
+                            instance.position[0],
+                            instance.position[1],
+                            instance.position[2],
+                            1.0,
+                        );
+                    *sum += p.truncate();
+                    *count += 1;
+                }
             }
         }
     }
@@ -1235,7 +1281,10 @@ impl Scene3D {
                     item.collect_transparent(world, Some(next_material), out);
                 }
             }
-            SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+            SceneObject::Geometry(_)
+            | SceneObject::Model(_)
+            | SceneObject::Terrain(_)
+            | SceneObject::CubeInstances(_) => {}
         }
     }
 
@@ -1553,6 +1602,28 @@ so the reach is ignored"
             }
             SceneObject::Terrain(_) => {}
 
+            // This first slice is deliberately one material family: each
+            // instance carries a fullbright/emissive RGB color. It does not
+            // enter the shadow pass, and enclosing material nodes do not
+            // override those per-instance colors.
+            SceneObject::CubeInstances(instances) => {
+                if depth_pass || instances.is_empty() {
+                    return;
+                }
+                let xform = world_matrix * self.xform;
+                let mut renderer = scene_context.cube_instances.borrow_mut();
+                let renderer = renderer.get_or_insert_with(|| {
+                    CubeInstanceRenderer::new(&render_context.gl, render_context.shader_version)
+                });
+                renderer.draw(
+                    render_context,
+                    instances,
+                    &xform,
+                    projection_matrix,
+                    view_matrix,
+                );
+            }
+
             SceneObject::Material(material_description, items) => {
                 let material = material_description.get(render_context, scene_context);
                 // The 3D forward pass is otherwise fully opaque — every shader
@@ -1852,6 +1923,46 @@ where
         array[3][2],
         array[3][3],
     ))
+}
+
+#[cfg(test)]
+mod cube_instance_tests {
+    use super::{CubeInstance, Scene3D, SceneObject};
+    use cgmath::Matrix4;
+
+    fn instance(color: [f32; 3]) -> CubeInstance {
+        CubeInstance {
+            position: [1.0, 2.0, 3.0],
+            scale: [0.5, 1.0, 2.0],
+            color,
+        }
+    }
+
+    #[test]
+    fn bulk_node_is_structural_and_serializable() {
+        let scene = Scene3D::cube_instances(vec![instance([0.2, 0.4, 0.8])]);
+        let same = Scene3D::cube_instances(vec![instance([0.2, 0.4, 0.8])]);
+        let changed = Scene3D::cube_instances(vec![instance([0.8, 0.4, 0.2])]);
+        assert_eq!(scene, same, "Scene.equals sees identical instance data");
+        assert_ne!(scene, changed, "Scene.equals sees per-instance colors");
+        assert!(matches!(&scene.obj, SceneObject::CubeInstances(xs) if xs.len() == 1));
+
+        let json = serde_json::to_string(&scene).expect("serialize bulk scene");
+        let back: Scene3D = serde_json::from_str(&json).expect("deserialize bulk scene");
+        assert_eq!(back, scene);
+    }
+
+    #[test]
+    fn empty_bulk_node_remains_visible_to_scene_equality() {
+        let empty = Scene3D::cube_instances(vec![]);
+        assert_ne!(
+            empty,
+            Scene3D {
+                obj: SceneObject::Group(vec![]),
+                xform: Matrix4::from_scale(1.0),
+            }
+        );
+    }
 }
 
 #[cfg(test)]

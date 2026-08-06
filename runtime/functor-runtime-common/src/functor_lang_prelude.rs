@@ -171,7 +171,8 @@ use crate::math::Angle;
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{
-    MaterialDescription, ModelDescription, ModelHandle, SpriteSampling, TextureDescription,
+    CubeInstance, MaterialDescription, ModelDescription, ModelHandle, SpriteSampling,
+    TextureDescription,
 };
 use crate::skybox::SkyboxDescription;
 use crate::terrain::TerrainDescription;
@@ -989,6 +990,9 @@ pub struct FunctorLangColor(pub (f32, f32, f32));
 /// never three bare floats, so arity slips and float-interleaving mistakes
 /// are unrepresentable (the Angle rule, applied to space).
 pub struct FunctorLangVec3(pub (f32, f32, f32));
+
+/// Plain per-instance data decoded once at the bulk prelude boundary.
+struct FunctorLangCubeInstance(pub CubeInstance);
 
 /// A [`RenderTargetDescriptor`] as an opaque Functor Lang value — declared once via
 /// `RenderTarget.named` and used at both sites: the writer
@@ -2073,6 +2077,15 @@ row 0 has {cols} heights, row {r} has {}",
             FunctorLangScene(group(
                 scenes.into_iter().map(|s| s.0).collect(),
                 Matrix4::from_scale(1.0),
+            ))
+        },
+    );
+    reg.fn1(
+        "Scene.cubeInstances",
+        "Scene.cubeInstances([{ data: (x, y, z, sx, sy, sz, r, g, b) }, …])",
+        |instances: Vec<FunctorLangCubeInstance>| {
+            FunctorLangScene(Scene3D::cube_instances(
+                instances.into_iter().map(|instance| instance.0).collect(),
             ))
         },
     );
@@ -4122,6 +4135,47 @@ impl crate::host_registry::FromArg for FunctorLangAngle {
 impl crate::host_registry::FromArg for FunctorLangVec3 {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         vec3_of(value, path, span).map(FunctorLangVec3)
+    }
+}
+
+impl crate::host_registry::FromArg for FunctorLangCubeInstance {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::Record(fields) = value else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected a Scene.cubeInstance record, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let Some((_, Value::Tuple(args))) = fields.iter().find(|(name, _)| name == "data") else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: Scene.cubeInstance `data` must be a 9-float tuple"
+                ),
+                span,
+            });
+        };
+        if args.len() != 9 {
+            return Err(RunError {
+                message: format!(
+                    "{path}: Scene.cubeInstance `data` must contain 9 floats, got {}",
+                    args.len()
+                ),
+                span,
+            });
+        }
+        let mut numbers = [0.0; 9];
+        for (index, value) in args.iter().enumerate() {
+            numbers[index] =
+                <f64 as crate::host_registry::FromArg>::from_arg(value, path, span)? as f32;
+        }
+        Ok(FunctorLangCubeInstance(CubeInstance {
+            position: [numbers[0], numbers[1], numbers[2]],
+            scale: [numbers[3], numbers[4], numbers[5]],
+            color: [numbers[6], numbers[7], numbers[8]],
+        }))
     }
 }
 
@@ -7846,6 +7900,37 @@ Vec3.make(x, y, z)"
     }
 
     // --- Scene.equals / Frame.equals (structural equality for draw tests) ---
+
+    #[test]
+    fn cube_instances_decode_typed_records_and_compare_structurally() {
+        let one = "Scene.cubeInstances([{ data: (1.0, 2.0, 3.0, 0.5, 1.0, 2.0, 0.2, 0.4, 0.8) }])";
+        let value = eval(&format!("let main = () => {one}"));
+        let scene = scene_of(&value).expect("cubeInstances returns a Scene");
+        let SceneObject::CubeInstances(instances) = &scene.obj else {
+            panic!("expected CubeInstances, got {:?}", scene.obj);
+        };
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].position, [1.0, 2.0, 3.0]);
+        assert_eq!(instances[0].scale, [0.5, 1.0, 2.0]);
+        assert_eq!(instances[0].color, [0.2, 0.4, 0.8]);
+
+        let module = functor_lang::lower(
+            functor_lang::parse(
+                "let main = () => Scene.cubeInstances([{ data: (1.0 / 0.0, 2.0, 3.0, 0.5, 1.0, 2.0, 0.2, 0.4, 0.8) }])",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("non-finite instance data must fail at the host boundary");
+        assert_eq!(failure.error.message, "expected a finite number, got inf");
+
+        assert!(equality(&format!("Scene.equals({one}, {one})")));
+        assert!(!equality(&format!(
+            "Scene.equals({one}, Scene.cubeInstances([{{ data: (1.0, 2.0, 3.0, 0.5, 1.0, 2.0, 0.8, 0.4, 0.2) }}]))"
+        )));
+    }
 
     /// Evaluate a `Scene.equals`/`Frame.equals` expression to its bool.
     fn equality(expr: &str) -> bool {

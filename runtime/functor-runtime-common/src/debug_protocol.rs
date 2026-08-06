@@ -62,7 +62,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// events. Additive — a pre-v10 runtime simply omits both, which deserializes
 /// as `0`; a client that waits on either must gate on the version rather than
 /// read a constant zero as "quiescent".
-pub const DEBUG_PROTOCOL_VERSION: u32 = 10;
+///
+/// 11 adds the `CubeInstances` scene node returned by `GET /scene`, with each
+/// compact instance carrying position, per-axis scale, and RGB color. Clients
+/// that decode scene variants exhaustively must gate before reading it.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 11;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -899,7 +903,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 10);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 11);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
