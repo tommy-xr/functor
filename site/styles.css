@@ -3705,8 +3705,8 @@ a:hover {
    gets everything left over. */
 .mp-wl {
   display: grid;
-  grid-template-columns: 54px 62px 1fr 46px;
-  gap: 8px;
+  grid-template-columns: 84px 62px 1fr 46px;
+  gap: 6px;
   padding: 3px 10px;
   font: 10.5px/1.5 var(--font-mono);
   color: var(--text);
@@ -3725,8 +3725,32 @@ a:hover {
   background: color-mix(in srgb, var(--pc) 14%, transparent);
 }
 
+/* Sent frame, then delivered — the link's delay, per packet. The sent frame is
+   the row's file-under number and keeps the ink; the arrival is an annotation
+   on it, so it sits quieter and one notch smaller. */
 .mp-wl .f {
   color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.mp-wl .f .dl {
+  margin-left: 4px;
+  font-style: normal;
+  font-size: 9.5px;
+  color: color-mix(in srgb, var(--text-dim) 65%, transparent);
+}
+
+/* IN FLIGHT at the playhead: sent by this frame, not yet delivered. The row is
+   the one place the parked timeline can say "the receiving game has not seen
+   this yet", so the arrival stamp lights up and the payload — which is the part
+   that has not landed — goes ghosted. */
+.mp-wl.flight .f .dl {
+  color: var(--cyan);
+}
+
+.mp-wl.flight .payload,
+.mp-wl.flight .n {
+  opacity: 0.45;
 }
 
 /* Direction takes the ink of whoever SENT it: the client's own color going up,
@@ -4033,7 +4057,7 @@ button.mp-vt-row:focus-visible {
 /* ALL interleaves several links, so every row gains a column naming the one it
    crossed — inserted after the frame, before the direction it qualifies. */
 .mp-wl.linked {
-  grid-template-columns: 54px 32px 62px 1fr 46px;
+  grid-template-columns: 84px 32px 62px 1fr 46px;
 }
 
 .mp-wl .l {
@@ -4555,6 +4579,24 @@ button.mp-vt-row:focus-visible {
   padding: 3px 5px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* Loss is set here but not applied: it belongs to datagrams (Net.Udp), and
+   Sub.connect is reliable-ordered. The field stays usable — it is a setting,
+   not a broken control — and wears the badge that says who will read it. */
+.mp-link-menu label.off {
+  opacity: 0.65;
+}
+
+.mp-link-soon {
+  padding: 1px 5px;
+  font: 9px/1.5 var(--font-mono);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pink);
+  background: color-mix(in srgb, var(--pink) 14%, transparent);
+  border-radius: 3px;
 }
 
 .mp-link-note {

@@ -174,11 +174,19 @@ id per pair, both ends told `connected`, FIFO per pane. No sockets are opened
 and no server process runs.
 
 Its routing properties mirror `functor_runtime_common::net::VirtualNet`, which
-it does not call: the coordinator ships **perfect links, next-rAF delivery**
-today, not step-time delivery. `VirtualNet`'s scheduling — packets as
-`{deliver_tick, seq, dest, event}` data over a seeded SplitMix64 and a per-link
-`LinkProfile` — is the basis planned for latency, jitter, loss, partitions, and
-the step-time delivery barrier that makes them reproducible.
+it does not call — including its scheduling: each routed packet is given a
+delivery FRAME (`sent + latency + jitter`, drawn from a seeded SplitMix64 and
+clamped so it can never overtake an earlier packet on the same connection) and
+flushed when the session's reference clock reaches it. Every pane's link chip
+sets that latency and jitter; the wire rows print `sent → delivered`.
+
+**Latency and jitter only, and that is a decision** (design Addendum 8.2):
+`Sub.connect` promises reliable, ordered delivery, so the coordinator must never
+drop or reorder a packet. The chips keep their loss numbers, labelled as
+applying to datagrams, and those activate with `Net.Udp`. Still to come:
+partitions, and the step-time delivery barrier — the schedule is keyed to the
+session's reference clock rather than to each receiving pane's own step, which
+is what stands between the reproducible jitter DRAWS and reproducible runs.
 
 `e2e/net-coordinator.mjs` (`npm run test:net-coordinator`) drives `examples/orbs`
 as a server plus two clients in headless Chromium and asserts the handshake,

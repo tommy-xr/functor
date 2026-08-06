@@ -28,12 +28,29 @@
 //     `Sub.listen` tagger;
 //   • FIFO per pane: deliveries queue in arrival order and flush as one batch.
 //
-// PERFECT LINKS ONLY. Everything a link profile would add — latency, jitter,
-// loss, partitions — is deliberately absent, and so is the step barrier: a
-// routed packet is delivered on the host's NEXT rAF, not on the receiving
-// pane's next fixed step. Impairment and the barrier are later PRs; when the
-// barrier lands, `flush()` becomes step-time delivery and a packet's frame
-// stops being a measurement and becomes the step it was scheduled in.
+// IMPAIRMENT (design Addendum 8.2) — LATENCY AND JITTER ONLY, and that is a
+// semantic decision, not a missing feature: `Sub.connect` promises RELIABLE,
+// ORDERED delivery, so a coordinator that dropped or reordered its packets
+// would be lying about the API the game is written against. Loss and reorder
+// belong to unreliable channels and arrive with `Net.Udp` (Addendum 6a); the
+// link chips keep showing their loss numbers, labelled as applying to
+// datagrams.
+//
+// So a routed packet is no longer delivered on the host's next rAF. It is
+// SCHEDULED — `sentFrame + latency ± jitter`, in reference-clock frames — and
+// flushed when the reference clock reaches that frame, exactly the way
+// `VirtualNet::send` schedules a `deliver_tick` (see
+// `runtime/functor-runtime-common/src/net/virtual_net.rs`, mirrored here rather
+// than called into). Its FIFO discipline comes with it: a later-sent packet
+// never overtakes an earlier one on the same connection, whatever the jitter
+// draw says, because its delivery is clamped to the previous packet's.
+//
+// The step barrier is still a later PR: the schedule is keyed to the SESSION's
+// reference clock, not to the receiving pane's own fixed step, so a delivery
+// lands on the host frame that reaches it rather than inside the receiver's
+// step. That is what stands between this and cross-run determinism — the jitter
+// DRAWS are already reproducible (a seeded SplitMix64 per session), but which
+// frame a pane happened to send in is still wall-clock.
 //
 // The packet log is the record every traffic view reads. Each row is keyed to
 // the REFERENCE CLOCK (`Packet.frame`) so traffic lives on the same axis the
@@ -69,13 +86,28 @@ export interface Packet {
    *
    * MEASURED, not scheduled: there is no step barrier yet, so this is the
    * reference pane's live head at route time, ±a frame. When the barrier lands
-   * it becomes the step the packet is delivered in, by construction.
+   * it becomes the step the packet is SENT in, by construction.
    *
    * `null` when there is no reference clock to key against — a host that passed
    * no `referenceFrame`, or a session whose reference pane has not recorded a
    * frame yet (a packet from the boot handshake).
    */
   frame: number | null;
+  /**
+   * The frame the packet is DELIVERED on — `frame` plus its link's latency and
+   * jitter draw, clamped so it never overtakes the previous packet on the same
+   * connection (see `schedule`). Scheduled at route time, which is what makes
+   * an in-flight packet queryable: a packet is on the wire at playhead `p` when
+   * `frame <= p < deliveredFrame`, and its flight LASTS `deliveredFrame -
+   * frame` frames — the number the wire rows print and the dots fly.
+   *
+   * Equal to `frame` on a link fast enough to round to zero frames (LAN).
+   * `null` in the two cases where there is no crossing to describe: no
+   * reference clock to schedule against (the boot handshake — it delivers on
+   * the next flush), or a delivery ABANDONED because the destination document
+   * navigated away before its frame came up.
+   */
+  deliveredFrame: number | null;
   /** When the coordinator routed it (`performance.now()`). Host-clock time, not
    * game time: the wall-clock sibling of `frame`, kept because a live view
    * animates on the host's clock while `frame` places the packet in the
@@ -135,6 +167,75 @@ const CONNECT_GRACE_MS = 15_000;
 /** Hot path: one decoder for every `Send` that crosses the coordinator. */
 const DECODER = new TextDecoder();
 
+/**
+ * The timeline's fixed tick rate (timeline-model.js TIMELINE_FPS) — how a link
+ * profile's milliseconds become the frames the schedule is expressed in.
+ *
+ * Exported because the schedule is what everything downstream now measures in:
+ * the pane grid's rail (mp-panes) and the packet dots' flight (mp-network) have
+ * to mean the same frame this file scheduled against, and three private 60s
+ * would be three things to keep in step.
+ */
+export const TIMELINE_FPS = 60;
+
+/** A link profile's delay, in reference-clock frames. Rounded, so a link faster
+ * than half a frame (LAN's 8ms) is honestly zero: the frame is the finest
+ * resolution the schedule has. */
+const framesOf = (ms: number): number =>
+  Math.max(0, Math.round((ms * TIMELINE_FPS) / 1000));
+
+/**
+ * Delivery is never abandoned. If the reference clock stalls (a paused session
+ * whose panes somehow keep sending, a background tab) the queue would otherwise
+ * grow without bound — so past this many packets the oldest are delivered
+ * EARLY. Dropping them is the one thing a reliable-ordered channel may not do
+ * (Addendum 8.2), so the pressure valve gives up the impairment instead.
+ */
+const MAX_IN_FLIGHT = 2_000;
+
+/**
+ * Deterministic PRNG (SplitMix64), the same algorithm and constants as
+ * `functor_runtime_common::net::Rng` — the jitter draws must be reproducible
+ * from a seed, so nothing here touches `Math.random`.
+ *
+ * BigInt because the algorithm is defined on 64-bit wrapping arithmetic: a
+ * 32-bit stand-in would be a different generator wearing its name. It costs a
+ * handful of BigInt ops per IMPAIRED packet (none at all on a jitter-free
+ * link), against a JSON decode per packet on the same path.
+ */
+const MASK64 = (1n << 64n) - 1n;
+
+class Rng {
+  private state: bigint;
+
+  constructor(seed: bigint) {
+    this.state = seed & MASK64;
+  }
+
+  next(): bigint {
+    this.state = (this.state + 0x9e3779b97f4a7c15n) & MASK64;
+    let z = this.state;
+    z = ((z ^ (z >> 30n)) * 0xbf58476d1ce4e5b9n) & MASK64;
+    z = ((z ^ (z >> 27n)) * 0x94d049bb133111ebn) & MASK64;
+    return (z ^ (z >> 31n)) & MASK64;
+  }
+
+  /** An integer in `[0, hi]` inclusive (Rust's `range_u32(0, hi)`). */
+  upTo(hi: number): number {
+    if (hi <= 0) return 0;
+    return Number(this.next() % BigInt(hi + 1));
+  }
+}
+
+/**
+ * Seeds run 1, 2, 3… per page, so a session's jitter is stable while it lives
+ * (a rebuilt coordinator is a new session and gets the next seed). Not a
+ * wall-clock seed: "stable within a session" is what makes two reads of the
+ * same log agree, and a fixed sequence is what will make cross-run replay
+ * possible once barrier stepping pins WHEN a pane sends.
+ */
+let nextSessionSeed = 1n;
+
 /** The authority (host:port) of an endpoint, ignoring scheme and path — the
  * same rule the Rust `authority()` applies, so both agree on what matches. */
 const authorityOf = (endpoint: string): string => {
@@ -145,8 +246,6 @@ const authorityOf = (endpoint: string): string => {
 interface Pane {
   id: string;
   frame: HTMLIFrameElement;
-  /** Events queued for this pane, flushed in order on the next host rAF. */
-  outbox: DeliveredEvent[];
   /** Everything this pane registered outside the coordinator's own scope
    * (the iframe `load` hook and the current document's `pagehide`). */
   scope: AbortController;
@@ -169,6 +268,23 @@ interface PendingConnect {
   since: number;
 }
 
+/**
+ * What a link does to the packets crossing it. LATENCY AND JITTER ONLY — the
+ * chips' loss/reorder fields are not here, and deliberately so (Addendum 8.2:
+ * dropping a packet on a reliable-ordered channel would be a lie about
+ * `Sub.connect`).
+ *
+ * `jitter` is EXTRA delay, drawn uniformly from `[0, jitter]` — the same
+ * one-sided shape `VirtualNet` uses. A packet can arrive late, never early:
+ * arriving early would mean the link beat its own latency.
+ */
+export interface LinkImpairment {
+  /** One-way latency, in ms. */
+  ms: number;
+  /** Jitter, in ms — the width of the extra-delay draw. */
+  jitter: number;
+}
+
 export interface NetCoordinatorOptions {
   /**
    * The session's REFERENCE CLOCK, as a frame number — what every routed packet
@@ -181,6 +297,30 @@ export interface NetCoordinatorOptions {
    * time it is. `null` while nothing has recorded a frame yet.
    */
   referenceFrame?: () => number | null;
+  /**
+   * The impairment on a client's link, by its pane id — the link chip, read
+   * live at ROUTE time so a profile change takes effect on the next packet.
+   * Packets already in flight keep the schedule they were given (re-timing them
+   * could reorder a reliable channel, which is the one thing this may not do).
+   *
+   * The pane asked about is always the CLIENT end of the pair: a link belongs
+   * to a client, and the authority has none. `null`/omitted is a perfect link.
+   */
+  link?: (clientPane: string) => LinkImpairment | null;
+}
+
+/** One packet waiting for its delivery frame. */
+interface InFlight {
+  /** The destination pane. */
+  pane: string;
+  event: DeliveredEvent;
+  /** The reference frame it is due on; `null` delivers on the next flush. */
+  due: number | null;
+  /** Its row in the log, so the record can be CORRECTED when the schedule is
+   * not what happens: an early flush under the pressure valve, or a delivery
+   * abandoned because the destination document navigated away. Without this the
+   * log would keep claiming a crossing that never took place. */
+  packet: Packet;
 }
 
 export class NetCoordinator {
@@ -195,6 +335,21 @@ export class NetCoordinator {
   /** Payload text the log is holding, in characters (see PACKET_LOG_BYTES). */
   private logBytes = 0;
   private readonly watchers = new Set<(packet: Packet) => void>();
+  /** Scheduled packets, in send order — which is also delivery order within a
+   * connection, because the clamp in `schedule` keeps it so. */
+  private readonly inFlight: InFlight[] = [];
+  /** `conn|destination pane` -> the last delivery frame scheduled that way: the
+   * FIFO clamp's state, keyed by where a packet is GOING — which is one entry
+   * per direction for every connection between two panes, and one shared entry
+   * for the loopback row `open()` documents (a pane that dials its own
+   * authority). Sharing it there over-clamps and never reorders, and keying by
+   * destination is also what keeps a `disconnected` clamped behind the messages
+   * still in flight, after its connection row is already gone. */
+  private readonly lastDue = new Map<string, number>();
+  private readonly rng = new Rng(nextSessionSeed++);
+  /** The reference frame the last flush saw — how a clock that went backwards
+   * (a reloaded or newly promoted reference pane) is noticed. */
+  private lastNow: number | null = null;
   private nextConn = 1;
   private raf = 0;
   private readonly abort = new AbortController();
@@ -231,7 +386,7 @@ export class NetCoordinator {
    */
   addPane(id: string, frame: HTMLIFrameElement, signal?: AbortSignal): void {
     const scope = new AbortController();
-    this.panes.set(id, { id, frame, outbox: [], scope });
+    this.panes.set(id, { id, frame, scope });
     const armUnload = () => {
       frame.contentWindow?.addEventListener("pagehide", () => this.resetPane(id), {
         once: true,
@@ -310,6 +465,8 @@ export class NetCoordinator {
     this.listeners.clear();
     this.conns.clear();
     this.pending.length = 0;
+    this.inFlight.length = 0;
+    this.lastDue.clear();
     this.watchers.clear();
   }
 
@@ -419,6 +576,10 @@ export class NetCoordinator {
     for (const side of [row.client, row.server]) {
       this.deliver(byPane, side, { kind: "disconnected", key: side.key, conn }, 0);
     }
+    // The clamp's state dies with the connection: a new connection reusing this
+    // id is a new stream, and inheriting a delivery frame from the old one
+    // would delay its first packets by whatever the last one was carrying.
+    for (const side of [row.client, row.server]) this.lastDue.delete(`${conn}|${side.pane}`);
     // A client whose peer went away (the server pane reloaded, or closed the
     // connection) can never ask again: its runtime only emits `Connect` for a
     // key it has not already declared, and a `disconnected` does not clear
@@ -452,12 +613,46 @@ export class NetCoordinator {
     return null;
   }
 
+  /**
+   * When this event lands, in reference-clock frames.
+   *
+   * Only MESSAGES are impaired: the lifecycle events are the coordinator's own
+   * bookkeeping, not traffic the game put on the wire (they carry no payload
+   * and the pane headers, not the log, are what read them). They still take the
+   * FIFO clamp, so a `disconnected` can never overtake a message still in
+   * flight on the connection it closes.
+   *
+   * `null` sent frame — no reference clock yet — schedules nothing: an
+   * unscheduled packet flushes immediately, which is exactly the boot
+   * handshake's old behaviour.
+   */
+  private schedule(sent: number | null, to: Side, event: DeliveredEvent): number | null {
+    if (sent === null) return null;
+    const conn = this.conns.get(event.conn);
+    const profile =
+      event.kind === "message" && conn ? this.options.link?.(conn.client.pane) : null;
+    const jitter = profile ? framesOf(profile.jitter) : 0;
+    let due = sent + (profile ? framesOf(profile.ms) : 0) + this.rng.upTo(jitter);
+    // FIFO per connection per direction (VirtualNet's rule): a later-sent
+    // packet never overtakes an earlier one, whatever the jitter drew. Clamped
+    // to the previous delivery rather than PAST it — packets that land on the
+    // same frame still arrive in send order (one flush, one ordered batch), and
+    // a burst must not be spread a frame apart per packet.
+    const key = `${event.conn}|${to.pane}`;
+    const previous = this.lastDue.get(key);
+    if (previous !== undefined && due < previous) due = previous;
+    this.lastDue.set(key, due);
+    return due;
+  }
+
   private deliver(from: string, to: Side, event: DeliveredEvent, size: number): void {
     const pane = this.panes.get(to.pane);
     if (!pane) return;
-    pane.outbox.push(event);
+    const frame = this.options.referenceFrame?.() ?? null;
+    const due = this.schedule(frame, to, event);
     const packet: Packet = {
-      frame: this.options.referenceFrame?.() ?? null,
+      frame,
+      deliveredFrame: due,
       at: performance.now(),
       from,
       to: to.pane,
@@ -466,6 +661,7 @@ export class NetCoordinator {
       size,
       ...(event.kind === "message" ? { text: event.text } : {}),
     };
+    this.inFlight.push({ pane: to.pane, event, due, packet });
     this.log.push(packet);
     this.logBytes += packet.text?.length ?? 0;
     if (this.log.length > PACKET_LOG_CAP + PACKET_LOG_SLACK) {
@@ -491,8 +687,15 @@ export class NetCoordinator {
       if (side.pane === id) this.listeners.delete(authority);
     }
     this.dropPending((p) => p.pane === id);
-    const pane = this.panes.get(id);
-    if (pane) pane.outbox.length = 0;
+    // A navigating pane is a NEW game: everything addressed to the document
+    // that is going away goes with it. (The other end of each connection keeps
+    // its `disconnected` — that is how it learns.) The log is told: an
+    // abandoned packet has no delivery frame, so no view claims it landed.
+    for (let i = this.inFlight.length - 1; i >= 0; i--) {
+      if (this.inFlight[i].pane !== id) continue;
+      this.inFlight[i].packet.deliveredFrame = null;
+      this.inFlight.splice(i, 1);
+    }
   }
 
   private dropPending(match: (p: PendingConnect) => boolean): void {
@@ -537,20 +740,64 @@ export class NetCoordinator {
   // ------------------------------------------------------------------- egress
 
   /**
-   * One batch per pane, in arrival order. This is the "perfect link": a packet
-   * routed during frame N is delivered at the start of the host's frame N+1,
-   * with no impairment applied. The barrier PR moves this to the receiving
-   * pane's step boundary.
+   * Everything whose delivery frame has arrived, one batch per pane, in send
+   * order — the impaired link's egress.
+   *
+   * A single pass over the queue, which is in send order and (per destination)
+   * therefore in delivery order too, so "due" is decided packet by packet and
+   * the survivors keep their relative order by construction. An unscheduled
+   * packet (routed before there was a reference clock) is due immediately; a
+   * SCHEDULED one waits for its frame even while the clock is momentarily
+   * unreadable, or the impairment would be silently skipped exactly when a pane
+   * is between documents.
+   *
+   * Two escapes, and both DELIVER rather than drop — the channel is reliable:
+   *
+   *   • the clock went BACKWARDS. It is a live measurement of whichever pane is
+   *     currently the reference, so a reloaded (or newly promoted) reference
+   *     pane restarts it near zero. Every schedule and every FIFO watermark
+   *     belongs to the old timeline, and holding them would stall the session
+   *     for as long as the clock was ahead — so a regression opens a new epoch:
+   *     drain the queue in order, forget the watermarks.
+   *   • more than `MAX_IN_FLIGHT` waiting. A clock that has stopped advancing
+   *     must not grow the queue without bound, so the oldest are delivered
+   *     early. `forced` is a PREFIX of a send-ordered queue, so this cannot
+   *     reorder anything.
+   *
+   * Both correct the log on the way past: a packet delivered off its schedule
+   * says so, because `deliveredFrame` is read as what happened.
    */
   private flush(): void {
     this.retryPending();
-    for (const pane of this.panes.values()) {
-      if (pane.outbox.length === 0) continue;
-      const events = pane.outbox.splice(0);
-      pane.frame.contentWindow?.postMessage(
-        { type: "functor-net-deliver", events },
-        window.location.origin
-      );
+    const now = this.options.referenceFrame?.() ?? null;
+    const rewound = now !== null && this.lastNow !== null && now < this.lastNow;
+    if (rewound) this.lastDue.clear();
+    this.lastNow = now ?? this.lastNow;
+    if (this.inFlight.length > 0) {
+      // One outbox per pane, per flush: a delivery is never held across frames,
+      // so this is the whole batch a pane receives.
+      const outboxes = new Map<string, DeliveredEvent[]>();
+      const forced = Math.max(0, this.inFlight.length - MAX_IN_FLIGHT);
+      let kept = 0;
+      for (let i = 0; i < this.inFlight.length; i++) {
+        const waiting = this.inFlight[i];
+        const early = rewound || i < forced;
+        if (early || waiting.due === null || (now !== null && waiting.due <= now)) {
+          if (early) waiting.packet.deliveredFrame = now;
+          const outbox = outboxes.get(waiting.pane);
+          if (outbox) outbox.push(waiting.event);
+          else outboxes.set(waiting.pane, [waiting.event]);
+        } else {
+          this.inFlight[kept++] = waiting;
+        }
+      }
+      this.inFlight.length = kept;
+      for (const [id, events] of outboxes) {
+        this.panes.get(id)?.frame.contentWindow?.postMessage(
+          { type: "functor-net-deliver", events },
+          window.location.origin
+        );
+      }
     }
   }
 }

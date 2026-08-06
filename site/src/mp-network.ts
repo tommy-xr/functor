@@ -15,17 +15,19 @@
 //      circles: client → server is the client's player color, sized by payload;
 //      server → client is the server's slate (--scrub-server) in a TIGHT size
 //      range, so the per-frame snapshot stream never dominates the picture.
-//   2. PACE is a measurement. See FLIGHT_MS.
+//   2. PACE is a measurement — a dot's flight is the delay its packet really
+//      took. See `shownFlightMs`, and the one stated exception.
 //
 // The third rule is the WIRE LOG: clicking an edge pins a panel, tethered to
 // that wire with a dashed leader, showing that link's traffic as DECODED VALUES
 // (`Steer {turn:1}`) rather than as bytes — and locked to the chrono rail, so
 // scrubbing sweeps the rows the same way it sweeps the dots.
 
-import type { NetCoordinator, Packet } from "./net-coordinator.js";
+import { TIMELINE_FPS, type NetCoordinator, type Packet } from "./net-coordinator.js";
 import {
   buildWireRow,
   indexAfter,
+  inFlightAt,
   LIVE_ROW_MS,
   logWindow,
   onLink,
@@ -37,48 +39,65 @@ import type { WireValue } from "./wire-value.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+const MS_PER_FRAME = 1000 / TIMELINE_FPS;
+
 /**
- * How long a packet takes to cross its edge, in ms.
+ * PACE IS A MEASUREMENT (Addendum 5, rule 2), and this is the ONE exception —
+ * stated here, and stated on the chip.
  *
- * A FIXED value, and that is honest today: the coordinator routes on perfect
- * links (net-coordinator.ts — no latency, no jitter, no loss), so there is no
- * measurement to render and every edge is genuinely the same speed. The link
- * chips are configured profiles, not observations, which is why they are
- * labelled as such.
+ * A dot flies for the delay its packet actually took: `deliveredFrame - frame`
+ * from the coordinator's schedule, in wall-time. Every link with a delay of at
+ * least one frame therefore flies TRUE — Wi-Fi's three frames really are a
+ * third of mobile's eight, and the picture says so.
  *
- * When impairment lands, this becomes the MEASURED latency of the packet's
- * link, per Addendum 5's "pace is a measurement": flight time is never scaled
- * for looks, and if sub-perceptual links ever force a floor or a log scale, the
- * UI must SAY so with a "×N" chip on the edge.
+ * A link under half a frame (LAN's 8ms) schedules zero frames of delay, so its
+ * true flight is zero milliseconds: nothing would ever appear on that wire. Only
+ * those are drawn at a floor — long enough to read as a streak, short enough to
+ * read as instant beside anything impaired — and their chip carries `<1f`, so a
+ * reader is never invited to compare that edge's pace with a real one.
  */
-const FLIGHT_MS = 600;
+const FLOOR_FLIGHT_MS = 40;
+
+/** How long a dot is shown flying, given the delay it really took. */
+const shownFlightMs = (trueMs: number): number => (trueMs > 0 ? trueMs : FLOOR_FLIGHT_MS);
+
+/** The chip's honesty suffix: `<1f` on the one kind of edge whose dots are not
+ * a measurement, "" everywhere else. Read off the SCHEDULED delay — the frames
+ * the coordinator actually applies — not off the chip's milliseconds, which is
+ * the number that gets rounded away. */
+const paceScale = (linkMs: number): string =>
+  Math.round((linkMs * TIMELINE_FPS) / 1000) > 0 ? "" : " <1f";
 
 /**
  * Concurrent dots, hard cap. Oldest is dropped first, so a runaway session sheds
  * packets instead of growing the DOM without bound.
  *
  * Sized for the honest steady state rather than for looks: with one dot per
- * edge per direction per frame (see the batching in `step`), a 60Hz session
- * keeps `FLIGHT_MS / 16.7 ≈ 36` dots in the air per edge per direction, so
- * MAX_CLIENTS × 2 directions ≈ 216 at the busiest. A cap below that is not a
- * safety valve, it is a visual bug: every dot is evicted mid-wire and the
- * stream never reaches the far end.
+ * edge per direction per frame (see the batching in `step`), a 60Hz session on
+ * an unimpaired link keeps `FLOOR_FLIGHT_MS / 16.7 ≈ 2` dots in the air per edge
+ * per direction, and a slow link keeps its whole latency's worth — a 400ms
+ * "awful" link, ≈24. MAX_CLIENTS × 2 directions × 24 ≈ 144 at the busiest preset. A
+ * link slower than that sheds its oldest dots, which is a stated bound: below
+ * the steady state it would not be a safety valve but a visual bug, every dot
+ * evicted mid-wire and the stream never reaching the far end.
  */
 const MAX_DOTS = 260;
 
 /**
- * How wide a window of the packet log the REPLAY renders, in reference-clock
- * frames.
+ * How far back the REPLAY walks the log, in reference-clock frames.
  *
- * The live feed keeps `FLIGHT_MS` of traffic in the air at once; parking the
- * session must show the same picture at the same density, so the window is that
- * flight time expressed in frames (the timeline's fixed 60fps), DERIVED rather
- * than written down so the two cannot drift apart. A packet routed AT the
- * playhead is at the start of its flight and one a full window
- * back is arriving — so scrubbing sweeps the traffic along the wires exactly as
- * running it would, in either direction.
+ * A bound on the WALK, not the window: which packets are on the wires at the
+ * playhead is decided per packet now, by its own flight (`frame` →
+ * `deliveredFrame`), because that is what the live feed shows too — so a parked
+ * frame and the live frame it was draw the same picture.
+ *
+ * DERIVED from the deepest flight this session has actually carried, not
+ * written down: the link fields take a hand-typed latency with no ceiling, and
+ * a fixed horizon would make a slow link's dots simply vanish when the session
+ * is parked — visible live, gone on the rail, which is the one thing this
+ * replay exists not to do. The floor keeps a quiet session's walk short.
  */
-const REPLAY_WINDOW_FRAMES = Math.round((FLIGHT_MS / 1000) * 60);
+const REPLAY_MIN_LOOKBACK_FRAMES = 30;
 
 /**
  * Rows in the pinned wire log's viewport.
@@ -123,9 +142,12 @@ export interface NetworkNode {
   shell: HTMLElement;
   /** The pane's player color, as a CSS value. */
   color: string;
-  /** The client's configured link profile, as a label. Read live: the chip is a
-   * label of the CONFIGURED profile, never a claim about the wire. */
+  /** The client's link profile, as a label. Read live: the chip is a control,
+   * and it changes under the reader's hand. */
   linkLabel: () => string;
+  /** That profile's latency in ms — what the chip's pace-scale suffix is
+   * measured against (`paceScale`). */
+  linkMs: () => number;
 }
 
 export interface NetworkGraphOptions {
@@ -198,6 +220,9 @@ interface Dot {
   dir: Direction;
   /** When the dot was spawned, on the host clock — the LIVE feed's animation. */
   start: number;
+  /** How long this dot's flight lasts, in ms: the delay its packet actually
+   * took, floored so a sub-frame link is still visible (`shownFlightMs`). */
+  flight: number;
   /** Fixed position along the wire (0..1), for a REPLAYED dot: a parked session
    * has no host-clock flight, its position is decided by the playhead. */
   held: number | null;
@@ -283,6 +308,9 @@ export function initNetworkGraph({
   /** The frame the replay is currently drawn for, so a held playhead rebuilds
    * nothing. `null` = nothing drawn yet. */
   let replayFrame: number | null = null;
+  /** How far the parked walk reaches back — the deepest flight seen so far
+   * (`flightOf`), never below `REPLAY_MIN_LOOKBACK_FRAMES`. */
+  let lookbackFrames = REPLAY_MIN_LOOKBACK_FRAMES;
   /** The link whose wire log is pinned (a client pane id), or null. */
   let selected: string | null = null;
   /** What the panel's rows currently say, so a steady session rewrites nothing. */
@@ -448,15 +476,21 @@ export function initNetworkGraph({
   // frame — cheaper than the bookkeeping a throttle would need.
   const paintChips = () => {
     for (const edge of edges.values()) {
-      const label = edge.node.linkLabel();
+      const scale = paceScale(edge.node.linkMs());
+      const label = `${edge.node.linkLabel()}${scale}`;
       if (edge.chipLabel.textContent !== label) {
         edge.chipLabel.textContent = label;
-        // The chip labels a CONFIGURED profile — the links themselves are still
-        // perfect (net-coordinator.ts). Say that, rather than implying a
-        // measurement the coordinator cannot make yet.
+        // The chip is the link's real profile now: these packets are delayed by
+        // it. Where the dots are NOT at true pace, the chip says so and the
+        // tooltip says by how much — the pace-is-a-measurement claim survives
+        // only if the one exception is stated (Addendum 5a).
         edge.chip.title =
-          `${label} — this client's configured link profile. Impairment is ` +
-          `recorded, not applied yet, so every packet crosses at the same pace. ` +
+          `${edge.node.linkLabel()} — this client's link, applied to its packets by the ` +
+          `host coordinator (latency and jitter; loss waits for datagrams). ` +
+          (scale
+            ? `Its delay rounds to under one frame, so its dots are drawn at a ` +
+              `${FLOOR_FLIGHT_MS}ms floor to be visible at all — not a measurement. `
+            : `The dots fly at the delay the packets actually took. `) +
           `Click to pin this link's wire log.`;
       }
       const count = `${edge.count} pkt`;
@@ -570,8 +604,11 @@ export function initNetworkGraph({
     const { highlight } = live;
     // A row that scrubbed out of the window takes its tree with it.
     if (opened && !shown.includes(opened.packet)) opened = null;
+    // The parked frame is in the hash: which rows are IN FLIGHT changes as the
+    // playhead crosses a delivery, even when the window and its highlight have
+    // not moved.
     const key =
-      `${selected}|${highlight}|${opened ? packetKey(opened.packet) : ""}|` +
+      `${selected}|${parked ? frame : ""}|${highlight}|${opened ? packetKey(opened.packet) : ""}|` +
       // `at` disambiguates two packets that share a frame, a direction and a
       // size — a fixed-width intent (`Steer {turn:0}` vs `{turn:1}`) otherwise
       // hashes the same and the rows would go stale.
@@ -592,6 +629,7 @@ export function initNetworkGraph({
         const built = buildWireRow({
           packet,
           at: index === highlight,
+          inFlight: inFlightAt(packet, parked && frame !== null ? frame : null),
           tree: isOpen && opened ? opened.host : null,
           onOpen: (value) => openRow(packet, value, shown),
         });
@@ -690,11 +728,30 @@ export function initNetworkGraph({
     selectEdge(null)
   );
 
+  /**
+   * A packet's flight, in ms: the delay the coordinator's schedule gave it,
+   * floored only when that delay is zero frames (`shownFlightMs`).
+   *
+   * Every flight is remembered as the replay's horizon, so a link slow enough
+   * to still be crossing 30 frames later is walked back to when the rail is
+   * parked instead of vanishing off the end of a fixed window.
+   */
+  const flightOf = (packet: Packet): number => {
+    const flight = shownFlightMs(
+      packet.deliveredFrame !== null && packet.frame !== null
+        ? (packet.deliveredFrame - packet.frame) * MS_PER_FRAME
+        : 0
+    );
+    lookbackFrames = Math.max(lookbackFrames, Math.ceil(flight / MS_PER_FRAME));
+    return flight;
+  };
+
   const spawn = (
     edge: Edge,
     dir: Direction,
     bytes: number,
     now: number,
+    flight: number,
     held: number | null = null
   ) => {
     // Both directions are circles; size scales MILDLY with the bytes the dot
@@ -715,7 +772,7 @@ export function initNetworkGraph({
       oldest?.el.remove();
     }
     packets.appendChild(el);
-    dots.push({ el, edge, dir, start: now, held });
+    dots.push({ el, edge, dir, start: now, flight, held });
   };
 
   /**
@@ -734,35 +791,59 @@ export function initNetworkGraph({
   };
 
   /**
-   * Draw the log's window at `frame`: one dot per edge per direction per frame
-   * of recorded traffic, held at the position that frame's age gives it.
+   * Draw what is ON THE WIRES at `frame`: one dot per edge per direction per
+   * frame of recorded traffic, held at the point of its own flight the playhead
+   * has reached.
    *
-   * The same batching rule the live feed uses (Addendum 5a.5), applied to the
-   * record rather than to the moment — so a parked frame and the live frame it
-   * was show the same picture.
+   * The same batching rule the live feed uses (Addendum 5a.5) applied to the
+   * record rather than to the moment — and, since impairment, the same FLIGHTS:
+   * a packet is drawn only while `frame` is inside its `sent → delivered`
+   * window, so a parked frame shows exactly the packets that were in the air
+   * then. Scrubbing therefore sweeps the traffic along the wires the way
+   * running it does, in either direction.
    */
   const renderReplay = (frame: number, now: number) => {
     clearDots();
     replayFrame = frame;
     if (reduceMotion.matches) return;
-    const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number; age: number }>();
-    // Straight to the playhead by binary search, then back one window — the
-    // walk costs the window, never the session (same rule as viewportRows).
+    const batched = new Map<
+      string,
+      { edge: Edge; dir: Direction; bytes: number; flight: number; t: number }
+    >();
+    // Straight to the playhead by binary search, then back over the deepest
+    // flight a link could have — the walk costs that, never the session (same
+    // rule as viewportRows).
     const log = net.packets();
     for (let i = indexAfter(log, frame) - 1; i >= 0; i--) {
       const packet = log[i];
       if (packet.frame === null) break;
       const age = frame - packet.frame;
-      if (age >= REPLAY_WINDOW_FRAMES) break;
+      if (age >= lookbackFrames) break;
       const link = linkOf(packet);
       if (!link) continue;
+      // Its own flight decides whether it is still in the air at the playhead.
+      // Note this is the flight as DRAWN — an unimpaired link's dot is on the
+      // wire for the visibility floor, where `inFlightAt` (wire-rows.ts, which
+      // marks the ROWS) reads the schedule and says the packet has landed. The
+      // rows speak in frames and the wires in pixels; the `<1f` on that edge's
+      // chip is where the two are reconciled.
+      const flightFrames = flightOf(packet) / MS_PER_FRAME;
+      if (age >= flightFrames) continue;
       const key = `${link.edge.node.id}|${link.dir}|${packet.frame}`;
       const carried = batched.get(key);
       if (carried) carried.bytes += packet.size;
-      else batched.set(key, { edge: link.edge, dir: link.dir, bytes: packet.size, age });
+      else {
+        batched.set(key, {
+          edge: link.edge,
+          dir: link.dir,
+          bytes: packet.size,
+          flight: flightFrames * MS_PER_FRAME,
+          t: age / flightFrames,
+        });
+      }
     }
-    for (const { edge, dir, bytes, age } of batched.values()) {
-      spawn(edge, dir, bytes, now, age / REPLAY_WINDOW_FRAMES);
+    for (const { edge, dir, bytes, flight, t } of batched.values()) {
+      spawn(edge, dir, bytes, now, flight, t);
     }
   };
 
@@ -792,7 +873,10 @@ export function initNetworkGraph({
     // about the rate; a dot per frame is exactly what the wire did, at the rate
     // the screen can show.
     if (!replay) {
-      const batched = new Map<string, { edge: Edge; dir: Direction; bytes: number }>();
+      const batched = new Map<
+        string,
+        { edge: Edge; dir: Direction; bytes: number; flight: number }
+      >();
       for (const packet of seen) {
         const link = linkOf(packet);
         if (!link) continue;
@@ -804,9 +888,14 @@ export function initNetworkGraph({
         const key = `${edge.node.id}|${dir}`;
         const carried = batched.get(key);
         if (carried) carried.bytes += packet.size;
-        else batched.set(key, { edge, dir, bytes: packet.size });
+        // The batch flies at the FIRST packet's flight: a batch is one frame of
+        // one link, so its members differ only by their jitter draw, and the
+        // dot stands for the frame rather than for any one of them.
+        else batched.set(key, { edge, dir, bytes: packet.size, flight: flightOf(packet) });
       }
-      for (const { edge, dir, bytes } of batched.values()) spawn(edge, dir, bytes, now);
+      for (const { edge, dir, bytes, flight } of batched.values()) {
+        spawn(edge, dir, bytes, now, flight);
+      }
       // The preference can flip while the view is open; whatever is still in the
       // air stops immediately rather than finishing its flight.
       if (reduceMotion.matches && dots.length > 0) clearDots();
@@ -819,7 +908,7 @@ export function initNetworkGraph({
       const dot = dots[i];
       // A replayed dot is HELD where the playhead put it; a live one flies on
       // the host clock. Both then travel the same wire the same way.
-      const t = dot.held ?? (now - dot.start) / FLIGHT_MS;
+      const t = dot.held ?? (now - dot.start) / dot.flight;
       if (t >= 1 || dot.edge.length === 0) {
         dot.el.remove();
         dots.splice(i, 1);

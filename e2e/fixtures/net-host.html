@@ -28,10 +28,26 @@
       // One file, both roles (file = module; the roles are `module` blocks).
       const GAME = "examples/orbs/game.fun";
 
-      const net = new NetCoordinator();
       const traces = new Map();
       const consoleLines = [];
       const frames = new Map();
+
+      // The session's reference clock and its links — the two seams impairment
+      // runs on (site/src/net-coordinator.ts). The sandbox reads the same two
+      // things off its panes; here the server pane IS the clock, and every
+      // client is on the same LAN profile the sandbox defaults to, whose 8ms
+      // rounds to zero frames. So the substrate this file tests is the impaired
+      // path, at the default that leaves delivery in the frame it was sent.
+      // Pinned here rather than imported: this fixture bundles only the
+      // coordinator, so retuning LINK_PRESETS[0] means retuning this too.
+      const LAN = { ms: 8, jitter: 2 };
+      const net = new NetCoordinator({
+        // The pane's LIVE HEAD, like the sandbox's reference clock — not its
+        // parked `frame()`, which is where a scrubber happens to sit.
+        referenceFrame: () =>
+          frames.get("server")?.contentWindow?.__scrub?.range()?.[1] ?? null,
+        link: () => LAN,
+      });
 
       const mount = (id, role) => {
         const frame = document.createElement("iframe");

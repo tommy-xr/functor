@@ -36,6 +36,7 @@ import type { NetCoordinator, Packet } from "./net-coordinator.js";
 import type { WireSlot } from "./status-bar-store.js";
 import {
   buildWireRow,
+  inFlightAt,
   LIVE_ROW_MS,
   linkIdOf,
   logWindow,
@@ -321,8 +322,10 @@ export function initWireTab({ slot, net, links, clock }: WireTabOptions): WireTa
     // two hundred rows, ten times a second, hashing the whole list costs more
     // than the rebuild it is there to avoid. Any shift of the window moves an
     // end (the log only ever grows at the tail, and a scrub moves both).
+    // `at` is in the hash because which rows are IN FLIGHT changes as the
+    // playhead crosses a delivery, even when the window has not moved.
     const key =
-      `${link}|${dir}|${highlight}|${shown.length}|` +
+      `${link}|${dir}|${at}|${highlight}|${shown.length}|` +
       `${shown[0] ? packetKey(shown[0]) : ""}|${shown.at(-1) ? packetKey(shown.at(-1)!) : ""}|` +
       `${opened ? packetKey(opened.packet) : ""}`;
     if (key === rowKey) return;
@@ -339,6 +342,7 @@ export function initWireTab({ slot, net, links, clock }: WireTabOptions): WireTa
         const built = buildWireRow({
           packet,
           at: index === highlight,
+          inFlight: inFlightAt(packet, at),
           tree: isOpen && opened ? opened.host : null,
           // ALL interleaves several links, so each row says which one it
           // crossed and wears that client's ink; a focused link says it once,
