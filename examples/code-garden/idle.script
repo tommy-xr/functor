@@ -1,0 +1,14 @@
+# No input at all: the garden sows and grows itself, so an empty script is the
+# whole scenario. It exists because `--input-script` is how you capture a
+# deterministic still of a game whose visible state accrues in the MODEL —
+# `--fixed-time` pins dt to 0, which would freeze this garden at its `init`.
+#
+# Format: <frame:int> <KeyName> <down|up>; frames advance by --script-dt.
+#
+#   functor -d examples/code-garden run native \
+#     --input-script examples/code-garden/idle.script --script-dt 0.0166667 \
+#     --capture-at-frame 2280 --capture-frame /tmp/noon.png
+#
+# Frames worth capturing: 90 (a young garden at night), 1400 (dawn), 2280 (a
+# mature garden at noon — lit meadow and branch shadows), 4080 (midnight, with
+# fireflies out and the crown lights pooling on the ground).

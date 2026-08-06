@@ -143,6 +143,10 @@ export const EXAMPLES: Example[] = [
       { source: "examples/terrain/heightmap.png", output: "heightmap.png" },
     ],
   },
+  // Single-file and asset-free: an L-system garden whose growth LAWS are
+  // top-level constants, so editing one in the sandbox re-shapes the plants
+  // already on screen instead of restarting them.
+  { id: "code-garden", label: "Code garden", source: "examples/code-garden/game.fun" },
   { id: "counter", label: "Counter", source: "examples/counter/game.fun" },
   { id: "primitives", label: "Primitives", source: "examples/primitives/game.fun" },
   { id: "ui", label: "UI widgets", source: "examples/ui/game.fun" },
