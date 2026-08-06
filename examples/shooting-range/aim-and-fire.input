@@ -1,0 +1,13 @@
+# Deterministically aim away from center, then fire.
+#
+# `Mouse.Move` coordinates are logical points in the same top-left-origin space
+# as `Input.mouse.x/y`, not framebuffer pixels. The first move establishes the
+# shooting range's previous sample; the second produces a (+160, -80) delta,
+# turning the camera right and up before the trigger is pressed.
+#
+#   functor -d examples/shooting-range run native \
+#     --input-script aim-and-fire.input --script-dt 0.016 \
+#     --capture-frame .captures/aim-and-fire.png --capture-at-frame 36
+0 Mouse.Move 400 300
+1 Mouse.Move 560 220
+2 Mouse.Left down

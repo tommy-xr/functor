@@ -727,6 +727,13 @@ mod tests {
                 }
             })
         );
+        assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
+        assert_eq!(actual["input"]["mouse"]["surface_height"], 540);
+        assert_ne!(
+            actual["input"]["mouse"]["surface_width"],
+            actual["viewport"]["width"],
+            "the logical pointer surface must remain distinct from the framebuffer viewport"
+        );
     }
 
     #[test]
