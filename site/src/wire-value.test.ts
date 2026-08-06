@@ -36,7 +36,7 @@ test("elides deep and wide values, and keeps the full rendering for the tooltip"
 
 test("plain Effect.send text passes through, marked untyped", () => {
   const row = decodeWire("hello");
-  assert.deepEqual(row, { head: "", body: "hello", typed: false });
+  assert.deepEqual(row, { head: "", body: "hello", typed: false, value: null });
   assert.equal(fullWire("hello"), "hello");
 });
 

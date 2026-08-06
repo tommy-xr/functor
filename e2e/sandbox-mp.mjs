@@ -156,6 +156,64 @@ const installProbe = (page) =>
           })),
         };
       },
+      /** Open the FATTEST payload on the pinned log — the snapshot, i.e. the
+       * row whose one-line rendering elides the most. Returns its compact
+       * text, so the test can compare it with what the tree then shows. */
+      openBiggestRow: () => {
+        let button = null;
+        let best = -1;
+        for (const row of document.querySelectorAll(".mp-wl")) {
+          const bytes = Number((row.querySelector(".n").textContent.match(/\d+/) ?? [0])[0]);
+          const control = row.querySelector("button.payload");
+          if (control && bytes > best) {
+            best = bytes;
+            button = control;
+          }
+        }
+        if (!button) return null;
+        const compact = button.textContent.trim();
+        button.click();
+        return compact;
+      },
+      /** Open the shallowest still-CLOSED node labelled `label` (the child
+       * index / field name), so repeating a label drills down a level rather
+       * than closing what the last call opened. */
+      openNode: (label) => {
+        const node = [...document.querySelectorAll("button.mp-vt-row")].find(
+          (row) =>
+            row.querySelector(".mp-vt-k")?.textContent === label &&
+            row.getAttribute("aria-expanded") !== "true"
+        );
+        if (!node) return false;
+        node.click();
+        return true;
+      },
+      /** The open row's tree, flattened: every visible node's label, its
+       * rendered value, and whether it is open. */
+      valueTree: () => {
+        const tree = document.querySelector(".mp-wl-tree");
+        const open = document.querySelectorAll('.mp-wl .payload[aria-expanded="true"]').length;
+        if (!tree) return { mounted: false, openRows: open, nodes: [] };
+        return {
+          mounted: true,
+          openRows: open,
+          footer: document.querySelector(".mp-wl-ft").textContent.trim(),
+          nodes: [...tree.querySelectorAll(".mp-vt-row")]
+            // A node inside a CLOSED parent is in the DOM but not on screen.
+            .filter((row) => !row.closest(".mp-vt-kids[hidden]"))
+            .map((row) => ({
+              key: row.querySelector(".mp-vt-k")?.textContent ?? "",
+              value: row.querySelector(".mp-vt-v")?.textContent ?? "",
+              open: row.getAttribute("aria-expanded") === "true",
+            })),
+        };
+      },
+      closeOpenRow: () => {
+        const button = document.querySelector('.mp-wl .payload[aria-expanded="true"]');
+        if (!button) return false;
+        button.click();
+        return true;
+      },
       clickEdge: (index) => document.querySelectorAll(".mp-edge-chip")[index].click(),
       pauseAll: () => document.getElementById("mp-pause").click(),
       layout: () => ({
@@ -1072,6 +1130,51 @@ try {
       overlaps(pinned.box, hub) === 0,
       "the panel never covers the hub",
       `${JSON.stringify(pinned.box)} vs hub ${JSON.stringify([hub.x, hub.y, hub.w, hub.h])}`
+    );
+
+    // --- the value tree: a row opens into its whole payload ------------------
+    // The row's one line is a summary and says so (`…`); opening it must show
+    // the fields that line elided, with nothing elided in their place.
+    const compact = await page.evaluate(() => window.__mpProbe.openBiggestRow());
+    const tree = await page.evaluate(() => window.__mpProbe.valueTree());
+    check(
+      tree.mounted && tree.openRows === 1 && tree.nodes.length > 1,
+      "opening a payload mounts its value tree in the row",
+      `${tree.nodes.length} nodes from "${compact}"`
+    );
+    // Into the snapshot's first list, then its first entry: the ship record's
+    // own fields, which the row could never have shown.
+    await page.evaluate(() => window.__mpProbe.openNode("0"));
+    await sleep(50);
+    await page.evaluate(() => window.__mpProbe.openNode("0"));
+    await sleep(50);
+    const deep = await page.evaluate(() => window.__mpProbe.valueTree());
+    const leaves = deep.nodes.filter((node) => /^(pid|x|y|rot|id|owner)$/.test(node.key));
+    check(
+      leaves.length >= 4 && leaves.every((node) => !node.value.includes("…")),
+      "expanding reaches the record's own fields, each rendered whole",
+      JSON.stringify(leaves.slice(0, 6))
+    );
+    // The live tail turns over ten times a second: the open row survives it
+    // (opening holds the viewport — the panel says so).
+    await sleep(400);
+    const survived = await page.evaluate(() => window.__mpProbe.valueTree());
+    check(
+      survived.mounted &&
+        survived.openRows === 1 &&
+        survived.nodes.length === deep.nodes.length &&
+        /tail is held/.test(survived.footer),
+      "the open row survives the live tail, with its opened nodes still open",
+      `${survived.nodes.length} nodes (was ${deep.nodes.length}) — "${survived.footer}"`
+    );
+    const closed = await page
+      .evaluate(() => window.__mpProbe.closeOpenRow())
+      .then(() => sleep(100))
+      .then(() => page.evaluate(() => window.__mpProbe.valueTree()));
+    check(
+      !closed.mounted && closed.openRows === 0,
+      "closing the row puts the panel back to one line per packet",
+      JSON.stringify(closed)
     );
 
     await page.evaluate(() => window.__mpProbe.pauseAll());

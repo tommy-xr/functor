@@ -27,9 +27,16 @@ If 8077 is already taken — a second `functor develop`, or a stale process —
 `develop` logs one line and runs the game **without** a debug server rather than
 failing to start; pass `--debug-port <PORT>` for a second session, or `--no-debug`
 to skip the listener entirely. An explicit `--debug-port` that can't bind is still
-a fatal error (a driver asked for *that* port and is waiting on it). Tooling that
-hard-codes 8077 — the TS SDK's `launch()`, the VS Code inspector's default — should
-therefore be pointed at its own port while a `develop` session is up.
+a fatal error (a driver asked for *that* port and is waiting on it).
+
+`--debug-port 0` binds an **OS-assigned free port**; the `[debug-server]
+listening on http://…` stderr line always reports the ACTUAL bound port, so
+automation parses it instead of assuming the requested one. This is the TS
+SDK `launch()` default — parallel sessions can't collide, and the actual port
+is on `runner.port`. Hard-code a port only when something external must find
+the server at a known address (e.g. `adb forward` on device, or the VS Code
+inspector, whose default is 8077 — point it at its own port while a `develop`
+session is up).
 
 The server binds **localhost by default** (`127.0.0.1:<PORT>`); `--debug-bind 0.0.0.0`
 exposes it to the LAN for remote develop (see `POST /reload-source`) — there is no auth,
@@ -107,7 +114,7 @@ screenshot run has no reason to grab your mouse.
 | Method & path | Purpose |
 | --- | --- |
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
-| `GET /state` | runtime state JSON: `frame`, `tts`, combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (keyboard/mouse held + pressed/released sets and optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
+| `GET /state` | runtime state JSON: `frame`, `tts`, `model_revision` + `pending_net` (protocol v10 — see below), combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (keyboard/mouse held + pressed/released sets and optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
@@ -151,6 +158,39 @@ the sigils as a strong convention rather than a proof):
 It is a one-way observation format (there is deliberately no parser back),
 and it is `null` for producers without a structured model (e.g. `--replay`,
 whose `model_debug` still describes the replay position).
+
+### `model_revision` and `pending_net` in `GET /state` (protocol v10)
+
+**Pause freezes the CLOCK, not the network.** `POST /time {"type":"set"}` stops
+time advancing; it does not stop the shell's sockets. A paused session keeps
+accepting inbound messages and keeps folding them through `update`, so its
+model changes while `frame` and `tts` stand perfectly still.
+
+That makes **`frame` not a version label for a networked model** — a driver
+that snapshots the model, waits, and compares `frame` to decide whether
+anything happened will conclude "nothing did" while the authority has quietly
+seated three players. `model_revision` is the label to use instead:
+
+- **`model_revision`** counts how many times the model has been REPLACED by
+  game logic since the program loaded — every entry point's return and every
+  effect or network fold, counted at the producer's single model assignment.
+  Monotone, never reset. Compare it against a previous read to answer "did
+  anything land", whether or not the clock moved. Replacing the model from
+  *outside* the game does not count — a hot reload (which rebinds it),
+  `/load-project`, `/rewind`, a timeline seek — because those are operations
+  the driver itself just performed and each answers with fresh state to
+  re-baseline from.
+- **`pending_net`** is how many inbound network events the shell has accepted
+  from its transport but not yet delivered to the game — connection events and
+  completed HTTP responses. **Poll until it is 0 to know a session is
+  quiescent** before snapshotting a baseline. It cannot see a packet still on
+  the wire between two processes, so it is a lower bound on outstanding
+  network work: it proves nothing already received is unprocessed, not that
+  nothing is coming.
+
+Both are additive, so a pre-v10 runtime simply omits them and they read `0`.
+A client that WAITS on either must gate on `GET /`'s `protocol_version` first —
+a constant zero from an old runtime is indistinguishable from real quiescence.
 
 ### `POST /input`
 

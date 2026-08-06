@@ -3,6 +3,10 @@
 // WebAssembly.instantiateStreaming requires.
 //
 //   node site/serve.mjs [--port 8123]
+//
+// `--port 0` binds an OS-assigned free port; the "serving" line always
+// reports the ACTUAL port (parse it to find the server) — so scripts can
+// grab a collision-free port instead of hard-coding one.
 
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -48,6 +52,6 @@ createServer(async (req, res) => {
   }
   res.writeHead(200, { "Content-Type": MIME[extname(file)] ?? "application/octet-stream" });
   createReadStream(file).pipe(res);
-}).listen(port, "127.0.0.1", () => {
-  console.log(`serving site/dist at http://127.0.0.1:${port}`);
+}).listen(port, "127.0.0.1", function () {
+  console.log(`serving site/dist at http://127.0.0.1:${this.address().port}`);
 });

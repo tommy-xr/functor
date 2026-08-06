@@ -8,7 +8,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use cgmath::{InnerSpace, Matrix, Matrix3, Matrix4, SquareMatrix, Vector3, Vector4};
+use cgmath::{InnerSpace, Matrix4, SquareMatrix, Vector3, Vector4};
 use glow::HasContext;
 
 use crate::{
@@ -630,7 +630,7 @@ impl TerrainRenderer {
         }
 
         let program = self.program.as_ref().expect("terrain program initialized");
-        let normal_matrix = terrain_normal_matrix(world);
+        let normal_matrix = crate::math::normal_matrix(world);
         unsafe {
             let p = &program.program;
             let u = &program.uniforms;
@@ -1915,14 +1915,6 @@ fn fit_heightmap(source: &HeightmapData, max_size: u32) -> (Vec<u16>, u32, u32) 
     (samples, width, height)
 }
 
-fn terrain_normal_matrix(world: &Matrix4<f32>) -> Matrix3<f32> {
-    let linear = Matrix3::from_cols(world.x.truncate(), world.y.truncate(), world.z.truncate());
-    linear
-        .invert()
-        .map(|matrix| matrix.transpose())
-        .unwrap_or_else(Matrix3::identity)
-}
-
 fn transformed_aabb_radius(world: &Matrix4<f32>, half_extents: Vector3<f32>) -> f32 {
     let x = world.x.truncate();
     let y = world.y.truncate();
@@ -2379,15 +2371,6 @@ mod tests {
             "test should exhaust the split budget, got {} patches",
             patches.len()
         );
-    }
-
-    #[test]
-    fn terrain_normals_use_inverse_transpose_for_non_uniform_scale() {
-        let world = Matrix4::from_nonuniform_scale(2.0, 1.0, 0.5);
-        let local = Vector3::new(1.0, 1.0, 0.0).normalize();
-        let actual = (terrain_normal_matrix(&world) * local).normalize();
-        let expected = Vector3::new(0.5, 1.0, 0.0).normalize();
-        assert!((actual - expected).magnitude() < 1e-6);
     }
 
     #[test]

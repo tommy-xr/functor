@@ -149,6 +149,16 @@ export interface RuntimeState {
   /** Clock steps queued by `advance` that have not run yet. `0` means every
    * requested step has been simulated. */
   pending_steps: number;
+  /** How many times the model has been REPLACED by game logic since load —
+   * the version label for a NETWORKED model, since pausing pins the clock and
+   * not the transport, so a paused game keeps folding inbound messages while
+   * `frame` stands still. Protocol v10+; a pre-v10 runtime omits it. */
+  model_revision?: number;
+  /** Inbound network events the shell has accepted but not yet delivered to
+   * the game. Poll until `0` for quiescence before snapshotting a baseline.
+   * Protocol v10+; a pre-v10 runtime omits it, so gate on `protocol_version`
+   * rather than reading a missing field as quiescent. */
+  pending_net?: number;
   /** Combined/legacy output extent. Use `views` when view identity matters. */
   viewport: RuntimeViewport;
   views: RuntimeView[];
@@ -258,7 +268,11 @@ export interface LaunchOptions {
   /** Game directory (the runner's cwd, for resolving assets).
    * e.g. an absolute path to `examples/hello`. */
   gameDir: string;
-  /** Debug-runtime HTTP port (default 8077). */
+  /** Debug-runtime HTTP port. Default 0 = OS-assigned: the runtime binds a
+   * free port and reports it on its `[debug-server] listening` line, which
+   * launch parses — read the actual port from `runner.port`. Pass a fixed
+   * port only when something external must find the server at a known
+   * address. */
   port?: number;
   /** Path to the `functor` CLI binary (default `<repoRoot>/target/debug/functor`). */
   runnerBin?: string;

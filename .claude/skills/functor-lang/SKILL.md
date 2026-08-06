@@ -1043,6 +1043,15 @@ is the exception in shape only (the light is its sole argument).
 `s |> Scene.rotateY(r) |> Scene.translate(v)` rotates in place, then moves (the
 order the source reads). `Physics.rotateX/Y/Z` follows the same rule.
 
+**Translucency is a subtree modifier, not a color channel** — `Color.rgb` has no
+alpha; `s |> Scene.opacity(0.35)` makes a whole subtree see-through, whatever
+materials are under it. Nested opacities multiply, an alpha outside `0..1` is an
+error, and `Scene.opacity(1.0, s)` is exactly `s` (so it does not perturb
+`Scene.equals`). Translucent subtrees draw after all opaque geometry, sorted
+back-to-front by the average world position of their leaves, with depth writing
+off and no shadow — see the `Scene.opacity` reference for what that granularity
+does and does not fix. The 2D analogue is `Sprite.fade`.
+
 **Zero-argument constructors take their parens** — `Scene.cube()`,
 `Sprite.blank()`, `Anim.rest()`, `Effect.none()`, `Map.empty()`,
 `Ui.topLeft()`. The arity is enforced.

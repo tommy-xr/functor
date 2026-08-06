@@ -1,5 +1,7 @@
 use cgmath::Matrix4;
 
+use crate::math::normal_matrix;
+
 use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::light::{lighting_glsl, LightingUniforms};
 use crate::shader_program::ShaderProgram;
@@ -9,8 +11,9 @@ use crate::RenderContext;
 use super::Material;
 
 // The skinned counterpart of `LitMaterial`: position AND normal deform by the
-// same joint blend (the normal rotation-only, via `mat3` — the
-// `SkinnedNormalDebugMaterial` convention), then the fragment shades with the
+// same joint blend (the normal by the world normal matrix composed with
+// `mat3(skinMatrix)` — the `SkinnedNormalDebugMaterial` convention), then the
+// fragment shades with the
 // shared lighting GLSL, so skinned glTF models are lit (and receive shadows)
 // exactly like lit static geometry. Albedo is the mesh's base-color texture
 // (unit 0, bound by the model draw path).
@@ -25,6 +28,11 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         uniform mat4 jointTransforms[MAX_JOINTS];
         uniform mat4 world;
+        // transpose(inverse(mat3(world))) — see LitMaterial. The joint blend
+        // keeps its plain `mat3(skinMatrix)`, which ASSUMES the blended joint
+        // transform is rigid; a non-uniformly scaled joint (squash-and-stretch
+        // keyframes) still shades incorrectly — unchanged, pre-existing.
+        uniform mat3 normalMatrix;
         uniform mat4 view;
         uniform mat4 projection;
 
@@ -42,7 +50,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
                 inWeights.w * jointTransforms[int(inJointIndices.w)];
 
             texCoord = inTex;
-            worldNormal = mat3(world) * mat3(skinMatrix) * inNormal;
+            worldNormal = normalMatrix * mat3(skinMatrix) * inNormal;
 
             // Apply the skinning transformation
             vec4 skinnedPos = skinMatrix * vec4(inPos, 1.0);
@@ -77,6 +85,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
 struct Uniforms {
     world_loc: UniformLocation,
+    normal_matrix_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     texture_loc: UniformLocation,
@@ -125,6 +134,7 @@ impl Material for SkinnedMaterial {
 
                 let uniforms = Uniforms {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
+                    normal_matrix_loc: shader.get_uniform_location(ctx.gl, "normalMatrix"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
@@ -154,6 +164,11 @@ impl Material for SkinnedMaterial {
                 p.use_program(ctx.gl);
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
+                p.set_uniform_matrix3(
+                    ctx.gl,
+                    &uniforms.normal_matrix_loc,
+                    &normal_matrix(world_matrix),
+                );
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);

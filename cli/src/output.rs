@@ -71,8 +71,15 @@ pub enum Event {
     },
     /// A command ended (also the exit-code carrier for machine consumers).
     CommandFinished { ok: bool, duration_ms: u64 },
-    /// A `build` typecheck passed (`entry` plus `sibling_count` sibling modules).
-    FunctorLangLoaded { entry: String, sibling_count: usize },
+    /// A `build` typecheck passed (`entry` plus `sibling_count` sibling
+    /// modules). `role` names the `entries` key that was checked, and is empty
+    /// for a single-`entry` project: roles of a multiplayer project commonly
+    /// share ONE file, so the entry path alone cannot say which one ran.
+    FunctorLangLoaded {
+        entry: String,
+        role: String,
+        sibling_count: usize,
+    },
     /// An Functor Lang check / load error, positioned in its file. `source_line` is the
     /// raw offending line (no caret baked in) so the human renderer can draw a
     /// rustc-style caret under `col`; machine consumers get the same structured
@@ -290,6 +297,7 @@ impl PlainRenderer {
             }
             Event::FunctorLangLoaded {
                 entry,
+                role,
                 sibling_count,
             } => {
                 let siblings = match sibling_count {
@@ -297,10 +305,19 @@ impl PlainRenderer {
                     1 => " (+1 module)".to_string(),
                     n => format!(" (+{n} modules)"),
                 };
+                // Two roles of a multiplayer project usually share one file, so
+                // naming the file alone leaves "which role did I just check?"
+                // unanswered — the exact question `--entry` was asked.
+                let role = if role.is_empty() {
+                    String::new()
+                } else {
+                    format!(" as {role}")
+                };
                 vec![format!(
-                    "{} checked {}{}",
+                    "{} checked {}{}{}",
                     g_ok().green(),
                     entry,
+                    role,
                     siblings.dimmed()
                 )]
             }

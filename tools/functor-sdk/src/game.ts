@@ -368,7 +368,14 @@ export async function waitFor<T>(
  *
  * Rejects (via `Promise.all`) if any client's step fails — but the others may
  * already have advanced, so a rejection means the simulation is desynced with
- * no automatic rollback; treat it as terminal for the run. */
+ * no automatic rollback; treat it as terminal for the run.
+ *
+ * Concurrent stepping is **not reproducible** across runs when the clients
+ * talk to each other: whether a client's packet reaches the authority before
+ * or after the authority's own step is a race. When the run must repeat
+ * exactly, step producer → authority → observer sequentially instead (each
+ * step awaited before the next begins) — the ordering law in
+ * `docs/mcp.md`, which the MCP `step_all` tool enforces. */
 export function stepAll(
   clients: readonly Pick<FunctorClient, "step">[],
   dts: number = DEFAULT_STEP_DT,

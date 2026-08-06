@@ -639,6 +639,11 @@ fn service_debug_request(
                 frame: debug.frame_count,
                 tts: clock.current_tts(),
                 pending_steps: clock.pending_steps(),
+                model_revision: game.model_revision(),
+                // The device shell delivers inbound net events through the same
+                // process-global gauge the desktop shell counts on; it reads 0
+                // until a device transport counts into it.
+                pending_net: functor_runtime_common::net::inbound_pending(),
                 viewport: RuntimeViewport::new(width, height),
                 views,
                 model: game.state_json(),
@@ -1091,7 +1096,7 @@ pub fn android_main(app: AndroidApp) {
     // browser reach it through `adb forward tcp:8123 tcp:8123` (see README).
     // A bind failure degrades to a standalone boot scene, loudly.
     let debug_rx = match functor_runtime_common::debug_http::spawn(("127.0.0.1", RELOAD_PORT)) {
-        Ok(rx) => {
+        Ok((_bound, rx)) => {
             log::info!("debug endpoint: http://127.0.0.1:{RELOAD_PORT}");
             Some(rx)
         }

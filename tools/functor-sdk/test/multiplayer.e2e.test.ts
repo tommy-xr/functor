@@ -53,19 +53,18 @@ test(
     const repoRoot = findRepoRoot(process.cwd());
     assert.ok(repoRoot, "must run from within the functor workspace");
 
-    // All three debug ports derive from one base so the test is self-consistent
-    // when relocated. (The ws port is fixed at 9101 by the example game.)
-    const base = Number(process.env.FUNCTOR_E2E_PORT ?? 8095);
+    // Debug ports are OS-assigned per launch (the SDK default), so parallel
+    // test files can never collide. (The GAME's ws port is fixed at 9101 by
+    // the example game — only this one test uses it, so it stays.)
     const gameDir = join(repoRoot, "examples", "orbs");
     // Both roles are the SAME file, so the role is named rather than inferred
     // from the path — the CLI's `--entry <name>` against functor.json's roles.
-    const launch = (entry: "client" | "server", port: number) =>
+    const launch = (entry: "client" | "server") =>
       FunctorRunner.launch({
         gameDir,
         repoRoot,
         functorLangPath: join(gameDir, "game.fun"),
         entry,
-        port,
         launchTimeoutMs: 60_000,
         headless,
       });
@@ -73,7 +72,7 @@ test(
     // Server first, and wait for its Sub.listen socket to actually bind before
     // launching clients — the client connects once with no retry, so a client
     // that races ahead of the listener would land in "error" and never converge.
-    await using server = await launch("server", base);
+    await using server = await launch("server");
     await waitForPort("127.0.0.1", 9101, {
       timeoutMs: 60_000,
       description: "orbs server ws listener",
@@ -81,8 +80,8 @@ test(
 
     // The client Joins on connect and streams a Steer every tick from there,
     // so no input injection is needed.
-    await using clientA = await launch("client", base + 1);
-    await using clientB = await launch("client", base + 2);
+    await using clientA = await launch("client");
+    await using clientB = await launch("client");
 
     const waitOpts = { timeoutMs: 90_000, intervalMs: 200 };
 

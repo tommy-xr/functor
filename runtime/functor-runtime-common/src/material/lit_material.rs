@@ -1,6 +1,8 @@
 use cgmath::Matrix4;
 use cgmath::Vector4;
 
+use crate::math::normal_matrix;
+
 use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::light::{lighting_glsl, LightingUniforms};
 use crate::shader_program::ShaderProgram;
@@ -12,7 +14,8 @@ use super::Material;
 // Diffuse-lit surface: albedo (a color, optionally modulated by a texture) shaded
 // by a bounded array of lights (ambient / directional / point / spot) via Lambert
 // plus distance + cone falloff. Reads the frame's lights from `RenderContext`.
-// Needs the vertex normal (attribute location 2). The light loop + shadow
+// Needs the vertex normal (attribute location 2), which is transformed by the
+// normal matrix (inverse-transpose) so non-uniform scales shade correctly. The light loop + shadow
 // sampling live in the shared `lighting_glsl` snippet (also used by the skinned
 // lit shader).
 const VERTEX_SHADER_SOURCE: &str = r#"
@@ -22,6 +25,10 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 3) in vec4 inTangent;
 
         uniform mat4 world;
+        // transpose(inverse(mat3(world))) — normals are covectors, so a
+        // non-uniform scale transforms them by the inverse-transpose. Tangents
+        // are ordinary directions and keep mat3(world).
+        uniform mat3 normalMatrix;
         uniform mat4 view;
         uniform mat4 projection;
 
@@ -33,7 +40,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         void main() {
             texCoord = inTex;
-            vec3 n = mat3(world) * inNormal;
+            vec3 n = normalMatrix * inNormal;
             vec3 t = mat3(world) * inTangent.xyz;
             worldNormal = n;
             worldTangent = t;
@@ -90,6 +97,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
 struct Uniforms {
     world_loc: UniformLocation,
+    normal_matrix_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     base_color_loc: UniformLocation,
@@ -137,6 +145,7 @@ impl Material for LitMaterial {
 
                 let uniforms = Uniforms {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
+                    normal_matrix_loc: shader.get_uniform_location(ctx.gl, "normalMatrix"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     base_color_loc: shader.get_uniform_location(ctx.gl, "baseColor"),
@@ -168,6 +177,11 @@ impl Material for LitMaterial {
                 p.use_program(ctx.gl);
 
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
+                p.set_uniform_matrix3(
+                    ctx.gl,
+                    &uniforms.normal_matrix_loc,
+                    &normal_matrix(world_matrix),
+                );
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
 
