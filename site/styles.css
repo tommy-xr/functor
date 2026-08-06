@@ -3917,11 +3917,142 @@ button.mp-vt-row:focus-visible {
   color: var(--text-dim);
 }
 
-.mp-wl-ft {
+.mp-wl-ft,
+.wire-ft {
   padding: 5px 10px;
   border-top: 1px solid var(--line);
   font: 9.5px/1.4 var(--font-mono);
   color: var(--text-dim);
+}
+
+/* ---- the wire tab (Addendum 8.2) ----
+
+   The same rows, docked. The pinned panel above is a floating card tethered to
+   a wire; this is an instrument bay in the status bar, so it takes the bar's
+   flat chrome — no border, no shadow, no radius — and spends its one piece of
+   color on the filter chips, where each link wears its client's ink. That is
+   the network view's own rule (color carries identity), carried into a list
+   that has to say WHICH wire each row crossed. */
+
+.wire-list {
+  /* The rows own the scroll (the header rail and footer must not leave with
+     it), so the list itself is a column that clips. */
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.wire-host,
+.wire-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.wire-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wire-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The direction filter is the secondary axis — pushed to the far end so the
+   links, which are what a reader picks between, hold the left. */
+.wire-dirs {
+  margin-left: auto;
+}
+
+.wire-chip {
+  --pc: var(--cyan);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-dim);
+  font: 10px/1.5 var(--font-mono);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+/* The ink dot: whose traffic this chip selects, in that client's own color. */
+.wire-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pc);
+}
+
+.wire-chip.all::before,
+.wire-dirs .wire-chip::before {
+  display: none;
+}
+
+.wire-chip:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--pc) 45%, var(--line));
+}
+
+.wire-chip:focus-visible {
+  outline: 1px solid var(--cyan);
+  outline-offset: 1px;
+}
+
+.wire-chip[aria-pressed="true"] {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--pc) 60%, var(--line));
+  background: color-mix(in srgb, var(--pc) 12%, transparent);
+}
+
+.wire-rows {
+  --pc: var(--cyan);
+  /* The positioning context the parked scroll measures a row's offset in
+     (wire-tab.ts) — never `scrollIntoView`, which would move the page too. */
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+/* ALL interleaves several links, so every row gains a column naming the one it
+   crossed — inserted after the frame, before the direction it qualifies. */
+.mp-wl.linked {
+  grid-template-columns: 54px 32px 62px 1fr 46px;
+}
+
+.mp-wl .l {
+  color: var(--pc);
+}
+
+/* The count on the tab itself, while the panel is closed. */
+.wire-badge {
+  margin-left: 6px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.wire-badge[hidden] {
+  display: none;
+}
+
+.statusbar-tab.active .wire-badge {
+  color: inherit;
 }
 
 /* ---- the network status strip (Addendum 5a.3) ----
