@@ -754,7 +754,15 @@ impl World {
             BodyKind::Kinematic => RigidBodyBuilder::kinematic_position_based(),
             BodyKind::Fixed => RigidBodyBuilder::fixed(),
         };
-        let mut builder = builder.pose(pose_of(body)).linvel(vec3(body.velocity));
+        let mut builder = builder
+            .pose(pose_of(body))
+            .linvel(vec3(body.velocity))
+            // Damping lives on the RIGID BODY (unlike friction/restitution,
+            // which are collider material properties): it is a velocity decay
+            // the integrator applies, not a contact response. Rapier only
+            // integrates a dynamic body, so it is inert on kinematic/fixed.
+            .linear_damping(body.linear_damping)
+            .angular_damping(body.angular_damping);
         if body.rotation_locked {
             // An upright body translates but never tips (the character-capsule
             // case). This stops the solver from ACCUMULATING spin; a body that
@@ -936,6 +944,16 @@ impl World {
             if rb.linvel() != v {
                 rb.set_linvel(v, true);
             }
+        }
+        // Damping is a coefficient the integrator reads, so writing it does not
+        // wake the body (the friction/restitution rule) — a sleeping body has
+        // no velocity for the new value to act on, and it takes effect the
+        // moment something else wakes it.
+        if prev.linear_damping != next.linear_damping {
+            self.bodies[rb_handle].set_linear_damping(next.linear_damping);
+        }
+        if prev.angular_damping != next.angular_damping {
+            self.bodies[rb_handle].set_angular_damping(next.angular_damping);
         }
         if prev.friction != next.friction {
             self.colliders[col_handle].set_friction(next.friction);
@@ -1776,6 +1794,108 @@ mod tests {
         spin_up(&mut w, "a", [0.0, 4.0, 0.0]);
         w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0]).with_mass(2.0)]));
         assert!(spin_of(&w, "a") > 1.0);
+    }
+
+    // Damping is a RIGID-BODY property (friction/restitution are collider
+    // material properties), so it has to reach the body builder at spawn.
+    // Default 0.0 = no damping: existing games are unchanged.
+    #[test]
+    fn damping_is_applied_at_spawn_and_defaults_to_none() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![
+            crate_at("damped", [0.0, 5.0, 0.0])
+                .with_linear_damping(0.5)
+                .with_angular_damping(0.25),
+            crate_at("free", [5.0, 5.0, 0.0]),
+        ]));
+        assert_eq!(w.bodies[w.tags["damped"].0].linear_damping(), 0.5);
+        assert_eq!(w.bodies[w.tags["damped"].0].angular_damping(), 0.25);
+        assert_eq!(w.bodies[w.tags["free"].0].linear_damping(), 0.0);
+        assert_eq!(w.bodies[w.tags["free"].0].angular_damping(), 0.0);
+    }
+
+    // A body coasting with no gravity keeps its velocity forever without
+    // damping, and bleeds it off with damping — the marble-settles case.
+    #[test]
+    fn linear_damping_bleeds_off_velocity() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![
+            crate_at("damped", [0.0, 5.0, 0.0])
+                .with_velocity([4.0, 0.0, 0.0])
+                .with_linear_damping(2.0),
+            crate_at("free", [50.0, 5.0, 0.0]).with_velocity([4.0, 0.0, 0.0]),
+        ]));
+        for _ in 0..120 {
+            w.step_fixed();
+        }
+        let damped = w.body_velocity("damped").unwrap()[0];
+        let free = w.body_velocity("free").unwrap()[0];
+        assert!((free - 4.0).abs() < 1e-3, "undamped body slowed: {free}");
+        assert!(damped < 0.6, "damped body did not slow: {damped}");
+    }
+
+    // Angular damping is the other half: spin bleeds off.
+    #[test]
+    fn angular_damping_bleeds_off_spin() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![
+            crate_at("a", [0.0, 5.0, 0.0]).with_angular_damping(3.0)
+        ]));
+        spin_up(&mut w, "a", [0.0, 4.0, 0.0]);
+        for _ in 0..120 {
+            w.step_fixed();
+        }
+        assert!(spin_of(&w, "a") < 0.2, "spin held: {}", spin_of(&w, "a"));
+    }
+
+    // Changing a declared damping value writes it onto the LIVE body (the
+    // friction/restitution divergence rule) — no rebuild, no pose or velocity
+    // reset; the new drag simply applies from the next step. And a STRUCTURAL
+    // change (mass) respawns the body, which must re-derive damping from the
+    // new declaration rather than lose it.
+    #[test]
+    fn changing_damping_reconciles_onto_the_live_body() {
+        let mut w = World::new([0.0, 0.0, 0.0]);
+        w.reconcile(&scene(vec![
+            crate_at("a", [0.0, 5.0, 0.0]).with_velocity([4.0, 0.0, 0.0])
+        ]));
+        for _ in 0..30 {
+            w.step_fixed();
+        }
+        let moved = w.body_transform("a").unwrap().0;
+
+        // Re-declare the SAME body with damping: the ordinary reconcile path.
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])
+            .with_velocity([4.0, 0.0, 0.0])
+            .with_linear_damping(2.0)
+            .with_angular_damping(1.0)]));
+        assert_eq!(w.bodies[w.tags["a"].0].linear_damping(), 2.0);
+        assert_eq!(w.bodies[w.tags["a"].0].angular_damping(), 1.0);
+        // Neither pose nor velocity was disturbed by the attribute change.
+        assert_eq!(w.body_transform("a").unwrap().0, moved);
+        assert!((w.body_velocity("a").unwrap()[0] - 4.0).abs() < 1e-4);
+
+        for _ in 0..120 {
+            w.step_fixed();
+        }
+        assert!(w.body_velocity("a").unwrap()[0] < 0.6);
+
+        // A structural change (mass) despawns and respawns the body: damping
+        // must come back with it.
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])
+            .with_velocity([4.0, 0.0, 0.0])
+            .with_linear_damping(2.0)
+            .with_angular_damping(1.0)
+            .with_mass(3.0)]));
+        assert_eq!(w.bodies[w.tags["a"].0].linear_damping(), 2.0);
+        assert_eq!(w.bodies[w.tags["a"].0].angular_damping(), 1.0);
+
+        // …and taking the attribute back off restores the coast.
+        w.reconcile(&scene(vec![crate_at("a", [0.0, 5.0, 0.0])
+            .with_velocity([4.0, 0.0, 0.0])
+            .with_mass(3.0)]));
+        assert_eq!(w.bodies[w.tags["a"].0].linear_damping(), 0.0);
+        assert_eq!(w.bodies[w.tags["a"].0].angular_damping(), 0.0);
     }
 
     #[test]

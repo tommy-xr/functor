@@ -1126,6 +1126,17 @@ docs/physics.md): dynamic/fixed bodies teleport the changed fields immediately,
 while a kinematic body receives the changed pose as its next-step target so it
 carries velocity into contacts.
 
+**Drag belongs on the body, not in `tick`.** Contact friction resists
+*sliding*, not *rolling*, so a sphere on a box coasts essentially forever —
+declare `|> Physics.linearDamping(f)` (and `|> Physics.angularDamping(f)` to
+bleed off spin) instead of reading `Physics.linearVelocity` and writing
+`Physics.setVelocityXZ` back every frame to fake it. Both default to `0.0`,
+both reject a negative value, both are `dynamic`-only (inert on a kinematic or
+fixed body), and changing the declared value writes it onto the live body from
+the next step without disturbing its pose or velocity — the same divergence
+rule as `friction`/`restitution`. Per-frame velocity commands are still right
+for *steering* (the controller recipe below); they are the wrong tool for *drag*.
+
 Physics **command effects** are returned beside the model like any effect
 — `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))` — but carry no
 tagger: nothing folds back through `update`; observe outcomes via the

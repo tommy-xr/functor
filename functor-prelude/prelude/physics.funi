@@ -116,6 +116,29 @@ let mass : (float, body) => body
 let friction : (float, body) => body
 /// Set a body's restitution; the body is last for piping.
 let restitution : (float, body) => body
+
+/// Damp a body's LINEAR velocity — drag, per second; the body is last for piping.
+///
+/// The default is `0.0` (no drag), so a rolling sphere on a box coasts almost
+/// forever: contact friction resists sliding, not rolling. A small value
+/// (`0.3`–`0.8`) is what makes a marble, a puck, or a thrown prop actually
+/// settle, and it belongs here rather than in a per-frame velocity command:
+/// damping is a property of the body, so declaring it keeps `tick` pure.
+/// Must not be negative. Only `dynamic` bodies integrate, so damping is inert
+/// on a `kinematic` or `fixed` one. Changing the value writes it onto the live
+/// body (the friction/restitution rule) — the new drag applies from the next
+/// step, with the body's current pose and velocity untouched.
+let linearDamping : (float, body) => body
+
+/// Damp a body's ANGULAR velocity — spin resistance, per second; the body is
+/// last for piping.
+///
+/// The default is `0.0`. Pair it with `linearDamping` for a ball that stops
+/// rolling instead of creeping, or use it alone to bleed off spin while linear
+/// motion is preserved. Must not be negative, `dynamic`-only, and reconciles
+/// onto a live body exactly like `linearDamping`.
+let angularDamping : (float, body) => body
+
 /// Make a body a non-solid sensor; the body is last for piping.
 let sensor : (body) => body
 
