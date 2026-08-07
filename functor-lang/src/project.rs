@@ -56,6 +56,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Scene",
     "Instance",
     "Anim",
+    "Terrain",
     "Asset",
     "Camera3D",
     "Camera2D",
@@ -72,6 +73,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Input",
     "Sub",
     "Effect",
+    "Persistence",
     "Physics",
     "RenderTarget",
     "Ui",
@@ -82,6 +84,15 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "AudioScene",
     "Debug",
 ];
+
+/// Whether a module name is one the language or the Functor prelude owns.
+///
+/// Exposed so a host that SHIPS a namespace can assert its own modules are
+/// reserved here — a new prelude module that nobody adds to the list above is
+/// silently shadowable by a game's file or inline `module`.
+pub fn is_protected_namespace(name: &str) -> bool {
+    PROTECTED_NAMESPACES.contains(&name)
+}
 
 /// One source module bundled by the language or a host rather than read from
 /// the user's project directory.
