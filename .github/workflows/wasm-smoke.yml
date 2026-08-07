@@ -97,6 +97,13 @@ jobs:
       - name: Run wasm smoke
         run: npm run test:wasm-smoke
 
+      # The browser Gamepad API → sampledInput path, with faked pads: pins the
+      # standard-mapping conversion, the null/disconnected/non-standard
+      # selection rules, and the duck-typed property-read contract a
+      # wasm-bindgen bump could silently break with all Rust tests green.
+      - name: Run gamepad wasm e2e
+        run: npm run test:gamepad-wasm
+
       # The multiplayer session hosted in the browser: a server + two client
       # panes, each its own `player.html?net=embedder` runtime, routed by the
       # host page's net coordinator over the embedder seam. Same "works native,

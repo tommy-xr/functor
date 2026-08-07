@@ -370,12 +370,13 @@ let grab = (s) =>
   are `0..1`; face buttons are POSITIONAL (`south` is the bottom face button —
   A on Xbox, Cross on PlayStation), plus bumpers, stick clicks, dpad, and
   `start`/`select`. Levels only, raw values: detect edges against your model
-  and apply your own deadzone. Native's windowed runtime polls the first
-  connected standard-mapping pad each frame (debug injection — `POST /input`
-  `{"type":"gamepad",…}` — wins over the poll); an unfocused window or a
-  pinned clock reads rest-level controls, not `Option.None`, so presence
-  stays a reliable capability signal. Headless and the web runtime do not
-  poll pads (`Option.None` unless injected). A future mobile-touch domain
+  and apply your own deadzone. Native's windowed runtime and the web runtime
+  both poll the first connected standard-mapping pad each frame (on native,
+  debug injection — `POST /input` `{"type":"gamepad",…}` — wins over the
+  poll); an unfocused window/document or a pinned clock reads rest-level
+  controls, not `Option.None`, so presence stays a reliable capability
+  signal. Browsers hide pads until a button is first pressed; headless polls
+  nothing (`Option.None` unless injected). A future mobile-touch domain
   belongs as another typed sibling on the snapshot.
 - **Bundled modules use the ordinary module semantics.** The language-owned
   `Net.fun` / `Key.fun` / `Mouse.fun` builtins, `Random.funi` interface, and

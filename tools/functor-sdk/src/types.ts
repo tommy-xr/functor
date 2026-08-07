@@ -107,9 +107,9 @@ export interface InputSnapshot {
   };
   /** Present while an XR target has valid head tracking. */
   xr?: XrInputSnapshot;
-  /** Present while a pad is connected (desktop windowed GLFW polling — rest
-   * levels while unfocused/pinned) or a sample is injected; absent on
-   * headless and web, which do not poll pads. */
+  /** Present while a pad is connected (desktop GLFW / browser Gamepad API
+   * polling — rest levels while unfocused/pinned) or a sample is injected;
+   * absent on headless, which polls nothing. */
   gamepad?: GamepadSnapshot;
 }
 
