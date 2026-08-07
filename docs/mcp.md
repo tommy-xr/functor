@@ -106,6 +106,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `get_scene` | The camera, scene graph, and lights `draw` produced. Pure data, so it works headlessly. |
 | `get_trace` | The paused inspector trace: every entry point's binder and variable values for the last real frame. Pause first. |
 | `capture_frame` | A PNG of the next rendered frame, returned as an MCP image block. |
+| `wire_log` | Every packet the coordinator routed for a session group, as data: `{seq, frame, at_ms, from, to, conn, kind, size, payload_text}`, with `since` / `limit` / `link` / `direction` filters. Group sessions only. |
 
 **Driving.**
 
@@ -114,6 +115,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `pause` | Pin the clock (defaults to the current `tts`), so nothing advances on its own. |
 | `step` | Run 1–10,000 `frames` of finite positive `dts` each, **wait for them to land**, and return the fresh state. |
 | `step_all` | Step several sessions one round, strictly sequentially, in the order given — the multiplayer lockstep primitive. See [Running a multiplayer session](#running-a-multiplayer-session). |
+| `launch_session_group` | Launch every role of a multi-entry project at once, wired to each other by **this process** — no sockets. See [The coordinator: this process is the network](#the-coordinator-this-process-is-the-network). |
 | `resume` | Follow wall-clock time again. |
 | `send_input` | Inject one `POST /input` command verbatim — key, mouse move/wheel/button, `ui_event`, or an `xr` sample. |
 | `rewind` | Restore model + physics to a recorded frame (it pins the clock first, as `/rewind` requires). |
@@ -439,6 +441,117 @@ an orbs client connects once and does not retry.
 `examples/orbs` twice from scratch and asserts the ordered lockstep produces
 the identical world trace both times.
 
+## The coordinator: this process is the network
+
+Everything above runs the roles over **real localhost sockets**, which is why
+`step_all` cannot promise anything about delivery: the packets are the kernel's.
+`launch_session_group` runs the same project the other way round — every role
+starts on the **embedder transport** (`--net-transport embedder`,
+`docs/debug-runtime.md`), so **no runtime opens a socket at all**. Each one's
+`Sub.listen` / `Sub.connect` / `Effect.send` traffic is drained by this server,
+routed, and delivered back. The MCP host *is* the network.
+
+```jsonc
+launch_session_group { "dir": "examples/orbs",
+                       "roles": ["server", "client", "client"],
+                       "mode": "headless" }
+// → { "group": "g1",
+//     "sessions": [ {"session":"s1","label":"server","role":"server", …},
+//                   {"session":"s2","label":"client1","role":"client", …},
+//                   {"session":"s3","label":"client2","role":"client", …} ],
+//     "step_order": ["s1","s2","s3"] }
+
+pause    { "session": "s2" }                          // pin every role
+pause    { "session": "s1" }
+pause    { "session": "s3" }
+step_all { "sessions": ["s2", "s1", "s3"] }           // one lockstep round
+wire_log { "group": "g1", "since": 41 }               // …and what crossed in it
+```
+
+`roles` is the launch order **and** the order to hand `step_all`; repeats are
+how a group gets two clients. Omit it for one session per declared entry, with
+a role named `server` first. Labels (`server`, `client1`, `client2`) are the
+routing identities the wire log reads by.
+
+**Routing (what the coordinator does).** It mirrors the browser coordinator
+(`site/src/net-coordinator.ts`) and, through it, `VirtualNet`: a listener
+registry keyed by **authority** (`host:port` — so a client's
+`ws://127.0.0.1:9101/orbs` matches a server's `127.0.0.1:9101` bind), **one
+connection id per pair** shared by both ends, both ends told `connected` under
+their own routing key, and **FIFO per session**. A client that dials before its
+authority exists waits and connects the moment the listener appears (15 s
+grace). A client whose peer is REMOVED from the group (its session stopped) is
+re-queued, because a runtime never re-dials on its own; a plain hot RELOAD of
+the authority is not that case — the model, and with it the connection ids,
+survives, so the group keeps routing straight across it.
+
+**Cadence.** Routing runs on this server's own loop, in two places:
+
+- **continuously in the background** — a round is scheduled every 8 ms, though
+  its real period is the round trip to each member (a headless runtime services
+  the debug channel once per ~16 ms loop, so a three-role group settles nearer
+  50–100 ms) — so a group running live on wall-clock time still moves its
+  packets between tool calls;
+- **at every session boundary inside a `step_all` round**, with the background
+  pump held off for the whole round. So a packet client 1 sends in round *N*
+  is delivered — and folded through `update`, since `POST /net/deliver` answers
+  only after the fold — before the authority steps.
+
+That second half is what `step_all` could not do over sockets. It is still not
+a *barrier*: the group runs freely between rounds, and nothing schedules a
+packet into a named step.
+
+**Delivery in v1 is IMMEDIATE and in order** — a perfect, reliable link: the
+router never drops or reorders a packet, and a delivery that fails in transit
+is re-queued at the front of its queue and retried. The one honest gap is that
+`GET /net/outbound` is take-and-consume, so a drain whose RESPONSE is lost
+takes those commands with it, and a delivery whose outcome is UNKNOWN (a
+timeout) is reported and not retried rather than risked twice — on a reliable
+ordered channel, a duplicate is worse than a gap. A session that stops
+consuming has its queue bounded and the shed count reported. All of these land
+on stderr, which is where this server logs; none of them are silent. Latency, jitter, and step-time scheduling ("departs step
+610, deliver at 618") arrive with barrier stepping, which is also what will
+give `wire_log`'s `frame` a value; today it is always `null` rather than a
+measurement dressed up as a schedule.
+
+**Reading the wire.** `wire_log` returns rows oldest-first:
+
+```jsonc
+{ "seq": 42, "frame": null, "at_ms": 8123.44,
+  "from": "client1", "to": "server", "conn": 1,
+  "kind": "message", "size": 118,
+  "payload_text": "\u0001fun:{\"Variant\":[\"Steer\",[…]]}" }
+```
+
+`payload_text` is the message **exactly as the receiving runtime sees it**, and
+is deliberately **not** decoded server-side: the framing belongs to the game
+(`Effect.sendMsg` writes U+0001 + `fun:` + the payload as JSON; plain
+`Effect.send` text is unframed), so the reader decodes it. `seq` is the stable
+cursor — read the last row's `seq`, run a round, pass it back as `since`, and
+you have exactly that round's traffic. `link` narrows to one label
+(`"client1"`) or an unordered pair (`"client1:server"`), and `direction`
+(`"sent"` / `"received"`) narrows a single label further. A label the group does
+not have is an error, not an empty result. Rows share a payload byte budget
+spent newest-first, so a chatty protocol's oldest rows come back with
+`payload_elided: true` (and `payloads_elided` counted) rather than flooding the
+answer — narrow the window or the `link` to read them.
+
+**What reproduces, and what does not.** With immediate in-order delivery and
+`step_all`'s boundary pumping, a steady-state round routes the same packets, in
+the same direction, every time. Absolute frame numbers do not: a group runs on
+wall-clock time between rounds, so how many frames elapse before you pause is
+not controlled. Whole-environment reproducibility waits on barrier stepping.
+
+Groups are launched from a **directory** (`dir`), because the roles come from
+that project's `functor.json` `entries`; use `launch_game` for an inline
+`files` project. Stopping a group's last session retires its coordinator, and
+`wire_log` then reports the group as unknown.
+
+`e2e/mcp-session-group.mjs` is the proof: orbs as a group, clients converging
+with **nothing ever listening on `127.0.0.1:9101`**, `wire_log` rows that decode
+agent-side, `step_all` + `wire_log` composing per round, and a mid-group reload
+of the authority.
+
 ## Debugging a human's live session
 
 `functor develop` serves the debug runtime on **http://127.0.0.1:8077** by default
@@ -490,8 +603,10 @@ tracking every frame).
 - [`docs/debug-runtime.md`](debug-runtime.md) — the HTTP surface these tools wrap,
   with the exact request/response shapes.
 - `e2e/mcp-server.mjs` — the end-to-end proof, speaking raw JSON-RPC to the server.
-- `e2e/mcp-step-all.mjs` — the multiplayer proof: three roles of
-  `examples/orbs`, stepped in order, run twice, asserted identical.
+- `e2e/mcp-step-all.mjs` — the multiplayer proof over real sockets: three roles
+  of `examples/orbs`, stepped in order, run twice, asserted identical.
+- `e2e/mcp-session-group.mjs` — the coordinator proof: the same roles wired to
+  each other by the MCP process, with zero sockets, and their wire read back.
 - `.claude/skills/functor-lang/SKILL.md` — the language guide `language_guide`
   serves, and the file to edit when the language changes.
 - [`docs/functor-lang.md`](functor-lang.md) — the language roadmap behind it.

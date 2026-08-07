@@ -732,6 +732,7 @@ pub struct FrameCtx<'a> {
     pub deferred_queries: &'a mut Vec<EffectTree>,
     pub pending_events: &'a mut Vec<PhysicsEvent>,
     pub live_conn_keys: &'a mut HashSet<String>,
+    pub connect_retries: &'a mut HashMap<String, ConnectRetryState>,
     pub prev_tts: &'a mut Option<f64>,
     /// This frame's buffered input events (docs/time-travel.md T6b): each shell
     /// appends to it in `key_event`/`mouse_move`/`mouse_wheel`, and
@@ -756,6 +757,92 @@ pub struct FrameCtx<'a> {
     /// world or the global queues. Always `false` on the live frame body.
     pub suppress_outbound: bool,
     pub reporter: &'a mut Reporter,
+}
+
+/// Retry state for one still-declared `Sub.connect` endpoint. Deadlines use
+/// game time (`tts`), so real, fake, and replay effects stay deterministic.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConnectRetryState {
+    failures: u32,
+    phase: ConnectRetryPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ConnectRetryPhase {
+    Pending,
+    Connected(u64),
+    WaitingUntil(f64),
+}
+
+impl ConnectRetryState {
+    fn pending() -> Self {
+        Self { failures: 0, phase: ConnectRetryPhase::Pending }
+    }
+
+    fn failed(&mut self, now: f64) {
+        if self.phase != ConnectRetryPhase::Pending {
+            return;
+        }
+        self.failures = self.failures.saturating_add(1);
+        self.phase = ConnectRetryPhase::WaitingUntil(
+            now + connect_retry_delay_seconds(self.failures),
+        );
+    }
+
+    fn disconnected(&mut self, conn: u64, now: f64) {
+        if self.phase != ConnectRetryPhase::Connected(conn) {
+            return;
+        }
+        self.failures = 1;
+        self.phase = ConnectRetryPhase::WaitingUntil(
+            now + connect_retry_delay_seconds(self.failures),
+        );
+    }
+
+    fn connected(&mut self, conn: u64) {
+        self.failures = 0;
+        self.phase = ConnectRetryPhase::Connected(conn);
+    }
+
+    /// Preserve the remaining game-time delay when a destructive timeline
+    /// branch moves `tts`. Socket IO stays live and is never replayed, but its
+    /// next deterministic retry must not inherit time discarded by the branch.
+    fn rebase_deadline(&mut self, old_tts: f64, new_tts: f64) {
+        if let ConnectRetryPhase::WaitingUntil(deadline) = &mut self.phase {
+            *deadline += new_tts - old_tts;
+        }
+    }
+
+    fn begin_retry_if_due(&mut self, now: f64) -> bool {
+        let ConnectRetryPhase::WaitingUntil(deadline) = self.phase else {
+            return false;
+        };
+        if now < deadline {
+            return false;
+        }
+        self.phase = ConnectRetryPhase::Pending;
+        true
+    }
+}
+
+/// Preserve every pending retry's remaining delay when a destructive timeline
+/// operation rebases game time. Socket IO itself stays outside replay.
+pub fn rebase_connect_retry_deadlines(
+    retries: &mut HashMap<String, ConnectRetryState>,
+    old_tts: Option<f64>,
+    new_tts: Option<f64>,
+) {
+    if let (Some(old_tts), Some(new_tts)) = (old_tts, new_tts) {
+        for retry in retries.values_mut() {
+            retry.rebase_deadline(old_tts, new_tts);
+        }
+    }
+}
+
+/// Infinite bounded exponential backoff: 250ms through 8s, then 8s forever.
+pub fn connect_retry_delay_seconds(failed_attempts: u32) -> f64 {
+    let exponent = failed_attempts.saturating_sub(1).min(5);
+    0.25 * (1u32 << exponent) as f64
 }
 
 impl FrameCtx<'_> {
@@ -786,6 +873,7 @@ impl FrameCtx<'_> {
         // while the draggable bar is parked on an earlier frame, branch the
         // timeline from there BEFORE this frame advances — and drop any in-flight
         // frame work so it doesn't cross the branch (the reload discipline).
+        let retry_tts_before_scrub = *self.prev_tts;
         if frame_time.dts > 0.0
             && self.recorder.commit_scrub_if_resuming(
                 self.model,
@@ -795,6 +883,11 @@ impl FrameCtx<'_> {
                 self.prev_tts,
             )
         {
+            rebase_connect_retry_deadlines(
+                self.connect_retries,
+                retry_tts_before_scrub,
+                *self.prev_tts,
+            );
             self.deferred_queries.clear();
             self.pending_events.clear();
             // The restored model predates the current loading snapshot, so
@@ -1282,7 +1375,7 @@ to receive their messages; dropping them",
         };
         // Reconcile connections EVERY frame — including frame one (before the
         // timer window exists), so a declared connection opens immediately.
-        self.reconcile_connections(&subs);
+        self.reconcile_connections(&subs, tts);
         // Asset progress also delivers on frame one: a loading screen wants
         // the initial snapshot, not the first change after it.
         self.deliver_asset_progress(&subs);
@@ -1492,13 +1585,14 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
         for key in std::mem::take(self.live_conn_keys) {
             push_conn_command(ConnCommand::CloseKey { key });
         }
+        self.connect_retries.clear();
     }
 
     /// Open connections newly declared this frame and close ones no longer
     /// declared (keyed by endpoint). Commands go to the shell's connection
     /// manager, drained via `net_drain_conn_commands`. The physics-events
     /// pattern for connections.
-    fn reconcile_connections(&mut self, subs: &Value) {
+    fn reconcile_connections(&mut self, subs: &Value, tts: f64) {
         // A dry-run forward-step (docs/time-travel.md T6b) must not open/close
         // live sockets: connection reconcile is purely OUTBOUND (it feeds
         // nothing back into the model), so suppress it wholesale — the same
@@ -1533,11 +1627,29 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
                         url: conn.key.clone(),
                     }
                 });
+                if !conn.listen {
+                    self.connect_retries
+                        .insert(conn.key.clone(), ConnectRetryState::pending());
+                }
+            } else if !conn.listen
+                && self
+                    .connect_retries
+                    .get_mut(&conn.key)
+                    .is_some_and(|retry| retry.begin_retry_if_due(tts))
+            {
+                // Native retains failed keys for idempotency, so release the
+                // old attempt before either shell opens the next one.
+                push_conn_command(ConnCommand::CloseKey { key: conn.key.clone() });
+                push_conn_command(ConnCommand::Connect {
+                    key: conn.key.clone(),
+                    url: conn.key.clone(),
+                });
             }
         }
         for key in self.live_conn_keys.iter() {
             if !declared.contains(key) {
                 push_conn_command(ConnCommand::CloseKey { key: key.clone() });
+                self.connect_retries.remove(key);
             }
         }
         *self.live_conn_keys = declared;
@@ -1547,6 +1659,15 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
     /// the message through `update`. Taggers are read FRESH from the current
     /// `subscriptions(model)` (never cached — a reload rebinds them).
     pub fn deliver_net_event(&mut self, key: String, kind: NetEventKind, conn: i32, text: String) {
+        let now = self.prev_tts.unwrap_or(0.0);
+        if let Some(retry) = self.connect_retries.get_mut(&key) {
+            match kind {
+                NetEventKind::Connected => retry.connected(conn as u64),
+                NetEventKind::Disconnected => retry.disconnected(conn as u64, now),
+                NetEventKind::Error => retry.failed(now),
+                NetEventKind::Message => {}
+            }
+        }
         if !self.has_subscriptions {
             return;
         }
@@ -1846,6 +1967,7 @@ fn forward_step_scene_with_error(
     let mut deferred_queries: Vec<EffectTree> = Vec::new();
     let mut pending_events: Vec<PhysicsEvent> = Vec::new();
     let mut live_conn_keys: HashSet<String> = HashSet::new();
+    let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
     let mut prev_tts = prev_tts;
     // Throwaway input buffer: the forward-step replays `inputs` directly and
     // never records, so this stays empty — it just satisfies the borrow.
@@ -1876,6 +1998,7 @@ fn forward_step_scene_with_error(
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
+            connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
             input_buf: &mut input_buf,
             has_physics,
@@ -2264,6 +2387,39 @@ pub fn history_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_retry_backoff_is_bounded_exponential_and_infinite() {
+        let first_ten = (1..=10).map(connect_retry_delay_seconds).collect::<Vec<_>>();
+        assert_eq!(first_ten, vec![0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0, 8.0]);
+        assert_eq!(connect_retry_delay_seconds(u32::MAX), 8.0);
+    }
+
+    #[test]
+    fn successful_connect_resets_the_backoff() {
+        let mut retry = ConnectRetryState::pending();
+        retry.failed(10.0);
+        assert!(!retry.begin_retry_if_due(10.249));
+        assert!(retry.begin_retry_if_due(10.25));
+        retry.failed(10.25);
+        assert!(!retry.begin_retry_if_due(10.749));
+        assert!(retry.begin_retry_if_due(10.75));
+        retry.connected(42);
+        retry.disconnected(42, 20.0);
+        assert!(!retry.begin_retry_if_due(20.249));
+        assert!(retry.begin_retry_if_due(20.25));
+    }
+
+    #[test]
+    fn retry_deadline_preserves_remaining_delay_across_timeline_rebase() {
+        let mut retries = HashMap::from([("endpoint".to_string(), ConnectRetryState::pending())]);
+        let retry = retries.get_mut("endpoint").unwrap();
+        retry.failed(10.0);
+        rebase_connect_retry_deadlines(&mut retries, Some(10.0), Some(2.0));
+        let retry = retries.get_mut("endpoint").unwrap();
+        assert!(!retry.begin_retry_if_due(2.249));
+        assert!(retry.begin_retry_if_due(2.25));
+    }
     use crate::functor_lang_prelude::UiHandler;
     use crate::ui::{UiEvent, UiEventKind};
 
@@ -2718,6 +2874,7 @@ mod tests {
         let mut deferred_queries: Vec<EffectTree> = Vec::new();
         let mut pending_events: Vec<PhysicsEvent> = Vec::new();
         let mut live_conn_keys: HashSet<String> = HashSet::new();
+        let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
         let mut prev_tts: Option<f64> = None;
         let mut input_buf: Vec<RecordedInput> = Vec::new();
         let mut delivered_asset_progress: Option<AssetProgress> = None;
@@ -2742,6 +2899,7 @@ mod tests {
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
+            connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
             input_buf: &mut input_buf,
             has_physics: false,
@@ -2884,6 +3042,7 @@ mod tests {
         let mut deferred_queries: Vec<EffectTree> = Vec::new();
         let mut pending_events: Vec<PhysicsEvent> = Vec::new();
         let mut live_conn_keys: HashSet<String> = HashSet::new();
+        let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
         // prev_tts just below a period boundary so this frame crosses 1.0s and
         // fires the `Sub.every` timer.
         let mut prev_tts: Option<f64> = Some(0.9);
@@ -2910,6 +3069,7 @@ mod tests {
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
+            connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
             input_buf: &mut input_buf,
             has_physics: false,
@@ -2950,6 +3110,7 @@ mod tests {
         let mut deferred_queries: Vec<EffectTree> = Vec::new();
         let mut pending_events: Vec<PhysicsEvent> = Vec::new();
         let mut live_conn_keys: HashSet<String> = HashSet::new();
+        let mut connect_retries: HashMap<String, ConnectRetryState> = HashMap::new();
         let mut prev_tts: Option<f64> = Some(tts - 0.1);
         let mut input_buf: Vec<RecordedInput> = Vec::new();
         let mut reporter = Reporter::new(
@@ -2973,6 +3134,7 @@ mod tests {
             deferred_queries: &mut deferred_queries,
             pending_events: &mut pending_events,
             live_conn_keys: &mut live_conn_keys,
+            connect_retries: &mut connect_retries,
             prev_tts: &mut prev_tts,
             input_buf: &mut input_buf,
             has_physics: false,
@@ -3178,6 +3340,7 @@ mod tests {
         deferred_queries: Vec<EffectTree>,
         pending_events: Vec<PhysicsEvent>,
         live_conn_keys: HashSet<String>,
+        connect_retries: HashMap<String, ConnectRetryState>,
         prev_tts: Option<f64>,
         input_buf: Vec<RecordedInput>,
         delivered_asset_progress: Option<AssetProgress>,
@@ -3206,6 +3369,7 @@ mod tests {
                 deferred_queries: Vec::new(),
                 pending_events: Vec::new(),
                 live_conn_keys: HashSet::new(),
+                connect_retries: HashMap::new(),
                 prev_tts: None,
                 input_buf: Vec::new(),
                 delivered_asset_progress: None,
@@ -3234,6 +3398,7 @@ mod tests {
                 deferred_queries: &mut self.deferred_queries,
                 pending_events: &mut self.pending_events,
                 live_conn_keys: &mut self.live_conn_keys,
+                connect_retries: &mut self.connect_retries,
                 prev_tts: &mut self.prev_tts,
                 input_buf: &mut self.input_buf,
                 has_physics: true,

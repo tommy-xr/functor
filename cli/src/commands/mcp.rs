@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use functor_docgen::{ApiItem, ApiReference};
+use functor_runtime_common::net::ConnCommand;
 use functor_runtime_common::{debug_protocol::DEBUG_PROTOCOL_SERVICE, Key};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -35,6 +36,29 @@ use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
 use tokio::process::{Child, Command};
+
+use super::mcp_net::NetCoordinator;
+
+/// How often the background routing pump drains and delivers a live group's
+/// traffic. Between `step_all` rounds a group still runs on wall-clock time,
+/// and its packets must move without a tool call to push them — this is the
+/// coordinator standing in for the kernel. It is a HOST-side poll of two tiny
+/// localhost endpoints, not per-frame runtime work.
+const PUMP_INTERVAL: Duration = Duration::from_millis(8);
+
+/// Largest delivery body the pump will post, comfortably under the debug
+/// server's own 64 KB command limit. A backlog larger than this is split across
+/// rounds rather than posted whole (which would 413 forever).
+const MAX_DELIVERY_BYTES: usize = 32 * 1024;
+
+/// Rows `wire_log` returns when the caller names no limit, and the ceiling it
+/// will return at all.
+const WIRE_LOG_DEFAULT_ROWS: usize = 100;
+const WIRE_LOG_MAX_ROWS: usize = 2_000;
+
+/// Total `payload_text` bytes one `wire_log` answer will carry. The row cap
+/// bounds the count; this bounds the SIZE, which the rows themselves do not.
+const MAX_WIRE_PAYLOAD_BYTES: usize = 256 * 1024;
 
 /// How long `launch_game` waits for a spawned runtime to answer discovery.
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -178,6 +202,65 @@ struct Session {
     /// ATTACHED session: the manifest of a runtime someone else started is not
     /// knowable over the wire.
     manifest: Option<String>,
+}
+
+/// One role of a session GROUP: a runtime launched on the embedder transport,
+/// whose network is this process.
+#[derive(Clone, Debug)]
+struct GroupMember {
+    /// Registry session id (`s3`).
+    session: String,
+    /// The routing identity in the wire log — the role name, disambiguated
+    /// when a role is launched more than once (`server`, `client1`, `client2`).
+    label: String,
+    /// The functor.json entry this member runs.
+    role: String,
+    url: String,
+}
+
+/// A set of runtimes wired to each other by this process.
+///
+/// One `tokio::sync::Mutex` per group covers BOTH the coordinator and the
+/// pump's HTTP round-trips, so a background pump and a `step_all` round can
+/// never interleave halfway through routing a batch.
+struct Group {
+    members: Vec<GroupMember>,
+    net: NetCoordinator,
+    /// Members whose last pump round failed, so the report is printed once per
+    /// outage instead of 125 times a second.
+    unreachable: BTreeSet<String>,
+}
+
+impl Group {
+    /// Report a member the pump could not reach — once, until it recovers.
+    fn note_unreachable(&mut self, label: &str, what: String) {
+        if self.unreachable.insert(label.to_string()) {
+            eprintln!("[coordinator] {label} unreachable — {what}");
+        }
+    }
+
+    fn note_reachable(&mut self, label: &str) {
+        if self.unreachable.remove(label) {
+            eprintln!("[coordinator] {label} is reachable again");
+        }
+    }
+}
+
+/// Whether a `/net/deliver` batch is safe to keep and retry.
+enum DeliveryOutcome {
+    Applied,
+    /// The runtime provably did not fold it — requeue.
+    NotApplied(String),
+    /// It may or may not have folded — report, and do NOT retry.
+    Ambiguous(String),
+}
+
+/// What `spawn_runtime` hands back to the two launch tools.
+struct SpawnedRuntime {
+    session: String,
+    url: String,
+    port: u16,
+    discovery: Value,
 }
 
 /// The await-safe part of a registry session.
@@ -409,6 +492,11 @@ struct Registry {
     /// window between `free_port` and the child's own bind — and MCP tool calls
     /// can overlap, which is exactly the two-game case sessions exist for.
     reserved: BTreeSet<u16>,
+    /// Coordinated groups by id (`g1`), and the reverse index a `step_all`
+    /// uses to find the group a session belongs to.
+    groups: BTreeMap<String, Arc<tokio::sync::Mutex<Group>>>,
+    session_groups: BTreeMap<String, String>,
+    next_group: u32,
 }
 
 impl Registry {
@@ -892,6 +980,45 @@ pub struct StepAllArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct LaunchGroupArgs {
+    /// Project directory (the one holding `functor.json`), absolute or
+    /// relative to the MCP server's working directory. A group launches from a
+    /// directory only: its roles come from that manifest's `entries`.
+    pub dir: String,
+    /// The roles to launch, IN ORDER — the launch order and the order to pass
+    /// to `step_all`, so put the authority where the protocol needs it.
+    /// Repeats are allowed and are how a group gets two clients:
+    /// `["server", "client", "client"]`. Omit it for one session per declared
+    /// entry, with a role named `server` first.
+    pub roles: Option<Vec<String>>,
+    /// `"headless"` (default here — a group is usually driven, not watched)
+    /// creates no GL context at all; `"hidden"` renders into an invisible
+    /// window so `capture_frame` returns pixels.
+    pub mode: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WireLogArgs {
+    /// Group id from `launch_session_group`. Omit it when only one group is
+    /// running.
+    pub group: Option<String>,
+    /// Return only rows with a HIGHER `seq` than this — read the last row's
+    /// `seq` before a `step_all` round and pass it after to get exactly that
+    /// round's traffic.
+    pub since: Option<u64>,
+    /// Newest-first row cap (default 100, maximum 2000). Rows are returned
+    /// oldest-first within that window.
+    pub limit: Option<usize>,
+    /// One session label (`"server"`, `"client2"`), or an unordered pair
+    /// (`"client1:server"`) — only traffic touching it, or between them.
+    pub link: Option<String>,
+    /// With a single-label `link`: `"sent"` (rows FROM it) or `"received"`
+    /// (rows TO it). Without one it is an error, since there is no reference
+    /// point for a direction.
+    pub direction: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct RewindArgs {
     pub session: String,
     /// The recorded rendered frame to restore.
@@ -1103,71 +1230,15 @@ files writes the inline project to a scratch directory this server owns",
         // unreadable manifest is not this tool's error to raise — the launch
         // below fails on it with the runtime's own message.
         let manifest = std::fs::read_to_string(dir.join("functor.json")).ok();
-        let port = resolve!(self
-            .sessions
-            .lock()
-            .expect("mcp registry poisoned")
-            .reserve_port());
-        let exe = resolve!(std::env::current_exe()
-            .map_err(|error| format!("cannot locate the functor executable: {error}")));
-
-        let mut command = Command::new(exe);
-        command.arg("-d").arg(&dir);
-        if let Some(entry) = &args.entry {
-            command.arg("--entry").arg(entry);
-        }
-        command
-            .args(["run", "native", "--debug-port"])
-            .arg(port.to_string())
-            .arg(mode_flag)
-            // stdout is this server's JSON-RPC channel — a child must never
-            // inherit it, or its logs would corrupt the protocol stream.
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                self.release_port(port);
-                return tool_error(format!("failed to spawn the runtime: {error}"));
-            }
-        };
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let mut drains = Vec::new();
-        if let Some(stream) = child.stdout.take() {
-            drains.push(drain_into(stream, log.clone()));
-        }
-        if let Some(stream) = child.stderr.take() {
-            drains.push(drain_into(stream, log.clone()));
-        }
-
-        let url = format!("http://127.0.0.1:{port}");
-        let discovery = match self.await_runtime(&url, &mut child).await {
-            Ok(discovery) => discovery,
-            Err(message) => {
-                let _ = child.start_kill();
-                self.release_port(port);
-                // The output that explains a failed launch — a bind error, a
-                // typecheck diagnostic — is written just before the child exits,
-                // so let the drain tasks reach EOF before reading the tail.
-                let _ = tokio::time::timeout(Duration::from_millis(500), async {
-                    for drain in drains {
-                        let _ = drain.await;
-                    }
-                })
-                .await;
-                return tool_error(format!("{message}\n\nruntime output:\n{}", tail(&log)));
-            }
-        };
-
-        let id = self.sessions.lock().expect("mcp registry poisoned").insert(
-            url.clone(),
-            Some(port),
-            Some(child),
-            scratch,
-            manifest,
+        let spawned = resolve!(
+            self.spawn_runtime(&dir, args.entry.as_deref(), mode_flag, scratch, manifest, false)
+                .await
+        );
+        let (id, url, port, discovery) = (
+            spawned.session,
+            spawned.url,
+            spawned.port,
+            spawned.discovery,
         );
         let mut response = serde_json::json!({
             "session": id,
@@ -1187,6 +1258,236 @@ files writes the inline project to a scratch directory this server owns",
             response["discovery"] = discovery;
         }
         ok_text(response.to_string())
+    }
+
+    /// Launch a whole MULTIPLAYER session at once, with THIS PROCESS as the
+    /// network. Every role starts on the embedder transport, so no socket is
+    /// ever opened: each runtime's `Sub.listen` / `Sub.connect` / `Effect.send`
+    /// traffic is drained by this server, routed by authority (a client url's
+    /// `host:port` matching a server's bind), and delivered back — and every
+    /// routed packet is readable as data through `wire_log`.
+    ///
+    /// Roles come from the project's `functor.json` `entries`. `roles` is the
+    /// launch order AND the order to hand `step_all`; repeats give a group two
+    /// clients. Returns the group id and one session per role, labelled the way
+    /// the wire log names them.
+    ///
+    /// Routing runs on this server's own loop: continuously in the background
+    /// (~8 ms) while the group runs live, and — the part that matters for
+    /// evaluation — at every session boundary INSIDE a `step_all` round, with
+    /// the background pump held off for the whole round. So a packet a client
+    /// sends in round N reaches the authority before the authority steps.
+    ///
+    /// Delivery in v1 is IMMEDIATE and in order (a perfect, reliable link):
+    /// the router never drops or reorders, and a failed delivery is re-queued
+    /// at the front and retried. Latency, jitter, and step-time scheduling
+    /// arrive with barrier stepping.
+    #[tool]
+    async fn launch_session_group(
+        &self,
+        Parameters(args): Parameters<LaunchGroupArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mode = args.mode.as_deref().unwrap_or("headless");
+        let mode_flag = match mode {
+            "hidden" => "--hidden",
+            "headless" => "--headless",
+            other => {
+                return tool_error(format!(
+                    "unknown mode {other:?}: expected \"headless\" (default; no GL) or \
+\"hidden\" (an invisible window, so capture_frame works)"
+                ))
+            }
+        };
+        let dir = std::path::PathBuf::from(&args.dir);
+        let manifest_text = resolve!(std::fs::read_to_string(dir.join("functor.json")).map_err(
+            |error| format!("cannot read {}/functor.json: {error}", absolute(&dir))
+        ));
+        let declared = resolve!(declared_entries(&manifest_text));
+        let roles = resolve!(group_roles(args.roles.as_deref(), &declared));
+        let labels = group_labels(&roles);
+
+        let group_id = {
+            let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+            registry.next_group += 1;
+            format!("g{}", registry.next_group)
+        };
+
+        let mut members: Vec<GroupMember> = Vec::with_capacity(roles.len());
+        for (role, label) in roles.iter().zip(&labels) {
+            match self
+                .spawn_runtime(
+                    &dir,
+                    Some(role),
+                    mode_flag,
+                    None,
+                    Some(manifest_text.clone()),
+                    true,
+                )
+                .await
+            {
+                Ok(spawned) => members.push(GroupMember {
+                    session: spawned.session,
+                    label: label.clone(),
+                    role: role.clone(),
+                    url: spawned.url,
+                }),
+                Err(message) => {
+                    // A half-launched group is a half-wired network: tear the
+                    // launched roles down rather than leave the caller to guess
+                    // which ones exist.
+                    let orphaned = self.abandon_group_members(&members).await;
+                    let mut error =
+                        format!("launch_session_group stopped at role {role:?}: {message}");
+                    if !orphaned.is_empty() {
+                        error.push_str(&format!(
+                            "\n\nWARNING: could not confirm termination of {} — those runtimes \
+may still be running, and this server no longer tracks them.",
+                            orphaned.join(", ")
+                        ));
+                    }
+                    return tool_error(error);
+                }
+            }
+        }
+
+        let mut net = NetCoordinator::new();
+        for member in &members {
+            net.add_session(&member.label);
+        }
+        let group = Arc::new(tokio::sync::Mutex::new(Group {
+            members: members.clone(),
+            net,
+            unreachable: BTreeSet::new(),
+        }));
+        {
+            let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+            for member in &members {
+                registry
+                    .session_groups
+                    .insert(member.session.clone(), group_id.clone());
+            }
+            registry.groups.insert(group_id.clone(), group.clone());
+        }
+        self.spawn_pump(group_id.clone(), group);
+
+        ok_text(
+            serde_json::json!({
+                "group": group_id,
+                "dir": absolute(&dir),
+                "mode": mode,
+                "transport": "embedder (this process is the network; no sockets)",
+                "sessions": members
+                    .iter()
+                    .map(|member| serde_json::json!({
+                        "session": member.session,
+                        "label": member.label,
+                        "role": member.role,
+                        "url": member.url,
+                    }))
+                    .collect::<Vec<_>>(),
+                "step_order": members.iter().map(|m| m.session.clone()).collect::<Vec<_>>(),
+            })
+            .to_string(),
+        )
+    }
+
+    /// The WIRE, as data: every packet this process routed for a group, in
+    /// order. One row per delivery — `{seq, frame, at_ms, from, to, conn, kind,
+    /// size, payload_text}`.
+    ///
+    /// `payload_text` is the message exactly as the receiving runtime sees it,
+    /// undecoded on purpose: the framing belongs to the game (`Effect.sendMsg`
+    /// writes JSON), so YOU decode it — a coordinator that parsed payloads
+    /// would be inventing a protocol it does not own.
+    ///
+    /// `frame` is `null` in v1: delivery is immediate and unscheduled, so there
+    /// is no step to name it with. `seq` is the stable cursor — read the last
+    /// row's `seq`, run a `step_all` round, then pass it as `since` to get
+    /// exactly that round's traffic.
+    #[tool]
+    async fn wire_log(
+        &self,
+        Parameters(args): Parameters<WireLogArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (group_id, group) = resolve!(self.group_by_id(args.group.as_deref()));
+        let limit = args.limit.unwrap_or(WIRE_LOG_DEFAULT_ROWS);
+        if limit == 0 || limit > WIRE_LOG_MAX_ROWS {
+            return tool_error(format!(
+                "limit must be between 1 and {WIRE_LOG_MAX_ROWS} (got {limit})"
+            ));
+        }
+        let guard = group.lock().await;
+        let known: Vec<String> = guard.net.labels().to_vec();
+        let filter = resolve!(WireFilter::parse(
+            args.link.as_deref(),
+            args.direction.as_deref(),
+            &known
+        ));
+        let matched: Vec<&crate::commands::mcp_net::Packet> = guard
+            .net
+            .packets()
+            .filter(|packet| args.since.is_none_or(|since| packet.seq > since))
+            .filter(|packet| filter.matches(packet))
+            .collect();
+        let total = matched.len();
+        // A row cap alone is not an output bound — a game chooses how big a
+        // message is, and 2000 rows of a chatty protocol is megabytes straight
+        // into a model's context. So payloads also share a byte budget, spent
+        // NEWEST-first (a reader asking for a window wants its tail); an
+        // elided row keeps every other field and says so.
+        let mut payload_budget = MAX_WIRE_PAYLOAD_BYTES;
+        let mut elided = 0usize;
+        let mut rows: Vec<Value> = matched
+            .into_iter()
+            .skip(total.saturating_sub(limit))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|packet| {
+                let payload = match &packet.payload_text {
+                    Some(text) if text.len() <= payload_budget => {
+                        payload_budget -= text.len();
+                        Value::String(text.clone())
+                    }
+                    Some(_) => {
+                        elided += 1;
+                        Value::Null
+                    }
+                    None => Value::Null,
+                };
+                serde_json::json!({
+                    "seq": packet.seq,
+                    // Always null in v1 — delivery is immediate and
+                    // unscheduled, so there is no step to name it with.
+                    "frame": packet.frame,
+                    "at_ms": (packet.at_ms * 1000.0).round() / 1000.0,
+                    "from": packet.from,
+                    "to": packet.to,
+                    "conn": packet.conn,
+                    "kind": packet.kind,
+                    "size": packet.size,
+                    "payload_text": payload,
+                    "payload_elided": packet.payload_text.is_some() && payload.is_null(),
+                })
+            })
+            .collect();
+        rows.reverse();
+        ok_text(
+            serde_json::json!({
+                "group": group_id,
+                "sessions": known,
+                "routed": guard.net.routed(),
+                "oldest_seq": guard.net.oldest_seq(),
+                "matched": total,
+                "returned": rows.len(),
+                // How many returned rows dropped their payload to stay inside
+                // the byte budget — narrow the window or the `link` to see them.
+                "payloads_elided": elided,
+                "connections": guard.net.connection_counts(),
+                "rows": rows,
+            })
+            .to_string(),
+        )
     }
 
     /// Attach to a debug server this process does NOT own — a runtime someone
@@ -1289,6 +1590,16 @@ files writes the inline project to a scratch directory this server owns",
             .lock()
             .expect("mcp registry poisoned")
             .begin_stop(&args.session));
+        // De-route BEFORE taking the session gate, for two reasons. It removes
+        // a lock-order inversion: `step_all` takes a group lock and THEN the
+        // per-session gates, so a stop holding a gate while waiting for the
+        // group lock could hang both for the life of the process (neither
+        // tokio mutex has a timeout). And it runs on every exit from here,
+        // including the unconfirmed-termination error return below — otherwise
+        // a group could outlive its last member and its pump would poll a dead
+        // runtime forever. `begin_stop` has already marked the session closing,
+        // so nothing new can start on it either way.
+        self.forget_group_member(&args.session).await;
         // Stop is a lifecycle boundary: after `closing` is visible it must
         // drain the current operation and finish cleanup even if its own MCP
         // request is subsequently cancelled.
@@ -1598,9 +1909,27 @@ a session that must step twice per round is two rounds, not one list",
             targets.push((session.clone(), target));
         }
 
+        // Coordinated groups among the listed sessions: their locks are held
+        // for the WHOLE round, which suspends the background routing pump.
+        // Routing then happens only where this loop puts it — at each session
+        // boundary — so a packet lands before its receiver's step rather than
+        // wherever an 8 ms timer fired. Locked in group-id order, and no other
+        // path ever holds two, so this cannot deadlock.
+        let mut coordinated: BTreeMap<String, Arc<tokio::sync::Mutex<Group>>> = BTreeMap::new();
+        for (session, _) in &targets {
+            if let Some((id, group)) = self.group_of(session) {
+                coordinated.insert(id, group);
+            }
+        }
         // ONE deadline for the call, not one per session: N sessions must not
-        // multiply how long a single tool call can block.
+        // multiply how long a single tool call can block. Started BEFORE the
+        // group locks, since waiting for a concurrent round to finish is time
+        // this call spends like any other.
         let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
+        let mut groups: Vec<tokio::sync::OwnedMutexGuard<Group>> = Vec::new();
+        for group in coordinated.into_values() {
+            groups.push(group.lock_owned().await);
+        }
         let mut stepped: Vec<Value> = Vec::with_capacity(targets.len());
         for (session, target) in targets {
             let desync = |message: String| {
@@ -1619,6 +1948,14 @@ in the list have already advanced; the group is no longer in lockstep."
                 Ok(operation) => operation,
                 Err(message) => return tool_error(desync(message)),
             };
+            // Route first: whatever the previous session in this round emitted
+            // becomes this one's inbound BEFORE it steps. `POST /net/deliver`
+            // folds each event through `update` before answering, so by the
+            // time this returns the model has already absorbed the round's
+            // traffic.
+            for group in groups.iter_mut() {
+                self.pump_locked(group).await;
+            }
             // Drain what this session has ALREADY received before it steps, so
             // the round folds it in rather than carrying it to the next one.
             if let Err(message) = self.settle_net(&target, operation_deadline).await {
@@ -1631,6 +1968,12 @@ in the list have already advanced; the group is no longer in lockstep."
             let mut summary = summarize_state(&state);
             summary["session"] = Value::String(session);
             stepped.push(summary);
+        }
+        // One final round so the LAST session's emissions are routed before the
+        // call returns: a `wire_log` taken straight afterwards then shows the
+        // whole round rather than all-but-the-tail.
+        for group in groups.iter_mut() {
+            self.pump_locked(group).await;
         }
         ok_text(
             serde_json::json!({ "dts": dts, "frames": frames, "sessions": stepped }).to_string(),
@@ -1868,6 +2211,330 @@ impl FunctorMcp {
             .target(session)
     }
 
+    /// Spawn one runtime child, wait for it to answer discovery, and register
+    /// it. The shared body of `launch_game` and `launch_session_group` — the
+    /// only difference between them is `embedder_net`, which decides whether
+    /// the child opens real sockets or hands its traffic to this process.
+    async fn spawn_runtime(
+        &self,
+        dir: &Path,
+        entry: Option<&str>,
+        mode_flag: &str,
+        scratch: Option<ScratchDir>,
+        manifest: Option<String>,
+        embedder_net: bool,
+    ) -> Result<SpawnedRuntime, String> {
+        let port = self
+            .sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .reserve_port()?;
+        let exe = std::env::current_exe()
+            .map_err(|error| format!("cannot locate the functor executable: {error}"))?;
+
+        let mut command = Command::new(exe);
+        command.arg("-d").arg(dir);
+        if let Some(entry) = entry {
+            command.arg("--entry").arg(entry);
+        }
+        command
+            .args(["run", "native", "--debug-port"])
+            .arg(port.to_string())
+            .arg(mode_flag);
+        if embedder_net {
+            // The runner arg the CLI forwards verbatim: no socket is opened,
+            // and the drained ConnCommands wait for `GET /net/outbound`.
+            command.args(["--net-transport", "embedder"]);
+        }
+        command
+            // stdout is this server's JSON-RPC channel — a child must never
+            // inherit it, or its logs would corrupt the protocol stream.
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.release_port(port);
+                return Err(format!("failed to spawn the runtime: {error}"));
+            }
+        };
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut drains = Vec::new();
+        if let Some(stream) = child.stdout.take() {
+            drains.push(drain_into(stream, log.clone()));
+        }
+        if let Some(stream) = child.stderr.take() {
+            drains.push(drain_into(stream, log.clone()));
+        }
+
+        let url = format!("http://127.0.0.1:{port}");
+        let discovery = match self.await_runtime(&url, &mut child).await {
+            Ok(discovery) => discovery,
+            Err(message) => {
+                let _ = child.start_kill();
+                self.release_port(port);
+                // The output that explains a failed launch — a bind error, a
+                // typecheck diagnostic — is written just before the child exits,
+                // so let the drain tasks reach EOF before reading the tail.
+                let _ = tokio::time::timeout(Duration::from_millis(500), async {
+                    for drain in drains {
+                        let _ = drain.await;
+                    }
+                })
+                .await;
+                return Err(format!("{message}\n\nruntime output:\n{}", tail(&log)));
+            }
+        };
+
+        let session = self.sessions.lock().expect("mcp registry poisoned").insert(
+            url.clone(),
+            Some(port),
+            Some(child),
+            scratch,
+            manifest,
+        );
+        Ok(SpawnedRuntime {
+            session,
+            url,
+            port,
+            discovery,
+        })
+    }
+
+    /// Tear down the roles a failed group launch already started, returning
+    /// the ones whose termination could NOT be confirmed. The caller is already
+    /// reporting a failure; an orphaned runtime has to be named in it, since
+    /// the session record is gone and `list_sessions` will not show it.
+    async fn abandon_group_members(&self, members: &[GroupMember]) -> Vec<String> {
+        let mut orphaned = Vec::new();
+        for member in members {
+            let child = {
+                let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+                let child = registry.take_child(&member.session).ok().flatten();
+                let _ = registry.remove(&member.session);
+                child
+            };
+            if let Some(mut child) = child {
+                if terminate_child(
+                    &mut child,
+                    "owned runtime child",
+                    RUNTIME_CHILD_SHUTDOWN_TIMEOUT,
+                )
+                .await
+                .is_err()
+                {
+                    orphaned.push(member.url.clone());
+                }
+            }
+        }
+        orphaned
+    }
+
+    /// Remove a session from its group's routing table, dropping the group
+    /// (and so ending its pump) once it is empty.
+    async fn forget_group_member(&self, session: &str) {
+        let Some((group_id, group)) = self.group_of(session) else {
+            return;
+        };
+        {
+            let mut guard = group.lock().await;
+            // Not `else { return }`: the registry cleanup below must run even
+            // when the member is already gone, or `session_groups` keeps a
+            // stale row and the group can never empty (so its pump never ends).
+            if let Some(index) = guard
+                .members
+                .iter()
+                .position(|member| member.session == session)
+            {
+                let label = guard.members.remove(index).label;
+                guard.net.remove_session(&label);
+            }
+        }
+        let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+        registry.session_groups.remove(session);
+        let empty = registry
+            .groups
+            .get(&group_id)
+            .is_some_and(|_| !registry.session_groups.values().any(|id| *id == group_id));
+        if empty {
+            registry.groups.remove(&group_id);
+        }
+    }
+
+    /// The group a session belongs to, if any.
+    fn group_of(&self, session: &str) -> Option<(String, Arc<tokio::sync::Mutex<Group>>)> {
+        let registry = self.sessions.lock().expect("mcp registry poisoned");
+        let id = registry.session_groups.get(session)?.clone();
+        let group = registry.groups.get(&id)?.clone();
+        Some((id, group))
+    }
+
+    fn group_by_id(&self, id: Option<&str>) -> Result<(String, Arc<tokio::sync::Mutex<Group>>), String> {
+        let registry = self.sessions.lock().expect("mcp registry poisoned");
+        match id {
+            Some(id) => registry
+                .groups
+                .get(id)
+                .cloned()
+                .map(|group| (id.to_string(), group))
+                .ok_or_else(|| {
+                    if registry.groups.is_empty() {
+                        format!(
+                            "unknown group {id:?}: no groups yet — start one with \
+launch_session_group"
+                        )
+                    } else {
+                        format!(
+                            "unknown group {id:?}: known groups are {}",
+                            registry.groups.keys().cloned().collect::<Vec<_>>().join(", ")
+                        )
+                    }
+                }),
+            None if registry.groups.len() == 1 => {
+                let (id, group) = registry.groups.iter().next().expect("one group");
+                Ok((id.clone(), group.clone()))
+            }
+            None if registry.groups.is_empty() => Err(
+                "no session group is running — launch_session_group starts one (its roles are \
+wired to each other by this process, with no sockets)"
+                    .to_string(),
+            ),
+            None => Err(format!(
+                "several groups are running ({}) — name one with `group`",
+                registry.groups.keys().cloned().collect::<Vec<_>>().join(", ")
+            )),
+        }
+    }
+
+    /// ONE routing round: take every member's queued `ConnCommand`s, route
+    /// them, and hand each member what it is owed.
+    ///
+    /// The pump deliberately does NOT take a session's operation gate. It is
+    /// the TRANSPORT — the thing a kernel does behind every other operation —
+    /// so gating it would both deadlock against a `step_all` holding a gate and
+    /// misrepresent what it models. `/net/outbound` and `/net/deliver` are the
+    /// only endpoints it touches, and neither races the clock.
+    ///
+    /// A member that cannot be reached (it stopped, it is mid-reload) is
+    /// skipped for the round rather than failing the group, and an undelivered
+    /// batch is re-queued in order for the next one.
+    async fn pump_group(&self, group: &Arc<tokio::sync::Mutex<Group>>) {
+        let mut guard = group.lock().await;
+        self.pump_locked(&mut guard).await;
+    }
+
+    /// [`Self::pump_group`] against a group lock the caller already holds — how
+    /// `step_all` pumps at each session boundary while KEEPING the background
+    /// pump out for the whole round. Holding the lock is what makes a round's
+    /// deliveries fall on the boundaries the caller declared instead of
+    /// wherever an 8 ms timer happened to fire.
+    async fn pump_locked(&self, guard: &mut Group) {
+        let members = guard.members.clone();
+        for member in &members {
+            let json = match self.get(&member.url, "/net/outbound").await {
+                Ok(json) => json,
+                // A member that cannot be drained is skipped for the round, but
+                // never SILENTLY: the failure includes a 409 from a runtime
+                // that is not on the embedder transport, which is the exact
+                // misconfiguration `EMBEDDER_TRANSPORT_REQUIRED` exists to make
+                // loud. Reported once per member until it succeeds again, so a
+                // dead child does not print 125 lines a second.
+                Err(error) => {
+                    guard.note_unreachable(&member.label, format!("drain failed: {error}"));
+                    continue;
+                }
+            };
+            guard.note_reachable(&member.label);
+            if json == "[]" {
+                continue;
+            }
+            match serde_json::from_str::<Vec<ConnCommand>>(&json) {
+                Ok(commands) => {
+                    for command in commands {
+                        guard.net.perform(&member.label, command);
+                    }
+                }
+                // A runtime whose outbound JSON does not parse is a protocol
+                // break, not a game bug — say so on stderr, which is this
+                // server's log channel (stdout is JSON-RPC).
+                Err(error) => eprintln!(
+                    "[coordinator] {} sent unparseable outbound commands: {error}",
+                    member.label
+                ),
+            }
+        }
+        guard.net.retry_pending();
+        for (label, shed) in guard.net.take_drops() {
+            eprintln!(
+                "[coordinator] {label}'s queue overflowed — dropped {shed} undelivered event(s); \
+that session is not consuming its traffic"
+            );
+        }
+        for member in &members {
+            let mut events = guard.net.take_outbox(&member.label);
+            while !events.is_empty() {
+                // CHUNKED, because `/net/deliver` caps its body: posting a
+                // whole backlog as one request would 413, be re-queued whole,
+                // and 413 again every round — a session's inbound dead for the
+                // rest of the run, silently. Splitting means a backlog drains
+                // over several rounds instead.
+                let rest = events.split_off(deliverable_prefix(&events));
+                let body = serde_json::to_string(&events).expect("delivered events serialize");
+                match self.post_delivery(&member.url, body).await {
+                    DeliveryOutcome::Applied => events = rest,
+                    DeliveryOutcome::NotApplied(error) => {
+                        // In order: the un-posted tail first, then this batch in
+                        // front of it. A reliable channel must not reorder.
+                        guard.net.requeue(&member.label, rest);
+                        guard.net.requeue(&member.label, events);
+                        guard.note_unreachable(&member.label, format!("delivery failed: {error}"));
+                        break;
+                    }
+                    // Ambiguous: the runtime may already have folded it, so
+                    // this batch is NOT retried (see `post_delivery`). The tail
+                    // goes back, and the loss is loud.
+                    DeliveryOutcome::Ambiguous(error) => {
+                        guard.net.requeue(&member.label, rest);
+                        guard.note_unreachable(
+                            &member.label,
+                            format!(
+                                "delivery outcome unknown, so {} event(s) were NOT retried \
+(retrying could double-fold them): {error}",
+                                events.len()
+                            ),
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The background half of the cadence: while a group's sessions run live
+    /// (between tool calls, on wall-clock time), its packets still have to
+    /// move. One task per group, ending when the group does.
+    fn spawn_pump(&self, group_id: String, group: Arc<tokio::sync::Mutex<Group>>) {
+        let server = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(PUMP_INTERVAL).await;
+                let alive = server
+                    .sessions
+                    .lock()
+                    .expect("mcp registry poisoned")
+                    .groups
+                    .contains_key(&group_id);
+                if !alive {
+                    return;
+                }
+                server.pump_group(&group).await;
+            }
+        });
+    }
+
     async fn acquire_operation(
         &self,
         target: &SessionTarget,
@@ -1912,6 +2579,43 @@ impl FunctorMcp {
             .await
             .map_err(|error| format!("POST {path} on {url} failed: {error}"))?;
         read_body(path, response).await
+    }
+
+    /// `POST /net/deliver`, classified by whether the batch can be SAFELY
+    /// retried.
+    ///
+    /// `/net/deliver` applies its events before answering, so a blind retry on
+    /// any failure would re-fold a batch the runtime may already have absorbed
+    /// — duplicating messages on a channel `Sub.connect` promises is reliable
+    /// and ordered, which is worse for a game than losing them. So only a
+    /// failure that provably did NOT apply is re-queued: a refused connection
+    /// (nothing was sent) or a status the runtime chose (it rejected the body).
+    /// An ambiguous failure — a timeout, a truncated response — is reported and
+    /// dropped rather than risked twice. A transactional batch id belongs with
+    /// the barrier-stepping protocol, not with a v1 that talks to a child
+    /// process over loopback.
+    async fn post_delivery(&self, url: &str, body: String) -> DeliveryOutcome {
+        let response = match self
+            .http
+            .post(format!("{url}/net/deliver"))
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if error.is_connect() => {
+                return DeliveryOutcome::NotApplied(format!("connection refused: {error}"))
+            }
+            Err(error) => return DeliveryOutcome::Ambiguous(format!("request failed: {error}")),
+        };
+        let rejected = response.status().is_client_error() || response.status().is_server_error();
+        match read_body("/net/deliver", response).await {
+            Ok(_) => DeliveryOutcome::Applied,
+            // The runtime answered, and its answer was a refusal: nothing was
+            // folded, so the batch is safe to keep.
+            Err(message) if rejected => DeliveryOutcome::NotApplied(message),
+            Err(message) => DeliveryOutcome::Ambiguous(message),
+        }
     }
 
     async fn post_binary(&self, url: &str, path: &str, body: Vec<u8>) -> Result<String, String> {
@@ -2986,6 +3690,169 @@ Rebuild that runtime from this version of Functor."
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+/// The roles a project's `functor.json` declares, sorted — `manifest_entries`'
+/// pairs with their files dropped. `entries` is a map, so its declaration order
+/// is not part of what the manifest means; a group's launch order comes from
+/// [`group_roles`] instead.
+fn declared_entries(manifest: &str) -> Result<Vec<String>, String> {
+    // A single-`entry` manifest parses as ONE NAMELESS role, which is exactly
+    // the case to refuse: a "group" of a single-entry project is one game. So
+    // is a manifest `manifest_entries` cannot reason about at all.
+    let roles: Vec<String> = manifest_entries(manifest)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(role, _)| role)
+        .filter(|role| !role.is_empty())
+        .collect();
+    if roles.is_empty() {
+        return Err(
+            "this project declares no `entries`, so it has no roles to group — a multiplayer \
+project's functor.json looks like {\"entries\": {\"client\": …, \"server\": …}}"
+                .to_string(),
+        );
+    }
+    Ok(roles)
+}
+
+/// The roles to launch, in order. Explicit `roles` wins verbatim (repeats are
+/// how a group gets two clients); the default is one session per declared
+/// entry, with `server` first because a client's `Connect` has nothing to
+/// resolve until its authority exists.
+fn group_roles(requested: Option<&[String]>, declared: &[String]) -> Result<Vec<String>, String> {
+    if let Some(roles) = requested {
+        if roles.is_empty() {
+            return Err(format!(
+                "roles must name at least one entry; this project declares {}",
+                declared.join(", ")
+            ));
+        }
+        if let Some(unknown) = roles.iter().find(|role| !declared.contains(role)) {
+            return Err(format!(
+                "unknown role {unknown:?}: this project declares {}",
+                declared.join(", ")
+            ));
+        }
+        return Ok(roles.to_vec());
+    }
+    let mut roles: Vec<String> = declared.to_vec();
+    if let Some(index) = roles.iter().position(|role| role == "server") {
+        let server = roles.remove(index);
+        roles.insert(0, server);
+    }
+    Ok(roles)
+}
+
+/// Wire-log labels for a role list: the plain role name when it appears once,
+/// and `client1` / `client2` when it repeats.
+fn group_labels(roles: &[String]) -> Vec<String> {
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for role in roles {
+        *seen.entry(role.as_str()).or_insert(0) += 1;
+    }
+    let mut used: BTreeMap<&str, usize> = BTreeMap::new();
+    roles
+        .iter()
+        .map(|role| {
+            if seen[role.as_str()] == 1 {
+                role.clone()
+            } else {
+                let index = used.entry(role.as_str()).or_insert(0);
+                *index += 1;
+                format!("{role}{index}")
+            }
+        })
+        .collect()
+}
+
+/// `wire_log`'s `link` + `direction`, resolved against the group's labels so a
+/// typo is an error rather than an empty result a caller would read as "no
+/// traffic".
+#[derive(Debug)]
+enum WireFilter {
+    All,
+    /// Rows between these two labels, in either direction.
+    Pair(String, String),
+    /// Rows touching one label, optionally narrowed to one direction.
+    One {
+        label: String,
+        sent: Option<bool>,
+    },
+}
+
+impl WireFilter {
+    fn parse(link: Option<&str>, direction: Option<&str>, known: &[String]) -> Result<Self, String> {
+        let sent = match direction {
+            None => None,
+            Some("sent") => Some(true),
+            Some("received") => Some(false),
+            Some(other) => {
+                return Err(format!(
+                    "unknown direction {other:?}: expected \"sent\" or \"received\""
+                ))
+            }
+        };
+        let check = |label: &str| -> Result<String, String> {
+            if known.iter().any(|k| k == label) {
+                Ok(label.to_string())
+            } else {
+                Err(format!(
+                    "unknown session label {label:?}: this group has {}",
+                    known.join(", ")
+                ))
+            }
+        };
+        match link {
+            None if sent.is_some() => Err(
+                "direction needs a single-label `link` to be relative to — \"sent\" from what?"
+                    .to_string(),
+            ),
+            None => Ok(WireFilter::All),
+            Some(link) => match link.split_once(':') {
+                Some((a, b)) if sent.is_some() => {
+                    let _ = (check(a.trim())?, check(b.trim())?);
+                    Err(format!(
+                        "direction does not apply to the pair {link:?} — it already names both \
+ends; pass a single label instead"
+                    ))
+                }
+                Some((a, b)) => Ok(WireFilter::Pair(check(a.trim())?, check(b.trim())?)),
+                None => Ok(WireFilter::One {
+                    label: check(link.trim())?,
+                    sent,
+                }),
+            },
+        }
+    }
+
+    fn matches(&self, packet: &crate::commands::mcp_net::Packet) -> bool {
+        match self {
+            WireFilter::All => true,
+            WireFilter::Pair(a, b) => {
+                (packet.from == *a && packet.to == *b) || (packet.from == *b && packet.to == *a)
+            }
+            WireFilter::One { label, sent } => match sent {
+                Some(true) => packet.from == *label,
+                Some(false) => packet.to == *label,
+                None => packet.from == *label || packet.to == *label,
+            },
+        }
+    }
+}
+
+/// How many leading events fit in one `/net/deliver` body. At least one always
+/// does: a single event over the budget is posted alone and lets the runtime's
+/// own 413 be the (loud) answer, rather than being silently stuck forever.
+fn deliverable_prefix(events: &[functor_runtime_common::net::DeliveredEvent]) -> usize {
+    let mut bytes = 2; // the enclosing `[]`
+    for (index, event) in events.iter().enumerate() {
+        bytes += serde_json::to_string(event).map_or(0, |json| json.len() + 1);
+        if bytes > MAX_DELIVERY_BYTES {
+            return index.max(1);
+        }
+    }
+    events.len()
 }
 
 fn node_executable() -> String {
@@ -4445,13 +5312,15 @@ fn tail(log: &Arc<Mutex<Vec<u8>>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_target_operation, base64_encoded_len, checked_output_total, encoded_capture_total,
+        acquire_target_operation, base64_encoded_len, checked_output_total, declared_entries,
+        deliverable_prefix, encoded_capture_total, group_labels, group_roles, MAX_DELIVERY_BYTES,
         ensure_operation_active, extend_bounded, find_guide_section, guide_sections,
         json_encoded_len, node_code_call_result, node_code_summary, read_body,
         read_bounded_response, render_api_hits, render_guide_contents, render_guide_section,
         retain_final_snapshot, search_api, serialize_json_bounded, spawn_node_child,
         strip_front_matter, truncate_code_error, CodeInputRestore, CodeOutputBudget, FunctorMcp,
-        NodeCodeOutput, Registry, RunGameCodeUnsafeArgs, SessionTarget, LANGUAGE_GUIDE,
+        NodeCodeOutput, Registry, RunGameCodeUnsafeArgs, SessionTarget, WireFilter,
+        LANGUAGE_GUIDE,
         MAX_CODE_CAPTURE_BYTES, MAX_CODE_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
@@ -5654,5 +6523,144 @@ mod tests {
             panic!("a removed id must not resolve again");
         };
         assert!(message.contains("unknown session"), "{message}");
+    }
+
+    // ---------------------------------------------------- session groups
+
+    fn packet(from: &str, to: &str, seq: u64) -> crate::commands::mcp_net::Packet {
+        crate::commands::mcp_net::Packet {
+            seq,
+            at_ms: 0.0,
+            frame: None,
+            from: from.into(),
+            to: to.into(),
+            conn: 1,
+            kind: "message",
+            size: 1,
+            payload_text: Some("x".into()),
+        }
+    }
+
+    /// A group's default order puts the AUTHORITY first: a client's `Connect`
+    /// has nothing to resolve until something is listening, and the same order
+    /// is what `step_all` wants.
+    #[test]
+    fn the_default_role_order_launches_the_server_first() {
+        let declared = vec!["client".to_string(), "server".to_string()];
+        assert_eq!(group_roles(None, &declared).unwrap(), ["server", "client"]);
+    }
+
+    /// Explicit roles are verbatim — including repeats, which is the only way
+    /// to ask for two clients — and an unknown one is refused before anything
+    /// launches.
+    #[test]
+    fn explicit_roles_are_taken_verbatim_and_checked() {
+        let declared = vec!["client".to_string(), "server".to_string()];
+        let asked = ["server".to_string(), "client".to_string(), "client".to_string()];
+        assert_eq!(group_roles(Some(&asked), &declared).unwrap(), asked);
+
+        let typo = ["sevrer".to_string()];
+        let error = group_roles(Some(&typo), &declared).unwrap_err();
+        assert!(error.contains("unknown role"), "{error}");
+        assert!(group_roles(Some(&[]), &declared).is_err());
+    }
+
+    /// Labels are what the wire log reads by, so a repeated role has to become
+    /// two distinguishable names while a unique one stays plain.
+    #[test]
+    fn repeated_roles_get_numbered_labels() {
+        let roles: Vec<String> = ["server", "client", "client"]
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        assert_eq!(group_labels(&roles), ["server", "client1", "client2"]);
+    }
+
+    #[test]
+    fn a_project_with_no_entries_is_not_a_group() {
+        let error = declared_entries(r#"{"entry":"game.fun"}"#).unwrap_err();
+        assert!(error.contains("no `entries`"), "{error}");
+        assert_eq!(
+            declared_entries(r#"{"entries":{"client":{"file":"game.fun","module":"Client"},"server":{"file":"game.fun","module":"Server"}}}"#).unwrap(),
+            ["client", "server"]
+        );
+    }
+
+    /// The wire filter resolves against the group's real labels, so a typo is
+    /// an ERROR rather than an empty result a caller reads as "no traffic".
+    #[test]
+    fn the_wire_filter_refuses_labels_the_group_does_not_have() {
+        let known = vec!["server".to_string(), "client1".to_string()];
+        let error = WireFilter::parse(Some("cleint1"), None, &known).unwrap_err();
+        assert!(error.contains("unknown session label"), "{error}");
+        let error = WireFilter::parse(Some("server"), Some("upward"), &known).unwrap_err();
+        assert!(error.contains("unknown direction"), "{error}");
+        // A direction with nothing to be relative to is a mistake, not a
+        // silently-ignored argument.
+        assert!(WireFilter::parse(None, Some("sent"), &known).is_err());
+        assert!(WireFilter::parse(Some("server:client1"), Some("sent"), &known).is_err());
+    }
+
+    #[test]
+    fn the_wire_filter_selects_by_link_and_direction() {
+        let known = vec!["server".to_string(), "client1".to_string(), "client2".to_string()];
+        let rows = [
+            packet("client1", "server", 0),
+            packet("server", "client1", 1),
+            packet("server", "client2", 2),
+        ];
+        let matching = |filter: WireFilter| -> Vec<u64> {
+            rows.iter().filter(|p| filter.matches(p)).map(|p| p.seq).collect()
+        };
+        assert_eq!(matching(WireFilter::parse(None, None, &known).unwrap()), [0, 1, 2]);
+        assert_eq!(
+            matching(WireFilter::parse(Some("client1"), None, &known).unwrap()),
+            [0, 1]
+        );
+        assert_eq!(
+            matching(WireFilter::parse(Some("client1"), Some("sent"), &known).unwrap()),
+            [0]
+        );
+        assert_eq!(
+            matching(WireFilter::parse(Some("client1"), Some("received"), &known).unwrap()),
+            [1]
+        );
+        assert_eq!(
+            matching(WireFilter::parse(Some("server:client2"), None, &known).unwrap()),
+            [2]
+        );
+    }
+
+    /// `/net/deliver` caps its body, so a backlog must be SPLIT rather than
+    /// posted whole: posting whole would 413, be re-queued whole, and 413 again
+    /// every round — that session's inbound dead for the rest of the run.
+    #[test]
+    fn a_delivery_batch_is_split_below_the_endpoint_limit() {
+        use functor_runtime_common::net::DeliveredEvent;
+        let event = |index: usize| DeliveredEvent::Message {
+            key: "ws://127.0.0.1:9101/orbs".into(),
+            conn: 1,
+            text: format!("{index}").repeat(400),
+        };
+        let events: Vec<DeliveredEvent> = (0..200).map(event).collect();
+        let prefix = deliverable_prefix(&events);
+        assert!(prefix > 0 && prefix < events.len(), "split at {prefix}");
+        assert!(
+            serde_json::to_string(&events[..prefix]).unwrap().len() <= MAX_DELIVERY_BYTES + 4096,
+            "the chosen prefix stays near the budget"
+        );
+
+        // A small backlog is one body.
+        let small: Vec<DeliveredEvent> = (0..3).map(event).collect();
+        assert_eq!(deliverable_prefix(&small), 3);
+
+        // A SINGLE event over the budget still goes alone: the runtime's own
+        // 413 is then the loud answer, rather than a batch stuck forever.
+        let huge = vec![DeliveredEvent::Message {
+            key: "k".into(),
+            conn: 1,
+            text: "x".repeat(MAX_DELIVERY_BYTES * 2),
+        }];
+        assert_eq!(deliverable_prefix(&huge), 1);
     }
 }

@@ -31,8 +31,8 @@ use crate::functor_lang_prelude::{
     EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
-    journal_arm, journal_swap, validate_contract, EntryNames, EntryRole, FrameCtx, JournalEntry,
-    Reporter, SpanSource,
+    journal_arm, journal_swap, rebase_connect_retry_deadlines, validate_contract,
+    ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Reporter, SpanSource,
 };
 use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
@@ -182,6 +182,7 @@ pub struct FunctorLangEmbeddedGame {
     /// Declared connection keys (`Sub.connect`/`Sub.listen`), reconciled each
     /// frame — see the desktop producer.
     live_conn_keys: std::collections::HashSet<String>,
+    connect_retries: std::collections::HashMap<String, ConnectRetryState>,
     /// The last successfully drawn frame, kept so a bad draw shows the last
     /// good picture instead of a blank.
     last_frame: Frame,
@@ -368,6 +369,7 @@ impl FunctorLangEmbeddedGame {
             recorder: SceneRecorder::new(),
             input_buf: Vec::new(),
             live_conn_keys: std::collections::HashSet::new(),
+            connect_retries: std::collections::HashMap::new(),
             asset_progress: None,
             delivered_asset_progress: None,
             has_physics: loaded.has_physics,
@@ -403,12 +405,18 @@ impl FunctorLangEmbeddedGame {
     /// time grid, so timers tick right through a reload. Returns the number of
     /// stored closures rebound, for the status line.
     fn swap_in(&mut self, loaded: Loaded) -> (usize, Option<(usize, f64)>) {
+        let retry_tts_before_reload = self.prev_tts;
         let live_model_was_safe = self.recorder.prepare_reload(
             &mut self.model,
             &mut self.physics_rt,
             &mut self.physics_frame,
             self.has_physics,
             &mut self.prev_tts,
+        );
+        rebase_connect_retry_deadlines(
+            &mut self.connect_retries,
+            retry_tts_before_reload,
+            self.prev_tts,
         );
         let (model, report) = functor_lang::rebind_value(&self.model, &self.module, &loaded.module);
         self.model = model;
@@ -584,6 +592,7 @@ impl FunctorLangEmbeddedGame {
             deferred_queries: &mut self.deferred_queries,
             pending_events: &mut self.pending_events,
             live_conn_keys: &mut self.live_conn_keys,
+            connect_retries: &mut self.connect_retries,
             prev_tts: &mut self.prev_tts,
             input_buf: &mut self.input_buf,
             has_physics: self.has_physics,
@@ -709,6 +718,7 @@ impl GameProducer for FunctorLangEmbeddedGame {
     /// Coupled scene rewind — delegated to the shared [`SceneRecorder`]
     /// (docs/time-travel.md T1), identical to the other producers.
     fn rewind_scene_to(&mut self, target: u64) -> Result<String, String> {
+        let retry_tts_before_rewind = self.prev_tts;
         let result = self.recorder.rewind_scene_to(
             target,
             &mut self.model,
@@ -718,6 +728,11 @@ impl GameProducer for FunctorLangEmbeddedGame {
             &mut self.prev_tts,
         );
         if result.is_ok() {
+            rebase_connect_retry_deadlines(
+                &mut self.connect_retries,
+                retry_tts_before_rewind,
+                self.prev_tts,
+            );
             self.deferred_queries.clear();
             self.pending_events.clear();
             // The restored model predates the current loading snapshot —

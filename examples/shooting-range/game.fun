@@ -8,8 +8,8 @@
 //                 `cooldown` is decremented before the fire check, so the
 //                 cadence is ceil(fireInterval / dt) = 11 frames at 60 Hz,
 //                 12 at the replay script's 0.016 s timestep).
-//                 This is also what the committed `firing.input` replay
-//                 script drives, as `0 Mouse.Left down`
+//                 This is also what the committed `firing.input` and
+//                 `aim-and-fire.input` replay scripts drive.
 //   W A S D       move along the firing line
 //   R             reload
 //   SPACE         fire (keyboard fallback)

@@ -1,6 +1,7 @@
 // The VSCode-style bottom status bar: a slim strip with three toggleable
 // panels — Problems (live type diagnostics), Output (runtime console traces +
-// reload results), and Executions (the paused inspector's entry-point picker).
+// reload results), and Executions (the paused inspector's entry-point picker,
+// each row expanding into the value its call returned).
 //
 // The rows come from `status-bar-store.ts`; this is only the view, rendered by
 // both editor pages. It emits the same markup the imperative `status-bar.ts`
@@ -12,6 +13,8 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import type { ReactNode } from "react";
 import { outputPreamble } from "../status-bar-store.js";
 import type { StatusBarStore } from "../status-bar-store.js";
+import { hasTree, mountValueTree } from "../value-tree.js";
+import { summarize } from "../wire-value.js";
 import { EditorKeybindingsButton } from "./EditorKeybindingsButton.js";
 import type { EditorKeybindingsController } from "../editor-keybindings.js";
 
@@ -63,6 +66,13 @@ export const StatusBar = ({
     store.getSnapshot
   );
   const [open, setOpen] = useState<TabName | null>(null);
+  // Which execution's returned value is open, by its stable `key` (which
+  // execution it IS) rather than by list position or label: the list is rebuilt
+  // on every pick and on every paused frame — a position would close the row
+  // the reader just opened, and the label carries the call's arguments, which
+  // change on every scrub.
+  const [openExec, setOpenExec] = useState<string | null>(null);
+  const execTree = useRef<HTMLDivElement>(null);
   const outputList = useRef<HTMLDivElement>(null);
   // The traffic monitor's two nodes (`store.wire`), mounted exactly like the
   // view strip below: their owner is imperative and repaints per frame.
@@ -108,6 +118,21 @@ export const StatusBar = ({
   useLayoutEffect(() => {
     viewHost.current?.replaceChildren(store.viewStrip);
   }, [store]);
+
+  // The open execution's value tree — the same imperative component the wire
+  // rows expand into (value-tree.ts), mounted into a node React owns but never
+  // renders into.
+  //
+  // Keyed on the VALUE, not on the executions array: picking a row rebuilds
+  // that array, and remounting would discard every node the reader had opened
+  // inside the tree. The producer hands back the same value until the trace
+  // itself changes (lang-intel's `liveResults`), so the tree survives a pick
+  // and is rebuilt exactly when the frame behind it moves.
+  const openValue = executions.find((item) => item.key === openExec)?.result ?? null;
+  useLayoutEffect(() => {
+    const host = execTree.current;
+    if (host && openValue) mountValueTree(host, openValue);
+  }, [openValue]);
 
   useLayoutEffect(() => {
     wireHost.current?.replaceChildren(store.wire.panel);
@@ -171,16 +196,44 @@ export const StatusBar = ({
           {executions.length === 0 ? (
             <div className="statusbar-empty">Pause the game to inspect the frame's executions.</div>
           ) : (
-            executions.map((item, index) => (
-              <button
-                type="button"
-                className={`exec-row${item.selected ? " selected" : ""}`}
-                key={index}
-                onClick={item.onPick}
-              >
-                {item.label}
-              </button>
-            ))
+            executions.map((item, index) => {
+              // Only a value with structure opens: a scalar, an opaque handle,
+              // or a result the producer's budget refused has nothing behind
+              // its own line, and offering a disclosure that reveals nothing is
+              // the failure the tree exists to end.
+              const tree = !!item.result && !item.resultTruncated && hasTree(item.result);
+              const open = tree && item.key === openExec;
+              // A refused structured result falls back to the runtime's own
+              // rendering — that text is never budgeted, so the reader loses
+              // the tree, not the value.
+              const summary = item.resultTruncated
+                ? `→ ${item.resultPreview} (structure over the trace budget)`
+                : item.result && `→ ${summarize(item.result)}`;
+              return (
+                <div className="exec-item" key={index}>
+                  <button
+                    type="button"
+                    className={`exec-row${item.selected ? " selected" : ""}`}
+                    aria-expanded={tree ? open : undefined}
+                    onClick={() => {
+                      // One control, one meaning: this row is the execution the
+                      // reader is looking at — the editor overlays its values
+                      // AND its returned value opens underneath.
+                      item.onPick?.();
+                      if (tree) setOpenExec(open ? null : (item.key ?? null));
+                    }}
+                  >
+                    <span className="exec-tw">{tree ? (open ? "▾" : "▸") : ""}</span>
+                    <span className="exec-label">{item.label}</span>
+                    {/* The returned value, one line — dropped while the row is
+                        open, where the tree's own root row says the same thing
+                        one line below it. */}
+                    {summary && !open && <span className="exec-result">{summary}</span>}
+                  </button>
+                  {open && <div className="exec-tree" ref={execTree} />}
+                </div>
+              );
+            })
           )}
         </div>
         {/* The traffic monitor, filled by wire-tab.ts. Mounted only while the

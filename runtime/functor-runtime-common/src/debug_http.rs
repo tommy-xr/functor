@@ -405,6 +405,88 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
             respond_result(&mut stream, cors_origin, recv(resp_rx), "rewind")
         }
+        ("GET", "/net/outbound") => {
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::NetOutbound(resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            match recv(resp_rx) {
+                Ok(Ok(json)) => respond_bytes(
+                    &mut stream,
+                    cors_origin,
+                    200,
+                    "OK",
+                    "application/json",
+                    json.as_bytes(),
+                ),
+                // The same 409 discipline `/time` uses: a runtime that cannot
+                // honor the request in its current mode says so loudly, rather
+                // than answering an empty `[]` a coordinator would read as
+                // "the game sent nothing" forever.
+                Ok(Err(message)) => {
+                    respond_text(&mut stream, cors_origin, 409, "Conflict", &message)
+                }
+                Err(_) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    500,
+                    "Internal Server Error",
+                    "net outbound failed",
+                ),
+            }
+        }
+        ("POST", "/net/deliver") => {
+            let body = match read_body(&mut reader, content_length, MAX_COMMAND_BYTES) {
+                Ok(body) => body,
+                Err(BodyError::MissingLength | BodyError::TooLarge) => {
+                    respond_text(
+                        &mut stream,
+                        cors_origin,
+                        413,
+                        "Payload Too Large",
+                        "delivery too large (or missing Content-Length); limit is 64KB",
+                    );
+                    return Some(());
+                }
+                Err(BodyError::Invalid) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", "bad body");
+                    return Some(());
+                }
+            };
+            let events = match std::str::from_utf8(&body)
+                .map_err(|error| error.to_string())
+                .and_then(crate::net::parse_delivered_events)
+            {
+                Ok(events) => events,
+                Err(error) => {
+                    respond_text(
+                        &mut stream,
+                        cors_origin,
+                        400,
+                        "Bad Request",
+                        &format!("bad net delivery: {error}"),
+                    );
+                    return Some(());
+                }
+            };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::NetDeliver(events, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            match recv(resp_rx) {
+                Ok(Ok(status)) => respond_text(&mut stream, cors_origin, 200, "OK", &status),
+                Ok(Err(message)) => {
+                    respond_text(&mut stream, cors_origin, 409, "Conflict", &message)
+                }
+                Err(_) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    500,
+                    "Internal Server Error",
+                    "net delivery failed",
+                ),
+            }
+        }
         ("POST", "/reload-asset") => {
             let body = match read_body(
                 &mut reader,
@@ -930,6 +1012,85 @@ Content-Length: {}\r\n\r\n{body}",
             "{response}"
         );
         assert!(response.ends_with("pinned by --fixed-time"));
+    }
+
+    /// The embedder transport's egress: the runtime's answer is the drained
+    /// `ConnCommand` JSON verbatim, and a runtime on the socket transport
+    /// REFUSES with 409 rather than answering an empty array — a coordinator
+    /// must be able to tell "nothing was sent" from "you asked the wrong
+    /// runtime".
+    #[test]
+    fn net_outbound_returns_the_drained_commands_and_409s_off_transport() {
+        let drain = |answer: Result<String, String>| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let client = connect(
+                &listener,
+                "GET /net/outbound HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+            );
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            match rx.recv().unwrap() {
+                DebugRequest::NetOutbound(response) => response.send(answer).unwrap(),
+                _ => panic!("expected a net outbound request"),
+            }
+            server.join().unwrap();
+            client.join().unwrap()
+        };
+
+        let commands = r#"[{"Listen":{"key":"127.0.0.1:9101","addr":"127.0.0.1:9101"}}]"#;
+        let response = drain(Ok(commands.to_string()));
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.contains("Content-Type: application/json\r\n"));
+        assert!(response.ends_with(commands), "{response}");
+
+        let response = drain(Err("on the socket transport".into()));
+        assert!(response.starts_with("HTTP/1.1 409 Conflict\r\n"), "{response}");
+    }
+
+    /// Ingress parses through the SHARED `DeliveredEvent` type (the same one
+    /// the web embedder posts), so a malformed batch is a 400 that never
+    /// reaches the runtime loop.
+    #[test]
+    fn net_deliver_parses_the_shared_event_shape_and_rejects_malformed_batches() {
+        use crate::net::DeliveredEvent;
+        let deliver = |body: &str| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let request = format!(
+                "POST /net/deliver HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let client = connect(&listener, request);
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            let events = match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(DebugRequest::NetDeliver(events, response)) => {
+                    response.send(Ok("delivered".into())).unwrap();
+                    Some(events)
+                }
+                Ok(_) => panic!("expected a net deliver request"),
+                Err(_) => None,
+            };
+            server.join().unwrap();
+            (events, client.join().unwrap())
+        };
+
+        let (events, response) =
+            deliver(r#"[{"kind":"message","key":"ws://x/","conn":3,"text":"hi"}]"#);
+        assert_eq!(
+            events,
+            Some(vec![DeliveredEvent::Message {
+                key: "ws://x/".into(),
+                conn: 3,
+                text: "hi".into()
+            }])
+        );
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+
+        // A negative conn would reach the game as u64::MAX; the shared parser
+        // rejects it, and so this never reaches the runtime loop.
+        let (events, response) = deliver(r#"[{"kind":"connected","key":"k","conn":-1}]"#);
+        assert_eq!(events, None);
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{response}");
     }
 
     #[test]

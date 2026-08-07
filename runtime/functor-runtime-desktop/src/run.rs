@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use functor_runtime_common::asset::AssetCache;
+use functor_runtime_common::net::DeliveredEvent;
 use functor_runtime_common::viewer::{camera_frustum_lines, DebugCamera, DebugPresentation};
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputEdges, InputSnapshot, MouseButtons, MouseSnapshot,
@@ -338,6 +339,8 @@ fn refresh_fixed_input_levels(
 
 fn apply_scripted_events(
     game: &mut dyn Game,
+    mouse_pos: &mut (i32, i32),
+    emulate_xr: bool,
     held_keys: &mut BTreeSet<InputKey>,
     held_buttons: &mut MouseButtons,
     edges: &mut InputEdges,
@@ -365,11 +368,19 @@ fn apply_scripted_events(
                     apply_mouse_button_edge(game, held_buttons, edges, b, *is_down);
                 }
             }
+            RecordedInput::MouseMove { x, y } => {
+                *mouse_pos = (*x, *y);
+                // Match POST /input: under the desktop XR emulator the
+                // pointer drives the synthesized controller sample instead of
+                // also reaching the game's legacy 2D mouse hook.
+                if !emulate_xr {
+                    game.mouse_move(*x, *y);
+                }
+            }
             // Listed rather than `_`, so adding a scriptable line shape (e.g.
-            // pointer motion) has to be wired here instead of compiling to a
+            // wheel motion) has to be wired here instead of compiling to a
             // silent no-op.
-            RecordedInput::MouseMove { .. }
-            | RecordedInput::MouseWheel { .. }
+            RecordedInput::MouseWheel { .. }
             | RecordedInput::Snapshot(_)
             | RecordedInput::UiEvent(_)
             | RecordedInput::WebviewEvent(_) => {}
@@ -380,7 +391,8 @@ fn apply_scripted_events(
 /// Parse an `--input-script` file into a frame → events map for deterministic
 /// scripted playback (docs/time-travel.md T6b). Each non-blank, non-comment
 /// line is `<frame:int> <control> <down|up>` — e.g. `0 Right down`,
-/// `18 Up down`, `4 Mouse.Left down`. `#` starts a comment (to end of line).
+/// `18 Up down`, `4 Mouse.Left down` — or `<frame:int> Mouse.Move <x> <y>`.
+/// `#` starts a comment (to end of line).
 ///
 /// A `<control>` is either a KEY name, which goes through the same
 /// [`InputKey::from_name`] map the debug server's POST /input uses, or a MOUSE
@@ -395,11 +407,13 @@ fn apply_scripted_events(
 /// (`MouseButton::ctor_tag`), and no key name contains a `.`, so the two
 /// namespaces cannot collide.
 ///
-/// Events are stored as raw `RecordedInput::Key` / `RecordedInput::MouseButton`
-/// so playback re-runs the identical live input path.
+/// Pointer coordinates are signed logical window points — the same top-left-
+/// origin space as `Input.mouse.x` / `.y`, not framebuffer pixels. They are
+/// deliberately not clamped: live pointer events and `POST /input` preserve
+/// out-of-surface coordinates too, and games decide how to handle a miss.
 ///
-/// Pointer MOTION (`RecordedInput::MouseMove`) is not scriptable yet — it needs
-/// a two-coordinate line shape rather than this `<control> <down|up>` triple.
+/// Events are stored as raw `RecordedInput` values so playback re-runs the
+/// identical live input path.
 fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read input script {path}: {e}"))?;
@@ -411,9 +425,33 @@ fn parse_input_script(path: &str) -> Result<HashMap<u64, Vec<RecordedInput>>, St
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
+        let is_mouse_move = parts
+            .get(1)
+            .is_some_and(|control| control.eq_ignore_ascii_case("Mouse.Move"));
+        if is_mouse_move {
+            if parts.len() != 4 {
+                return Err(format!(
+                    "{path}:{lineno}: expected `<frame> Mouse.Move <x> <y>`, got `{raw}`"
+                ));
+            }
+            let frame: u64 = parts[0]
+                .parse()
+                .map_err(|_| format!("{path}:{lineno}: bad frame number `{}`", parts[0]))?;
+            let x: i32 = parts[2].parse().map_err(|_| {
+                format!("{path}:{lineno}: bad logical x coordinate `{}`", parts[2])
+            })?;
+            let y: i32 = parts[3].parse().map_err(|_| {
+                format!("{path}:{lineno}: bad logical y coordinate `{}`", parts[3])
+            })?;
+            map.entry(frame)
+                .or_default()
+                .push(RecordedInput::MouseMove { x, y });
+            continue;
+        }
         if parts.len() != 3 {
             return Err(format!(
-                "{path}:{lineno}: expected `<frame> <Key|Mouse.Button> <down|up>`, got `{raw}`"
+                "{path}:{lineno}: expected `<frame> <Key|Mouse.Button> <down|up>` or \
+                 `<frame> Mouse.Move <x> <y>`, got `{raw}`"
             ));
         }
         let frame: u64 = parts[0]
@@ -558,6 +596,22 @@ pub enum CursorPolicyArg {
     Visible,
 }
 
+/// Where this runtime's persistent-connection networking goes.
+///
+/// The desktop analog of the web runtime's `window.__functorNetTransport`
+/// (`runtime/functor-runtime-web/src/lib.rs`): natively, "the embedder" is the
+/// process driving the debug server — `functor mcp`'s coordinator.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NetTransportArg {
+    /// Real sockets, via the tungstenite host (`ws_host`). The default.
+    #[default]
+    Sockets,
+    /// No socket is ever opened. The game's drained `ConnCommand`s stay queued
+    /// for `GET /net/outbound`, and inbound events arrive over
+    /// `POST /net/deliver` — so the debug-server CLIENT is the network.
+    Embedder,
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -630,6 +684,15 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = CursorPolicyArg::Captured)]
     cursor: CursorPolicyArg,
 
+    /// Where `Sub.connect` / `Sub.listen` traffic goes: real `sockets`
+    /// (default) or the `embedder` — the process on the other side of the
+    /// debug server, which then drains `GET /net/outbound` and delivers over
+    /// `POST /net/deliver`. `embedder` opens NO socket, which is how
+    /// `functor mcp`'s coordinator runs a whole client/server session inside
+    /// one host process with a readable wire log.
+    #[arg(long, value_enum, default_value_t = NetTransportArg::Sockets)]
+    net_transport: NetTransportArg,
+
     /// Write a PNG of the rendered frame to this path, then exit. The capture
     /// happens on the first frame after --capture-time seconds of wall-clock
     /// time, so assets have a chance to load. Implies --hidden.
@@ -656,11 +719,14 @@ pub struct Args {
     fixed_time: Option<f32>,
 
     /// Drive the game deterministically from a scripted input file instead of
-    /// live window input (docs/time-travel.md T6b). Each line is
+    /// live window input (docs/time-travel.md T6b). Each line is either
     /// `<frame:int> <control> <down|up>` — a KeyName like `Right`, `Up`, `A`,
     /// `Space`, or a mouse button with an explicit `Mouse.` prefix
     /// (`Mouse.Left`, `Mouse.Right`, `Mouse.Middle`; the prefix is required
-    /// because `Left`/`Right`/`Middle` are also key names).
+    /// because `Left`/`Right`/`Middle` are also key names) — or
+    /// `<frame:int> Mouse.Move <x> <y>`. Pointer coordinates are signed LOGICAL
+    /// window points in the same top-left-origin space as `Input.mouse.x/y`,
+    /// not framebuffer pixels; out-of-surface values are preserved.
     /// `#` starts a comment. The sim advances by a FIXED `--script-dt`
     /// per rendered frame (not wall-clock), and each frame's scripted events are
     /// fed before that frame's tick, so frame N is always the same sim state —
@@ -882,11 +948,19 @@ fn deliver_net_ws(
 
 /// Perform the HTTP + WebSocket commands this frame's tick queued. HTTP requests
 /// run on tokio tasks (results return via `net_tx`); WS commands go to the manager.
+///
+/// Under [`NetTransportArg::Embedder`] the connection half is SKIPPED entirely:
+/// the commands stay in the shared queue until the debug server's
+/// `GET /net/outbound` takes them, which is what makes the embedder path cost
+/// nothing per frame beyond the branch — and, more importantly, means no
+/// socket is ever opened. The HTTP half is untouched either way: `Effect.http`
+/// is not connection traffic and has no coordinator to route it.
 fn dispatch_net_ws(
     game: &mut dyn Game,
     net_tx: &std::sync::mpsc::Sender<net_dispatch::NetResult>,
     http_client: &reqwest::Client,
     ws_manager: &mut ws_host::WsManager,
+    net_transport: NetTransportArg,
 ) {
     let commands_json = game.net_drain_commands();
     if commands_json != "[]" {
@@ -907,6 +981,10 @@ fn dispatch_net_ws(
         }
     }
 
+    if net_transport == NetTransportArg::Embedder {
+        return;
+    }
+
     let conn_json = game.net_drain_conn_commands();
     if conn_json != "[]" {
         match serde_json::from_str::<Vec<functor_runtime_common::net::ConnCommand>>(&conn_json) {
@@ -919,6 +997,14 @@ fn dispatch_net_ws(
         }
     }
 }
+
+/// Refusal both embedder-transport endpoints answer under the default socket
+/// transport. Draining there would steal the real dispatcher's commands and
+/// delivering there would inject events no peer sent — so this is a 409, not a
+/// quiet empty answer a coordinator would read as "the game sent nothing".
+const EMBEDDER_TRANSPORT_REQUIRED: &str =
+    "this runtime is on the socket transport — start it with `--net-transport embedder` \
+for the host process to be its network";
 
 /// Service one debug-server request. `capture` produces the PNG (or a
 /// `CaptureError`) for `POST /capture` — a framebuffer readback in the windowed
@@ -956,6 +1042,9 @@ fn service_debug_request(
     // instead of reaching the game. Always `None` in the headless loop, which
     // has no webview overlay.
     mut webview_keyboard: Option<&mut Vec<crate::webview_keys::WebviewKey>>,
+    // Which transport owns the game's connection queues, so `/net/outbound`
+    // and `/net/deliver` refuse rather than fight the real dispatcher.
+    net_transport: NetTransportArg,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) -> bool {
     let mut sampled_input_changed = false;
@@ -1049,6 +1138,39 @@ fn service_debug_request(
                 }
             }
             let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::NetOutbound(resp) => {
+            let _ = resp.send(if net_transport == NetTransportArg::Embedder {
+                Ok(game.net_drain_conn_commands())
+            } else {
+                Err(EMBEDDER_TRANSPORT_REQUIRED.to_string())
+            });
+        }
+        debug_server::DebugRequest::NetDeliver(events, resp) => {
+            let _ = resp.send(if net_transport == NetTransportArg::Embedder {
+                let count = events.len();
+                // Each push folds the event through `update` synchronously
+                // (`deliver_net_event`), so a 200 means the model has already
+                // absorbed the batch — the property the coordinator's
+                // step-ordering relies on.
+                for event in events {
+                    match event {
+                        DeliveredEvent::Connected { key, conn } => game.net_push_connected(key, conn),
+                        DeliveredEvent::Message { key, conn, text } => {
+                            game.net_push_conn_message(key, conn, text)
+                        }
+                        DeliveredEvent::Disconnected { key, conn } => {
+                            game.net_push_disconnected(key, conn)
+                        }
+                        DeliveredEvent::Error { key, conn, message } => {
+                            game.net_push_conn_error(key, conn, message)
+                        }
+                    }
+                }
+                Ok(format!("delivered {count} net event(s)"))
+            } else {
+                Err(EMBEDDER_TRANSPORT_REQUIRED.to_string())
+            });
         }
         debug_server::DebugRequest::Input(cmd, resp) => {
             sampled_input_changed = matches!(
@@ -1188,6 +1310,7 @@ fn run_headless(
     emulate_xr: bool,
     input_script: Option<HashMap<u64, Vec<RecordedInput>>>,
     script_dt: f32,
+    net_transport: NetTransportArg,
 ) {
     // Stderr, not stdout: keep the CLI's `--json` ndjson stream (stdout) clean
     // even under `--headless`. This is an out-of-band notice, not an event.
@@ -1257,6 +1380,8 @@ fn run_headless(
             {
                 apply_scripted_events(
                     &mut *game,
+                    &mut mouse_pos,
+                    emulate_xr,
                     &mut held_keys,
                     &mut held_buttons,
                     &mut input_edges,
@@ -1281,7 +1406,7 @@ fn run_headless(
             game.tick(sub.clone());
             frame_count += 1;
         }
-        dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
+        dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager, net_transport);
 
         // The frame is pure data (no GL); it powers GET /scene. Drain and drop
         // audio commands so they do not pile up. Preloads and physics terrain
@@ -1323,6 +1448,7 @@ fn run_headless(
                     &scene_context,
                     None,
                     None, // no webview overlay in headless
+                    net_transport,
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -1424,6 +1550,22 @@ then restart the runner"
         .debug_port
         .and_then(|port| debug_server::spawn(&args.debug_bind, port, args.debug_port_optional));
 
+    // The embedder transport is only half a network without a debug client:
+    // the drained commands accumulate in an unbounded queue nobody takes, and
+    // no event can ever be delivered. Refusing here turns a silent leak (and a
+    // game whose networking quietly does nothing) into a startup error — and
+    // it deliberately keys on the SERVER, not the flag, so an optional port
+    // that was already taken fails just as loudly.
+    if args.net_transport == NetTransportArg::Embedder && debug_requests.is_none() {
+        eprintln!(
+            "error: --net-transport embedder needs a debug server — the embedder IS the client \
+of `GET /net/outbound` / `POST /net/deliver`, so without one this game's network can never be \
+drained or delivered. Pass --debug-port <PORT> (or drop --net-transport embedder to use real \
+sockets)."
+        );
+        std::process::exit(1);
+    }
+
     // Headless: drive the game + debug server with no GL window, and return.
     if args.headless {
         if args.capture_frame.is_some() {
@@ -1444,6 +1586,7 @@ then restart the runner"
             args.emulate_xr,
             input_script,
             args.script_dt,
+            args.net_transport,
         );
         return;
     }
@@ -2492,6 +2635,8 @@ Escape again to quit"
                     if let Some(events) = script.get(&frame_count) {
                         apply_scripted_events(
                             &mut *game,
+                            &mut game_mouse_pos,
+                            args.emulate_xr,
                             &mut held_keys,
                             &mut held_buttons,
                             &mut input_edges,
@@ -2530,7 +2675,13 @@ Escape again to quit"
 
             // Perform the HTTP + WebSocket commands this frame's tick queued
             // (shared with the headless loop).
-            dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager);
+            dispatch_net_ws(
+                &mut *game,
+                &net_tx,
+                &http_client,
+                &mut ws_manager,
+                args.net_transport,
+            );
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
@@ -3333,6 +3484,7 @@ Escape again to quit"
                         } else {
                             None
                         },
+                        args.net_transport,
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
@@ -3506,6 +3658,54 @@ mod tests {
             map[&9][0],
             RecordedInput::MouseButton { button, is_down: false } if button == Btn::Right as i32
         ));
+    }
+
+    #[test]
+    fn parse_input_script_maps_logical_pointer_motion() {
+        let path = write_tmp(
+            "functor-test-pointer.script",
+            "0 Mouse.Move 400 300\n7 mouse.move -12 640  # outside is preserved\n",
+        );
+        let map = parse_input_script(path.to_str().unwrap()).unwrap();
+
+        assert!(matches!(
+            map[&0][0],
+            RecordedInput::MouseMove { x: 400, y: 300 }
+        ));
+        assert!(matches!(
+            map[&7][0],
+            RecordedInput::MouseMove { x: -12, y: 640 }
+        ));
+    }
+
+    #[test]
+    fn parse_input_script_teaches_pointer_shape_and_coordinate_range() {
+        let short = write_tmp("functor-test-pointer-short.script", "0 Mouse.Move 400\n");
+        let err = parse_input_script(short.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("<frame> Mouse.Move <x> <y>"),
+            "the arity error must teach the pointer line shape: {err}"
+        );
+
+        let non_number = write_tmp(
+            "functor-test-pointer-number.script",
+            "0 Mouse.Move center 300\n",
+        );
+        let err = parse_input_script(non_number.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.contains("bad logical x coordinate `center`"),
+            "the coordinate error must name the bad axis and value: {err}"
+        );
+
+        // The script stores the same i32 coordinates as live/debug input. A
+        // value outside that representable range is rejected at parse time;
+        // negative or merely out-of-surface i32 values remain valid.
+        let out_of_range = write_tmp(
+            "functor-test-pointer-range.script",
+            "0 Mouse.Move 2147483648 300\n",
+        );
+        let err = parse_input_script(out_of_range.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("bad logical x coordinate `2147483648`"));
     }
 
     /// `Left`/`Right`/`Middle` name a KEY and a MOUSE BUTTON. The `Mouse.`

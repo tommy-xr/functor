@@ -116,7 +116,7 @@ screenshot run has no reason to grab your mouse.
 | `POST /capture` | PNG (`image/png`) of the next rendered frame |
 | `GET /state` | runtime state JSON: `frame`, `tts`, `model_revision` + `pending_net` (protocol v10 — see below), combined/legacy `viewport`, `views` (`main` on desktop; `left` + `right` on Quest), `input` (keyboard/mouse held + pressed/released sets and optional typed device domains), `model` (structured JSON — see below), `model_debug` (Rust `Debug` text) |
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
-| `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
+| `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Each invocation carries its returned value both as text (`result`, `result_preview`) and as STRUCTURE (`result_json`, the same grammar as `/state`'s `model` — so a client can tree it instead of parsing a rendering), under a 1 MiB budget shared by the document's structured results (the `result`/`preview` TEXT is not bounded by it): a value that would exceed the remaining budget is emitted as `{"$truncated": "trace budget"}` with `result_json_truncated: true` on that invocation, and the first refusal spends the rest of the budget. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
 | `POST /time` | control the frame clock (see below) |
 | `POST /reload-source` | swap game logic from the request body (see below) |
@@ -126,6 +126,8 @@ screenshot run has no reason to grab your mouse.
 | `POST /reload-asset` | upload one project-relative texture/model/audio asset as a binary path+bytes envelope |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
+| `GET /net/outbound` | **embedder transport only** — take-and-consume the game's queued `ConnCommand`s (see below) |
+| `POST /net/deliver` | **embedder transport only** — deliver inbound network events into the game (see below) |
 
 ### `model` in `GET /state`
 
@@ -309,13 +311,21 @@ regression capture — use `--input-script <file>` instead: the runner replays t
 file against a fixed `--script-dt` per frame, so frame N is always the same sim
 state, and `--capture-at-frame N` grabs a byte-identical still every time.
 
-Each non-blank line is `<frame> <control> <down|up>`; `#` starts a comment.
-A `<control>` is either a KEY name (`Right`, `Up`, `A`, `Space` — the same
-`Key::from_name` spelling `POST /input` uses) or a MOUSE BUTTON written with an
-explicit `Mouse.` prefix:
+Each non-blank line is one of these two forms; `#` starts a comment:
+
+```text
+<frame> <Key|Mouse.Button> <down|up>
+<frame> Mouse.Move <x> <y>
+```
+
+A control is either a KEY name (`Right`, `Up`, `A`, `Space` — the same
+`Key::from_name` spelling `POST /input` uses), a MOUSE BUTTON written with an
+explicit `Mouse.` prefix, or the special `Mouse.Move` pointer form:
 
 ```
 0  Right       down     # hold the right arrow key from frame 0
+0  Mouse.Move  400 300  # establish the pointer at a logical point
+1  Mouse.Move  560 220  # aim by moving before this frame's tick
 4  Mouse.Left  down     # press and hold the left mouse button
 28 Mouse.Left  up
 ```
@@ -330,13 +340,28 @@ updates for later `sampledInput` steps, so holding one scripts full-auto fire
 The scripted transition also appears once in `mouse.pressed` or
 `mouse.released` on that frame's sampled snapshot.
 
+`Mouse.Move` coordinates are signed **logical points** with a top-left origin,
+in exactly the same space as `Input.mouse.x` / `.y` and the debug state's
+`input.mouse.surface_width` / `surface_height`. They are not framebuffer
+pixels: on a Retina window the logical surface may be 800×600 while `viewport`
+is 1600×1200. Motion is delivered before the named frame's `sampledInput` and
+`tick`, and the new position is carried into that sampled snapshot and replay
+history.
+
+With `--emulate-xr`, the position drives the synthesized controller sample and
+does not also invoke the legacy `mouseMove` hook, matching `POST /input`.
+
+Scripts and `POST /input` intentionally preserve negative and out-of-surface
+coordinates instead of rejecting them. Native pointer events can report the
+same transient values, and clamping only one injection path would make replay
+diverge from live input. A mapping API such as `Camera3D.toWorldRay` therefore
+continues to return `None` outside the half-open logical surface; drivers can
+read the published surface extent and choose or validate an in-range point.
+
 A `Mouse.* up` with no preceding press is a **parse error**, not a silently
 dropped line: live playback would suppress it while the forward-step trajectory
 preview would replay it, so a stray release is rejected rather than allowed to
 make the preview and the real run disagree.
-
-Pointer MOTION is not scriptable yet — `mouse_move` is injection-only, since it
-needs a two-coordinate line shape rather than this `<control> <down|up>` triple.
 
 ### Sampled input in `GET /state`
 
@@ -356,6 +381,8 @@ clients should treat absent edge arrays/button sets as empty.
   "mouse": {
     "x": 0,
     "y": 0,
+    "surface_width": 800,
+    "surface_height": 600,
     "buttons": { "left": false, "right": false, "middle": false },
     "pressed": { "left": false, "right": false, "middle": false },
     "released": { "left": false, "right": false, "middle": false }
@@ -412,6 +439,12 @@ clients should treat absent edge arrays/button sets as empty.
   }
 }
 ```
+
+`surface_width` and `surface_height` were added in debug protocol v7. They are
+the logical pointer surface in the same coordinate space as `x` and `y`, not
+the framebuffer dimensions in top-level `viewport` (which are `0×0` in
+headless mode). A client that needs resize-correct pointer mapping must require
+v7 or newer rather than infer the logical extent from `viewport`.
 
 Tracked poses use OpenXR's rig-local convention: +X right, +Y up, -Z forward;
 quaternions are `[x, y, z, w]`. Head and controller poses are relative to the
@@ -550,6 +583,65 @@ are excluded — by file name. A producer whose logic is not source-shaped
 (`--replay`) answers **501**, and a pre-v5 runtime answers **404**.
 
 `functor mcp`'s `save_project` tool is built on it (docs/mcp.md).
+
+### The embedder transport (protocol v11)
+
+A runtime started with `--net-transport embedder` opens **no socket**. Its
+persistent-connection traffic — everything `Sub.listen`, `Sub.connect`,
+`Effect.send` and `Effect.close` produce — stays queued for the debug client,
+and inbound events arrive from it. **The client is the network.** The default is
+unchanged (`--net-transport sockets`): the runner dispatches to the real
+tungstenite host exactly as before, and both endpoints below answer **409**,
+because draining there would steal the real dispatcher's commands and
+delivering there would inject events no peer sent.
+
+This is the native half of the seam the web runtime already has
+(`window.__functorNetTransport = "embedder"`, and the browser coordinator in
+`site/src/net-coordinator.ts`). Natively, "the embedder" is whatever process
+drives the debug server — for `functor mcp`'s session groups, that is the MCP
+host itself (docs/mcp.md).
+
+**`GET /net/outbound`** returns and CONSUMES the queued commands, as the
+versioned `ConnCommand` JSON every host consumes (serde's externally-tagged
+representation, byte payloads included):
+
+```jsonc
+[ {"Listen":  {"key":"127.0.0.1:9101","addr":"127.0.0.1:9101"}},
+  {"Connect": {"key":"ws://127.0.0.1:9101/orbs","url":"ws://127.0.0.1:9101/orbs"}},
+  {"Send":    {"conn":1,"payload":[102,117,110,58]}},
+  {"CloseConn": {"conn":1}},
+  {"CloseKey":  {"key":"127.0.0.1:9101"}} ]
+```
+
+**`POST /net/deliver`** takes a JSON array of events, the shape mirroring the
+four producer push methods one-for-one (`key` is the routing key of the
+`connect`/`listen` the event belongs to; a message is TEXT, as a real WebSocket
+hands it over):
+
+```jsonc
+[ {"kind":"connected",    "key":"ws://127.0.0.1:9101/orbs","conn":1},
+  {"kind":"message",      "key":"ws://127.0.0.1:9101/orbs","conn":1,"text":"hi"},
+  {"kind":"disconnected", "key":"ws://127.0.0.1:9101/orbs","conn":1},
+  {"kind":"error",        "key":"ws://127.0.0.1:9101/orbs","conn":1,"message":"…"} ]
+```
+
+The two directions use different shapes on purpose: egress is the already
+versioned logic↔shell type, and ingress mirrors the push methods it feeds. A
+negative `conn` is a **400** (it would reach the game as `u64::MAX`), and so is
+a malformed batch — neither reaches the runtime loop.
+
+Delivery is **synchronous**: each event folds through `update` before the
+response, so a `200` means the model has already absorbed the batch. That is
+what lets a driver route a packet and then step, and know the step saw it.
+`pending_net` therefore stays 0 on this transport — nothing waits in a shell
+channel.
+
+`--net-transport embedder` without `--debug-port` is refused at startup: with no
+client there is nothing to drain the queue or deliver into it, so the game's
+network would silently be a black hole with an unbounded backlog behind it.
+
+The device runtime answers 409 for both: a Quest session's network is a real
+socket to a real peer, with no coordinator behind adb.
 
 ### Project asset sync
 

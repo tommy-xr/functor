@@ -98,6 +98,18 @@ fn sources_json(sources: &[InspectorSource]) -> Vec<serde_json::Value> {
 /// of their args, so the record is exact, and effects are plain data (nothing
 /// performs), so replay is side-effect-free. `index`/`count` frame each call
 /// within its entry name; binding spans map to `(file, local offsets)`.
+///
+/// Each invocation also carries its result as STRUCTURE (`result_json`, the
+/// `/state` grammar — [`crate::functor_lang_prelude::value_to_json`]) beside
+/// the `Display` text, so a consumer can tree it instead of re-parsing a
+/// rendering that was never specified as a format. The recorder still owns no
+/// `Value`s and nothing is retained per frame: the result is live *here*,
+/// returned by the replay call this function already makes. Bindings stay
+/// text-only for the same reason inverted — their values exist only inside the
+/// recorder, and a project's binding sites all observing one model would
+/// multiply the doc by the site count for a surface whose full `value` string
+/// is already untruncated. See [`MAX_TRACE_VALUE_JSON_BYTES`] for the size
+/// discipline.
 fn build_invocations(
     journal: &[JournalEntry],
     draw: Option<(&str, &[Value])>,
@@ -119,29 +131,31 @@ fn build_invocations(
     // takes as its own, shifting every slot).
     let _mute = functor_lang::suppress_trace();
     let saved_handlers = crate::functor_lang_prelude::take_ui_handlers();
+    // The replayed RESULT is kept, not discarded: it is a live `Value` right
+    // here, so the structured `result_json` costs nothing per frame (this whole
+    // function runs on pause only) and needs no retention anywhere else.
     let mut replayed = Vec::with_capacity(journal.len() + 1);
     for e in journal {
-        if let Ok((_discard, inv)) = session.call_recorded(e.entry, e.args.clone(), &mut FunctorHost)
-        {
-            replayed.push((e.entry, Provenance::render(&e.provenance, &e.args), inv));
+        if let Ok((result, inv)) = session.call_recorded(e.entry, e.args.clone(), &mut FunctorHost) {
+            replayed.push((e.entry, Provenance::render(&e.provenance, &e.args), inv, result));
         }
     }
     if let Some((draw_name, args)) = draw {
-        if let Ok((_discard, inv)) =
-            session.call_recorded(draw_name, args.to_vec(), &mut FunctorHost)
+        if let Ok((result, inv)) = session.call_recorded(draw_name, args.to_vec(), &mut FunctorHost)
         {
-            replayed.push((draw_name, Provenance::Draw.render(args), inv));
+            replayed.push((draw_name, Provenance::Draw.render(args), inv, result));
         }
     }
     let _replay_pushed = crate::functor_lang_prelude::take_ui_handlers();
     crate::functor_lang_prelude::restore_ui_handlers(saved_handlers);
     let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (entry, _, _) in &replayed {
+    for (entry, _, _, _) in &replayed {
         *counts.entry(entry).or_default() += 1;
     }
     let mut seen: HashMap<&str, usize> = HashMap::new();
     let mut out = Vec::with_capacity(replayed.len());
-    for (entry, provenance, inv) in &replayed {
+    let mut budget = MAX_TRACE_VALUE_JSON_BYTES;
+    for (entry, provenance, inv, result) in &replayed {
         let index = {
             let c = seen.entry(entry).or_default();
             let i = *c;
@@ -174,6 +188,7 @@ fn build_invocations(
                 })
             })
             .collect();
+        let (result_json, result_json_truncated) = budgeted_value_json(result, &mut budget);
         out.push(serde_json::json!({
             "entry": entry,
             "index": index,
@@ -182,6 +197,8 @@ fn build_invocations(
             "ghost": false,
             "result": inv.result,
             "result_preview": inv.result_preview,
+            "result_json": result_json,
+            "result_json_truncated": result_json_truncated,
             "truncated": inv.truncated,
             "bindings": bindings,
         }));
@@ -190,11 +207,60 @@ fn build_invocations(
     // collected it, draw included) — merged and deduped for coverage_json.
     let mut frame_coverage: Vec<usize> = replayed
         .iter()
-        .flat_map(|(_, _, inv)| inv.coverage.iter().copied())
+        .flat_map(|(_, _, inv, _)| inv.coverage.iter().copied())
         .collect();
     frame_coverage.sort_unstable();
     frame_coverage.dedup();
     (out, frame_coverage)
+}
+
+/// The trace document's budget for the STRUCTURED invocation results
+/// (`result_json`) it carries, in bytes of serialized JSON.
+///
+/// It bounds exactly that — not the whole document, which already carries the
+/// untruncated `Display` text of every result and every binding site and has no
+/// cap of its own. What it buys is that the *structured* copy, which a single
+/// trace repeats once per invocation (`tick` and each `update` return the
+/// model), cannot multiply a world-snapshot model by the invocation count.
+///
+/// A shared budget rather than a per-value one: values are serialized in frame
+/// order and charged against it, and one that does not fit carries
+/// `{"$truncated": "trace budget"}` with `"result_json_truncated": true` on its
+/// invocation — visible, never silent, and the consumer still has that
+/// invocation's `result` / `result_preview` text to show instead. The first
+/// refusal SPENDS the rest of the budget, so a model too big to ship is walked
+/// and serialized at most once per trace build rather than once per invocation.
+///
+/// 1 MiB is chosen against the RELAY: the web producer publishes this document
+/// as one string through a wasm export that the page forwards as a
+/// `postMessage`. A megabyte of structured values is inspectable and cheap at
+/// pause cadence; ten is a stutter the reader never asked for. Depth is bounded
+/// separately and already: [`value_to_json`] caps at `VALUE_JSON_MAX_DEPTH`
+/// containers.
+const MAX_TRACE_VALUE_JSON_BYTES: usize = 1024 * 1024;
+
+/// Serialize one value for the trace, charging `remaining`. Returns the JSON
+/// and whether it was refused for budget.
+fn budgeted_value_json(value: &Value, remaining: &mut usize) -> (serde_json::Value, bool) {
+    let refused = || (serde_json::json!({ "$truncated": "trace budget" }), true);
+    // Nothing left: refuse WITHOUT walking the value. This is what keeps a
+    // model too large for the budget from being converted and serialized once
+    // per invocation — it is paid once, by the value that exhausted it.
+    if *remaining == 0 {
+        return refused();
+    }
+    let json = crate::functor_lang_prelude::value_to_json(value);
+    // Measure what would actually go on the wire. `to_string` here is the same
+    // work `serde_json::json!` does when the doc is stringified — paid twice
+    // for the values that fit, which at pause cadence is not a cost worth
+    // designing around.
+    let size = serde_json::to_string(&json).map(|s| s.len()).unwrap_or(usize::MAX);
+    if size > *remaining {
+        *remaining = 0;
+        return refused();
+    }
+    *remaining -= size;
+    (json, false)
 }
 
 /// The wire strings for the recorder's site/kind enums.
@@ -520,6 +586,50 @@ mod tests {
             "reference sites reach the wire: {binds:#?}"
         );
         assert!(binds.iter().any(|b| b["name"] == "dt" && b["site"] == "ref"));
+    }
+
+    #[test]
+    fn invocation_results_carry_structure_beside_the_text() {
+        let (session, model, sources) = session_and_sources();
+        let journal = vec![JournalEntry {
+            entry: "tick",
+            args: vec![model, Value::Number(0.25), Value::Number(1.0)],
+            provenance: Provenance::Tick,
+        }];
+        let doc: serde_json::Value = serde_json::from_str(&build_trace_doc(
+            true, 1, 0.25, &sources, &journal, None, &session,
+        ))
+        .unwrap();
+        let tick = &doc["invocations"][0];
+        // The structured copy is the `/state` grammar — a record is a plain
+        // JSON object — and it agrees with the Display text it travels beside.
+        assert_eq!(tick["result_json"], serde_json::json!({ "n": 0.25 }));
+        assert_eq!(tick["result_json_truncated"], serde_json::json!(false));
+        assert!(tick["result"].is_string());
+    }
+
+    #[test]
+    fn a_value_over_the_budget_is_marked_not_dropped() {
+        // The budget is shared across the doc: a value that does not fit is
+        // replaced by a VISIBLE marker (and flagged), never silently omitted.
+        let mut remaining = 16;
+        // A value that fits is emitted whole and charges its own bytes.
+        let (json, truncated) = budgeted_value_json(&Value::Number(1.0), &mut remaining);
+        assert!(!truncated);
+        assert_eq!(json, serde_json::json!(1.0));
+        assert_eq!(remaining, 16 - "1.0".len());
+
+        let big = Value::List(Rc::new((0..1000).map(|i| Value::Number(i as f64)).collect()));
+        let (json, truncated) = budgeted_value_json(&big, &mut remaining);
+        assert!(truncated);
+        assert_eq!(json, serde_json::json!({ "$truncated": "trace budget" }));
+        // The refusal SPENDS the rest: whatever follows is refused without
+        // being walked, so an unshippable model costs one conversion per trace
+        // build rather than one per invocation.
+        assert_eq!(remaining, 0);
+        let (json, truncated) = budgeted_value_json(&Value::Number(1.0), &mut remaining);
+        assert!(truncated);
+        assert_eq!(json, serde_json::json!({ "$truncated": "trace budget" }));
     }
 
     #[test]

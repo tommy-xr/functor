@@ -462,7 +462,9 @@ pub enum RecordedInput {
     /// A keyboard event carrying the raw `Key as i32` code (not the resolved
     /// `Key`), so replay re-runs `Key::from_i32` exactly as the live path does.
     Key { code: i32, is_down: bool },
-    /// A pointer position in window pixels.
+    /// A pointer position in logical window points (GLFW points natively, CSS
+    /// pixels on web), matching `Input.mouse.x` / `.y` rather than framebuffer
+    /// pixels.
     MouseMove { x: i32, y: i32 },
     /// A wheel notch (±1 per notch).
     MouseWheel { delta: i32 },

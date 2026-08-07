@@ -17,7 +17,17 @@
 // Pure and DOM-free on purpose: this is the part worth reasoning about, and it
 // is the part a reader will not want to open a browser to check.
 
-/** The serde shape of `functor_runtime_common::functor_lang_prelude::EffectValue`. */
+/**
+ * The serde shape of `functor_runtime_common::functor_lang_prelude::EffectValue`.
+ *
+ * `Opaque` is the member the wire has no legitimate use for: it is what a value
+ * that only exists inside a running program — a closure, a host handle, a value
+ * the producer had to truncate — becomes when the paused inspector's trace is
+ * converted into this shape (`fromValueJson`). It renders as its own text, with
+ * no quotes and no children: there is nothing behind it to open. A game that
+ * hand-writes one into a frame therefore gets unquoted text in a wire row,
+ * which is no more than a plain `Effect.send` string already does.
+ */
 export type WireValue =
   | { Number: number }
   | { Bool: boolean }
@@ -26,7 +36,8 @@ export type WireValue =
   | { Map: [WireKey, WireValue][] }
   | { Tuple: WireValue[] }
   | { Record: [string, WireValue][] }
-  | { Variant: [string, WireValue[]] };
+  | { Variant: [string, WireValue[]] }
+  | { Opaque: string };
 
 type WireKey = { Bool: boolean } | { Number: number } | { Text: string };
 
@@ -125,6 +136,9 @@ const render = (value: WireValue, depth: number, full: boolean): string => {
   if ("Number" in value) return num(value.Number);
   if ("Bool" in value) return String(value.Bool);
   if ("Text" in value) return str(value.Text, full);
+  // Bare, never quoted: `<fn(dt)>` is not a string the program holds, it is a
+  // description of something that is not data.
+  if ("Opaque" in value) return String(value.Opaque);
   if ("List" in value && Array.isArray(value.List)) {
     if (deep) return value.List.length ? `[…${value.List.length}]` : "[]";
     const shown = take(value.List).map((item) => render(item, depth + 1, full));
@@ -221,3 +235,70 @@ export function fullWire(wire: string | undefined): string {
   const rendered = value ? render(value, 0, true) : raw;
   return rendered.length <= MAX_FULL ? rendered : `${rendered.slice(0, MAX_FULL)}…`;
 }
+
+// --- The paused inspector's values --------------------------------------------
+//
+// The trace relay carries a second value grammar, and deliberately so. Wire
+// payloads are `EffectValue` — the plain-data SUBSET, which is exactly right
+// for something that has to cross a socket. A trace value is whatever the game
+// happened to return, closures and host handles included, so the runtime ships
+// it through `functor_lang_prelude::value_to_json` (the same total, lossy view
+// `/state` gives the model, protocol v4): plain JSON with sigil objects for the
+// things JSON has no spelling for — `{"$ctor":…}`, `{"$tuple":…}`, `{"$map":…}`,
+// `{"$fn":…}`, `{"$host":…}`, `{"$number":"NaN"}`, `{"$truncated":…}`.
+//
+// Rather than teach the tree a second grammar, the two meet HERE: one
+// conversion into `WireValue`, and every renderer downstream (summarize,
+// childrenOf, the tree) stays single-grammar. Note the asymmetry the sigils
+// force — a record field literally named `$ctor` would be read as a variant.
+// That is the format's, not this function's: `value_to_json` is documented as
+// one-way with deliberately no parser back, and this is a viewer.
+
+/** The `value_to_json` grammar: plain JSON, with sigil objects. */
+export type ValueJson = unknown;
+
+const opaque = (text: string): WireValue => ({ Opaque: text });
+
+/** Convert one `value_to_json` node into the shape the tree renders.
+ *
+ * TOTAL, like everything else here: the input is a running game's data relayed
+ * through a postMessage, and this runs inside the page's own event loop. */
+export const fromValueJson = (json: ValueJson): WireValue => {
+  if (typeof json === "number") return { Number: json };
+  if (typeof json === "string") return { Text: json };
+  if (typeof json === "boolean") return { Bool: json };
+  if (Array.isArray(json)) return { List: json.map(fromValueJson) };
+  if (typeof json !== "object" || json === null) return opaque(String(json));
+  const obj = json as Record<string, unknown>;
+  if ("$fn" in obj) return opaque(String(obj.$fn));
+  if ("$host" in obj) return opaque(`<${String(obj.$host)}>`);
+  if ("$number" in obj) return opaque(String(obj.$number));
+  if ("$truncated" in obj) return opaque(`… (${String(obj.$truncated)})`);
+  if ("$tuple" in obj && Array.isArray(obj.$tuple)) {
+    return { Tuple: obj.$tuple.map(fromValueJson) };
+  }
+  if ("$ctor" in obj) {
+    const args = Array.isArray(obj.args) ? obj.args.map(fromValueJson) : [];
+    return { Variant: [String(obj.$ctor), args] };
+  }
+  if ("$map" in obj && Array.isArray(obj.$map)) {
+    return {
+      Map: obj.$map.map((entry) => {
+        const pair = Array.isArray(entry) ? entry : [];
+        return [asKey(fromValueJson(pair[0])), fromValueJson(pair[1])];
+      }),
+    };
+  }
+  return { Record: Object.entries(obj).map(([k, v]) => [k, fromValueJson(v)]) };
+};
+
+/** A converted map key, narrowed to what a key can be — anything else (only
+ * reachable from a malformed relay) becomes its own label. */
+const asKey = (value: WireValue): WireKey => {
+  if (typeof value === "object" && value !== null) {
+    if ("Text" in value) return { Text: value.Text };
+    if ("Number" in value) return { Number: value.Number };
+    if ("Bool" in value) return { Bool: value.Bool };
+  }
+  return { Text: summarize(value) };
+};
