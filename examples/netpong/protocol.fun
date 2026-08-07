@@ -13,15 +13,16 @@ type Phase =
 
 type Point = { x: float, y: float }
 
+// The whole world, every 50 ms. `seq` is the only bookkeeping: a client
+// compares it and drops anything that is not newer. Nothing here is a delta,
+// and nothing is here that the renderer does not draw — the ball's VELOCITY
+// stays server-side, because this client extrapolates nothing.
 type Snapshot = {
   seq: float,
-  serverTime: float,
   leftY: float,
   rightY: float,
   ballX: float,
   ballY: float,
-  ballVx: float,
-  ballVy: float,
   leftScore: float,
   rightScore: float,
   phase: Phase,
@@ -52,13 +53,10 @@ let point = (x: float, y: float): Point => { x: x, y: y }
 
 let initialSnapshot = (): Snapshot => {
   seq: 0.0,
-  serverTime: 0.0,
   leftY: 0.0,
   rightY: 0.0,
   ballX: 0.0,
   ballY: 0.0,
-  ballVx: -9.0,
-  ballVy: 4.2,
   leftScore: 0.0,
   rightScore: 0.0,
   phase: Serving(2.2),

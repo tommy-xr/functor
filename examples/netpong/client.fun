@@ -18,9 +18,11 @@
 // What this file owns is presentation, not truth. `target` is the newest
 // server snapshot; `render` is what you actually see. `tick` moves the local
 // paddle IMMEDIATELY off local input (prediction — no round trip), eases it
-// back toward the server's copy (reconciliation), and interpolates the remote
-// paddle and the ball between the 20 Hz snapshots. Both are ordinary model
-// data, so the inspector and time travel can read the divergence.
+// back toward the server's copy (a soft correction), and eases the remote
+// paddle and the ball toward each new 20 Hz snapshot instead of snapping to
+// it. Both are ordinary model data, so the inspector and time travel can read
+// the divergence — and the render is deliberately a hair BEHIND truth, which
+// is what buys the smoothness.
 
 type ConnState = | Offline | Online(id: float)
 
@@ -29,7 +31,7 @@ type Model = {
   seat: float,             // which paddle the server handed us; -1 = unseated
   status: string,
   target: Protocol.Snapshot,   // the newest server truth
-  render: Protocol.Snapshot,   // what is drawn: predicted + interpolated
+  render: Protocol.Snapshot,   // what is drawn: predicted + smoothed
   axis: float,             // held steering, -1/0/+1, echoed to the server
   autopilot: bool,
   intentSeq: float,        // OUR sequence, so the server drops stale intents
@@ -60,7 +62,11 @@ let toMsg = (ev: Net.NetEvent): Msg =>
 
 let update = (m: Model, msg: Msg) =>
   match msg with
-  | Joined(id) => ({ m with conn: Online(id), status: "CONNECTED", sendClock: 0.0 },
+  // A new connection is a new sequence namespace: a restarted server counts
+  // from zero again, so carrying the old high-water mark over would make every
+  // snapshot of the new match look stale and freeze the screen.
+  | Joined(id) => ({ m with conn: Online(id), status: "CONNECTED", sendClock: 0.0,
+                            lastSnapshotSeq: -1.0 },
                    Effect.sendMsg(id, Protocol.PaddleIntent(m.intentSeq, m.axis)))
   | Packet(_, wire) =>
       (match wire with
@@ -73,7 +79,10 @@ let update = (m: Model, msg: Msg) =>
            else m
        | _ => m)
   | Dropped => { m with conn: Offline, seat: -1.0, status: "RECONNECTING" }
-  | ConnErr(message) => { m with conn: Offline, status: Text.concat("NET ERROR: ", message) }
+  // Report the error, but do NOT tear the connection down: a failed dial is
+  // already Offline (and `Sub.connect` is retrying), while a corrupt frame
+  // arrives as an error on a link that is still perfectly up.
+  | ConnErr(message) => { m with status: Text.concat("NET ERROR: ", message) }
 
 // One declarative line is the whole transport. `Sub.connect` keeps the
 // connection up: dial before the server exists, or restart the server
@@ -112,10 +121,15 @@ let autoAxis = (m: Model): float =>
 // The heart of the sample: `target` (server truth) -> `render` (what you see).
 // OUR paddle is predicted — it moves this frame off local input, then eases
 // toward the server's copy so a correction is a slide, not a snap. Everything
-// else is interpolated toward the target. A phase change or a score means the
-// world DISCONTINUED, so ball and trail snap instead of sweeping across the
-// court through positions that never happened.
-let smooth = (m: Model, dt: float, axis: float): Protocol.Snapshot =>
+// else eases toward the target as well: exponential smoothing on the newest
+// snapshot, not a two-snapshot time-buffered interpolator, so the render
+// trails truth by a fraction of a snapshot and never overshoots it. A phase
+// change or a score means the world DISCONTINUED, so ball and trail snap
+// instead of sweeping across the court through positions that never happened.
+let smooth = (m: Model, rawDt: float, axis: float): Protocol.Snapshot =>
+  // Bound the step exactly as the server bounds its own: a frame hitch must
+  // not predict our paddle further than the authority will ever move it.
+  let dt = Math.clamp(0.0, 0.05, rawDt) in
   let k = Math.clamp(0.0, 1.0, dt * 13.0) in
   let predictedLeft =
     if m.seat == 0.0
@@ -140,10 +154,11 @@ let smooth = (m: Model, dt: float, axis: float): Protocol.Snapshot =>
                |> List.take(15.0)
              else m.target.trail }
 
-// Render every frame; send at 20 Hz. Subtracting the interval (rather than
-// zeroing the clock) keeps the leftover, so the cadence doesn't drift with the
-// frame rate — but while offline the clock is capped at one interval, or a
-// long disconnect would burst a queue of intents the moment it reconnects.
+// Render every frame; send at 20 Hz. Keeping the leftover (rather than zeroing
+// the clock) stops the cadence drifting with the frame rate; taking it modulo
+// the interval also collapses a backlog, because an intent is a held LEVEL, not
+// an event that has to be replayed. Offline the clock is pinned at one interval
+// for the same reason: a long disconnect must not burst on reconnect.
 let tick = (m: Model, dt: float, tts: float) =>
   let axis = if m.autopilot then autoAxis(m) else m.axis in
   let nextClock = m.sendClock + dt in
@@ -152,9 +167,9 @@ let tick = (m: Model, dt: float, tts: float) =>
     match m.conn with
     | Online(id) =>
         let seq = m.intentSeq + 1.0 in
-        ({ next with sendClock: nextClock - 0.05, intentSeq: seq },
+        ({ next with sendClock: Math.mod(nextClock, 0.05), intentSeq: seq },
          Effect.sendMsg(id, Protocol.PaddleIntent(seq, axis)))
-    | Offline => { next with sendClock: Math.min(0.05, nextClock) }
+    | Offline => { next with sendClock: 0.05 }
   else next
 
 let draw = (m: Model, tts: float): Frame.t => Game.view(m.render, m.status, m.seat, m.autopilot)

@@ -13,7 +13,9 @@
 //      surfaces the failure, then retries into a seat and advancing snapshots,
 //      in the same process (no relaunch);
 //   2. restarting only the server does the same again: the client sees the
-//      disconnect, loses its seat, and the SAME process rejoins;
+//      disconnect, loses its seat, and the SAME process rejoins — adopting the
+//      restarted server's fresh snapshot sequence rather than waiting out the
+//      old one;
 //   3. two clients take seats 0 and 1 from the authority;
 //   4. real key input at a client reaches the server as a sequenced
 //      `PaddleIntent` on that client's own seat — nobody steers a paddle they
@@ -31,20 +33,37 @@
 //
 // Set FUNCTOR_BIN when the build uses a shared CARGO_TARGET_DIR.
 import assert from "node:assert/strict";
-import net from "node:net";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { BIN as runner, ROOT, portIsBound, sleep, waitForPort } from "./mcp-rpc.mjs";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const GAME_DIR = resolve(ROOT, "examples/netpong");
-const runner = process.env.FUNCTOR_BIN ?? resolve(ROOT, "target/debug/functor");
 const basePort = Number(process.env.NETPONG_DEBUG_PORT ?? 8318);
-// The sample's own listener, from `Protocol.bind` — real WebSocket traffic.
+// The sample's own listener, from `Protocol.bind` — real WebSocket traffic. It
+// is baked into the .fun, so unlike the debug ports it cannot be moved.
 const GAME_PORT = 9108;
 const children = [];
 
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+// Fixed ports mean a leftover process from a crashed run — or a hand-launched
+// `functor -d examples/netpong run native --entry server` — would be mistaken
+// for the server this test starts. Fail loudly instead of asserting against
+// somebody else's game.
+for (const port of [GAME_PORT, basePort, basePort + 1, basePort + 2]) {
+  if (await portIsBound(port)) {
+    console.error(`port ${port} is already in use — kill the process on it first`);
+    process.exit(1);
+  }
+}
+
+/** Wait until nothing is listening on `port` — a killed server must release
+ *  its listener before the replacement can bind it. */
+const waitPortFree = async (port, timeoutMs = 15000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (await portIsBound(port)) {
+    if (Date.now() > deadline) throw new Error(`port ${port} never freed`);
+    await sleep(100);
+  }
+};
 
 const start = (entry, port) => {
   const child = spawn(runner, [
@@ -94,13 +113,6 @@ const waitDebug = (port) => waitFor(`debug port ${port}`, async () => {
   return state.frame > 0 ? state : false;
 });
 
-const waitSocket = (port) => waitFor(`websocket listener ${port}`, () =>
-  new Promise((done) => {
-    const socket = net.createConnection({ host: "127.0.0.1", port });
-    socket.once("connect", () => { socket.destroy(); done(true); });
-    socket.once("error", () => done(false));
-  }));
-
 const ctor = (value) => value?.$ctor;
 
 try {
@@ -118,7 +130,7 @@ try {
   const connectBeforeListenStartedAt = Date.now();
   let server = start("server", basePort);
   await waitDebug(basePort);
-  await waitSocket(GAME_PORT);
+  await waitForPort(GAME_PORT);
 
   const firstLive = await waitFor("original client to reconnect after listener starts", async () => {
     const state = await getState(basePort + 1);
@@ -131,10 +143,12 @@ try {
     const state = await getState(basePort + 1);
     return state.model.lastSnapshotSeq > firstLiveSeq ? state : false;
   });
-  assert.equal(clientA.pid, clientAPid);
+  assert.equal(clientA.exitCode, null, "client A is still the original live process");
 
   // Restart only the authoritative server. The same original client must
-  // observe the disconnect, retry, receive a fresh seat, and resume snapshots.
+  // observe the disconnect, retry, receive a fresh seat, and resume snapshots —
+  // on the RESTARTED server's sequence, which counts from zero again.
+  const seqBeforeKill = (await getState(basePort + 1)).model.lastSnapshotSeq;
   server.kill("SIGTERM");
   await new Promise((done) => server.once("exit", done));
   const disconnected = await waitFor("original client to observe server shutdown", async () => {
@@ -143,16 +157,25 @@ try {
       && ctor(state.model.conn) === "Offline" ? state : false;
   });
   assert.equal(disconnected.model.seat, -1);
+  await waitPortFree(GAME_PORT);
   const serverRestartStartedAt = Date.now();
   server = start("server", basePort);
   await waitDebug(basePort);
-  await waitSocket(GAME_PORT);
+  await waitForPort(GAME_PORT);
   const liveAfterServerRestart = await waitFor("original client after server restart", async () => {
     const state = await getState(basePort + 1);
-    return state.model.status === "LIVE" && state.model.lastSnapshotSeq > firstLiveSeq
+    return state.model.status === "LIVE" && state.model.lastSnapshotSeq >= 1
       && (state.model.seat === 0 || state.model.seat === 1) ? state : false;
   });
   const serverRestartMs = Date.now() - serverRestartStartedAt;
+  // The point of the reset: the client goes LIVE again on a seq BELOW the one
+  // it held before the kill. Carrying the old high-water mark over would make
+  // it wait out the whole old count before drawing anything.
+  assert.ok(
+    liveAfterServerRestart.model.lastSnapshotSeq < seqBeforeKill,
+    `reconnect must adopt the restarted server's fresh sequence ` +
+      `(${liveAfterServerRestart.model.lastSnapshotSeq} < ${seqBeforeKill})`
+  );
   const restartedServer = await getState(basePort);
   assert.equal(restartedServer.model.players.length, 1);
   assert.equal(restartedServer.model.players[0].seat, liveAfterServerRestart.model.seat);
@@ -161,7 +184,7 @@ try {
     const state = await getState(basePort + 1);
     return state.model.lastSnapshotSeq > restartLiveSeq ? state : false;
   });
-  assert.equal(clientA.pid, clientAPid);
+  assert.equal(clientA.exitCode, null, "client A is still the original live process");
 
   let clientB = start("client", basePort + 2);
   await waitDebug(basePort + 2);
@@ -194,11 +217,15 @@ try {
   assert.ok(intentSeen.model.players.find((p) => p.seat === clientASeat).intentSeq > 0);
 
   // Client A is still holding `S`, so its paddle sits low and a real rally
-  // scores. Both clients must converge on the server's scoreboard.
+  // scores. Baseline first: the attract-mode AI has been playing through two
+  // reconnects, so "score > 0" alone could be satisfied by a point that was
+  // already on the board. Both clients must converge on the server's scoreboard.
+  const scoreBefore = (await getState(basePort)).model;
+  const totalBefore = scoreBefore.leftScore + scoreBefore.rightScore;
   const scored = await waitFor("a real authoritative point", async () => {
     const state = await getState(basePort);
-    return state.model.leftScore + state.model.rightScore > 0 ? state : false;
-  }, 30000);
+    return state.model.leftScore + state.model.rightScore > totalBefore ? state : false;
+  }, 60000);
   for (const port of [basePort + 1, basePort + 2]) {
     const converged = await waitFor(`client ${port} scoreboard convergence`, async () => {
       const state = await getState(port);
@@ -213,7 +240,7 @@ try {
   const won = await waitFor("authoritative win state", async () => {
     const state = await getState(basePort);
     return ctor(state.model.phase) === "Protocol.Won" ? state : false;
-  }, 60000);
+  }, 180000);
   const wonSeq = won.model.snapshotSeq;
   await post(basePort + 1, "/input", { type: "key", key: "R", down: true });
   await post(basePort + 1, "/input", { type: "key", key: "R", down: false });
@@ -261,7 +288,7 @@ try {
     // The client that dialled before the listener existed is the SAME process
     // at the end of the run — the two reconnects below were `Sub.connect`'s.
     originalClientPid: clientAPid,
-    originalClientSurvivedServerRestart: clientA.pid === clientAPid,
+    originalClientSurvivedServerRestart: clientA.exitCode === null,
     connectBeforeListenMs,
     serverRestartMs,
     serverRestartSeat: liveAfterServerRestart.model.seat,
@@ -280,7 +307,13 @@ try {
   }
   throw error;
 } finally {
-  for (const child of children) {
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-  }
+  // Await every exit: the next run's port preflight (and a back-to-back
+  // invocation of this one) must not race a still-shutting-down listener.
+  await Promise.all(
+    children.map((child) => {
+      if (child.exitCode !== null || child.signalCode !== null) return null;
+      child.kill("SIGTERM");
+      return new Promise((done) => child.once("exit", done));
+    })
+  );
 }

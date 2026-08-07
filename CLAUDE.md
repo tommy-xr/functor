@@ -256,9 +256,11 @@ reference and the SAME-FILE shape — one `game.fun` whose `client` and `server`
 both inline modules of it (`module Client { … }` / `module Server { … }`, with the
 protocol, the world step and the renderer shared bare above them), so one buffer
 hot-reloads both roles atomically and the sandbox runs the two panes off the same source.
-The roles-as-FILES form (one `.fun` per role over a shared sibling) is equally supported —
-reach for it once roles outgrow one buffer or want independent deploy units — but ships
-with no bundled example; the config/parsing tests cover it.
+**`examples/netpong`** is the roles-as-FILES counterpart — authoritative multiplayer Pong
+whose `client.fun` and `server.fun` are separate entry files over a shared `protocol.fun`
+and a shared `game.fun` renderer. Reach for that shape once roles outgrow one buffer or
+want independent deploy units. (`examples/lobby` is the same shape applied to discovery:
+a client, a game server, and a master server.)
 
 Under the hood: `build` typechecks the whole `.fun` project (diagnostics are errors) and
 **verifies every literal `Asset.*` locator**: a relative path must exist on disk (error — with

@@ -73,8 +73,10 @@ let axisFor = (seat: float, players: List<Player>): Option.t<float> =>
 
 let update = (m: Model, msg: Msg) =>
   match msg with
-  // Seats are assigned, never claimed: the first two connections get 0 and 1,
-  // a third is accepted but seated nowhere (it can watch, not steer).
+  // Seats are assigned, never claimed: the first two connections get 0 and 1.
+  // A third is accepted by the transport but takes no seat, gets no `Welcome`,
+  // and is not in the broadcast list — deliberately the smallest possible
+  // policy. Spectators would be one more list and one more send.
   | Joined(cid) =>
       let occupied0 = playerForSeat(0.0, m.players) |> Option.isSome in
       let occupied1 = playerForSeat(1.0, m.players) |> Option.isSome in
@@ -129,10 +131,12 @@ let servedBall = (leftScore: float, rightScore: float): (float, float) =>
   (sign * (9.2 + (leftScore + rightScore) * 0.18),
    if Math.mod(leftScore + rightScore, 3.0) == 0.0 then 4.6 else -4.1)
 
+// The model, minus everything a viewer does not need: velocities and the
+// server clock stay here.
 let snapshot = (m: Model): Protocol.Snapshot => {
-  seq: m.snapshotSeq, serverTime: m.serverTime,
+  seq: m.snapshotSeq,
   leftY: m.leftY, rightY: m.rightY,
-  ballX: m.ballX, ballY: m.ballY, ballVx: m.ballVx, ballVy: m.ballVy,
+  ballX: m.ballX, ballY: m.ballY,
   leftScore: m.leftScore, rightScore: m.rightScore,
   phase: m.phase, hitPulse: m.hitPulse, scorePulse: m.scorePulse, trail: m.trail,
 }
@@ -174,10 +178,9 @@ let stepRally = (m: Model, dt: float): Model =>
   else if hitX > Protocol.courtHalfWidth then withPoint(0.0, moved)
   else moved
 
-// One pure step of the whole match. `dt` is bounded so a stalled frame (a
-// breakpoint, a dragged window) can't tunnel the ball through a paddle, and so
-// the step stays reproducible: same model + same dt = same next model, which
-// is what the determinism expect below pins.
+// One pure step of the whole match. `dt` is BOUNDED, so a stalled frame (a
+// breakpoint, a dragged window) advances the world by one step instead of
+// tunnelling the ball through a paddle — the expect below pins exactly that.
 let stepWorld = (dt: float, m: Model): Model =>
   let boundedDt = Math.clamp(0.0, 0.05, dt) in
   let leftY = movePaddle(0.0, m.leftY, m.ballY, m.players, boundedDt) in
@@ -211,13 +214,15 @@ let tick = (m: Model, dt: float, tts: float) =>
     (ready, Effect.batch(sends))
   else stepped
 
-let draw = (m: Model, tts: float): Frame.t => Game.view(snapshot(m), "LISTENING :9108", -1.0, true)
+// Seat -1 tells the shared renderer to draw the authority's banner instead of
+// a player's HUD, so the status/autopilot arguments are a player's business.
+let draw = (m: Model, tts: float): Frame.t => Game.view(snapshot(m), "", -1.0, false)
 
 expect (
   let m = { fresh() with phase: Protocol.Rally, ballX: 0.0, ballY: 0.0,
                          ballVx: 10.0, ballVy: 0.0 } in
   let a = stepWorld(0.05, m) in
-  let b = stepWorld(0.05, m) in
+  let b = stepWorld(5.0, m) in
   a == b && Math.abs(a.ballX - 0.5) < 0.0001)
 expect (
   let m = { fresh() with phase: Protocol.Rally,
