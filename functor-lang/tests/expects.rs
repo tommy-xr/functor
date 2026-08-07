@@ -46,7 +46,8 @@ fn expect_is_rejected_in_interface_files() {
 
 #[test]
 fn expect_body_may_be_a_let_in_block() {
-    let ok = reports("let double = (x) => x * 2.0\nexpect (\n  let y = double(3.0) in\n  y == 6.0\n)\n");
+    let ok =
+        reports("let double = (x) => x * 2.0\nexpect (\n  let y = double(3.0) in\n  y == 6.0\n)\n");
     assert!(matches!(ok[0].outcome, ExpectOutcome::Pass));
 }
 
@@ -133,10 +134,8 @@ fn non_bool_expect_is_a_runtime_error_when_unchecked() {
 
 #[test]
 fn sibling_module_expects_run_with_the_project() {
-    let dir = std::env::temp_dir().join(format!(
-        "functor-lang-expects-test-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("functor-lang-expects-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     std::fs::write(

@@ -178,11 +178,7 @@ fn visit(expr: &Expr, targets: &Targets, consider: &mut impl FnMut(Span, Span)) 
         // the `let cube : () => t` line of the owning `.funi`. Unregistered
         // externals (no signature; the gradual seam) still answer nothing.
         ExprKind::External(path) => {
-            offer(
-                expr.span,
-                targets.signatures.get(&path.join(".")),
-                consider,
-            );
+            offer(expr.span, targets.signatures.get(&path.join(".")), consider);
         }
         ExprKind::Ctor { name, .. } => {
             offer(

@@ -59,6 +59,32 @@ fn real_tuple_mismatch_still_errors() {
     );
 }
 
+/// The instancing surface typechecks as a pipeline, and its brands have
+/// teeth: a bare number where an `Angle.t` or `Instance.t` belongs is a
+/// check-time error.
+#[test]
+fn instancing_pipeline_checks_and_brands_reject() {
+    let diags = check(
+        "let copies: List<Instance.t> =\n\
+         [Instance.at(Vec3.make(0.0, 0.0, 0.0))\n\
+           |> Instance.scaleXYZ(1.0, 2.0, 1.0)\n\
+           |> Instance.rotateY(Angle.degrees(45.0))\n\
+           |> Instance.tint(Color.rgb(1.0, 0.5, 0.5))]\n\
+         let scene: Scene.t =\n\
+         Scene.cube() |> Scene.lit(Color.rgb(1.0, 1.0, 1.0)) |> Scene.instanced(copies)",
+    );
+    assert!(
+        diags.is_empty(),
+        "instancing pipeline should check: {diags:?}"
+    );
+
+    let diags = check("let bad = Instance.rotateY(45.0, Instance.at(Vec3.make(0.0, 0.0, 0.0)))");
+    assert!(!diags.is_empty(), "a bare number is not an Angle.t");
+
+    let diags = check("let bad = Scene.instanced([1.0], Scene.cube())");
+    assert!(!diags.is_empty(), "a bare number is not an Instance.t");
+}
+
 /// Host calls carry real types from the prelude `.funi`, across namespaces.
 #[test]
 fn host_calls_have_real_types() {

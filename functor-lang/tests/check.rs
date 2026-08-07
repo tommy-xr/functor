@@ -307,7 +307,10 @@ fn math_builtins_check() {
     assert_clean("let x = () => Math.pow(2.0, 8.0)");
     assert_clean("let area = (r: float): float => Math.pi * r * r");
     let (message, _, _) = single_diag("let x = () => Math.mod(1.0, \"s\")");
-    assert_eq!(message, "argument 2 of `Math.mod`: expected float, got string");
+    assert_eq!(
+        message,
+        "argument 2 of `Math.mod`: expected float, got string"
+    );
 }
 
 // `Random.step`/`Random.range` are typed builtins whose seed is the injected
@@ -316,9 +319,7 @@ fn math_builtins_check() {
 #[test]
 fn random_step_typechecks() {
     assert_clean("let x = () => let (v, s) = Random.step(Random.seed(1.0)) in (v + 1.0, s)");
-    assert_clean(
-        "let x = () => let (v, _) = Random.range(0.0, 10.0, Random.seed(1.0)) in v + 1.0",
-    );
+    assert_clean("let x = () => let (v, _) = Random.range(0.0, 10.0, Random.seed(1.0)) in v + 1.0");
     // The threaded nextSeed is itself a Seed…
     assert_clean("let x = () => let (_, s) = Random.step(Random.seed(1.0)) in Random.step(s)");
     // …and so is a per-entity fork (subject-LAST, so it pipes).
@@ -623,7 +624,10 @@ or write `unknown` if this position is deliberately untyped"
 #[test]
 fn the_miscased_annotation_trap_is_closed() {
     let (message, _, _) = single_diag("let x: Float = \"hi\"");
-    assert!(message.starts_with("unknown type name `Float`"), "{message}");
+    assert!(
+        message.starts_with("unknown type name `Float`"),
+        "{message}"
+    );
 
     let (message, _, _) = single_diag("let x: float = \"hi\"");
     assert_eq!(message, "`x`: expected float, got string");
@@ -1097,9 +1101,14 @@ fn ctor_application_demands_full_arity() {
     );
     // The recovery keeps a wrong count to ONE diagnostic, not a cascade.
     let (message, _, _) = single_diag(&format!("{SHAPE}let x = (): Shape => Rect(1.0)"));
-    assert!(message.starts_with("`Rect` takes 2 argument(s)"), "{message}");
+    assert!(
+        message.starts_with("`Rect` takes 2 argument(s)"),
+        "{message}"
+    );
     // Staging on purpose is exactly what the hint says: a lambda.
-    assert_clean(&format!("{SHAPE}let mkTall = (h: float): Shape => Rect(2.0, h)"));
+    assert_clean(&format!(
+        "{SHAPE}let mkTall = (h: float): Shape => Rect(2.0, h)"
+    ));
     // Bare references stay first-class, and nullary ctors are unaffected.
     assert_clean(&format!(
         "{SHAPE}let xs = (rs: List<float>): List<Shape> => List.map(Circle, rs)\n\
@@ -1636,7 +1645,8 @@ fn function_typed_argument_is_checked() {
     );
     let msgs: Vec<&str> = diags.iter().map(|(m, _, _)| m.as_str()).collect();
     assert!(
-        msgs.iter().any(|m| m.contains("parameter `s`") && m.contains("expected float")),
+        msgs.iter()
+            .any(|m| m.contains("parameter `s`") && m.contains("expected float")),
         "want a param mismatch, got {msgs:?}"
     );
 }
@@ -1782,7 +1792,11 @@ fn abstract_type_mismatch_is_flagged() {
 fn abstract_type_has_no_constructor() {
     let program = functor_lang::parse("type SceneNode\nlet bad = () => SceneNode").expect("parse");
     let err = functor_lang::lower(program).expect_err("SceneNode is a type, not a value");
-    assert!(err.message.contains("SceneNode"), "unexpected: {}", err.message);
+    assert!(
+        err.message.contains("SceneNode"),
+        "unexpected: {}",
+        err.message
+    );
 }
 
 /// Abstract types may be generic: `type Handle<'a>`.
@@ -1907,9 +1921,7 @@ fn new_comparisons_result_in_bool() {
 fn logical_result_is_bool() {
     // The `&&` result feeds a float context — the mismatch proves it typed
     // as Bool, not gradual Unknown.
-    let (message, _, _) = single_diag(
-        "let f = (a: bool, b: bool): float => a && b",
-    );
+    let (message, _, _) = single_diag("let f = (a: bool, b: bool): float => a && b");
     assert!(
         message.contains("bool") && message.contains("float"),
         "unexpected: {message}"

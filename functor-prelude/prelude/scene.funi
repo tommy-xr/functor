@@ -93,6 +93,26 @@ let screen : (RenderTarget.t, t) => t
 ///   rasterized — so fading fully out costs nothing.
 let opacity : (float, t) => t
 
+/// Stamp a scene once per instance — one node for thousands of copies.
+///
+/// `scene |> Scene.instanced(instances)` is semantically a group holding one
+/// transformed copy of the template per `Instance.t`, with each copy's
+/// `Instance.tint` multiplied into the template's material colors. Materials
+/// come FROM the template: `Scene.cube() |> Scene.lit(color)` instanced is
+/// lit and shadowed exactly like its copies would be.
+///
+/// The renderer draws recognized templates as ONE hardware-instanced call —
+/// a single cube/sphere/cylinder/quad/plane leaf, under any transforms and at
+/// most one solid `Scene.color` / `Scene.lit` / `Scene.emissive` material.
+/// Any other template still renders correctly, expanded copy-by-copy on the
+/// CPU with a once-per-topology `[functor]` perf note — never worse than
+/// writing the group by hand, but not faster either.
+///
+/// An empty list draws nothing. `Scene.opacity` inside the template is a
+/// teaching error — wrap the whole instanced node instead
+/// (`… |> Scene.instanced(xs) |> Scene.opacity(a)`).
+let instanced : (List<Instance.t>, t) => t
+
 /// Attach an animation pose to model nodes; the scene is last for piping.
 ///
 /// Without an attached pose, a skinned model plays its FIRST clip on the game

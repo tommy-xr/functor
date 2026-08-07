@@ -11,11 +11,11 @@
 pub mod ast;
 pub mod codelens;
 pub mod complete;
-pub mod eval;
+pub mod coverage;
 pub mod docs;
+pub mod eval;
 pub mod goto;
 pub mod hover;
-pub mod coverage;
 pub mod inlay;
 pub mod ir;
 // Public for consumers that need raw string literals without evaluating
@@ -32,9 +32,8 @@ pub mod value;
 
 pub use eval::{
     render_trace, run, run_expects, run_expects_budgeted, run_with_host, ExpectOutcome,
-    ExpectReport, FailedCompare,
-    Host, NoHost, RecordedBinding, RecordedInvocation, RecordedKind, RecordedSite, RunFailure,
-    RunOutcome, RunRecord, Session, Tracing,
+    ExpectReport, FailedCompare, Host, NoHost, RecordedBinding, RecordedInvocation, RecordedKind,
+    RecordedSite, RunFailure, RunOutcome, RunRecord, Session, Tracing,
 };
 pub use lower::lower;
 pub use parser::{parse, parse_interface};
