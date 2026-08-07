@@ -33,6 +33,14 @@ let rotateY : (Angle.t, t) => t
 /// Rotate the instance about the Z axis; piped later means applied later.
 let rotateZ : (Angle.t, t) => t
 
+/// The flat fast path: position, yaw, and per-axis scale in ONE call.
+///
+/// Exactly `Instance.at(position) |> Instance.scaleXYZ(sx, sy, sz)
+/// |> Instance.rotateY(rotationY)`, minus the per-copy builder-call overhead —
+/// reach for it when a large per-frame field makes construction cost visible.
+/// Compose further channels (another rotation axis, `Instance.tint`) on top.
+let trs : (Vec3.t, Angle.t, float, float, float) => t
+
 /// Multiply the copy's material colors by `color` — a per-instance tint over
 /// the template's material, not a second material system. Tints compose by
 /// multiplying; white is the identity.

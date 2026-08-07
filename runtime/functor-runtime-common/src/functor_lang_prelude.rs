@@ -2089,6 +2089,19 @@ fn register_instance(reg: &mut crate::host_registry::Registry) {
             FunctorLangInstance(instance.0.rotated(Quaternion::from_angle_z(angle)))
         },
     );
+    reg.fn5(
+        "Instance.trs",
+        "Instance.trs(position, rotationY, scaleX, scaleY, scaleZ)",
+        |v: FunctorLangVec3, angle: FunctorLangAngle, sx: f64, sy: f64, sz: f64| {
+            let (x, y, z) = v.0;
+            let angle: Rad<f32> = angle.0.into();
+            FunctorLangInstance(
+                InstanceData::at([x, y, z])
+                    .scaled_xyz(sx as f32, sy as f32, sz as f32)
+                    .rotated(Quaternion::from_angle_y(angle)),
+            )
+        },
+    );
     reg.fn2(
         "Instance.tint",
         "Instance.tint(color, instance)",
