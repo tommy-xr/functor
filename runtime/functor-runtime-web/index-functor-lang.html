@@ -6,11 +6,12 @@
        this page only wires input into the runtime's `functor_lang_*` exports. -->
   <head>
     <meta content="text/html;charset=utf-8" http-equiv="Content-Type" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; }
       /* Fill the window; the runtime sizes the drawable buffer (and GL
          viewport) to match this displayed size each frame, scaled for HiDPI. */
-      #canvas { display: block; width: 100%; height: calc(100% - var(--functor-scrubber-h, 0px)); margin-top: var(--functor-scrubber-h, 0px); }
+      #canvas { display: block; width: 100%; height: calc(100% - var(--functor-scrubber-h, 0px)); margin-top: var(--functor-scrubber-h, 0px); touch-action: none; overscroll-behavior: none; }
       /* Explicit mouse-capture toggle. The cursor stays FREE by default so the
          time-travel scrubber is usable without the pointer being grabbed on
          every click; press this (or Esc to release) to control the camera. */
@@ -72,6 +73,7 @@
         functor_lang_mouse_move,
         functor_lang_mouse_wheel,
         functor_lang_mouse_button,
+        functor_lang_touch_event,
         functor_lang_uses_captured_mouse_input,
         functor_lang_ui_pointer,
         functor_lang_ui_pointer_leave,
@@ -482,6 +484,56 @@
           gameButtons.clear();
         };
         window.addEventListener("blur", releaseGameButtons);
+
+        // Touch contacts (mobile): forwarded into the sampled-input touch
+        // domain with page-assigned small ordinals (browsers hand out
+        // arbitrary Touch.identifiers). CSS pixels relative to the canvas,
+        // like the visible-pointer path. No preventDefault: the canvas's
+        // `touch-action: none` already stops scrolling/zooming, while the
+        // browser's compatibility mouse events stay alive so `Ui.*` widgets
+        // and mouse-driven games remain tappable on touch devices (a
+        // touch-aware game simply ignores the synthesized mouse input).
+        const touchOrdinals = new Map(); // Touch.identifier -> { ordinal, x, y }
+        const touchEntry = (identifier) => {
+          if (touchOrdinals.has(identifier)) return touchOrdinals.get(identifier);
+          const used = new Set([...touchOrdinals.values()].map((e) => e.ordinal));
+          let ordinal = 0;
+          while (used.has(ordinal)) ordinal++;
+          const entry = { ordinal, x: 0, y: 0 };
+          touchOrdinals.set(identifier, entry);
+          return entry;
+        };
+        // Phases mirror TouchPhase::from_i32: 0 begin, 1 move, 2 end, 3 cancel.
+        const forwardTouches = (e, phase, release) => {
+          if (debugCameraOwnsInput()) return;
+          const rect = canvas.getBoundingClientRect();
+          for (const touch of e.changedTouches) {
+            const entry = touchEntry(touch.identifier);
+            entry.x = touch.clientX - rect.left;
+            entry.y = touch.clientY - rect.top;
+            functor_lang_touch_event(phase, entry.ordinal, entry.x, entry.y);
+            if (release) touchOrdinals.delete(touch.identifier);
+          }
+        };
+        canvas.addEventListener("touchstart", (e) => forwardTouches(e, 0, false));
+        canvas.addEventListener("touchmove", (e) => forwardTouches(e, 1, false));
+        canvas.addEventListener("touchend", (e) => forwardTouches(e, 2, true));
+        canvas.addEventListener("touchcancel", (e) => forwardTouches(e, 3, true));
+        // The touch twin of releaseGameButtons: a contact whose touchend the
+        // page never sees (tab switch, system gesture, incoming call) must
+        // not stay held forever — sweep every active contact as CANCELLED
+        // (the platform stole it) and free its ordinal.
+        const releaseTouches = () => {
+          for (const entry of touchOrdinals.values()) {
+            functor_lang_touch_event(3, entry.ordinal, entry.x, entry.y);
+          }
+          touchOrdinals.clear();
+        };
+        window.addEventListener("blur", releaseTouches);
+        window.addEventListener("pagehide", releaseTouches);
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) releaseTouches();
+        });
 
         // Interactive game UI (docs/ui-interaction.md U3): while the pointer
         // is FREE (not look mode), its canvas position + primary button drive

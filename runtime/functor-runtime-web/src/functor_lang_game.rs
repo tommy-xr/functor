@@ -284,6 +284,18 @@ pub fn functor_lang_mouse_button(button: i32, is_down: bool) {
     push_input(InputEvent::MouseButton { button, is_down });
 }
 
+/// One touch-contact transition from the page's touch listeners. `phase` is
+/// 0=begin, 1=move, 2=end, 3=cancel (anything else is dropped); `id` is the
+/// page-assigned small ordinal (the page remaps the browser's arbitrary
+/// `Touch.identifier`s); `x`/`y` are CSS pixels relative to the canvas.
+#[wasm_bindgen]
+pub fn functor_lang_touch_event(phase: i32, id: u32, x: f32, y: f32) {
+    let Some(phase) = functor_runtime_common::TouchPhase::from_i32(phase) else {
+        return;
+    };
+    push_input(InputEvent::Touch { phase, id, x, y });
+}
+
 thread_local! {
     /// The page's UNLOCKED pointer over the canvas — `(pos in CSS px,
     /// primary button down, press latched since last sample)` — for the
@@ -501,6 +513,26 @@ pub fn drain_input(
                 }
                 if deliver {
                     game.mouse_button(button, is_down);
+                }
+            }
+            InputEvent::Touch { phase, id, x, y } => {
+                // The key/mouse level/edge split: presses and moves only when
+                // delivering; releases also as recovery while suppressed
+                // (level cleared, no model-visible edge — `record_edge` is
+                // `deliver`, the shared reducers' recovery contract).
+                let is_release = matches!(
+                    phase,
+                    functor_runtime_common::TouchPhase::End
+                        | functor_runtime_common::TouchPhase::Cancel
+                );
+                if deliver || (is_release && recover_releases) {
+                    functor_runtime_common::apply_touch_transition(
+                        &mut snapshot.touch,
+                        edges,
+                        phase,
+                        functor_runtime_common::TouchPoint { id, x, y },
+                        deliver,
+                    );
                 }
             }
             // Only the time-travel recorder creates snapshots; the page input
@@ -726,6 +758,11 @@ fn input_marker(input: &InputEvent) -> Option<(&'static str, String)> {
                 format!("mouse {name} {edge}"),
             ))
         }
+        // Touch is never recorded as a sparse event (only inside `Snapshot`,
+        // which this marker log doesn't unpack), so no timeline marker can
+        // fire for it — returning a label here would advertise a feature
+        // that cannot appear.
+        InputEvent::Touch { .. } => None,
         InputEvent::Snapshot(_) => None,
         InputEvent::UiEvent(event) => Some(("ui-input", format!("UI {event:?}"))),
         InputEvent::WebviewEvent(event) => Some(("webview-input", format!("webview {event:?}"))),
