@@ -63,6 +63,26 @@ export interface GamepadSnapshot {
   select: boolean;
 }
 
+/** One touch contact in the mouse's logical coordinate space. `id` is a
+ * small ordinal stable for the contact's lifetime. */
+export interface TouchPoint {
+  id: number;
+  x: number;
+  y: number;
+}
+
+/** Active touch contacts plus one step's de-duplicated transitions — the
+ * keyboard contract for fingers. A cancelled contact reports through
+ * `released`. */
+export interface TouchSnapshot {
+  touches: TouchPoint[];
+  pressed: TouchPoint[];
+  released: TouchPoint[];
+}
+
+/** Wire spelling of a touch transition phase for `POST /input`. */
+export type TouchPhaseName = "begin" | "move" | "end" | "cancel";
+
 /** Wire spelling of a mouse button for `POST /input`. */
 export type MouseButtonName = "left" | "right" | "middle";
 
@@ -75,9 +95,9 @@ export interface MouseButtons {
 
 /** Runtime-owned input sampled independently of the game model.
  *
- * Typed device domains extend this record: XR and gamepad are available
- * today; a mobile-touch snapshot can be added without replacing
- * keyboard/mouse or introducing target-specific clients. */
+ * Typed device domains extend this record — XR, gamepad, and touch today;
+ * further devices join as sibling fields without replacing keyboard/mouse or
+ * introducing target-specific clients. */
 export interface InputSnapshot {
   /** Keys currently held, by canonical name. */
   held_keys: KeyName[];
@@ -111,6 +131,9 @@ export interface InputSnapshot {
    * polling — rest levels while unfocused/pinned) or a sample is injected;
    * absent on headless, which polls nothing. */
   gamepad?: GamepadSnapshot;
+  /** Present while a touch surface exists (or a touch was injected); empty
+   * lists while idle. Absent on targets with no touch input at all. */
+  touch?: TouchSnapshot;
 }
 
 export interface RuntimeViewport {
@@ -205,7 +228,8 @@ export type InputCommand =
   | ({ type: "xr" } & XrInputSample)
   | { type: "xr_clear" }
   | ({ type: "gamepad" } & GamepadInputSample)
-  | { type: "gamepad_clear" };
+  | { type: "gamepad_clear" }
+  | { type: "touch"; phase: TouchPhaseName; id: number; x: number; y: number };
 
 /** An injected gamepad sample for `POST /input` (desktop only) — the
  * {@link XrInputSample} contract for the pad domain: level state until

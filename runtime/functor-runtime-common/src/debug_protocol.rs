@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ui::UiEventKind, GamepadSnapshot, InputSnapshot, XrInputSnapshot};
+use crate::{ui::UiEventKind, GamepadSnapshot, InputSnapshot, TouchPhase, XrInputSnapshot};
 
 /// Stable name returned by the discovery endpoint on every runtime target.
 pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
@@ -76,7 +76,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `{"type":"gamepad_clear"}` (the `xr`/`xr_clear` contract for the gamepad
 /// domain) — and the optional `gamepad` field on `GET /state`'s input
 /// snapshot.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 12;
+///
+/// 13 adds touch injection — `POST /input` `{"type":"touch","phase":…}`
+/// transitions folded through the shared reducer (evented, like `key`, not
+/// whole-sample like `xr`) — and the optional `touch` field on `GET /state`'s
+/// input snapshot.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 13;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -130,7 +135,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
+        description: "runtime state JSON: frame, tts, pending_steps (queued clock steps not yet run), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text)",
     },
     DebugRoute {
         method: "GET",
@@ -145,7 +150,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/input",
-        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device) | {\"type\":\"gamepad\",\"left_stick\":[0.0,1.0],\"south\":true,...} (desktop only; level state until the next gamepad command) | {\"type\":\"gamepad_clear\"} (drop it, restoring the physical pad or no device)",
+        description: "inject input — {\"type\":\"key\",\"key\":\"w\",\"down\":true} | {\"type\":\"mouse_move\",\"x\":0,\"y\":0} | {\"type\":\"mouse_wheel\",\"delta\":1} | {\"type\":\"mouse_button\",\"button\":\"left\",\"down\":true} (edge + held level, like key) | {\"type\":\"ui_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"webview_event\",\"slot\":0,\"kind\":\"Clicked\"} | {\"type\":\"xr\",\"left\":{...},\"right\":{...},\"head\":{...}} (desktop only; level state until the next xr command) | {\"type\":\"xr_clear\"} (drop it, restoring the emulator or no device) | {\"type\":\"gamepad\",\"left_stick\":[0.0,1.0],\"south\":true,...} (desktop only; level state until the next gamepad command) | {\"type\":\"gamepad_clear\"} (drop it, restoring the physical pad or no device) | {\"type\":\"touch\",\"phase\":\"begin\",\"id\":0,\"x\":10,\"y\":20} (evented, like key: phases begin/move/end/cancel fold through the shared touch reducer)",
     },
     DebugRoute {
         method: "POST",
@@ -360,6 +365,21 @@ pub enum InputCommand {
     /// domain when none is connected. The release half of `Gamepad`'s
     /// held-key contract.
     GamepadClear,
+    /// One touch-contact transition — `{"type":"touch","phase":"begin",
+    /// "id":0,"x":10,"y":20}` with phases `begin`/`move`/`end`/`cancel`.
+    ///
+    /// Unlike `Xr`/`Gamepad` (whole-sample level state), touch is EVENTED:
+    /// each command folds through the same transition reducer real platform
+    /// touch events take, updating the held contacts later steps sample and
+    /// recording the same de-duplicated one-step edges — so a scripted tap
+    /// or drag replays identically. Ending every begun id releases the
+    /// domain's contacts; no separate clear command exists.
+    Touch {
+        phase: TouchPhase,
+        id: u32,
+        x: f32,
+        y: f32,
+    },
 }
 
 /// A clock command sent through `POST /time`.
@@ -964,6 +984,34 @@ mod tests {
     }
 
     #[test]
+    fn a_touch_command_decodes_each_phase_and_rejects_unknown_ones() {
+        for (phase, expected) in [
+            ("begin", TouchPhase::Begin),
+            ("move", TouchPhase::Move),
+            ("end", TouchPhase::End),
+            ("cancel", TouchPhase::Cancel),
+        ] {
+            let body = format!(r#"{{"type":"touch","phase":"{phase}","id":2,"x":10.5,"y":20}}"#);
+            assert_eq!(
+                serde_json::from_str::<InputCommand>(&body).unwrap(),
+                InputCommand::Touch {
+                    phase: expected,
+                    id: 2,
+                    x: 10.5,
+                    y: 20.0
+                }
+            );
+        }
+        // An unknown phase is a 400, like every malformed command.
+        assert!(
+            serde_json::from_str::<InputCommand>(
+                r#"{"type":"touch","phase":"start","id":0,"x":0,"y":0}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn routes_are_unique_complete_and_drive_discovery() {
         let labels: BTreeSet<_> = DEBUG_ROUTES.iter().map(|route| route.label()).collect();
         assert_eq!(labels.len(), DEBUG_ROUTES.len(), "duplicate method/path");
@@ -1007,7 +1055,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 12);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 13);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

@@ -11,6 +11,8 @@ import type {
   Scene,
   StepUntilOptions,
   WaitForOptions,
+  TouchPhaseName,
+  TouchSnapshot,
   XrInputSample,
   XrInputSnapshot,
 } from "./types.js";
@@ -75,6 +77,11 @@ export class FunctorClient {
    * injected). */
   async gamepadInput(): Promise<GamepadSnapshot | undefined> {
     return (await this.state()).input.gamepad;
+  }
+
+  /** Latest touch snapshot, or undefined on targets with no touch input. */
+  async touchInput(): Promise<TouchSnapshot | undefined> {
+    return (await this.state()).input.touch;
   }
 
   /** Capture the next rendered frame as PNG bytes. */
@@ -232,6 +239,15 @@ export class FunctorClient {
    * release half of {@link gamepad}'s held-key contract. */
   gamepadClear(): Promise<void> {
     return this.input({ type: "gamepad_clear" });
+  }
+
+  /** Inject one touch-contact transition (phases `begin`/`move`/`end`/
+   * `cancel`). Evented like {@link keyDown}, not whole-sample like
+   * {@link xr}: each call folds through the same reducer real touch events
+   * take, so a scripted tap or drag is recorded and replays identically.
+   * End every begun `id` to release the domain's contacts. */
+  touch(phase: TouchPhaseName, id: number, x: number, y: number): Promise<void> {
+    return this.input({ type: "touch", phase, id, x, y });
   }
 
   /** Click an interactive UI slot (`Clicked` in the runtime's UI protocol). */
