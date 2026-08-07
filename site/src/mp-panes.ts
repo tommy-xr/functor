@@ -1826,10 +1826,16 @@ export function initMultiplayerPanes({
       updateChrome();
       paintAggregate();
     },
-    // Mirror a debounced hot-reload push. The server pane is deliberately not
-    // a target — the buffer being edited is the CLIENT entry (see mountServer).
+    // Mirror a debounced hot-reload push. EVERY pane is a target, the
+    // authority included: a same-file project (`module Client` / `module
+    // Server`) boots both roles from the buffer being edited, and the runtime
+    // re-resolves each pane's own role on reload (`load_source(.., &self.role)`
+    // in the embedded producer), so the server swaps its Server module while
+    // the clients swap theirs — one edit, one atomic session-wide reload, every
+    // model preserved.
     push(source) {
       for (const { bridge } of mirrors) bridge.push(source);
+      serverPane?.bridge.push(source);
     },
     reset() {
       for (const { bridge } of mirrors) bridge.reset();
