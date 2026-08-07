@@ -119,7 +119,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -633,7 +633,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 13);
+        assert_eq!(PROTOCOL_VERSION, 14);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -660,7 +660,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 13);
+        assert_eq!(PROTOCOL_VERSION, 14);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
@@ -683,7 +683,7 @@ mod tests {
     fn opacity_subtree_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 13);
+        assert_eq!(PROTOCOL_VERSION, 14);
         let scene = SceneObject::Opacity(
             0.35,
             vec![Scene3D {
@@ -704,7 +704,7 @@ mod tests {
     fn two_bone_reach_animation_wire_is_pinned() {
         use crate::anim::AnimExpr;
 
-        assert_eq!(PROTOCOL_VERSION, 13);
+        assert_eq!(PROTOCOL_VERSION, 14);
         let reach = AnimExpr::Reach {
             root: "upper".to_string(),
             middle: "lower".to_string(),
