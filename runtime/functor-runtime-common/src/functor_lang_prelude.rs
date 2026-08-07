@@ -5231,7 +5231,10 @@ dropping the rest"
             ));
             return;
         }
-        let (kind, value, tagger) = match tree {
+        // `kind` is the structured log's wire label; `api` is what a game
+        // author actually typed, so a message about a failed tagger names a
+        // function that exists (`Persistence.load`, not `Effect.storage.load`).
+        let (kind, api, value, tagger) = match tree {
             EffectTree::None => continue,
             EffectTree::Batch(items) => {
                 // Preserve declaration order against the LIFO queue.
@@ -5450,6 +5453,7 @@ dropping the rest"
                 }
                 None => (
                     "physics.raycast",
+                    "Physics.raycast",
                     runner.raycast(origin, dir, max_dist),
                     tagger,
                 ),
@@ -5480,16 +5484,23 @@ dropping the rest"
                 }
                 continue;
             }
-            EffectTree::Load { slot, tagger } => ("storage.load", runner.load(&slot), tagger),
-            EffectTree::Now { tagger } => ("now", runner.now().into(), tagger),
-            EffectTree::Random { tagger } => ("random", runner.random().into(), tagger),
+            EffectTree::Load { slot, tagger } => (
+                "storage.load",
+                "Persistence.load",
+                runner.load(&slot),
+                tagger,
+            ),
+            EffectTree::Now { tagger } => ("now", "Effect.now", runner.now().into(), tagger),
+            EffectTree::Random { tagger } => {
+                ("random", "Effect.random", runner.random().into(), tagger)
+            }
         };
         let value: EffectValue = value;
         let functor_lang_value = match value.to_functor_lang() {
             Ok(value) => value,
             Err(error) => {
                 report(format!(
-                    "[functor-lang] Effect.{kind} produced invalid structured data: {error}"
+                    "[functor-lang] {api} produced invalid structured data: {error}"
                 ));
                 continue;
             }
@@ -5501,12 +5512,12 @@ dropping the rest"
         let msg = match session.apply(
             tagger,
             vec![functor_lang_value],
-            &format!("Effect.{kind} tagger"),
+            &format!("{api} tagger"),
             &mut FunctorHost,
         ) {
             Ok(msg) => msg,
             Err(e) => {
-                report(format!("[functor-lang] Effect.{kind} tagger error: {}", e.message));
+                report(format!("[functor-lang] {api} tagger error: {}", e.message));
                 continue;
             }
         };
@@ -6125,6 +6136,25 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
     fn a_branded_sum_flows_into_a_branded_parameter() {
         eval_with_prelude("let main = () => Scene.cube() |> Scene.rotateY(90deg + 45deg)\n")
             .expect("a summed angle is still an Angle");
+    }
+
+    /// Drift guard: every namespace the prelude SHIPS must be reserved by the
+    /// language, or a game's `persistence.fun` — or an inline `module
+    /// Persistence` — silently steals it. `PROTECTED_NAMESPACES` is a static
+    /// list, so without this a new `.funi` lands unprotected by omission
+    /// (which is exactly what `Persistence` did, and `Terrain` before it).
+    #[test]
+    fn every_prelude_module_is_a_protected_namespace() {
+        let unprotected: Vec<String> = functor_prelude::modules()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| !functor_lang::project::is_protected_namespace(name))
+            .collect();
+        assert_eq!(
+            unprotected,
+            Vec::<String>::new(),
+            "prelude modules missing from PROTECTED_NAMESPACES (functor-lang/src/project.rs)"
+        );
     }
 
     // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`
