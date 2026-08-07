@@ -3,7 +3,7 @@
 // `functor mcp` speaks line-delimited JSON-RPC 2.0 on stdio and the harnesses
 // speak it RAW — no MCP client library — so what they assert is exactly what a
 // coding agent's client would see. That is worth exactly one copy: this module
-// is it, imported by `mcp-server.mjs` and `mcp-step-all.mjs`.
+// is it, imported by every `mcp-*.mjs` harness and by `code-garden.mjs`.
 //
 // Plain ESM with node builtins only, like every other file in `e2e/`.
 import { connect } from "node:net";
