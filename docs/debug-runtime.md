@@ -659,10 +659,11 @@ An **MCP server** over the same endpoints ships as `functor mcp` — sessions,
 state, scene, capture, input, time, and rewind as standard tools for coding
 agents (docs/mcp.md).
 
-## Future directions
+## Multiplayer simulation
 
-- **Multiplayer simulation.** Launch N runner instances, each on its own
-  `--debug-port`, networked via `Sub.connect`/`Sub.listen`; pin all clocks and step
-  them in lockstep, injecting input and observing state per client. This is the
-  out-of-process counterpart to the browser's hosted panes + net coordinator
-  (`docs/multiplayer.md`).
+`functor mcp` can launch every role of a multi-entry project as a session group
+on `--net-transport embedder`, making the MCP host process the network with no
+sockets open. Use `step_all` for ordered producer → authority → observer rounds,
+`wire_log` for the routed packets, and each session's structured `/state` model
+for assertions. See [`docs/mcp.md`](mcp.md#running-a-multiplayer-session) for the
+socket-backed flow and the hermetic coordinator flow.

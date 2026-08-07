@@ -1,9 +1,8 @@
 # Multiplayer / networking design
 
-Status: **active** (Phase 0 in progress). This is the design doc and roadmap for
-networking in Functor. The backlog stubs in `docs/todo.md` ("Async inbox",
-"Keyed resource registry", `Sub.Net.*`) are the first concrete steps and are
-expanded here.
+Status: **active**. The networking spine, HTTP and WebSocket transports, typed
+messages, multi-entry roles, the browser coordinator, and hermetic MCP session
+groups are shipped. Direct TCP/UDP and WebRTC remain roadmap work.
 
 ## Goal
 
@@ -92,7 +91,7 @@ when the response lands, the broker applies the tagger and delivers the message.
 ```functor
 // client: declares a desired connection; runtime keeps it open + reconnects
 Sub.connect(url, tagger)   // tagger: (Net.NetEvent) => Msg
-// server: accepts many; yields per-client events (native only for TCP/UDP/WS)
+// server: accepts many; real socket listeners are native, embedders may host either role
 Sub.listen(addr, tagger)   // tagger: (Net.NetEvent) => Msg
 
 Effect.send(connId, text)     // send on an open connection
@@ -192,13 +191,14 @@ clamped so it can never overtake an earlier packet on the same connection) and
 flushed when the session's reference clock reaches it. Every pane's link chip
 sets that latency and jitter; the wire rows print `sent → delivered`.
 
-**Latency and jitter only, and that is a decision** (design Addendum 8.2):
+**Latency and jitter only, and that is a decision**:
 `Sub.connect` promises reliable, ordered delivery, so the coordinator must never
 drop or reorder a packet. The chips keep their loss numbers, labelled as
-applying to datagrams, and those activate with `Net.Udp`. Still to come:
-partitions, and the step-time delivery barrier — the schedule is keyed to the
-session's reference clock rather than to each receiving pane's own step, which
-is what stands between the reproducible jitter DRAWS and reproducible runs.
+applying to datagrams; they remain inert because no datagram channel is shipped.
+Still to come: partitions, and the step-time delivery barrier — the schedule is
+keyed to the session's reference clock rather than to each receiving pane's own
+step, which is what stands between the reproducible jitter DRAWS and
+reproducible runs.
 
 `e2e/net-coordinator.mjs` (`npm run test:net-coordinator`) drives `examples/orbs`
 as a server plus two clients in headless Chromium and asserts the handshake,
@@ -210,10 +210,15 @@ removed: it duplicated the protocol the coordinator now owns while running the
 games in a shape (shared command queues, one thread, one clock) that the panes
 do not. `VirtualNet` itself survives as the semantics above.
 
-**B. Multi-process integration harness.** Real `functor` game processes driven
-over an extended debug-server API (add `/net` inject + `/tick` step to the
-existing `/input`, `/time`, `/state`, `/scene`). Slower, less deterministic;
-validates the real I/O + serialization path. Smoke/integration only.
+**B. Multi-process integration harness (shipped).** `functor mcp`'s
+`launch_session_group` reads a project's declared roles, launches one native
+runtime per role on `--net-transport embedder`, and makes the MCP process the
+network. `step_all` runs caller-ordered producer → authority → observer rounds;
+`wire_log` exposes every routed packet as data; `/state` exposes each role's
+structured model for assertions. The embedder endpoints are
+`GET /net/outbound` and `POST /net/deliver`; no runtime socket opens. See
+[`docs/mcp.md`](mcp.md#the-coordinator-this-process-is-the-network) and
+[`docs/debug-runtime.md`](debug-runtime.md#the-embedder-transport-protocol-v11).
 
 ## Whole-environment time travel
 
@@ -249,19 +254,19 @@ not recorded state, so it survives a restore — "rewind, worsen the link, watch
 again" works.
 
 This is **not built on the coordinator yet**: the removed in-process harness is
-where these rules were first implemented and regression-tested, and the
-coordinator-seek PR re-establishes them over the panes.
+where these rules were first implemented and regression-tested; future
+coordinator seek work must re-establish them over the panes.
 
 ## Roadmap (small, stacked PRs; each protocol ships with a test)
 
-| Phase | Scope | Targets |
-| --- | --- | --- |
-| **0. Spine** | the `ConnCommand`/`NetEvent` vocabulary + `AsyncInbox` + `VirtualNet`, Rust-only unit tests (latency/loss/reorder/partition). No game yet. | n/a |
-| **1. HTTP** | `Effect` request + inbound `Sub` response (correlate by token); reqwest/hyper (native) + fetch (wasm). | wasm+native |
-| **2. WebSocket** | `Sub.connect` + `Effect.send`; sub identity/reconciliation. Client first, then `Sub.listen` (server, native). | wasm+native |
-| **3. Multi-instance SDK** | runner handle refactor + the embedder seam + the host coordinator + first sync/latency/disconnect suite. | both |
-| **4. TCP/UDP direct** | raw TCP + UDP `listen`/`connect` (UDP matters most for the real-time game). | native only |
-| **5. WebRTC** | data channels + signaling. Deferred. | wasm+native |
+| Phase | Status | Scope | Targets |
+| --- | --- | --- | --- |
+| **0. Spine** | shipped | the `ConnCommand`/`NetEvent` vocabulary + `AsyncInbox` + `VirtualNet` | n/a |
+| **1. HTTP** | shipped | `Effect.httpGet` / `httpPost`, with the response tagger folded through `update` | wasm+native |
+| **2. WebSocket** | shipped | `Sub.connect` (wasm+native), `Sub.listen` (native sockets or an embedder), and `Effect.send` / `sendMsg` | wasm+native |
+| **3. Multi-instance SDK** | shipped | multi-entry roles, the embedder seam, browser host coordinator, and MCP session groups | both |
+| **4. TCP/UDP direct** | pending | raw TCP + UDP `listen`/`connect` | native only |
+| **5. WebRTC** | deferred | data channels + signaling | wasm+native |
 
 ## Netcode epic (Phase 6+, scoped separately)
 
