@@ -104,17 +104,18 @@ pub fn run_project_expects(entry: &Path) -> Result<ExpectRun, ExpectRunError> {
 /// Expects from the engine's own bundled modules are EXCLUDED: they are not
 /// the user's tests, and their `<builtin>/…` paths are not files anyone can
 /// open. (`build`'s module count filters the same marker.)
-pub fn run_expects_in(project: &functor_lang::project::Project) -> Result<ExpectRun, ExpectRunError> {
-    let reports =
-        functor_lang::run_expects(&project.module, &mut FunctorHost).map_err(|failure| {
-            let (file, line, col) = project.sources.resolve(failure.error.span.start);
-            ExpectRunError {
-                file: file.path.clone(),
-                line,
-                col,
-                message: failure.error.message.clone(),
-            }
-        });
+pub fn run_expects_in(
+    project: &functor_lang::project::Project,
+) -> Result<ExpectRun, ExpectRunError> {
+    let reports = functor_lang::run_expects(&project.module, &mut FunctorHost).map_err(|failure| {
+        let (file, line, col) = project.sources.resolve(failure.error.span.start);
+        ExpectRunError {
+            file: file.path.clone(),
+            line,
+            col,
+            message: failure.error.message.clone(),
+        }
+    });
     // The `Ui.*` constructors register handlers in a thread-local the producer
     // drains per frame; nothing consumes them here, so drop whatever the
     // expects accumulated (also on the error path — the def load runs first).

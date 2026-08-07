@@ -169,12 +169,13 @@ fn verify_magic(url: &str, bytes: &[u8]) -> Result<(), String> {
         .position(|b| !b.is_ascii_whitespace())
         .map(|start| &stripped[start..])
         .unwrap_or(&[]);
-    let html = [&b"<!doctype"[..], &b"<html"[..]]
-        .iter()
-        .any(|prefix| body.len() >= prefix.len() && body[..prefix.len()].eq_ignore_ascii_case(prefix));
+    let html = [&b"<!doctype"[..], &b"<html"[..]].iter().any(|prefix| {
+        body.len() >= prefix.len() && body[..prefix.len()].eq_ignore_ascii_case(prefix)
+    });
     if html {
-        return Err("response body is an HTML page, not an asset — is the URL an error page?"
-            .to_string());
+        return Err(
+            "response body is an HTML page, not an asset — is the URL an error page?".to_string(),
+        );
     }
     let path_part = url.split(['?', '#']).next().unwrap_or(url);
     let ext = std::path::Path::new(path_part)
@@ -382,10 +383,8 @@ mod remote {
         /// dir comes from an env var — splitting it would race siblings.
         #[test]
         fn fetch_downloads_then_serves_from_disk_cache() {
-            let cache = std::env::temp_dir().join(format!(
-                "functor-remote-cache-test-{}",
-                std::process::id()
-            ));
+            let cache = std::env::temp_dir()
+                .join(format!("functor-remote-cache-test-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&cache);
             std::env::set_var("FUNCTOR_ASSET_CACHE", &cache);
 
@@ -404,8 +403,7 @@ mod remote {
             }
 
             let url = "https://example.test/model.glb";
-            let mut fut: Pin<Box<dyn Future<Output = RemoteFetchResult>>> =
-                Box::pin(fetch(url));
+            let mut fut: Pin<Box<dyn Future<Output = RemoteFetchResult>>> = Box::pin(fetch(url));
             // Download in flight: the future parks without blocking.
             assert!(matches!(poll_once(&mut fut), Poll::Pending));
             assert!(matches!(poll_once(&mut fut), Poll::Pending));
@@ -419,8 +417,7 @@ mod remote {
             }
 
             // Second fetch: served from the disk cache, fetcher not called again.
-            let mut fut2: Pin<Box<dyn Future<Output = RemoteFetchResult>>> =
-                Box::pin(fetch(url));
+            let mut fut2: Pin<Box<dyn Future<Output = RemoteFetchResult>>> = Box::pin(fetch(url));
             match poll_once(&mut fut2) {
                 Poll::Ready(Ok(bytes)) => assert_eq!(bytes, GLB),
                 _ => panic!("expected cached Ready(Ok(..))"),
@@ -430,8 +427,7 @@ mod remote {
             // A body that isn't what the URL claims (CDN soft-404 HTML) is an
             // error and must NOT be cached.
             let url2 = "https://example.test/other.glb";
-            let mut fut3: Pin<Box<dyn Future<Output = RemoteFetchResult>>> =
-                Box::pin(fetch(url2));
+            let mut fut3: Pin<Box<dyn Future<Output = RemoteFetchResult>>> = Box::pin(fetch(url2));
             assert!(matches!(poll_once(&mut fut3), Poll::Pending));
             let tx = stash.lock().unwrap().take().unwrap();
             tx.send(Ok(b"<html>not found</html>".to_vec())).unwrap();
@@ -495,8 +491,7 @@ mod remote {
             assert_eq!(recovered.unwrap(), GLB, "recovers once the server does");
             // And the ASYNC runtime path hits the tooling-warmed entry too —
             // the whole point: import warms exactly what the game later loads.
-            let mut fut4: Pin<Box<dyn Future<Output = RemoteFetchResult>>> =
-                Box::pin(fetch(url3));
+            let mut fut4: Pin<Box<dyn Future<Output = RemoteFetchResult>>> = Box::pin(fetch(url3));
             match poll_once(&mut fut4) {
                 Poll::Ready(Ok(bytes)) => assert_eq!(bytes, GLB),
                 _ => panic!("runtime fetch should hit the tooling-warmed cache entry"),
@@ -546,7 +541,9 @@ mod tests {
 
     #[test]
     fn remote_paths_are_urls_only() {
-        assert!(is_remote_path("https://assets.babylonjs.com/meshes/fish.glb"));
+        assert!(is_remote_path(
+            "https://assets.babylonjs.com/meshes/fish.glb"
+        ));
         assert!(is_remote_path("http://localhost:8080/crate.png"));
         assert!(!is_remote_path("crate.png"));
         assert!(!is_remote_path("models/fish.glb"));

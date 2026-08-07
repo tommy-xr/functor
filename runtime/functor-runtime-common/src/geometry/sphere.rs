@@ -61,17 +61,23 @@ fn generate_unit_sphere(slices: u32, stacks: u32) -> (Vec<Vertex>, Vec<usize>) {
 
 impl Sphere {
     pub fn create() -> Box<dyn Geometry> {
-        let slices = 20;
-        let stacks = 20;
-        let (sphere_vertices, sphere_indices) = generate_unit_sphere(slices, stacks);
-
-        let mut vertices: Vec<VertexPositionTexture> = sphere_vertices
-            .into_iter()
-            .map(|v| VertexPositionTexture::new(v.position, v.tex_coords, v.normal))
-            .collect();
-        let indices: Vec<u32> = sphere_indices.into_iter().map(|i| i as u32).collect();
-
-        super::compute_tangents(&mut vertices, &indices);
+        let (vertices, indices) = sphere_mesh_data();
         Box::new(IndexedMesh::create(vertices, indices))
     }
+}
+
+/// The canonical unit-sphere mesh, shared by ordinary and instanced rendering.
+pub(crate) fn sphere_mesh_data() -> (Vec<VertexPositionTexture>, Vec<u32>) {
+    let slices = 20;
+    let stacks = 20;
+    let (sphere_vertices, sphere_indices) = generate_unit_sphere(slices, stacks);
+
+    let mut vertices: Vec<VertexPositionTexture> = sphere_vertices
+        .into_iter()
+        .map(|v| VertexPositionTexture::new(v.position, v.tex_coords, v.normal))
+        .collect();
+    let indices: Vec<u32> = sphere_indices.into_iter().map(|i| i as u32).collect();
+
+    super::compute_tangents(&mut vertices, &indices);
+    (vertices, indices)
 }

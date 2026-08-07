@@ -175,11 +175,7 @@ mod tests {
             obj: SceneObject::Group(vec![]),
             xform: Matrix4::identity(),
         };
-        assert!(!Frame::with_2d(
-            Frame::new(Camera::default(), empty_3d),
-            layer
-        )
-        .is_pure_2d());
+        assert!(!Frame::with_2d(Frame::new(Camera::default(), empty_3d), layer).is_pure_2d());
     }
 
     #[test]

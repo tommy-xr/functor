@@ -346,7 +346,13 @@ const KEYWORDS: &[&str] = &[
 fn sanitize_ident(raw: &str) -> String {
     let mut s: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if let Some(first) = s.chars().next() {
         if first.is_ascii_uppercase() {
@@ -729,7 +735,10 @@ let boom = Asset.sound(\"boom.ogg\")
             ("walk".to_string(), 3.0),
         ];
         assert_eq!(duplicate_clip_names(&clips), vec!["walk".to_string()]);
-        let input = models(&[("bot.glb", &[("walk", 1.0), ("idle", 2.0), ("walk", 3.0)][..])]);
+        let input = models(&[(
+            "bot.glb",
+            &[("walk", 1.0), ("idle", 2.0), ("walk", 3.0)][..],
+        )]);
         let src = generate(&input).unwrap();
         assert!(src.contains("  walk: { name: \"walk\", duration: 1.0 },"));
         assert!(!src.contains("walk_2"));

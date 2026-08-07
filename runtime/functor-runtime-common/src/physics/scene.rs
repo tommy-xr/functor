@@ -21,8 +21,12 @@ pub const DEFAULT_GRAVITY: [f32; 3] = [0.0, -9.81, 0.0];
 pub enum Shape {
     /// Box in the body's local axes, given as *full* extents
     /// (width, height, depth).
-    Cuboid { extents: [f32; 3] },
-    Sphere { radius: f32 },
+    Cuboid {
+        extents: [f32; 3],
+    },
+    Sphere {
+        radius: f32,
+    },
     /// Capsule along the local Y axis: a segment of `2 * half_height` with
     /// spherical caps of `radius`.
     Capsule {

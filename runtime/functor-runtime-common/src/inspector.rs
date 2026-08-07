@@ -136,8 +136,14 @@ fn build_invocations(
     // function runs on pause only) and needs no retention anywhere else.
     let mut replayed = Vec::with_capacity(journal.len() + 1);
     for e in journal {
-        if let Ok((result, inv)) = session.call_recorded(e.entry, e.args.clone(), &mut FunctorHost) {
-            replayed.push((e.entry, Provenance::render(&e.provenance, &e.args), inv, result));
+        if let Ok((result, inv)) = session.call_recorded(e.entry, e.args.clone(), &mut FunctorHost)
+        {
+            replayed.push((
+                e.entry,
+                Provenance::render(&e.provenance, &e.args),
+                inv,
+                result,
+            ));
         }
     }
     if let Some((draw_name, args)) = draw {
@@ -254,7 +260,9 @@ fn budgeted_value_json(value: &Value, remaining: &mut usize) -> (serde_json::Val
     // work `serde_json::json!` does when the doc is stringified — paid twice
     // for the values that fit, which at pause cadence is not a cost worth
     // designing around.
-    let size = serde_json::to_string(&json).map(|s| s.len()).unwrap_or(usize::MAX);
+    let size = serde_json::to_string(&json)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX);
     if size > *remaining {
         *remaining = 0;
         return refused();
@@ -296,7 +304,15 @@ pub fn build_trace_doc(
     session: &Session,
 ) -> String {
     build_trace_doc_with_coverage(
-        paused, frame, tts, sources, journal, draw, &[], &[], session,
+        paused,
+        frame,
+        tts,
+        sources,
+        journal,
+        draw,
+        &[],
+        &[],
+        session,
     )
 }
 
@@ -385,7 +401,8 @@ fn coverage_json(
         // paused_coverage is identical (BTreeSet dedups), so always
         // processing is strictly safe for one cheap extra replay.
         for e in entries {
-            if let Ok((_discard, cov)) = session.call_covered(e.entry, e.args.clone(), &mut FunctorHost)
+            if let Ok((_discard, cov)) =
+                session.call_covered(e.entry, e.args.clone(), &mut FunctorHost)
             {
                 for start in cov {
                     hits.entry(start).or_default().insert(offset);
@@ -534,11 +551,17 @@ mod tests {
         for b in binds {
             let start = b["start"].as_u64().unwrap() as usize;
             let end = b["end"].as_u64().unwrap() as usize;
-            assert!(start <= end && end <= SRC.len(), "LOCAL offset into the file");
+            assert!(
+                start <= end && end <= SRC.len(),
+                "LOCAL offset into the file"
+            );
             assert!(b["value"].is_string());
         }
         // `dt` binds to the exact arg we passed — a real value.
-        let dt = binds.iter().find(|b| b["name"] == "dt").expect("dt binding");
+        let dt = binds
+            .iter()
+            .find(|b| b["name"] == "dt")
+            .expect("dt binding");
         assert_eq!(dt["value"], serde_json::json!("0.2"));
 
         // The input invocation: its own count, key/down provenance, real bindings.
@@ -571,12 +594,21 @@ mod tests {
         // composite (preview elides) and `dt` a primitive (preview == value).
         for b in binds {
             assert!(b["preview"].is_string(), "{b}");
-            assert!(matches!(b["kind"].as_str(), Some("primitive" | "composite")), "{b}");
+            assert!(
+                matches!(b["kind"].as_str(), Some("primitive" | "composite")),
+                "{b}"
+            );
             assert!(matches!(b["site"].as_str(), Some("binder" | "ref")), "{b}");
         }
-        let m = binds.iter().find(|b| b["name"] == "m" && b["site"] == "binder").unwrap();
+        let m = binds
+            .iter()
+            .find(|b| b["name"] == "m" && b["site"] == "binder")
+            .unwrap();
         assert_eq!(m["kind"], serde_json::json!("composite"));
-        let dt = binds.iter().find(|b| b["name"] == "dt" && b["site"] == "binder").unwrap();
+        let dt = binds
+            .iter()
+            .find(|b| b["name"] == "dt" && b["site"] == "binder")
+            .unwrap();
         assert_eq!(dt["kind"], serde_json::json!("primitive"));
         assert_eq!(dt["preview"], dt["value"]);
 
@@ -585,7 +617,9 @@ mod tests {
             binds.iter().any(|b| b["name"] == "m" && b["site"] == "ref"),
             "reference sites reach the wire: {binds:#?}"
         );
-        assert!(binds.iter().any(|b| b["name"] == "dt" && b["site"] == "ref"));
+        assert!(binds
+            .iter()
+            .any(|b| b["name"] == "dt" && b["site"] == "ref"));
     }
 
     #[test]
@@ -619,7 +653,9 @@ mod tests {
         assert_eq!(json, serde_json::json!(1.0));
         assert_eq!(remaining, 16 - "1.0".len());
 
-        let big = Value::List(Rc::new((0..1000).map(|i| Value::Number(i as f64)).collect()));
+        let big = Value::List(Rc::new(
+            (0..1000).map(|i| Value::Number(i as f64)).collect(),
+        ));
         let (json, truncated) = budgeted_value_json(&big, &mut remaining);
         assert!(truncated);
         assert_eq!(json, serde_json::json!({ "$truncated": "trace budget" }));
@@ -674,7 +710,11 @@ mod tests {
         let tick = &doc["invocations"][0];
         assert_eq!(tick["entry"], serde_json::json!("tick"));
         assert!(
-            tick["bindings"].as_array().unwrap().iter().any(|b| b["name"] == "b"),
+            tick["bindings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["name"] == "b"),
             "the Ui.button binding recorded"
         );
 
@@ -688,7 +728,11 @@ mod tests {
         assert!(leaked.is_empty(), "replay re-emitted Debug.log: {leaked:?}");
 
         let handlers = take_ui_handlers();
-        assert_eq!(handlers.len(), 1, "replay pushes must not linger in the UI table");
+        assert_eq!(
+            handlers.len(),
+            1,
+            "replay pushes must not linger in the UI table"
+        );
         assert!(matches!(handlers[0], UiHandler::Msg(Value::Number(n)) if n == 9.0));
     }
 
@@ -711,9 +755,7 @@ mod tests {
         let sources = inspector_sources(&project.sources);
         let runnable = functor_lang::coverage::runnable_offsets(&project.module);
 
-        let model = |n: f64| {
-            Value::Record(Rc::new(vec![("n".to_string(), Value::Number(n))]))
-        };
+        let model = |n: f64| Value::Record(Rc::new(vec![("n".to_string(), Value::Number(n))]));
         let tick = |n: f64| JournalEntry {
             entry: "tick",
             args: vec![model(n), Value::Number(0.1), Value::Number(0.1)],
@@ -728,26 +770,27 @@ mod tests {
             (6u64, vec![tick(0.2)]),
         ];
         let doc: serde_json::Value = serde_json::from_str(&build_trace_doc_with_coverage(
-            true,
-            5,
-            0.5,
-            &sources,
-            &journal,
-            None,
-            &ring,
-            &runnable,
-            &session,
+            true, 5, 0.5, &sources, &journal, None, &ring, &runnable, &session,
         ))
         .unwrap();
 
         let true_arm = src.find("{ n: m.n + 1.0 }").unwrap();
         // rfind: `init` is the SAME text as the false arm — the arm is last.
         let false_arm = src.rfind("{ n: 0.0 }").unwrap();
-        let cov = doc["coverage"]["game.fun"].as_array().expect("coverage for game.fun");
+        let cov = doc["coverage"]["game.fun"]
+            .as_array()
+            .expect("coverage for game.fun");
         let frames_at = |start: usize| {
             cov.iter()
                 .find(|c| c["start"] == serde_json::json!(start))
-                .map(|c| c["frames"].as_array().unwrap().iter().map(|f| f.as_i64().unwrap()).collect::<Vec<_>>())
+                .map(|c| {
+                    c["frames"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|f| f.as_i64().unwrap())
+                        .collect::<Vec<_>>()
+                })
         };
         // The true arm ran on the paused frame (0) and the frame after (+1),
         // never the frame before.
@@ -795,7 +838,10 @@ mod tests {
         .unwrap();
 
         let invs = doc["invocations"].as_array().unwrap();
-        let draw = invs.iter().find(|i| i["entry"] == "draw").expect("draw invocation");
+        let draw = invs
+            .iter()
+            .find(|i| i["entry"] == "draw")
+            .expect("draw invocation");
         assert_eq!(draw["provenance"], serde_json::json!("draw"));
         assert_eq!(draw["count"], serde_json::json!(1));
         let binds = draw["bindings"].as_array().unwrap();
