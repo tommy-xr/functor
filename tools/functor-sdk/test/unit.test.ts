@@ -330,6 +330,64 @@ test("xr() posts a flat, tagged sample and passes partials through", async () =>
   ]);
 });
 
+test("gamepadInput returns the typed optional input domain", async () => {
+  const gamepad = {
+    left_stick: [-0.5, 1] as [number, number],
+    right_stick: [0, 0] as [number, number],
+    left_trigger: 0,
+    right_trigger: 0.25,
+    south: true,
+    east: false,
+    west: false,
+    north: false,
+    left_bumper: false,
+    right_bumper: false,
+    left_stick_pressed: false,
+    right_stick_pressed: false,
+    dpad_up: false,
+    dpad_down: false,
+    dpad_left: true,
+    dpad_right: false,
+    start: false,
+    select: false,
+  };
+  const http = {
+    getJson: async () => ({
+      frame: 1,
+      tts: 0,
+      viewport: { width: 1, height: 1 },
+      views: [],
+      model: "{}",
+      input: { held_keys: [], mouse: { x: 0, y: 0 }, gamepad },
+    }),
+  } as unknown as HttpClient;
+  const client = new FunctorClient(http);
+
+  assert.deepEqual(await client.gamepadInput(), gamepad);
+});
+
+test("gamepad() posts a flat, tagged partial sample; gamepadClear() releases it", async () => {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  const http = {
+    postText: async (path: string, body: unknown) => {
+      calls.push({ path, body });
+      return "ok";
+    },
+  } as HttpClient;
+  const client = new FunctorClient(http);
+
+  await client.gamepad({ left_stick: [-0.5, 1], south: true });
+  await client.gamepadClear();
+
+  assert.deepEqual(calls, [
+    {
+      path: "/input",
+      body: { type: "gamepad", left_stick: [-0.5, 1], south: true },
+    },
+    { path: "/input", body: { type: "gamepad_clear" } },
+  ]);
+});
+
 test("reloadAssets uploads binary envelopes then finalizes the manifest", async () => {
   const calls: Array<{ path: string; body: unknown }> = [];
   const http = {

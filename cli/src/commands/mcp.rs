@@ -1723,11 +1723,14 @@ MCP server before reconnecting or reusing that runtime URL.",
     /// `{"type":"mouse_button","button":"left","down":true}`,
     /// `{"type":"ui_event","slot":0,"kind":"Clicked"}` (also
     /// `{"SliderChanged":0.5}` / `{"TextChanged":"hi"}`),
-    /// `{"type":"xr", "head":…, "left":…, "right":…}`, `{"type":"xr_clear"}`.
+    /// `{"type":"xr", "head":…, "left":…, "right":…}`, `{"type":"xr_clear"}`,
+    /// `{"type":"gamepad", "left_stick":[0,1], "south":true}`,
+    /// `{"type":"gamepad_clear"}`.
     /// The list mirrors `POST /input` and is not exhaustive; an unrecognized
     /// shape comes back as the runtime's own 400, which names the problem.
-    /// Keys, held buttons and XR samples are LEVEL state: they stay in force
-    /// across steps until released, which is how a paused session is scripted.
+    /// Keys, held buttons, XR and gamepad samples are LEVEL state: they stay
+    /// in force across steps until released, which is how a paused session is
+    /// scripted.
     #[tool]
     async fn send_input(
         &self,
@@ -3410,6 +3413,27 @@ still be alive; stop an owned session, or restart both an attached runtime and t
                     url,
                     "/input",
                     serde_json::json!({ "type": "xr_clear" }).to_string(),
+                )
+                .await?;
+                Ok(nothing())
+            }
+            "gamepad" => {
+                require_arity(method, args, 1)?;
+                let sample = args[0]
+                    .as_object()
+                    .ok_or_else(|| "gamepad sample must be an object".to_string())?;
+                let mut command = sample.clone();
+                command.insert("type".into(), Value::String("gamepad".into()));
+                self.post(url, "/input", Value::Object(command).to_string())
+                    .await?;
+                Ok(nothing())
+            }
+            "gamepadClear" => {
+                require_arity(method, args, 0)?;
+                self.post(
+                    url,
+                    "/input",
+                    serde_json::json!({ "type": "gamepad_clear" }).to_string(),
                 )
                 .await?;
                 Ok(nothing())

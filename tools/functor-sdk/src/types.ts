@@ -38,6 +38,31 @@ export interface XrInputSnapshot {
   right: XrControllerSnapshot;
 }
 
+/** The primary connected gamepad's held state, aligned to the standard
+ * mapping desktop and web pads share. Face buttons are positional (`south` is
+ * the bottom face button); sticks are `-1..1` with up-positive Y (the XR
+ * thumbstick convention); triggers are `0..1`. Levels only — no edge sets. */
+export interface GamepadSnapshot {
+  left_stick: [x: number, y: number];
+  right_stick: [x: number, y: number];
+  left_trigger: number;
+  right_trigger: number;
+  south: boolean;
+  east: boolean;
+  west: boolean;
+  north: boolean;
+  left_bumper: boolean;
+  right_bumper: boolean;
+  left_stick_pressed: boolean;
+  right_stick_pressed: boolean;
+  dpad_up: boolean;
+  dpad_down: boolean;
+  dpad_left: boolean;
+  dpad_right: boolean;
+  start: boolean;
+  select: boolean;
+}
+
 /** Wire spelling of a mouse button for `POST /input`. */
 export type MouseButtonName = "left" | "right" | "middle";
 
@@ -50,9 +75,9 @@ export interface MouseButtons {
 
 /** Runtime-owned input sampled independently of the game model.
  *
- * Typed device domains extend this record: XR is available today; gamepad and
- * mobile-touch snapshots can be added without replacing keyboard/mouse or
- * introducing target-specific clients. */
+ * Typed device domains extend this record: XR and gamepad are available
+ * today; a mobile-touch snapshot can be added without replacing
+ * keyboard/mouse or introducing target-specific clients. */
 export interface InputSnapshot {
   /** Keys currently held, by canonical name. */
   held_keys: KeyName[];
@@ -82,6 +107,9 @@ export interface InputSnapshot {
   };
   /** Present while an XR target has valid head tracking. */
   xr?: XrInputSnapshot;
+  /** Present while a gamepad sample is injected (no shell polls a physical
+   * pad yet; polling will make this "while a pad is connected"). */
+  gamepad?: GamepadSnapshot;
 }
 
 export interface RuntimeViewport {
@@ -174,7 +202,15 @@ export type InputCommand =
   | { type: "ui_event"; slot: number; kind: UiEventKind }
   | { type: "webview_event"; slot: number; kind: UiEventKind }
   | ({ type: "xr" } & XrInputSample)
-  | { type: "xr_clear" };
+  | { type: "xr_clear" }
+  | ({ type: "gamepad" } & GamepadInputSample)
+  | { type: "gamepad_clear" };
+
+/** An injected gamepad sample for `POST /input` (desktop only) — the
+ * {@link XrInputSample} contract for the pad domain: level state until
+ * replaced, a whole-sample replacement whose omitted fields take their
+ * defaults (centered sticks, released triggers/buttons). */
+export type GamepadInputSample = Partial<GamepadSnapshot>;
 
 /** An injected XR sample for `POST /input` (desktop only).
  *

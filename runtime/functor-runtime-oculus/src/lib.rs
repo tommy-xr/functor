@@ -748,6 +748,15 @@ fn service_debug_request(
 tracking); use the desktop runtime's --headless/--debug-port path"
                         .to_string(),
                 ),
+                // Same story for the gamepad domain: the device runtime does
+                // not sample pads (Quest controllers ARE the xr domain), so
+                // honoring an injection here would invent a device the shell
+                // can never refresh or clear on its own.
+                InputCommand::Gamepad(_) | InputCommand::GamepadClear => Err(
+                    "gamepad injection is unsupported on the device runtime; use the \
+desktop runtime's --headless/--debug-port path"
+                        .to_string(),
+                ),
             };
             if clock.is_paused() {
                 game.absorb_paused_input();

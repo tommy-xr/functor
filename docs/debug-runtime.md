@@ -208,6 +208,8 @@ JSON is tagged by `type`. Unknown keys/shapes return **400** with a message.
 {"type":"ui_event","slot":2,"kind":{"TextChanged":"hi"}}       // edit text input slot 2
 {"type":"xr","left":{...},"right":{...},"head":{...}}          // set the XR device sample
 {"type":"xr_clear"}                                            // drop it again
+{"type":"gamepad","left_stick":[0.0,1.0],"south":true}         // set the gamepad sample
+{"type":"gamepad_clear"}                                       // drop it again
 ```
 
 `mouse_button` is both an edge and level state, exactly like `key`: it calls the
@@ -266,6 +268,19 @@ without it. That is the point: the mouse/keyboard emulator pins both hands to
 `z = -0.55` with identity orientations, so gestures like pulling a hand back
 toward your face, or aiming with a rotated grip, are inexpressible there and can
 only be driven this way. `held_keys` and `mouse` stay live alongside it.
+
+`{"type":"gamepad"}` is the same contract for the gamepad domain: sampled
+level state (no entry point call, recorded, replayable), a whole-sample
+replacement whose omitted fields take their defaults (centered sticks,
+released triggers/buttons), `deny_unknown_fields`, and `{"type":"gamepad_clear"}`
+as the release half — today restoring no `gamepad` domain at all (no shell
+polls a physical pad yet, so injection is the domain's only source). The
+body is the snake_case [`gamepad` sample]
+(#sampled-input-in-get-state) `GET /state` reports: `left_stick`/`right_stick`
+(`[-1..1]`, up-positive Y), `left_trigger`/`right_trigger` (`0..1`), and the
+positional booleans `south`/`east`/`west`/`north`, `left_bumper`/`right_bumper`,
+`left_stick_pressed`/`right_stick_pressed`, `dpad_up`/`dpad_down`/`dpad_left`/
+`dpad_right`, `start`/`select`.
 
 Pair it with `POST /time` to step one frame per pose — and **wait for `frame` to
 increment before sending the next pose**. Advances accumulate (one advance is
@@ -352,7 +367,8 @@ make the preview and the real run disagree.
 
 `input` is runtime-owned data sampled for one fixed simulation step. Keyboard and
 mouse keep their existing event entry points while also exposing deterministic
-held and pressed/released sets. Quest adds `xr` while head tracking is valid:
+held and pressed/released sets. Quest adds `xr` while head tracking is valid;
+`gamepad` appears while a pad sample is live (today: injected):
 
 These edge fields were added in debug protocol v6. Against an older runtime,
 clients should treat absent edge arrays/button sets as empty.
@@ -400,6 +416,26 @@ clients should treat absent edge arrays/button sets as empty.
       "thumbstick_pressed": false,
       "menu_pressed": false
     }
+  },
+  "gamepad": {
+    "left_stick": [0.0, 0.0],
+    "right_stick": [0.0, 0.0],
+    "left_trigger": 0.0,
+    "right_trigger": 0.0,
+    "south": false,
+    "east": false,
+    "west": false,
+    "north": false,
+    "left_bumper": false,
+    "right_bumper": false,
+    "left_stick_pressed": false,
+    "right_stick_pressed": false,
+    "dpad_up": false,
+    "dpad_down": false,
+    "dpad_left": false,
+    "dpad_right": false,
+    "start": false,
+    "select": false
   }
 }
 ```
@@ -419,9 +455,15 @@ source is available for that hand. Grip and aim are independently nullable
 because buttons can remain available during a temporary pose-tracking loss.
 Analog values are normalized to `0..1`; thumbstick axes to `-1..1`.
 
-Non-XR runtimes omit `xr`, preserving the previous desktop JSON shape. Future
-gamepad and mobile-touch support should add typed sibling fields rather than
-target-specific endpoints or string-keyed capability bags.
+Non-XR runtimes omit `xr`, and padless runtimes omit `gamepad` — each domain
+is a typed sibling field, present only when its device is live. `gamepad`
+carries the pad's held state: sticks as `[x, y]` in `-1..1` with up-positive
+Y, triggers in `0..1`, positional face buttons (`south` is the bottom one),
+bumpers, stick clicks, dpad, and `start`/`select`. No shell polls a physical
+pad yet, so today the domain appears only while a sample is injected
+(`{"type":"gamepad"}` above). Future mobile-touch support should add another
+typed sibling field rather than target-specific endpoints or string-keyed
+capability bags.
 
 ### `POST /time` — frame-loop control
 

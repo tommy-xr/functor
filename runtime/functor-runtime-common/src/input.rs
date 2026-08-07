@@ -6,10 +6,9 @@ use crate::TrackingPose;
 ///
 /// Keyboard and mouse retain their event entry points, while this plain-data
 /// snapshot exposes both levels and de-duplicated transitions through the
-/// extensible shell → producer seam. XR is the first typed device domain;
-/// gamepads and mobile touches can add sibling fields without turning device
-/// capabilities into stringly-typed maps or adding target-specific producer
-/// methods.
+/// extensible shell → producer seam. XR and gamepad are typed device domains;
+/// mobile touch can add a sibling field without turning device capabilities
+/// into stringly-typed maps or adding target-specific producer methods.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InputSnapshot {
     /// Keys currently held, in canonical discriminant order.
@@ -31,6 +30,13 @@ pub struct InputSnapshot {
     /// the existing desktop `/state` wire shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xr: Option<XrInputSnapshot>,
+    /// Live state of the primary connected gamepad when the target supplies
+    /// one. `None` means no pad is connected — a capability signal, so a game
+    /// can key control hints off it.
+    ///
+    /// Omitted rather than serialized as `null` when absent, like `xr`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamepad: Option<GamepadSnapshot>,
 }
 
 /// Last known mouse position in logical shell coordinates, the matching
@@ -273,6 +279,51 @@ pub struct XrControllerSnapshot {
     pub secondary_pressed: bool,
     pub thumbstick_pressed: bool,
     pub menu_pressed: bool,
+}
+
+/// Target-neutral state for the primary connected gamepad, aligned to the
+/// standard mapping GLFW (`glfwGetGamepadState`) and the Web Gamepad API
+/// share.
+///
+/// Face buttons are POSITIONAL (`south` is the bottom face button — A on
+/// Xbox, Cross on PlayStation, B on Nintendo), because letter names swap
+/// between vendors. Sticks are `-1..1` with **up-positive Y**, matching the
+/// XR thumbstick convention — a shell that polls a pad must negate GLFW's
+/// and the browser's down-positive axes at its boundary. Triggers are
+/// `0..1`. Values are raw (no deadzone shaping); games apply their own.
+///
+/// No shell polls a physical pad yet: today the domain's only source is
+/// debug injection (`POST /input` `{"type":"gamepad",…}`); GLFW and Web
+/// Gamepad API polling land as `override > polled > None` in the shells.
+///
+/// Levels only, no edge sets: pads are polled, so a press always spans at
+/// least one render frame and shows up in at least one sample — games detect
+/// edges against their model, exactly as XR games do.
+///
+/// Deserialization defaults every missing field, so a debug-injected sample
+/// (`POST /input` `{"type":"gamepad",…}`) can name only the controls it
+/// drives.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GamepadSnapshot {
+    pub left_stick: [f32; 2],
+    pub right_stick: [f32; 2],
+    pub left_trigger: f32,
+    pub right_trigger: f32,
+    pub south: bool,
+    pub east: bool,
+    pub west: bool,
+    pub north: bool,
+    pub left_bumper: bool,
+    pub right_bumper: bool,
+    pub left_stick_pressed: bool,
+    pub right_stick_pressed: bool,
+    pub dpad_up: bool,
+    pub dpad_down: bool,
+    pub dpad_left: bool,
+    pub dpad_right: bool,
+    pub start: bool,
+    pub select: bool,
 }
 
 /// Canonical key identifier shared across the F# <-> Rust boundary and all
@@ -685,19 +736,7 @@ fn controller_value(controller: &XrControllerSnapshot) -> functor_lang::Value {
             "squeeze",
             functor_lang::Value::Number(controller.squeeze as f64),
         ),
-        (
-            "thumbstick",
-            record([
-                (
-                    "x",
-                    functor_lang::Value::Number(controller.thumbstick[0] as f64),
-                ),
-                (
-                    "y",
-                    functor_lang::Value::Number(controller.thumbstick[1] as f64),
-                ),
-            ]),
-        ),
+        ("thumbstick", axes2_value(controller.thumbstick)),
         (
             "primaryPressed",
             functor_lang::Value::Bool(controller.primary_pressed),
@@ -714,6 +753,49 @@ fn controller_value(controller: &XrControllerSnapshot) -> functor_lang::Value {
             "menuPressed",
             functor_lang::Value::Bool(controller.menu_pressed),
         ),
+    ])
+}
+
+/// Convert a 2-axis pair into the plain-data `Input.point2` record.
+fn axes2_value(axes: [f32; 2]) -> functor_lang::Value {
+    record([
+        ("x", functor_lang::Value::Number(axes[0] as f64)),
+        ("y", functor_lang::Value::Number(axes[1] as f64)),
+    ])
+}
+
+fn gamepad_value(pad: &GamepadSnapshot) -> functor_lang::Value {
+    record([
+        ("leftStick", axes2_value(pad.left_stick)),
+        ("rightStick", axes2_value(pad.right_stick)),
+        (
+            "leftTrigger",
+            functor_lang::Value::Number(pad.left_trigger as f64),
+        ),
+        (
+            "rightTrigger",
+            functor_lang::Value::Number(pad.right_trigger as f64),
+        ),
+        ("south", functor_lang::Value::Bool(pad.south)),
+        ("east", functor_lang::Value::Bool(pad.east)),
+        ("west", functor_lang::Value::Bool(pad.west)),
+        ("north", functor_lang::Value::Bool(pad.north)),
+        ("leftBumper", functor_lang::Value::Bool(pad.left_bumper)),
+        ("rightBumper", functor_lang::Value::Bool(pad.right_bumper)),
+        (
+            "leftStickPressed",
+            functor_lang::Value::Bool(pad.left_stick_pressed),
+        ),
+        (
+            "rightStickPressed",
+            functor_lang::Value::Bool(pad.right_stick_pressed),
+        ),
+        ("dpadUp", functor_lang::Value::Bool(pad.dpad_up)),
+        ("dpadDown", functor_lang::Value::Bool(pad.dpad_down)),
+        ("dpadLeft", functor_lang::Value::Bool(pad.dpad_left)),
+        ("dpadRight", functor_lang::Value::Bool(pad.dpad_right)),
+        ("start", functor_lang::Value::Bool(pad.start)),
+        ("select", functor_lang::Value::Bool(pad.select)),
     ])
 }
 
@@ -765,6 +847,10 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
             ]),
         ),
         ("xr", option_value(xr)),
+        (
+            "gamepad",
+            option_value(snapshot.gamepad.as_ref().map(gamepad_value)),
+        ),
     ])
 }
 
@@ -772,8 +858,8 @@ pub fn input_snapshot_value(snapshot: &InputSnapshot) -> functor_lang::Value {
 mod tests {
     use super::{
         apply_key_transition_to_snapshot, apply_mouse_transition_to_snapshot, input_snapshot_value,
-        mouse_button_input_value, tracking_pose_from_value, tracking_pose_value, InputEdges,
-        InputSnapshot, Key, MouseButton, MouseButtons, MouseSnapshot, RecordedInput,
+        mouse_button_input_value, tracking_pose_from_value, tracking_pose_value, GamepadSnapshot,
+        InputEdges, InputSnapshot, Key, MouseButton, MouseButtons, MouseSnapshot, RecordedInput,
         XrControllerSnapshot, XrInputSnapshot,
     };
     use crate::TrackingPose;
@@ -1002,6 +1088,25 @@ mod tests {
         };
         let encoded = serde_json::to_string(&xr).unwrap();
         assert_eq!(serde_json::from_str::<InputSnapshot>(&encoded).unwrap(), xr);
+
+        // The gamepad domain follows the same wire contract: omitted when
+        // absent (asserted by the exact desktop JSON above), round-tripped
+        // when present.
+        let pad = InputSnapshot {
+            gamepad: Some(GamepadSnapshot {
+                left_stick: [0.5, -0.5],
+                left_trigger: 1.0,
+                south: true,
+                select: true,
+                ..GamepadSnapshot::default()
+            }),
+            ..InputSnapshot::default()
+        };
+        let encoded = serde_json::to_string(&pad).unwrap();
+        assert_eq!(
+            serde_json::from_str::<InputSnapshot>(&encoded).unwrap(),
+            pad
+        );
     }
 
     #[test]
@@ -1040,6 +1145,13 @@ mod tests {
                     ..XrControllerSnapshot::default()
                 },
             }),
+            gamepad: Some(GamepadSnapshot {
+                left_stick: [-0.5, 1.0],
+                right_trigger: 0.25,
+                south: true,
+                dpad_left: true,
+                ..GamepadSnapshot::default()
+            }),
         };
         let rendered = input_snapshot_value(&snapshot).to_string();
         assert!(
@@ -1061,6 +1173,23 @@ mod tests {
         assert!(rendered.contains("xr: Option.Some("), "{rendered}");
         assert!(rendered.contains("trigger: 0.75"), "{rendered}");
         assert!(rendered.contains("primaryPressed: true"), "{rendered}");
+        assert!(rendered.contains("gamepad: Option.Some("), "{rendered}");
+        assert!(
+            rendered.contains("leftStick: { x: -0.5, y: 1 }"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("rightTrigger: 0.25"), "{rendered}");
+        assert!(rendered.contains("south: true"), "{rendered}");
+        assert!(rendered.contains("dpadLeft: true"), "{rendered}");
+        assert!(rendered.contains("select: false"), "{rendered}");
+
+        // Without a pad the domain is an explicit None, never a zeroed record.
+        let no_pad = InputSnapshot::default();
+        assert!(
+            input_snapshot_value(&no_pad)
+                .to_string()
+                .contains("gamepad: Option.None"),
+        );
     }
 
     #[test]

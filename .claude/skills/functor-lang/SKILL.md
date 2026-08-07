@@ -363,8 +363,17 @@ let grab = (s) =>
   +Y up, and -Z forward. Each controller also carries `active`, analog
   trigger/squeeze/thumbstick state, and named button booleans. Missing XR,
   inactive controllers, and temporarily invalid poses are explicit
-  `Option.None`/`active: false`, never stale values. Future gamepad and mobile
-  touch domains belong as typed siblings of `xr` on the snapshot.
+  `Option.None`/`active: false`, never stale values. The snapshot also
+  contains `gamepad: Option.t<Input.gamepad>` — the primary connected pad's
+  held state, `Option.None` while no pad is connected. Sticks are `point2` in
+  `-1..1` with **up-positive `y`** (the XR thumbstick convention); triggers
+  are `0..1`; face buttons are POSITIONAL (`south` is the bottom face button —
+  A on Xbox, Cross on PlayStation), plus bumpers, stick clicks, dpad, and
+  `start`/`select`. Levels only, raw values: detect edges against your model
+  and apply your own deadzone. No shell polls a physical pad yet — today the
+  domain is supplied by desktop debug injection only (`POST /input`
+  `{"type":"gamepad",…}`), so it is `Option.None` everywhere else. A future
+  mobile-touch domain belongs as another typed sibling on the snapshot.
 - **Bundled modules use the ordinary module semantics.** The language-owned
   `Net.fun` / `Key.fun` / `Mouse.fun` builtins, `Random.funi` interface, and
   `Option.fun` / `Result.fun` standard-library implementations are in-memory
