@@ -148,7 +148,19 @@ try {
   // Restart only the authoritative server. The same original client must
   // observe the disconnect, retry, receive a fresh seat, and resume snapshots —
   // on the RESTARTED server's sequence, which counts from zero again.
-  const seqBeforeKill = (await getState(basePort + 1)).model.lastSnapshotSeq;
+  // Let the session build a high-water mark first. The check below is "the
+  // client came back on a LOWER sequence than it held", which only means
+  // anything if the old line is comfortably ahead of whatever a freshly
+  // started server reaches during the reconnect window — otherwise a short
+  // session and a quick restart can legitimately meet at the same number.
+  const SEQ_HEADROOM = 30;
+  const seqBeforeKill = (await waitFor(
+    `original client to bank a sequence of at least ${SEQ_HEADROOM}`,
+    async () => {
+      const state = await getState(basePort + 1);
+      return state.model.lastSnapshotSeq >= SEQ_HEADROOM ? state : false;
+    }
+  )).model.lastSnapshotSeq;
   server.kill("SIGTERM");
   await new Promise((done) => server.once("exit", done));
   const disconnected = await waitFor("original client to observe server shutdown", async () => {
