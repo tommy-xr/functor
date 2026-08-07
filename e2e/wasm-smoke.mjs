@@ -105,7 +105,12 @@ function entrySource(sample) {
   const cfg = JSON.parse(
     readFileSync(`${ROOT}/examples/${sample}/functor.json`, "utf8"),
   );
-  const entry = cfg.entry || "game.fun";
+  // A multi-entry project (functor.json `entries`) is served at the role the
+  // CLI defaults to — `client`, or the sole entry — which for a roles-as-FILES
+  // sample is NOT game.fun. A role may also be an object naming a shared file.
+  const roles = cfg.entries ? Object.keys(cfg.entries) : null;
+  const role = roles ? cfg.entries[roles.includes("client") ? "client" : roles[0]] : cfg.entry;
+  const entry = (typeof role === "object" ? role.file : role) || "game.fun";
   return readFileSync(`${ROOT}/examples/${sample}/${entry}`, "utf8");
 }
 
