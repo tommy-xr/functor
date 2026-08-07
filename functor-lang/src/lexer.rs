@@ -344,7 +344,8 @@ fn lex_with_interpolation_depth(
                 // declared units.
                 if i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
                     let suffix_start = i;
-                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                    {
                         i += 1;
                     }
                     let suffix = &src[suffix_start..i];

@@ -143,7 +143,10 @@ fn main() {
             }
         }
         let passed = reports.len() - failed;
-        println!("{} expects: {passed} passed, {failed} failed", reports.len());
+        println!(
+            "{} expects: {passed} passed, {failed} failed",
+            reports.len()
+        );
         if failed > 0 {
             exit(1);
         }

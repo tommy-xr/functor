@@ -324,10 +324,10 @@ fn comparison_with_negation_still_parses() {
 /// and trailing commas in a constructor's field list.
 #[test]
 fn variant_declaration_forms_parse() {
-    assert!(
-        functor_lang::parse("type Shape = | Circle(radius: float) | Rect(w: float, h: float,) | Point")
-            .is_ok()
-    );
+    assert!(functor_lang::parse(
+        "type Shape = | Circle(radius: float) | Rect(w: float, h: float,) | Point"
+    )
+    .is_ok());
     assert!(functor_lang::parse("type Answer = | Yes").is_ok());
 }
 
@@ -391,7 +391,11 @@ file"
 fn error_lowercase_module_name() {
     assert_eq!(
         parse_err("module server {\n  let x = 1.0\n}"),
-        ("module names are capitalized: `module Server`".to_string(), 1, 8)
+        (
+            "module names are capitalized: `module Server`".to_string(),
+            1,
+            8
+        )
     );
 }
 
@@ -562,7 +566,8 @@ fn error_nested_tuple_sub_pattern() {
 /// scoped to tuple/ctor patterns.
 #[test]
 fn error_literal_in_list_pattern() {
-    let (message, _, _) = parse_err("let f = (xs) => match xs with | [] => 0.0 | [true, ..r] => 1.0");
+    let (message, _, _) =
+        parse_err("let f = (xs) => match xs with | [] => 0.0 | [true, ..r] => 1.0");
     assert_eq!(
         message,
         "expected a binding name or `_` (list patterns do not nest), found `true`"
@@ -702,12 +707,22 @@ fn parsed_value(src: &str) -> ExprKind {
 fn and_binds_tighter_than_or() {
     // `a || b && c` parses as `a || (b && c)`.
     use functor_lang::ast::LogicalOp;
-    let ExprKind::Logical { op: LogicalOp::Or, rhs, .. } = parsed_value("let v = a || b && c")
+    let ExprKind::Logical {
+        op: LogicalOp::Or,
+        rhs,
+        ..
+    } = parsed_value("let v = a || b && c")
     else {
         panic!("expected an `||` at the root");
     };
     assert!(
-        matches!(rhs.kind, ExprKind::Logical { op: LogicalOp::And, .. }),
+        matches!(
+            rhs.kind,
+            ExprKind::Logical {
+                op: LogicalOp::And,
+                ..
+            }
+        ),
         "expected `&&` on the right of `||`, got {:?}",
         rhs.kind
     );
@@ -717,8 +732,11 @@ fn and_binds_tighter_than_or() {
 fn logical_is_looser_than_comparison() {
     // `a > b && c > d` parses as `(a > b) && (c > d)`.
     use functor_lang::ast::LogicalOp;
-    let ExprKind::Logical { op: LogicalOp::And, lhs, .. } =
-        parsed_value("let v = a > b && c > d")
+    let ExprKind::Logical {
+        op: LogicalOp::And,
+        lhs,
+        ..
+    } = parsed_value("let v = a > b && c > d")
     else {
         panic!("expected an `&&` at the root");
     };
@@ -880,9 +898,7 @@ fn if_condition_absorbs_logical_operators() {
 fn if_else_branch_absorbs_a_trailing_pipeline() {
     // The else branch is a full expression, so `if c then a else b |> f`
     // parses as `if c then a else (b |> f)`.
-    let ExprKind::If { else_branch, .. } =
-        parsed_value("let v = if c then a else b |> f")
-    else {
+    let ExprKind::If { else_branch, .. } = parsed_value("let v = if c then a else b |> f") else {
         panic!("expected an `if` at the root");
     };
     assert!(
