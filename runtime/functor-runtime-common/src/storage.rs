@@ -1,4 +1,4 @@
-//! Durable local save slots — the store behind `Effect.save` / `Effect.load`.
+//! Durable local save slots — the store behind `Persistence.save` / `Persistence.load`.
 //!
 //! A slot is a named blob of PLAIN DATA (the same structural codec
 //! `Effect.sendMsg` uses: [`crate::functor_lang_prelude::EffectValue`] as
@@ -255,7 +255,7 @@ pub use backend::set_project_root;
 use backend::saves_dir;
 
 /// Serializes tests that point the (process-global) native store at a
-/// throwaway directory — `Effect.save`/`load` tests live in the prelude too.
+/// throwaway directory — `Persistence.save`/`load` tests live in the prelude too.
 #[cfg(test)]
 pub(crate) static SAVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

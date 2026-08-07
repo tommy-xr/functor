@@ -78,7 +78,11 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
         &["Physics", "Anim", "Terrain", "Time"],
     ),
     (ApiGroup::Engine, "Input", &["Input"]),
-    (ApiGroup::Engine, "Effects & messaging", &["Effect", "Sub"]),
+    (
+        ApiGroup::Engine,
+        "Effects & messaging",
+        &["Effect", "Sub", "Persistence"],
+    ),
     (ApiGroup::Engine, "Audio", &["AudioScene", "AudioSource"]),
     (ApiGroup::Engine, "UI", &["Ui", "Html", "Attr", "Style"]),
     (ApiGroup::Engine, "Assets", &["Asset"]),
@@ -670,7 +674,7 @@ mod tests {
             let items: usize = modules.iter().map(|module| module.items.len()).sum();
             (modules.len(), items)
         };
-        assert_eq!(count(ApiGroup::Engine), (28, 323));
+        assert_eq!(count(ApiGroup::Engine), (29, 323));
         assert_eq!(count(ApiGroup::Stdlib), (10, 97));
         assert!(reference
             .modules
