@@ -105,7 +105,19 @@ function entrySource(sample) {
   const cfg = JSON.parse(
     readFileSync(`${ROOT}/examples/${sample}/functor.json`, "utf8"),
   );
-  const entry = cfg.entry || "game.fun";
+  // A multi-entry project (functor.json `entries`) is served at the role the
+  // CLI defaults to, and this mirrors the CLI's rule exactly (see
+  // cli/src/commands/functor_lang_project.rs): the SOLE entry, else `client`,
+  // else it is ambiguous and `--entry` is required — which for a roles-as-FILES
+  // sample is NOT game.fun. A role may also be an object naming a shared file.
+  const roles = cfg.entries ? Object.keys(cfg.entries) : null;
+  let role = cfg.entry;
+  if (roles) {
+    const name = roles.length === 1 ? roles[0] : roles.includes("client") ? "client" : null;
+    if (!name) throw new Error(`${sample}: ambiguous entries (${roles}) — no default role`);
+    role = cfg.entries[name];
+  }
+  const entry = (typeof role === "object" ? role.file : role) || "game.fun";
   return readFileSync(`${ROOT}/examples/${sample}/${entry}`, "utf8");
 }
 

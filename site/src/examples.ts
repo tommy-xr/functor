@@ -176,6 +176,30 @@ export const EXAMPLES: Example[] = [
     module: "Client",
     server: { file: exampleEntryPath("orbs"), module: "Server" },
   },
+  // The other half of the multiplayer pair: orbs keeps both roles in one
+  // buffer, netpong keeps them in separate FILES. So the role is the file
+  // here — `server` names server.fun with no module/prefix — and the sandbox
+  // edits client.fun. All three of the client entry's siblings must be copied
+  // (server.fun is the server pane's OWN entry, and a sibling of the client's):
+  // the runtime derives module names from file STEMS, and both roles call the
+  // shared renderer as `Game.view`, so a missing game.fun fails every pane with
+  // `unknown external 'Game.view'`. They live in a per-example subdirectory so
+  // generic stems (`protocol`, `server`, `game`) can't collide with another
+  // sample's files.
+  {
+    id: "netpong",
+    label: "Netpong (multiplayer)",
+    source: "examples/netpong/client.fun",
+    multiplayer: true,
+    // Keyboard-only, like the sample's own functor.json.
+    mouseCapture: false,
+    siblings: [
+      { source: "examples/netpong/server.fun", output: "examples/netpong/server.fun" },
+      { source: "examples/netpong/protocol.fun", output: "examples/netpong/protocol.fun" },
+      { source: "examples/netpong/game.fun", output: "examples/netpong/game.fun" },
+    ],
+    server: { file: "examples/netpong/server.fun" },
+  },
   {
     id: "platformer",
     label: "Platformer",
