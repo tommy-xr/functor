@@ -356,8 +356,9 @@ pub enum InputCommand {
     /// magnitude above the other commands.
     Gamepad(GamepadSnapshot),
     /// Drop an injected gamepad sample, restoring whatever the runtime would
-    /// sample on its own — today no `gamepad` domain at all (no shell polls a
-    /// physical pad yet). The release half of `Gamepad`'s held-key contract.
+    /// sample on its own — the GLFW-polled pad on desktop, or no `gamepad`
+    /// domain when none is connected. The release half of `Gamepad`'s
+    /// held-key contract.
     GamepadClear,
 }
 

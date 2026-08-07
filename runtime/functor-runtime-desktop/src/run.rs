@@ -160,7 +160,12 @@ fn desktop_input_snapshot(
     xr_primary_down: bool,
     xr_surface: (i32, i32),
     xr_override: Option<&XrInputSnapshot>,
+    // The gamepad domain resolves `override > polled > None` HERE (the one
+    // statement of the precedence rule, like the XR match below): a debug
+    // injection wins over the windowed loop's per-frame GLFW poll; headless
+    // has no GLFW instance and always passes `polled_gamepad: None`.
     gamepad_override: Option<&GamepadSnapshot>,
+    polled_gamepad: Option<&GamepadSnapshot>,
 ) -> InputSnapshot {
     let xr = match xr_override {
         Some(injected) => Some(injected.clone()),
@@ -170,10 +175,7 @@ fn desktop_input_snapshot(
     };
     let mut snapshot =
         sampled_input_snapshot(held_keys, mouse_pos, xr_surface, held_buttons, edges, xr);
-    // The gamepad domain's only desktop source for now is debug injection
-    // (`POST /input` `{"type":"gamepad"}`); GLFW pad polling slots in here as
-    // `override > polled > None`, the XR shape above.
-    snapshot.gamepad = gamepad_override.cloned();
+    snapshot.gamepad = gamepad_override.or(polled_gamepad).cloned();
     snapshot
 }
 
@@ -316,11 +318,13 @@ fn refresh_fixed_input_levels(
     held_buttons: MouseButtons,
     xr_primary_down: bool,
     xr_override: Option<&XrInputSnapshot>,
+    // `override > polled > None`, resolved here like `desktop_input_snapshot`.
     gamepad_override: Option<&GamepadSnapshot>,
+    polled_gamepad: Option<&GamepadSnapshot>,
 ) {
     snapshot.held_keys = held_keys.iter().copied().collect();
     snapshot.mouse.buttons = held_buttons;
-    snapshot.gamepad = gamepad_override.cloned();
+    snapshot.gamepad = gamepad_override.or(polled_gamepad).cloned();
     // An injected sample owns the whole XR domain — window keys must not
     // re-derive its trigger/thumbstick out from under the driver.
     match xr_override {
@@ -1399,6 +1403,7 @@ fn run_headless(
                     crate::desktop_xr_emulator::reference_surface(),
                     xr_override.as_ref(),
                     gamepad_override.as_ref(),
+                    None,
                 );
                 game.sampled_input(&snapshot);
             }
@@ -1426,6 +1431,7 @@ fn run_headless(
                     crate::desktop_xr_emulator::reference_surface(),
                     xr_override.as_ref(),
                     gamepad_override.as_ref(),
+                    None,
                 );
                 service_debug_request(
                     req,
@@ -1813,6 +1819,9 @@ Escape releases while captured"
         let mut xr_primary_clicked = false;
         let mut xr_override: Option<XrInputSnapshot> = None;
         let mut gamepad_override: Option<GamepadSnapshot> = None;
+        // The pad polled from GLFW this frame; a debug-injected override wins
+        // over it at every sample site (`override > polled > None`).
+        let mut polled_gamepad: Option<GamepadSnapshot> = None;
         // `--fixed-time` is a deterministic capture pin: the one zero-delta
         // bootstrap step must not observe cursor motion from the host window.
         // Explicit debug input remains authoritative; key release/focus-loss
@@ -1828,6 +1837,7 @@ Escape releases while captured"
             window.get_size(),
             xr_override.as_ref(),
             gamepad_override.as_ref(),
+            polled_gamepad.as_ref(),
         );
         // Whether the window owns the pointer (free-look). Capture is always
         // entered by a non-overlay click; see the Escape / MouseButton / Focus
@@ -2005,6 +2015,7 @@ then restart the runner"
                             false,
                             xr_override.as_ref(),
                             gamepad_override.as_ref(),
+                            polled_gamepad.as_ref(),
                         );
                     }
                     window.set_cursor_mode(glfw::CursorMode::Normal);
@@ -2030,6 +2041,19 @@ then restart the runner"
             // capture can't turn the camera). Window close/escape and the debug
             // server's /input still work.
             let ignore_user_input = clock.is_pinned();
+            // Poll the pad once per render frame — level state, refreshed
+            // whole. PRESENCE is sticky while a pad is connected (`None`
+            // stays the no-pad capability signal); the CONTROLS read rest
+            // level while window input is gated — unfocused, or time pinned —
+            // the pad twin of the focus-loss held-key sweep. Disconnect is
+            // `None` next frame, never stale values.
+            polled_gamepad = crate::desktop_gamepad::sample(&glfw).map(|pad| {
+                if ignore_user_input || !window.is_focused() {
+                    GamepadSnapshot::default()
+                } else {
+                    pad
+                }
+            });
             // Keyboard events for a focused `Ui.textInput` this frame,
             // collected from the GLFW stream while the overlay wants the
             // keyboard and handed to `draw_view` below. While the clock is
@@ -2115,6 +2139,7 @@ then restart the runner"
                                     false,
                                     xr_override.as_ref(),
                                     gamepad_override.as_ref(),
+                                    polled_gamepad.as_ref(),
                                 );
                             }
                             window.set_cursor_mode(glfw::CursorMode::Normal);
@@ -2166,6 +2191,7 @@ Escape again to quit"
                                 false,
                                 xr_override.as_ref(),
                                 gamepad_override.as_ref(),
+                                polled_gamepad.as_ref(),
                             );
                         }
                         if !hidden {
@@ -2364,6 +2390,7 @@ Escape again to quit"
                                 xr_primary_down || xr_primary_clicked,
                                 xr_override.as_ref(),
                                 gamepad_override.as_ref(),
+                                polled_gamepad.as_ref(),
                             );
                         }
                     }
@@ -2410,6 +2437,7 @@ Escape again to quit"
                                     xr_primary_down || xr_primary_clicked,
                                     xr_override.as_ref(),
                                     gamepad_override.as_ref(),
+                                    polled_gamepad.as_ref(),
                                 );
                             }
                         }
@@ -2454,6 +2482,7 @@ Escape again to quit"
                                     xr_primary_down || xr_primary_clicked,
                                     xr_override.as_ref(),
                                     gamepad_override.as_ref(),
+                                    polled_gamepad.as_ref(),
                                 );
                             }
                         }
@@ -2497,6 +2526,7 @@ Escape again to quit"
                                 false,
                                 xr_override.as_ref(),
                                 gamepad_override.as_ref(),
+                                polled_gamepad.as_ref(),
                             );
                         }
                     }
@@ -2659,6 +2689,7 @@ Escape again to quit"
                             window.get_size(),
                             xr_override.as_ref(),
                             gamepad_override.as_ref(),
+                            polled_gamepad.as_ref(),
                         );
                         game.sampled_input(&snapshot);
                     }
@@ -3454,6 +3485,7 @@ Escape again to quit"
                             window.get_size(),
                             xr_override.as_ref(),
                             gamepad_override.as_ref(),
+                            polled_gamepad.as_ref(),
                         )
                     };
                     let sampled_input_changed = service_debug_request(
@@ -3506,6 +3538,7 @@ Escape again to quit"
                             window.get_size(),
                             xr_override.as_ref(),
                             gamepad_override.as_ref(),
+                            polled_gamepad.as_ref(),
                         );
                     }
                 }
@@ -3805,6 +3838,7 @@ mod tests {
             (800, 600),
             None,
             None,
+            None,
         );
         let pose = snapshot
             .xr
@@ -3822,6 +3856,7 @@ mod tests {
             &held,
             buttons,
             false,
+            None,
             None,
             None,
         );
@@ -3863,6 +3898,7 @@ mod tests {
             (800, 600),
             None,
             None,
+            None,
         );
         assert!(snapshot.held_keys.is_empty());
         assert_eq!(snapshot.pressed_keys, vec![InputKey::Space]);
@@ -3884,6 +3920,7 @@ mod tests {
             (800, 600),
             None,
             None,
+            None,
         );
         assert_eq!(before.mouse.surface_width, 800);
         assert_eq!(before.mouse.surface_height, 600);
@@ -3899,6 +3936,7 @@ mod tests {
             false,
             false,
             (1440, 900),
+            None,
             None,
             None,
         );
@@ -3953,6 +3991,7 @@ mod tests {
             (800, 600),
             Some(&injected),
             None,
+            None,
         );
         assert_eq!(snapshot.xr.as_ref(), Some(&injected));
         // Keyboard/mouse domains stay live alongside it.
@@ -3982,6 +4021,7 @@ mod tests {
             (800, 600),
             None,
             None,
+            None,
         );
         assert_eq!(plain.xr, None, "no XR domain without a device or injection");
 
@@ -3994,6 +4034,7 @@ mod tests {
             false,
             (800, 600),
             Some(&injected),
+            None,
             None,
         );
         assert_eq!(snapshot.xr.as_ref(), Some(&injected));
@@ -4016,6 +4057,7 @@ mod tests {
             (800, 600),
             None,
             None,
+            None,
         );
         assert_eq!(
             plain.gamepad, None,
@@ -4032,6 +4074,7 @@ mod tests {
             (800, 600),
             None,
             Some(&pad),
+            None,
         );
         assert_eq!(snapshot.gamepad.as_ref(), Some(&pad));
 
@@ -4044,6 +4087,7 @@ mod tests {
             false,
             None,
             Some(&pad),
+            None,
         );
         assert_eq!(snapshot.gamepad.as_ref(), Some(&pad));
         refresh_fixed_input_levels(
@@ -4053,8 +4097,43 @@ mod tests {
             false,
             None,
             None,
+            None,
         );
         assert_eq!(snapshot.gamepad, None);
+
+        // Precedence is resolved in the builders: an injected override wins
+        // over the windowed loop's polled pad, and the poll supplies the
+        // domain on its own.
+        let polled = GamepadSnapshot {
+            east: true,
+            ..GamepadSnapshot::default()
+        };
+        let resolved = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (0, 0),
+            MouseButtons::default(),
+            &InputEdges::default(),
+            false,
+            false,
+            (800, 600),
+            None,
+            Some(&pad),
+            Some(&polled),
+        );
+        assert_eq!(resolved.gamepad.as_ref(), Some(&pad));
+        let polled_only = desktop_input_snapshot(
+            &BTreeSet::new(),
+            (0, 0),
+            MouseButtons::default(),
+            &InputEdges::default(),
+            false,
+            false,
+            (800, 600),
+            None,
+            None,
+            Some(&polled),
+        );
+        assert_eq!(polled_only.gamepad.as_ref(), Some(&polled));
     }
 
     #[test]
@@ -4070,6 +4149,7 @@ mod tests {
             (800, 600),
             Some(&injected),
             None,
+            None,
         );
         // Space would drive the EMULATOR's trigger to 1.0; the injected sample
         // owns the XR domain, so window keys must leave it alone.
@@ -4081,6 +4161,7 @@ mod tests {
             MouseButtons::default(),
             true,
             Some(&injected),
+            None,
             None,
         );
 
