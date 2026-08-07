@@ -303,8 +303,8 @@ let grab = (s) =>
   builtin/prelude or bundled-core namespace (Net, Key, Mouse, Random, Option, Result,
   List, Map, Text, Math, Debug, Scene,
   Sprite, Anim, Asset, Camera3D, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
-  Angle, Texture, Time, Input, Sub, Effect, Physics, RenderTarget, Ui, Html, Attr,
-  Style, AudioSource, AudioScene) is a
+  Angle, Texture, Time, Input, Sub, Effect, Persistence, Physics, RenderTarget, Ui, Html,
+  Attr, Style, AudioSource, AudioScene) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
   manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -528,8 +528,8 @@ open Widget                                              // …or open, bringing
 - This is how the **engine prelude's types are declared**: the `functor-prelude`
   crate ships a `.funi` for every host namespace (`Scene`, `Sprite`, `Asset`,
   `Camera3D`, `Camera2D`, `Frame`, `Light`, `Fog`, `Skybox`, `RenderTarget`,
-  `Texture`, `Angle`, `Time`, `Sub`, `Effect`, `Physics`, `Ui`, `Html`, `Attr`,
-  `Style`, `AudioSource`, `AudioScene`),
+  `Texture`, `Angle`, `Time`, `Sub`, `Effect`, `Persistence`, `Physics`, `Ui`, `Html`,
+  `Attr`, `Style`, `AudioSource`, `AudioScene`),
   loaded by the
   runner so engine calls carry real types (no longer `Unknown`). Each module's
   primary opaque handle is `Mod.t` (`Camera3D.t`, `Frame.t`, `Effect.t`, …);
@@ -996,6 +996,7 @@ The generated modules:
 | `Physics` | shapes, bodies, the `physics` hook's world, live reads, commands, raycasts, events |
 | `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
 | `Sub` | what `subscriptions` returns: timers, connections, asset progress, physics events |
+| `Persistence` | durable local save slots: `save` / `load`, as ordinary effects |
 | `AudioScene` / `AudioSource` | what `soundScape` returns, and its keyed continuous voices |
 | `Ui` | the lightweight HUD `ui` hook: text, rows/columns, anchored panels, button/slider/textInput |
 | `Html` / `Attr` / `Style` | the `webview` hook: an Elm-style HTML tree, attributes/handlers, typed inline CSS |
@@ -1102,15 +1103,16 @@ need no declaration, and these are the variants to match:
 structurally (usually a shared-module ADT), with no string codec; functions and
 opaque host values in the payload are teaching errors.
 
-**Durable local state is `Effect.save` / `Effect.load`** — the same plain-data
-codec, aimed at a named SLOT instead of a connection:
+**Durable local state is `Persistence.save` / `Persistence.load`** — its own
+module, producing ordinary `Effect.t` values through the same plain-data codec,
+aimed at a named SLOT instead of a connection:
 
 ```functor
 let tick = (m, dt, tts) =>
   if m.booted then (m, Effect.none())
-  else (m, Effect.load("autosave", (loaded) => Restored(loaded)))   // Option.t<Model>
+  else (m, Persistence.load("autosave", (loaded) => Restored(loaded)))   // Option.t<Model>
 
-| Saved => (m, Effect.save("autosave", m))                          // in `update`
+| Saved => (m, Persistence.save("autosave", m))                          // in `update`
 ```
 
 `load`'s tagger receives `Option.Some(value)` or `Option.None` — absent OR

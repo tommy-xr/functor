@@ -21,35 +21,6 @@ let send : (float, string) => t
 /// The peer receives `Net.Data(id, value)`. Functions and opaque host values
 /// cannot be sent.
 let sendMsg : (float, 'a) => t
-/// Persist a plain-data value in a local save slot.
-///
-/// The durable dual of the model: a slot survives quitting the game, where
-/// hot-reload's preserved model does not. The value is carried by the same
-/// codec as `sendMsg` — numbers, strings, bools, lists, maps, tuples,
-/// records and variants of those — so functions and opaque host values are a
-/// teaching error at the call site. Saving the whole model is the common
-/// case; save what `init` can rebuild from.
-///
-/// The slot is a NAME, not a path: letters, digits, `_` and `-` (1–64
-/// characters). Natively it lands in `<project>/.functor/saves/<slot>.json`,
-/// written atomically; in the browser it is one project-scoped
-/// `localStorage` key. Writing the same slot again replaces it.
-let save : (string, 'a) => t
-/// Read a local save slot back and tag it as a message.
-///
-/// The tagger receives `Option.Some(value)` — the value exactly as saved —
-/// or `Option.None` when the slot has never been written or what is there
-/// cannot be read at all (a corrupt or hand-mangled file): an unreadable
-/// save degrades to "no save", it never stops the game.
-///
-/// A save that reads back fine but was written by an OLDER MODEL SHAPE is
-/// still `Option.Some` — nothing checks the shape for you. Handle that the
-/// way you would any external data: change the slot name when the model
-/// changes incompatibly, or save a record carrying your own version field
-/// and match on it.
-///
-/// Usually issued once at boot from the first `tick`.
-let load : (string, (Option.t<'a>) => 'msg) => t
 /// Perform an HTTP GET and tag its `Net.HttpResponse` as a message.
 let httpGet : (string, (Net.HttpResponse) => 'msg) => t
 /// Perform an HTTP POST with a text body and tag its response as a message.
