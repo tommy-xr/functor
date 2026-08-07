@@ -37,6 +37,7 @@
           <div class="docs-nav-group-label" id="nav-concepts">Concepts</div>
           <a href="#contract">The game contract</a>
           <a href="#debug-camera">The debug camera</a>
+          <a href="#multiplayer">Multiplayer</a>
           <a href="#language">The language</a>
         </div>
         <div class="docs-nav-group" role="group" aria-labelledby="nav-tooling">
@@ -292,8 +293,10 @@ let draw = (model, tts: float) =>
             Everything above the two blocks is <em>shared</em>: the protocol type both roles agree
             on, and the authoritative rules written as pure functions. That sharing is the point —
             one declaration of the protocol, so a typo on either side is a check-time error. And
-            because it is one buffer, one save hot-reloads both roles atomically; delete a block a
-            role names and the reload fails loudly, keeping the old program running.
+            because it is one buffer, the protocol and both role contracts change together;
+            <code>build</code> validates every declared role in one pass. Each local
+            runtime watches that same file and reloads its own live model when it changes; delete a
+            block a role names and the reload fails loudly, keeping the old program running.
           </p>
           <p class="docs-callout">
             <strong>This step is the role structure, not the wire.</strong> To keep it runnable in
@@ -502,6 +505,142 @@ functor -d . run native --entry server  # the same world, seen from the authorit
           </p>
         </section>
 
+        <section id="multiplayer">
+          <h2>Building and debugging multiplayer</h2>
+          <p>
+            Functor does not make one model magically shared. A multiplayer project declares
+            <strong>roles</strong>, and each role is an ordinary game runtime with its own model.
+            The usual compact shape is one <code>game.fun</code>: shared protocol and world rules
+            at file scope, then <code>module Client { … }</code> and
+            <code>module Server { … }</code>. The manifest maps role names to those inline
+            modules:
+          </p>
+          <pre class="shell">{
+  "language": "functor-lang",
+  "entries": {
+    "client": { "file": "game.fun", "module": "Client" },
+    "server": { "file": "game.fun", "module": "Server" }
+  }
+}</pre>
+          <p>
+            <a href="https://github.com/tommy-xr/functor/tree/main/examples/orbs"><code>examples/orbs</code></a>
+            is the reference. Its one buffer declares the wire exactly once, above both roles:
+          </p>
+          <pre class="functor-lang">type Ship = { pid: float, x: float, y: float, rot: float }
+type Orb = { id: float, x: float, y: float, owner: float }
+type Intent = { turn: float, thrust: bool, claim: bool }
+
+type Wire =
+  | Join
+  | Welcome(pid: float)
+  | Steer(intent: Intent)
+  | Claim(orbId: float)
+  | Snapshot(ships: List&lt;Ship>, orbs: List&lt;Orb>)</pre>
+          <p>
+            <code>Join</code> opens the handshake; <code>Welcome(pid)</code> gives a client the
+            identity the authority assigned it; <code>Snapshot</code> carries the authoritative
+            ships and orbs back. Two details are the design lesson. <code>Steer(intent)</code>
+            carries no pid: identity is the connection the packet arrived on, so a client cannot
+            choose whom it steers. And <code>Claim(orbId)</code> is a <em>request</em>, not a fact.
+            The server looks up the sender, checks that ship is really in range, resolves ties, and
+            announces the result in a later snapshot.
+          </p>
+          <p>
+            Keeping both contracts and the protocol in one file means one edit cannot update a
+            client-side copy while forgetting a server-side copy. <code>functor build</code>
+            checks every role, and each local role runtime watches and reloads the same file with
+            its own model preserved. The browser sandbox has one narrower limitation today: live
+            editor pushes update the client panes, while the SERVER pane keeps the served source;
+            <strong>↺ reset</strong> reloads both sides from the built example.
+          </p>
+
+          <h3>The transport</h3>
+          <p>
+            Networking follows the same subscription/effect split as the rest of the game
+            contract. A client returns <code>Sub.connect(url, tagger)</code> from
+            <code>subscriptions</code>; an authority returns
+            <code>Sub.listen(address, tagger)</code>. The tagger maps ordered
+            <code>Net.NetEvent</code> values — <code>Net.Connected</code>,
+            <code>Net.Data</code>, <code>Net.Disconnected</code>, and
+            <code>Net.Error</code> (plus <code>Net.Message</code> for text) — into your game's
+            messages. <code>Effect.sendMsg(connectionId, value)</code> sends plain data and the
+            peer receives that value already decoded in <code>Net.Data</code>; there is no string
+            codec to maintain for the shared <code>Wire</code> type.
+          </p>
+          <p>
+            In the sandbox every pane boots on the embedder transport. Its
+            <code>Sub.connect</code>, <code>Sub.listen</code>, and
+            <code>Effect.sendMsg</code> commands go to the host page, which matches the listener,
+            assigns connection ids, and routes events back into the panes. No browser socket or
+            separate server process is involved; the page is the network.
+          </p>
+
+          <h3>The sandbox is the instrument</h3>
+          <p>
+            <a href="../sandbox.html?example=orbs">Open Orbs in the sandbox</a>. The
+            <strong>CLIENTS</strong> control chooses one, two, or three player seats, and the
+            <strong>+</strong> seat adds the next client without restarting the existing panes.
+            The SERVER pane is separate from that count. Its slate chrome marks it as the
+            authority: it has no player number, no keyboard owner, and is never another player.
+            Press <strong>f</strong> to cycle the available layouts, or choose one in the chrono
+            bar:
+          </p>
+          <table>
+            <thead><tr><th>layout</th><th>use it for</th></tr></thead>
+            <tbody>
+              <tr><td><strong>TILED</strong></td><td>scan every client and the authority in one row</td></tr>
+              <tr><td><strong>GRID</strong></td><td>give clients a two-column play area and the SERVER its own full-width authority strip</td></tr>
+              <tr><td><strong>NETWORK</strong></td><td>put the SERVER at the hub and inspect the links and packet flow around it</td></tr>
+              <tr><td><strong>TABS</strong></td><td>give one selected pane the full preview while every other runtime keeps running</td></tr>
+            </tbody>
+          </table>
+          <p>
+            NETWORK draws one wire from each client to the hub, with one packet circle per link,
+            direction, and frame that carried traffic. Circles moving toward the server are
+            intents in that client's color; packets moving back are authority traffic in slate.
+            Size reflects bytes carried. On a delayed link, a dot's flight is the
+            packet's real scheduled <code>sent → delivered</code> latency. The default 8 ms LAN
+            preset rounds to the same 60 Hz frame, so its chip says <code>&lt;1f</code> and the UI
+            draws a short 40 ms visibility floor; that one streak is not a latency measurement.
+            Pause or scrub and the moving feed becomes a replay of the packet log at the
+            playhead.
+          </p>
+          <p>
+            Each client header has a link chip. Pick <strong>LAN</strong>,
+            <strong>Wi-Fi</strong>, <strong>mobile</strong>, or <strong>awful</strong>, or enter
+            custom latency and jitter. Those two numbers are live: the host schedules the next
+            packet with that one-way delay plus a deterministic jitter draw, while packets already
+            in flight keep their schedule.
+          </p>
+          <p class="docs-callout">
+            <strong><code>Sub.connect</code> is reliable and ordered.</strong> The coordinator
+            never drops a packet and never lets a later packet overtake an earlier one. The link
+            chip's loss field is displayed but inert, and no reorder control is shipped; loss and
+            reordering belong to a future datagram channel. There is no datagram API today. This
+            is transport semantics, not a sandbox convenience.
+          </p>
+          <p>
+            The bottom panel's <strong>WIRE</strong> tab is available in every layout whenever a
+            SERVER is present. Its badge counts routed packets even while the panel is closed.
+            Open it to tail all traffic, filter to one client↔server link, then choose
+            <strong>both</strong>, <strong>intent</strong> (client → server), or
+            <strong>authority</strong> (server → client). Each row reads
+            <code>#f sent→delivered</code>, direction, payload, and byte count; a same-frame
+            delivery omits the redundant arrow. <code>Effect.sendMsg</code> payloads appear as
+            decoded Functor values such as <code>Steer(…)</code> and
+            <code>Snapshot(…)</code>, not as a byte dump. Plain <code>Effect.send</code> text is
+            the explicit exception and is shown exactly as sent.
+          </p>
+          <p>
+            Click a structured payload to open its value tree. Records, lists, tuples, maps, and
+            variants expand a level at a time; the same tree opens when you click a structured
+            return value in the neighbouring <strong>EXECUTIONS</strong> tab. The chrono bar above
+            the panes controls the whole session: pause every role, step every role once, or seek
+            every pane to the same session instant. While it is parked, NETWORK and WIRE read the
+            recorded traffic at that playhead instead of continuing to show the live tail.
+          </p>
+        </section>
+
         <section id="language">
           <h2>The language</h2>
 
@@ -686,10 +825,12 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
           </p>
 
           <p>
-            The tools cover sessions (<code>launch_game</code> / <code>connect_game</code> /
+            The tools cover sessions (<code>launch_game</code> /
+            <code>launch_session_group</code> / <code>connect_game</code> /
             <code>list_sessions</code> / <code>stop_game</code>), observation
             (<code>get_state</code> / <code>get_scene</code> / <code>get_trace</code> /
-            <code>capture_frame</code>), driving (<code>pause</code> / <code>step</code> /
+            <code>capture_frame</code> / <code>wire_log</code>), driving
+            (<code>pause</code> / <code>step</code> / <code>step_all</code> /
             <code>resume</code> / <code>send_input</code> / <code>rewind</code> /
             <code>reload_source</code>), authoring (<code>init_game</code> /
             <code>save_project</code>), and two knowledge tools that need no session at all
@@ -699,6 +840,56 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
             CI-friendly, but nothing to read back). The full tool-by-tool reference — every
             argument, the protocol versions each tool needs, and the errors they surface — is
             <a href="https://github.com/tommy-xr/functor/blob/main/docs/mcp.md">docs/mcp.md</a>.
+          </p>
+
+          <h3>Driving a multiplayer group</h3>
+          <p>
+            <code>launch_session_group</code> reads the roles from the project's
+            <code>functor.json</code> and starts one runtime per role. With no explicit role list,
+            it launches one of each and puts a role named <code>server</code> first so the
+            authority exists before clients dial. Repeat a role when the test needs more seats.
+            Every runtime starts with <code>--net-transport embedder</code>: the MCP host process
+            drains and routes the traffic itself, and no runtime opens a socket.
+          </p>
+          <pre class="shell">launch_session_group { "dir": "examples/orbs",
+                       "roles": ["server", "client", "client"],
+                       "mode": "headless" }
+// → group g1: server s1, client1 s2, client2 s3
+
+pause     { "session": "s1" }
+pause     { "session": "s2" }
+pause     { "session": "s3" }
+step_all  { "sessions": ["s2", "s1", "s3"] }
+wire_log  { "group": "g1", "since": 0 }
+get_state { "session": "s1" }
+get_state { "session": "s3" }</pre>
+          <p>
+            The loop is <code>step_all</code> → <code>wire_log</code> → assertions against each
+            <code>get_state</code> response's structured <code>model</code>. The wire log returns
+            routed packets as rows — sequence, endpoints, connection, size, and the exact
+            <code>payload_text</code> the receiver saw — so an agent can prove what crossed as
+            well as what each role eventually believed. Use its <code>since</code> cursor to read
+            only the traffic from the round just stepped. The complete filters and row shape live
+            in
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/mcp.md">docs/mcp.md</a>.
+          </p>
+          <p class="docs-callout">
+            <strong>Ordering is semantics:</strong> step producer → authority → observer. In the
+            example above <code>s2</code> produces intent, <code>s1</code> applies it and
+            broadcasts authority, then <code>s3</code> observes. <code>step_all</code> steps
+            sessions strictly sequentially in the caller's order; concurrent stepping makes
+            packet arrival a race and is not reproducible.
+          </p>
+          <p>
+            <strong>Pause freezes the clock, not the network.</strong> Inbound messages still fold
+            through <code>update</code>, so a paused model can change while <code>frame</code> and
+            <code>tts</code> do not. Do not use <code>frame</code> as a networked model's version
+            label: compare <code>model_revision</code>. Before taking a baseline, wait for
+            <code>pending_net</code> to reach zero on every role; it reports inbound events the
+            shell has accepted but not yet folded. It cannot see a packet still in transit, so
+            pair it with a game-level convergence assertion. The exact state fields and transport
+            endpoints are documented in
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/debug-runtime.md">docs/debug-runtime.md</a>.
           </p>
 
           <h3>One trusted automation function</h3>

@@ -434,8 +434,10 @@ or `reload_project` preserves the live model *and* the live sockets — connecti
 are owned by the shell, which does not reload — so clients stay joined across an
 edit to the server's rules.
 
-Launch the authority first and let its listener bind before a client dials —
-an orbs client connects once and does not retry.
+Launch the authority first and let its listener bind before a client dials.
+`Sub.connect` is a desired connection: a failed attempt reports `Net.Error` and
+retries forever on the deterministic game-time backoff documented by the
+prelude, so a boot race recovers rather than leaving the client dead.
 
 `e2e/mcp-step-all.mjs` is the end-to-end proof: it runs the three roles of
 `examples/orbs` twice from scratch and asserts the ordered lockstep produces
@@ -468,9 +470,10 @@ step_all { "sessions": ["s2", "s1", "s3"] }           // one lockstep round
 wire_log { "group": "g1", "since": 41 }               // …and what crossed in it
 ```
 
-`roles` is the launch order **and** the order to hand `step_all`; repeats are
-how a group gets two clients. Omit it for one session per declared entry, with
-a role named `server` first. Labels (`server`, `client1`, `client2`) are the
+`roles` is the launch order; repeats are how a group gets two clients. Omit it
+for one session per declared entry, with a role named `server` first. Choose the
+later `step_all` order by the producer → authority → observer law rather than by
+blindly copying launch order. Labels (`server`, `client1`, `client2`) are the
 routing identities the wire log reads by.
 
 **Routing (what the coordinator does).** It mirrors the browser coordinator
