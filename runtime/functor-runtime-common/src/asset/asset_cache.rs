@@ -305,10 +305,7 @@ pub fn resolve_while_pending_state<T: 'static>(
 /// Whether a placeholder in `while_pending` was started and still needs
 /// polling. Long-lived shell requests must remain registered until this is
 /// false even after the primary settles, or `Sub.assets` can be stranded.
-pub fn while_pending_chain_is_unsettled(
-    cache: &AssetCache,
-    while_pending: &[String],
-) -> bool {
+pub fn while_pending_chain_is_unsettled(cache: &AssetCache, while_pending: &[String]) -> bool {
     while_pending
         .iter()
         .any(|locator| cache.is_unsettled(locator))
@@ -616,7 +613,11 @@ mod tests {
         pipeline.evict(&placeholder);
         assert!(cache.is_unsettled(&placeholder));
         let progress = cache.progress();
-        assert_eq!((progress.loaded, progress.total), (1, 2), "placeholder pending again");
+        assert_eq!(
+            (progress.loaded, progress.total),
+            (1, 2),
+            "placeholder pending again"
+        );
 
         // The next resolve — primary LOADED, so no new placeholder is
         // NEEDED for display — still re-drives the started entry, and the
@@ -634,8 +635,7 @@ mod tests {
         // An entry that was NEVER started is not requested once the primary
         // is loaded (placeholders stay lazy).
         let never = temp_file("wp-live-never.bin", b"123");
-        let shown =
-            resolve_while_pending(&cache, &pipeline, &primary, &[never.clone()]);
+        let shown = resolve_while_pending(&cache, &pipeline, &primary, &[never.clone()]);
         assert_eq!(*shown, 7);
         let progress = cache.progress();
         assert_eq!(progress.total, 2, "never-needed placeholder never counted");

@@ -90,7 +90,8 @@ impl GpuCounters {
     /// Record `bytes` uploaded to the GPU this frame (a `buffer_data` /
     /// `buffer_sub_data` / `tex_image` payload).
     pub fn uploaded(&self, bytes: usize) {
-        self.bytes_uploaded.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.bytes_uploaded
+            .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
     pub fn cache_hit(&self) {

@@ -127,8 +127,7 @@ mod tests {
         assert_eq!(indices.len() % 3, 0, "indices must form triangles");
 
         // The two cap centers are the only vertices on the axis (x = z = 0).
-        let is_cap_center =
-            |&i: &usize| verts[i].position.x == 0.0 && verts[i].position.z == 0.0;
+        let is_cap_center = |&i: &usize| verts[i].position.x == 0.0 && verts[i].position.z == 0.0;
 
         for tri in indices.chunks(3) {
             for &i in tri {
@@ -151,20 +150,25 @@ mod tests {
 
 impl Cylinder {
     pub fn create() -> Box<dyn Geometry> {
-        let slices = 20;
-        let stacks = 20;
-        let height = 1.0;
-        let radius = 0.5;
-        let (cylinder_vertices, cylinder_indices) =
-            generate_cylinder(slices, stacks, height, radius);
-
-        let mut vertices: Vec<VertexPositionTexture> = cylinder_vertices
-            .into_iter()
-            .map(|v| VertexPositionTexture::new(v.position, v.tex_coords, v.normal))
-            .collect();
-        let indices: Vec<u32> = cylinder_indices.into_iter().map(|i| i as u32).collect();
-
-        super::compute_tangents(&mut vertices, &indices);
+        let (vertices, indices) = cylinder_mesh_data();
         Box::new(IndexedMesh::create(vertices, indices))
     }
+}
+
+/// The canonical unit-cylinder mesh, shared by ordinary and instanced rendering.
+pub(crate) fn cylinder_mesh_data() -> (Vec<VertexPositionTexture>, Vec<u32>) {
+    let slices = 20;
+    let stacks = 20;
+    let height = 1.0;
+    let radius = 0.5;
+    let (cylinder_vertices, cylinder_indices) = generate_cylinder(slices, stacks, height, radius);
+
+    let mut vertices: Vec<VertexPositionTexture> = cylinder_vertices
+        .into_iter()
+        .map(|v| VertexPositionTexture::new(v.position, v.tex_coords, v.normal))
+        .collect();
+    let indices: Vec<u32> = cylinder_indices.into_iter().map(|i| i as u32).collect();
+
+    super::compute_tangents(&mut vertices, &indices);
+    (vertices, indices)
 }

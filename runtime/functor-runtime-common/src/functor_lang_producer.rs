@@ -776,7 +776,10 @@ enum ConnectRetryPhase {
 
 impl ConnectRetryState {
     fn pending() -> Self {
-        Self { failures: 0, phase: ConnectRetryPhase::Pending }
+        Self {
+            failures: 0,
+            phase: ConnectRetryPhase::Pending,
+        }
     }
 
     fn failed(&mut self, now: f64) {
@@ -784,9 +787,8 @@ impl ConnectRetryState {
             return;
         }
         self.failures = self.failures.saturating_add(1);
-        self.phase = ConnectRetryPhase::WaitingUntil(
-            now + connect_retry_delay_seconds(self.failures),
-        );
+        self.phase =
+            ConnectRetryPhase::WaitingUntil(now + connect_retry_delay_seconds(self.failures));
     }
 
     fn disconnected(&mut self, conn: u64, now: f64) {
@@ -794,9 +796,8 @@ impl ConnectRetryState {
             return;
         }
         self.failures = 1;
-        self.phase = ConnectRetryPhase::WaitingUntil(
-            now + connect_retry_delay_seconds(self.failures),
-        );
+        self.phase =
+            ConnectRetryPhase::WaitingUntil(now + connect_retry_delay_seconds(self.failures));
     }
 
     fn connected(&mut self, conn: u64) {
@@ -1639,7 +1640,9 @@ LAST stepped world, so a read of a tag this hook has never declared still raises
             {
                 // Native retains failed keys for idempotency, so release the
                 // old attempt before either shell opens the next one.
-                push_conn_command(ConnCommand::CloseKey { key: conn.key.clone() });
+                push_conn_command(ConnCommand::CloseKey {
+                    key: conn.key.clone(),
+                });
                 push_conn_command(ConnCommand::Connect {
                     key: conn.key.clone(),
                     url: conn.key.clone(),
@@ -2329,8 +2332,7 @@ pub fn history_frames(
     // it); the `DryWorld` guard removes it on every exit path. Built only when
     // the game has physics AND something is actually restorable.
     let physics_range = has_physics.then(|| physics.seekable_range()).flatten();
-    let draw_world =
-        physics_range.map(|_| DryWorld(physics::create_world([0.0, -9.81, 0.0])));
+    let draw_world = physics_range.map(|_| DryWorld(physics::create_world([0.0, -9.81, 0.0])));
 
     let mut frames = Vec::with_capacity(picks.len());
     for pick in picks {
@@ -2390,8 +2392,13 @@ mod tests {
 
     #[test]
     fn connect_retry_backoff_is_bounded_exponential_and_infinite() {
-        let first_ten = (1..=10).map(connect_retry_delay_seconds).collect::<Vec<_>>();
-        assert_eq!(first_ten, vec![0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0, 8.0]);
+        let first_ten = (1..=10)
+            .map(connect_retry_delay_seconds)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            first_ten,
+            vec![0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0, 8.0]
+        );
         assert_eq!(connect_retry_delay_seconds(u32::MAX), 8.0);
     }
 
@@ -2474,7 +2481,10 @@ mod tests {
         assert_eq!(EntryNames::with_prefix(""), EntryNames::UNPREFIXED);
         // Interned: rebuilding the same prefix (every hot reload) reuses the
         // same leaked names instead of growing the table.
-        assert!(std::ptr::eq(EntryNames::with_prefix("server").tick, names.tick));
+        assert!(std::ptr::eq(
+            EntryNames::with_prefix("server").tick,
+            names.tick
+        ));
     }
 
     /// The module form of the same rule: an inline-module role's bindings are
@@ -2490,7 +2500,10 @@ mod tests {
         assert_eq!(names.sound_scape, "Server.soundScape");
         // A sibling file's block canonicalizes file-qualified.
         assert_eq!(EntryNames::in_module("Utils.Grid").tick, "Utils.Grid.tick");
-        assert!(std::ptr::eq(EntryNames::in_module("Server").tick, names.tick));
+        assert!(std::ptr::eq(
+            EntryNames::in_module("Server").tick,
+            names.tick
+        ));
     }
 
     /// A module role resolves against the LINKED project, so the canonical
@@ -2543,17 +2556,16 @@ mod tests {
             .expect("scrub to a historical frame");
         recorder.finish_reload(&model, physics_frame, true);
 
-        let error =
-            materialize_counterfactual_history(
-                &session,
-                &EntryNames::UNPREFIXED,
-                &mut model,
-                &mut recorder,
-                false,
-                false,
-                false,
-            )
-                .expect_err("the second replayed tick has no matching arm");
+        let error = materialize_counterfactual_history(
+            &session,
+            &EntryNames::UNPREFIXED,
+            &mut model,
+            &mut recorder,
+            false,
+            false,
+            false,
+        )
+        .expect_err("the second replayed tick has no matching arm");
         assert!(error.contains("retained old snapshots"), "{error}");
 
         recorder
@@ -2603,8 +2615,8 @@ mod tests {
             false,
             false,
         )
-            .expect("replay succeeds")
-            .expect("historical reload replays");
+        .expect("replay succeeds")
+        .expect("historical reload replays");
 
         for frame in lo..=hi {
             recorder
@@ -3616,7 +3628,10 @@ mod tests {
             2,
             "one degraded notice + one command warning, not one pair per frame: {reports:?}"
         );
-        assert!(reports.iter().any(|r| r.contains("physics error")), "{reports:?}");
+        assert!(
+            reports.iter().any(|r| r.contains("physics error")),
+            "{reports:?}"
+        );
         assert!(
             reports.iter().any(|r| r.contains("ghost")),
             "the command warning still surfaces: {reports:?}"

@@ -19,7 +19,11 @@ use crate::shader_program::{ShaderProgram, UniformLocation};
 pub enum Fog {
     /// `factor = clamp((far - d) / (far - near), 0, 1)`: fully clear at
     /// `near`, fully fog by `far` (world units).
-    Linear { near: f32, far: f32, color: [f32; 3] },
+    Linear {
+        near: f32,
+        far: f32,
+        color: [f32; 3],
+    },
     /// `factor = exp(-density * d)`: the classic atmospheric falloff.
     Exp { density: f32, color: [f32; 3] },
 }

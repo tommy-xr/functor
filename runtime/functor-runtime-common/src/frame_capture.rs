@@ -151,7 +151,9 @@ pub unsafe fn read_bound_framebuffer_rgba(
     }
     let error = gl.get_error();
     if error != glow::NO_ERROR {
-        return Err(format!("OpenGL framebuffer readback failed (0x{error:04x})"));
+        return Err(format!(
+            "OpenGL framebuffer readback failed (0x{error:04x})"
+        ));
     }
 
     Ok(pixels)

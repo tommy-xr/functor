@@ -71,6 +71,11 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v13: generalized scene instancing — the `SceneObject::Instanced` variant,
+/// carrying a template subtree plus one compact channel record per copy
+/// (position, quaternion rotation, per-axis scale, tint). Only scenes that
+/// call `Scene.instanced` produce it; every other frame keeps its v12 shape.
+///
 /// v12: translucent subtrees — the `SceneObject::Opacity` variant (a v11 reader
 /// cannot decode a frame carrying one). Only scenes that call `Scene.opacity`
 /// produce it: full opacity is the identity, so every other frame keeps its
@@ -111,7 +116,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -300,11 +305,7 @@ pub trait GameProducer {
     /// against the live frame exactly as it does the forward ghosts. The window
     /// CLIPS at the oldest recorded frame rather than extrapolating past it.
     /// The default is empty (no history) for producers without a model history.
-    fn history_frames(
-        &self,
-        _divisions: usize,
-        _dt: f32,
-    ) -> Vec<(crate::Frame, crate::FrameTime)> {
+    fn history_frames(&self, _divisions: usize, _dt: f32) -> Vec<(crate::Frame, crate::FrameTime)> {
         Vec::new()
     }
 
@@ -625,7 +626,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(PROTOCOL_VERSION, 13);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -652,7 +653,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(PROTOCOL_VERSION, 13);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
@@ -675,7 +676,7 @@ mod tests {
     fn opacity_subtree_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(PROTOCOL_VERSION, 13);
         let scene = SceneObject::Opacity(
             0.35,
             vec![Scene3D {
@@ -692,11 +693,44 @@ mod tests {
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
+    /// The instanced node's template + compact channel records are visible to
+    /// `GET /scene` and must remain decodable by consumers advertising
+    /// protocol v13.
+    #[test]
+    fn instanced_wire_is_pinned() {
+        use crate::{InstanceData, MaterialDescription, Scene3D, SceneObject};
+
+        assert_eq!(PROTOCOL_VERSION, 13);
+        let template = Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::lit(1.0, 0.5, 0.25, 1.0),
+                vec![Scene3D::cube()],
+            ),
+            xform: cgmath::Matrix4::from_scale(1.0),
+        };
+        let scene = Scene3D::instanced(
+            template,
+            vec![InstanceData {
+                position: [1.0, 2.0, 3.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale: [0.5, 1.0, 2.0],
+                tint: [0.2, 0.4, 0.8],
+            }],
+        );
+        let json = serde_json::to_string(&scene.obj).expect("serialize instanced node");
+        assert_eq!(
+            json,
+            r#"{"Instanced":{"template":{"obj":{"Material":[{"Lit":{"color":[1.0,0.5,0.25,1.0],"texture":null,"normal_map":null}},[{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}]]},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]},"instances":[{"position":[1.0,2.0,3.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[0.5,1.0,2.0],"tint":[0.2,0.4,0.8]}]}}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize instanced node");
+        assert_eq!(back, scene.obj);
+    }
+
     #[test]
     fn two_bone_reach_animation_wire_is_pinned() {
         use crate::anim::AnimExpr;
 
-        assert_eq!(PROTOCOL_VERSION, 12);
+        assert_eq!(PROTOCOL_VERSION, 13);
         let reach = AnimExpr::Reach {
             root: "upper".to_string(),
             middle: "lower".to_string(),
@@ -756,6 +790,21 @@ mod tests {
                     animation: None,
                     while_pending: vec![],
                 }),
+                Scene3D::instanced(
+                    Scene3D {
+                        obj: SceneObject::Material(
+                            MaterialDescription::lit(0.9, 0.4, 0.2, 1.0),
+                            vec![Scene3D::cube()],
+                        ),
+                        xform: Matrix4::identity(),
+                    },
+                    vec![crate::InstanceData {
+                        position: [1.0, 2.0, 3.0],
+                        rotation: [0.0, 0.7071, 0.0, 0.7071],
+                        scale: [0.5, 1.0, 2.0],
+                        tint: [0.2, 0.4, 0.8],
+                    }],
+                ),
                 // A monitor: samples the "feed" render target declared below.
                 Scene3D {
                     obj: SceneObject::Material(

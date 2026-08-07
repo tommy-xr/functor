@@ -409,8 +409,7 @@ impl SceneRecorder {
                 .scrub_pos
                 .zip(self.model_history.recorded_range())
                 .is_some_and(|(selected, (_, hi))| {
-                    selected < hi
-                        && self.input_history.supports_origin_replay_through(hi)
+                    selected < hi && self.input_history.supports_origin_replay_through(hi)
                 });
             return ReloadHistory::Preserved;
         }
@@ -497,10 +496,7 @@ impl SceneRecorder {
                 .any(|input| matches!(input, RecordedInput::Snapshot(_)))
         });
         self.input_history.origin_replay_complete = !required
-            || (prefix_complete
-                && self
-                    .input_history
-                    .sampled_history_is_complete_from_origin());
+            || (prefix_complete && self.input_history.sampled_history_is_complete_from_origin());
     }
 
     /// Complete replay target after a safe reload. Sparse edge-input logs retain
@@ -594,7 +590,8 @@ impl SceneRecorder {
         prev_tts: &mut Option<f64>,
     ) {
         if let Some(frame) = self.scrub_pos {
-            let _ = self.rewind_scene_to(frame, model, physics, physics_frame, has_physics, prev_tts);
+            let _ =
+                self.rewind_scene_to(frame, model, physics, physics_frame, has_physics, prev_tts);
         }
     }
 
@@ -1183,7 +1180,13 @@ mod tests {
             .expect("valid replay history")
             .expect("materialized history");
 
-        assert!(rec.commit_scrub_if_resuming(&mut model, &mut physics, &mut physics_frame, false, &mut None));
+        assert!(rec.commit_scrub_if_resuming(
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+            &mut None
+        ));
         assert_eq!(model.to_string(), "12", "Resume adopts the rebuilt anchor");
         assert_eq!(rec.counterfactual_replay_span(), Ok(None));
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));
@@ -1212,8 +1215,15 @@ mod tests {
 
         // The live tail: the game has been running to frame 9 (tts 9.0).
         let mut prev_tts = Some(9.0);
-        rec.rewind_scene_to(3, &mut model, &mut physics, &mut physics_frame, false, &mut prev_tts)
-            .expect("rewind");
+        rec.rewind_scene_to(
+            3,
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+            &mut prev_tts,
+        )
+        .expect("rewind");
 
         // The next frame's window is then (3.0, 3.0+dt] — forward and non-empty.
         // With the bug it was (9.0, 3.0+dt]: negative, so every timer was mute
@@ -1247,7 +1257,11 @@ mod tests {
             false,
             &mut prev_tts
         ));
-        assert_eq!(prev_tts, Some(4.0), "resume commits the branch and its window");
+        assert_eq!(
+            prev_tts,
+            Some(4.0),
+            "resume commits the branch and its window"
+        );
     }
 
     #[test]
@@ -1451,7 +1465,13 @@ mod tests {
             .expect("seek");
 
         assert!(!rec.reload_history_is_safe());
-        rec.commit_scrub_before_reload(&mut model, &mut physics, &mut physics_frame, false, &mut None);
+        rec.commit_scrub_before_reload(
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+            &mut None,
+        );
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));
         assert!(rec.reload_history_is_safe());
 
@@ -1480,8 +1500,13 @@ mod tests {
         // but must not overwrite this live value with frame 2's snapshot.
         model = closure_model();
         let live_before = model.to_string();
-        let live_model_was_safe =
-            rec.prepare_reload(&mut model, &mut physics, &mut physics_frame, false, &mut None);
+        let live_model_was_safe = rec.prepare_reload(
+            &mut model,
+            &mut physics,
+            &mut physics_frame,
+            false,
+            &mut None,
+        );
         assert!(!live_model_was_safe);
         assert_eq!(model.to_string(), live_before);
         assert_eq!(rec.scene_frame_range(), Some((0, 2)));

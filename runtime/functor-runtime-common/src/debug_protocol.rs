@@ -71,7 +71,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// outbound commands there would steal them from the real dispatcher and
 /// delivering into it would inject events no peer sent. A pre-v11 runtime
 /// answers 404.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 11;
+///
+/// 12 adds the `Instanced` scene node returned by `GET /scene` — a template
+/// subtree plus compact per-copy channel records (position, quaternion
+/// rotation, per-axis scale, tint). Clients that decode scene variants
+/// exhaustively must gate before reading it.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 12;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -309,9 +314,17 @@ impl RuntimeState {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputCommand {
-    Key { key: String, down: bool },
-    MouseMove { x: i32, y: i32 },
-    MouseWheel { delta: i32 },
+    Key {
+        key: String,
+        down: bool,
+    },
+    MouseMove {
+        x: i32,
+        y: i32,
+    },
+    MouseWheel {
+        delta: i32,
+    },
     /// A mouse-button edge, `button` spelled `"left"` / `"right"` /
     /// `"middle"` (the [`crate::MouseButton::from_name`] wire spelling).
     ///
@@ -319,9 +332,18 @@ pub enum InputCommand {
     /// `mouseButton` hook and updates the held buttons the next step's
     /// `sampledInput` samples — so full-auto fire is scriptable by holding
     /// `down: true` across several `/time advance` steps.
-    MouseButton { button: String, down: bool },
-    UiEvent { slot: u32, kind: UiEventKind },
-    WebviewEvent { slot: u32, kind: UiEventKind },
+    MouseButton {
+        button: String,
+        down: bool,
+    },
+    UiEvent {
+        slot: u32,
+        kind: UiEventKind,
+    },
+    WebviewEvent {
+        slot: u32,
+        kind: UiEventKind,
+    },
     /// Set the XR device sample the next fixed step's `sampledInput` sees, so
     /// tracked poses, grips, and buttons are scriptable without a headset.
     ///
@@ -345,7 +367,9 @@ pub enum InputCommand {
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TimeCommand {
-    Set { tts: f32 },
+    Set {
+        tts: f32,
+    },
     /// Step the clock, then hold. `frames` (default 1) is the BATCH form: it
     /// queues that many `dts` steps in one request instead of one round trip
     /// per step. Queued steps accumulate — `n` advances always run `n` steps.
@@ -730,8 +754,7 @@ mod tests {
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
         assert_eq!(actual["input"]["mouse"]["surface_height"], 540);
         assert_ne!(
-            actual["input"]["mouse"]["surface_width"],
-            actual["viewport"]["width"],
+            actual["input"]["mouse"]["surface_width"], actual["viewport"]["width"],
             "the logical pointer surface must remain distinct from the framebuffer viewport"
         );
     }
@@ -848,7 +871,10 @@ mod tests {
         );
         assert_eq!(
             sample.left.grip,
-            Some(TrackingPose::new([-0.3, -0.1, -0.6], [0.0, 0.38, 0.0, 0.92]))
+            Some(TrackingPose::new(
+                [-0.3, -0.1, -0.6],
+                [0.0, 0.38, 0.0, 0.92]
+            ))
         );
         // Omitted controller fields take their defaults: no `aim` pose, and the
         // left hand's trigger is released even though the right hand's is held.
@@ -873,8 +899,8 @@ mod tests {
     #[test]
     fn a_misspelled_xr_field_is_rejected_rather_than_silently_defaulted() {
         for body in [
-            r#"{"type":"xr","lft":{"active":true}}"#,          // misspelled hand
-            r#"{"type":"xr","right":{"triger":1.0}}"#,         // misspelled control
+            r#"{"type":"xr","lft":{"active":true}}"#,  // misspelled hand
+            r#"{"type":"xr","right":{"triger":1.0}}"#, // misspelled control
             r#"{"type":"xr","right":{"grip":{"pos":[0.0,0.0,0.0]}}}"#, // misspelled pose field
         ] {
             let err = serde_json::from_str::<InputCommand>(body)
@@ -937,7 +963,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 11);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 12);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

@@ -47,8 +47,7 @@ pub struct PreloadCommand {
 /// unclaimed, matching the bounded completion-message registry.
 pub const TOKENS_PER_TARGET_CAP: usize = 1024;
 
-static OUTBOUND: Lazy<Mutex<VecDeque<PreloadCommand>>> =
-    Lazy::new(|| Mutex::new(VecDeque::new()));
+static OUTBOUND: Lazy<Mutex<VecDeque<PreloadCommand>>> = Lazy::new(|| Mutex::new(VecDeque::new()));
 
 /// Queue a command for the shell to perform (called by the effect drain).
 pub fn push_command(cmd: PreloadCommand) {

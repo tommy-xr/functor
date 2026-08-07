@@ -39,12 +39,21 @@ pub const MAX_SUBSTEPS_PER_FRAME: u32 = 8;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PhysicsCommand {
     /// Instantaneous momentum change.
-    ApplyImpulse { tag: String, impulse: [f32; 3] },
+    ApplyImpulse {
+        tag: String,
+        impulse: [f32; 3],
+    },
     /// A force applied for one fixed step (cleared after — no rapier force
     /// persistence to forget about). Under the recorded drive each substep is
     /// a recorded frame, so a force lasts exactly one fixed step.
-    ApplyForce { tag: String, force: [f32; 3] },
-    SetVelocity { tag: String, velocity: [f32; 3] },
+    ApplyForce {
+        tag: String,
+        force: [f32; 3],
+    },
+    SetVelocity {
+        tag: String,
+        velocity: [f32; 3],
+    },
     /// Replace a body's HORIZONTAL velocity, leaving `y` exactly as the world
     /// holds it at apply time.
     ///
@@ -57,16 +66,26 @@ pub enum PhysicsCommand {
     /// The untouched axis is read from the LIVE body, so several velocity
     /// commands in one frame compose: they apply in queue order, the LAST
     /// write to a given axis wins, and an axis nobody wrote is untouched.
-    SetVelocityXZ { tag: String, x: f32, z: f32 },
+    SetVelocityXZ {
+        tag: String,
+        x: f32,
+        z: f32,
+    },
     /// Replace a body's VERTICAL velocity, leaving the horizontal plane
     /// exactly as the world holds it at apply time — a jump that keeps the
     /// run. Composes with [`PhysicsCommand::SetVelocityXZ`] by the same
     /// last-write-wins-per-axis rule; together the two cover all three axes.
-    SetVelocityY { tag: String, y: f32 },
+    SetVelocityY {
+        tag: String,
+        y: f32,
+    },
     /// Move the live body without touching its declaration (the declared
     /// cache is unchanged, so the next frame's unchanged declaration does not
     /// snap it back).
-    Teleport { tag: String, position: [f32; 3] },
+    Teleport {
+        tag: String,
+        position: [f32; 3],
+    },
 }
 
 impl PhysicsCommand {
@@ -683,9 +702,7 @@ impl World {
             let (tag, kind) = command.tag_and_kind();
             let (tag, kind) = (tag.to_string(), kind);
             let Some(&(rb_handle, _)) = self.tags.get(tag.as_str()) else {
-                self.push_command_warning(format!(
-                    "physics {kind} for unknown tag \"{tag}\""
-                ));
+                self.push_command_warning(format!("physics {kind} for unknown tag \"{tag}\""));
                 continue;
             };
             // Rapier silently ignores impulses/forces/velocities on
@@ -830,20 +847,12 @@ impl World {
                 } else {
                     live_pose
                 };
-                Some((
-                    live_pose,
-                    pending_pose,
-                    rb.linvel(),
-                    rb.angvel(),
-                ))
+                Some((live_pose, pending_pose, rb.linvel(), rb.angvel()))
             });
             self.despawn(&next.tag);
             let spawned = self.spawn(next);
             debug_assert!(spawned);
-            if let (
-                Some((live_pose, pending_pose, linvel, angvel)),
-                Some((rb_handle, _)),
-            ) =
+            if let (Some((live_pose, pending_pose, linvel, angvel)), Some((rb_handle, _))) =
                 (live, self.tags.get(&next.tag).copied())
             {
                 let rb = &mut self.bodies[rb_handle];
@@ -1484,12 +1493,9 @@ mod tests {
             assert!(fallen[1] < 5.0);
 
             let changed = if structural {
-                Body::dynamic(
-                    "a".to_string(),
-                    Shape::Sphere { radius: 0.5 },
-                )
-                .at([0.0, 5.0, 0.0])
-                .facing(rotated)
+                Body::dynamic("a".to_string(), Shape::Sphere { radius: 0.5 })
+                    .at([0.0, 5.0, 0.0])
+                    .facing(rotated)
             } else {
                 original.facing(rotated)
             };
@@ -1584,8 +1590,7 @@ mod tests {
             .facing(rotation)
         };
         let sphere = |rotation| {
-            Body::kinematic("spinner".to_string(), Shape::Sphere { radius: 1.0 })
-                .facing(rotation)
+            Body::kinematic("spinner".to_string(), Shape::Sphere { radius: 1.0 }).facing(rotation)
         };
 
         // An unchanged declaration field retains its pending target when a
@@ -1675,7 +1680,9 @@ mod tests {
         let (rest, rot) = w.body_transform("a").unwrap();
         w.reconcile(&scene(vec![
             ground(),
-            crate_at("a", rest).facing(rot).with_velocity([0.0, 0.0, 0.0]),
+            crate_at("a", rest)
+                .facing(rot)
+                .with_velocity([0.0, 0.0, 0.0]),
         ]));
         w.step_fixed();
         let dump: serde_json::Value = serde_json::from_str(&w.dump()).unwrap();
@@ -1686,7 +1693,10 @@ mod tests {
     fn reconcile_is_invariant_to_declaration_order() {
         let mut x = World::new([0.0, -9.81, 0.0]);
         let mut y = World::new([0.0, -9.81, 0.0]);
-        let (a, b) = (crate_at("a", [0.0, 2.0, 0.0]), crate_at("b", [0.5, 3.0, 0.0]));
+        let (a, b) = (
+            crate_at("a", [0.0, 2.0, 0.0]),
+            crate_at("b", [0.5, 3.0, 0.0]),
+        );
         x.reconcile(&scene(vec![a.clone(), b.clone()]));
         y.reconcile(&scene(vec![b, a]));
         for _ in 0..30 {
@@ -2129,11 +2139,7 @@ mod tests {
         (pos[0], pos[1])
     }
 
-    fn run_capsule_fixed(
-        spawn_y: f32,
-        frames: u32,
-        policy: impl Fn(&mut World),
-    ) -> (f32, f32) {
+    fn run_capsule_fixed(spawn_y: f32, frames: u32, policy: impl Fn(&mut World)) -> (f32, f32) {
         run_capsule(spawn_y, frames, |_| FIXED_DT, policy)
     }
 
@@ -2301,7 +2307,10 @@ mod tests {
         }
         let warnings = w.take_command_warnings();
         assert_eq!(warnings.len(), MAX_COMMAND_WARNINGS + 1);
-        assert!(warnings.last().unwrap().contains("suppressed"), "{warnings:?}");
+        assert!(
+            warnings.last().unwrap().contains("suppressed"),
+            "{warnings:?}"
+        );
     }
 
     #[test]
@@ -2353,7 +2362,10 @@ mod tests {
         w.step_frame(FIXED_DT); // launch (separation may register this frame…)
         w.step_frame(FIXED_DT); // …or this one; both deliberately undrained
         w.step_frame(FIXED_DT); // fully airborne: boundary cleared the stale ones,
-        assert!(w.take_events().is_empty(), "stale events survived the frame boundary");
+        assert!(
+            w.take_events().is_empty(),
+            "stale events survived the frame boundary"
+        );
     }
 
     #[test]
@@ -2434,7 +2446,11 @@ mod tests {
         // Two cuboid colliders' worth of wireframe + body axes + the resting
         // contact — the exact count is rapier's business; non-empty and finite
         // is the contract.
-        assert!(lines.len() > 20, "expected a real wireframe, got {}", lines.len());
+        assert!(
+            lines.len() > 20,
+            "expected a real wireframe, got {}",
+            lines.len()
+        );
         for line in &lines {
             assert!(line.a.iter().chain(&line.b).all(|v| v.is_finite()));
             assert!(line.color.iter().all(|c| (0.0..=1.0).contains(c)));

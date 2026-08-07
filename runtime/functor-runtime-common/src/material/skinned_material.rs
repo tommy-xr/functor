@@ -116,8 +116,12 @@ impl Material for SkinnedMaterial {
                 );
 
                 // fragment shader
-                let fragment_source =
-                    format!("{}\n{}\n{}", FOG_GLSL, lighting_glsl(), FRAGMENT_SHADER_SOURCE);
+                let fragment_source = format!(
+                    "{}\n{}\n{}",
+                    FOG_GLSL,
+                    lighting_glsl(),
+                    FRAGMENT_SHADER_SOURCE
+                );
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
