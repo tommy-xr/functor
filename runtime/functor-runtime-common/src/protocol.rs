@@ -305,7 +305,11 @@ pub trait GameProducer {
     /// against the live frame exactly as it does the forward ghosts. The window
     /// CLIPS at the oldest recorded frame rather than extrapolating past it.
     /// The default is empty (no history) for producers without a model history.
-    fn history_frames(&self, _divisions: usize, _dt: f32) -> Vec<(crate::Frame, crate::FrameTime)> {
+    fn history_frames(
+        &self,
+        _divisions: usize,
+        _dt: f32,
+    ) -> Vec<(crate::Frame, crate::FrameTime)> {
         Vec::new()
     }
 

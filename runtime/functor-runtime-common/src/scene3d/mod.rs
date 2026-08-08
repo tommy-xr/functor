@@ -41,10 +41,11 @@ mod material_description;
 mod model_description;
 mod texture_description;
 
-pub use instancing::{expand_instanced, InstanceData};
+pub use instancing::InstanceData;
 pub use material_description::*;
 
 use instanced_renderer::InstancedRenderer;
+pub(crate) use instancing::expand_instanced;
 pub use model_description::*;
 pub use texture_description::*;
 
@@ -656,6 +657,19 @@ impl SceneContext {
 
     /// Log `message` the first time `key` is seen (per-key, once per run) —
     /// render-loop warnings must not spam every frame.
+    /// Like [`SceneContext::warn_once`], but the message is built only on the
+    /// first sighting — for render-loop call sites where formatting the
+    /// message every frame would itself be a per-frame cost.
+    pub fn warn_once_with(&self, key: &str, message: impl FnOnce() -> String) {
+        if self
+            .render_target_warned
+            .borrow_mut()
+            .insert(key.to_string())
+        {
+            warn_line(&message());
+        }
+    }
+
     pub fn warn_once(&self, key: &str, message: &str) {
         if self
             .render_target_warned
@@ -1222,19 +1236,17 @@ impl Scene3D {
                 *sum += (world * self.xform).w.truncate();
                 *count += 1;
             }
-            // Each copy contributes its own center, so a translucent wrapper
-            // around an instanced node sorts by the batch's true centroid.
-            SceneObject::Instanced { instances, .. } => {
+            // Each copy contributes its template's leaf origins under its own
+            // instance transform — the same walk the stamp expansion would
+            // produce, so a translucent wrapper around an instanced node sorts
+            // by the batch's true centroid even for transformed templates.
+            SceneObject::Instanced {
+                template,
+                instances,
+            } => {
                 let w = world * self.xform;
                 for instance in instances {
-                    let p = w * cgmath::vec4(
-                        instance.position[0],
-                        instance.position[1],
-                        instance.position[2],
-                        1.0,
-                    );
-                    *sum += p.truncate();
-                    *count += 1;
+                    template.accumulate_leaf_origins(&(w * instance.matrix()), sum, count);
                 }
             }
         }
@@ -1778,22 +1790,30 @@ so the reach is ignored"
                             view_matrix,
                         );
                     }
-                    // The honest fallback: render the stamp-equivalent group,
-                    // never worse than writing the group by hand, with a
-                    // once-per-topology perf note so the cost is visible.
+                    // The honest fallback: render the stamp-equivalent group
+                    // (the semantics itself), with a once-per-topology perf
+                    // note so the cost is visible. The note is emitted from
+                    // the forward pass only and its message formats lazily —
+                    // the steady-state cost is the key summary, which is
+                    // O(template size) and dwarfed by the expansion itself.
                     None => {
-                        let summary = instancing::template_summary(template);
-                        scene_context.warn_once(
-                            &format!("instanced-fallback:{summary}"),
-                            &format!(
-                                "[functor] Scene.instanced template `{summary}` is not \
-hardware-instanced — rendering {} copies as a stamped group (hardware templates \
-are one cube/sphere/cylinder/quad/plane leaf under transforms and at most one \
-solid Scene.color / Scene.lit / Scene.emissive material)",
-                                instances.len()
-                            ),
-                        );
-                        instancing::expand_instanced(template, instances).render(
+                        if !depth_pass {
+                            let summary = instancing::template_summary(template);
+                            let copies = instances.len();
+                            scene_context.warn_once_with(
+                                &format!("instanced-fallback:{summary}"),
+                                || {
+                                    format!(
+                                        "[functor] Scene.instanced template `{summary}` is not hardware-instanced \
+— rendering {copies} copies as a stamped group, comparable to writing \
+the group by hand (hardware templates are one cube/sphere/cylinder/quad/plane \
+leaf under transforms and at most one solid Scene.color / Scene.lit / \
+Scene.emissive material)"
+                                    )
+                                },
+                            );
+                        }
+                        expand_instanced(template, instances).render(
                             render_context,
                             scene_context,
                             &xform,

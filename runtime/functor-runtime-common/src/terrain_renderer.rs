@@ -1927,7 +1927,9 @@ fn transformed_aabb_radius(world: &Matrix4<f32>, half_extents: Vector3<f32>) -> 
     extents.magnitude()
 }
 
-fn slice_bytes<T>(slice: &[T]) -> &[u8] {
+/// Reinterpret a slice as raw bytes for GPU upload — shared by the terrain
+/// and scene-instancing renderers.
+pub(crate) fn slice_bytes<T>(slice: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(slice.as_ptr().cast::<u8>(), std::mem::size_of_val(slice)) }
 }
 

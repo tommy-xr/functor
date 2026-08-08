@@ -30,22 +30,39 @@ use super::MaterialDescription;
 
 // The instance transform is `translate * rotate * scale` applied on top of
 // the template's internal `local` matrix, all under the node's accumulated
-// `world`. Normals are covectors: the inverse-transpose of `R * S` is
-// `R * S⁻¹`, hence rotate(normal / instanceScale); the template-internal part
-// uses the precomputed `localNormalMatrix`, and the enclosing `world` uses
+// `world`. Shared by the forward and depth vertex shaders so the two passes'
+// instance placement is provably identical.
+const INSTANCE_TRANSFORM_GLSL: &str = r#"
+        layout (location = 4) in vec3 instancePosition;
+        layout (location = 5) in vec4 instanceRotation;
+        layout (location = 6) in vec3 instanceScale;
+
+        uniform mat4 world;
+        uniform mat4 local;
+
+        vec3 rotate(vec4 q, vec3 v) {
+            return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+        }
+
+        vec3 instanceLocal(vec3 pos) {
+            vec4 lp = local * vec4(pos, 1.0);
+            return rotate(instanceRotation, lp.xyz * instanceScale) + instancePosition;
+        }
+"#;
+
+// Normals are covectors: the inverse-transpose of `R * S` is `R * S⁻¹`, hence
+// rotate(normal / instanceScale); the template-internal part uses the
+// precomputed `localNormalMatrix`, and the enclosing `world` uses
 // `normalMatrix`. Tangents are ordinary directions and keep the plain
-// matrices.
+// matrices. A zero (or denormal) scale axis clamps to 1 for the NORMAL only —
+// the CPU path's `normal_matrix` likewise falls back on a singular matrix, so
+// a flattened copy shades sanely instead of dividing to NaN.
 const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 2) in vec3 inNormal;
         layout (location = 3) in vec4 inTangent;
-        layout (location = 4) in vec3 instancePosition;
-        layout (location = 5) in vec4 instanceRotation;
-        layout (location = 6) in vec3 instanceScale;
         layout (location = 7) in vec3 instanceTint;
 
-        uniform mat4 world;
-        uniform mat4 local;
         uniform mat3 normalMatrix;
         uniform mat3 localNormalMatrix;
         uniform mat4 view;
@@ -56,18 +73,14 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         out vec3 worldTangent;
         out vec3 tintColor;
 
-        vec3 rotate(vec4 q, vec3 v) {
-            return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
-        }
-
         void main() {
-            vec4 lp = local * vec4(inPos, 1.0);
-            vec3 p = rotate(instanceRotation, lp.xyz * instanceScale) + instancePosition;
-            vec4 wp = world * vec4(p, 1.0);
+            vec4 wp = world * vec4(instanceLocal(inPos), 1.0);
             worldPos = wp.xyz;
             tintColor = instanceTint;
             vec3 ln = localNormalMatrix * inNormal;
-            worldNormal = normalMatrix * rotate(instanceRotation, ln / instanceScale);
+            vec3 safeScale = mix(instanceScale, vec3(1.0),
+                vec3(lessThan(abs(instanceScale), vec3(1e-8))));
+            worldNormal = normalMatrix * rotate(instanceRotation, ln / safeScale);
             vec3 lt = mat3(local) * inTangent.xyz;
             worldTangent = mat3(world) * rotate(instanceRotation, lt * instanceScale);
             gl_Position = projection * view * wp;
@@ -108,39 +121,22 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         }
 "#;
 
-// Depth-pass twin: positions only, packing depth exactly like `DepthMaterial`
-// so instanced copies land in the same RGBA8 shadow map.
+// Depth-pass twin: positions only (via the shared instance placement), packing
+// depth with the same shared snippet as `DepthMaterial` so instanced copies
+// land in the same RGBA8 shadow map.
 const DEPTH_VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
-        layout (location = 4) in vec3 instancePosition;
-        layout (location = 5) in vec4 instanceRotation;
-        layout (location = 6) in vec3 instanceScale;
 
-        uniform mat4 world;
-        uniform mat4 local;
         uniform mat4 view;
         uniform mat4 projection;
 
-        vec3 rotate(vec4 q, vec3 v) {
-            return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
-        }
-
         void main() {
-            vec4 lp = local * vec4(inPos, 1.0);
-            vec3 p = rotate(instanceRotation, lp.xyz * instanceScale) + instancePosition;
-            gl_Position = projection * view * world * vec4(p, 1.0);
+            gl_Position = projection * view * world * vec4(instanceLocal(inPos), 1.0);
         }
 "#;
 
 const DEPTH_FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
-
-        vec4 packDepth(float depth) {
-            vec4 enc = vec4(1.0, 255.0, 65025.0, 16581375.0) * depth;
-            enc = fract(enc);
-            enc -= enc.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
-            return enc;
-        }
 
         void main() {
             fragColor = packDepth(gl_FragCoord.z);
@@ -191,8 +187,14 @@ pub(super) struct InstancedRenderer {
 
 impl InstancedRenderer {
     pub(super) fn new(gl: &glow::Context, shader_version: &str) -> Self {
-        let vertex_shader =
-            Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER_SOURCE, shader_version);
+        let forward_vertex_source =
+            format!("{}\n{}", INSTANCE_TRANSFORM_GLSL, VERTEX_SHADER_SOURCE);
+        let vertex_shader = Shader::build(
+            gl,
+            ShaderType::Vertex,
+            &forward_vertex_source,
+            shader_version,
+        );
         let fragment_source = format!(
             "{}\n{}\n{}",
             FOG_GLSL,
@@ -216,16 +218,21 @@ impl InstancedRenderer {
             fog: FogUniforms::get(&forward, gl),
         };
 
-        let depth_vertex = Shader::build(
-            gl,
-            ShaderType::Vertex,
-            DEPTH_VERTEX_SHADER_SOURCE,
-            shader_version,
+        let depth_vertex_source = format!(
+            "{}\n{}",
+            INSTANCE_TRANSFORM_GLSL, DEPTH_VERTEX_SHADER_SOURCE
+        );
+        let depth_vertex =
+            Shader::build(gl, ShaderType::Vertex, &depth_vertex_source, shader_version);
+        let depth_fragment_source = format!(
+            "{}\n{}",
+            crate::material::depth_material::PACK_DEPTH_GLSL,
+            DEPTH_FRAGMENT_SHADER_SOURCE
         );
         let depth_fragment = Shader::build(
             gl,
             ShaderType::Fragment,
-            DEPTH_FRAGMENT_SHADER_SOURCE,
+            &depth_fragment_source,
             shader_version,
         );
         let depth = ShaderProgram::link(gl, &depth_vertex, &depth_fragment);
@@ -254,8 +261,8 @@ impl InstancedRenderer {
                 InstancedPrimitive::Quad => quad_mesh_data(),
                 InstancedPrimitive::Plane => plane_mesh_data(),
             };
-            let vertex_bytes = as_bytes(&vertices);
-            let index_bytes = as_bytes(&indices);
+            let vertex_bytes = crate::terrain_renderer::slice_bytes(&vertices);
+            let index_bytes = crate::terrain_renderer::slice_bytes(&indices);
 
             unsafe {
                 let vao = gl.create_vertex_array().expect("instanced VAO");
@@ -342,7 +349,7 @@ impl InstancedRenderer {
         view: &Matrix4<f32>,
     ) {
         let depth_pass = ctx.render_pass == RenderPass::DepthOnly;
-        let bytes = as_bytes(instances);
+        let bytes = crate::terrain_renderer::slice_bytes(instances);
         // Scope the mutable mesh borrow: upload the instance records, then
         // carry only the Copy GL handles into the uniform/draw phase.
         let (index_buffer, index_count) = {
@@ -351,6 +358,9 @@ impl InstancedRenderer {
                 ctx.gl.bind_vertex_array(Some(mesh.vao));
                 ctx.gl
                     .bind_buffer(glow::ARRAY_BUFFER, Some(mesh.instance_buffer));
+                // Deliberately monotonic: capacity follows the high-water
+                // mark for the process lifetime (like every other persistent
+                // renderer cache here) rather than shrinking per frame.
                 if bytes.len() > mesh.instance_capacity {
                     ctx.gl
                         .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
@@ -377,10 +387,12 @@ impl InstancedRenderer {
                 let (color, lit) = match template.material {
                     MaterialDescription::Lit { color, .. } => (*color, true),
                     MaterialDescription::Color(color)
-                    | MaterialDescription::Emissive { color, .. }
-                    | MaterialDescription::SpriteTexture { color, .. } => (*color, false),
-                    // Recognition never accepts a bare `Texture` material.
-                    MaterialDescription::Texture(_) => (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false),
+                    | MaterialDescription::Emissive { color, .. } => (*color, false),
+                    // Recognition never accepts these; the arm exists only so
+                    // the match stays exhaustive if the enum grows.
+                    MaterialDescription::Texture(_) | MaterialDescription::SpriteTexture { .. } => {
+                        (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false)
+                    }
                 };
                 let u = &self.forward_uniforms;
                 let p = &self.forward;
@@ -420,11 +432,5 @@ impl InstancedRenderer {
             );
             ctx.gl.bind_vertex_array(None);
         }
-    }
-}
-
-fn as_bytes<T>(values: &[T]) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
     }
 }

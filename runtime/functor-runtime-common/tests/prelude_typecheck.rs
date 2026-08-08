@@ -42,10 +42,7 @@ fn effect_returning_update_checks_clean() {
         "let update = (m, msg) =>\n\
          match msg with | true => (m, Effect.none()) | false => m",
     );
-    assert!(
-        diags.is_empty(),
-        "effect lift should check clean: {diags:?}"
-    );
+    assert!(diags.is_empty(), "effect lift should check clean: {diags:?}");
 }
 
 /// …but a genuine `(model, Float)` vs `model` mismatch still errors — the lift
@@ -53,10 +50,7 @@ fn effect_returning_update_checks_clean() {
 #[test]
 fn real_tuple_mismatch_still_errors() {
     let diags = check("let f = (m) => match m with | true => (m, 1.0) | false => m");
-    assert!(
-        !diags.is_empty(),
-        "a real (m, Float) vs m mismatch must error"
-    );
+    assert!(!diags.is_empty(), "a real (m, Float) vs m mismatch must error");
 }
 
 /// The instancing surface typechecks as a pipeline, and its brands have
@@ -73,10 +67,7 @@ fn instancing_pipeline_checks_and_brands_reject() {
          let scene: Scene.t =\n\
          Scene.cube() |> Scene.lit(Color.rgb(1.0, 1.0, 1.0)) |> Scene.instanced(copies)",
     );
-    assert!(
-        diags.is_empty(),
-        "instancing pipeline should check: {diags:?}"
-    );
+    assert!(diags.is_empty(), "instancing pipeline should check: {diags:?}");
 
     let diags = check("let bad = Instance.rotateY(45.0, Instance.at(Vec3.make(0.0, 0.0, 0.0)))");
     assert!(!diags.is_empty(), "a bare number is not an Angle.t");
@@ -88,9 +79,7 @@ fn instancing_pipeline_checks_and_brands_reject() {
 /// Host calls carry real types from the prelude `.funi`, across namespaces.
 #[test]
 fn host_calls_have_real_types() {
-    let diags = check(
-        "let bad : float = Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0))",
-    );
+    let diags = check("let bad : float = Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, 0.0, 0.0))");
     assert!(diags.iter().any(|m| m.contains("Camera3D.t")), "{diags:?}");
     let diags = check(
         "let bad : float =\n\
@@ -202,10 +191,7 @@ fn asset_consumers_take_asset_values_only() {
          let sfx = Effect.play(Asset.sound(\"boom.ogg\"))\n\
          let bed = AudioSource.ambient(\"bed\", Asset.sound(\"wind.ogg\"))",
     );
-    assert!(
-        diags.is_empty(),
-        "asset forms should check clean: {diags:?}"
-    );
+    assert!(diags.is_empty(), "asset forms should check clean: {diags:?}");
 
     // The retired coercions fail the CHECK, naming the Asset kind.
     let diags = check("let s = Scene.model(\"shark.glb\")");
@@ -236,10 +222,7 @@ fn while_pending_checks_clean_in_both_positions() {
          let tex = Asset.texture(\"wood.png\") |> Asset.whilePending(Asset.texture(\"grey.png\"))\n\
          let mat = Scene.plane() |> Scene.litTexture(tex)",
     );
-    assert!(
-        diags.is_empty(),
-        "whilePending should check clean: {diags:?}"
-    );
+    assert!(diags.is_empty(), "whilePending should check clean: {diags:?}");
 }
 
 /// `Effect.preload`/`preloadThen` check clean with Asset values and produce
@@ -282,10 +265,7 @@ fn vec3_arithmetic_checks_clean() {
          let scene = Scene.cube() |> Scene.translate(perp) |> Scene.scale(total)\n\
          let draw = (m, tts) => Frame.create(Camera3D.lookAt(mid, unit), scene)",
     );
-    assert!(
-        diags.is_empty(),
-        "Vec3 arithmetic should check clean: {diags:?}"
-    );
+    assert!(diags.is_empty(), "Vec3 arithmetic should check clean: {diags:?}");
 }
 
 /// The brand is still enforced STATICALLY: a bare number or a structural
@@ -364,9 +344,10 @@ fn a_bare_number_in_a_branded_position_teaches_the_suffix() {
 fn an_unknown_suffix_lists_the_prelude_units() {
     let diags = check("let bad = 90degrees");
     assert!(
-        diags.iter().any(|m| m.contains("unknown unit `degrees`")
-            && m.contains("`deg`")
-            && m.contains("`ms`")),
+        diags
+            .iter()
+            .any(|m| m.contains("unknown unit `degrees`") && m.contains("`deg`")
+                && m.contains("`ms`")),
         "{diags:?}"
     );
 }
@@ -422,10 +403,7 @@ fn prelude_brands_compare_and_order() {
     assert!(diags.is_empty(), "{diags:?}");
     // Brands still do not mix: an angle is not a duration.
     let diags = check("let bad: bool = 90deg < 1.5s\n");
-    assert!(
-        !diags.is_empty(),
-        "an angle below a duration must not check"
-    );
+    assert!(!diags.is_empty(), "an angle below a duration must not check");
 }
 
 /// Half 2: an ENGINE value has no structural equality — the runtime refuses
@@ -498,18 +476,12 @@ fn scene_and_frame_equals_check_clean() {
 #[test]
 fn equality_on_a_nested_engine_value_is_a_check_error_too() {
     for (src, ty) in [
-        (
-            "let bad: bool = (Scene.cube(), 1.0) == (Scene.cube(), 1.0)\n",
-            "Scene.t",
-        ),
+        ("let bad: bool = (Scene.cube(), 1.0) == (Scene.cube(), 1.0)\n", "Scene.t"),
         (
             "let bad: bool = ((Scene.cube(), 1.0), true) == ((Scene.cube(), 1.0), true)\n",
             "Scene.t",
         ),
-        (
-            "let bad: bool = [Scene.cube()] == [Scene.cube()]\n",
-            "Scene.t",
-        ),
+        ("let bad: bool = [Scene.cube()] == [Scene.cube()]\n", "Scene.t"),
         // A brand that DECLARES `==` is comparable as an operand, but not
         // nested: the structural walk never consults the brand table, so
         // this really is a certain runtime error. [xreview: Claude High]

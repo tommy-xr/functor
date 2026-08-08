@@ -466,10 +466,8 @@ pub fn ray_result_value(hit: Option<physics::RayHit>) -> EffectValue {
 /// world is scoped (the live singleton, or a forward-step's throwaway world).
 fn active_world_raycast(origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
     ray_result_value(
-        physics::with_world(physics::active_world(), |w| {
-            w.raycast(origin, dir, max_dist)
-        })
-        .flatten(),
+        physics::with_world(physics::active_world(), |w| w.raycast(origin, dir, max_dist))
+            .flatten(),
     )
 }
 
@@ -493,13 +491,9 @@ impl EffectMapKey {
             // JSON refuses NaN/infinity, but fake/replay values are also
             // publicly constructible in memory. Validate that external seam
             // instead of letting MapKey::compare panic or admitting infinity.
-            EffectMapKey::Number(value) if value.is_finite() => {
-                Ok(functor_lang::value::MapKey::Number(if *value == 0.0 {
-                    0.0
-                } else {
-                    *value
-                }))
-            }
+            EffectMapKey::Number(value) if value.is_finite() => Ok(
+                functor_lang::value::MapKey::Number(if *value == 0.0 { 0.0 } else { *value }),
+            ),
             EffectMapKey::Number(value) => Err(format!(
                 "effect map keys must be finite; got {value} (NaN/Infinity cannot be map keys)"
             )),
@@ -694,10 +688,7 @@ pub fn effect_value_from_value(value: &Value) -> Result<EffectValue, String> {
         Value::Bool(b) => Ok(EffectValue::Bool(*b)),
         Value::String(s) => Ok(EffectValue::Text(s.to_string())),
         Value::List(items) => Ok(EffectValue::List(
-            items
-                .iter()
-                .map(effect_value_from_value)
-                .collect::<Result<_, _>>()?,
+            items.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
         )),
         Value::Map(entries) => Ok(EffectValue::Map(
             entries
@@ -715,10 +706,7 @@ pub fn effect_value_from_value(value: &Value) -> Result<EffectValue, String> {
                 .collect::<Result<_, String>>()?,
         )),
         Value::Tuple(items) => Ok(EffectValue::Tuple(
-            items
-                .iter()
-                .map(effect_value_from_value)
-                .collect::<Result<_, _>>()?,
+            items.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
         )),
         Value::Record(fields) => Ok(EffectValue::Record(
             fields
@@ -728,9 +716,7 @@ pub fn effect_value_from_value(value: &Value) -> Result<EffectValue, String> {
         )),
         Value::Variant { ctor, args } => Ok(EffectValue::Variant(
             ctor.to_string(),
-            args.iter()
-                .map(effect_value_from_value)
-                .collect::<Result<_, _>>()?,
+            args.iter().map(effect_value_from_value).collect::<Result<_, _>>()?,
         )),
         other => Err(format!(
             "not plain data: {} — a message must be numbers, strings, bools, \
@@ -997,6 +983,7 @@ impl HostData for FunctorLangAnim {
 /// degree/radian confusion unrepresentable (the F# side's `Math.Angle`
 /// discipline, carried across the boundary).
 pub struct FunctorLangAngle(pub Angle);
+
 
 /// An RGB color as an opaque Functor Lang value — made by `Color.rgb(r, g, b)`.
 /// Material/light/fog/UI color parameters accept ONLY this, never three bare
@@ -1373,6 +1360,11 @@ impl HostData for FunctorLangInstance {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    // Plain channel data — a model holding Instance values stays hot-reload
+    // and time-travel safe.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
 }
 
 impl HostData for FunctorLangTerrain {
@@ -1409,10 +1401,7 @@ impl HostData for FunctorLangFrame {
 /// the shells' render loop.
 pub fn frame_value(value: &Value) -> Option<&Frame> {
     match value {
-        Value::HostData(data) => data
-            .as_any()
-            .downcast_ref::<FunctorLangFrame>()
-            .map(|f| &f.0),
+        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangFrame>().map(|f| &f.0),
         _ => None,
     }
 }
@@ -1421,10 +1410,7 @@ pub fn frame_value(value: &Value) -> Option<&Frame> {
 /// overlay pass — the `ui` hook's [`frame_value`].
 pub fn view_value(value: &Value) -> Option<&View> {
     match value {
-        Value::HostData(data) => data
-            .as_any()
-            .downcast_ref::<FunctorLangView>()
-            .map(|v| &v.0),
+        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangView>().map(|v| &v.0),
         _ => None,
     }
 }
@@ -1592,23 +1578,17 @@ fn register_branded_constructors(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Time.hours", "Time.hours(n)", |n: f64| {
         FunctorLangDuration(n * 3600.0)
     });
-    reg.fn3(
-        "Color.rgb",
-        "Color.rgb(r, g, b)",
-        |r: f64, g: f64, b: f64| FunctorLangColor((r as f32, g as f32, b as f32)),
-    );
-    reg.fn3(
-        "Vec3.make",
-        "Vec3.make(x, y, z)",
-        |x: f64, y: f64, z: f64| FunctorLangVec3((x as f32, y as f32, z as f32)),
-    );
+    reg.fn3("Color.rgb", "Color.rgb(r, g, b)", |r: f64, g: f64, b: f64| {
+        FunctorLangColor((r as f32, g as f32, b as f32))
+    });
+    reg.fn3("Vec3.make", "Vec3.make(x, y, z)", |x: f64, y: f64, z: f64| {
+        FunctorLangVec3((x as f32, y as f32, z as f32))
+    });
     // Identity at runtime — the tag brand is check-time only (physics.funi).
     // Rc<str> in and out: allocation-neutral in a per-frame physics hook.
-    reg.fn1(
-        "Physics.tag",
-        "Physics.tag(\"name\")",
-        |name: std::rc::Rc<str>| Value::String(name),
-    );
+    reg.fn1("Physics.tag", "Physics.tag(\"name\")", |name: std::rc::Rc<str>| {
+        Value::String(name)
+    });
     const RT_NAMED: &str = "RenderTarget.named(\"id\") — a non-empty name; 512x512 unless \
 piped through RenderTarget.sized";
     reg.fn1("RenderTarget.named", RT_NAMED, |name: String| {
@@ -1634,13 +1614,7 @@ piped through RenderTarget.sized";
                 ));
             }
             let (r, g, b) = color.0;
-            Ok(FunctorLangFog(Fog::linear(
-                near as f32,
-                far as f32,
-                r,
-                g,
-                b,
-            )))
+            Ok(FunctorLangFog(Fog::linear(near as f32, far as f32, r, g, b)))
         },
     );
     reg.fn2(
@@ -1707,15 +1681,9 @@ crate::host_returnable!(
 /// never reach a transform (where it would blank the scene and serialize as
 /// `null` in the `Frame` wire form).
 fn register_vec3(reg: &mut crate::host_registry::Registry) {
-    reg.fn1("Vec3.x", "Vec3.x(v)", |v: FunctorLangVec3| {
-        Value::Number(v.0 .0 as f64)
-    });
-    reg.fn1("Vec3.y", "Vec3.y(v)", |v: FunctorLangVec3| {
-        Value::Number(v.0 .1 as f64)
-    });
-    reg.fn1("Vec3.z", "Vec3.z(v)", |v: FunctorLangVec3| {
-        Value::Number(v.0 .2 as f64)
-    });
+    reg.fn1("Vec3.x", "Vec3.x(v)", |v: FunctorLangVec3| Value::Number(v.0 .0 as f64));
+    reg.fn1("Vec3.y", "Vec3.y(v)", |v: FunctorLangVec3| Value::Number(v.0 .1 as f64));
+    reg.fn1("Vec3.z", "Vec3.z(v)", |v: FunctorLangVec3| Value::Number(v.0 .2 as f64));
 
     reg.fn2(
         "Vec3.add",
@@ -1760,22 +1728,18 @@ fn register_vec3(reg: &mut crate::host_registry::Registry) {
     reg.fn1("Vec3.length", "Vec3.length(v)", |v: FunctorLangVec3| {
         Value::Number(vec3_length(widen(v)))
     });
-    reg.fn1(
-        "Vec3.normalize",
-        "Vec3.normalize(v)",
-        |v: FunctorLangVec3| {
-            let v = widen(v);
-            let len = vec3_length(v);
-            // `len` is finite for every representable input (see `vec3_length`),
-            // so the only non-dividable case is a true zero.
-            let unit = if len > 0.0 {
-                (v.0 / len, v.1 / len, v.2 / len)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-            vec3_finite("Vec3.normalize", unit)
-        },
-    );
+    reg.fn1("Vec3.normalize", "Vec3.normalize(v)", |v: FunctorLangVec3| {
+        let v = widen(v);
+        let len = vec3_length(v);
+        // `len` is finite for every representable input (see `vec3_length`),
+        // so the only non-dividable case is a true zero.
+        let unit = if len > 0.0 {
+            (v.0 / len, v.1 / len, v.2 / len)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        vec3_finite("Vec3.normalize", unit)
+    });
     reg.fn2(
         "Vec3.distance",
         "Vec3.distance(b, a) — |a - b|",
@@ -1847,9 +1811,7 @@ must stay within the 32-bit float range"
 }
 
 fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
-    reg.fn0("Ui.topLeft", "Ui.topLeft()", || {
-        FunctorLangUiAnchor(ui::Anchor::TopLeft)
-    });
+    reg.fn0("Ui.topLeft", "Ui.topLeft()", || FunctorLangUiAnchor(ui::Anchor::TopLeft));
     reg.fn0("Ui.topRight", "Ui.topRight()", || {
         FunctorLangUiAnchor(ui::Anchor::TopRight)
     });
@@ -1859,9 +1821,7 @@ fn register_ui_anchors(reg: &mut crate::host_registry::Registry) {
     reg.fn0("Ui.bottomRight", "Ui.bottomRight()", || {
         FunctorLangUiAnchor(ui::Anchor::BottomRight)
     });
-    reg.fn0("Ui.center", "Ui.center()", || {
-        FunctorLangUiAnchor(ui::Anchor::Center)
-    });
+    reg.fn0("Ui.center", "Ui.center()", || FunctorLangUiAnchor(ui::Anchor::Center));
 }
 
 /// A material node over a scene — the shared shape of every Scene material
@@ -2043,14 +2003,10 @@ four texture Assets and a positive finite tile size in world units";
 fn register_instance(reg: &mut crate::host_registry::Registry) {
     use cgmath::{Quaternion, Rad, Rotation3};
 
-    reg.fn1(
-        "Instance.at",
-        "Instance.at(position)",
-        |v: FunctorLangVec3| {
-            let (x, y, z) = v.0;
-            FunctorLangInstance(InstanceData::at([x, y, z]))
-        },
-    );
+    reg.fn1("Instance.at", "Instance.at(position)", |v: FunctorLangVec3| {
+        let (x, y, z) = v.0;
+        FunctorLangInstance(InstanceData::at([x, y, z]))
+    });
     reg.fn2(
         "Instance.scale",
         "Instance.scale(factor, instance)",
@@ -2116,21 +2072,13 @@ fn register_scene(reg: &mut crate::host_registry::Registry) {
     // Primitive geometry: constructors take no arguments — the registry
     // rejects any with the usage error, so a guessed `Scene.cube(size)`
     // fails loud instead of silently ignoring it.
-    reg.fn0("Scene.cube", "Scene.cube()", || {
-        FunctorLangScene(Scene3D::cube())
-    });
-    reg.fn0("Scene.sphere", "Scene.sphere()", || {
-        FunctorLangScene(Scene3D::sphere())
-    });
+    reg.fn0("Scene.cube", "Scene.cube()", || FunctorLangScene(Scene3D::cube()));
+    reg.fn0("Scene.sphere", "Scene.sphere()", || FunctorLangScene(Scene3D::sphere()));
     reg.fn0("Scene.cylinder", "Scene.cylinder()", || {
         FunctorLangScene(Scene3D::cylinder())
     });
-    reg.fn0("Scene.quad", "Scene.quad()", || {
-        FunctorLangScene(Scene3D::quad())
-    });
-    reg.fn0("Scene.plane", "Scene.plane()", || {
-        FunctorLangScene(Scene3D::plane())
-    });
+    reg.fn0("Scene.quad", "Scene.quad()", || FunctorLangScene(Scene3D::quad()));
+    reg.fn0("Scene.plane", "Scene.plane()", || FunctorLangScene(Scene3D::plane()));
     // A glTF model by file path (relative to the game dir), the Functor Lang
     // face of F#'s `Model.file |> Graphics.Scene3D.model`. Loading is the
     // shells' asset pipeline; a missing file logs an error and renders as
@@ -2196,8 +2144,12 @@ row 0 has {cols} heights, row {r} has {}",
             for h in row.iter() {
                 match h {
                     Value::Number(n) if (*n as f32).is_finite() => heights.push(*n as f32),
-                    Value::Number(n) => return Err(format!("expected a finite number, got {n}")),
-                    other => return Err(format!("expected a number, got {}", other.kind_name())),
+                    Value::Number(n) => {
+                        return Err(format!("expected a finite number, got {n}"))
+                    }
+                    other => {
+                        return Err(format!("expected a number, got {}", other.kind_name()))
+                    }
                 }
             }
         }
@@ -2242,11 +2194,7 @@ row 0 has {cols} heights, row {r} has {}",
             material_scene(material, scene)
         }
     }
-    reg.fn2(
-        "Scene.lit",
-        "Scene.lit(color, scene)",
-        lit_or_emissive(false),
-    );
+    reg.fn2("Scene.lit", "Scene.lit(color, scene)", lit_or_emissive(false));
     reg.fn2(
         "Scene.emissive",
         "Scene.emissive(color, scene)",
@@ -2300,7 +2248,9 @@ row 0 has {cols} heights, row {r} has {}",
         "Scene.screen(target, scene)",
         |target: FunctorLangRenderTarget, scene: FunctorLangScene| {
             material_scene(
-                MaterialDescription::emissive_texture(TextureDescription::render_target(target.0)),
+                MaterialDescription::emissive_texture(TextureDescription::render_target(
+                    target.0,
+                )),
                 scene,
             )
         },
@@ -2452,10 +2402,7 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
         "Camera3D.firstPerson",
         "Camera3D.firstPerson(eye, yaw, pitch, fov) — a Vec3 eye and Angle values \
 (Angle.degrees/Angle.radians)",
-        |eye: FunctorLangVec3,
-         yaw: FunctorLangAngle,
-         pitch: FunctorLangAngle,
-         fov: FunctorLangAngle| {
+        |eye: FunctorLangVec3, yaw: FunctorLangAngle, pitch: FunctorLangAngle, fov: FunctorLangAngle| {
             let (ex, ey, ez) = eye.0;
             FunctorLangCamera(Camera::first_person([ex, ey, ez], yaw.0, pitch.0, fov.0))
         },
@@ -2469,8 +2416,7 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
                 .0
                 .map_tracking_pose(crate::TrackingPose::IDENTITY, tracked)
                 .ok_or_else(|| {
-                    "Camera3D.mapTrackedPose: invalid pose or degenerate authored camera"
-                        .to_string()
+                    "Camera3D.mapTrackedPose: invalid pose or degenerate authored camera".to_string()
                 })?;
             let point = |xyz: [f32; 3]| {
                 Value::Record(Rc::new(vec![
@@ -2493,7 +2439,12 @@ fn register_camera(reg: &mut crate::host_registry::Registry) {
             crate::input::option_value(
                 camera
                     .0
-                    .to_world_ray(mouse.x, mouse.y, mouse.surface_width, mouse.surface_height)
+                    .to_world_ray(
+                        mouse.x,
+                        mouse.y,
+                        mouse.surface_width,
+                        mouse.surface_height,
+                    )
                     .map(|ray| {
                         let vec3 = |[x, y, z]: [f32; 3]| {
                             Value::HostData(Rc::new(FunctorLangVec3((x, y, z))))
@@ -2632,9 +2583,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
         "Frame.withRenderTarget(target, targetFrame, frame) — targetFrame \
 is a Frame.create/createLit(…) rendered into the target each frame, before \
 frame's main pass",
-        |target: FunctorLangRenderTarget,
-         target_frame: FunctorLangFrame,
-         frame: FunctorLangFrame| {
+        |target: FunctorLangRenderTarget, target_frame: FunctorLangFrame, frame: FunctorLangFrame| {
             FunctorLangFrame(Frame::with_render_target(frame.0, target.0, target_frame.0))
         },
     );
@@ -2691,9 +2640,7 @@ relative to the game dir";
         "RenderTarget.sized(width, height, target)",
         |w: f64, h: f64, target: FunctorLangRenderTarget| {
             if w <= 0.0 {
-                return Err(format!(
-                    "RenderTarget.sized width must be positive, got {w}"
-                ));
+                return Err(format!("RenderTarget.sized width must be positive, got {w}"));
             }
             if h <= 0.0 {
                 return Err(format!(
@@ -2712,9 +2659,7 @@ paths (+X, -X, +Y, -Y, +Z, -Z)";
             if [&px, &nx, &py, &ny, &pz, &nz].iter().any(|s| s.is_empty()) {
                 return Err(format!("usage: {SKYBOX_FILES}"));
             }
-            Ok(FunctorLangSkybox(SkyboxDescription::new(
-                px, nx, py, ny, pz, nz,
-            )))
+            Ok(FunctorLangSkybox(SkyboxDescription::new(px, nx, py, ny, pz, nz)))
         },
     );
 }
@@ -2782,7 +2727,8 @@ fn canonical_quaternion(mut q: [f32; 4]) -> [f32; 4] {
     // reload and debug-state comparisons do not churn between q and -q.
     let negate = q[3] < 0.0
         || (q[3] == 0.0
-            && (q[0] < 0.0 || (q[0] == 0.0 && (q[1] < 0.0 || (q[1] == 0.0 && q[2] < 0.0)))));
+            && (q[0] < 0.0
+                || (q[0] == 0.0 && (q[1] < 0.0 || (q[1] == 0.0 && q[2] < 0.0)))));
     if negate {
         for component in &mut q {
             *component = -*component;
@@ -2928,9 +2874,10 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
         "Physics.restitution",
         "Physics.restitution(n, body)",
         |n: f64, body: FunctorLangBody| {
-            Ok(FunctorLangBody(body.0.with_restitution(
-                non_negative(n, "Physics.restitution")? as f32,
-            )))
+            Ok(FunctorLangBody(
+                body.0
+                    .with_restitution(non_negative(n, "Physics.restitution")? as f32),
+            ))
         },
     );
     reg.fn2(
@@ -2946,18 +2893,14 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
         "Physics.angularDamping",
         "Physics.angularDamping(n, body)",
         |n: f64, body: FunctorLangBody| {
-            Ok(FunctorLangBody(body.0.with_angular_damping(non_negative(
-                n,
-                "Physics.angularDamping",
-            )?
-                as f32)))
+            Ok(FunctorLangBody(body.0.with_angular_damping(
+                non_negative(n, "Physics.angularDamping")? as f32,
+            )))
         },
     );
-    reg.fn1(
-        "Physics.sensor",
-        "Physics.sensor(body)",
-        |body: FunctorLangBody| FunctorLangBody(body.0.as_sensor()),
-    );
+    reg.fn1("Physics.sensor", "Physics.sensor(body)", |body: FunctorLangBody| {
+        FunctorLangBody(body.0.as_sensor())
+    });
     reg.fn1(
         "Physics.upright",
         "Physics.upright(body)",
@@ -3099,13 +3042,11 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
         "Physics.setVelocityXZ",
         "Physics.setVelocityXZ(tag, x, z)",
         |tag: std::rc::Rc<str>, x: f64, z: f64| {
-            FunctorLangEffect(EffectTree::Physics(
-                physics::PhysicsCommand::SetVelocityXZ {
-                    tag: tag.to_string(),
-                    x: x as f32,
-                    z: z as f32,
-                },
-            ))
+            FunctorLangEffect(EffectTree::Physics(physics::PhysicsCommand::SetVelocityXZ {
+                tag: tag.to_string(),
+                x: x as f32,
+                z: z as f32,
+            }))
         },
     );
     reg.fn2(
@@ -3145,11 +3086,9 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
     // returns (alone or in Sub.batch). The tagger receives
     // {started, a, b, sensor} per contact begin/end, post-step (like query
     // answers).
-    reg.fn1(
-        "Physics.events",
-        "Physics.events(tagger)",
-        |tagger: Tagger| FunctorLangSub(SubTree::PhysicsEvents { tagger: tagger.0 }),
-    );
+    reg.fn1("Physics.events", "Physics.events(tagger)", |tagger: Tagger| {
+        FunctorLangSub(SubTree::PhysicsEvents { tagger: tagger.0 })
+    });
 }
 
 /// Typed asset locators (the typed-manifest front door): a branded value
@@ -3324,9 +3263,7 @@ fn register_anim(reg: &mut crate::host_registry::Registry) {
     });
     // The bind (rest) pose — the base for purely programmatic posing
     // (Anim.rotate on a model with no authored clips, e.g. a hand).
-    reg.fn0("Anim.rest", "Anim.rest()", || {
-        FunctorLangAnim(AnimExpr::Rest)
-    });
+    reg.fn0("Anim.rest", "Anim.rest()", || FunctorLangAnim(AnimExpr::Rest));
     // Additive layer (anim-last so the BASE pipes):
     // walk |> Anim.add(Anim.clip("headShake", tts), 1.0) layers the
     // shake's delta-from-bind on top of the walk.
@@ -3346,26 +3283,22 @@ on top, scaled by weight; base last, so it pipes: base |> Anim.add(layerAnim, we
     // joints (a name covers itself and every descendant).
     const MASK: &str = "Anim.mask([\"jointName\", …], anim) — a non-empty list of joint \
 names; each covers its whole subtree (functor inspect lists a model's joints)";
-    reg.fn2(
-        "Anim.mask",
-        MASK,
-        |joints: Vec<String>, anim: FunctorLangAnim| {
-            if joints.is_empty() {
-                return Err(format!("usage: {MASK}"));
-            }
-            if joints.iter().any(|j| j.is_empty()) {
-                // An empty NAME is a string, so the legacy arm's kind-naming
-                // error read "got a string" — kept byte-identical.
-                return Err(
-                    "Anim.mask joint names must be non-empty strings, got a string".to_string(),
-                );
-            }
-            Ok(FunctorLangAnim(AnimExpr::Mask {
-                joints,
-                expr: Box::new(anim.0),
-            }))
-        },
-    );
+    reg.fn2("Anim.mask", MASK, |joints: Vec<String>, anim: FunctorLangAnim| {
+        if joints.is_empty() {
+            return Err(format!("usage: {MASK}"));
+        }
+        if joints.iter().any(|j| j.is_empty()) {
+            // An empty NAME is a string, so the legacy arm's kind-naming
+            // error read "got a string" — kept byte-identical.
+            return Err(
+                "Anim.mask joint names must be non-empty strings, got a string".to_string(),
+            );
+        }
+        Ok(FunctorLangAnim(AnimExpr::Mask {
+            joints,
+            expr: Box::new(anim.0),
+        }))
+    });
     // Post-multiply an additive local rotation onto one joint —
     // programmatic per-joint control (head aim, finger curl). Angles are
     // branded values (the Angle rule): XYZ Euler, local frame.
@@ -3408,7 +3341,9 @@ a non-empty joint name, model-space Vec3 target, Angle limit from 0 to 180 degre
          weight: f64,
          anim: FunctorLangAnim| {
             let max_deflection: cgmath::Rad<f32> = max_deflection.0.into();
-            if joint.is_empty() || !(0.0..=std::f32::consts::PI).contains(&max_deflection.0) {
+            if joint.is_empty()
+                || !(0.0..=std::f32::consts::PI).contains(&max_deflection.0)
+            {
                 return Err(format!("usage: {LOOK_AT}"));
             }
             Ok(FunctorLangAnim(AnimExpr::LookAt {
@@ -3460,19 +3395,15 @@ with uniform root scale, a model-space Vec3 target, and weight";
 /// model. Taggers are validated callable at construction (the [`Tagger`]
 /// rule) so a typo fails at the call, not frames later when the result lands.
 fn register_effects(reg: &mut crate::host_registry::Registry) {
-    reg.fn0("Effect.none", "Effect.none()", || {
-        FunctorLangEffect(EffectTree::None)
-    });
+    reg.fn0("Effect.none", "Effect.none()", || FunctorLangEffect(EffectTree::None));
     // The tagger is a Functor Lang function value, applied by the producer with the
     // performed result.
     reg.fn1("Effect.now", "Effect.now(tagger)", |tagger: Tagger| {
         FunctorLangEffect(EffectTree::Now { tagger: tagger.0 })
     });
-    reg.fn1(
-        "Effect.random",
-        "Effect.random(tagger)",
-        |tagger: Tagger| FunctorLangEffect(EffectTree::Random { tagger: tagger.0 }),
-    );
+    reg.fn1("Effect.random", "Effect.random(tagger)", |tagger: Tagger| {
+        FunctorLangEffect(EffectTree::Random { tagger: tagger.0 })
+    });
     reg.fn1(
         "Effect.batch",
         "Effect.batch([effect, …])",
@@ -3508,8 +3439,8 @@ fn register_effects(reg: &mut crate::host_registry::Registry) {
                     "Effect.sendMsg: connId must be a non-negative whole number, got {conn}"
                 ));
             }
-            let payload =
-                effect_value_from_value(&msg).map_err(|e| format!("Effect.sendMsg: {e}"))?;
+            let payload = effect_value_from_value(&msg)
+                .map_err(|e| format!("Effect.sendMsg: {e}"))?;
             Ok(FunctorLangEffect(EffectTree::SendMsg { conn, payload }))
         },
     );
@@ -3665,13 +3596,9 @@ fn register_subs(reg: &mut crate::host_registry::Registry) {
             })
         },
     );
-    reg.fn1(
-        "Sub.batch",
-        "Sub.batch([sub, …])",
-        |subs: Vec<FunctorLangSub>| {
-            FunctorLangSub(SubTree::Batch(subs.into_iter().map(|s| s.0).collect()))
-        },
-    );
+    reg.fn1("Sub.batch", "Sub.batch([sub, …])", |subs: Vec<FunctorLangSub>| {
+        FunctorLangSub(SubTree::Batch(subs.into_iter().map(|s| s.0).collect()))
+    });
     // Asset-loading progress SUB: the tagger receives
     // `{loaded, total, failed}` whenever the loading snapshot changes (see
     // functor_lang_producer's delivery). The loading-screen seam.
@@ -3716,20 +3643,12 @@ fn register_ui_widgets(reg: &mut crate::host_registry::Registry) {
             })
         },
     );
-    reg.fn1(
-        "Ui.column",
-        "Ui.column([view, …])",
-        |views: Vec<FunctorLangView>| {
-            FunctorLangView(View::Column(views.into_iter().map(|v| v.0).collect()))
-        },
-    );
-    reg.fn1(
-        "Ui.row",
-        "Ui.row([view, …])",
-        |views: Vec<FunctorLangView>| {
-            FunctorLangView(View::Row(views.into_iter().map(|v| v.0).collect()))
-        },
-    );
+    reg.fn1("Ui.column", "Ui.column([view, …])", |views: Vec<FunctorLangView>| {
+        FunctorLangView(View::Column(views.into_iter().map(|v| v.0).collect()))
+    });
+    reg.fn1("Ui.row", "Ui.row([view, …])", |views: Vec<FunctorLangView>| {
+        FunctorLangView(View::Row(views.into_iter().map(|v| v.0).collect()))
+    });
     // View LAST (subject-last), so it pipes:
     // `Ui.column([…]) |> Ui.panel(Ui.topLeft())`.
     reg.fn2(
@@ -3871,7 +3790,9 @@ fn register_html(reg: &mut crate::host_registry::Registry) {
     reg.fn3(
         "Html.element",
         "Html.element(\"tag\", [attr, …], [node, …])",
-        |tag: String, attrs: Vec<FunctorLangHtmlAttr>, children: Vec<FunctorLangHtmlNode>| {
+        |tag: String,
+         attrs: Vec<FunctorLangHtmlAttr>,
+         children: Vec<FunctorLangHtmlNode>| {
             if !valid_html_name(&tag) || forbidden_tag(&tag) {
                 return Err(format!(
                     "Html.element: `{tag}` is not an allowed tag name \
@@ -3976,55 +3897,39 @@ fn css_color(color: FunctorLangColor) -> String {
 fn register_style(reg: &mut crate::host_registry::Registry) {
     /// A fixed declaration (`Style.bold()` -> `font-weight: bold`).
     fn fixed(reg: &mut crate::host_registry::Registry, path: &'static str, css: &'static str) {
-        reg.fn0(
-            path,
-            format!("{path}()").leak() as &'static str,
-            move || FunctorLangStyle(css.to_string()),
-        );
+        reg.fn0(path, format!("{path}()").leak() as &'static str, move || {
+            FunctorLangStyle(css.to_string())
+        });
     }
     /// A `px`-valued declaration (`Style.widthPx(300.0)` -> `width: 300px`).
     fn px(reg: &mut crate::host_registry::Registry, path: &'static str, prop: &'static str) {
-        reg.fn1(
-            path,
-            format!("{path}(n)").leak() as &'static str,
-            move |n: f64| FunctorLangStyle(format!("{prop}: {n}px")),
-        );
+        reg.fn1(path, format!("{path}(n)").leak() as &'static str, move |n: f64| {
+            FunctorLangStyle(format!("{prop}: {n}px"))
+        });
     }
     /// A `%`-valued declaration (`Style.widthPct(50.0)` -> `width: 50%`).
     fn pct(reg: &mut crate::host_registry::Registry, path: &'static str, prop: &'static str) {
-        reg.fn1(
-            path,
-            format!("{path}(n)").leak() as &'static str,
-            move |n: f64| FunctorLangStyle(format!("{prop}: {n}%")),
-        );
+        reg.fn1(path, format!("{path}(n)").leak() as &'static str, move |n: f64| {
+            FunctorLangStyle(format!("{prop}: {n}%"))
+        });
     }
     /// A color-valued declaration (`Style.color(Color.rgb(…))`).
     fn colored(reg: &mut crate::host_registry::Registry, path: &'static str, prop: &'static str) {
         reg.fn1(
             path,
             format!("{path}(color)").leak() as &'static str,
-            move |color: FunctorLangColor| {
-                FunctorLangStyle(format!("{prop}: {}", css_color(color)))
-            },
+            move |color: FunctorLangColor| FunctorLangStyle(format!("{prop}: {}", css_color(color))),
         );
     }
 
     // Layout (flexbox).
     fixed(reg, "Style.flexRow", "display: flex; flex-direction: row");
-    fixed(
-        reg,
-        "Style.flexColumn",
-        "display: flex; flex-direction: column",
-    );
+    fixed(reg, "Style.flexColumn", "display: flex; flex-direction: column");
     px(reg, "Style.gapPx", "gap");
     fixed(reg, "Style.justifyStart", "justify-content: flex-start");
     fixed(reg, "Style.justifyCenter", "justify-content: center");
     fixed(reg, "Style.justifyEnd", "justify-content: flex-end");
-    fixed(
-        reg,
-        "Style.justifyBetween",
-        "justify-content: space-between",
-    );
+    fixed(reg, "Style.justifyBetween", "justify-content: space-between");
     fixed(reg, "Style.alignStart", "align-items: flex-start");
     fixed(reg, "Style.alignCenter", "align-items: center");
     fixed(reg, "Style.alignEnd", "align-items: flex-end");
@@ -4193,9 +4098,7 @@ impl crate::host_registry::FromArg for ModelPath {
                 // asset_path enforces the KIND (teaching error); the chain
                 // rides along.
                 let locator = asset_path(v, AssetKind::Model, path, span)?;
-                let chain = asset_of(v)
-                    .map(|a| a.while_pending.clone())
-                    .unwrap_or_default();
+                let chain = asset_of(v).map(|a| a.while_pending.clone()).unwrap_or_default();
                 Ok(ModelPath {
                     path: locator,
                     while_pending: chain,
@@ -4690,10 +4593,7 @@ pub fn http_response_value(result: &crate::net::HttpResult) -> Value {
             ],
         )
     } else {
-        EffectValue::Variant(
-            "Net.Failure".into(),
-            vec![EffectValue::Text(result.error_text())],
-        )
+        EffectValue::Variant("Net.Failure".into(), vec![EffectValue::Text(result.error_text())])
     };
     variant
         .to_functor_lang()
@@ -4832,12 +4732,10 @@ pub fn snapshot_preload_completions(tokens: &[u64]) -> Vec<PreloadCompletionSnap
         tokens
             .iter()
             .filter_map(|token| {
-                map.get(token)
-                    .cloned()
-                    .map(|message| PreloadCompletionSnapshot {
-                        token: *token,
-                        message,
-                    })
+                map.get(token).cloned().map(|message| PreloadCompletionSnapshot {
+                    token: *token,
+                    message,
+                })
             })
             .collect()
     })
@@ -5022,10 +4920,7 @@ pub fn deliver_physics_events(
             ) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    report(format!(
-                        "[functor-lang] Physics.events tagger error: {}",
-                        e.message
-                    ));
+                    report(format!("[functor-lang] Physics.events tagger error: {}", e.message));
                     continue;
                 }
             };
@@ -5055,7 +4950,9 @@ pub fn deliver_physics_events(
                         );
                     }
                 }
-                Err(e) => report(format!("[functor-lang] {update_name} error: {}", e.message)),
+                Err(e) => {
+                    report(format!("[functor-lang] {update_name} error: {}", e.message))
+                }
             }
         }
     }
@@ -5513,10 +5410,7 @@ dropping the rest"
         ) {
             Ok(msg) => msg,
             Err(e) => {
-                report(format!(
-                    "[functor-lang] Effect.{kind} tagger error: {}",
-                    e.message
-                ));
+                report(format!("[functor-lang] Effect.{kind} tagger error: {}", e.message));
                 continue;
             }
         };
@@ -5577,10 +5471,7 @@ Anim.clip(\"walk\", tts)"
 /// `soundScape` return), for the shells' soundscape reconcile.
 pub fn audio_scene_of(value: &Value) -> Option<&crate::audio::AudioScene> {
     match value {
-        Value::HostData(data) => data
-            .as_any()
-            .downcast_ref::<FunctorLangAudioScene>()
-            .map(|s| &s.0),
+        Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangAudioScene>().map(|s| &s.0),
         _ => None,
     }
 }
@@ -5900,10 +5791,7 @@ mod tests {
     /// registry migration — the prelude consumes Scenes via FromArg).
     fn scene_of(value: &Value) -> Option<&Scene3D> {
         match value {
-            Value::HostData(data) => data
-                .as_any()
-                .downcast_ref::<FunctorLangScene>()
-                .map(|s| &s.0),
+            Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangScene>().map(|s| &s.0),
             _ => None,
         }
     }
@@ -6019,17 +5907,9 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
     #[test]
     fn angles_add_and_subtract_through_their_declared_operators() {
         let sum = eval_with_prelude("let main = () => 90deg + 45deg\n").expect("runs");
-        assert!(
-            (radians(&sum)
-                - radians(
-                    &eval_with_prelude(
-                        "let main = () => Angle.add(Angle.degrees(90.0), Angle.degrees(45.0))\n"
-                    )
-                    .expect("runs")
-                ))
-            .abs()
-                < 1e-6
-        );
+        assert!((radians(&sum) - radians(&
+            eval_with_prelude("let main = () => Angle.add(Angle.degrees(90.0), Angle.degrees(45.0))\n")
+                .expect("runs"))).abs() < 1e-6);
         let difference = eval_with_prelude("let main = () => 90deg - 1.5rad\n").expect("runs");
         assert!(
             (radians(&difference) - (std::f32::consts::FRAC_PI_2 - 1.5)).abs() < 1e-6,
@@ -6055,10 +5935,7 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
             "let main = () => 2.0 * 45deg\n",
         ] {
             let value = eval_with_prelude(src).expect("runs");
-            assert!(
-                (radians(&value) - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
-                "{src}"
-            );
+            assert!((radians(&value) - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "{src}");
         }
         let value = eval_with_prelude("let main = () => 0.5s * 3.0\n").expect("runs");
         assert_eq!(seconds(&value), 1.5);
@@ -6535,10 +6412,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
                       { x: 0.0, y: 0.0 }, { x: 0.0, y: 1.0 }, { x: 2.0, y: 1.0 }, \
                       { x: 1.0, y: 1.0 }, { x: 3.0, y: 2.0 }])";
         let message = run_fail(&format!("let main = () => {spiked}"));
-        assert!(
-            message.contains("doubles back on itself"),
-            "message: {message}"
-        );
+        assert!(message.contains("doubles back on itself"), "message: {message}");
 
         // The 32-gon a circle lowers to must still pass, or circles break.
         let ring = eval(
@@ -6635,11 +6509,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
              |> Frame.create2D(Camera2D.create(16.0, 9.0))",
         );
         let json = serde_json::to_string(&frame).expect("shape frame serializes");
-        assert_eq!(
-            json.matches(r#""ConvexPolygon""#).count(),
-            2,
-            "json: {json}"
-        );
+        assert_eq!(json.matches(r#""ConvexPolygon""#).count(), 2, "json: {json}");
         // The author's triangle survives verbatim — points are NOT re-centered.
         assert!(
             json.contains(r#""points":[[0.0,0.0],[2.0,0.0],[1.0,1.5]]"#),
@@ -6683,13 +6553,10 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
                 let m = scene.xform;
                 let candidate = (m.y.x * m.y.x + m.y.y * m.y.y).sqrt();
                 match &scene.obj {
-                    SceneObject::Group(items) => {
-                        items.iter().find_map(thickness).or(if candidate > 0.0 {
-                            Some(candidate)
-                        } else {
-                            None
-                        })
-                    }
+                    SceneObject::Group(items) => items
+                        .iter()
+                        .find_map(thickness)
+                        .or(if candidate > 0.0 { Some(candidate) } else { None }),
                     _ => Some(candidate),
                 }
             }
@@ -6750,29 +6617,14 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             other => panic!("expected a number, got {other}"),
         };
         // The built-in font is monospace: width is exactly size * characters.
-        assert_eq!(
-            width("let main = () => Sprite.measure(2.0, \"SCORE\").width"),
-            10.0
-        );
-        assert_eq!(
-            width("let main = () => Sprite.measure(0.5, \"SCORE\").width"),
-            2.5
-        );
-        assert_eq!(
-            width("let main = () => Sprite.measure(2.0, \"\").width"),
-            0.0
-        );
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"SCORE\").width"), 10.0);
+        assert_eq!(width("let main = () => Sprite.measure(0.5, \"SCORE\").width"), 2.5);
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"\").width"), 0.0);
         // Height is the LINE height for every string, including the empty one,
         // so stacking lines by `measure(...).height` cannot overlap them — the
         // layout bug that is invisible in code review.
-        assert_eq!(
-            width("let main = () => Sprite.measure(2.0, \"SCORE\").height"),
-            2.0
-        );
-        assert_eq!(
-            width("let main = () => Sprite.measure(2.0, \"\").height"),
-            2.0
-        );
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"SCORE\").height"), 2.0);
+        assert_eq!(width("let main = () => Sprite.measure(2.0, \"\").height"), 2.0);
     }
 
     #[test]
@@ -6784,10 +6636,7 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             Value::Number(n) => n,
             other => panic!("expected a number, got {other}"),
         };
-        assert_eq!(
-            width("let main = () => Sprite.measure(1.0, \"A B\").width"),
-            3.0
-        );
+        assert_eq!(width("let main = () => Sprite.measure(1.0, \"A B\").width"), 3.0);
 
         // ...and only the visible glyphs emit a quad.
         assert_eq!(glyph_quads("A B"), 2, "the space draws nothing");
@@ -6826,14 +6675,8 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
             4.0
         );
         // A trailing newline is a real, empty final line.
-        assert_eq!(
-            metric("let main = () => Sprite.measure(2.0, \"HI\\n\").height"),
-            4.0
-        );
-        assert_eq!(
-            metric("let main = () => Sprite.measure(2.0, \"HI\\n\").width"),
-            4.0
-        );
+        assert_eq!(metric("let main = () => Sprite.measure(2.0, \"HI\\n\").height"), 4.0);
+        assert_eq!(metric("let main = () => Sprite.measure(2.0, \"HI\\n\").width"), 4.0);
         // An empty line in the middle keeps its row.
         assert_eq!(
             metric("let main = () => Sprite.measure(1.0, \"HI\\n\\nHO\").height"),
@@ -7153,9 +6996,8 @@ Asset.model(\"shark.glb\") at the data boundary"
         );
         // An empty string can't be echoed into the advice (Asset.model("")
         // is itself rejected) — a fixed valid example stands in.
-        assert!(
-            run_fail("let main = () => Scene.model(\"\")").contains("Asset.model(\"file.glb\")")
-        );
+        assert!(run_fail("let main = () => Scene.model(\"\")")
+            .contains("Asset.model(\"file.glb\")"));
     }
 
     // --- typed assets (Track B.1) ---
@@ -7169,6 +7011,7 @@ Asset.model(\"shark.glb\") at the data boundary"
             .error
             .message
     }
+
 
     /// `Asset.texture` feeds the texture materials exactly like a
     /// `Texture.file` value (both lit and the normal-map slot).
@@ -7193,6 +7036,7 @@ Asset.model(\"shark.glb\") at the data boundary"
             );
         }
     }
+
 
     /// `Asset.sound` in the one-shot effects queues the expected
     /// AudioCommands (paths unwrapped from the branded values).
@@ -7497,10 +7341,8 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
     #[test]
     fn prelude_errors_are_spanned() {
         let module = functor_lang::lower(
-            functor_lang::parse(
-                "let main = () => Scene.color(Color.rgb(1.0, \"x\", 0.0), Scene.cube())",
-            )
-            .unwrap(),
+            functor_lang::parse("let main = () => Scene.color(Color.rgb(1.0, \"x\", 0.0), Scene.cube())")
+                .unwrap(),
         )
         .unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
@@ -7513,10 +7355,9 @@ texture placeholder for a model asset; construct it with Asset.model(…)",
     // teaching error — degree/radian confusion is unrepresentable.
     #[test]
     fn bare_numbers_are_not_angles() {
-        let module = functor_lang::lower(
-            functor_lang::parse("let main = () => Scene.cube() |> Scene.rotateY(1.57)").unwrap(),
-        )
-        .unwrap();
+        let module =
+            functor_lang::lower(functor_lang::parse("let main = () => Scene.cube() |> Scene.rotateY(1.57)").unwrap())
+                .unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
@@ -7569,7 +7410,8 @@ Color.rgb(r, g, b)"
     // string — so /state, the journal, and event-tag equality are unchanged.
     #[test]
     fn bare_strings_are_not_physics_tags() {
-        let dir = std::env::temp_dir().join(format!("functor-physics-tag-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("functor-physics-tag-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -7587,7 +7429,9 @@ Color.rgb(r, g, b)"
         let diags: Vec<String> = project.check().into_iter().map(|d| d.message).collect();
         assert_eq!(
             diags,
-            vec!["argument 1 of `Physics.position`: expected Physics.tag, got string".to_string()]
+            vec![
+                "argument 1 of `Physics.position`: expected Physics.tag, got string".to_string()
+            ]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -7616,7 +7460,9 @@ Vec3.make(x, y, z)"
             "usage: Scene.translate(v, scene)"
         );
         assert_eq!(
-            fail("let main = () => Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), 0.0)"),
+            fail(
+                "let main = () => Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), 0.0)"
+            ),
             "Camera3D.lookAt: expected a Vec3, got a bare number — wrap the components: \
 Vec3.make(x, y, z)"
         );
@@ -7633,10 +7479,7 @@ Vec3.make(x, y, z)"
     fn eval_number(expr: &str) -> f64 {
         match eval(&format!("let main = () => {expr}")) {
             Value::Number(n) => n,
-            other => panic!(
-                "expected a number from `{expr}`, got a {}",
-                value_kind(&other)
-            ),
+            other => panic!("expected a number from `{expr}`, got a {}", value_kind(&other)),
         }
     }
 
@@ -7663,7 +7506,10 @@ Vec3.make(x, y, z)"
     /// The components a game stores go in and come back out unchanged.
     #[test]
     fn vec3_accessors_read_components() {
-        assert_close(eval_vec3("Vec3.make(1.5, -2.25, 3.0)"), (1.5, -2.25, 3.0));
+        assert_close(
+            eval_vec3("Vec3.make(1.5, -2.25, 3.0)"),
+            (1.5, -2.25, 3.0),
+        );
     }
 
     /// Every arithmetic op, in direct-call form.
@@ -7673,20 +7519,11 @@ Vec3.make(x, y, z)"
         let b = "Vec3.make(10.0, 20.0, 30.0)";
 
         // add is commutative; both spellings agree.
-        assert_close(
-            eval_vec3(&format!("Vec3.add({b}, {a})")),
-            (11.0, 22.0, 33.0),
-        );
-        assert_close(
-            eval_vec3(&format!("Vec3.add({a}, {b})")),
-            (11.0, 22.0, 33.0),
-        );
+        assert_close(eval_vec3(&format!("Vec3.add({b}, {a})")), (11.0, 22.0, 33.0));
+        assert_close(eval_vec3(&format!("Vec3.add({a}, {b})")), (11.0, 22.0, 33.0));
 
         // sub(b, a) == a - b — the subject is the LAST argument.
-        assert_close(
-            eval_vec3(&format!("Vec3.sub({b}, {a})")),
-            (-9.0, -18.0, -27.0),
-        );
+        assert_close(eval_vec3(&format!("Vec3.sub({b}, {a})")), (-9.0, -18.0, -27.0));
         assert_close(eval_vec3(&format!("Vec3.sub({a}, {b})")), (9.0, 18.0, 27.0));
 
         assert_close(eval_vec3(&format!("Vec3.scale(2.0, {a})")), (2.0, 4.0, 6.0));
@@ -7728,23 +7565,14 @@ Vec3.make(x, y, z)"
         );
 
         // lerp(target, t, from): t = 0 is `from`, t = 1 is `target`.
-        assert_close(
-            eval_vec3(&format!("Vec3.lerp({b}, 0.0, {a})")),
-            (1.0, 2.0, 3.0),
-        );
+        assert_close(eval_vec3(&format!("Vec3.lerp({b}, 0.0, {a})")), (1.0, 2.0, 3.0));
         assert_close(
             eval_vec3(&format!("Vec3.lerp({b}, 1.0, {a})")),
             (10.0, 20.0, 30.0),
         );
-        assert_close(
-            eval_vec3(&format!("Vec3.lerp({b}, 0.5, {a})")),
-            (5.5, 11.0, 16.5),
-        );
+        assert_close(eval_vec3(&format!("Vec3.lerp({b}, 0.5, {a})")), (5.5, 11.0, 16.5));
         // t is not clamped — it extrapolates.
-        assert_close(
-            eval_vec3(&format!("Vec3.lerp({b}, 2.0, {a})")),
-            (19.0, 38.0, 57.0),
-        );
+        assert_close(eval_vec3(&format!("Vec3.lerp({b}, 2.0, {a})")), (19.0, 38.0, 57.0));
     }
 
     /// The strafe-axis identity the docs promise, pinned numerically: the
@@ -7774,10 +7602,7 @@ Vec3.make(x, y, z)"
     fn vec3_accessors_round_to_f32() {
         let x = eval_number("Vec3.x(Vec3.make(0.1, 0.0, 0.0))");
         assert_eq!(x, 0.1f32 as f64);
-        assert_ne!(
-            x, 0.1f64,
-            "the f32 rounding is real and must stay documented"
-        );
+        assert_ne!(x, 0.1f64, "the f32 rounding is real and must stay documented");
     }
 
     /// Functor Lang has no exponent notation in float literals, so a huge
@@ -7801,16 +7626,9 @@ Vec3.make(x, y, z)"
             "unexpected length {len}"
         );
         let unit = eval_vec3(&format!("Vec3.normalize({big})"));
-        assert_ne!(
-            unit,
-            (0.0, 0.0, 0.0),
-            "a huge vector must not normalize to zero"
-        );
+        assert_ne!(unit, (0.0, 0.0, 0.0), "a huge vector must not normalize to zero");
         let unit_len = eval_number(&format!("Vec3.length(Vec3.normalize({big}))"));
-        assert!(
-            (unit_len - 1.0).abs() < 1e-6,
-            "expected unit length, got {unit_len}"
-        );
+        assert!((unit_len - 1.0).abs() < 1e-6, "expected unit length, got {unit_len}");
     }
 
     /// An operation that overflows the `f32` range fails LOUDLY, naming the
@@ -8032,18 +7850,16 @@ Vec3.make(x, y, z)"
     // Model node — the declarative "what pose" seam the renderer evaluates.
     #[test]
     fn scene_opacity_wraps_the_subtree_and_nested_opacities_stay_nested() {
-        let value =
-            eval("let main = () => Scene.cube() |> Scene.opacity(0.5) |> Scene.opacity(0.5)");
+        let value = eval(
+            "let main = () => Scene.cube() |> Scene.opacity(0.5) |> Scene.opacity(0.5)",
+        );
         let scene = scene_of(&value).expect("a Scene");
         let SceneObject::Opacity(outer, outer_items) = &scene.obj else {
             panic!("expected an Opacity node, got {:?}", scene.obj);
         };
         assert_eq!(*outer, 0.5);
         let SceneObject::Opacity(inner, inner_items) = &outer_items[0].obj else {
-            panic!(
-                "expected a nested Opacity node, got {:?}",
-                outer_items[0].obj
-            );
+            panic!("expected a nested Opacity node, got {:?}", outer_items[0].obj);
         };
         assert_eq!(*inner, 0.5);
         // The multiplication is the RENDERER's (0.25 at the leaf); the scene
@@ -8207,10 +8023,7 @@ Vec3.make(x, y, z)"
             .err()
             .expect("an opacity-bearing template must be a teaching error");
         assert!(
-            failure
-                .error
-                .message
-                .contains("wrap the whole instanced node"),
+            failure.error.message.contains("wrap the whole instanced node"),
             "unexpected message: {}",
             failure.error.message
         );
@@ -8335,7 +8148,8 @@ Vec3.make(x, y, z)"
     /// the scene, the lights, and the frame's optional decorations.
     #[test]
     fn frame_equals_compares_the_whole_frame() {
-        const CAMERA: &str = "Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))";
+        const CAMERA: &str =
+            "Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))";
         assert!(equality(&format!(
             "Frame.equals(Frame.create({CAMERA}, Scene.cube()),\n\
                           Frame.create({CAMERA}, Scene.cube()))"
@@ -8369,7 +8183,8 @@ Scene.cube()))"
     /// [xreview: Claude Low]
     #[test]
     fn frame_equals_covers_every_decoration() {
-        const CAMERA: &str = "Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))";
+        const CAMERA: &str =
+            "Camera3D.lookAt(Vec3.make(0.0, 1.0, -4.0), Vec3.make(0.0, 0.0, 0.0))";
         const CAM2D: &str = "Camera2D.create(16.0, 9.0)";
         let differs = |a: &str, b: &str| {
             assert!(
@@ -8381,7 +8196,9 @@ Scene.cube()))"
         // Fog.
         differs(
             &base,
-            &format!("{base} |> Frame.withFog(Fog.linear(5.0, 50.0, Color.rgb(0.1, 0.1, 0.2)))"),
+            &format!(
+                "{base} |> Frame.withFog(Fog.linear(5.0, 50.0, Color.rgb(0.1, 0.1, 0.2)))"
+            ),
         );
         // Skybox.
         differs(
@@ -8408,7 +8225,9 @@ Scene.cube()))"
         // that happens to carry the same layer.
         differs(
             &format!("Frame.create2D({CAM2D}, {dot})"),
-            &format!("Frame.create({CAMERA}, Scene.group([])) |> Frame.with2D({CAM2D}, {dot})"),
+            &format!(
+                "Frame.create({CAMERA}, Scene.group([])) |> Frame.with2D({CAM2D}, {dot})"
+            ),
         );
         // …and each of those still equals itself.
         assert!(equality(&format!(
@@ -8477,8 +8296,7 @@ Anim.clip(\"walk\", tts)"
         let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
             .unwrap_or_else(|failure| panic!("session loads: {}", failure.error.message));
         let value = session.global("main").expect("entry value");
-        let AnimExpr::Blend(entries) = anim_of(&value, "test", Span::new(0, 0)).expect("Anim")
-        else {
+        let AnimExpr::Blend(entries) = anim_of(&value, "test", Span::new(0, 0)).expect("Anim") else {
             panic!("mid-transition Animator pose should be a blend");
         };
         assert_eq!(entries.len(), 2);
@@ -8517,10 +8335,7 @@ Anim.clip(\"walk\", tts)"
             weight,
         }) = &description.animation
         else {
-            panic!(
-                "expected an Add at the root, got {:?}",
-                description.animation
-            );
+            panic!("expected an Add at the root, got {:?}", description.animation);
         };
         assert_eq!(*weight, 0.5);
         assert!(
@@ -8704,10 +8519,8 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
     // A value the prelude doesn't serve still errors as unknown.
     #[test]
     fn unknown_externals_still_error() {
-        let module = functor_lang::lower(
-            functor_lang::parse("let main = () => Scene.frobnicate()").unwrap(),
-        )
-        .unwrap();
+        let module =
+            functor_lang::lower(functor_lang::parse("let main = () => Scene.frobnicate()").unwrap()).unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
@@ -9043,20 +8856,9 @@ paths (+X, -X, +Y, -Y, +Z, -Z)"
         assert_close(scene.bodies[3].rotation, scene.bodies[1].rotation);
         assert_eq!(scene.bodies[0].position, [3.0, 4.0, 5.0]);
         for body in &scene.bodies {
-            let norm = body
-                .rotation
-                .iter()
-                .map(|component| component * component)
-                .sum::<f32>();
-            assert!(
-                (norm - 1.0).abs() < 1e-6,
-                "rotation was not normalized: {norm}"
-            );
-            assert!(
-                body.rotation[3] >= 0.0,
-                "rotation was not canonical: {:?}",
-                body.rotation
-            );
+            let norm = body.rotation.iter().map(|component| component * component).sum::<f32>();
+            assert!((norm - 1.0).abs() < 1e-6, "rotation was not normalized: {norm}");
+            assert!(body.rotation[3] >= 0.0, "rotation was not canonical: {:?}", body.rotation);
         }
     }
 
@@ -9267,10 +9069,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         );
         assert!(matches!(field(&hit, "hit"), Value::Bool(true)));
         assert!(matches!(field(&hit, "tag"), Value::String(s) if &*s == "ball"));
-        assert!(
-            (num(&hit, "ny") - 1.0).abs() < 1e-5,
-            "sphere top normal is +Y"
-        );
+        assert!((num(&hit, "ny") - 1.0).abs() < 1e-5, "sphere top normal is +Y");
         assert!(num(&hit, "distance") > 0.0);
 
         // Excluding the ball lets the same ray through to the floor behind it.
@@ -9370,8 +9169,8 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             .0;
 
         // Draining needs no `update` hook — a command effect carries no tagger.
-        let module =
-            functor_lang::lower(functor_lang::parse("let main = () => 0.0").unwrap()).unwrap();
+        let module = functor_lang::lower(functor_lang::parse("let main = () => 0.0").unwrap())
+            .unwrap();
         let session = functor_lang::Session::load(&module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
         let mut model = Value::Number(0.0);
@@ -9502,18 +9301,14 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             let drawn = eval("let main = () => Scene.sphere() |> Physics.transformed(\"ball\")");
             scene_of(&drawn).expect("a Scene").xform.w.y
         };
-        assert!(
-            (ball_y() - 5.0).abs() < 1e-6,
-            "unscoped read = default world"
-        );
+        assert!((ball_y() - 5.0).abs() < 1e-6, "unscoped read = default world");
         {
             let _scope = crate::physics::ActiveWorldScope::enter(scoped);
             assert!((ball_y() - 9.0).abs() < 1e-6, "scoped read = scoped world");
 
             // A suppressed drain (the dry-run forward-step) under the scope
             // queues the command on the SCOPED world…
-            let effect =
-                eval("let main = () => Physics.applyImpulse(\"ball\", Vec3.make(2.0, 0.0, 0.0))");
+            let effect = eval("let main = () => Physics.applyImpulse(\"ball\", Vec3.make(2.0, 0.0, 0.0))");
             let Value::HostData(data) = &effect else {
                 panic!("expected an Effect");
             };
@@ -9587,10 +9382,8 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
                 "Physics.angularDamping must not be negative",
             ),
         ] {
-            let module = functor_lang::lower(
-                functor_lang::parse(&format!("let main = () => {src}")).unwrap(),
-            )
-            .unwrap();
+            let module =
+                functor_lang::lower(functor_lang::parse(&format!("let main = () => {src}")).unwrap()).unwrap();
             let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
                 .err()
                 .unwrap_or_else(|| panic!("`{src}` should fail"));
@@ -9608,22 +9401,15 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     #[test]
     fn physics_command_effects_queue_and_apply() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
-        let effect =
-            eval("let main = () => Physics.applyImpulse(\"ball\", Vec3.make(2.0, 0.0, 0.0))");
+        let effect = eval("let main = () => Physics.applyImpulse(\"ball\", Vec3.make(2.0, 0.0, 0.0))");
         let Value::HostData(data) = &effect else {
             panic!("expected an Effect");
         };
-        let tree = &data
-            .as_any()
-            .downcast_ref::<FunctorLangEffect>()
-            .expect("Effect")
-            .0;
+        let tree = &data.as_any().downcast_ref::<FunctorLangEffect>().expect("Effect").0;
 
         // Drain it the way the producer does (no session/update involvement —
         // physics effects are tagger-less).
-        let module =
-            functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap())
-                .unwrap();
+        let module = functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap()).unwrap();
         let session = functor_lang::Session::load(&module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
         let mut model = Value::Number(0.0);
@@ -9681,15 +9467,10 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             let Value::HostData(data) = &effect else {
                 panic!("expected an Effect from `{src}`");
             };
-            let tree = &data
-                .as_any()
-                .downcast_ref::<FunctorLangEffect>()
-                .expect("Effect")
-                .0;
+            let tree = &data.as_any().downcast_ref::<FunctorLangEffect>().expect("Effect").0;
 
             let module =
-                functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap())
-                    .unwrap();
+                functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap()).unwrap();
             let session = functor_lang::Session::load(&module, &mut FunctorHost)
                 .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
             let mut model = Value::Number(0.0);
@@ -9718,14 +9499,9 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let Value::HostData(data) = &effect else {
             panic!("expected an Effect");
         };
-        let tree = &data
-            .as_any()
-            .downcast_ref::<FunctorLangEffect>()
-            .expect("Effect")
-            .0;
+        let tree = &data.as_any().downcast_ref::<FunctorLangEffect>().expect("Effect").0;
         let module =
-            functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap())
-                .unwrap();
+            functor_lang::lower(functor_lang::parse("let update = (m, msg) => m").unwrap()).unwrap();
         let session = functor_lang::Session::load(&module, &mut FunctorHost)
             .unwrap_or_else(|f| panic!("load failed: {}", f.error.message));
         let mut model = Value::Number(0.0);
@@ -9761,10 +9537,9 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     #[test]
     fn physics_read_of_unknown_tag_is_a_spanned_error() {
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
-        let module = functor_lang::lower(
-            functor_lang::parse("let main = () => Physics.position(\"ghost\")").unwrap(),
-        )
-        .unwrap();
+        let module =
+            functor_lang::lower(functor_lang::parse("let main = () => Physics.position(\"ghost\")").unwrap())
+                .unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
@@ -9778,8 +9553,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     // `main` bound to a host function errors like a builtin, not a value.
     #[test]
     fn main_bound_to_host_fn_errors() {
-        let module =
-            functor_lang::lower(functor_lang::parse("let main = Scene.cube").unwrap()).unwrap();
+        let module = functor_lang::lower(functor_lang::parse("let main = Scene.cube").unwrap()).unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
@@ -9794,10 +9568,8 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     #[test]
     fn non_finite_numbers_are_rejected_at_the_boundary() {
         let module = functor_lang::lower(
-            functor_lang::parse(
-                "let main = () => Scene.translate(Vec3.make(1.0 / 0.0, 0.0, 0.0), Scene.cube())",
-            )
-            .unwrap(),
+            functor_lang::parse("let main = () => Scene.translate(Vec3.make(1.0 / 0.0, 0.0, 0.0), Scene.cube())")
+                .unwrap(),
         )
         .unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
@@ -10004,12 +9776,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let Value::HostData(data) = &effect else {
             panic!("expected an Effect")
         };
-        let tree = data
-            .as_any()
-            .downcast_ref::<FunctorLangEffect>()
-            .unwrap()
-            .0
-            .clone();
+        let tree = data.as_any().downcast_ref::<FunctorLangEffect>().unwrap().0.clone();
         let EffectTree::Raycast { tagger, .. } = &tree else {
             panic!("expected a raycast effect");
         };
@@ -10035,16 +9802,8 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let mut fail = |m: String| panic!("unexpected report: {m}");
 
         // Pre-step drain: DEFERRED — nothing performed, nothing logged.
-        let deferred = drain_effects(
-            &session,
-            "update",
-            &mut model,
-            tree,
-            &mut runner,
-            &mut log,
-            &mut fail,
-            false,
-        );
+        let deferred =
+            drain_effects(&session, "update", &mut model, tree, &mut runner, &mut log, &mut fail, false);
         assert_eq!(deferred.len(), 1);
         assert!(log.is_empty());
         assert!(matches!(model, Value::Number(_)), "model must be untouched");
@@ -10432,13 +10191,10 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     /// non-effects — construction-time teaching errors, not mid-drain ones.
     #[test]
     fn effect_construction_is_validated() {
-        let module =
-            functor_lang::lower(functor_lang::parse("let main = () => Effect.now(3.0)").unwrap())
-                .unwrap();
-        let failure =
-            functor_lang::run_with_host(&module, functor_lang::Tracing::Off, &mut FunctorHost)
-                .err()
-                .expect("should fail");
+        let module = functor_lang::lower(functor_lang::parse("let main = () => Effect.now(3.0)").unwrap()).unwrap();
+        let failure = functor_lang::run_with_host(&module, functor_lang::Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
         // [registry delta] was "Effect.now(tagger): the tagger must be a
         // function of the result, got a number" — flattened to the shared
         // Tagger teaching text.
@@ -10446,14 +10202,11 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             failure.error.message,
             "Effect.now: the tagger must be a function of the result record, got a number"
         );
-        let module = functor_lang::lower(
-            functor_lang::parse("let main = () => Effect.batch([1.0])").unwrap(),
-        )
-        .unwrap();
-        let failure =
-            functor_lang::run_with_host(&module, functor_lang::Tracing::Off, &mut FunctorHost)
-                .err()
-                .expect("should fail");
+        let module =
+            functor_lang::lower(functor_lang::parse("let main = () => Effect.batch([1.0])").unwrap()).unwrap();
+        let failure = functor_lang::run_with_host(&module, functor_lang::Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("should fail");
         // [registry delta] was "Effect.batch items must be Effects, got a
         // number" — the uniform typed list-element error.
         assert_eq!(
@@ -10501,8 +10254,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     #[test]
     fn structural_nodes_count_toward_the_cap() {
         let module =
-            functor_lang::lower(functor_lang::parse("let noop = (m, msg) => m").expect("parse"))
-                .expect("lower");
+            functor_lang::lower(functor_lang::parse("let noop = (m, msg) => m").expect("parse")).expect("lower");
         let session = match functor_lang::Session::load(&module, &mut FunctorHost) {
             Ok(session) => session,
             Err(failure) => panic!("load failed: {}", failure.error.message),
@@ -10550,8 +10302,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
     #[test]
     fn bare_numbers_are_not_durations() {
         let module = functor_lang::lower(
-            functor_lang::parse("type Msg = | Pulse\nlet main = () => Sub.every(0.5, Pulse)")
-                .unwrap(),
+            functor_lang::parse("type Msg = | Pulse\nlet main = () => Sub.every(0.5, Pulse)").unwrap(),
         )
         .unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
@@ -10575,9 +10326,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             err,
             "subscriptions must return a Sub (Sub.every / Sub.none / Sub.batch), got a number"
         );
-        let module =
-            functor_lang::lower(functor_lang::parse("let main = () => Sub.batch([1.0])").unwrap())
-                .unwrap();
+        let module = functor_lang::lower(functor_lang::parse("let main = () => Sub.batch([1.0])").unwrap()).unwrap();
         let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
             .err()
             .expect("should fail");
@@ -11128,10 +10877,8 @@ the game dir"
     fn effect_send_queues_a_conn_command() {
         let _guard = CONN_QUEUE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         crate::net::drain_conn_commands(); // clear
-        let module = functor_lang::lower(
-            functor_lang::parse("let main = () => Effect.send(7.0, \"hi\")").unwrap(),
-        )
-        .unwrap();
+        let module =
+            functor_lang::lower(functor_lang::parse("let main = () => Effect.send(7.0, \"hi\")").unwrap()).unwrap();
         let session = match functor_lang::Session::load(&module, &mut FunctorHost) {
             Ok(s) => s,
             Err(f) => panic!("load: {}", f.error.message),
@@ -11193,10 +10940,7 @@ the game dir"
                     "pos".into(),
                     EffectValue::Tuple(vec![EffectValue::Number(1.0), EffectValue::Number(-3.5)]),
                 ),
-                (
-                    "tags".into(),
-                    EffectValue::List(vec![EffectValue::Text("a".into())]),
-                ),
+                ("tags".into(), EffectValue::List(vec![EffectValue::Text("a".into())])),
                 ("ok".into(), EffectValue::Bool(true)),
             ])],
         );
@@ -11210,23 +10954,19 @@ the game dir"
 
         assert_eq!(
             net_event_value(NetEventKind::Message, 7, &wire),
-            EffectValue::Variant("Net.Data".into(), vec![EffectValue::Number(7.0), payload])
+            EffectValue::Variant(
+                "Net.Data".into(),
+                vec![EffectValue::Number(7.0), payload]
+            )
         );
         assert_eq!(
             net_event_value(NetEventKind::Message, 7, "plain text"),
             EffectValue::Variant(
                 "Net.Message".into(),
-                vec![
-                    EffectValue::Number(7.0),
-                    EffectValue::Text("plain text".into())
-                ]
+                vec![EffectValue::Number(7.0), EffectValue::Text("plain text".into())]
             )
         );
-        match net_event_value(
-            NetEventKind::Message,
-            7,
-            &format!("{TYPED_MSG_PREFIX}not json"),
-        ) {
+        match net_event_value(NetEventKind::Message, 7, &format!("{TYPED_MSG_PREFIX}not json")) {
             EffectValue::Variant(ctor, args) => {
                 assert_eq!(ctor, "Net.Error");
                 assert!(
@@ -11256,12 +10996,7 @@ the game dir"
         let model = session.global("init").unwrap();
         let (mut m, fx) = split_model_effect(
             session
-                .apply(
-                    tick,
-                    vec![model, Value::Number(0.5), Value::Number(0.5)],
-                    "tick",
-                    &mut FunctorHost,
-                )
+                .apply(tick, vec![model, Value::Number(0.5), Value::Number(0.5)], "tick", &mut FunctorHost)
                 .unwrap(),
         );
         let mut log = EffectLog::new();
@@ -11380,10 +11115,7 @@ the game dir"
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
 
         // Perform the fetch effect: queues the request + registers the tagger.
-        let fetch = effect_of(&session.global("fetch").unwrap())
-            .unwrap()
-            .0
-            .clone();
+        let fetch = effect_of(&session.global("fetch").unwrap()).unwrap().0.clone();
         let mut model = session.global("init").unwrap();
         let mut log = EffectLog::new();
         let _ = drain_effects(
@@ -11398,9 +11130,7 @@ the game dir"
         );
         // One HttpRequest command was queued, carrying the request's token.
         let token = match crate::net::drain_commands().as_slice() {
-            [crate::net::NetCommand::HttpRequest {
-                token, method, url, ..
-            }] => {
+            [crate::net::NetCommand::HttpRequest { token, method, url, .. }] => {
                 assert_eq!(*method, crate::net::HttpMethod::Get);
                 assert_eq!(url, "http://127.0.0.1:9000/hello");
                 *token
@@ -11417,14 +11147,9 @@ the game dir"
             body: b"hello!".to_vec(),
             error: None,
         });
-        let msg = session
-            .apply(tagger, vec![resp], "http", &mut FunctorHost)
-            .unwrap();
-        let (model, _) = split_model_effect(
-            session
-                .call("update", vec![model, msg], &mut FunctorHost)
-                .unwrap(),
-        );
+        let msg = session.apply(tagger, vec![resp], "http", &mut FunctorHost).unwrap();
+        let (model, _) =
+            split_model_effect(session.call("update", vec![model, msg], &mut FunctorHost).unwrap());
         assert_eq!(model.to_string(), "{ phase: Done(200, \"hello!\") }");
 
         // The token is consumed (a duplicate/late response finds no tagger).
@@ -11455,14 +11180,8 @@ the game dir"
         let mut model = session.global("init").unwrap();
         let mut log = EffectLog::new();
 
-        let fetch = effect_of(&session.global("fetch").unwrap())
-            .unwrap()
-            .0
-            .clone();
-        let shoot = effect_of(&session.global("shoot").unwrap())
-            .unwrap()
-            .0
-            .clone();
+        let fetch = effect_of(&session.global("fetch").unwrap()).unwrap().0.clone();
+        let shoot = effect_of(&session.global("shoot").unwrap()).unwrap().0.clone();
         for effect in [fetch, shoot] {
             let _ = drain_effects(
                 &session,
@@ -11482,14 +11201,8 @@ the game dir"
             vec!["net.http", "audio.play"]
         );
         // But nothing escaped: no net/http command, no audio command, no tagger.
-        assert!(
-            crate::net::drain_commands().is_empty(),
-            "no outbound net command"
-        );
-        assert!(
-            crate::audio::drain_commands().is_empty(),
-            "no outbound audio command"
-        );
+        assert!(crate::net::drain_commands().is_empty(), "no outbound net command");
+        assert!(crate::audio::drain_commands().is_empty(), "no outbound audio command");
     }
 
     // --- audio (roadmap E2): one-shots + soundScape ---
@@ -11513,10 +11226,7 @@ the game dir"
         let mut model = session.global("init").unwrap();
         let mut log = EffectLog::new();
 
-        let shoot = effect_of(&session.global("shoot").unwrap())
-            .unwrap()
-            .0
-            .clone();
+        let shoot = effect_of(&session.global("shoot").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
             "update",
@@ -11529,10 +11239,7 @@ the game dir"
         );
         assert_eq!(log.last().map(|r| r.kind), Some("audio.play"));
 
-        let blast = effect_of(&session.global("blast").unwrap())
-            .unwrap()
-            .0
-            .clone();
+        let blast = effect_of(&session.global("blast").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
             "update",
@@ -11586,10 +11293,7 @@ the game dir"
         let mut model = session.global("init").unwrap();
         let mut log = EffectLog::new();
 
-        let ping = effect_of(&session.global("ping").unwrap())
-            .unwrap()
-            .0
-            .clone();
+        let ping = effect_of(&session.global("ping").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
             "update",
@@ -11604,11 +11308,7 @@ the game dir"
 
         // One tokened one-shot was queued.
         let token = match crate::audio::drain_commands().as_slice() {
-            [crate::audio::AudioCommand::PlayOneShot {
-                token: Some(t),
-                sound,
-                ..
-            }] => {
+            [crate::audio::AudioCommand::PlayOneShot { token: Some(t), sound, .. }] => {
                 assert_eq!(sound, "chime.wav");
                 *t
             }
@@ -11656,10 +11356,7 @@ the game dir"
         let mut model = session.global("init").unwrap();
         let mut log = EffectLog::new();
 
-        let warm = effect_of(&session.global("warm").unwrap())
-            .unwrap()
-            .0
-            .clone();
+        let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
             "update",
@@ -11677,15 +11374,18 @@ the game dir"
         // Two commands queued: the tokenless texture warm, the tokened model.
         let commands = crate::asset::preload::drain_commands();
         let token = match commands.as_slice() {
-            [crate::asset::preload::PreloadCommand {
-                kind: crate::asset::preload::PreloadKind::Texture,
-                locator: tex,
-                token: None,
-            }, crate::asset::preload::PreloadCommand {
-                kind: crate::asset::preload::PreloadKind::Model,
-                locator: model_loc,
-                token: Some(t),
-            }] => {
+            [
+                crate::asset::preload::PreloadCommand {
+                    kind: crate::asset::preload::PreloadKind::Texture,
+                    locator: tex,
+                    token: None,
+                },
+                crate::asset::preload::PreloadCommand {
+                    kind: crate::asset::preload::PreloadKind::Model,
+                    locator: model_loc,
+                    token: Some(t),
+                },
+            ] => {
                 assert_eq!(tex, "wood.png");
                 assert_eq!(model_loc, "boss.glb");
                 *t
@@ -11741,10 +11441,7 @@ the game dir"
             .unwrap_or_else(|f| panic!("session: {}", f.error.message));
         let mut model = session.global("init").unwrap();
         let mut log = EffectLog::new();
-        let warm = effect_of(&session.global("warm").unwrap())
-            .unwrap()
-            .0
-            .clone();
+        let warm = effect_of(&session.global("warm").unwrap()).unwrap().0.clone();
         let _ = drain_effects(
             &session,
             "update",
@@ -11899,10 +11596,7 @@ a number",
             "Snapshot".into(),
             vec![
                 EffectValue::List(
-                    ships
-                        .iter()
-                        .map(|(pid, x, y)| orbs_ship(*pid, *x, *y))
-                        .collect(),
+                    ships.iter().map(|(pid, x, y)| orbs_ship(*pid, *x, *y)).collect(),
                 ),
                 EffectValue::List(
                     orbs.iter()
@@ -11917,9 +11611,7 @@ a number",
     /// a typed frame.
     fn orbs_decode(payload: &[u8]) -> EffectValue {
         let text = std::str::from_utf8(payload).expect("utf8 payload");
-        decode_typed_msg(text)
-            .expect("a typed frame")
-            .expect("frame decodes")
+        decode_typed_msg(text).expect("a typed frame").expect("frame decodes")
     }
 
     /// A record's numeric fields, in the order asked for — fails loud on a
@@ -11975,8 +11667,8 @@ a number",
     /// modules of it — so each role's contract is looked up under `Client.*` /
     /// `Server.*` (what functor.json's `{ "file": …, "module": … }` resolves).
     fn orbs_session() -> functor_lang::Session {
-        let entry =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/orbs/game.fun");
+        let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/orbs/game.fun");
         let project = functor_lang::project::load(&entry)
             .unwrap_or_else(|e| panic!("load orbs: {}", e.render()));
         functor_lang::Session::load(&project.module, &mut FunctorHost)
@@ -11984,9 +11676,7 @@ a number",
     }
 
     fn orbs_call(session: &functor_lang::Session, name: &str, args: Vec<Value>) -> Value {
-        let f = session
-            .global(name)
-            .unwrap_or_else(|| panic!("no `{name}`"));
+        let f = session.global(name).unwrap_or_else(|| panic!("no `{name}`"));
         session
             .apply(f, args, name, &mut FunctorHost)
             .unwrap_or_else(|e| panic!("{name}: {}", e.message))
@@ -12065,8 +11755,9 @@ a number",
                 ),
             )
         }
-        let event =
-            |kind, id: u64, text: &str| net_event_value(kind, id, text).to_functor_lang().unwrap();
+        let event = |kind, id: u64, text: &str| {
+            net_event_value(kind, id, text).to_functor_lang().unwrap()
+        };
 
         // The listener is declared on the arena address.
         let init = session.global("Server.init").expect("no `Server.init`");
@@ -12077,10 +11768,7 @@ a number",
         // A socket alone is not a pilot: the connection opens, and only the
         // `Join` that follows it is answered with a seat and a `Welcome`.
         let (model, sends) = feed(&session, init, event(NetEventKind::Connected, 1, ""));
-        assert!(
-            sends.is_empty(),
-            "a bare connect answers nothing: {sends:?}"
-        );
+        assert!(sends.is_empty(), "a bare connect answers nothing: {sends:?}");
         let (model, sends) = feed(
             &session,
             model,
@@ -12121,20 +11809,12 @@ a number",
         let (model, _) = feed(
             &session,
             model,
-            event(
-                NetEventKind::Message,
-                1,
-                &orbs_steer_frame(0.0, true, false),
-            ),
+            event(NetEventKind::Message, 1, &orbs_steer_frame(0.0, true, false)),
         );
         let (model, _) = feed(
             &session,
             model,
-            event(
-                NetEventKind::Message,
-                2,
-                &orbs_steer_frame(1.0, false, false),
-            ),
+            event(NetEventKind::Message, 2, &orbs_steer_frame(1.0, false, false)),
         );
         let (model, _) = feed(&session, model, event(NetEventKind::Message, 1, "junk"));
 
@@ -12173,11 +11853,7 @@ a number",
         // broadcasts only pid 1, and only to the client still connected.
         let (model, _) = feed(&session, model, event(NetEventKind::Disconnected, 1, ""));
         let (_, sends) = broadcast(&session, model);
-        assert_eq!(
-            sends.len(),
-            1,
-            "only the remaining client is served: {sends:?}"
-        );
+        assert_eq!(sends.len(), 1, "only the remaining client is served: {sends:?}");
         assert_eq!(sends[0].0, 2);
         let (ships, _) = orbs_snapshot(&sends[0].1);
         assert!(
@@ -12215,11 +11891,13 @@ a number",
                 other => panic!("not a number: {other}"),
             }
         }
-        let sends_of = |session: &functor_lang::Session, returned: Value| -> Vec<(u64, Vec<u8>)> {
-            orbs_drain_sends(session, "Client.update", returned).1
+        let sends_of =
+            |session: &functor_lang::Session, returned: Value| -> Vec<(u64, Vec<u8>)> {
+                orbs_drain_sends(session, "Client.update", returned).1
+            };
+        let event = |kind, id: u64, text: &str| {
+            net_event_value(kind, id, text).to_functor_lang().unwrap()
         };
-        let event =
-            |kind, id: u64, text: &str| net_event_value(kind, id, text).to_functor_lang().unwrap();
         // Keys are the built-in `Key` module's variants (`Key.W`), as the
         // producers deliver them; `sampledInput` reads the held LEVELS off the
         // snapshot it is handed.
@@ -12254,23 +11932,12 @@ a number",
         );
 
         // The socket opens (id 5): store it and open the handshake with a Join.
-        let opened = orbs_call(
-            &session,
-            "toMsg",
-            vec![event(NetEventKind::Connected, 5, "")],
-        );
+        let opened = orbs_call(&session, "toMsg", vec![event(NetEventKind::Connected, 5, "")]);
         let joined = orbs_call(&session, "Client.update", vec![init, opened]);
         let (model, _) = split_model_effect(joined.clone());
         assert_eq!(field(&model, "conn").to_string(), "Option.Some(5)");
-        assert_eq!(
-            num(field(&model, "myPid")),
-            -1.0,
-            "no identity until the Welcome"
-        );
-        assert_eq!(
-            sends_of(&session, joined),
-            vec![(5, orbs_join_frame().into_bytes())]
-        );
+        assert_eq!(num(field(&model, "myPid")), -1.0, "no identity until the Welcome");
+        assert_eq!(sends_of(&session, joined), vec![(5, orbs_join_frame().into_bytes())]);
         // …and until the server answers, a tick still sends nothing: the
         // client steers no one before it is seated.
         assert!(
@@ -12308,12 +11975,7 @@ a number",
             Value::List(items) => items.clone(),
             other => panic!("ships is not a list: {other}"),
         };
-        assert_eq!(
-            ships.len(),
-            2,
-            "two ships decoded, got: {}",
-            field(&model, "ships")
-        );
+        assert_eq!(ships.len(), 2, "two ships decoded, got: {}", field(&model, "ships"));
         let at = |pid: f64| -> (f64, f64) {
             let s = ships
                 .iter()
@@ -12347,11 +12009,7 @@ a number",
             vec![(5, orbs_steer_frame(1.0, false, false).into_bytes())]
         );
         let coast = vec![(5, orbs_steer_frame(0.0, false, false).into_bytes())];
-        assert_eq!(
-            steer(&model, vec![key("X")]),
-            coast,
-            "an unrelated key steers nothing"
-        );
+        assert_eq!(steer(&model, vec![key("X")]), coast, "an unrelated key steers nothing");
         assert_eq!(steer(&model, vec![]), coast, "releasing everything coasts");
 
         // Holding SPACE over a free orb rides a Claim along with the Steer —
@@ -12363,24 +12021,14 @@ a number",
                 .map(|(conn, payload)| (*conn, orbs_decode(payload)))
                 .collect::<Vec<_>>(),
             vec![
-                (
-                    5,
-                    EffectValue::Variant("Steer".into(), vec![orbs_intent(0.0, false, true)])
-                ),
-                (
-                    5,
-                    EffectValue::Variant("Claim".into(), vec![EffectValue::Number(0.0)])
-                ),
+                (5, EffectValue::Variant("Steer".into(), vec![orbs_intent(0.0, false, true)])),
+                (5, EffectValue::Variant("Claim".into(), vec![EffectValue::Number(0.0)])),
             ],
             "the claim names the orb the last snapshot put us over"
         );
 
         // Disconnect drops the connection and clears the board.
-        let dropped = orbs_call(
-            &session,
-            "toMsg",
-            vec![event(NetEventKind::Disconnected, 5, "")],
-        );
+        let dropped = orbs_call(&session, "toMsg", vec![event(NetEventKind::Disconnected, 5, "")]);
         let (model, _) =
             split_model_effect(orbs_call(&session, "Client.update", vec![model, dropped]));
         assert_eq!(field(&model, "conn").to_string(), "Option.None");
@@ -12433,8 +12081,7 @@ with Ui.topLeft()"
         functor_lang::set_trace_sink(Box::new(move |m| sink_buf.lock().unwrap().push(m)));
 
         fn load(src: &str) -> functor_lang::Session {
-            let module =
-                functor_lang::lower(functor_lang::parse(src).expect("parse")).expect("lower");
+            let module = functor_lang::lower(functor_lang::parse(src).expect("parse")).expect("lower");
             functor_lang::Session::load(&module, &mut FunctorHost)
                 .unwrap_or_else(|f| panic!("load failed: {}", f.error.message))
         }
