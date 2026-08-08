@@ -52,9 +52,9 @@ const NAV_IDS = new Set(NAV.map(({ id }) => id));
 
 type HeaderOptions = Partial<Record<HeaderKey, string>> & { controls?: string };
 
-// The badge ships as the literal "alpha"; build.mjs stamps the release tag
-// over it afterwards (one regex, unchanged by this module — which is why a
-// page may carry only ONE header block; injectHeader enforces that).
+// The badge ships as the literal "alpha"; build.mjs stamps the release tag or
+// PR head SHA over it afterwards (one regex — which is why a page may carry
+// only ONE header block; injectHeader enforces that).
 const renderHeader = ({
   prefix = "",
   suffix = "",

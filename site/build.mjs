@@ -88,25 +88,42 @@ await rm(dist, { recursive: true, force: true });
 await mkdir(`${dist}/pkg`, { recursive: true });
 await mkdir(`${dist}/examples`, { recursive: true });
 
-// The header version-badge names the build. A deploy (CI — the functor.games
-// build) names the release it ships from: the nearest reachable vX.Y.Z, walked
-// back from HEAD (hence the deploy's fetch-depth: 0). A local build is stricter
-// — only an exact, clean release tag counts; dev work, a commit ahead of a tag,
-// or a dirty tag checkout all read "v0.0.0 · dev", so a working copy never
-// mislabels itself as a release it merely descends from.
+// The header version-badge names the build. A PR preview receives its immutable
+// head SHA from the unprivileged build workflow and shows that identity directly
+// (the full SHA stays in the tooltip). A production deploy names the release it
+// ships from: the nearest reachable vX.Y.Z, walked back from HEAD (hence the
+// deploy's fetch-depth: 0). A local build is stricter — only an exact, clean
+// release tag counts; dev work, a commit ahead of a tag, or a dirty tag checkout
+// all read "v0.0.0 · dev", so a working copy never mislabels itself as a release
+// it merely descends from.
 let badge = "v0.0.0 · dev";
-try {
-  const describe = process.env.CI
-    ? "git describe --tags --abbrev=0 --match 'v[0-9]*'"
-    : "git describe --tags --exact-match --dirty --match 'v[0-9]*'";
-  const tag = execSync(describe, {
-    cwd: root,
-    stdio: ["ignore", "pipe", "ignore"],
-  })
-    .toString()
-    .trim();
-  if (/^v\d+\.\d+\.\d+$/.test(tag)) badge = `${tag} · alpha`;
-} catch {}
+let badgeTitle = "Local development build";
+const previewSha = process.env.FUNCTOR_SITE_PREVIEW_SHA;
+if (previewSha !== undefined) {
+  if (!/^[0-9a-f]{40}$/i.test(previewSha)) {
+    console.error("FUNCTOR_SITE_PREVIEW_SHA must be a full 40-character Git commit SHA");
+    process.exit(1);
+  }
+  const normalizedSha = previewSha.toLowerCase();
+  badge = `${normalizedSha.slice(0, 7)} · preview`;
+  badgeTitle = `PR preview for commit ${normalizedSha}`;
+} else {
+  try {
+    const describe = process.env.CI
+      ? "git describe --tags --abbrev=0 --match 'v[0-9]*'"
+      : "git describe --tags --exact-match --dirty --match 'v[0-9]*'";
+    const tag = execSync(describe, {
+      cwd: root,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    if (/^v\d+\.\d+\.\d+$/.test(tag)) {
+      badge = `${tag} · alpha`;
+      badgeTitle = "Functor is alpha software — everything may change between releases";
+    }
+  } catch {}
+}
 
 // The API reference is prerendered into its page (see src/api-reference-html.mjs):
 // a no-JS fetch of /docs/ must return the real signatures and docs, not a shell.
@@ -133,10 +150,12 @@ for (const page of PAGES) {
   await mkdir(dirname(target), { recursive: true });
   if (page.endsWith(".html")) {
     let html = await readFile(`${site}${page}`, "utf8");
-    // The shared header first (it carries the badge span), then stamp the badge.
+    // The shared header first (it carries the badge span), then stamp both its
+    // visible identity and tooltip. Badge values are either fixed copy, a
+    // validated tag, or a hex-only SHA, so they are safe to place in markup.
     html = injectHeader(html, page).replace(
-      /(<span class="version-badge"[^>]*>)[^<]*(<\/span>)/,
-      `$1${badge}$2`
+      /<span class="version-badge"[^>]*>[^<]*<\/span>/,
+      `<span class="version-badge" title="${badgeTitle}">${badge}</span>`
     );
     if (page === "docs/index.html") {
       for (const [marker, markup] of Object.entries(PRERENDER)) {
