@@ -36,14 +36,6 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
-        // Matches DepthMaterial::packDepth.
-        vec4 packDepth(float depth) {
-            vec4 enc = vec4(1.0, 255.0, 65025.0, 16581375.0) * depth;
-            enc = fract(enc);
-            enc -= enc.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
-            return enc;
-        }
-
         void main() {
             fragColor = packDepth(gl_FragCoord.z);
         }
@@ -75,10 +67,15 @@ impl Material for SkinnedDepthMaterial {
                     ctx.shader_version,
                 );
 
+                let fragment_source = format!(
+                    "{}\n{}",
+                    super::depth_material::PACK_DEPTH_GLSL,
+                    FRAGMENT_SHADER_SOURCE
+                );
                 let fragment_shader = Shader::build(
                     ctx.gl,
                     ShaderType::Fragment,
-                    FRAGMENT_SHADER_SOURCE,
+                    &fragment_source,
                     ctx.shader_version,
                 );
 

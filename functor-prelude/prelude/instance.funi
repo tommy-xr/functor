@@ -43,5 +43,6 @@ let trs : (Vec3.t, Angle.t, float, float, float) => t
 
 /// Multiply the copy's material colors by `color` — a per-instance tint over
 /// the template's material, not a second material system. Tints compose by
-/// multiplying; white is the identity.
+/// multiplying; white is the identity. The tint is RGB only — a copy's alpha
+/// always comes from the template's material.
 let tint : (Color.t, t) => t

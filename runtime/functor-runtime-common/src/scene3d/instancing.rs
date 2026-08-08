@@ -76,14 +76,23 @@ impl InstanceData {
 
     /// `Instance.rotateX/Y/Z` — compose `by` AFTER the rotation so far (the
     /// outer pipe applies last, like `Scene.rotate*`).
+    ///
+    /// The result is re-normalized and sign-canonicalized (`w >= 0`) so
+    /// repeated composition neither drifts off unit length nor flips a wire
+    /// representation between `q` and `-q` (the same rotation) — instances are
+    /// pinned on the v13 `/scene` wire and compared by `Scene.equals`.
     pub fn rotated(mut self, by: Quaternion<f32>) -> Self {
+        use cgmath::InnerSpace;
         let current = Quaternion::new(
             self.rotation[3],
             self.rotation[0],
             self.rotation[1],
             self.rotation[2],
         );
-        let next = by * current;
+        let mut next = (by * current).normalize();
+        if next.s < 0.0 {
+            next = -next;
+        }
         self.rotation = [next.v.x, next.v.y, next.v.z, next.s];
         self
     }

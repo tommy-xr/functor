@@ -24,7 +24,7 @@ pub trait Material {
 
 mod basic_material;
 mod color_material;
-mod depth_material;
+pub(crate) mod depth_material;
 mod emissive_material;
 mod lit_material;
 mod normal_debug_material;
