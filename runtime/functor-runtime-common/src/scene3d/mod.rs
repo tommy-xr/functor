@@ -1773,7 +1773,7 @@ so the reach is ignored"
                 }
                 let xform = world_matrix * self.xform;
                 match instancing::recognize(template) {
-                    Some(recognized) => {
+                    Some(instancing::RecognizedTemplate::Primitive(recognized)) => {
                         let mut renderer = scene_context.instanced.borrow_mut();
                         let renderer = renderer.get_or_insert_with(|| {
                             InstancedRenderer::new(
@@ -1781,9 +1781,67 @@ so the reach is ignored"
                                 render_context.shader_version,
                             )
                         });
-                        renderer.draw(
+                        renderer.draw_primitive(
                             render_context,
                             &recognized,
+                            instances,
+                            &xform,
+                            projection_matrix,
+                            view_matrix,
+                        );
+                    }
+                    Some(instancing::RecognizedTemplate::Model(recognized)) => {
+                        // Resolve exactly like the ordinary Model arm — this
+                        // is ALSO the liveness poll for `Asset.whilePending`
+                        // chains, so it must run every frame.
+                        let ModelHandle::File(file) = &recognized.description.handle;
+                        let model: Arc<AssetHandle<Model>> = render_context
+                            .asset_cache
+                            .load_asset_with_pipeline(scene_context.model_pipeline.clone(), file);
+                        let hydrated_model = crate::asset::resolve_while_pending(
+                            &render_context.asset_cache,
+                            &scene_context.model_pipeline,
+                            &model,
+                            &recognized.description.while_pending,
+                        );
+                        // Whether the model is rigid is only knowable now.
+                        // A skinned model stamps per copy (full per-copy
+                        // skinning — exact semantics); the shared-pose
+                        // instanced path is the next ladder rung.
+                        if hydrated_model.skeleton.get_joint_count() > 0 {
+                            if !depth_pass {
+                                let copies = instances.len();
+                                scene_context.warn_once_with(
+                                    &format!("instanced-skinned:{file}"),
+                                    || format!(
+                                        "[functor] Scene.instanced template model \"{file}\" is \
+skinned — rendering {copies} copies as a stamped group with per-copy skinning \
+(rigid models hardware-instance; a shared-pose instanced path for animated \
+templates is planned)"
+                                    ),
+                                );
+                            }
+                            expand_instanced(template, instances).render(
+                                render_context,
+                                scene_context,
+                                &xform,
+                                projection_matrix,
+                                view_matrix,
+                                current_material,
+                            );
+                            return;
+                        }
+                        let mut renderer = scene_context.instanced.borrow_mut();
+                        let renderer = renderer.get_or_insert_with(|| {
+                            InstancedRenderer::new(
+                                &render_context.gl,
+                                render_context.shader_version,
+                            )
+                        });
+                        renderer.draw_model(
+                            render_context,
+                            &hydrated_model,
+                            &recognized.local,
                             instances,
                             &xform,
                             projection_matrix,

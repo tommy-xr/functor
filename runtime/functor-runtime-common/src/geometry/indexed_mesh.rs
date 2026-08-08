@@ -18,8 +18,20 @@ pub struct IndexedMeshData<T: Vertex> {
 
 pub struct IndexedMeshRuntimeData {
     vao: VertexArray,
+    vbo: Buffer,
     ebo: Buffer,
     len: i32,
+}
+
+/// The hydrated GL handles of an [`IndexedMesh`], as plain `Copy` values —
+/// what the instanced-model path needs to build a SECOND VAO over the same
+/// vertex/index buffers (its per-instance attributes cannot live on the
+/// mesh's own VAO without changing every ordinary draw).
+#[derive(Clone, Copy)]
+pub struct MeshBufferHandles {
+    pub vbo: Buffer,
+    pub ebo: Buffer,
+    pub index_count: i32,
 }
 
 impl<T: Vertex> IndexedMesh<T> {
@@ -28,6 +40,16 @@ impl<T: Vertex> IndexedMesh<T> {
         let ora = RuntimeRenderableAsset::new(data, ());
 
         IndexedMesh { ora }
+    }
+
+    /// Hydrate (if needed) and hand back the mesh's GL buffer handles.
+    pub(crate) fn buffers(&self, gl: &glow::Context) -> MeshBufferHandles {
+        let data = self.ora.get(gl);
+        MeshBufferHandles {
+            vbo: data.vbo,
+            ebo: data.ebo,
+            index_count: data.len,
+        }
     }
 }
 
@@ -90,7 +112,7 @@ impl<T: Vertex> RenderableAsset for IndexedMeshData<T> {
             // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
             gl.bind_buffer(glow::ARRAY_BUFFER, None);
             gl.bind_vertex_array(None);
-            IndexedMeshRuntimeData { vao, ebo, len }
+            IndexedMeshRuntimeData { vao, vbo, ebo, len }
         }
     }
 }
