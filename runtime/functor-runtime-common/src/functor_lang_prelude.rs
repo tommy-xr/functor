@@ -364,6 +364,25 @@ pub enum EffectTree {
         body: String,
         tagger: Value,
     },
+    /// Persist a plain-data value in a local save slot (`Persistence.save(slot,
+    /// value)`). The payload is converted to its [`EffectValue`] at
+    /// construction (a closure inside is a teaching error at the call site,
+    /// exactly like [`Self::SendMsg`]) and written by the runner —
+    /// `Real` to the platform store ([`crate::storage`]), `Fake`/`Replay`
+    /// to memory. Tagger-less: a save reports nothing back.
+    Save {
+        slot: String,
+        payload: EffectValue,
+    },
+    /// Read a local save slot back (`Persistence.load(slot, tagger)`). A same-frame
+    /// runner read like [`Self::Now`]: the tagger receives
+    /// `Option.Some(value)` or `Option.None` (absent OR unreadable/corrupt —
+    /// a broken save must not kill a running game), and the result lands in
+    /// the effect log, so a replay feeds back exactly what was loaded.
+    Load {
+        slot: String,
+        tagger: Value,
+    },
     /// A physics query (docs/physics.md Phase 4). Unlike `Now`/`Random`,
     /// queries are **deferred**: the pre-step drain holds them and the
     /// driver performs them right after the frame's physics step, so the
@@ -432,6 +451,64 @@ pub trait EffectRunner {
     /// singleton physics world; `Fake`/`Replay` return canned/recorded
     /// records — physics queries are testable without a world at all.
     fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue;
+    /// Persist a save slot (`Persistence.save`). `Real` writes the platform store;
+    /// `Fake` records the write in memory (so a test can assert what a game
+    /// saved without touching a disk); `Replay` drops it — a replay must not
+    /// rewrite the world it is replaying. An error is returned for the drain
+    /// to report; the game keeps running.
+    fn save(&mut self, slot: &str, payload: &EffectValue) -> Result<(), String>;
+    /// Read a save slot (`Persistence.load`) as `Option.Some(value)` /
+    /// `Option.None` — see [`save_slot_value`]. `Real` asks the platform
+    /// store; `Fake` answers from what it recorded (empty = `None`); `Replay`
+    /// replays the recorded result.
+    fn load(&mut self, slot: &str) -> EffectValue;
+}
+
+/// The tagger-facing `Option` for a loaded save slot. The ctors are the
+/// stdlib `Option`'s canonical names, so a game matches the ordinary
+/// `Option.Some(v)` / `Option.None` it already knows.
+pub fn save_slot_value(loaded: Option<EffectValue>) -> EffectValue {
+    match loaded {
+        Some(value) => EffectValue::Variant("Option.Some".to_string(), vec![value]),
+        None => EffectValue::Variant("Option.None".to_string(), Vec::new()),
+    }
+}
+
+/// Read a slot through the platform store and decode it — the `Real`/dry-run
+/// load. Absent OR undecodable both answer `None` (loudly logged): a save
+/// written by an older version of the game must degrade to "no save", never
+/// to a crash.
+fn read_saved_slot(slot: &str) -> EffectValue {
+    let text = match crate::storage::read_slot(slot) {
+        Ok(Some(text)) => text,
+        Ok(None) => return save_slot_value(None),
+        Err(error) => {
+            log::warn!("[functor-lang] Persistence.load(\"{slot}\"): {error}");
+            return save_slot_value(None);
+        }
+    };
+    match serde_json::from_str::<EffectValue>(&text) {
+        // Convertibility is part of "readable": a slot file is EXTERNAL data
+        // (hand-edited, foreign, version-skewed), and a value that decodes but
+        // cannot become a Functor value would otherwise report mid-drain and
+        // silently never call the tagger — the game would wait forever for a
+        // restore message. Answer None instead.
+        Ok(value) if value.to_functor_lang().is_ok() => save_slot_value(Some(value)),
+        Ok(_) => {
+            log::warn!(
+                "[functor-lang] Persistence.load(\"{slot}\"): the saved data is not \
+representable — answering Option.None"
+            );
+            save_slot_value(None)
+        }
+        Err(error) => {
+            log::warn!(
+                "[functor-lang] Persistence.load(\"{slot}\"): the saved data could not be \
+read ({error}) — answering Option.None"
+            );
+            save_slot_value(None)
+        }
+    }
 }
 
 /// The tagger-facing record for a raycast result. Always the full shape —
@@ -689,6 +766,10 @@ pub fn effect_value_from_value(value: &Value) -> Result<EffectValue, String> {
                 .map(|(key, value)| {
                     let key = match key {
                         functor_lang::value::MapKey::Bool(value) => EffectMapKey::Bool(*value),
+                        // No finiteness check needed here (unlike a non-finite
+                        // VALUE above): the interpreter already refuses a
+                        // NaN/Infinity map key at insertion, so one cannot
+                        // reach this walker.
                         functor_lang::value::MapKey::Number(value) => EffectMapKey::Number(*value),
                         functor_lang::value::MapKey::String(value) => {
                             EffectMapKey::Text(value.to_string())
@@ -823,6 +904,14 @@ impl EffectRunner for RealEffects {
     fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
         active_world_raycast(origin, dir, max_dist)
     }
+    fn save(&mut self, slot: &str, payload: &EffectValue) -> Result<(), String> {
+        let text = serde_json::to_string(payload)
+            .expect("EffectValue is a closed plain-data enum; serialization cannot fail");
+        crate::storage::write_slot(slot, &text)
+    }
+    fn load(&mut self, slot: &str) -> EffectValue {
+        read_saved_slot(slot)
+    }
     fn random(&mut self) -> f64 {
         // xorshift64*; map the top 53 bits into [0, 1).
         let mut x = self.rng_state;
@@ -844,6 +933,14 @@ pub struct FakeEffects {
     /// misses. Test physics-query handling with no world at all.
     pub ray_hits: Vec<EffectValue>,
     next_ray: usize,
+    /// The in-memory save store, newest last: every `Persistence.save` this runner
+    /// performed, appended after anything [`FakeEffects::with_saves`] seeded
+    /// (seeding reads as "the game had already saved this"). One vector, so
+    /// it is both the store and the journal of what a game wrote — a test
+    /// asserts persistence with no disk and no browser. `Persistence.load` answers
+    /// with the LAST value written to that slot (`Option.None` when the slot
+    /// was never written), which is exactly the real store's rule.
+    pub saves: Vec<(String, EffectValue)>,
 }
 
 impl FakeEffects {
@@ -854,7 +951,15 @@ impl FakeEffects {
             next: 0,
             ray_hits: Vec::new(),
             next_ray: 0,
+            saves: Vec::new(),
         }
+    }
+
+    /// Pre-seed the in-memory save store — a game booting against an
+    /// EXISTING save, with no disk involved.
+    pub fn with_saves(mut self, saves: Vec<(String, EffectValue)>) -> FakeEffects {
+        self.saves = saves;
+        self
     }
 
     pub fn with_ray_hits(mut self, ray_hits: Vec<EffectValue>) -> FakeEffects {
@@ -880,6 +985,19 @@ impl EffectRunner for FakeEffects {
         self.next_ray += 1;
         v
     }
+    fn save(&mut self, slot: &str, payload: &EffectValue) -> Result<(), String> {
+        self.saves.push((slot.to_string(), payload.clone()));
+        Ok(())
+    }
+    fn load(&mut self, slot: &str) -> EffectValue {
+        save_slot_value(
+            self.saves
+                .iter()
+                .rev()
+                .find(|(key, _)| key == slot)
+                .map(|(_, value)| value.clone()),
+        )
+    }
 }
 
 /// The dry-run forward-step's runner (docs/time-travel.md T6b): ENVIRONMENT
@@ -887,24 +1005,50 @@ impl EffectRunner for FakeEffects {
 /// on wall clock or entropy — but a raycast is a WORLD read, not an
 /// environment read, so it answers against the ACTIVE world (the forward-step
 /// scopes that to its throwaway projected world) exactly like the live runner.
-pub struct DryRunEffects(FakeEffects);
+pub struct DryRunEffects {
+    env: FakeEffects,
+    /// Slots the PROJECTION wrote, newest last. A dry run must not touch the
+    /// player's store, but within the projection a save must still be
+    /// visible to a later load — otherwise the projected model diverges from
+    /// the live one for the one program shape (save-then-load) this exists
+    /// to project faithfully. Reads fall through to the real store.
+    saves: Vec<(String, EffectValue)>,
+}
 
 impl DryRunEffects {
     #[allow(clippy::new_without_default)]
     pub fn new() -> DryRunEffects {
-        DryRunEffects(FakeEffects::new(0.0, vec![0.0]))
+        DryRunEffects {
+            env: FakeEffects::new(0.0, vec![0.0]),
+            saves: Vec::new(),
+        }
     }
 }
 
 impl EffectRunner for DryRunEffects {
     fn now(&mut self) -> f64 {
-        self.0.now()
+        self.env.now()
     }
     fn random(&mut self) -> f64 {
-        self.0.random()
+        self.env.random()
     }
     fn raycast(&mut self, origin: [f32; 3], dir: [f32; 3], max_dist: f32) -> EffectValue {
         active_world_raycast(origin, dir, max_dist)
+    }
+    fn save(&mut self, slot: &str, payload: &EffectValue) -> Result<(), String> {
+        // A projection must not touch the player's save — it writes to its own
+        // throwaway overlay instead, exactly as it steps a throwaway world.
+        self.saves.push((slot.to_string(), payload.clone()));
+        Ok(())
+    }
+    fn load(&mut self, slot: &str) -> EffectValue {
+        // A slot READ is a world read, not an environment read — same rule as
+        // `raycast`: the projection sees the store the live game sees, with
+        // its own uncommitted writes on top.
+        match self.saves.iter().rev().find(|(key, _)| key == slot) {
+            Some((_, value)) => save_slot_value(Some(value.clone())),
+            None => read_saved_slot(slot),
+        }
     }
 }
 
@@ -953,6 +1097,16 @@ impl EffectRunner for ReplayEffects {
     }
     fn raycast(&mut self, _origin: [f32; 3], _dir: [f32; 3], _max_dist: f32) -> EffectValue {
         self.take("physics.raycast")
+    }
+    fn save(&mut self, _slot: &str, _payload: &EffectValue) -> Result<(), String> {
+        // A replay must not rewrite the world it is replaying — but it DOES
+        // consume the recording's `storage.save` record, so the log stays
+        // index-aligned and a save/load sequence replays exactly.
+        self.take("storage.save");
+        Ok(())
+    }
+    fn load(&mut self, _slot: &str) -> EffectValue {
+        self.take("storage.load")
     }
 }
 
@@ -1458,6 +1612,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_assets(&mut reg);
         register_anim(&mut reg);
         register_effects(&mut reg);
+        register_persistence(&mut reg);
         register_subs(&mut reg);
         register_ui_widgets(&mut reg);
         register_html(&mut reg);
@@ -3418,6 +3573,35 @@ message delivered when its load settles",
     );
 }
 
+/// The Persistence vocabulary — durable LOCAL state through the same broker
+/// (and the same plain-data codec as `Effect.sendMsg`) as every other effect:
+/// a game's "write my progress" and "read it back at boot". The slot key and
+/// the payload are validated HERE, at the construction site, so a bad key or
+/// a closure in the model errors at the call instead of mid-drain.
+fn register_persistence(reg: &mut crate::host_registry::Registry) {
+    reg.fn2(
+        "Persistence.save",
+        "Persistence.save(slot, value)",
+        |slot: String, value: Value| {
+            crate::storage::validate_slot(&slot).map_err(|e| format!("Persistence.save: {e}"))?;
+            let payload =
+                effect_value_from_value(&value).map_err(|e| format!("Persistence.save: {e}"))?;
+            Ok(FunctorLangEffect(EffectTree::Save { slot, payload }))
+        },
+    );
+    reg.fn2(
+        "Persistence.load",
+        "Persistence.load(slot, tagger)",
+        |slot: String, tagger: Tagger| {
+            crate::storage::validate_slot(&slot).map_err(|e| format!("Persistence.load: {e}"))?;
+            Ok(FunctorLangEffect(EffectTree::Load {
+                slot,
+                tagger: tagger.0,
+            }))
+        },
+    );
+}
+
 /// An `Effect.preload` argument: a MODEL or TEXTURE Asset value. Sounds
 /// teach (they decode at play time, outside the asset cache — there is
 /// nothing to warm), and bare strings teach toward the constructors — a new
@@ -4965,8 +5149,13 @@ pub fn needs_update(tree: &EffectTree) -> bool {
         | EffectTree::PlayAudio { .. }
         | EffectTree::PlayAudioThen { .. }
         | EffectTree::PreloadAsset { .. }
-        | EffectTree::PreloadAssetThen { .. } => false,
-        EffectTree::Now { .. } | EffectTree::Random { .. } | EffectTree::Raycast { .. } => true,
+        | EffectTree::PreloadAssetThen { .. }
+        // A save reports nothing back; only `Persistence.load` has a tagger.
+        | EffectTree::Save { .. } => false,
+        EffectTree::Now { .. }
+        | EffectTree::Random { .. }
+        | EffectTree::Raycast { .. }
+        | EffectTree::Load { .. } => true,
         EffectTree::Batch(items) => items.iter().any(needs_update),
     }
 }
@@ -5042,7 +5231,10 @@ dropping the rest"
             ));
             return;
         }
-        let (kind, value, tagger) = match tree {
+        // `kind` is the structured log's wire label; `api` is what a game
+        // author actually typed, so a message about a failed tagger names a
+        // function that exists (`Persistence.load`, not `Effect.storage.load`).
+        let (kind, api, value, tagger) = match tree {
             EffectTree::None => continue,
             EffectTree::Batch(items) => {
                 // Preserve declaration order against the LIFO queue.
@@ -5261,19 +5453,54 @@ dropping the rest"
                 }
                 None => (
                     "physics.raycast",
+                    "Physics.raycast",
                     runner.raycast(origin, dir, max_dist),
                     tagger,
                 ),
             },
-            EffectTree::Now { tagger } => ("now", runner.now().into(), tagger),
-            EffectTree::Random { tagger } => ("random", runner.random().into(), tagger),
+            EffectTree::Save { slot, payload } => {
+                // Tagger-less, like a physics command: perform the write and
+                // log the STRUCTURED payload, so what a game persisted is
+                // observable (and replayable) as data. A failed write is
+                // reported and dropped — a full disk must not kill the game.
+                //
+                // Unlike the outbound arms below, a save is NOT gated on
+                // `suppress_outbound`: the RUNNER is already the world seam
+                // here (a dry run holds a `DryRunEffects`, whose `save` is a
+                // no-op; a replay consumes its record instead of writing), and
+                // routing it through the runner unconditionally is what keeps
+                // a replayed save/load pair index-aligned with its recording.
+                if let Err(error) = runner.save(&slot, &payload) {
+                    report(format!(
+                        "[functor-lang] Persistence.save(\"{slot}\") failed: {error}"
+                    ));
+                }
+                log.push(EffectRecord {
+                    kind: "storage.save",
+                    value: payload,
+                });
+                if log.len() > EFFECT_LOG_CAP {
+                    log.remove(0);
+                }
+                continue;
+            }
+            EffectTree::Load { slot, tagger } => (
+                "storage.load",
+                "Persistence.load",
+                runner.load(&slot),
+                tagger,
+            ),
+            EffectTree::Now { tagger } => ("now", "Effect.now", runner.now().into(), tagger),
+            EffectTree::Random { tagger } => {
+                ("random", "Effect.random", runner.random().into(), tagger)
+            }
         };
         let value: EffectValue = value;
         let functor_lang_value = match value.to_functor_lang() {
             Ok(value) => value,
             Err(error) => {
                 report(format!(
-                    "[functor-lang] Effect.{kind} produced invalid structured data: {error}"
+                    "[functor-lang] {api} produced invalid structured data: {error}"
                 ));
                 continue;
             }
@@ -5285,12 +5512,12 @@ dropping the rest"
         let msg = match session.apply(
             tagger,
             vec![functor_lang_value],
-            &format!("Effect.{kind} tagger"),
+            &format!("{api} tagger"),
             &mut FunctorHost,
         ) {
             Ok(msg) => msg,
             Err(e) => {
-                report(format!("[functor-lang] Effect.{kind} tagger error: {}", e.message));
+                report(format!("[functor-lang] {api} tagger error: {}", e.message));
                 continue;
             }
         };
@@ -5909,6 +6136,25 @@ in this file (they quote `90deg` / `1.5rad` / `0.5s` / `500ms`) and this list to
     fn a_branded_sum_flows_into_a_branded_parameter() {
         eval_with_prelude("let main = () => Scene.cube() |> Scene.rotateY(90deg + 45deg)\n")
             .expect("a summed angle is still an Angle");
+    }
+
+    /// Drift guard: every namespace the prelude SHIPS must be reserved by the
+    /// language, or a game's `persistence.fun` — or an inline `module
+    /// Persistence` — silently steals it. `PROTECTED_NAMESPACES` is a static
+    /// list, so without this a new `.funi` lands unprotected by omission
+    /// (which is exactly what `Persistence` did, and `Terrain` before it).
+    #[test]
+    fn every_prelude_module_is_a_protected_namespace() {
+        let unprotected: Vec<String> = functor_prelude::modules()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| !functor_lang::project::is_protected_namespace(name))
+            .collect();
+        assert_eq!(
+            unprotected,
+            Vec::<String>::new(),
+            "prelude modules missing from PROTECTED_NAMESPACES (functor-lang/src/project.rs)"
+        );
     }
 
     // Drift guard: a HARD BIJECTION between the `functor-prelude` `.funi`
@@ -10835,6 +11081,246 @@ the game dir"
         assert!(
             msg.contains("non-finite"),
             "expected the non-finite teaching error, got: {msg}"
+        );
+    }
+
+    /// A save/load program, run under whichever runner a test hands it: the
+    /// first tick saves the model, the second loads it into a FRESH model —
+    /// the "quit and relaunch" shape, minus the process boundary.
+    fn run_save_then_load(runner: &mut dyn EffectRunner) -> (String, EffectLog) {
+        let src = "let init = { score: 0.0, tags: [\"a\"] }\n\
+                   let update = (m, msg) =>\n\
+                     match msg with\n\
+                     | Option.Some(saved) => saved\n\
+                     | Option.None => m\n\
+                   let save = (m) => (m, Persistence.save(\"autosave\", m))\n\
+                   let restore = (m) => (m, Persistence.load(\"autosave\", (o) => o))\n";
+        let project = functor_lang::project::load_single_source("game", src)
+            .unwrap_or_else(|e| panic!("load: {}", e.render()));
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("session: {}", f.error.message));
+        let mut log = EffectLog::new();
+        let mut drain = |model: &mut Value, name: &str| {
+            let (next, fx) = split_model_effect(
+                session
+                    .call(name, vec![model.clone()], &mut FunctorHost)
+                    .unwrap_or_else(|e| panic!("{name}: {}", e.message)),
+            );
+            *model = next;
+            let deferred = drain_effects(
+                &session,
+                "update",
+                model,
+                fx.expect("an effect"),
+                runner,
+                &mut log,
+                &mut |m| panic!("unexpected report: {m}"),
+                false,
+            );
+            assert!(deferred.is_empty(), "nothing should defer here");
+        };
+        // Play a little, then save.
+        let mut model = Value::Record(std::rc::Rc::new(vec![
+            ("score".to_string(), Value::Number(42.0)),
+            (
+                "tags".to_string(),
+                Value::List(std::rc::Rc::new(vec![Value::String(Rc::from("a"))])),
+            ),
+        ]));
+        drain(&mut model, "save");
+        // Relaunch: a fresh model, restored from the slot.
+        let mut restarted = session.global("init").unwrap();
+        drain(&mut restarted, "restore");
+        (restarted.to_string(), log)
+    }
+
+    /// The persistence spine on the REAL store: `Persistence.save` writes the
+    /// project's slot file (atomically, as canonical plain-data JSON) and a
+    /// later `Persistence.load` restores exactly the saved value into a fresh
+    /// model — the quit-and-relaunch contract, plus the on-disk artifact.
+    #[test]
+    fn save_writes_the_slot_file_and_load_restores_it() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::set_project_root(dir.path().to_path_buf());
+        let (restored, log) = run_save_then_load(&mut RealEffects::new());
+        assert_eq!(restored, "{ score: 42, tags: [\"a\"] }");
+        let expected = EffectValue::Record(vec![
+            ("score".into(), EffectValue::Number(42.0)),
+            ("tags".into(), EffectValue::List(vec![EffectValue::Text("a".into())])),
+        ]);
+        assert_eq!(
+            log,
+            vec![
+                EffectRecord {
+                    kind: "storage.save",
+                    value: expected.clone()
+                },
+                EffectRecord {
+                    kind: "storage.load",
+                    value: save_slot_value(Some(expected.clone()))
+                },
+            ]
+        );
+        // The artifact a player's save actually is: one JSON file under the
+        // project, decodable back into the same plain data.
+        let text = std::fs::read_to_string(dir.path().join(".functor/saves/autosave.json")).unwrap();
+        assert_eq!(serde_json::from_str::<EffectValue>(&text).unwrap(), expected);
+    }
+
+    /// A slot that was never written — and one whose file is corrupt — both
+    /// answer `Option.None` instead of failing the frame.
+    #[test]
+    fn an_absent_or_corrupt_slot_loads_as_none() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::set_project_root(dir.path().to_path_buf());
+        assert_eq!(
+            RealEffects::new().load("autosave"),
+            save_slot_value(None),
+            "an unwritten slot is None"
+        );
+        std::fs::create_dir_all(dir.path().join(".functor/saves")).unwrap();
+        std::fs::write(dir.path().join(".functor/saves/autosave.json"), "{not json").unwrap();
+        assert_eq!(
+            RealEffects::new().load("autosave"),
+            save_slot_value(None),
+            "a corrupt slot is None, not a crash"
+        );
+    }
+
+    /// `FakeEffects` is an in-memory store: it RECORDS what the game saved
+    /// (so a test asserts persistence with no disk at all) and answers loads
+    /// from it — the same program, no world.
+    #[test]
+    fn fake_effects_record_saves_and_answer_loads() {
+        let mut fake = FakeEffects::new(0.0, vec![0.0]);
+        let (restored, log) = run_save_then_load(&mut fake);
+        assert_eq!(restored, "{ score: 42, tags: [\"a\"] }");
+        assert_eq!(fake.saves.len(), 1);
+        assert_eq!(fake.saves[0].0, "autosave");
+        assert_eq!(log[0].kind, "storage.save");
+        // An untouched slot is absent, and a pre-seeded one boots restored.
+        assert_eq!(
+            FakeEffects::new(0.0, vec![0.0]).load("nothing-here"),
+            save_slot_value(None)
+        );
+        let seeded = EffectValue::Number(7.0);
+        assert_eq!(
+            FakeEffects::new(0.0, vec![0.0])
+                .with_saves(vec![("autosave".into(), seeded.clone())])
+                .load("autosave"),
+            save_slot_value(Some(seeded))
+        );
+    }
+
+    /// Replay determinism: a recorded save/load log replays to the SAME model
+    /// and the same log, with no store consulted — and the replay does not
+    /// rewrite the slot it is replaying.
+    #[test]
+    fn a_recorded_save_load_sequence_replays_exactly() {
+        let (fake_model, fake_log) = run_save_then_load(&mut FakeEffects::new(0.0, vec![0.0]));
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Point the real store at an empty directory: if replay touched it,
+        // the assertions below (and this directory) would show it.
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::set_project_root(dir.path().to_path_buf());
+        let (replay_model, replay_log) = run_save_then_load(&mut ReplayEffects::new(fake_log.clone()));
+        assert_eq!(replay_model, fake_model);
+        assert_eq!(replay_log, fake_log);
+        assert!(
+            !dir.path().join(".functor/saves").exists(),
+            "a replay must not write the store it is replaying"
+        );
+    }
+
+    /// The two call-site guards: a slot key is a NAME (no traversal, no
+    /// separators, no empty), and a payload must be plain data — both taught
+    /// at the construction site, not frames later.
+    #[test]
+    fn save_rejects_bad_slots_and_non_plain_values() {
+        let msg = run_fail("let main = () => Persistence.save(\"../escape\", 1.0)");
+        assert!(
+            msg.contains("Persistence.save: slot key") && msg.contains("a slot is a NAME, not a path"),
+            "expected the slot teaching error, got: {msg}"
+        );
+        let msg = run_fail("let main = () => Persistence.load(\"\", (o) => o)");
+        assert!(
+            msg.contains("Persistence.load: slot key must not be empty"),
+            "expected the empty-slot teaching error, got: {msg}"
+        );
+        let msg = run_fail("let main = () => Persistence.save(\"autosave\", (x) => x)");
+        assert!(
+            msg.contains("Persistence.save: not plain data") && msg.contains("a function"),
+            "expected the plain-data teaching error, got: {msg}"
+        );
+        let msg = run_fail("let main = () => Persistence.save(\"autosave\", Scene.cube())");
+        assert!(
+            msg.contains("not plain data") && msg.contains("opaque host value"),
+            "expected the host-value teaching error, got: {msg}"
+        );
+        // A NaN would serialize as JSON `null` and fail to READ BACK — after
+        // the rename had already replaced the last good save. Refuse it at the
+        // call site, as a value and as a map key.
+        let msg = run_fail("let main = () => Persistence.save(\"autosave\", 0.0 / 0.0)");
+        assert!(
+            msg.contains("non-finite"),
+            "expected the non-finite teaching error, got: {msg}"
+        );
+        // The other NaN door — a map KEY — is already shut by the
+        // interpreter, so a save can never carry one either.
+        let msg = run_fail(
+            "let main = () => Persistence.save(\"autosave\", Map.insert(0.0 / 0.0, 1.0, Map.empty()))",
+        );
+        assert!(
+            msg.contains("keys must be finite"),
+            "expected the map-key finiteness error, got: {msg}"
+        );
+        // A reserved Windows device name would write nowhere on that platform.
+        let msg = run_fail("let main = () => Persistence.save(\"con\", 1.0)");
+        assert!(
+            msg.contains("reserved device name"),
+            "expected the reserved-name teaching error, got: {msg}"
+        );
+    }
+
+    /// The store is defence-in-depth, not just call-site validation: the Rust
+    /// API refuses a traversing key too, so no future host caller can reach
+    /// outside the saves directory.
+    #[test]
+    fn the_store_itself_refuses_a_traversing_slot() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::set_project_root(dir.path().to_path_buf());
+        assert!(crate::storage::write_slot("../escape", "1").is_err());
+        assert!(crate::storage::read_slot("../escape").is_err());
+        assert!(!dir.path().parent().unwrap().join("escape.json").exists());
+    }
+
+    /// A dry-run projection writes to its OWN overlay: the player's store is
+    /// untouched, but a save is still visible to a later load inside the
+    /// projection (otherwise the projected model would diverge from the live
+    /// one for exactly the program this exists to project).
+    #[test]
+    fn a_dry_run_save_stays_in_the_projection() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::set_project_root(dir.path().to_path_buf());
+        let (restored, _) = run_save_then_load(&mut DryRunEffects::new());
+        assert_eq!(restored, "{ score: 42, tags: [\"a\"] }");
+        assert!(
+            !dir.path().join(".functor/saves").exists(),
+            "a projection must not write the player's store"
         );
     }
 

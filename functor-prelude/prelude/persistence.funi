@@ -1,0 +1,49 @@
+//! Durable local state — the save slot that outlives the process.
+//!
+//! The model is the game's live state and hot-reload preserves it, but
+//! quitting does not: a slot is where progress goes to survive. Both
+//! functions produce an ordinary `Effect.t`, performed by the same broker as
+//! every other effect, so a save is deterministic under replay like anything
+//! else.
+//!
+//! This is the simple path for the common case — one autosave, saved whole and
+//! read back at boot. It deliberately says nothing about where the bytes live;
+//! a general file API over a virtual user namespace is planned, and these two
+//! functions are meant to keep reading as the two-line convenience layer over
+//! it.
+//!
+//! Slots belong to the running project: natively `<project>/.functor/saves/`,
+//! in the browser a page- and entry-scoped `localStorage` key. One process
+//! runs one game, so the store root is process-global. The Quest/embedded
+//! producer does not name a writable project root yet — there slots follow the
+//! process working directory.
+
+/// Persist a plain-data value in a local save slot.
+///
+/// The durable dual of the model: a slot survives quitting the game, where
+/// hot-reload's preserved model does not. The value is carried by the same
+/// codec as `Effect.sendMsg` — numbers, strings, bools, lists, maps, tuples,
+/// records and variants of those — so functions and opaque host values are a
+/// teaching error at the call site. Saving the whole model is the common
+/// case; save what `init` can rebuild from.
+///
+/// The slot is a NAME, not a path: letters, digits, `_` and `-` (1–64
+/// characters). Natively it lands in `<project>/.functor/saves/<slot>.json`,
+/// written atomically; in the browser it is one project-scoped
+/// `localStorage` key. Writing the same slot again replaces it.
+let save : (string, 'a) => Effect.t
+/// Read a local save slot back and tag it as a message.
+///
+/// The tagger receives `Option.Some(value)` — the value exactly as saved —
+/// or `Option.None` when the slot has never been written or what is there
+/// cannot be read at all (a corrupt or hand-mangled file): an unreadable
+/// save degrades to "no save", it never stops the game.
+///
+/// A save that reads back fine but was written by an OLDER MODEL SHAPE is
+/// still `Option.Some` — nothing checks the shape for you. Handle that the
+/// way you would any external data: change the slot name when the model
+/// changes incompatibly, or save a record carrying your own version field
+/// and match on it.
+///
+/// Usually issued once at boot from the first `tick`.
+let load : (string, (Option.t<'a>) => 'msg) => Effect.t
