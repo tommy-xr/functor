@@ -118,7 +118,8 @@ pub fn canonicalize_map_entries(mut entries: Vec<(MapKey, Value)>) -> (Vec<(MapK
     // retained earlier slot therefore implements last-write-wins without a
     // second input-sized vector.
     entries.dedup_by(|later, earlier| {
-        comparison_units = comparison_units.saturating_add(later.0.comparison_units(&earlier.0));
+        comparison_units =
+            comparison_units.saturating_add(later.0.comparison_units(&earlier.0));
         if later.0 == earlier.0 {
             std::mem::swap(&mut later.1, &mut earlier.1);
             true
@@ -271,9 +272,7 @@ impl Value {
         match self {
             Value::Number(_) | Value::Bool(_) => true,
             // The cap is CHARACTERS; `take(N+1)` bounds the count work.
-            Value::String(s) => {
-                s.chars().take(MAX_PREVIEW_STRING + 1).count() <= MAX_PREVIEW_STRING
-            }
+            Value::String(s) => s.chars().take(MAX_PREVIEW_STRING + 1).count() <= MAX_PREVIEW_STRING,
             Value::Variant { args, .. } => args.is_empty(),
             Value::List(items) => items.is_empty(),
             Value::Map(entries) => entries.is_empty(),
@@ -324,11 +323,7 @@ impl Value {
                     .take(MAX_PREVIEW_ITEMS)
                     .map(|v| v.preview_at(depth + 1))
                     .collect();
-                let tail = if items.len() > MAX_PREVIEW_ITEMS {
-                    ", …"
-                } else {
-                    ""
-                };
+                let tail = if items.len() > MAX_PREVIEW_ITEMS { ", …" } else { "" };
                 format!("[{}{tail}]", shown.join(", "))
             }
             Value::Map(entries) => {
@@ -356,11 +351,7 @@ impl Value {
                     .take(MAX_PREVIEW_ITEMS)
                     .map(|v| v.preview_at(depth + 1))
                     .collect();
-                let tail = if items.len() > MAX_PREVIEW_ITEMS {
-                    ", …"
-                } else {
-                    ""
-                };
+                let tail = if items.len() > MAX_PREVIEW_ITEMS { ", …" } else { "" };
                 format!("({}{tail})", shown.join(", "))
             }
             Value::Record(fields) => {
@@ -369,11 +360,7 @@ impl Value {
                     .take(MAX_PREVIEW_FIELDS)
                     .map(|(name, value)| format!("{name}: {}", value.preview_at(depth + 1)))
                     .collect();
-                let tail = if fields.len() > MAX_PREVIEW_FIELDS {
-                    ", …"
-                } else {
-                    ""
-                };
+                let tail = if fields.len() > MAX_PREVIEW_FIELDS { ", …" } else { "" };
                 format!("{{ {}{tail} }}", shown.join(", "))
             }
             Value::Variant { ctor, args } if !args.is_empty() => {
@@ -382,11 +369,7 @@ impl Value {
                     .take(MAX_PREVIEW_ITEMS)
                     .map(|v| v.preview_at(depth + 1))
                     .collect();
-                let tail = if args.len() > MAX_PREVIEW_ITEMS {
-                    ", …"
-                } else {
-                    ""
-                };
+                let tail = if args.len() > MAX_PREVIEW_ITEMS { ", …" } else { "" };
                 format!("{ctor}({}{tail})", shown.join(", "))
             }
             // Every remaining shape is primitive: `Display` is already short.
@@ -562,11 +545,7 @@ impl fmt::Display for Value {
                         Value::Builtin(b) => crate::eval::builtin_arity(*b),
                         _ => p.applied.len(),
                     };
-                    write!(
-                        f,
-                        "<partial {} more>",
-                        arity.saturating_sub(p.applied.len())
-                    )?
+                    write!(f, "<partial {} more>", arity.saturating_sub(p.applied.len()))?
                 }
                 Value::Builtin(b) => write!(f, "<builtin {}>", builtin_name(*b))?,
                 Value::HostFn(path) => write!(f, "<host {path}>")?,

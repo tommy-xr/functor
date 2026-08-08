@@ -150,8 +150,7 @@ impl Listener {
         } else if dist >= SPATIAL_MAX_DISTANCE {
             0.0
         } else {
-            let t =
-                1.0 - (dist - SPATIAL_MIN_DISTANCE) / (SPATIAL_MAX_DISTANCE - SPATIAL_MIN_DISTANCE);
+            let t = 1.0 - (dist - SPATIAL_MIN_DISTANCE) / (SPATIAL_MAX_DISTANCE - SPATIAL_MIN_DISTANCE);
             t * t
         };
 
@@ -318,7 +317,10 @@ pub fn reconcile(live: &HashMap<String, AudioSource>, desired: &AudioScene) -> V
     let mut updates = Vec::new();
 
     // Stops: live keys no longer desired. Sorted for determinism.
-    let mut stops: Vec<&String> = live.keys().filter(|k| !seen.contains(k)).collect();
+    let mut stops: Vec<&String> = live
+        .keys()
+        .filter(|k| !seen.contains(k))
+        .collect();
     stops.sort();
     for key in stops {
         updates.push(SceneUpdate::Stop(key.clone()));
@@ -397,10 +399,7 @@ mod tests {
         // Halfway between min and max the linear factor is 0.5, squared → 0.25.
         let mid = (SPATIAL_MIN_DISTANCE + SPATIAL_MAX_DISTANCE) / 2.0;
         let g = l.spatialize([0.0, 0.0, mid]).gain;
-        assert!(
-            (g - 0.25).abs() < 1e-5,
-            "gain {g} should be ~0.25 at the midpoint"
-        );
+        assert!((g - 0.25).abs() < 1e-5, "gain {g} should be ~0.25 at the midpoint");
         // Monotonically decreasing with distance.
         assert!(l.spatialize([0.0, 0.0, 3.0]).gain > l.spatialize([0.0, 0.0, 6.0]).gain);
     }

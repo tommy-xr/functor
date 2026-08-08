@@ -729,7 +729,13 @@ fn sprite_number(value: &Value, node: &str) -> Result<f32, String> {
 }
 
 /// Fold the inherited tint into a node's own color channels.
-fn tinted(tint: [f32; 4], r: &Value, g: &Value, b: &Value, node: &str) -> Result<[f32; 4], String> {
+fn tinted(
+    tint: [f32; 4],
+    r: &Value,
+    g: &Value,
+    b: &Value,
+    node: &str,
+) -> Result<[f32; 4], String> {
     Ok([
         sprite_number(r, node)? * tint[0],
         sprite_number(g, node)? * tint[1],
@@ -795,7 +801,10 @@ fn lower_sprite(
                 let Value::Record(fields) = point else {
                     return Err("invalid Polygon sprite data: expected point records".to_string());
                 };
-                let coordinate = |name: &str| match fields.iter().find(|(field, _)| field == name) {
+                let coordinate = |name: &str| match fields
+                    .iter()
+                    .find(|(field, _)| field == name)
+                {
                     Some((_, value)) => sprite_number(value, "Polygon"),
                     None => Err(format!(
                         "invalid Polygon sprite data: point is missing `{name}`"
@@ -837,8 +846,11 @@ fn lower_sprite(
             // if it rotates an assembled group instead.
             Ok(transformed(
                 leaf,
-                Matrix4::from_translation(cgmath::vec3((x1 + x2) * 0.5, (y1 + y2) * 0.5, 0.0))
-                    * Matrix4::from_angle_z(cgmath::Rad(dy.atan2(dx)))
+                Matrix4::from_translation(cgmath::vec3(
+                    (x1 + x2) * 0.5,
+                    (y1 + y2) * 0.5,
+                    0.0,
+                )) * Matrix4::from_angle_z(cgmath::Rad(dy.atan2(dx)))
                     * Matrix4::from_nonuniform_scale(length, thickness, 1.0),
             )
             .0)
@@ -935,7 +947,12 @@ fn lower_sprite(
 /// `Sprite.move` places text the same way it places a rectangle. `\n` starts a
 /// new line, stacked at exactly one `size` of line height and centered within
 /// the run's box (left-aligned blocks are the follow-up `textBlock`'s job).
-fn lower_sprite_text(size: f32, color: [f32; 4], text: &str, sampling: SpriteSampling) -> Scene3D {
+fn lower_sprite_text(
+    size: f32,
+    color: [f32; 4],
+    text: &str,
+    sampling: SpriteSampling,
+) -> Scene3D {
     let (_, rows) = sprite_font::measure_cells(text);
     let rows = rows as f32;
     let mut glyphs = Vec::new();

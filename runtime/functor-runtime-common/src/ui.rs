@@ -957,20 +957,26 @@ impl Scrubber {
                                             };
                                             // Pink = future, cyan = past —
                                             // the trail's own two colors.
-                                            let future_band = egui::Color32::from_rgba_unmultiplied(
-                                                232, 88, 184, 200,
-                                            );
-                                            let future_cap = egui::Color32::from_rgba_unmultiplied(
-                                                232, 88, 184, 230,
-                                            );
-                                            let future_hot = egui::Color32::from_rgb(255, 208, 238);
-                                            let past_band = egui::Color32::from_rgba_unmultiplied(
-                                                64, 217, 255, 200,
-                                            );
-                                            let past_cap = egui::Color32::from_rgba_unmultiplied(
-                                                64, 217, 255, 230,
-                                            );
-                                            let past_hot = egui::Color32::from_rgb(150, 236, 255);
+                                            let future_band =
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    232, 88, 184, 200,
+                                                );
+                                            let future_cap =
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    232, 88, 184, 230,
+                                                );
+                                            let future_hot =
+                                                egui::Color32::from_rgb(255, 208, 238);
+                                            let past_band =
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    64, 217, 255, 200,
+                                                );
+                                            let past_cap =
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    64, 217, 255, 230,
+                                                );
+                                            let past_hot =
+                                                egui::Color32::from_rgb(150, 236, 255);
                                             // Start at the handle's edges so
                                             // neither band paints over the
                                             // handle itself.
@@ -983,9 +989,10 @@ impl Scrubber {
                                             // band is simply shorter there
                                             // (the trail clips the same way).
                                             let back_x1 = x_of(f) - 5.0;
-                                            let back_x0 =
-                                                x_of(f.saturating_sub(future_frames).max(lo))
-                                                    .min(back_x1);
+                                            let back_x0 = x_of(
+                                                f.saturating_sub(future_frames).max(lo),
+                                            )
+                                            .min(back_x1);
                                             band(ui, back_x0, back_x1, past_band);
                                             if let Some(a) = cap(
                                                 ui,
@@ -1055,8 +1062,10 @@ impl Scrubber {
                             // Same two colors as the rail's bands: cyan for
                             // the recorded past, pink for the projected
                             // future.
-                            let cyan = egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
-                            let pink = egui::Color32::from_rgba_unmultiplied(232, 88, 184, 190);
+                            let cyan =
+                                egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
+                            let pink =
+                                egui::Color32::from_rgba_unmultiplied(232, 88, 184, 190);
                             let mut segments: Vec<(String, egui::Color32)> = Vec::new();
                             match state.range {
                                 Some((lo, hi)) => {
@@ -1066,8 +1075,8 @@ impl Scrubber {
                                         // frame — report what actually exists,
                                         // matching where the rail's cyan band
                                         // stops.
-                                        let past_frames =
-                                            future_frames.min(state.frame.saturating_sub(lo));
+                                        let past_frames = future_frames
+                                            .min(state.frame.saturating_sub(lo));
                                         segments.push((format!("-{past_frames} "), cyan));
                                     }
                                     segments.push((format!("{}", state.frame), weak));
@@ -1108,7 +1117,10 @@ impl Scrubber {
                                                 crate::viewer::DebugCameraMode::Orbit,
                                             ] {
                                                 if ui
-                                                    .selectable_label(current == mode, mode.label())
+                                                    .selectable_label(
+                                                        current == mode,
+                                                        mode.label(),
+                                                    )
                                                     .clicked()
                                                 {
                                                     action = Some(
@@ -1130,7 +1142,8 @@ impl Scrubber {
                                             )
                                             .changed()
                                         {
-                                            action = Some(ScrubberAction::SetDebugCameraFov(value));
+                                            action =
+                                                Some(ScrubberAction::SetDebugCameraFov(value));
                                         }
                                     } else if let Some(zoom) = state.camera_zoom_2d {
                                         ui.separator();
@@ -1160,15 +1173,16 @@ impl Scrubber {
                                                 )
                                                 .clicked()
                                             {
-                                                action = Some(ScrubberAction::SetDebugMaterial(
-                                                    material,
-                                                ));
+                                                action = Some(
+                                                    ScrubberAction::SetDebugMaterial(material),
+                                                );
                                             }
                                         }
                                         ui.separator();
                                         let mut physics = state.debug_presentation.physics;
                                         if ui.checkbox(&mut physics, "Physics").changed() {
-                                            action = Some(ScrubberAction::SetDebugPhysics(physics));
+                                            action =
+                                                Some(ScrubberAction::SetDebugPhysics(physics));
                                         }
                                         let mut frustum =
                                             state.debug_presentation.authored_camera_frustum;
@@ -1183,7 +1197,8 @@ impl Scrubber {
                                     ui.separator();
                                     let mut game_ui = state.debug_presentation.show_game_ui;
                                     if ui.checkbox(&mut game_ui, "Game UI").changed() {
-                                        action = Some(ScrubberAction::SetGameUiVisible(game_ui));
+                                        action =
+                                            Some(ScrubberAction::SetGameUiVisible(game_ui));
                                     }
                                 });
                             }
@@ -1398,10 +1413,7 @@ mod tests {
             modifiers: egui::Modifiers::default(),
         }];
         assert!(run_widget_frame(&ctx, release, &mut texts, &view("cube")).is_empty());
-        assert!(
-            ctx.egui_wants_keyboard_input(),
-            "click should focus the field"
-        );
+        assert!(ctx.egui_wants_keyboard_input(), "click should focus the field");
 
         // Frame 3: a typed character (the shell's Char event, lowered the
         // same way draw_view lowers it) must emit exactly one TextChanged.
@@ -1412,10 +1424,7 @@ mod tests {
         let UiEventKind::TextChanged(new_text) = &events[0].kind else {
             panic!("expected TextChanged, got {:?}", events[0].kind);
         };
-        assert!(
-            new_text.contains('s'),
-            "typed char should land: {new_text:?}"
-        );
+        assert!(new_text.contains('s'), "typed char should land: {new_text:?}");
         let emitted = new_text.clone();
 
         // Frame 4 — the ECHO: the model comes back equal to what we emitted;
@@ -1472,4 +1481,5 @@ mod tests {
             UiEventKind::TextChanged(s) if s == "a"
         ));
     }
+
 }

@@ -52,10 +52,7 @@ fn plain_literals_are_unchanged() {
 #[test]
 fn a_suffix_runs_to_the_end_of_the_identifier() {
     let tokens = lex("16px2", 0).expect("lexes");
-    assert_eq!(
-        tokens[0].kind,
-        TokenKind::NumberUnit(16.0, "px2".to_string())
-    );
+    assert_eq!(tokens[0].kind, TokenKind::NumberUnit(16.0, "px2".to_string()));
 }
 
 /// The lexer never produces a negative literal (as for plain numbers) — the
@@ -64,7 +61,10 @@ fn a_suffix_runs_to_the_end_of_the_identifier() {
 fn unary_minus_is_a_separate_token() {
     let tokens = lex("-2.5px", 0).expect("lexes");
     assert_eq!(tokens[0].kind, TokenKind::Minus);
-    assert_eq!(tokens[1].kind, TokenKind::NumberUnit(2.5, "px".to_string()));
+    assert_eq!(
+        tokens[1].kind,
+        TokenKind::NumberUnit(2.5, "px".to_string())
+    );
 }
 
 /// A prefix minus folds INTO the literal (the number-pattern precedent), so
@@ -103,10 +103,7 @@ fn a_unit_item_parses_with_a_qualified_target() {
         panic!("expected a unit item, got {:?}", program.items[0]);
     };
     assert_eq!(decl.suffix, "deg");
-    assert_eq!(
-        decl.target,
-        vec!["Angle".to_string(), "degrees".to_string()]
-    );
+    assert_eq!(decl.target, vec!["Angle".to_string(), "degrees".to_string()]);
 }
 
 #[test]
@@ -232,9 +229,7 @@ fn a_duplicate_suffix_is_an_error() {
 fn a_target_that_is_not_a_float_function_is_a_check_error() {
     let diags = check_src("let two = 2.0\nunit x = two\n");
     assert!(
-        diags
-            .iter()
-            .any(|d| d.contains("`unit x`") && d.contains("got float")),
+        diags.iter().any(|d| d.contains("`unit x`") && d.contains("got float")),
         "{diags:?}"
     );
 
@@ -373,7 +368,10 @@ fn a_keyword_touching_a_number_is_not_a_suffix() {
 #[test]
 fn a_digit_separator_is_taught_not_reported_as_a_unit() {
     let message = lower_err("let a = 1_000\n");
-    assert!(message.contains("no digit separators"), "{message}");
+    assert!(
+        message.contains("no digit separators"),
+        "{message}"
+    );
 }
 
 /// A plain function target works too — nothing about units is brand-specific.
@@ -429,11 +427,7 @@ fn malformed_operator_declarations_are_targeted_parse_errors() {
     // listing everything again.
     let message = parse_err("unit px (!=) = ne\n");
     assert!(message.contains("`!=` is derived from `==`"), "{message}");
-    for src in [
-        "unit px (>) = gt\n",
-        "unit px (<=) = le\n",
-        "unit px (>=) = ge\n",
-    ] {
+    for src in ["unit px (>) = gt\n", "unit px (<=) = le\n", "unit px (>=) = ge\n"] {
         let message = parse_err(src);
         assert!(message.contains("are derived from `<`"), "{message}");
     }
@@ -574,10 +568,10 @@ fn a_wrong_shaped_implementation_is_rejected() {
 fn an_unresolvable_operator_asks_for_an_annotation() {
     let diags = check_src(&format!("{PX}let add = (a, b) => a + b\n"));
     assert!(
-        diags.iter().any(
-            |d| d.contains("could be float arithmetic or `Px` arithmetic")
-                && d.contains("annotate an operand")
-        ),
+        diags
+            .iter()
+            .any(|d| d.contains("could be float arithmetic or `Px` arithmetic")
+                && d.contains("annotate an operand")),
         "{diags:?}"
     );
 
@@ -878,7 +872,9 @@ fn the_interpreter_derives_the_orderings_too() {
 /// you to declare an operator on `Option`. [xreview: Claude Medium]
 #[test]
 fn an_ordinary_variant_gets_no_unit_advice() {
-    let src = format!("{ORD}type Box = | Wrap(v: float)\nlet main = () => Wrap(1.0) < Wrap(2.0)\n");
+    let src = format!(
+        "{ORD}type Box = | Wrap(v: float)\nlet main = () => Wrap(1.0) < Wrap(2.0)\n"
+    );
     let program = functor_lang::parse(&src).expect("parses");
     let module = functor_lang::lower(program).expect("lowers");
     let message = functor_lang::run(&module, Tracing::Off)

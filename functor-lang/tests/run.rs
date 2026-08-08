@@ -422,28 +422,13 @@ fn text_split_rejects_empty_separator() {
 #[test]
 fn text_parse_float_defaults_to_zero_on_garbage() {
     // Mirrors the F# ports' `trim().parse().unwrap_or(0)`.
-    assert_eq!(
-        main_result("let main = () => Text.parseFloat(\"  -12  \")"),
-        "-12"
-    );
-    assert_eq!(
-        main_result("let main = () => Text.parseFloat(\"bogus\")"),
-        "0"
-    );
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"  -12  \")"), "-12");
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"bogus\")"), "0");
     // "nan"/"inf" parse as f64 but are non-finite garbage — degrade to 0 too,
     // so a corrupt field never injects NaN/inf into the model.
-    assert_eq!(
-        main_result("let main = () => Text.parseFloat(\"nan\")"),
-        "0"
-    );
-    assert_eq!(
-        main_result("let main = () => Text.parseFloat(\"inf\")"),
-        "0"
-    );
-    assert_eq!(
-        main_result("let main = () => Text.parseFloat(\"-inf\")"),
-        "0"
-    );
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"nan\")"), "0");
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"inf\")"), "0");
+    assert_eq!(main_result("let main = () => Text.parseFloat(\"-inf\")"), "0");
 }
 
 #[test]
@@ -507,10 +492,7 @@ fn long_flat_expression_chains_evaluate() {
 fn maximum_of_empty_list_is_none() {
     // `List.maximum` is PARTIAL like `nth`/`head`/`last`/`find`: absence is
     // `Option.None`, not a runtime error.
-    assert_eq!(
-        main_result("let main = () => List.maximum([])"),
-        "Option.None"
-    );
+    assert_eq!(main_result("let main = () => List.maximum([])"), "Option.None");
     assert_eq!(
         main_result("let main = () => List.maximum([1.0, 3.0, 2.0])"),
         "Option.Some(3)"
@@ -534,10 +516,7 @@ fn builtins_evaluate() {
 
 #[test]
 fn list_length_isempty_reverse() {
-    assert_eq!(
-        main_result("let main = () => List.length([7.0, 8.0, 9.0])"),
-        "3"
-    );
+    assert_eq!(main_result("let main = () => List.length([7.0, 8.0, 9.0])"), "3");
     assert_eq!(main_result("let main = () => List.length([])"), "0");
     assert_eq!(main_result("let main = () => List.isEmpty([])"), "true");
     assert_eq!(main_result("let main = () => List.isEmpty([1.0])"), "false");
@@ -575,10 +554,7 @@ fn list_partial_accessors_return_option() {
         main_result("let main = () => List.nth(-1.0, [10.0])"),
         "Option.None"
     );
-    assert_eq!(
-        main_result("let main = () => List.nth(0.0, [])"),
-        "Option.None"
-    );
+    assert_eq!(main_result("let main = () => List.nth(0.0, [])"), "Option.None");
     // A fractional index is a CALLER BUG, not an absence — it errors rather
     // than quietly reading as "not found".
     // Fractional AND non-finite indices are rejected — the latter matters
@@ -622,10 +598,7 @@ fn list_partial_accessors_return_option() {
         "Option.None"
     );
     let (message, _, _) = run_err("let main = () => List.find((v) => 1.0, [1.0])");
-    assert!(
-        message.contains("must return a bool"),
-        "unexpected: {message}"
-    );
+    assert!(message.contains("must return a bool"), "unexpected: {message}");
 }
 
 /// `List.minimum` mirrors `List.maximum`: PARTIAL accessors, Option-shaped —
@@ -644,19 +617,13 @@ fn list_minimum_returns_option() {
         main_result("let main = () => List.minimum([-5.0, 0.0])"),
         "Option.Some(-5)"
     );
-    assert_eq!(
-        main_result("let main = () => List.minimum([])"),
-        "Option.None"
-    );
+    assert_eq!(main_result("let main = () => List.minimum([])"), "Option.None");
     // Same element-type discipline as `List.maximum`.
     let (message, _, _) = run_err("let main = () => List.minimum([\"a\"])");
     assert!(message.contains("expects numbers"), "unexpected: {message}");
     // The two siblings agree on the empty list too — both are `Option.None`
     // (`maximum_of_empty_list_is_none` pins the rest of `List.maximum`).
-    assert_eq!(
-        main_result("let main = () => List.maximum([])"),
-        "Option.None"
-    );
+    assert_eq!(main_result("let main = () => List.maximum([])"), "Option.None");
 }
 
 /// `indexedMap` — the builtin that retires the O(n²) hand-rolled indexing.
@@ -698,10 +665,7 @@ fn list_sort_by_is_ascending_and_stable() {
         main_result("let main = () => [3.0, 1.0, 2.0] |> List.sortBy((v) => 0.0 - v)"),
         "[3, 2, 1]"
     );
-    assert_eq!(
-        main_result("let main = () => [] |> List.sortBy((v) => v)"),
-        "[]"
-    );
+    assert_eq!(main_result("let main = () => [] |> List.sortBy((v) => v)"), "[]");
     assert_eq!(
         main_result("let main = () => [1.0] |> List.sortBy((v) => v)"),
         "[1]"
@@ -737,10 +701,7 @@ fn list_sort_by_is_ascending_and_stable() {
         .lines()
         .filter(|line| line.contains("List.sortBy["))
         .count();
-    assert_eq!(
-        key_calls, 8,
-        "the key must run once per element, ran {key_calls}"
-    );
+    assert_eq!(key_calls, 8, "the key must run once per element, ran {key_calls}");
     // A NaN key does not corrupt the sort: NaN sorts LAST and every real
     // element keeps its correct position. This assertion is deliberately
     // written to be platform-independent — an earlier version expected
@@ -776,10 +737,7 @@ fn list_sort_by_is_ascending_and_stable() {
         );
     }
     let (message, _, _) = run_err("let main = () => [1.0] |> List.sortBy((v) => \"s\")");
-    assert!(
-        message.contains("must return a number"),
-        "unexpected: {message}"
-    );
+    assert!(message.contains("must return a number"), "unexpected: {message}");
 }
 
 /// `zip` pairs the PIPED list first and stops at the shorter one.
@@ -798,10 +756,7 @@ fn list_zip_truncates_and_keeps_the_subject_first() {
         main_result("let main = () => [1.0] |> List.zip([\"a\", \"b\", \"c\"])"),
         "[(1, \"a\")]"
     );
-    assert_eq!(
-        main_result("let main = () => [] |> List.zip([\"a\"])"),
-        "[]"
-    );
+    assert_eq!(main_result("let main = () => [] |> List.zip([\"a\"])"), "[]");
     assert_eq!(main_result("let main = () => [1.0] |> List.zip([])"), "[]");
 }
 
@@ -821,14 +776,8 @@ fn list_take_and_drop_saturate() {
         main_result("let main = () => [1.0] |> List.take(99.0)"),
         "[1]"
     );
-    assert_eq!(
-        main_result("let main = () => [1.0] |> List.drop(99.0)"),
-        "[]"
-    );
-    assert_eq!(
-        main_result("let main = () => [1.0] |> List.take(-5.0)"),
-        "[]"
-    );
+    assert_eq!(main_result("let main = () => [1.0] |> List.drop(99.0)"), "[]");
+    assert_eq!(main_result("let main = () => [1.0] |> List.take(-5.0)"), "[]");
     assert_eq!(
         main_result("let main = () => [1.0] |> List.drop(-5.0)"),
         "[1]"
@@ -872,10 +821,7 @@ let main = () => List.all(split, [-1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 9.0])"
 /// `sum` is total — an empty list is 0, so there is no Option here.
 #[test]
 fn list_sum_is_total() {
-    assert_eq!(
-        main_result("let main = () => List.sum([1.0, 2.0, 3.5])"),
-        "6.5"
-    );
+    assert_eq!(main_result("let main = () => List.sum([1.0, 2.0, 3.5])"), "6.5");
     assert_eq!(main_result("let main = () => List.sum([])"), "0");
     assert_eq!(main_result("let main = () => [-1.0, 1.0] |> List.sum"), "0");
     let (message, _, _) = run_err("let main = () => List.sum([\"s\"])");
@@ -910,10 +856,7 @@ let main = () => List.concatMap(f, xs) == List.flatten(List.map(f, xs))"
         "true"
     );
     let (message, _, _) = run_err("let main = () => [1.0] |> List.concatMap((v) => v)");
-    assert!(
-        message.contains("must return a list"),
-        "unexpected: {message}"
-    );
+    assert!(message.contains("must return a list"), "unexpected: {message}");
 }
 
 /// `Math.clamp` is the general clamp `Math.clamp01` only looked like, and it
@@ -924,23 +867,11 @@ fn math_clamp_is_general_and_threads_last() {
         main_result("let main = () => Math.clamp(0.0, 10.0, 42.0)"),
         "10"
     );
-    assert_eq!(
-        main_result("let main = () => 42.0 |> Math.clamp(0.0, 10.0)"),
-        "10"
-    );
-    assert_eq!(
-        main_result("let main = () => -5.0 |> Math.clamp(0.0, 10.0)"),
-        "0"
-    );
-    assert_eq!(
-        main_result("let main = () => 5.0 |> Math.clamp(0.0, 10.0)"),
-        "5"
-    );
+    assert_eq!(main_result("let main = () => 42.0 |> Math.clamp(0.0, 10.0)"), "10");
+    assert_eq!(main_result("let main = () => -5.0 |> Math.clamp(0.0, 10.0)"), "0");
+    assert_eq!(main_result("let main = () => 5.0 |> Math.clamp(0.0, 10.0)"), "5");
     // Bounds are inclusive, and a degenerate range pins the value.
-    assert_eq!(
-        main_result("let main = () => 3.0 |> Math.clamp(3.0, 3.0)"),
-        "3"
-    );
+    assert_eq!(main_result("let main = () => 3.0 |> Math.clamp(3.0, 3.0)"), "3");
     // `Math.clamp01(n)` is exactly `Math.clamp(0.0, 1.0, n)`.
     assert_eq!(
         main_result(
@@ -960,10 +891,7 @@ let main = () => List.all(agree, [-2.0, -0.5, 0.0, 0.25, 1.0, 7.0])"
         "let main = () => Math.clamp(0.0, 0.0 / 0.0, 0.5)",
     ] {
         let (message, _, _) = run_err(src);
-        assert!(
-            message.contains("low <= high"),
-            "unexpected for {src}: {message}"
-        );
+        assert!(message.contains("low <= high"), "unexpected for {src}: {message}");
     }
     // A NaN VALUE is not an error — it clamps to NaN, as IEEE says.
     assert_eq!(
@@ -981,19 +909,10 @@ let main = () => List.all(agree, [-2.0, -0.5, 0.0, 0.25, 1.0, 7.0])"
 /// `from + (target - from) * t`, in `Vec3.lerp`'s argument order.
 #[test]
 fn math_lerp_is_unclamped() {
-    assert_eq!(
-        main_result("let main = () => Math.lerp(10.0, 0.5, 0.0)"),
-        "5"
-    );
+    assert_eq!(main_result("let main = () => Math.lerp(10.0, 0.5, 0.0)"), "5");
     // Both endpoints are hit EXACTLY.
-    assert_eq!(
-        main_result("let main = () => Math.lerp(8.0, 0.0, 2.0)"),
-        "2"
-    );
-    assert_eq!(
-        main_result("let main = () => Math.lerp(8.0, 1.0, 2.0)"),
-        "8"
-    );
+    assert_eq!(main_result("let main = () => Math.lerp(8.0, 0.0, 2.0)"), "2");
+    assert_eq!(main_result("let main = () => Math.lerp(8.0, 1.0, 2.0)"), "8");
     // …including the pairs where `from + (target - from) * 1.0` rounds off
     // `target` (~9% of random pairs do). An ease that runs to completion must
     // ARRIVE, so `t == 1` answers `target` itself rather than the formula.
@@ -1006,19 +925,10 @@ fn math_lerp_is_unclamped() {
         "true"
     );
     // Unclamped: `t` outside [0, 1] extrapolates in both directions.
-    assert_eq!(
-        main_result("let main = () => Math.lerp(10.0, 2.0, 0.0)"),
-        "20"
-    );
-    assert_eq!(
-        main_result("let main = () => Math.lerp(10.0, -1.0, 0.0)"),
-        "-10"
-    );
+    assert_eq!(main_result("let main = () => Math.lerp(10.0, 2.0, 0.0)"), "20");
+    assert_eq!(main_result("let main = () => Math.lerp(10.0, -1.0, 0.0)"), "-10");
     // A descending pair interpolates just as well.
-    assert_eq!(
-        main_result("let main = () => Math.lerp(0.0, 0.25, 10.0)"),
-        "7.5"
-    );
+    assert_eq!(main_result("let main = () => Math.lerp(0.0, 0.25, 10.0)"), "7.5");
     // THE SUBJECT IS THE START VALUE, exactly as `pos |> Vec3.lerp(target, t)`
     // threads the start vector — the scalar and vector forms pipe alike.
     assert_eq!(
@@ -1038,22 +948,10 @@ fn math_smoothstep_is_clamped_and_rejects_degenerate_edges() {
         "0.5"
     );
     // Clamped outside the edges — flat 0 below, flat 1 above.
-    assert_eq!(
-        main_result("let main = () => Math.smoothstep(0.0, 1.0, 0.0)"),
-        "0"
-    );
-    assert_eq!(
-        main_result("let main = () => Math.smoothstep(0.0, 1.0, 1.0)"),
-        "1"
-    );
-    assert_eq!(
-        main_result("let main = () => Math.smoothstep(0.0, 1.0, -5.0)"),
-        "0"
-    );
-    assert_eq!(
-        main_result("let main = () => Math.smoothstep(0.0, 1.0, 9.0)"),
-        "1"
-    );
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, 0.0)"), "0");
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, 1.0)"), "1");
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, -5.0)"), "0");
+    assert_eq!(main_result("let main = () => Math.smoothstep(0.0, 1.0, 9.0)"), "1");
     // Non-unit edges rescale: 2.5 is the midpoint of [2, 3].
     assert_eq!(
         main_result("let main = () => Math.smoothstep(2.0, 3.0, 2.5)"),
@@ -1212,7 +1110,9 @@ fn text_length_and_chars_are_scalar_values() {
     // (The escape is Rust's — the `.fun` source holds the literal combining
     // character, since Functor Lang has no `\u{…}` escape.)
     assert_eq!(
-        main_result(&format!("let main = () => Text.length(\"e\u{301}\")")),
+        main_result(&format!(
+            "let main = () => Text.length(\"e\u{301}\")"
+        )),
         "2"
     );
 
@@ -1297,15 +1197,9 @@ fn text_case_contains_replace_trim() {
         main_result("let main = () => \"  a b  \" |> Text.trim"),
         "\"a b\""
     );
-    assert_eq!(
-        main_result("let main = () => \"\\n\\tx \" |> Text.trim"),
-        "\"x\""
-    );
+    assert_eq!(main_result("let main = () => \"\\n\\tx \" |> Text.trim"), "\"x\"");
     assert_eq!(main_result("let main = () => \"\" |> Text.trim"), "\"\"");
-    assert_eq!(
-        main_result("let main = () => \"abc\" |> Text.trim"),
-        "\"abc\""
-    );
+    assert_eq!(main_result("let main = () => \"abc\" |> Text.trim"), "\"abc\"");
 }
 
 /// Like the existing list builtins, the additions LOOP in Rust — a game can
@@ -1331,9 +1225,7 @@ fn added_list_builtins_do_not_consume_eval_depth() {
         "Option.Some(999)"
     );
     assert_eq!(
-        main_result(
-            "let main = () => List.range(1000.0) |> List.indexedMap((i, v) => i) |> List.last"
-        ),
+        main_result("let main = () => List.range(1000.0) |> List.indexedMap((i, v) => i) |> List.last"),
         "Option.Some(999)"
     );
 }
@@ -1382,14 +1274,8 @@ fn list_any_all_predicates() {
         "false"
     );
     // Vacuous truth / falsity on the empty list.
-    assert_eq!(
-        main_result("let main = () => List.all((x) => x > 0.0, [])"),
-        "true"
-    );
-    assert_eq!(
-        main_result("let main = () => List.any((x) => x > 0.0, [])"),
-        "false"
-    );
+    assert_eq!(main_result("let main = () => List.all((x) => x > 0.0, [])"), "true");
+    assert_eq!(main_result("let main = () => List.any((x) => x > 0.0, [])"), "false");
     let (message, _, _) = run_err("let main = () => List.any((x) => x, [1.0])");
     assert!(message.contains("must return a bool"), "got: {message}");
 }
@@ -1441,19 +1327,10 @@ fn math_builtins_evaluate() {
 #[test]
 fn math_mod_is_euclidean() {
     assert_eq!(main_result("let main = () => Math.mod(9.0, 8.0)"), "1");
-    assert_eq!(
-        main_result("let main = () => Math.mod(0.0 - 1.0, 8.0)"),
-        "7"
-    );
-    assert_eq!(
-        main_result("let main = () => Math.mod(0.0 - 3.0, 8.0)"),
-        "5"
-    );
+    assert_eq!(main_result("let main = () => Math.mod(0.0 - 1.0, 8.0)"), "7");
+    assert_eq!(main_result("let main = () => Math.mod(0.0 - 3.0, 8.0)"), "5");
     // Always non-negative, even with a negative divisor.
-    assert_eq!(
-        main_result("let main = () => Math.mod(0.0 - 1.0, 0.0 - 8.0)"),
-        "7"
-    );
+    assert_eq!(main_result("let main = () => Math.mod(0.0 - 1.0, 0.0 - 8.0)"), "7");
 }
 
 // `Math.pi` is a value, so applying it as a function is a runtime error.
@@ -1646,9 +1523,7 @@ fn session_load_does_not_run_main() {
 
 #[test]
 fn session_calls_top_level_functions() {
-    let module =
-        functor_lang::lower(functor_lang::parse("let tick = (n) => { v: n + 1.0 }").unwrap())
-            .unwrap();
+    let module = functor_lang::lower(functor_lang::parse("let tick = (n) => { v: n + 1.0 }").unwrap()).unwrap();
     let session = match functor_lang::Session::load(&module, &mut functor_lang::NoHost) {
         Ok(session) => session,
         Err(failure) => panic!("load failed: {}", failure.error.message),
@@ -2015,22 +1890,18 @@ fn ctor_application_demands_full_arity_at_runtime() {
     );
     // Zero args on a parameterful ctor is under-application, not a nullary use.
     let (message, _, _) = run_err(&format!("{SHAPE}let main = () => Circle()"));
-    assert!(
-        message.starts_with("`Circle` takes 1 argument(s), got 0"),
-        "{message}"
-    );
+    assert!(message.starts_with("`Circle` takes 1 argument(s), got 0"), "{message}");
     // A gradual seam the checker cannot see through still errors at the call…
     let (message, _, _) = run_err(&format!(
         "{SHAPE}let stage = (f: unknown) => f(1.0)\n\
          let main = () => stage(Rect)"
     ));
-    assert!(
-        message.starts_with("`Rect` takes 2 argument(s), got 1"),
-        "{message}"
-    );
+    assert!(message.starts_with("`Rect` takes 2 argument(s), got 1"), "{message}");
     // …including from inside a builtin, which names the builtin it came from —
     // and drops the staging hint, since a lambda cannot fix `List.map`'s call.
-    let (message, _, _) = run_err(&format!("{SHAPE}let main = () => [1.0] |> List.map(Rect)"));
+    let (message, _, _) = run_err(&format!(
+        "{SHAPE}let main = () => [1.0] |> List.map(Rect)"
+    ));
     assert_eq!(
         message,
         "the constructor `Rect` passed to List.map takes 2 argument(s), got 1 \
@@ -2044,10 +1915,7 @@ fn ctor_application_demands_full_arity_at_runtime() {
         "{SHAPE}let make = Rect\n\
          let main = () => make(1.0)"
     ));
-    assert!(
-        message.starts_with("`Rect` takes 2 argument(s), got 1"),
-        "{message}"
-    );
+    assert!(message.starts_with("`Rect` takes 2 argument(s), got 1"), "{message}");
     // Staging arguments on purpose — the hint's lambda — works.
     assert_eq!(
         main_result(&format!(
@@ -2440,14 +2308,8 @@ fn bool_operator_on_non_bool_errors() {
 
 #[test]
 fn if_else_evaluates_taken_branch() {
-    assert_eq!(
-        main_result("let main = () => if true then 1.0 else 2.0"),
-        "1"
-    );
-    assert_eq!(
-        main_result("let main = () => if false then 1.0 else 2.0"),
-        "2"
-    );
+    assert_eq!(main_result("let main = () => if true then 1.0 else 2.0"), "1");
+    assert_eq!(main_result("let main = () => if false then 1.0 else 2.0"), "2");
 }
 
 #[test]

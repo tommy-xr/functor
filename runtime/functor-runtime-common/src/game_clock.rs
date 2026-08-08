@@ -324,7 +324,9 @@ impl GameClock {
             return;
         }
         match self.pending_steps.back_mut() {
-            Some((queued_dt, queued)) if *queued_dt == dt => *queued = queued.saturating_add(count),
+            Some((queued_dt, queued)) if *queued_dt == dt => {
+                *queued = queued.saturating_add(count)
+            }
             _ => self.pending_steps.push_back((dt, count)),
         }
     }

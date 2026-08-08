@@ -27,8 +27,8 @@ use functor_lang::{Session, Value};
 
 use crate::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog, EffectRunner,
-    EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
+    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog,
+    EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
     journal_arm, journal_swap, rebase_connect_retry_deadlines, validate_contract,
@@ -1318,10 +1318,7 @@ let draw = (model, tts) =>
             !matches!(&frame.scene.obj, crate::SceneObject::Group(children) if children.is_empty()),
             "serverDraw produced the game's scene, not the empty fallback"
         );
-        assert!(
-            game.state_debug().contains("spin"),
-            "serverTick advanced the model"
-        );
+        assert!(game.state_debug().contains("spin"), "serverTick advanced the model");
 
         // The prefixed sibling of the broken-push case below: a push missing
         // the role's tick names `serverTick`, never the canonical `tick`.
@@ -1468,11 +1465,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         )
         .expect("the declared role boots on the push");
         assert_eq!(game.names.tick, "Server.tick");
-        assert!(
-            game.state_debug().contains("n: 7"),
-            "{}",
-            game.state_debug()
-        );
+        assert!(game.state_debug().contains("n: 7"), "{}", game.state_debug());
 
         // A re-push re-resolves the same role and preserves the model.
         crate::protocol::reload_with_role(
@@ -1483,10 +1476,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         .expect("the re-push reloads");
         assert_eq!(game.names.tick, "Server.tick");
         assert_eq!(
-            game.session
-                .global("Server.probe")
-                .expect("probe")
-                .to_string(),
+            game.session.global("Server.probe").expect("probe").to_string(),
             "2",
             "the edit landed"
         );
@@ -1503,15 +1493,14 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert!(err.contains("module Server"), "{err}");
         assert_eq!(game.names.tick, "Server.tick", "the role is intact");
         assert_eq!(
-            game.session
-                .global("Server.probe")
-                .expect("probe")
-                .to_string(),
+            game.session.global("Server.probe").expect("probe").to_string(),
             "2",
             "the old program keeps running"
         );
-        crate::protocol::reload_with_role(&mut game, None, |game| game.reload_project(&files(3.0)))
-            .expect("a role-less push runs the role already in force");
+        crate::protocol::reload_with_role(&mut game, None, |game| {
+            game.reload_project(&files(3.0))
+        })
+        .expect("a role-less push runs the role already in force");
         assert_eq!(game.names.tick, "Server.tick");
 
         // A DIFFERENT role on the model-preserving route is refused: adopting
@@ -1695,10 +1684,10 @@ let draw = (model, tts) =>
         .expect("sampled-input game loads");
         let snapshot = |x| crate::InputSnapshot {
             mouse: crate::MouseSnapshot {
-                x,
-                y: 0,
-                ..Default::default()
-            },
+                    x,
+                    y: 0,
+                    ..Default::default()
+                },
             ..crate::InputSnapshot::default()
         };
 
@@ -1828,8 +1817,7 @@ let draw = (model, tts) =>
             .expect("re-adding the hook reloads");
         assert!(readded.contains("history recomputed"), "{readded}");
 
-        game.seek_scene_to(2)
-            .expect("rebuilt future remains seekable");
+        game.seek_scene_to(2).expect("rebuilt future remains seekable");
         let model = game.state_debug();
         assert!(model.contains("sum: 6"), "{model}");
     }
@@ -1876,8 +1864,7 @@ let draw = (model, tts) =>
         game.seek_scene_to(0).expect("frame zero is seekable");
         let status = game.reload_source(sampled).expect("later reload succeeds");
         assert!(status.contains("history recomputed"), "{status}");
-        game.seek_scene_to(1)
-            .expect("rebuilt future remains seekable");
+        game.seek_scene_to(1).expect("rebuilt future remains seekable");
         let model = game.state_debug();
         assert!(model.contains("sum: 3"), "{model}");
     }
@@ -1932,8 +1919,7 @@ let draw = (model, tts) =>
             .reload_source(sampled)
             .expect("same-hook reload revalidates the current branch");
         assert!(status.contains("history recomputed"), "{status}");
-        game.seek_scene_to(2)
-            .expect("rebuilt future remains seekable");
+        game.seek_scene_to(2).expect("rebuilt future remains seekable");
         let model = game.state_debug();
         assert!(model.contains("sum: 6"), "{model}");
     }

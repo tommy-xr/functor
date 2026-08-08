@@ -553,9 +553,10 @@ pub fn builtin_signature(b: Builtin) -> Type {
             List(Box::new(Var(0))),
         ),
         // Subject-LAST. List.any / List.all : (('a) => Bool, List<'a>) => Bool
-        Builtin::ListAny | Builtin::ListAll => {
-            func(vec![func(vec![Var(0)], Bool), List(Box::new(Var(0)))], Bool)
-        }
+        Builtin::ListAny | Builtin::ListAll => func(
+            vec![func(vec![Var(0)], Bool), List(Box::new(Var(0)))],
+            Bool,
+        ),
         // List.reverse : (List<'a>) => List<'a>
         Builtin::ListReverse => func(vec![List(Box::new(Var(0)))], List(Box::new(Var(0)))),
         // List.isEmpty : (List<'a>) => Bool
@@ -565,9 +566,14 @@ pub fn builtin_signature(b: Builtin) -> Type {
         // forces the absent case to be handled instead of letting a sentinel
         // number flow onward. `option(t)` is `Option.t<t>`.
         // Subject-LAST. List.nth : (Float, List<'a>) => Option.t<'a>
-        Builtin::ListNth => func(vec![Float, List(Box::new(Var(0)))], option(Var(0))),
+        Builtin::ListNth => func(
+            vec![Float, List(Box::new(Var(0)))],
+            option(Var(0)),
+        ),
         // List.head / List.last : (List<'a>) => Option.t<'a>
-        Builtin::ListHead | Builtin::ListLast => func(vec![List(Box::new(Var(0)))], option(Var(0))),
+        Builtin::ListHead | Builtin::ListLast => {
+            func(vec![List(Box::new(Var(0)))], option(Var(0)))
+        }
         // Subject-LAST. List.find : (('a) => Bool, List<'a>) => Option.t<'a>
         Builtin::ListFind => func(
             vec![func(vec![Var(0)], Bool), List(Box::new(Var(0)))],
@@ -590,9 +596,10 @@ pub fn builtin_signature(b: Builtin) -> Type {
             List(Box::new(Tuple(vec![Var(0), Var(1)]))),
         ),
         // Subject-LAST. List.take / List.drop : (Float, List<'a>) => List<'a>
-        Builtin::ListTake | Builtin::ListDrop => {
-            func(vec![Float, List(Box::new(Var(0)))], List(Box::new(Var(0))))
-        }
+        Builtin::ListTake | Builtin::ListDrop => func(
+            vec![Float, List(Box::new(Var(0)))],
+            List(Box::new(Var(0))),
+        ),
         // List.sum : (List<Float>) => Float
         Builtin::ListSum => func(vec![List(Box::new(Float))], Float),
         // Subject-LAST. List.concatMap : (('a) => List<'b>, List<'a>) => List<'b>
@@ -979,8 +986,7 @@ fn check_impl(
             // A constructor's brand is its own (non-generic) variant type.
             ExprKind::Ctor { name, .. } => {
                 let result = checker.ctors.get(name).and_then(|(owner, params, _)| {
-                    (*params == 0)
-                        .then(|| (owner.clone(), Type::Variant(owner.clone(), Vec::new())))
+                    (*params == 0).then(|| (owner.clone(), Type::Variant(owner.clone(), Vec::new())))
                 });
                 (result, name.clone())
             }
@@ -1568,10 +1574,7 @@ impl Checker<'_> {
             }
             _ => String::new(),
         };
-        self.diag(
-            span,
-            format!("{what}: expected {expected}, got {got}{hint}"),
-        );
+        self.diag(span, format!("{what}: expected {expected}, got {got}{hint}"));
     }
 
     /// The suffix half of a branded-value teaching error: how to build a
@@ -1798,10 +1801,7 @@ unit-suffixed literal ({suffixes})"
             "=>" => {
                 let (ret, params) = ty.args.split_last().expect("function type has a return");
                 Type::Fn(
-                    params
-                        .iter()
-                        .map(|p| self.resolve_type(p, report))
-                        .collect(),
+                    params.iter().map(|p| self.resolve_type(p, report)).collect(),
                     Box::new(self.resolve_type(ret, report)),
                 )
             }
@@ -2542,7 +2542,9 @@ missing {missing}. Did you forget an argument?"
                     // must itself be a function).
                     Type::Fn(params, ret) => {
                         // Check every arg that pairs with a declared param.
-                        for (i, (arg, param_ty)) in args.iter().zip(params.iter()).enumerate() {
+                        for (i, (arg, param_ty)) in
+                            args.iter().zip(params.iter()).enumerate()
+                        {
                             let what = format!("argument {} of `{}`", i + 1, callee_label(callee));
                             self.expect(arg, param_ty, &what);
                         }
@@ -2755,8 +2757,7 @@ missing {missing}. Did you forget an argument?"
                 _ => None,
             })
             .collect();
-        self.match_scrutinees
-            .push((scrutinee_ty.clone(), own_ctors));
+        self.match_scrutinees.push((scrutinee_ty.clone(), own_ctors));
         for arm in arms {
             // Arms after a catch-all are unreachable at runtime — they are
             // still CHECKED (garbage draws diagnostics) but must not
@@ -3504,8 +3505,8 @@ is {other}"
             // the type its result flows into — says which reading this is. A
             // comparison's result is `bool` either way, so it never carries
             // evidence and only the operands can decide it.
-            let result_undecided =
-                node.op.is_comparison() || matches!(self.zonk(&node.result), Type::Var(_));
+            let result_undecided = node.op.is_comparison()
+                || matches!(self.zonk(&node.result), Type::Var(_));
             if branded_reading_exists
                 && matches!(lhs, Type::Var(_))
                 && matches!(rhs, Type::Var(_))
@@ -3612,9 +3613,7 @@ from them instead (`{name}` supports no `==`{structural})",
         let Some(Type::Fn(params, result)) = self.signatures.get(&path).map(|s| &s.ty) else {
             return String::new();
         };
-        if params.len() == 2
-            && params.iter().all(|param| param == operand)
-            && **result == Type::Bool
+        if params.len() == 2 && params.iter().all(|param| param == operand) && **result == Type::Bool
         {
             format!(" — `{path}(a, b)` compares structurally")
         } else {

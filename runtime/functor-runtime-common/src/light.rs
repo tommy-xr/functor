@@ -51,7 +51,15 @@ impl Light {
         Light::Ambient { color: [r, g, b] }
     }
 
-    pub fn directional(dx: f32, dy: f32, dz: f32, r: f32, g: f32, b: f32, intensity: f32) -> Light {
+    pub fn directional(
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        intensity: f32,
+    ) -> Light {
         Light::Directional {
             direction: [dx, dy, dz],
             color: [r, g, b],
@@ -60,16 +68,7 @@ impl Light {
         }
     }
 
-    pub fn point(
-        px: f32,
-        py: f32,
-        pz: f32,
-        r: f32,
-        g: f32,
-        b: f32,
-        intensity: f32,
-        range: f32,
-    ) -> Light {
+    pub fn point(px: f32, py: f32, pz: f32, r: f32, g: f32, b: f32, intensity: f32, range: f32) -> Light {
         Light::Point {
             position: [px, py, pz],
             color: [r, g, b],

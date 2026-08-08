@@ -25,8 +25,11 @@ impl JointPose {
             linear.y.magnitude(),
             linear.z.magnitude(),
         );
-        let rotation_matrix =
-            Matrix3::from_cols(linear.x / scale.x, linear.y / scale.y, linear.z / scale.z);
+        let rotation_matrix = Matrix3::from_cols(
+            linear.x / scale.x,
+            linear.y / scale.y,
+            linear.z / scale.z,
+        );
 
         Self {
             translation,
@@ -587,7 +590,8 @@ mod tests {
         // The Armature's transform (a scale + rotation, like Mixamo's cm→m
         // conversion) must flow into every joint's absolute transform even
         // though it is not one of the skin's joints.
-        let armature = Matrix4::from_scale(0.01) * Matrix4::from_angle_x(cgmath::Deg(-90.0_f32));
+        let armature =
+            Matrix4::from_scale(0.01) * Matrix4::from_angle_x(cgmath::Deg(-90.0_f32));
         let hips = Matrix4::from_translation(Vector3::new(0.0, 100.0, 0.0));
         let spine = Matrix4::from_translation(Vector3::new(0.0, 10.0, 0.0));
         let hierarchy = mixamo_like_hierarchy(armature, hips, spine);

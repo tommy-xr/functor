@@ -454,7 +454,10 @@ pub struct FailedCompare {
 /// independence holds because `depth`/`call_depth` unwind on error, globals
 /// are read-only after the load, and `mut_slots` entries are keyed by
 /// per-expect-unique `BindingId`s, so a leaked slot is unreachable.)
-pub fn run_expects(module: &Module, host: &mut dyn Host) -> Result<Vec<ExpectReport>, RunFailure> {
+pub fn run_expects(
+    module: &Module,
+    host: &mut dyn Host,
+) -> Result<Vec<ExpectReport>, RunFailure> {
     run_expects_budgeted(module, host, None)
 }
 
@@ -879,7 +882,13 @@ impl Interp<'_> {
         use crate::ast::BinOp;
         let env = Env::empty();
         if let ExprKind::Binary {
-            op: op @ (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge),
+            op:
+                op @ (BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Gt
+                | BinOp::Le
+                | BinOp::Ge),
             lhs,
             rhs,
         } = &expect.expr.kind
@@ -1189,13 +1198,7 @@ evaluation depth."
     /// [`Recorder`].
     fn record_binding(&mut self, binding: BindingId, name: &str, span: Span, value: &Value) {
         if let Some(recorder) = &mut self.recorder {
-            recorder.record(
-                SiteKey::Binding(binding.0),
-                RecordedSite::Binder,
-                name,
-                span,
-                value,
-            );
+            recorder.record(SiteKey::Binding(binding.0), RecordedSite::Binder, name, span, value);
         }
     }
 
@@ -1216,13 +1219,7 @@ evaluation depth."
             ) {
                 return;
             }
-            recorder.record(
-                SiteKey::Ref(span.start),
-                RecordedSite::Ref,
-                name,
-                span,
-                value,
-            );
+            recorder.record(SiteKey::Ref(span.start), RecordedSite::Ref, name, span, value);
         }
     }
 
@@ -1533,7 +1530,9 @@ evaluation depth."
                     span: expr.span,
                 }),
             },
-            ExprKind::Not(inner) => Ok(Value::Bool(!as_bool(&self.eval(inner, env)?, inner.span)?)),
+            ExprKind::Not(inner) => {
+                Ok(Value::Bool(!as_bool(&self.eval(inner, env)?, inner.span)?))
+            }
             // Only the TAKEN branch is evaluated: test each condition (which
             // must be a bool) in order and evaluate the first matching branch.
             // `else if` chains nest down `else_branch`, so descend that spine
@@ -2191,9 +2190,7 @@ definition (a top-level initializer may only use globals defined above it)",
 most 1000000 cells"
                         .to_string(),
                 ),
-                _ => {
-                    err("List.grid(fn, rows, cols) expects a function and two numbers".to_string())
-                }
+                _ => err("List.grid(fn, rows, cols) expects a function and two numbers".to_string()),
             },
             Builtin::ListMaximum => match args.as_slice() {
                 [Value::List(items)] => {
@@ -2386,9 +2383,9 @@ most 1000000 cells"
                             .flatten(),
                     ))
                 }
-                [Value::Number(i), Value::List(_)] => {
-                    err(format!("List.nth needs a whole, finite index, got {i}"))
-                }
+                [Value::Number(i), Value::List(_)] => err(format!(
+                    "List.nth needs a whole, finite index, got {i}"
+                )),
                 _ => err("List.nth(index, list) expects a number and a list".to_string()),
             },
             Builtin::ListHead => match args.as_slice() {
@@ -2732,7 +2729,8 @@ most 1000000 cells"
                     }
                     let comparison_count_ceiling = stable_sort_comparison_ceiling(items.len())
                         .saturating_add(
-                            u64::try_from(items.len().saturating_sub(1)).unwrap_or(u64::MAX),
+                            u64::try_from(items.len().saturating_sub(1))
+                                .unwrap_or(u64::MAX),
                         );
                     let comparison_work_ceiling =
                         comparison_count_ceiling.saturating_mul(max_comparison_units);
@@ -2810,10 +2808,8 @@ most 1000000 cells"
                     // O(input) scan + re-materialized pieces: charge input
                     // bytes (no growth — output total ≈ input).
                     self.charge(s.len() as u64, span)?;
-                    let parts: Vec<Value> = s
-                        .split(sep.as_ref())
-                        .map(|p| Value::String(Rc::from(p)))
-                        .collect();
+                    let parts: Vec<Value> =
+                        s.split(sep.as_ref()).map(|p| Value::String(Rc::from(p))).collect();
                     Ok(Value::List(Rc::new(parts)))
                 }
                 _ => err("Text.split(sep, s) expects two strings".to_string()),
@@ -2854,11 +2850,7 @@ most 1000000 cells"
                     // O(input) scan: charge input bytes (the Text.split rule).
                     self.charge(s.len() as u64, span)?;
                     Ok(Value::Number(
-                        s.trim()
-                            .parse::<f64>()
-                            .ok()
-                            .filter(|n| n.is_finite())
-                            .unwrap_or(0.0),
+                        s.trim().parse::<f64>().ok().filter(|n| n.is_finite()).unwrap_or(0.0),
                     ))
                 }
                 _ => err("Text.parseFloat(s) expects one string".to_string()),
@@ -3217,9 +3209,9 @@ got edge0 {edge0} and edge1 {edge1}"
                     crate::trace::emit(format!("{label}: {subject}"));
                     Ok(subject.clone())
                 }
-                _ => {
-                    err("Debug.log(label, subject) expects a string label and a value".to_string())
-                }
+                _ => err(
+                    "Debug.log(label, subject) expects a string label and a value".to_string(),
+                ),
             },
         }
     }
@@ -3410,12 +3402,7 @@ fn value_eq(
                 if xs.len() != ys.len() {
                     return Ok(false);
                 }
-                work.extend(
-                    xs.iter()
-                        .zip(ys.iter())
-                        .rev()
-                        .map(|(x, y)| Work::Pair(x, y)),
-                );
+                work.extend(xs.iter().zip(ys.iter()).rev().map(|(x, y)| Work::Pair(x, y)));
             }
             (Value::Map(xs), Value::Map(ys)) => {
                 if xs.len() != ys.len() {
@@ -3443,12 +3430,7 @@ fn value_eq(
                 if xc != yc || xs.len() != ys.len() {
                     return Ok(false);
                 }
-                work.extend(
-                    xs.iter()
-                        .zip(ys.iter())
-                        .rev()
-                        .map(|(x, y)| Work::Pair(x, y)),
-                );
+                work.extend(xs.iter().zip(ys.iter()).rev().map(|(x, y)| Work::Pair(x, y)));
             }
             // An unapplied constructor is a function value — no equality.
             (
@@ -4231,11 +4213,7 @@ mod sort_key_tests {
         for nan in [pos_nan, neg_nan] {
             // Greater than everything real, including the infinities.
             for other in [0.0, -0.0, 1.0, -1.0, f64::INFINITY, f64::NEG_INFINITY] {
-                assert_eq!(
-                    sort_key_cmp(nan, other),
-                    Ordering::Greater,
-                    "{nan} vs {other}"
-                );
+                assert_eq!(sort_key_cmp(nan, other), Ordering::Greater, "{nan} vs {other}");
                 assert_eq!(sort_key_cmp(other, nan), Ordering::Less, "{other} vs {nan}");
             }
             // Both NaNs sort to the same place as each other.
@@ -4268,10 +4246,7 @@ mod sort_key_tests {
         assert_eq!(sort_key_cmp(1.0, 2.0), Ordering::Less);
         assert_eq!(sort_key_cmp(2.0, 1.0), Ordering::Greater);
         assert_eq!(sort_key_cmp(2.0, 2.0), Ordering::Equal);
-        assert_eq!(
-            sort_key_cmp(f64::NEG_INFINITY, f64::INFINITY),
-            Ordering::Less
-        );
+        assert_eq!(sort_key_cmp(f64::NEG_INFINITY, f64::INFINITY), Ordering::Less);
     }
 
     #[test]
@@ -4286,9 +4261,7 @@ mod sort_key_tests {
 
 #[cfg(test)]
 mod builtin_registry_tests {
-    use super::{
-        builtin, builtin_members, builtin_name, Builtin, ALL_BUILTINS, BUILTIN_NAMESPACES,
-    };
+    use super::{builtin, builtin_members, builtin_name, Builtin, ALL_BUILTINS, BUILTIN_NAMESPACES};
     use std::collections::BTreeSet;
 
     /// The DRIFT LOCK between the interpreter's dispatch table and the member
@@ -4303,11 +4276,7 @@ mod builtin_registry_tests {
             let name = builtin_name(b);
             let path: Vec<String> = name.split('.').map(str::to_string).collect();
             assert_eq!(path.len(), 2, "{name} should be `Namespace.member`");
-            assert_eq!(
-                builtin(&path),
-                Some(b),
-                "{name} does not dispatch to itself"
-            );
+            assert_eq!(builtin(&path), Some(b), "{name} does not dispatch to itself");
             assert!(
                 BUILTIN_NAMESPACES.contains(&path[0].as_str()),
                 "{name}: `{}` is missing from BUILTIN_NAMESPACES",
@@ -4404,11 +4373,7 @@ mod builtin_registry_tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(
-            ALL_BUILTINS.len(),
-            76,
-            "ALL_BUILTINS must list every Builtin"
-        );
+        assert_eq!(ALL_BUILTINS.len(), 76, "ALL_BUILTINS must list every Builtin");
 
         // The length check alone would accept a DUPLICATE entry standing in
         // for a missing one.
@@ -4531,11 +4496,7 @@ mod random_tests {
         let mut sorted = s.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         sorted.dedup();
-        assert!(
-            sorted.len() > 990,
-            "too many repeats: {} unique",
-            sorted.len()
-        );
+        assert!(sorted.len() > 990, "too many repeats: {} unique", sorted.len());
     }
 
     #[test]
@@ -4548,11 +4509,7 @@ mod random_tests {
         let mut sorted = firsts.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         sorted.dedup();
-        assert_eq!(
-            sorted.len(),
-            seeds.len(),
-            "distinct seeds collapsed: {firsts:?}"
-        );
+        assert_eq!(sorted.len(), seeds.len(), "distinct seeds collapsed: {firsts:?}");
         // And in-range integer seeds are the identity fold (not remapped).
         assert_eq!(random_step(5.0), random_step(5.0));
     }
@@ -4582,10 +4539,7 @@ mod random_tests {
         // the "shifted stream" footgun would spike this toward ±1.
         let pairs: Vec<(f64, f64)> = xs.windows(2).map(|w| (w[0], w[1])).collect();
         let corr = pearson(&pairs);
-        assert!(
-            corr.abs() < 0.05,
-            "adjacent-seed correlation too high: {corr}"
-        );
+        assert!(corr.abs() < 0.05, "adjacent-seed correlation too high: {corr}");
 
         // Also: no adjacent-seed streams share an element within the first few
         // draws (the true overlap bug — stream i+1 == stream i shifted by one).
@@ -4612,11 +4566,7 @@ mod random_tests {
         let mut sorted = counters.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(
-            sorted.len(),
-            seeds.len(),
-            "seed counters collapsed: {counters:?}"
-        );
+        assert_eq!(sorted.len(), seeds.len(), "seed counters collapsed: {counters:?}");
         // -0.0 == +0.0, so the two equal zeros must seed alike…
         assert_eq!(super::seed_counter(-0.0), super::seed_counter(0.0));
         // …and every counter round-trips exactly through the language's f64s.

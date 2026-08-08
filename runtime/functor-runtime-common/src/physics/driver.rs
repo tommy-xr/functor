@@ -387,11 +387,7 @@ mod tests {
                         extents: [1.0, 1.0, 1.0],
                     },
                 )
-                .at(if t < 30 {
-                    [0.0, 4.0, 0.0]
-                } else {
-                    [0.5, 5.0, 0.0]
-                }),
+                .at(if t < 30 { [0.0, 4.0, 0.0] } else { [0.5, 5.0, 0.0] }),
             ],
         )
     }
@@ -546,10 +542,7 @@ mod tests {
         assert!(out.warnings.is_empty(), "{:?}", out.warnings);
         // The branch's first step applied the +x impulse.
         let vx = with_world(DEFAULT_WORLD, |w| w.body_velocity("a").unwrap()[0]).unwrap();
-        assert!(
-            vx > 0.0,
-            "the same-frame impulse was dropped by the rewind: vx={vx}"
-        );
+        assert!(vx > 0.0, "the same-frame impulse was dropped by the rewind: vx={vx}");
         remove_world(DEFAULT_WORLD);
     }
 

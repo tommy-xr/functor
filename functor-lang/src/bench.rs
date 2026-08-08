@@ -114,8 +114,8 @@ pub fn main(args: &[String]) -> ! {
 pub fn run_one(path: &Path) -> Result<BenchResult, String> {
     let project = functor_lang::project::load(path).map_err(|err| err.render())?;
     let mut host = functor_lang::NoHost;
-    let session = functor_lang::Session::load(&project.module, &mut host)
-        .map_err(|f| render_error(&project, &f.error))?;
+    let session =
+        functor_lang::Session::load(&project.module, &mut host).map_err(|f| render_error(&project, &f.error))?;
     if session.global("main").is_none() {
         return Err(format!(
             "{}: no zero-arg `let main` to benchmark (see functor-lang/benches/README.md)",
@@ -207,11 +207,7 @@ fn collect_dir(dir: &Path) -> Result<Vec<PathBuf>, String> {
 
 fn render_error(project: &functor_lang::project::Project, err: &functor_lang::RunError) -> String {
     let (file, line, col) = project.sources.resolve(err.span.start);
-    format!(
-        "{}:{line}:{col}: error: {}",
-        file.path.display(),
-        err.message
-    )
+    format!("{}:{line}:{col}: error: {}", file.path.display(), err.message)
 }
 
 /// Pretty-print a per-op nanosecond count with an appropriate unit.

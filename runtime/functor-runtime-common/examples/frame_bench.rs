@@ -413,12 +413,7 @@ fn bench_text() {
     println!();
     println!(
         "{:>7} {:>9} {:>15} {:>15} {:>10} {:>13} {:>12}",
-        "glyphs",
-        "layout",
-        "us/frame(min)",
-        "us/frame(med)",
-        "us/glyph",
-        "allocs/frame",
+        "glyphs", "layout", "us/frame(min)", "us/frame(med)", "us/glyph", "allocs/frame",
         "bytes/frame"
     );
     // 20 glyphs ~ a score line; 400 ~ a dense HUD; 1500 ~ a full screen of text.

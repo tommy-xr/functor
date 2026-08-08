@@ -159,15 +159,10 @@ mod tests {
                 payload: b"hi".to_vec(),
             },
             ConnCommand::CloseConn { conn: 7 },
-            ConnCommand::CloseKey {
-                key: "wss://x/".into(),
-            },
+            ConnCommand::CloseKey { key: "wss://x/".into() },
         ];
         let json = serde_json::to_string(&cmds).unwrap();
-        assert_eq!(
-            cmds,
-            serde_json::from_str::<Vec<ConnCommand>>(&json).unwrap()
-        );
+        assert_eq!(cmds, serde_json::from_str::<Vec<ConnCommand>>(&json).unwrap());
     }
 
     #[test]
@@ -202,18 +197,9 @@ mod tests {
         assert_eq!(
             mine,
             vec![
-                KeyedEvent {
-                    key: key.into(),
-                    event: NetEvent::Connected(1)
-                },
-                KeyedEvent {
-                    key: key.into(),
-                    event: NetEvent::Message(1, b"a".to_vec())
-                },
-                KeyedEvent {
-                    key: key.into(),
-                    event: NetEvent::Disconnected(1)
-                },
+                KeyedEvent { key: key.into(), event: NetEvent::Connected(1) },
+                KeyedEvent { key: key.into(), event: NetEvent::Message(1, b"a".to_vec()) },
+                KeyedEvent { key: key.into(), event: NetEvent::Disconnected(1) },
             ]
         );
     }

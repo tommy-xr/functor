@@ -360,21 +360,24 @@ impl Camera {
         } = self.world_basis()?;
         let aspect = surface_width / surface_height;
         let half_fov_tan = (self.fov_radians * 0.5).tan();
-        if !aspect.is_normal() || !half_fov_tan.is_normal() || half_fov_tan <= 0.0 {
+        if !aspect.is_normal()
+            || !half_fov_tan.is_normal()
+            || half_fov_tan <= 0.0
+        {
             return None;
         }
 
         let ndc_x = 2.0 * x / surface_width - 1.0;
         let ndc_y = 1.0 - 2.0 * y / surface_height;
-        let direction =
-            (forward + right * (ndc_x * half_fov_tan * aspect) + up * (ndc_y * half_fov_tan))
-                .normalize();
-        (direction.x.is_finite() && direction.y.is_finite() && direction.z.is_finite()).then_some(
-            WorldRay {
+        let direction = (forward
+            + right * (ndc_x * half_fov_tan * aspect)
+            + up * (ndc_y * half_fov_tan))
+            .normalize();
+        (direction.x.is_finite() && direction.y.is_finite() && direction.z.is_finite())
+            .then_some(WorldRay {
                 origin: eye.into(),
                 direction: direction.into(),
-            },
-        )
+            })
     }
 
     /// Build an asymmetric perspective projection from four view-space field-
@@ -515,7 +518,9 @@ mod tests {
     fn world_ray_is_logical_scale_invariant_and_tracks_resize() {
         let camera = Camera::default();
         let one_x = camera.to_world_ray(300.0, 200.0, 900.0, 1000.0).unwrap();
-        let retina = camera.to_world_ray(600.0, 400.0, 1800.0, 2000.0).unwrap();
+        let retina = camera
+            .to_world_ray(600.0, 400.0, 1800.0, 2000.0)
+            .unwrap();
         for i in 0..3 {
             assert!(approx(one_x.direction[i], retina.direction[i]));
         }
@@ -551,8 +556,12 @@ mod tests {
         let camera = Camera::default();
         assert!(camera.to_world_ray(0.0, 0.0, 0.0, 900.0).is_none());
         assert!(camera.to_world_ray(-0.1, 0.0, 1600.0, 900.0).is_none());
-        assert!(camera.to_world_ray(1600.0, 450.0, 1600.0, 900.0).is_none());
-        assert!(camera.to_world_ray(800.0, 900.0, 1600.0, 900.0).is_none());
+        assert!(camera
+            .to_world_ray(1600.0, 450.0, 1600.0, 900.0)
+            .is_none());
+        assert!(camera
+            .to_world_ray(800.0, 900.0, 1600.0, 900.0)
+            .is_none());
 
         let zero_gaze = Camera::look_at(
             [1.0, 1.0, 1.0],
@@ -566,8 +575,12 @@ mod tests {
             [0.0, 1.0, 0.0],
             Angle::from_degrees(45.0),
         );
-        assert!(zero_gaze.to_world_ray(10.0, 10.0, 100.0, 100.0).is_none());
-        assert!(parallel_up.to_world_ray(10.0, 10.0, 100.0, 100.0).is_none());
+        assert!(zero_gaze
+            .to_world_ray(10.0, 10.0, 100.0, 100.0)
+            .is_none());
+        assert!(parallel_up
+            .to_world_ray(10.0, 10.0, 100.0, 100.0)
+            .is_none());
 
         for degrees in [0.0, 180.0, 360.0, 450.0] {
             let invalid_fov = Camera::look_at(
@@ -576,7 +589,9 @@ mod tests {
                 [0.0, 1.0, 0.0],
                 Angle::from_degrees(degrees),
             );
-            assert!(invalid_fov.to_world_ray(50.0, 50.0, 100.0, 100.0).is_none());
+            assert!(invalid_fov
+                .to_world_ray(50.0, 50.0, 100.0, 100.0)
+                .is_none());
         }
     }
 

@@ -3,7 +3,7 @@ use image::ImageFormat;
 use crate::{
     asset::{AssetCache, AssetPipeline},
     texture::{
-        Texture2D, TextureData, TextureFormat, TextureOptions, JPEG, PNG, TERRAIN_DETAIL_ANISOTROPY,
+        Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, JPEG, PNG,
     },
 };
 

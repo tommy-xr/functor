@@ -211,10 +211,7 @@ pub enum ExprKind {
     /// resolves the suffix against the project's `unit` declarations and
     /// desugars it to the plain call (`Angle.degrees(90.0)`); the IR has no
     /// unit-literal node.
-    NumberUnit {
-        value: f64,
-        suffix: String,
-    },
+    NumberUnit { value: f64, suffix: String },
     String(String),
     /// `$"score: {score}"` — text and full expression holes, evaluated
     /// left-to-right. `{{` / `}}` produce literal braces.

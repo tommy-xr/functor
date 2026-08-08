@@ -1044,10 +1044,7 @@ Content-Length: {}\r\n\r\n{body}",
         assert!(response.ends_with(commands), "{response}");
 
         let response = drain(Err("on the socket transport".into()));
-        assert!(
-            response.starts_with("HTTP/1.1 409 Conflict\r\n"),
-            "{response}"
-        );
+        assert!(response.starts_with("HTTP/1.1 409 Conflict\r\n"), "{response}");
     }
 
     /// Ingress parses through the SHARED `DeliveredEvent` type (the same one
@@ -1093,10 +1090,7 @@ Content-Length: {}\r\n\r\n{body}",
         // rejects it, and so this never reaches the runtime loop.
         let (events, response) = deliver(r#"[{"kind":"connected","key":"k","conn":-1}]"#);
         assert_eq!(events, None);
-        assert!(
-            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
-            "{response}"
-        );
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request\r\n"), "{response}");
     }
 
     #[test]

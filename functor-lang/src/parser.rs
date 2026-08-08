@@ -233,7 +233,9 @@ impl Parser {
                 }
                 // …and `unit` (a literal-suffix declaration). Contextual too:
                 // `unit` stays usable as an ordinary name.
-                TokenKind::Ident(name) if name == "unit" => items.push(self.unit_item()?),
+                TokenKind::Ident(name) if name == "unit" => {
+                    items.push(self.unit_item()?)
+                }
                 _ => {
                     return self
                         .error("`let`, `type`, `open`, `expect`, `unit`, or `module` at top level")
@@ -326,7 +328,10 @@ project-wide, so declare them at the top level of the file"
                 let name = name.clone();
                 (name, self.bump().span)
             }
-            _ => return self.error("a unit suffix after `unit` (e.g. `unit deg = Angle.degrees`)"),
+            _ => {
+                return self
+                    .error("a unit suffix after `unit` (e.g. `unit deg = Angle.degrees`)")
+            }
         };
         // The suffix has to be able to follow digits: `90deg` must lex back to
         // this same suffix. Identifiers always do, so only the `_`-led case
@@ -342,11 +347,7 @@ project-wide, so declare them at the top level of the file"
         // `unit deg (…)` — an operator declaration rather than the suffix's
         // own target.
         if self.peek_kind() == &TokenKind::LParen {
-            return Ok(Item::UnitOp(self.unit_op_decl(
-                kw.span,
-                suffix,
-                suffix_span,
-            )?));
+            return Ok(Item::UnitOp(self.unit_op_decl(kw.span, suffix, suffix_span)?));
         }
         self.expect(TokenKind::Eq, "`=` after the unit suffix")?;
         let (mut segment, mut span) =
@@ -393,8 +394,7 @@ project-wide, so declare them at the top level of the file"
             TokenKind::BangEq => {
                 return Err(ParseError {
                     message: "`!=` is derived from `==` — declare `unit <suffix> (==)` and `!=` \
-follows"
-                        .to_string(),
+follows".to_string(),
                     span: op_span,
                 })
             }
@@ -586,9 +586,9 @@ rebind surface); `mut` is for `let mut … in …` inside a function"
             });
         }
         self.bump(); // `=`
-                     // `type t = host` — an abstract type whose values are opaque HOST
-                     // values (see `TypeBody::Host`). Contextual, like `unit`/`open`, so
-                     // `host` stays usable as an ordinary name everywhere else.
+        // `type t = host` — an abstract type whose values are opaque HOST
+        // values (see `TypeBody::Host`). Contextual, like `unit`/`open`, so
+        // `host` stays usable as an ordinary name everywhere else.
         if matches!(self.peek_kind(), TokenKind::Ident(name) if name == "host") {
             let end = self.bump().span;
             if !self.interface {
@@ -1250,39 +1250,40 @@ and an `else` branch)",
             }
         }
         let span = self.peek().span;
-        let kind =
-            match self.peek_kind() {
-                TokenKind::Number(n) => {
-                    let n = *n;
-                    self.bump();
-                    PatternKind::Number(n)
-                }
-                TokenKind::Str(s) => {
-                    let s = s.clone();
-                    self.bump();
-                    PatternKind::String(s)
-                }
-                TokenKind::True => {
-                    self.bump();
-                    PatternKind::Bool(true)
-                }
-                TokenKind::False => {
-                    self.bump();
-                    PatternKind::Bool(false)
-                }
-                TokenKind::Ident(name) if name == "_" => {
-                    self.bump();
-                    PatternKind::Wildcard
-                }
-                TokenKind::Ident(name) if !starts_uppercase(name) => {
-                    let name = name.clone();
-                    self.bump();
-                    PatternKind::Var(name)
-                }
-                _ => return self.error(
+        let kind = match self.peek_kind() {
+            TokenKind::Number(n) => {
+                let n = *n;
+                self.bump();
+                PatternKind::Number(n)
+            }
+            TokenKind::Str(s) => {
+                let s = s.clone();
+                self.bump();
+                PatternKind::String(s)
+            }
+            TokenKind::True => {
+                self.bump();
+                PatternKind::Bool(true)
+            }
+            TokenKind::False => {
+                self.bump();
+                PatternKind::Bool(false)
+            }
+            TokenKind::Ident(name) if name == "_" => {
+                self.bump();
+                PatternKind::Wildcard
+            }
+            TokenKind::Ident(name) if !starts_uppercase(name) => {
+                let name = name.clone();
+                self.bump();
+                PatternKind::Var(name)
+            }
+            _ => {
+                return self.error(
                     "a binding name, `_`, or a literal (constructor/tuple patterns do not nest)",
-                ),
-            };
+                )
+            }
+        };
         Ok(Pattern { kind, span })
     }
 

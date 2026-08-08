@@ -718,11 +718,7 @@ impl TerrainRenderer {
                 p.set_uniform_1f(gl, &u.detail_tile, textures.tile_size);
                 let span = description.width.max(description.depth);
                 let fade_end = DETAIL_FADE_MAX_END.min(span * DETAIL_FADE_END_FRACTION);
-                p.set_uniform_1f(
-                    gl,
-                    &u.detail_fade_start,
-                    fade_end * DETAIL_FADE_START_FRACTION,
-                );
+                p.set_uniform_1f(gl, &u.detail_fade_start, fade_end * DETAIL_FADE_START_FRACTION);
                 p.set_uniform_1f(gl, &u.detail_fade_end, fade_end);
                 p.set_uniform_vec3(gl, &u.detail_camera_pos, &ctx.camera_pos);
                 let averages = detail_bound.expect("checked by the filter above");
@@ -753,7 +749,9 @@ impl TerrainRenderer {
 
         if matches!(
             ctx.debug_render_mode,
-            DebugRenderMode::Default | DebugRenderMode::Transparent | DebugRenderMode::Physics
+            DebugRenderMode::Default
+                | DebugRenderMode::Transparent
+                | DebugRenderMode::Physics
         ) {
             if let Some(grass) = description.grass.as_ref() {
                 self.draw_grass(
@@ -1251,11 +1249,7 @@ rendering a {}x{} height copy",
                 glow::TEXTURE_MIN_FILTER,
                 glow::LINEAR_MIPMAP_LINEAR as i32,
             );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_WRAP_S,
@@ -1343,7 +1337,9 @@ fn macro_dims(width_world: f32, depth_world: f32) -> (u32, u32) {
     if !long.is_finite() || long <= 0.0 {
         return (MACRO_SIZE, MACRO_SIZE);
     }
-    let scale = |v: f32| ((v / long * MACRO_SIZE as f32).round() as u32).clamp(8, MACRO_SIZE);
+    let scale = |v: f32| {
+        ((v / long * MACRO_SIZE as f32).round() as u32).clamp(8, MACRO_SIZE)
+    };
     (scale(width_world), scale(depth_world))
 }
 
@@ -1561,8 +1557,8 @@ fn select_grass_instances_into(
     let half_depth = description.depth * 0.5;
     let radius_squared = grass.distance * grass.distance;
     let stride_f64 = f64::from(stride);
-    let desired_capacity =
-        ((estimated / (stride_f64 * stride_f64)).ceil() as usize).min(MAX_GRASS_INSTANCES);
+    let desired_capacity = ((estimated / (stride_f64 * stride_f64)).ceil() as usize)
+        .min(MAX_GRASS_INSTANCES);
     if instances.capacity() < desired_capacity {
         instances.reserve(desired_capacity);
     }
@@ -2022,10 +2018,7 @@ mod tests {
             (vec![1234u16; 64 * 64], 64, 64),
         ] {
             let map = bake_square(&samples, w, h, 4000.0, 600.0);
-            assert!(
-                map.iter().all(|&v| v == 255),
-                "{w}x{h} should be fully open"
-            );
+            assert!(map.iter().all(|&v| v == 255), "{w}x{h} should be fully open");
         }
     }
 
@@ -2118,7 +2111,9 @@ mod tests {
         // that column into the spike, inventing occlusion from terrain the
         // probe cannot see. Terminating the ray does not.
         const N: u32 = 256;
-        let samples: Vec<u16> = (0..N * N).map(|i| if i == 0 { 65535 } else { 0 }).collect();
+        let samples: Vec<u16> = (0..N * N)
+            .map(|i| if i == 0 { 65535 } else { 0 })
+            .collect();
         let map = bake_square(&samples, N, N, 4000.0, 600.0);
 
         let n = MACRO_SIZE as usize;
@@ -2146,14 +2141,8 @@ mod tests {
         let mid = MACRO_SIZE / 2;
         let summit = ao_at(&map, mid, mid);
         let foot = ao_at(&map, mid + (MACRO_SIZE as f32 * 45.0 / 256.0) as u32, mid);
-        assert!(
-            summit > foot,
-            "summit {summit} should out-see its foot {foot}"
-        );
-        assert!(
-            ao_at(&map, MACRO_SIZE - 4, mid) > 0.98,
-            "the far plain is open"
-        );
+        assert!(summit > foot, "summit {summit} should out-see its foot {foot}");
+        assert!(ao_at(&map, MACRO_SIZE - 4, mid) > 0.98, "the far plain is open");
     }
 
     #[test]
@@ -2252,7 +2241,8 @@ mod tests {
             color: [0.1, 0.3, 0.08],
         };
         let radius_cells = (grass.distance / grass.spacing).ceil() as i32;
-        let estimated = std::f64::consts::PI * f64::from(radius_cells) * f64::from(radius_cells);
+        let estimated =
+            std::f64::consts::PI * f64::from(radius_cells) * f64::from(radius_cells);
         let stride = (estimated / MAX_GRASS_INSTANCES as f64).sqrt().ceil() as i32;
         assert!(stride > 1, "test must exercise decimated selection");
 

@@ -131,7 +131,6 @@ mod tests {
     fn matches_declared_shader_bound() {
         // The fragment shader hard-codes the array size; keep it in lockstep
         // with the Rust bound the padding logic relies on.
-        assert!(COMPOSITE_FRAGMENT_SHADER_SOURCE
-            .contains(&format!("#define MAX_COMPOSITE {MAX_COMPOSITE}")));
+        assert!(COMPOSITE_FRAGMENT_SHADER_SOURCE.contains(&format!("#define MAX_COMPOSITE {MAX_COMPOSITE}")));
     }
 }

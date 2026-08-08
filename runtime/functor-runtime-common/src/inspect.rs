@@ -273,12 +273,7 @@ pub fn inspect_model(
     let selected_animation = match animation_name {
         Some(selector) => {
             let by_name = animations.iter().find(|a| a.name == selector);
-            let by_index = || {
-                selector
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|i| animations.get(i))
-            };
+            let by_index = || selector.parse::<usize>().ok().and_then(|i| animations.get(i));
             match by_name.or_else(by_index) {
                 Some(a) => Some(a),
                 None => {

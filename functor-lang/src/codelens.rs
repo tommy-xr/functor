@@ -98,10 +98,7 @@ mod tests {
         let (_, types) = check_with_types(&module);
         let lenses = signatures(&module, &types);
         // `b`'s lens anchors at the start of its `let`, on line 2.
-        assert_eq!(
-            &src[lenses[1].span.start..lenses[1].span.start + 5],
-            "let b"
-        );
+        assert_eq!(&src[lenses[1].span.start..lenses[1].span.start + 5], "let b");
     }
 
     // PR 2. A def inside an inline `module` gets its own lens, titled with the

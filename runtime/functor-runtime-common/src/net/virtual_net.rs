@@ -264,7 +264,11 @@ impl VirtualNet {
         }
         self.in_flight = still;
 
-        due.sort_by(|x, y| x.deliver_tick.cmp(&y.deliver_tick).then(x.seq.cmp(&y.seq)));
+        due.sort_by(|x, y| {
+            x.deliver_tick
+                .cmp(&y.deliver_tick)
+                .then(x.seq.cmp(&y.seq))
+        });
         for p in due {
             self.enqueue(p.dest, p.event);
         }
@@ -297,16 +301,7 @@ mod tests {
     fn delivers_message_after_latency() {
         let mut net = VirtualNet::new(1);
         let (c, s) = (net.add_node(), net.add_node());
-        net.set_link(
-            c,
-            s,
-            LinkProfile {
-                latency_ticks: 3,
-                jitter_ticks: 0,
-                loss: 0.0,
-                reorder: false,
-            },
-        );
+        net.set_link(c, s, LinkProfile { latency_ticks: 3, jitter_ticks: 0, loss: 0.0, reorder: false });
         let conn = net.connect(c, s);
         connected(&mut net, c, s, conn);
 
@@ -323,16 +318,7 @@ mod tests {
     fn total_loss_drops_everything() {
         let mut net = VirtualNet::new(1);
         let (c, s) = (net.add_node(), net.add_node());
-        net.set_link(
-            c,
-            s,
-            LinkProfile {
-                latency_ticks: 1,
-                jitter_ticks: 0,
-                loss: 1.0,
-                reorder: true,
-            },
-        );
+        net.set_link(c, s, LinkProfile { latency_ticks: 1, jitter_ticks: 0, loss: 1.0, reorder: true });
         let conn = net.connect(c, s);
         connected(&mut net, c, s, conn);
 
@@ -358,10 +344,7 @@ mod tests {
         net.heal(c, s);
         net.send(c, conn, b"through".to_vec());
         net.advance(10);
-        assert_eq!(
-            net.poll(s),
-            vec![NetEvent::Message(conn, b"through".to_vec())]
-        );
+        assert_eq!(net.poll(s), vec![NetEvent::Message(conn, b"through".to_vec())]);
     }
 
     #[test]
@@ -370,16 +353,7 @@ mod tests {
         // send order on the link.
         let mut net = VirtualNet::new(99);
         let (c, s) = (net.add_node(), net.add_node());
-        net.set_link(
-            c,
-            s,
-            LinkProfile {
-                latency_ticks: 1,
-                jitter_ticks: 20,
-                loss: 0.0,
-                reorder: false,
-            },
-        );
+        net.set_link(c, s, LinkProfile { latency_ticks: 1, jitter_ticks: 20, loss: 0.0, reorder: false });
         let conn = net.connect(c, s);
         connected(&mut net, c, s, conn);
 
@@ -438,16 +412,7 @@ mod tests {
         fn run() -> Vec<(u64, Vec<u8>)> {
             let mut net = VirtualNet::new(0xDEAD_BEEF);
             let (c, s) = (net.add_node(), net.add_node());
-            net.set_link(
-                c,
-                s,
-                LinkProfile {
-                    latency_ticks: 2,
-                    jitter_ticks: 8,
-                    loss: 0.25,
-                    reorder: true,
-                },
-            );
+            net.set_link(c, s, LinkProfile { latency_ticks: 2, jitter_ticks: 8, loss: 0.25, reorder: true });
             let conn = net.connect(c, s);
             net.poll(c);
             net.poll(s);

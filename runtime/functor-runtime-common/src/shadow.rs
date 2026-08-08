@@ -37,16 +37,8 @@ impl ShadowMap {
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(None),
             );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::NEAREST as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::NEAREST as i32,
-            );
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             // Declare a single mip level so the texture is unambiguously complete
             // (some drivers — macOS — otherwise intermittently treat the FBO color
             // texture as "unloadable" and sample zero).
@@ -247,9 +239,10 @@ pub fn render_shadow_pass(
         // keys); on wasm the canvas default framebuffer IS the target, so
         // `None` is exact there.
         #[cfg(not(target_arch = "wasm32"))]
-        let previous_fbo =
-            std::num::NonZeroU32::new(gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32)
-                .map(glow::NativeFramebuffer);
+        let previous_fbo = std::num::NonZeroU32::new(
+            gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32,
+        )
+        .map(glow::NativeFramebuffer);
         #[cfg(target_arch = "wasm32")]
         let previous_fbo: Option<glow::Framebuffer> = None;
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(shadow_map.fbo));
