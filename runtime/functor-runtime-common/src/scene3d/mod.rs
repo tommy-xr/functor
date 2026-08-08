@@ -229,6 +229,69 @@ fn resolve_model_for_draw(
     )
 }
 
+/// Evaluate a skinned model's pose ONCE — the declarative `Scene.animate`
+/// expression when attached (unknown clip/joint names warn once; a missing
+/// clip contributes the bind pose, a missing joint is ignored), else the
+/// zero-config default (the first clip auto-plays, looping on the game
+/// clock). Shared by the ordinary Model draw arm and the instanced
+/// shared-pose path, which uploads the result once for every copy.
+fn model_pose_joints(
+    render_context: &RenderContext,
+    scene_context: &SceneContext,
+    hydrated_model: &Arc<Model>,
+    animation: &Option<crate::anim::AnimExpr>,
+    file: &str,
+) -> Vec<Matrix4<f32>> {
+    match animation {
+        Some(expr) => crate::anim::skinning_transforms(hydrated_model, expr, &mut |warning| {
+            let (key, message) = match warning {
+                crate::anim::AnimWarning::MissingClip(name) => (
+                    format!("anim-clip:{file}:{name}"),
+                    format!(
+                        "[anim] model \"{file}\" has no clip \
+named \"{name}\" — rendering the bind pose (functor inspect lists a model's clips)"
+                    ),
+                ),
+                crate::anim::AnimWarning::MissingJoint(name) => (
+                    format!("anim-joint:{file}:{name}"),
+                    format!(
+                        "[anim] model \"{file}\" has no joint \
+named \"{name}\" — ignoring it (functor inspect lists a model's joints)"
+                    ),
+                ),
+                crate::anim::AnimWarning::InvalidChain { root, middle, end } => (
+                    format!("anim-chain:{file}:{root}:{middle}:{end}"),
+                    format!(
+                        "[anim] model \"{file}\" joints \
+\"{root}\" -> \"{middle}\" -> \"{end}\" are not a direct, non-degenerate \
+two-bone chain — ignoring Anim.reach"
+                    ),
+                ),
+                crate::anim::AnimWarning::NonUniformRootScale { root } => (
+                    format!("anim-reach-scale:{file}:{root}"),
+                    format!(
+                        "[anim] model \"{file}\" root joint \
+\"{root}\" has non-uniform scale — Anim.reach requires uniform root scale, \
+so the reach is ignored"
+                    ),
+                ),
+            };
+            scene_context.warn_once(&key, &message);
+        }),
+        // Zero-config default: the first clip auto-plays, looping on the
+        // game clock.
+        None => match hydrated_model.animations.first() {
+            Some(animation) => {
+                let time = render_context.frame_time.tts % animation.duration;
+                let animated_skeleton =
+                    Skeleton::animate(&hydrated_model.skeleton, animation, time);
+                animated_skeleton.get_skinning_transforms()
+            }
+            None => vec![Matrix4::identity(); 50],
+        },
+    }
+}
+
 impl SceneContext {
     /// Drop every cached decode of `path` so the next draw reloads it from
     /// disk — asset hot-reload (pair with `AssetCache::evict` for the bytes).
@@ -1478,80 +1541,17 @@ impl Scene3D {
                         };
                         model_material.initialize(&render_context);
 
-                        let animation_index = 0;
-
                         // The pose depends only on the model + expression, so
                         // evaluate it once per model (a blend samples every
                         // clip in the expression) and share it across meshes.
                         let joints = if is_skinned {
-                            match &model_description.animation {
-                                // The declarative path: game code chose the
-                                // pose (clip playheads, blend weights,
-                                // per-joint rotations) — evaluate it. An
-                                // unknown clip/joint name warns once; a
-                                // missing clip contributes the bind pose, a
-                                // missing joint is ignored.
-                                Some(expr) => crate::anim::skinning_transforms(
-                                    &hydrated_model,
-                                    expr,
-                                    &mut |warning| {
-                                        let (key, message) = match warning {
-                                            crate::anim::AnimWarning::MissingClip(name) => (
-                                                format!("anim-clip:{str}:{name}"),
-                                                format!(
-                                                    "[anim] model \"{str}\" has no clip \
-named \"{name}\" — rendering the bind pose (functor inspect lists a model's clips)"
-                                                ),
-                                            ),
-                                            crate::anim::AnimWarning::MissingJoint(name) => (
-                                                format!("anim-joint:{str}:{name}"),
-                                                format!(
-                                                    "[anim] model \"{str}\" has no joint \
-named \"{name}\" — ignoring it (functor inspect lists a model's joints)"
-                                                ),
-                                            ),
-                                            crate::anim::AnimWarning::InvalidChain {
-                                                root,
-                                                middle,
-                                                end,
-                                            } => (
-                                                format!("anim-chain:{str}:{root}:{middle}:{end}"),
-                                                format!(
-                                                    "[anim] model \"{str}\" joints \
-\"{root}\" -> \"{middle}\" -> \"{end}\" are not a direct, non-degenerate \
-two-bone chain — ignoring Anim.reach"
-                                                ),
-                                            ),
-                                            crate::anim::AnimWarning::NonUniformRootScale {
-                                                root,
-                                            } => (
-                                                format!("anim-reach-scale:{str}:{root}"),
-                                                format!(
-                                                    "[anim] model \"{str}\" root joint \
-\"{root}\" has non-uniform scale — Anim.reach requires uniform root scale, \
-so the reach is ignored"
-                                                ),
-                                            ),
-                                        };
-                                        scene_context.warn_once(&key, &message);
-                                    },
-                                ),
-                                // Zero-config default: the first clip
-                                // auto-plays, looping on the game clock.
-                                None => match hydrated_model.animations.get(animation_index) {
-                                    Some(animation) => {
-                                        let time =
-                                            render_context.frame_time.tts % animation.duration;
-                                        let animated_skeleton = Skeleton::animate(
-                                            &hydrated_model.skeleton,
-                                            animation,
-                                            time,
-                                        );
-                                        animated_skeleton.get_skinning_transforms()
-                                    }
-                                    None => vec![Matrix4::identity(); 50],
-                                },
-                            }
+                            model_pose_joints(
+                                render_context,
+                                scene_context,
+                                &hydrated_model,
+                                &model_description.animation,
+                                str,
+                            )
                         } else {
                             vec![]
                         };
@@ -1815,33 +1815,25 @@ so the reach is ignored"
                             file,
                             &recognized.description.while_pending,
                         );
-                        // Whether the model is rigid is only knowable now.
-                        // A skinned model stamps per copy (full per-copy
-                        // skinning — exact semantics); the shared-pose
-                        // instanced path is the next ladder rung.
-                        if hydrated_model.skeleton.get_joint_count() > 0 {
-                            if !depth_pass {
-                                let copies = instances.len();
-                                scene_context.warn_once_with(
-                                    &format!("instanced-skinned:{file}"),
-                                    || format!(
-                                        "[functor] Scene.instanced template model \"{file}\" is \
-skinned — rendering {copies} copies as a stamped group with per-copy skinning \
-(rigid models hardware-instance; a shared-pose instanced path for animated \
-templates is planned)"
-                                    ),
-                                );
-                            }
-                            expand_instanced(template, instances).render(
+                        // Whether the model is rigid or skinned is only
+                        // knowable now. A SKINNED model instances at the
+                        // SHARED pose: the stamp of a group of same-tts
+                        // copies is exactly one sampled pose repeated, so
+                        // the pose evaluates and uploads once and every
+                        // copy skins from it. (Per-instance playheads are
+                        // the next ladder rung.)
+                        let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
+                        let joints = if is_skinned {
+                            model_pose_joints(
                                 render_context,
                                 scene_context,
-                                &xform,
-                                projection_matrix,
-                                view_matrix,
-                                current_material,
-                            );
-                            return;
-                        }
+                                &hydrated_model,
+                                &recognized.description.animation,
+                                file,
+                            )
+                        } else {
+                            vec![]
+                        };
                         let mut renderer = scene_context.instanced.borrow_mut();
                         let renderer = renderer.get_or_insert_with(|| {
                             InstancedRenderer::new(
@@ -1849,16 +1841,30 @@ templates is planned)"
                                 render_context.shader_version,
                             )
                         });
-                        renderer.draw_model(
-                            render_context,
-                            file,
-                            &hydrated_model,
-                            &recognized.local,
-                            instances,
-                            &xform,
-                            projection_matrix,
-                            view_matrix,
-                        );
+                        if is_skinned {
+                            renderer.draw_skinned_model(
+                                render_context,
+                                file,
+                                &hydrated_model,
+                                &joints,
+                                &recognized.local,
+                                instances,
+                                &xform,
+                                projection_matrix,
+                                view_matrix,
+                            );
+                        } else {
+                            renderer.draw_model(
+                                render_context,
+                                file,
+                                &hydrated_model,
+                                &recognized.local,
+                                instances,
+                                &xform,
+                                projection_matrix,
+                                view_matrix,
+                            );
+                        }
                     }
                     // The honest fallback: render the stamp-equivalent group
                     // (the semantics itself), with a once-per-topology perf
