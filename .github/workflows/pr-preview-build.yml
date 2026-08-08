@@ -1,0 +1,72 @@
+name: Build PR Preview
+
+# This is deliberately the unprivileged half of preview deployment. It builds
+# PR code with a read-only token and no secrets, then uploads only site/dist.
+# The default-branch workflow_run job independently authorizes the PR before it
+# exposes Cloudflare credentials or publishes these files as static assets.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-preview-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # This saves Actions minutes; it is not the security boundary. The trusted
+    # deploy workflow repeats this gate using GitHub's API and default-branch
+    # code, so changing this line in a PR cannot authorize that PR.
+    if: >-
+      github.event.pull_request.user.login == 'tommy-xr' &&
+      github.event.pull_request.head.repo.full_name == 'tommy-xr/functor'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build web runtime bundle
+        run: wasm-pack build --target=web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build language analysis wasm
+        run: npm run build:lang-wasm
+
+      - name: Build site for the immutable PR head
+        env:
+          FUNCTOR_SITE_PREVIEW_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm run site:build
+
+      - name: Upload static preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-preview-site
+          path: site/dist
+          if-no-files-found: error
+          retention-days: 1
