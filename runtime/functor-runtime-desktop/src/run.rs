@@ -1636,8 +1636,10 @@ sockets)."
             // a cheap scene doesn't spin uncapped and pin the GPU. GATED OFF for
             // hidden/capture and deterministic (`--fixed-time`) runs, which must
             // keep their current timing behavior — a golden capture or the debug
-            // server's /capture must never block on the compositor's swap. Applies
-            // to the current context, so it must follow `make_current`.
+            // server's /capture must never block on the compositor's swap.
+            // Non-capture hidden/fixed-time runs get an explicit sleep-based
+            // cap at the end of the loop body instead. Applies to the current
+            // context, so it must follow `make_current`.
             if !hidden && args.fixed_time.is_none() {
                 glfw.set_swap_interval(glfw::SwapInterval::Sync(1));
             }
@@ -3553,6 +3555,17 @@ Escape again to quit"
             // Hand this frame's shell-measured GL cost to the producer, which
             // folds it into the same rolling window it averages tick/draw over.
             game.record_gl_timing(render_ns, swap_ns);
+
+            // Hidden and `--fixed-time` runs skip vsync above, and a hidden
+            // window's swap never blocks on the compositor — cap the loop near
+            // 60 Hz explicitly so a long-lived session (`--hidden
+            // --debug-port`) doesn't busy-spin a core (mirrors the headless
+            // loop's cap). `--capture-frame` runs are exempt: they exit at the
+            // capture, and `--capture-at-frame N` counts sim frames, so the
+            // cap would stretch a near-instant scripted capture to N/60 s.
+            if (hidden || args.fixed_time.is_some()) && args.capture_frame.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
         }
     }
 
