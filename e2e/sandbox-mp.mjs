@@ -443,6 +443,18 @@ const installProbe = (page) =>
         const inv = invocations.find((i) => i.entry === "draw") ?? invocations[0];
         return inv?.bindings?.find((b) => b.name === "m")?.value ?? null;
       },
+      // Reload markers per pane: a hot-swap records one on that runtime's own
+      // timeline, so this counts who actually took a pushed edit.
+      reloads: () =>
+        [...document.querySelectorAll(".mp-pane")].map((shell, index) => {
+          const role = shell.classList.contains("server") ? "server" : `client ${index + 1}`;
+          const seam = shell.querySelector("iframe")?.contentWindow?.__scrub;
+          const markers = seam?.view()?.eventMarkers ?? [];
+          const count = markers
+            .filter((m) => m.category === "reload")
+            .reduce((total, m) => total + (m.count ?? 1), 0);
+          return { role, count };
+        }),
     };
   });
 
@@ -657,6 +669,29 @@ try {
       seated(models.c1) && seated(models.c2),
       "both client panes were seated by the server pane (a pid off the wire)",
       String(models.c1).slice(0, 160)
+    );
+
+    // A pushed edit reaches EVERY runtime, the authority included. Both roles
+    // are modules of the buffer being edited, and each pane re-resolves its own
+    // role on reload — so a session-wide hot swap is one edit, not one edit
+    // plus a reset. (Before the authority was a push target this held for the
+    // clients alone, and the server pane sat on its served source.)
+    const before = await page.evaluate(() => window.__mpProbe.reloads());
+    await page.evaluate(() => {
+      const src = window.__sandbox.source();
+      window.__sandbox.setSource(src.replace("let halfW = 13.0", "let halfW = 12.0"));
+    });
+    await sleep(3500);
+    const after = await page.evaluate(() => window.__mpProbe.reloads());
+    const took = (role) => {
+      const b = before.find((r) => r.role === role)?.count ?? 0;
+      const a = after.find((r) => r.role === role)?.count ?? 0;
+      return a > b;
+    };
+    check(
+      took("server") && took("client 1") && took("client 2"),
+      "one edit hot-reloads every pane, the authority included",
+      JSON.stringify({ before, after })
     );
     // A SEAT, not just a pilot: the world's pilots carry a `pid` too, so only
     // the cid→pid pairing proves the authority bound each connection.
