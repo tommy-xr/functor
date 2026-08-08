@@ -101,6 +101,55 @@ let draw = (m: float, tts: float) =>
 "#
 }
 
+/// Model path A: one `Scene.model` pipeline per copy.
+fn per_node_model(side: u32) -> String {
+    shared_header(side)
+        + r#"
+let barrel = Asset.model("barrel.glb")
+
+let cell = (ix, iz, tts) =>
+  let fx = ix / side in
+  let fz = iz / side in
+  let h = height(fx, fz, tts) in
+  Scene.model(barrel)
+    |> Scene.scale(0.02 * h)
+    |> Scene.rotateY(Angle.degrees(120.0 * fx))
+    |> Scene.translate(Vec3.make((ix - side / 2.0) * 1.4, h / 2.0, (iz - side / 2.0) * 1.4))
+
+let draw = (m: float, tts: float) =>
+  let copies =
+    List.range(side)
+      |> List.concatMap((ix) => List.range(side) |> List.map((iz) => cell(ix, iz, tts))) in
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(30.0, 24.0, 30.0), Vec3.make(0.0, 1.0, 0.0)),
+    Scene.group(copies))
+"#
+}
+
+/// Model path B: `Instance.trs` chains into one instanced model node.
+fn instanced_model(side: u32) -> String {
+    shared_header(side)
+        + r#"
+let barrel = Asset.model("barrel.glb")
+
+let cell = (ix, iz, tts) =>
+  let fx = ix / side in
+  let fz = iz / side in
+  let h = height(fx, fz, tts) in
+  Instance.trs(
+      Vec3.make((ix - side / 2.0) * 1.4, h / 2.0, (iz - side / 2.0) * 1.4),
+      Angle.degrees(120.0 * fx), 0.02 * h, 0.02 * h, 0.02 * h)
+
+let draw = (m: float, tts: float) =>
+  let copies =
+    List.range(side)
+      |> List.concatMap((ix) => List.range(side) |> List.map((iz) => cell(ix, iz, tts))) in
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(30.0, 24.0, 30.0), Vec3.make(0.0, 1.0, 0.0)),
+    Scene.model(barrel) |> Scene.instanced(copies))
+"#
+}
+
 const WARMUP: Duration = Duration::from_millis(300);
 const SAMPLES: usize = 120;
 
@@ -164,6 +213,24 @@ fn main() {
             (1.0 - b / a) * 100.0,
             c,
             (1.0 - c / a) * 100.0
+        );
+    }
+
+    println!();
+    println!("model templates (construction only — GPU draw-call savings invisible here):");
+    println!(
+        "{:>7} {:>18} {:>18} {:>9}",
+        "models", "per-node ms", "instanced ms", "red%"
+    );
+    for side in [32u32, 64, 96] {
+        let a = bench(&per_node_model(side));
+        let b = bench(&instanced_model(side));
+        println!(
+            "{:>7} {:>18.3} {:>18.3} {:>8.1}%",
+            side * side,
+            a,
+            b,
+            (1.0 - b / a) * 100.0
         );
     }
 }

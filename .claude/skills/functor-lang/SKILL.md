@@ -1072,9 +1072,11 @@ each combinator composes within its own channel (rotations multiply with the
 outer pipe applying last; scales and tints multiply componentwise). The
 renderer hardware-instances a recognized template — one
 cube/sphere/cylinder/quad/plane leaf under transforms and at most one solid
-`Scene.color`/`Scene.lit`/`Scene.emissive` material — in ONE draw call;
-anything else (models, textured materials, groups, bare leaves) still renders
-correctly via CPU expansion with a once-per-topology `[functor]` perf note.
+`Scene.color`/`Scene.lit`/`Scene.emissive` material (ONE draw call), or a
+rigid `Scene.model` leaf under transforms (one draw call per mesh primitive,
+textured like the ordinary model draw); anything else (skinned or animated
+models, textured materials, groups, bare leaves) still renders correctly via
+CPU expansion with a once-per-topology `[functor]` perf note.
 `Scene.opacity` inside a template is a teaching error — wrap the whole
 instanced node instead. `Scene.equals` compares instanced nodes structurally
 (template + every instance's channels).
