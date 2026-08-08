@@ -28,7 +28,7 @@ pub struct IndexedMeshRuntimeData {
 /// vertex/index buffers (its per-instance attributes cannot live on the
 /// mesh's own VAO without changing every ordinary draw).
 #[derive(Clone, Copy)]
-pub struct MeshBufferHandles {
+pub(crate) struct MeshBufferHandles {
     pub vbo: Buffer,
     pub ebo: Buffer,
     pub index_count: i32,

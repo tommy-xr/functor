@@ -208,6 +208,27 @@ struct CompositeUniforms {
     weight_loc: UniformLocation,
 }
 
+/// Resolve a model asset for drawing: the per-frame cache poll (which is ALSO
+/// the liveness poll for `Asset.whilePending` chains, so it must run every
+/// frame) followed by placeholder resolution. Shared by the ordinary Model
+/// draw arm and the instanced-model arm so the two cannot drift.
+fn resolve_model_for_draw(
+    render_context: &RenderContext,
+    scene_context: &SceneContext,
+    file: &str,
+    while_pending: &[String],
+) -> Arc<Model> {
+    let model: Arc<AssetHandle<Model>> = render_context
+        .asset_cache
+        .load_asset_with_pipeline(scene_context.model_pipeline.clone(), file);
+    crate::asset::resolve_while_pending(
+        &render_context.asset_cache,
+        &scene_context.model_pipeline,
+        &model,
+        while_pending,
+    )
+}
+
 impl SceneContext {
     /// Drop every cached decode of `path` so the next draw reloads it from
     /// disk — asset hot-reload (pair with `AssetCache::evict` for the bytes).
@@ -1401,18 +1422,14 @@ impl Scene3D {
             SceneObject::Model(model_description) => {
                 match &model_description.handle {
                     ModelHandle::File(str) => {
-                        let model: Arc<AssetHandle<Model>> = render_context
-                            .asset_cache
-                            .load_asset_with_pipeline(scene_context.model_pipeline.clone(), str);
-
                         // While the primary streams in, an `Asset.whilePending`
                         // chain renders its first loaded placeholder instead of
                         // the empty fallback (chainless models resolve exactly
                         // like the old `get()`).
-                        let hydrated_model = crate::asset::resolve_while_pending(
-                            &render_context.asset_cache,
-                            &scene_context.model_pipeline,
-                            &model,
+                        let hydrated_model = resolve_model_for_draw(
+                            render_context,
+                            scene_context,
+                            str,
                             &model_description.while_pending,
                         );
 
@@ -1791,17 +1808,11 @@ so the reach is ignored"
                         );
                     }
                     Some(instancing::RecognizedTemplate::Model(recognized)) => {
-                        // Resolve exactly like the ordinary Model arm — this
-                        // is ALSO the liveness poll for `Asset.whilePending`
-                        // chains, so it must run every frame.
                         let ModelHandle::File(file) = &recognized.description.handle;
-                        let model: Arc<AssetHandle<Model>> = render_context
-                            .asset_cache
-                            .load_asset_with_pipeline(scene_context.model_pipeline.clone(), file);
-                        let hydrated_model = crate::asset::resolve_while_pending(
-                            &render_context.asset_cache,
-                            &scene_context.model_pipeline,
-                            &model,
+                        let hydrated_model = resolve_model_for_draw(
+                            render_context,
+                            scene_context,
+                            file,
                             &recognized.description.while_pending,
                         );
                         // Whether the model is rigid is only knowable now.
@@ -1840,6 +1851,7 @@ templates is planned)"
                         });
                         renderer.draw_model(
                             render_context,
+                            file,
                             &hydrated_model,
                             &recognized.local,
                             instances,
@@ -1866,7 +1878,7 @@ templates is planned)"
 — rendering {copies} copies as a stamped group, comparable to writing \
 the group by hand (hardware templates are one cube/sphere/cylinder/quad/plane \
 leaf under transforms and at most one solid Scene.color / Scene.lit / \
-Scene.emissive material)"
+Scene.emissive material, or a bare rigid Scene.model leaf under transforms)"
                                     )
                                 },
                             );

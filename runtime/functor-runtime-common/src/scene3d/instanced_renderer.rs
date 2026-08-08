@@ -17,11 +17,12 @@ use glow::HasContext;
 use crate::fog::{FogUniforms, FOG_GLSL};
 use crate::geometry::{
     cube_mesh_data, cylinder_mesh_data, plane_mesh_data, quad_mesh_data, sphere_mesh_data,
+    MeshBufferHandles,
 };
 use crate::light::{lighting_glsl, LightingUniforms};
 use crate::math::normal_matrix;
 use crate::model::Model;
-use crate::render::vertex::{Vertex, VertexAttributeType};
+use crate::render::vertex::{BuiltInVertexChannel, Vertex, VertexAttributeType};
 use crate::render::{VertexPositionTexture, VertexPositionTextureSkinned};
 use crate::texture::RuntimeTexture;
 use crate::shader::{Shader, ShaderType};
@@ -193,32 +194,32 @@ struct MeshBuffers {
     instance_capacity: usize,
 }
 
-/// One model mesh primitive's instanced state: a SECOND VAO over the mesh's
-/// own vertex/index buffers (locations 0-3; the skinned joint/weight
-/// attributes at 4/5 are deliberately not enabled — instance channels live
-/// there) plus this primitive's instance buffer.
-struct ModelMeshBuffers {
-    vao: glow::VertexArray,
-    /// The mesh's own VBO the VAO reads vertices from — kept to detect a
-    /// stale entry when an Arc address is reused by a different model.
-    vertex_buffer: glow::Buffer,
-    index_buffer: glow::Buffer,
+/// One rigid model's instanced GPU state: ONE shared instance buffer
+/// (uploaded once per node) plus a second VAO per mesh primitive over the
+/// mesh's own vertex/index buffers.
+struct ModelInstancedState {
     instance_buffer: glow::Buffer,
-    index_count: i32,
     instance_capacity: usize,
+    meshes: Vec<ModelMeshVao>,
+}
+
+struct ModelMeshVao {
+    vao: glow::VertexArray,
+    /// The mesh's own VBO the VAO reads vertices from — compared against the
+    /// live handle each draw to detect a stale entry after an asset
+    /// evict/hot-reload replaced the model's GL buffers.
+    vertex_buffer: glow::Buffer,
 }
 
 /// Persistent GPU state for `Scene.instanced`'s hardware path.
 pub(super) struct InstancedRenderer {
     meshes: HashMap<InstancedPrimitive, MeshBuffers>,
-    // Keyed by the hydrated model's Arc pointer + mesh index. An asset evict/
-    // hot-reload produces a NEW Arc with new GL buffers — usually a new
-    // address too, but a dropped Arc's address CAN be reused by a later
-    // model (ABA), so each draw validates the entry against the mesh's live
-    // VBO/EBO handles and rebuilds on mismatch. Entries for dropped models
-    // are otherwise retained (bounded by the models a session actually
-    // instanced) like every other persistent cache.
-    model_meshes: HashMap<(usize, usize), ModelMeshBuffers>,
+    // Keyed by the model's asset locator, so the entry count is bounded by
+    // the model FILES a session actually instanced — a hot reload/evict
+    // replaces the entry in place (each draw validates the cached VAOs
+    // against the meshes' live vertex-buffer handles and rebuilds on
+    // mismatch) instead of stranding a dead generation.
+    model_meshes: HashMap<String, ModelInstancedState>,
     forward: ShaderProgram,
     forward_uniforms: ForwardUniforms,
     depth: ShaderProgram,
@@ -345,24 +346,7 @@ impl InstancedRenderer {
                 }
 
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-                let instance_stride = size_of::<InstanceData>() as i32;
-                for (location, size, offset) in [
-                    (4, 3, offset_of!(InstanceData, position)),
-                    (5, 4, offset_of!(InstanceData, rotation)),
-                    (6, 3, offset_of!(InstanceData, scale)),
-                    (7, 3, offset_of!(InstanceData, tint)),
-                ] {
-                    gl.enable_vertex_attrib_array(location);
-                    gl.vertex_attrib_pointer_f32(
-                        location,
-                        size,
-                        glow::FLOAT,
-                        false,
-                        instance_stride,
-                        offset as i32,
-                    );
-                    gl.vertex_attrib_divisor(location, 1);
-                }
+                instance_attrib_layout(gl, true);
 
                 gl.bind_vertex_array(None);
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
@@ -455,19 +439,8 @@ impl InstancedRenderer {
                 ctx.gl.bind_vertex_array(Some(mesh.vao));
                 ctx.gl
                     .bind_buffer(glow::ARRAY_BUFFER, Some(mesh.instance_buffer));
-                // Deliberately monotonic: capacity follows the high-water
-                // mark for the process lifetime (like every other persistent
-                // renderer cache here) rather than shrinking per frame.
-                if bytes.len() > mesh.instance_capacity {
-                    ctx.gl
-                        .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
-                    mesh.instance_capacity = bytes.len();
-                } else {
-                    ctx.gl
-                        .buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes);
-                }
+                upload_instances(ctx.gl, bytes, &mut mesh.instance_capacity);
             }
-            crate::gpu_counters::gpu_counters().uploaded(bytes.len());
             (mesh.index_buffer, mesh.index_count)
         };
         if depth_pass {
@@ -515,10 +488,13 @@ impl InstancedRenderer {
     ///
     /// The caller has already resolved the model and verified it is rigid
     /// (no skeleton); an unloaded/failed model resolves to zero meshes and
-    /// draws nothing here.
+    /// draws nothing here. The instance records upload ONCE per node — every
+    /// mesh primitive's VAO reads the model's one shared instance buffer.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_model(
         &mut self,
         ctx: &RenderContext,
+        file: &str,
         model: &Arc<Model>,
         local: &Matrix4<f32>,
         instances: &[InstanceData],
@@ -526,126 +502,72 @@ impl InstancedRenderer {
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
     ) {
+        if model.meshes.is_empty() {
+            return;
+        }
         let depth_pass = ctx.render_pass == RenderPass::DepthOnly;
         let bytes = crate::terrain_renderer::slice_bytes(instances);
-        let key_base = Arc::as_ptr(model) as usize;
-        for (mesh_index, mesh) in model.meshes.iter().enumerate() {
-            let handles = mesh.mesh.buffers(ctx.gl);
-            let key = (key_base, mesh_index);
-            // ABA guard: a dropped model Arc's address can be reused by a
-            // DIFFERENT model later. The mesh's live GL handles are the
-            // ground truth — a cached entry whose buffers don't match is
-            // stale (its VAO reads deleted/foreign buffers); rebuild it.
-            if let Some(entry) = self.model_meshes.get(&key) {
-                if entry.vertex_buffer != handles.vbo || entry.index_buffer != handles.ebo {
-                    let stale = self.model_meshes.remove(&key).expect("checked above");
-                    let counters = crate::gpu_counters::gpu_counters();
-                    counters.vao_deleted();
-                    counters.buffer_deleted();
-                    unsafe {
-                        ctx.gl.delete_vertex_array(stale.vao);
-                        ctx.gl.delete_buffer(stale.instance_buffer);
-                    }
-                }
-            }
-            // Scope the mutable cache borrow, carrying out only Copy handles.
-            let (index_buffer, index_count) = {
-                let entry = self
-                    .model_meshes
-                    .entry(key)
-                    .or_insert_with(|| unsafe {
-                        let vao = ctx.gl.create_vertex_array().expect("model instanced VAO");
-                        let instance_buffer =
-                            ctx.gl.create_buffer().expect("model instance data");
-                        let counters = crate::gpu_counters::gpu_counters();
-                        counters.vao_created();
-                        counters.buffer_created();
-
-                        ctx.gl.bind_vertex_array(Some(vao));
-                        ctx.gl.bind_buffer(glow::ARRAY_BUFFER, Some(handles.vbo));
-                        let stride = VertexPositionTextureSkinned::get_total_size() as i32;
-                        // Locations 0-3 (position/uv/normal/tangent) from the
-                        // mesh's own VBO; the skinned joints/weights at 4/5
-                        // stay DISABLED — those locations carry the instance
-                        // channels instead.
-                        for (location, attribute) in VertexPositionTextureSkinned::get_vertex_attributes()
-                            .iter()
-                            .take(4)
-                            .enumerate()
-                        {
-                            ctx.gl.enable_vertex_attrib_array(location as u32);
-                            match attribute.attribute_type {
-                                VertexAttributeType::Float => ctx.gl.vertex_attrib_pointer_f32(
-                                    location as u32,
-                                    attribute.size,
-                                    glow::FLOAT,
-                                    false,
-                                    stride,
-                                    attribute.offset as i32,
-                                ),
-                            }
-                        }
-
-                        ctx.gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-                        let instance_stride = size_of::<InstanceData>() as i32;
-                        // No tint attribute (location 7): a bare model
-                        // template has no material colors for the tint to
-                        // multiply, so the STAMP ignores it — the hardware
-                        // path must match. The generic attribute value is
-                        // pinned to white at draw time instead.
-                        for (location, size, offset) in [
-                            (4, 3, offset_of!(InstanceData, position)),
-                            (5, 4, offset_of!(InstanceData, rotation)),
-                            (6, 3, offset_of!(InstanceData, scale)),
-                        ] {
-                            ctx.gl.enable_vertex_attrib_array(location);
-                            ctx.gl.vertex_attrib_pointer_f32(
-                                location,
-                                size,
-                                glow::FLOAT,
-                                false,
-                                instance_stride,
-                                offset as i32,
-                            );
-                            ctx.gl.vertex_attrib_divisor(location, 1);
-                        }
-
-                        ctx.gl.bind_vertex_array(None);
-                        ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
-
-                        ModelMeshBuffers {
-                            vao,
-                            vertex_buffer: handles.vbo,
-                            index_buffer: handles.ebo,
-                            instance_buffer,
-                            index_count: handles.index_count,
-                            instance_capacity: 0,
-                        }
-                    });
-                unsafe {
-                    ctx.gl.bind_vertex_array(Some(entry.vao));
-                    ctx.gl
-                        .bind_buffer(glow::ARRAY_BUFFER, Some(entry.instance_buffer));
-                    if bytes.len() > entry.instance_capacity {
-                        ctx.gl
-                            .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
-                        entry.instance_capacity = bytes.len();
-                    } else {
-                        ctx.gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes);
-                    }
-                }
-                crate::gpu_counters::gpu_counters().uploaded(bytes.len());
-                (entry.index_buffer, entry.index_count)
-            };
-
-            // Location 7's array is disabled in the model VAO — pin the
-            // generic tint value to white (identity), matching the stamp's
-            // tint-ignoring semantics for bare model templates. Generic
-            // attribute values are context state, so set it per draw.
+        // Hydrate (if needed) and fetch the live GL handles fresh each draw —
+        // the cache stores only what staleness detection needs; index buffers
+        // and counts are read from here.
+        let handles: Vec<MeshBufferHandles> = model
+            .meshes
+            .iter()
+            .map(|mesh| mesh.mesh.buffers(ctx.gl))
+            .collect();
+        // Staleness guard: the cache is keyed by asset locator, so an asset
+        // evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
+        // vertex-buffer mismatch — drop the whole entry and rebuild. Nothing
+        // else in the tree deletes mesh VBOs, so a handle mismatch is a
+        // reliable staleness signal (and entries stay bounded by the model
+        // files a session actually instanced).
+        let stale = self.model_meshes.get(file).is_some_and(|state| {
+            state.meshes.len() != handles.len()
+                || state
+                    .meshes
+                    .iter()
+                    .zip(handles.iter())
+                    .any(|(cached, live)| cached.vertex_buffer != live.vbo)
+        });
+        if stale {
+            let state = self.model_meshes.remove(file).expect("checked above");
+            let counters = crate::gpu_counters::gpu_counters();
             unsafe {
-                ctx.gl.vertex_attrib_3_f32(7, 1.0, 1.0, 1.0);
+                for cached in &state.meshes {
+                    ctx.gl.delete_vertex_array(cached.vao);
+                    counters.vao_deleted();
+                }
+                ctx.gl.delete_buffer(state.instance_buffer);
+                counters.buffer_deleted();
             }
-
+        }
+        // Build (or reuse) the per-model state, then upload the instance
+        // records ONCE into its shared buffer; carry out only Copy VAOs.
+        let vaos: Vec<glow::VertexArray> = {
+            let state = match self.model_meshes.get_mut(file) {
+                Some(state) => state,
+                None => {
+                    let state = unsafe { Self::create_model_state(ctx.gl, &handles) };
+                    self.model_meshes.entry(file.to_string()).or_insert(state)
+                }
+            };
+            unsafe {
+                ctx.gl
+                    .bind_buffer(glow::ARRAY_BUFFER, Some(state.instance_buffer));
+                upload_instances(ctx.gl, bytes, &mut state.instance_capacity);
+                ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            }
+            state.meshes.iter().map(|cached| cached.vao).collect()
+        };
+        // Location 7's array is disabled in the model VAOs — pin the generic
+        // tint value to white (identity), matching the stamp's tint-ignoring
+        // semantics for bare model templates (`tint_scene` leaves Model nodes
+        // untouched). Generic attribute values are context state, so once per
+        // node is enough.
+        unsafe {
+            ctx.gl.vertex_attrib_3_f32(7, 1.0, 1.0, 1.0);
+        }
+        for ((mesh, live), vao) in model.meshes.iter().zip(handles.iter()).zip(vaos.iter()) {
             // glTF: a static mesh composes its NODE transform under the
             // template-internal transform (skinned models never reach here).
             let mesh_local = local * mesh.transform;
@@ -665,11 +587,12 @@ impl InstancedRenderer {
                 );
             }
             unsafe {
+                ctx.gl.bind_vertex_array(Some(*vao));
                 ctx.gl
-                    .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(index_buffer));
+                    .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(live.ebo));
                 ctx.gl.draw_elements_instanced(
                     glow::TRIANGLES,
-                    index_count,
+                    live.index_count,
                     glow::UNSIGNED_INT,
                     0,
                     instances.len() as i32,
@@ -679,5 +602,120 @@ impl InstancedRenderer {
         unsafe {
             ctx.gl.bind_vertex_array(None);
         }
+    }
+
+    /// Create a rigid model's instanced GPU state: one shared instance
+    /// buffer, plus a VAO per mesh primitive — mesh attributes from the
+    /// mesh's own VBO (skipping the skinned joint/weight channels, whose
+    /// locations 4/5 carry the instance TRS instead) and the instance layout
+    /// from the shared buffer.
+    unsafe fn create_model_state(
+        gl: &glow::Context,
+        handles: &[MeshBufferHandles],
+    ) -> ModelInstancedState {
+        let counters = crate::gpu_counters::gpu_counters();
+        let instance_buffer = gl.create_buffer().expect("model instance data");
+        counters.buffer_created();
+        let meshes = handles
+            .iter()
+            .map(|live| {
+                let vao = gl.create_vertex_array().expect("model instanced VAO");
+                counters.vao_created();
+                gl.bind_vertex_array(Some(vao));
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(live.vbo));
+                let stride = VertexPositionTextureSkinned::get_total_size() as i32;
+                for (location, attribute) in VertexPositionTextureSkinned::get_vertex_attributes()
+                    .iter()
+                    .enumerate()
+                {
+                    // Joints/weights sit at locations 4/5 — exactly where the
+                    // instance channels live — and rigid meshes never read
+                    // them, so leave those arrays disabled by CHANNEL (not by
+                    // positional prefix, which would silently mis-bind if the
+                    // attribute table were ever reordered).
+                    if matches!(
+                        attribute.attribute_channel,
+                        BuiltInVertexChannel::JointIndices | BuiltInVertexChannel::JointWeights
+                    ) {
+                        continue;
+                    }
+                    gl.enable_vertex_attrib_array(location as u32);
+                    match attribute.attribute_type {
+                        VertexAttributeType::Float => gl.vertex_attrib_pointer_f32(
+                            location as u32,
+                            attribute.size,
+                            glow::FLOAT,
+                            false,
+                            stride,
+                            attribute.offset as i32,
+                        ),
+                    }
+                }
+                // No tint attribute: a bare model template has no material
+                // colors for the tint to multiply, so the STAMP ignores it —
+                // the hardware path pins location 7's generic value instead.
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
+                instance_attrib_layout(gl, false);
+                gl.bind_vertex_array(None);
+                ModelMeshVao {
+                    vao,
+                    vertex_buffer: live.vbo,
+                }
+            })
+            .collect();
+        gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        ModelInstancedState {
+            instance_buffer,
+            instance_capacity: 0,
+            meshes,
+        }
+    }
+}
+
+/// Upload the instance records into the currently bound `ARRAY_BUFFER`.
+/// Deliberately monotonic: capacity follows the high-water mark for the
+/// process lifetime (like every other persistent renderer cache here) rather
+/// than shrinking per frame.
+unsafe fn upload_instances(gl: &glow::Context, bytes: &[u8], capacity: &mut usize) {
+    if bytes.len() > *capacity {
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+        *capacity = bytes.len();
+    } else {
+        gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes);
+    }
+    crate::gpu_counters::gpu_counters().uploaded(bytes.len());
+}
+
+/// Declare the per-instance attribute layout — TRS at locations 4/5/6, tint
+/// at 7 when `with_tint` — on the currently bound VAO, sourced from the
+/// currently bound `ARRAY_BUFFER`. Kept in ONE place so the primitive and
+/// model VAOs cannot drift from the shaders' shared location contract.
+unsafe fn instance_attrib_layout(gl: &glow::Context, with_tint: bool) {
+    let instance_stride = size_of::<InstanceData>() as i32;
+    let channels: &[(u32, i32, usize)] = if with_tint {
+        &[
+            (4, 3, offset_of!(InstanceData, position)),
+            (5, 4, offset_of!(InstanceData, rotation)),
+            (6, 3, offset_of!(InstanceData, scale)),
+            (7, 3, offset_of!(InstanceData, tint)),
+        ]
+    } else {
+        &[
+            (4, 3, offset_of!(InstanceData, position)),
+            (5, 4, offset_of!(InstanceData, rotation)),
+            (6, 3, offset_of!(InstanceData, scale)),
+        ]
+    };
+    for &(location, size, offset) in channels {
+        gl.enable_vertex_attrib_array(location);
+        gl.vertex_attrib_pointer_f32(
+            location,
+            size,
+            glow::FLOAT,
+            false,
+            instance_stride,
+            offset as i32,
+        );
+        gl.vertex_attrib_divisor(location, 1);
     }
 }
