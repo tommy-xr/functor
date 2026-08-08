@@ -169,16 +169,8 @@ fn fill_vertices(vertices: &mut Vec<VertexPositionTexture>, count: usize, points
     }
     // Guard the degenerate case anyway: a 1.0 span maps every vertex to u/v 0.
     let span = [
-        if max[0] > min[0] {
-            max[0] - min[0]
-        } else {
-            1.0
-        },
-        if max[1] > min[1] {
-            max[1] - min[1]
-        } else {
-            1.0
-        },
+        if max[0] > min[0] { max[0] - min[0] } else { 1.0 },
+        if max[1] > min[1] { max[1] - min[1] } else { 1.0 },
     ];
 
     let normal = vec3(0.0, 0.0, 1.0);
@@ -187,7 +179,10 @@ fn fill_vertices(vertices: &mut Vec<VertexPositionTexture>, count: usize, points
         let point = points.get(index).copied().unwrap_or([0.0, 0.0]);
         let mut vertex = VertexPositionTexture::new(
             vec3(point[0], point[1], 0.0),
-            vec2((point[0] - min[0]) / span[0], (point[1] - min[1]) / span[1]),
+            vec2(
+                (point[0] - min[0]) / span[0],
+                (point[1] - min[1]) / span[1],
+            ),
             normal,
         );
         vertex.tangent = vec4(1.0, 0.0, 0.0, 1.0);

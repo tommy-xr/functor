@@ -620,7 +620,8 @@ fn apply_reach(
     let height = (upper_length * upper_length - along * along)
         .max(0.0)
         .sqrt();
-    let desired_middle = root + target_direction * along as f32 + bend_direction * height as f32;
+    let desired_middle =
+        root + target_direction * along as f32 + bend_direction * height as f32;
     let desired_end = root + target_direction * distance as f32;
     let Some(root_model) = transform_point(solve_to_model, root) else {
         return Err(ReachFailure::InvalidChain);
@@ -641,7 +642,8 @@ fn apply_reach(
     let bend_normal = if let Some(direction) = normalized_f64(bend_normal) {
         direction
     } else {
-        normalized_f64(target_direction.cross(bend_direction)).ok_or(ReachFailure::InvalidChain)?
+        normalized_f64(target_direction.cross(bend_direction))
+            .ok_or(ReachFailure::InvalidChain)?
     };
 
     if !rotate_segment_toward(
@@ -859,7 +861,8 @@ mod tests {
     /// A three-joint chain (root -> arm -> hand), all at identity bind, with
     /// a `raise` clip translating every joint to y=2 over 2s.
     fn chain_model() -> Model {
-        let mut builder = SkeletonBuilder::create(vec![Matrix4::identity(); 3]);
+        let mut builder =
+            SkeletonBuilder::create(vec![Matrix4::identity(); 3]);
         builder.add_joint(0, 0, "root".to_string(), None, Matrix4::identity());
         builder.add_joint(1, 1, "arm".to_string(), Some(0), Matrix4::identity());
         builder.add_joint(2, 2, "hand".to_string(), Some(1), Matrix4::identity());
@@ -1169,8 +1172,13 @@ mod tests {
         // opposite arbitrary axes and make a clamped head snap side-to-side.
         for x in [-1e-8, 0.0, 1e-8] {
             let target = vec3(x, 0.0, -1.0).normalize();
-            let correction =
-                scaled_shortest_arc(Vector3::unit_z(), target, Vector3::unit_y(), max_angle, 1.0);
+            let correction = scaled_shortest_arc(
+                Vector3::unit_z(),
+                target,
+                Vector3::unit_y(),
+                max_angle,
+                1.0,
+            );
             let forward = correction.rotate_vector(Vector3::unit_z());
             assert!(
                 (forward - expected).magnitude() < 1e-5,
@@ -1288,10 +1296,7 @@ mod tests {
         };
         let transforms = skinning_transforms(&model, &expr, &mut no_warning);
         let end = joint_translation(&transforms, 2);
-        assert!(
-            (end - vec3(0.0, 2.0, 0.0)).magnitude() < 1e-5,
-            "end: {end:?}"
-        );
+        assert!((end - vec3(0.0, 2.0, 0.0)).magnitude() < 1e-5, "end: {end:?}");
     }
 
     #[test]

@@ -35,11 +35,7 @@ pub enum DeliveredEvent {
     /// The connection identified by `key` became usable as `conn`.
     Connected { key: String, conn: i32 },
     /// Text arrived on `conn`.
-    Message {
-        key: String,
-        conn: i32,
-        text: String,
-    },
+    Message { key: String, conn: i32, text: String },
     /// `conn` closed.
     Disconnected { key: String, conn: i32 },
     /// A transport-level error on `conn`; the connection is considered dead.
@@ -137,8 +133,8 @@ mod tests {
     #[test]
     fn a_negative_conn_is_rejected() {
         // It would reach the game as u64::MAX through the prelude's cast.
-        let err =
-            parse_delivered_events(r#"[{"kind":"connected","key":"k","conn":-1}]"#).unwrap_err();
+        let err = parse_delivered_events(r#"[{"kind":"connected","key":"k","conn":-1}]"#)
+            .unwrap_err();
         assert!(err.contains("negative connection id"), "{err}");
     }
 }

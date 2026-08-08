@@ -132,18 +132,10 @@ impl Material for LitMaterial {
                     ctx.shader_version,
                 );
 
-                let fragment_source = format!(
-                    "{}\n{}\n{}",
-                    FOG_GLSL,
-                    lighting_glsl(),
-                    FRAGMENT_SHADER_SOURCE
-                );
-                let fragment_shader = Shader::build(
-                    ctx.gl,
-                    ShaderType::Fragment,
-                    &fragment_source,
-                    ctx.shader_version,
-                );
+                let fragment_source =
+                    format!("{}\n{}\n{}", FOG_GLSL, lighting_glsl(), FRAGMENT_SHADER_SOURCE);
+                let fragment_shader =
+                    Shader::build(ctx.gl, ShaderType::Fragment, &fragment_source, ctx.shader_version);
 
                 let shader = crate::shader_program::ShaderProgram::link(
                     &ctx.gl,

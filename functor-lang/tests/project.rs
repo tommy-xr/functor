@@ -18,10 +18,8 @@ struct Scratch {
 
 impl Scratch {
     fn new(name: &str, files: &[(&str, &str)]) -> Scratch {
-        let dir = std::env::temp_dir().join(format!(
-            "functor-lang-project-test-{}-{name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("functor-lang-project-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create scratch dir");
         for (file, src) in files {
@@ -105,8 +103,8 @@ fn fixture_runs_and_checks_clean() {
     let project = functor_lang::project::load(&entry).unwrap_or_else(|e| panic!("{}", e.render()));
     let diags = project.check();
     assert!(diags.is_empty(), "fixture should check clean: {diags:?}");
-    let record = functor_lang::run(&project.module, Tracing::Off)
-        .unwrap_or_else(|f| panic!("{}", f.error.message));
+    let record =
+        functor_lang::run(&project.module, Tracing::Off).unwrap_or_else(|f| panic!("{}", f.error.message));
     match record.outcome {
         RunOutcome::Main(Value::Number(n)) => assert_eq!(n, 7.75),
         other => panic!(
@@ -176,11 +174,7 @@ fn sibling_may_reference_the_entry() {
     let session = functor_lang::Session::load(&project.module, &mut functor_lang::NoHost)
         .unwrap_or_else(|f| panic!("session should load: {}", f.error.message));
     let result = session
-        .call(
-            "Util.above",
-            vec![Value::Number(10.0)],
-            &mut functor_lang::NoHost,
-        )
+        .call("Util.above", vec![Value::Number(10.0)], &mut functor_lang::NoHost)
         .expect("call should succeed");
     assert_eq!(number(&result), 42.0);
 }
@@ -623,10 +617,7 @@ fn sibling_binding_annotations_are_enforced() {
 fn qualified_types_in_sibling_binding_annotations() {
     let files: &[(&str, &str)] = &[
         ("game.fun", "let main = () => 0.0\n"),
-        (
-            "shapes.fun",
-            "type Shape = | Circle(radius: float) | Point\n",
-        ),
+        ("shapes.fun", "type Shape = | Circle(radius: float) | Point\n"),
         (
             "consumer.fun",
             "let good: Shapes.Shape = Shapes.Circle(1.0)\n\
@@ -657,10 +648,7 @@ fn opened_types_in_binding_annotations_are_enforced() {
                 "game.fun",
                 "open Shapes\nlet bad: Shape = 3.0\nlet main = () => 0.0\n",
             ),
-            (
-                "shapes.fun",
-                "type Shape = | Circle(radius: float) | Point\n",
-            ),
+            ("shapes.fun", "type Shape = | Circle(radius: float) | Point\n"),
         ],
     );
     let project = scratch.load().unwrap_or_else(|e| panic!("{}", e.render()));
@@ -684,7 +672,10 @@ fn interface_types_in_sibling_binding_annotations() {
         "sibling-funi-annot",
         &[
             ("game.fun", "let main = () => 0.0\n"),
-            ("widget.funi", "type Handle\nlet make : () => Handle\n"),
+            (
+                "widget.funi",
+                "type Handle\nlet make : () => Handle\n",
+            ),
             (
                 "util.fun",
                 "let good: Widget.Handle = Widget.make()\n\
@@ -823,12 +814,7 @@ fn single_file_project_adds_only_the_core_modules() {
     let project = load("single-file", &[("game.fun", src)]);
     let plain = functor_lang::lower(functor_lang::parse(src).expect("parses")).expect("lowers");
 
-    let proj_defs: Vec<&str> = project
-        .module
-        .defs
-        .iter()
-        .map(|d| d.name.as_str())
-        .collect();
+    let proj_defs: Vec<&str> = project.module.defs.iter().map(|d| d.name.as_str()).collect();
     for def in &plain.defs {
         assert!(
             proj_defs.contains(&def.name.as_str()),
@@ -836,12 +822,7 @@ fn single_file_project_adds_only_the_core_modules() {
             def.name
         );
     }
-    let proj_types: Vec<&str> = project
-        .module
-        .types
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let proj_types: Vec<&str> = project.module.types.iter().map(|t| t.name.as_str()).collect();
     for ty in &plain.types {
         assert!(proj_types.contains(&ty.name.as_str()));
     }
@@ -950,10 +931,7 @@ fn option_returning_builtins_interop_with_the_option_module() {
                \x20 hit + miss + piped + same + empty + least + noLeast\n";
     let project = load("option-builtin-interop", &[("game.fun", src)]);
     let diags = project.check();
-    assert!(
-        diags.is_empty(),
-        "Option-returning builtins should check: {diags:?}"
-    );
+    assert!(diags.is_empty(), "Option-returning builtins should check: {diags:?}");
 
     let record = functor_lang::run(&project.module, Tracing::Off)
         .unwrap_or_else(|f| panic!("should run: {}", f.error.message));
@@ -1009,10 +987,7 @@ fn option_builtins_agree_with_the_sentinel_workarounds() {
         .unwrap_or_else(|f| panic!("should run: {}", f.error.message));
     match record.outcome {
         RunOutcome::Main(Value::Number(n)) => {
-            assert_eq!(
-                n, 1.0,
-                "a builtin disagreed with the workaround it replaces"
-            )
+            assert_eq!(n, 1.0, "a builtin disagreed with the workaround it replaces")
         }
         _ => panic!("expected a numeric main result"),
     }
@@ -1072,10 +1047,7 @@ fn builtin_key_module_is_matchable() {
 
     let err = load_err(
         "key-module-typo",
-        &[(
-            "game.fun",
-            "let f = (k) => match k with | Key.Enterr => 1.0 | _ => 0.0\n",
-        )],
+        &[("game.fun", "let f = (k) => match k with | Key.Enterr => 1.0 | _ => 0.0\n")],
     );
     assert!(
         err.contains("module `Key` has no constructor `Enterr`"),
@@ -1106,12 +1078,8 @@ fn random_signatures_agree_between_interface_and_builtin_fallback() {
     };
     // Builtin-scheme path: bare parse + lower + check, no project env.
     let via_builtin = |src: &str| -> Vec<String> {
-        let module =
-            functor_lang::lower(functor_lang::parse(src).expect("parses")).expect("lowers");
-        functor_lang::check(&module)
-            .into_iter()
-            .map(|d| d.message)
-            .collect()
+        let module = functor_lang::lower(functor_lang::parse(src).expect("parses")).expect("lowers");
+        functor_lang::check(&module).into_iter().map(|d| d.message).collect()
     };
 
     assert_eq!(via_project("rand-parity-ok", ok), Vec::<String>::new());
@@ -1213,24 +1181,14 @@ fn same_named_defs_in_different_modules_do_not_cross_rebind() {
     let (alpha, report) = functor_lang::rebind_value(&pair[0], &old.module, &new.module);
     assert_eq!(report.rebound, 1, "warnings: {:?}", report.warnings);
     let result = session
-        .apply(
-            alpha,
-            vec![Value::Number(2.0)],
-            "alpha",
-            &mut functor_lang::NoHost,
-        )
+        .apply(alpha, vec![Value::Number(2.0)], "alpha", &mut functor_lang::NoHost)
         .expect("apply alpha");
     assert_eq!(number(&result), 12.0); // new body: 2 + 1*10
 
     let (beta, report) = functor_lang::rebind_value(&pair[1], &old.module, &new.module);
     assert_eq!(report.rebound, 1, "warnings: {:?}", report.warnings);
     let result = session
-        .apply(
-            beta,
-            vec![Value::Number(2.0)],
-            "beta",
-            &mut functor_lang::NoHost,
-        )
+        .apply(beta, vec![Value::Number(2.0)], "beta", &mut functor_lang::NoHost)
         .expect("apply beta");
     assert_eq!(number(&result), 1.0); // beta unchanged: 2 - 1
 }
@@ -1316,10 +1274,7 @@ fn overrides_replace_a_sibling_buffer() {
         .sources
         .file_by_path(&scratch.dir.join("utils.fun"))
         .expect("utils.fun is a project file");
-    assert!(
-        file.src.contains("tripled"),
-        "override source is in the map"
-    );
+    assert!(file.src.contains("tripled"), "override source is in the map");
 }
 
 /// The shipped multi-file example (`examples/hello-cubes` = game.fun +
@@ -1377,7 +1332,10 @@ fn interface_signature_mismatch_is_flagged() {
         "funi-mismatch",
         &[
             ("game.fun", "let bad = (): float => Widget.size(3.0)"),
-            ("widget.funi", "type Handle\nlet size : (Handle) => float"),
+            (
+                "widget.funi",
+                "type Handle\nlet size : (Handle) => float",
+            ),
         ],
     );
     let diags = project.check();
@@ -1781,12 +1739,7 @@ fn inline_module_members_canonicalize_under_their_file() {
             ("utils.fun", "module Grid {\n  let cell = 2.0\n}\n"),
         ],
     );
-    let names: Vec<&str> = project
-        .module
-        .defs
-        .iter()
-        .map(|d| d.name.as_str())
-        .collect();
+    let names: Vec<&str> = project.module.defs.iter().map(|d| d.name.as_str()).collect();
     assert!(names.contains(&"Server.step"), "{names:?}");
     assert!(names.contains(&"Utils.Grid.cell"), "{names:?}");
 }
@@ -2017,10 +1970,7 @@ fn sibling_inline_module_collides_with_another_file() {
         "inline-vs-file-sibling",
         &[
             ("game.fun", "let main = () => Utils.a\n"),
-            (
-                "utils.fun",
-                "module Server {\n  let x = 1.0\n}\nlet a = Server.x\n",
-            ),
+            ("utils.fun", "module Server {\n  let x = 1.0\n}\nlet a = Server.x\n"),
             ("server.fun", "let b = 2.0\n"),
         ],
     );
@@ -2038,14 +1988,8 @@ fn two_files_may_each_declare_the_same_inline_module_name() {
         "inline-same-name-two-files",
         &[
             ("game.fun", "let main = () => Utils.a + Helpers.b\n"),
-            (
-                "utils.fun",
-                "module Grid {\n  let cell = 1.0\n}\nlet a = Grid.cell\n",
-            ),
-            (
-                "helpers.fun",
-                "module Grid {\n  let cell = 2.0\n}\nlet b = Grid.cell\n",
-            ),
+            ("utils.fun", "module Grid {\n  let cell = 1.0\n}\nlet a = Grid.cell\n"),
+            ("helpers.fun", "module Grid {\n  let cell = 2.0\n}\nlet b = Grid.cell\n"),
         ],
     );
     assert_eq!(number(&value), 3.0);
@@ -2071,10 +2015,7 @@ fn inline_module_collides_with_a_protected_namespace() {
         "inline-vs-protected-sibling",
         &[
             ("game.fun", "let main = () => Utils.a\n"),
-            (
-                "utils.fun",
-                "module Math {\n  let pi = 3.0\n}\nlet a = Math.pi\n",
-            ),
+            ("utils.fun", "module Math {\n  let pi = 3.0\n}\nlet a = Math.pi\n"),
         ],
     );
     assert_eq!(
@@ -2237,10 +2178,8 @@ fn a_host_type_refuses_equality_at_check_time() {
     );
     let diags = project.check();
     assert!(
-        diags
-            .iter()
-            .any(|d| d.message.contains("engine values are opaque")
-                && d.message.contains("`Widget.Handle` supports no `==`")),
+        diags.iter().any(|d| d.message.contains("engine values are opaque")
+            && d.message.contains("`Widget.Handle` supports no `==`")),
         "{diags:?}"
     );
     // `!=` is the exact negation, so it is refused identically…
@@ -2251,7 +2190,10 @@ fn a_host_type_refuses_equality_at_check_time() {
                 "game.fun",
                 "let differ = (): bool => Widget.make() != Widget.make()\n",
             ),
-            ("widget.funi", "type Handle = host\nlet make : () => Handle"),
+            (
+                "widget.funi",
+                "type Handle = host\nlet make : () => Handle",
+            ),
         ],
     );
     assert!(
@@ -2303,10 +2245,10 @@ fn a_host_type_with_an_equals_points_at_it() {
         ],
     );
     assert!(
-        with_equals.check().iter().any(|d| d.message.contains(
-            "`Widget.Handle` supports no `==` — `Widget.equals(a, b)` \
-compares structurally"
-        )),
+        with_equals.check().iter().any(|d| d
+            .message
+            .contains("`Widget.Handle` supports no `==` — `Widget.equals(a, b)` \
+compares structurally")),
         "{:?}",
         with_equals.check()
     );
@@ -2330,9 +2272,7 @@ compares structurally"
     let diags = wrong_shape.check();
     assert!(
         diags.iter().any(|d| d.message.contains("supports no `==`"))
-            && !diags
-                .iter()
-                .any(|d| d.message.contains("compares structurally")),
+            && !diags.iter().any(|d| d.message.contains("compares structurally")),
         "{diags:?}"
     );
 }
@@ -2351,10 +2291,7 @@ fn the_equals_hint_is_withheld_where_it_would_not_apply() {
         "let same = (): bool => [Widget.make()] == [Widget.make()]\n",
         "let same = (): bool => (Widget.make(), 1.0) == (Widget.make(), 1.0)\n",
     ] {
-        let project = load(
-            "host-type-equals-nested",
-            &[("game.fun", nested), ("widget.funi", WIDGET)],
-        );
+        let project = load("host-type-equals-nested", &[("game.fun", nested), ("widget.funi", WIDGET)]);
         let diags = project.check();
         assert!(
             diags.iter().any(|d| d.message.contains("supports no `==`"))
@@ -2416,8 +2353,5 @@ fn a_host_type_is_rejected_in_an_implementation_file() {
         "host-type-in-fun",
         &[("game.fun", "type Handle = host\nlet main = () => 1.0\n")],
     );
-    assert!(
-        message.contains("belongs in an interface (.funi) file"),
-        "{message}"
-    );
+    assert!(message.contains("belongs in an interface (.funi) file"), "{message}");
 }

@@ -285,11 +285,7 @@ fn constructor_arguments_rebind() {
     let after = module(&src("x + 10.0"));
     let (rebound, report) = rebind_value(&main_value(&before), &before, &after);
     assert_eq!(report.rebound, 1, "stored closure should rebind");
-    assert!(
-        report.warnings.is_empty(),
-        "warnings: {:?}",
-        report.warnings
-    );
+    assert!(report.warnings.is_empty(), "warnings: {:?}", report.warnings);
     let Value::Variant { args, .. } = rebound else {
         panic!("expected a variant")
     };

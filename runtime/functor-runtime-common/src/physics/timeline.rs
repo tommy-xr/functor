@@ -178,9 +178,7 @@ where
     /// and the old future is gone. Keyframes at or after `frame` go too (a
     /// re-recorded frame re-snapshots on its cadence).
     pub fn truncate_from(&mut self, frame: Frame) {
-        let Some(next) = self.next_frame() else {
-            return;
-        };
+        let Some(next) = self.next_frame() else { return };
         if frame >= next {
             return;
         }
@@ -369,10 +367,7 @@ mod tests {
         tl.prune(10);
         let mut probe = World::new(DEFAULT_GRAVITY);
         tl.seek(10, &mut probe);
-        assert!(
-            Simulatable::snapshot(&probe) == at_10,
-            "prune broke seek(10)"
-        );
+        assert!(Simulatable::snapshot(&probe) == at_10, "prune broke seek(10)");
         // The floor keyframe is 8, so frames 8..20 (12 of them) remain.
         assert_eq!(tl.commands_since(8).len(), 12);
     }

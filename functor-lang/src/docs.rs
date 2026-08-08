@@ -170,8 +170,9 @@ mod tests {
     /// just like project definitions and prelude signatures.
     #[test]
     fn standard_library_defs_attach_their_source_docs() {
-        let project = load_single_source("game", "let main = () => Option.None\n")
-            .unwrap_or_else(|e| panic!("loads: {}", e.render()));
+        let project =
+            load_single_source("game", "let main = () => Option.None\n")
+                .unwrap_or_else(|e| panic!("loads: {}", e.render()));
         let map = project
             .module
             .defs

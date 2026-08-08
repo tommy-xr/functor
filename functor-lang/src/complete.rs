@@ -398,9 +398,7 @@ fn member_candidates(
     // over a declared record offers its fields, anything else offers nothing
     // (field access on a non-record has no members, and a chained `a.b.` is
     // the chained-member boundary — never a namespace's members).
-    let head = qualifier
-        .split_once('.')
-        .map_or(qualifier, |(head, _)| head);
+    let head = qualifier.split_once('.').map_or(qualifier, |(head, _)| head);
     if let Some(offset) = fresh {
         if let Some(ty) = qualifier_type(project, scopes, head, offset, &types) {
             let fields = if qualifier.contains('.') {
@@ -515,7 +513,11 @@ fn direct_member<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
 ///   reachable (`Server.step` there is an unknown external): `None`;
 /// - anything else — a sibling (`Utils`), a sibling's inline module
 ///   (`Utils.Grid`), a builtin namespace (`Scene`) — as written.
-fn canonical_qualifier(project: &Project, current_module: &str, qualifier: &str) -> Option<String> {
+fn canonical_qualifier(
+    project: &Project,
+    current_module: &str,
+    qualifier: &str,
+) -> Option<String> {
     let (head, rest) = match qualifier.split_once('.') {
         Some((head, rest)) => (head, Some(rest)),
         None => (qualifier, None),
@@ -1053,10 +1055,7 @@ mod tests {
         let items = game(STUB, &[], "let s = Math.");
         assert_eq!(find(&items, "sqrt").kind, CompletionKind::Function);
         assert_eq!(find(&items, "pi").kind, CompletionKind::Value);
-        assert_eq!(
-            find(&items, "pi").detail.as_deref(),
-            Some("Math.pi : float")
-        );
+        assert_eq!(find(&items, "pi").detail.as_deref(), Some("Math.pi : float"));
     }
 
     // 3 (+20). Sibling module `Utils.` from `game.fun` — exact Vec, kinds.
@@ -1281,13 +1280,7 @@ mod tests {
         let project = project_of(&[("game.fun", src)], &[]);
 
         // Inside `f`'s body: `score` is offered, typed from its annotation.
-        let in_f = complete(
-            &project,
-            "Game",
-            None,
-            src,
-            src.find("=> score").unwrap() + 8,
-        );
+        let in_f = complete(&project, "Game", None, src, src.find("=> score").unwrap() + 8);
         assert_eq!(
             find(&in_f, "score").detail.as_deref(),
             Some("score : float")
@@ -1338,13 +1331,7 @@ mod tests {
         assert_eq!(find(&in_body, "y").detail.as_deref(), Some("y : float"));
 
         // In `y`'s value (`x + 1.0`, empty partial): `x` is in scope, `y` NOT.
-        let in_value = complete(
-            &project,
-            "Game",
-            None,
-            src,
-            src.find("let y = ").unwrap() + 8,
-        );
+        let in_value = complete(&project, "Game", None, src, src.find("let y = ").unwrap() + 8);
         assert!(
             has(&in_value, "x"),
             "param in the value: {:?}",
@@ -1474,13 +1461,7 @@ mod tests {
         );
 
         // …but a v1 prelude member (no freshness needed) still answers.
-        let scene = complete(
-            &project,
-            "Game",
-            None,
-            "let s = Scene.",
-            "let s = Scene.".len(),
-        );
+        let scene = complete(&project, "Game", None, "let s = Scene.", "let s = Scene.".len());
         assert!(has(&scene, "cube"), "v1 prelude member still works");
     }
 
@@ -1658,10 +1639,7 @@ mod tests {
         let project = modules_project();
         let live = "let x = Server.";
         let items = complete(&project, "Game", None, live, live.len());
-        assert_eq!(
-            find(&items, "step").detail.as_deref(),
-            Some("Server.step : (Server.Cmd) => float")
-        );
+        assert_eq!(find(&items, "step").detail.as_deref(), Some("Server.step : (Server.Cmd) => float"));
         assert_eq!(find(&items, "Spawn").kind, CompletionKind::Constructor);
     }
 
@@ -1707,23 +1685,14 @@ mod tests {
     #[test]
     fn bare_completion_inside_a_module_body_sees_both_namespaces() {
         let project = modules_project();
-        let items = complete(
-            &project,
-            "Game",
-            Some("Server"),
-            "let x = ",
-            "let x = ".len(),
-        );
+        let items = complete(&project, "Game", Some("Server"), "let x = ", "let x = ".len());
         assert_eq!(
             find(&items, "step").detail.as_deref(),
             Some("Server.step : (Server.Cmd) => float")
         );
         assert_eq!(find(&items, "Spawn").kind, CompletionKind::Constructor);
         // The file's top level, visible from inside the module.
-        assert_eq!(
-            find(&items, "speed").detail.as_deref(),
-            Some("speed : float")
-        );
+        assert_eq!(find(&items, "speed").detail.as_deref(), Some("speed : float"));
     }
 
     // A module's own name SHADOWS a same-named one at the file's top level —
@@ -1737,23 +1706,14 @@ mod tests {
             )],
             &[],
         );
-        let inside = complete(
-            &project,
-            "Game",
-            Some("Server"),
-            "let x = ",
-            "let x = ".len(),
-        );
+        let inside = complete(&project, "Game", Some("Server"), "let x = ", "let x = ".len());
         assert_eq!(
             find(&inside, "value").detail.as_deref(),
             Some("Server.value : float")
         );
         // At the file's top level the file's own binding wins.
         let outside = complete(&project, "Game", None, "let x = ", "let x = ".len());
-        assert_eq!(
-            find(&outside, "value").detail.as_deref(),
-            Some("value : float")
-        );
+        assert_eq!(find(&outside, "value").detail.as_deref(), Some("value : float"));
     }
 
     // In a SIBLING file the cursor's block is passed as its canonical path
@@ -1772,10 +1732,7 @@ mod tests {
             find(&items, "cell").detail.as_deref(),
             Some("Utils.Grid.cell : (float) => float")
         );
-        assert_eq!(
-            find(&items, "version").detail.as_deref(),
-            Some("Utils.version : float")
-        );
+        assert_eq!(find(&items, "version").detail.as_deref(), Some("Utils.version : float"));
     }
 
     // [xreview] The ENTRY's inline modules are bare only in the entry file:
@@ -1814,7 +1771,10 @@ mod tests {
         // The cached project holds this buffer minus the trailing `.` — the
         // one edit the member freshness gate accepts.
         let cached = "let f = (Utils) => Utils.Grid";
-        let project = project_of(&[("game.fun", cached), ("utils.fun", MODULES_SIBLING)], &[]);
+        let project = project_of(
+            &[("game.fun", cached), ("utils.fun", MODULES_SIBLING)],
+            &[],
+        );
         let items = complete(&project, "Game", None, src, src.len());
         assert!(items.is_empty(), "{:?}", labels(&items));
     }
@@ -1827,9 +1787,6 @@ mod tests {
         let project = project_of(&[("game.fun", src)], &[]);
         let offset = src.find("=> delta").unwrap() + 3;
         let items = complete(&project, "Game", Some("Server"), src, offset);
-        assert_eq!(
-            find(&items, "delta").detail.as_deref(),
-            Some("delta : float")
-        );
+        assert_eq!(find(&items, "delta").detail.as_deref(), Some("delta : float"));
     }
 }

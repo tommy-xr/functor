@@ -235,7 +235,11 @@ pub(crate) fn resolve_units(
     let mut lowerer = prepare(items, project, IdBases::default())?;
     let mut resolved = Vec::with_capacity(decls.len());
     for decl in decls {
-        resolved.push((decl.suffix.clone(), lowerer.unit_target(decl)?, decl.span));
+        resolved.push((
+            decl.suffix.clone(),
+            lowerer.unit_target(decl)?,
+            decl.span,
+        ));
     }
     Ok(resolved)
 }

@@ -59,18 +59,12 @@ pub mod debug_http;
 pub mod debug_protocol;
 pub mod events;
 pub mod fog;
+pub mod gpu_counters;
 mod frame;
 pub mod frame_capture;
 mod frame_time;
-pub mod functor_lang_game_embedded;
-pub mod functor_lang_prelude;
-pub mod functor_lang_producer;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod functor_lang_test;
 pub mod game_clock;
 pub mod geometry;
-pub mod gpu_counters;
-pub mod host_registry;
 mod input;
 pub mod inspect;
 pub mod inspector;
@@ -79,6 +73,12 @@ mod light;
 pub mod manifest;
 pub mod material;
 pub mod math;
+pub mod functor_lang_game_embedded;
+pub mod functor_lang_prelude;
+pub mod host_registry;
+pub mod functor_lang_producer;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod functor_lang_test;
 pub mod model;
 pub mod net;
 pub mod physics;
@@ -89,9 +89,9 @@ pub mod render_target;
 mod renderer;
 mod scene3d;
 mod shader;
-mod shader_program;
 pub mod shadow;
 pub mod skybox;
+mod shader_program;
 mod sprite2d;
 // The built-in font is an implementation detail of `Sprite.text`, not public
 // API — nothing outside this crate should depend on its atlas layout.
@@ -103,8 +103,8 @@ pub mod timetravel;
 pub mod trajectory;
 pub mod ui;
 pub mod viewer;
-mod viewport;
 pub mod webview;
+mod viewport;
 
 pub use camera::*;
 pub use fog::Fog;
@@ -116,8 +116,8 @@ pub use light::*;
 pub use render_context::*;
 pub use render_target::RenderTargetDescriptor;
 pub use renderer::*;
-pub use scene3d::*;
 pub use skybox::SkyboxDescription;
+pub use scene3d::*;
 pub use sprite2d::{Camera2D, SpriteLayer};
 pub use terrain::{TerrainDescription, TerrainGeometry, TerrainGrass, TerrainLayers};
 pub use trajectory::{

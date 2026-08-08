@@ -206,7 +206,9 @@ mod tests {
         // rejected coordinate.
         assert_eq!(camera.to_world(500.0, 100.0, 1000.0, 1000.0), None);
         assert_eq!(camera.to_world(500.0, 218.74, 1000.0, 1000.0), None);
-        assert!(camera.to_world(500.0, 218.75, 1000.0, 1000.0).is_some());
+        assert!(camera
+            .to_world(500.0, 218.75, 1000.0, 1000.0)
+            .is_some());
         assert_eq!(camera.to_world(500.0, 781.25, 1000.0, 1000.0), None);
         assert_eq!(
             camera.to_world(500.0, 500.0, 1000.0, 1000.0),

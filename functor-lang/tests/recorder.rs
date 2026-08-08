@@ -209,18 +209,10 @@ fn long_values_elide_in_previews() {
     // A long string caps at 40 chars with a marked tail.
     let long = "x".repeat(60);
     let (_, inv) = session
-        .call_recorded(
-            "idText",
-            vec![Value::String(Rc::from(long.as_str()))],
-            &mut NoHost,
-        )
+        .call_recorded("idText", vec![Value::String(Rc::from(long.as_str()))], &mut NoHost)
         .expect("call_recorded");
     let s = binding(&inv, "s");
-    assert_eq!(
-        s.kind,
-        RecordedKind::Composite,
-        "a long string is not inline-complete"
-    );
+    assert_eq!(s.kind, RecordedKind::Composite, "a long string is not inline-complete");
     assert_eq!(s.preview, format!("\"{}…\"", "x".repeat(40)));
 
     // A long list elides after 4 items.
@@ -291,10 +283,7 @@ fn reference_sites_cannot_starve_binders() {
         .call_recorded("update", vec![Value::Number(1.0)], &mut NoHost)
         .expect("call_recorded");
 
-    assert!(
-        inv.truncated,
-        "1030 ref sites must breach the 1024 ref budget"
-    );
+    assert!(inv.truncated, "1030 ref sites must breach the 1024 ref budget");
     let z = binding(&inv, "z");
     assert_eq!(z.site, RecordedSite::Binder);
     assert_eq!(z.value, "1030");
@@ -308,22 +297,14 @@ fn string_previews_cap_by_characters_not_bytes() {
     // 39 multibyte chars: primitive (the cap counts characters).
     let short = "é".repeat(39);
     let (_, inv) = session
-        .call_recorded(
-            "idText",
-            vec![Value::String(Rc::from(short.as_str()))],
-            &mut NoHost,
-        )
+        .call_recorded("idText", vec![Value::String(Rc::from(short.as_str()))], &mut NoHost)
         .expect("call_recorded");
     assert_eq!(binding(&inv, "s").kind, RecordedKind::Primitive);
 
     // 45 multibyte chars: composite, capped at 40 CHARACTERS.
     let long = "é".repeat(45);
     let (_, inv) = session
-        .call_recorded(
-            "idText",
-            vec![Value::String(Rc::from(long.as_str()))],
-            &mut NoHost,
-        )
+        .call_recorded("idText", vec![Value::String(Rc::from(long.as_str()))], &mut NoHost)
         .expect("call_recorded");
     let s = binding(&inv, "s");
     assert_eq!(s.kind, RecordedKind::Composite);
@@ -338,11 +319,7 @@ fn preview_cut_on_a_quote_stays_well_formed() {
     let src = "let idText = (s) => s";
     let session = session(src);
     let (_, inv) = session
-        .call_recorded(
-            "idText",
-            vec![Value::String(Rc::from(long.as_str()))],
-            &mut NoHost,
-        )
+        .call_recorded("idText", vec![Value::String(Rc::from(long.as_str()))], &mut NoHost)
         .expect("call_recorded");
     let preview = &binding(&inv, "s").preview;
     assert!(
@@ -377,16 +354,9 @@ fn coverage_records_the_taken_arm_only() {
     let (_, inv) = session
         .call_recorded("pick", vec![Value::Bool(true)], &mut NoHost)
         .expect("call_recorded");
-    assert!(
-        inv.coverage.contains(&taken),
-        "taken arm covered: {:?}",
-        inv.coverage
-    );
+    assert!(inv.coverage.contains(&taken), "taken arm covered: {:?}", inv.coverage);
     assert!(!inv.coverage.contains(&untaken), "un-taken arm NOT covered");
-    assert!(
-        inv.coverage.windows(2).all(|w| w[0] < w[1]),
-        "sorted + deduped"
-    );
+    assert!(inv.coverage.windows(2).all(|w| w[0] < w[1]), "sorted + deduped");
 
     // The coverage-only mode agrees and still returns the exact result.
     let (result, cov) = session
