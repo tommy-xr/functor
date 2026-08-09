@@ -1269,14 +1269,31 @@ try {
     await page.focus("#mp-playhead");
     await page.keyboard.press("End");
     await sleep(400);
-    const head = await page.evaluate(() => ({
+    // Since impairment (#657) a parked frame shows exactly the packets in the
+    // air THEN — an unimpaired dot's drawn flight is only the ~2-frame
+    // visibility floor, and the pause can land a few frames after the last
+    // packet the coordinator routed (the panes lag the reference clock under
+    // load). The head itself may therefore legitimately be past every flight;
+    // walk back to the last frame that had traffic before reading the wires.
+    let head = await page.evaluate(() => ({
       ...window.__mpProbe.network(),
       label: window.__mpProbe.railFrame(),
     }));
+    let walked = 0;
+    while (head.replay === 0 && walked < 12) {
+      await page.keyboard.press("ArrowLeft");
+      walked += 1;
+      await sleep(150);
+      head = await page.evaluate(() => ({
+        ...window.__mpProbe.network(),
+        label: window.__mpProbe.railFrame(),
+      }));
+    }
     check(
       head.replay > 0 && head.live === 0,
       "parked at the head, every dot on the wires comes from the packet log",
-      `replay=${head.replay} live=${head.live} at #f ${head.label}`
+      `replay=${head.replay} live=${head.live} at #f ${head.label}` +
+        (walked > 0 ? ` (walked back ${walked})` : "")
     );
 
     // SCRUB-LOCKED: parked, the panel's viewport sits at the playhead and marks
@@ -1295,6 +1312,10 @@ try {
     // not happening. (From the head deliberately: resuming from a rewound frame
     // is a live session again, but the panes' connections do not survive the
     // rewind — a coordinator-barrier problem, not this view's.)
+    if (walked > 0) {
+      await page.keyboard.press("End");
+      await sleep(200);
+    }
     await page.evaluate(() => window.__mpProbe.pauseAll());
     const resumed = await page
       .waitForFunction(() => window.__mpProbe.network().live > 0, null, { timeout: 15000 })
