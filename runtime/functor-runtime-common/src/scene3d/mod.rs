@@ -287,7 +287,10 @@ so the reach is ignored"
                     Skeleton::animate(&hydrated_model.skeleton, animation, time);
                 animated_skeleton.get_skinning_transforms()
             }
-            None => vec![Matrix4::identity(); 50],
+            // A skeleton with no clips: identity for EVERY joint (sized by
+            // the model, not a fixed count — an undersized palette would
+            // leave the tail joints reading a previous upload's leftovers).
+            None => vec![Matrix4::identity(); hydrated_model.skeleton.get_joint_count() as usize],
         },
     }
 }
@@ -1884,7 +1887,7 @@ impl Scene3D {
 — rendering {copies} copies as a stamped group, comparable to writing \
 the group by hand (hardware templates are one cube/sphere/cylinder/quad/plane \
 leaf under transforms and at most one solid Scene.color / Scene.lit / \
-Scene.emissive material, or a bare rigid Scene.model leaf under transforms)"
+Scene.emissive material, or a bare Scene.model leaf under transforms)"
                                     )
                                 },
                             );

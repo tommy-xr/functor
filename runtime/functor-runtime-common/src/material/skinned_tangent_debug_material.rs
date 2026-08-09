@@ -121,12 +121,7 @@ impl Material for SkinnedTangentDebugMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
 
-                let num_joints = skinning_data.len();
-                let mut joint_matrices = Vec::with_capacity(num_joints * 16);
-                for i in 0..num_joints {
-                    let matrix_array: &[f32; 16] = skinning_data[i].as_ref();
-                    joint_matrices.extend_from_slice(matrix_array);
-                }
+                let joint_matrices = crate::model::flatten_joint_matrices(skinning_data);
 
                 p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);
             }

@@ -298,6 +298,60 @@ struct ModelMeshVao {
     vertex_buffer: glow::Buffer,
 }
 
+/// The skinned program pair (forward + depth) with their uniform sets and
+/// palette locations — built lazily on the FIRST skinned instanced draw, so
+/// a scene that only instances primitives or rigid models never pays their
+/// compile/link.
+struct SkinnedPrograms {
+    forward: ShaderProgram,
+    forward_uniforms: ForwardUniforms,
+    forward_joints: UniformLocation,
+    depth: ShaderProgram,
+    depth_uniforms: DepthUniforms,
+    depth_joints: UniformLocation,
+}
+
+impl SkinnedPrograms {
+    fn new(gl: &glow::Context, shader_version: &str) -> Self {
+        let forward = build_program(
+            gl,
+            shader_version,
+            &format!(
+                "{}\n{}\n{}",
+                instance_transform_glsl(6),
+                SKINNING_GLSL,
+                SKINNED_VERTEX_SHADER_SOURCE
+            ),
+            &forward_fragment_source(),
+        );
+        let forward_uniforms = forward_uniforms_of(&forward, gl);
+        let forward_joints = forward.get_uniform_location(gl, "jointTransforms");
+
+        let depth = build_program(
+            gl,
+            shader_version,
+            &format!(
+                "{}\n{}\n{}",
+                instance_transform_glsl(6),
+                SKINNING_GLSL,
+                SKINNED_DEPTH_VERTEX_SHADER_SOURCE
+            ),
+            &depth_fragment_source(),
+        );
+        let depth_uniforms = depth_uniforms_of(&depth, gl);
+        let depth_joints = depth.get_uniform_location(gl, "jointTransforms");
+
+        Self {
+            forward,
+            forward_uniforms,
+            forward_joints,
+            depth,
+            depth_uniforms,
+            depth_joints,
+        }
+    }
+}
+
 /// Persistent GPU state for `Scene.instanced`'s hardware path.
 pub(super) struct InstancedRenderer {
     meshes: HashMap<InstancedPrimitive, MeshBuffers>,
@@ -314,63 +368,32 @@ pub(super) struct InstancedRenderer {
     forward_uniforms: ForwardUniforms,
     depth: ShaderProgram,
     depth_uniforms: DepthUniforms,
-    skinned_forward: ShaderProgram,
-    skinned_forward_uniforms: ForwardUniforms,
-    skinned_forward_joints: UniformLocation,
-    skinned_depth: ShaderProgram,
-    skinned_depth_uniforms: DepthUniforms,
-    skinned_depth_joints: UniformLocation,
+    // Lazily built (see `SkinnedPrograms`); needs the shader version kept.
+    skinned: Option<SkinnedPrograms>,
+    shader_version: String,
 }
 
 impl InstancedRenderer {
     pub(super) fn new(gl: &glow::Context, shader_version: &str) -> Self {
-        let build_program = |vertex_source: &str, fragment_source: &str| {
-            let vertex = Shader::build(gl, ShaderType::Vertex, vertex_source, shader_version);
-            let fragment = Shader::build(gl, ShaderType::Fragment, fragment_source, shader_version);
-            ShaderProgram::link(gl, &vertex, &fragment)
-        };
-        let forward_fragment = format!("{}\n{}\n{}", FOG_GLSL, lighting_glsl(), FRAGMENT_SHADER_SOURCE);
-        let depth_fragment = format!(
-            "{}\n{}",
-            crate::material::depth_material::PACK_DEPTH_GLSL,
-            DEPTH_FRAGMENT_SHADER_SOURCE
-        );
-
         let forward = build_program(
+            gl,
+            shader_version,
             &format!("{}\n{}", instance_transform_glsl(4), VERTEX_SHADER_SOURCE),
-            &forward_fragment,
+            &forward_fragment_source(),
         );
         let forward_uniforms = forward_uniforms_of(&forward, gl);
 
         let depth = build_program(
-            &format!("{}\n{}", instance_transform_glsl(4), DEPTH_VERTEX_SHADER_SOURCE),
-            &depth_fragment,
+            gl,
+            shader_version,
+            &format!(
+                "{}\n{}",
+                instance_transform_glsl(4),
+                DEPTH_VERTEX_SHADER_SOURCE
+            ),
+            &depth_fragment_source(),
         );
         let depth_uniforms = depth_uniforms_of(&depth, gl);
-
-        let skinned_forward = build_program(
-            &format!(
-                "{}\n{}\n{}",
-                instance_transform_glsl(6),
-                SKINNING_GLSL,
-                SKINNED_VERTEX_SHADER_SOURCE
-            ),
-            &forward_fragment,
-        );
-        let skinned_forward_uniforms = forward_uniforms_of(&skinned_forward, gl);
-        let skinned_forward_joints = skinned_forward.get_uniform_location(gl, "jointTransforms");
-
-        let skinned_depth = build_program(
-            &format!(
-                "{}\n{}\n{}",
-                instance_transform_glsl(6),
-                SKINNING_GLSL,
-                SKINNED_DEPTH_VERTEX_SHADER_SOURCE
-            ),
-            &depth_fragment,
-        );
-        let skinned_depth_uniforms = depth_uniforms_of(&skinned_depth, gl);
-        let skinned_depth_joints = skinned_depth.get_uniform_location(gl, "jointTransforms");
 
         Self {
             meshes: HashMap::new(),
@@ -380,12 +403,8 @@ impl InstancedRenderer {
             forward_uniforms,
             depth,
             depth_uniforms,
-            skinned_forward,
-            skinned_forward_uniforms,
-            skinned_forward_joints,
-            skinned_depth,
-            skinned_depth_uniforms,
-            skinned_depth_joints,
+            skinned: None,
+            shader_version: shader_version.to_string(),
         }
     }
 
@@ -455,8 +474,6 @@ impl InstancedRenderer {
             }
         })
     }
-
-
 
     /// Draw one recognized PRIMITIVE instanced node — in the depth pass with
     /// the instanced depth program, otherwise with the forward program (unlit
@@ -566,49 +583,8 @@ impl InstancedRenderer {
             .iter()
             .map(|mesh| mesh.mesh.buffers(ctx.gl))
             .collect();
-        // Staleness guard: the cache is keyed by asset locator, so an asset
-        // evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
-        // vertex-buffer mismatch — drop the whole entry and rebuild. Nothing
-        // else in the tree deletes mesh VBOs, so a handle mismatch is a
-        // reliable staleness signal (and entries stay bounded by the model
-        // files a session actually instanced).
-        let stale = self.model_meshes.get(file).is_some_and(|state| {
-            state.meshes.len() != handles.len()
-                || state
-                    .meshes
-                    .iter()
-                    .zip(handles.iter())
-                    .any(|(cached, live)| cached.vertex_buffer != live.vbo)
-        });
-        if stale {
-            let state = self.model_meshes.remove(file).expect("checked above");
-            let counters = crate::gpu_counters::gpu_counters();
-            unsafe {
-                for cached in &state.meshes {
-                    ctx.gl.delete_vertex_array(cached.vao);
-                    counters.vao_deleted();
-                }
-                ctx.gl.delete_buffer(state.instance_buffer);
-                counters.buffer_deleted();
-            }
-        }
-        // Build (or reuse) the per-model state, then upload the instance
-        // records ONCE into its shared buffer; carry out only Copy VAOs.
-        let vaos: Vec<glow::VertexArray> = {
-            let state = match self.model_meshes.get_mut(file) {
-                Some(state) => state,
-                None => {
-                    let state = unsafe { Self::create_model_state(ctx.gl, &handles) };
-                    self.model_meshes.entry(file.to_string()).or_insert(state)
-                }
-            };
-            unsafe {
-                ctx.gl
-                    .bind_buffer(glow::ARRAY_BUFFER, Some(state.instance_buffer));
-                upload_instances(ctx.gl, bytes, &mut state.instance_capacity);
-                ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            }
-            state.meshes.iter().map(|cached| cached.vao).collect()
+        let vaos = unsafe {
+            acquire_model_vaos(ctx.gl, &mut self.model_meshes, file, &handles, bytes, false)
         };
         // Location 7's array is disabled in the model VAOs — pin the generic
         // tint value to white (identity), matching the stamp's tint-ignoring
@@ -665,73 +641,6 @@ impl InstancedRenderer {
         }
     }
 
-    /// Create a rigid model's instanced GPU state: one shared instance
-    /// buffer, plus a VAO per mesh primitive — mesh attributes from the
-    /// mesh's own VBO (skipping the skinned joint/weight channels, whose
-    /// locations 4/5 carry the instance TRS instead) and the instance layout
-    /// from the shared buffer.
-    unsafe fn create_model_state(
-        gl: &glow::Context,
-        handles: &[MeshBufferHandles],
-    ) -> ModelInstancedState {
-        let counters = crate::gpu_counters::gpu_counters();
-        let instance_buffer = gl.create_buffer().expect("model instance data");
-        counters.buffer_created();
-        let meshes = handles
-            .iter()
-            .map(|live| {
-                let vao = gl.create_vertex_array().expect("model instanced VAO");
-                counters.vao_created();
-                gl.bind_vertex_array(Some(vao));
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(live.vbo));
-                let stride = VertexPositionTextureSkinned::get_total_size() as i32;
-                for (location, attribute) in VertexPositionTextureSkinned::get_vertex_attributes()
-                    .iter()
-                    .enumerate()
-                {
-                    // Joints/weights sit at locations 4/5 — exactly where the
-                    // instance channels live — and rigid meshes never read
-                    // them, so leave those arrays disabled by CHANNEL (not by
-                    // positional prefix, which would silently mis-bind if the
-                    // attribute table were ever reordered).
-                    if matches!(
-                        attribute.attribute_channel,
-                        BuiltInVertexChannel::JointIndices | BuiltInVertexChannel::JointWeights
-                    ) {
-                        continue;
-                    }
-                    gl.enable_vertex_attrib_array(location as u32);
-                    match attribute.attribute_type {
-                        VertexAttributeType::Float => gl.vertex_attrib_pointer_f32(
-                            location as u32,
-                            attribute.size,
-                            glow::FLOAT,
-                            false,
-                            stride,
-                            attribute.offset as i32,
-                        ),
-                    }
-                }
-                // No tint attribute: a bare model template has no material
-                // colors for the tint to multiply, so the STAMP ignores it —
-                // the hardware path pins location 7's generic value instead.
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-                instance_attrib_layout(gl, 4, false);
-                gl.bind_vertex_array(None);
-                ModelMeshVao {
-                    vao,
-                    vertex_buffer: live.vbo,
-                }
-            })
-            .collect();
-        gl.bind_buffer(glow::ARRAY_BUFFER, None);
-        ModelInstancedState {
-            instance_buffer,
-            instance_capacity: 0,
-            meshes,
-        }
-    }
-
     /// Draw one recognized SKINNED instanced node at the SHARED pose: the
     /// pose's joint palette uploads once, then one instanced call per mesh
     /// primitive — lit and textured like `SkinnedMaterial`'s stamped copies
@@ -764,44 +673,21 @@ impl InstancedRenderer {
             .iter()
             .map(|mesh| mesh.mesh.buffers(ctx.gl))
             .collect();
-        // Same staleness rule as the rigid path (see `draw_model`).
-        let stale = self.skinned_model_meshes.get(file).is_some_and(|state| {
-            state.meshes.len() != handles.len()
-                || state
-                    .meshes
-                    .iter()
-                    .zip(handles.iter())
-                    .any(|(cached, live)| cached.vertex_buffer != live.vbo)
-        });
-        if stale {
-            let state = self.skinned_model_meshes.remove(file).expect("checked above");
-            let counters = crate::gpu_counters::gpu_counters();
-            unsafe {
-                for cached in &state.meshes {
-                    ctx.gl.delete_vertex_array(cached.vao);
-                    counters.vao_deleted();
-                }
-                ctx.gl.delete_buffer(state.instance_buffer);
-                counters.buffer_deleted();
-            }
+        // The programs compile on the first skinned draw (see
+        // `SkinnedPrograms`).
+        if self.skinned.is_none() {
+            self.skinned = Some(SkinnedPrograms::new(ctx.gl, &self.shader_version));
         }
-        let vaos: Vec<glow::VertexArray> = {
-            let state = match self.skinned_model_meshes.get_mut(file) {
-                Some(state) => state,
-                None => {
-                    let state = unsafe { Self::create_skinned_model_state(ctx.gl, &handles) };
-                    self.skinned_model_meshes
-                        .entry(file.to_string())
-                        .or_insert(state)
-                }
-            };
-            unsafe {
-                ctx.gl
-                    .bind_buffer(glow::ARRAY_BUFFER, Some(state.instance_buffer));
-                upload_instances(ctx.gl, bytes, &mut state.instance_capacity);
-                ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            }
-            state.meshes.iter().map(|cached| cached.vao).collect()
+        let programs = self.skinned.as_ref().expect("just built");
+        let vaos = unsafe {
+            acquire_model_vaos(
+                ctx.gl,
+                &mut self.skinned_model_meshes,
+                file,
+                &handles,
+                bytes,
+                true,
+            )
         };
         // The tint attribute (location 9) has no array in the skinned VAOs —
         // pin the generic value to white, matching the stamp's tint-ignoring
@@ -810,28 +696,19 @@ impl InstancedRenderer {
             ctx.gl.vertex_attrib_3_f32(9, 1.0, 1.0, 1.0);
         }
         // ONE palette upload per node per pass — the shared-pose contract.
-        let program = if depth_pass {
-            &self.skinned_depth
+        let (program, joints_loc) = if depth_pass {
+            (&programs.depth, &programs.depth_joints)
         } else {
-            &self.skinned_forward
-        };
-        let joints_loc = if depth_pass {
-            &self.skinned_depth_joints
-        } else {
-            &self.skinned_forward_joints
+            (&programs.forward, &programs.forward_joints)
         };
         program.use_program(ctx.gl);
-        let mut joint_matrices = Vec::with_capacity(joints.len() * 16);
-        for joint in joints {
-            let matrix_array: &[f32; 16] = joint.as_ref();
-            joint_matrices.extend_from_slice(matrix_array);
-        }
+        let joint_matrices = crate::model::flatten_joint_matrices(joints);
         program.set_uniform_matrix4fv(ctx.gl, joints_loc, &joint_matrices);
         for ((mesh, live), vao) in model.meshes.iter().zip(handles.iter()).zip(vaos.iter()) {
             if depth_pass {
                 set_depth_uniforms(
-                    &self.skinned_depth,
-                    &self.skinned_depth_uniforms,
+                    &programs.depth,
+                    &programs.depth_uniforms,
                     ctx,
                     world,
                     local,
@@ -841,8 +718,8 @@ impl InstancedRenderer {
             } else {
                 mesh.base_color_texture.bind(0, ctx);
                 set_forward_uniforms(
-                    &self.skinned_forward,
-                    &self.skinned_forward_uniforms,
+                    &programs.forward,
+                    &programs.forward_uniforms,
                     ctx,
                     world,
                     local,
@@ -870,62 +747,162 @@ impl InstancedRenderer {
             ctx.gl.bind_vertex_array(None);
         }
     }
-
-    /// Create a skinned model's instanced GPU state: like
-    /// [`Self::create_model_state`], but every mesh channel is enabled
-    /// (joints/weights at 4/5 feed the palette blend) and the instance
-    /// layout sits at locations 6-8.
-    unsafe fn create_skinned_model_state(
-        gl: &glow::Context,
-        handles: &[MeshBufferHandles],
-    ) -> ModelInstancedState {
-        let counters = crate::gpu_counters::gpu_counters();
-        let instance_buffer = gl.create_buffer().expect("skinned model instance data");
-        counters.buffer_created();
-        let meshes = handles
-            .iter()
-            .map(|live| {
-                let vao = gl
-                    .create_vertex_array()
-                    .expect("skinned model instanced VAO");
-                counters.vao_created();
-                gl.bind_vertex_array(Some(vao));
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(live.vbo));
-                let stride = VertexPositionTextureSkinned::get_total_size() as i32;
-                for (location, attribute) in VertexPositionTextureSkinned::get_vertex_attributes()
-                    .iter()
-                    .enumerate()
-                {
-                    gl.enable_vertex_attrib_array(location as u32);
-                    match attribute.attribute_type {
-                        VertexAttributeType::Float => gl.vertex_attrib_pointer_f32(
-                            location as u32,
-                            attribute.size,
-                            glow::FLOAT,
-                            false,
-                            stride,
-                            attribute.offset as i32,
-                        ),
-                    }
-                }
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-                instance_attrib_layout(gl, 6, false);
-                gl.bind_vertex_array(None);
-                ModelMeshVao {
-                    vao,
-                    vertex_buffer: live.vbo,
-                }
-            })
-            .collect();
-        gl.bind_buffer(glow::ARRAY_BUFFER, None);
-        ModelInstancedState {
-            instance_buffer,
-            instance_capacity: 0,
-            meshes,
-        }
-    }
 }
 
+/// Compile and link one instanced program.
+fn build_program(
+    gl: &glow::Context,
+    shader_version: &str,
+    vertex_source: &str,
+    fragment_source: &str,
+) -> ShaderProgram {
+    let vertex = Shader::build(gl, ShaderType::Vertex, vertex_source, shader_version);
+    let fragment = Shader::build(gl, ShaderType::Fragment, fragment_source, shader_version);
+    ShaderProgram::link(gl, &vertex, &fragment)
+}
+
+/// The forward fragment source shared by the plain and skinned programs.
+fn forward_fragment_source() -> String {
+    format!(
+        "{}\n{}\n{}",
+        FOG_GLSL,
+        lighting_glsl(),
+        FRAGMENT_SHADER_SOURCE
+    )
+}
+
+/// The depth fragment source shared by the plain and skinned programs.
+fn depth_fragment_source() -> String {
+    format!(
+        "{}\n{}",
+        crate::material::depth_material::PACK_DEPTH_GLSL,
+        DEPTH_FRAGMENT_SHADER_SOURCE
+    )
+}
+
+/// Acquire one model's per-file instanced GPU state — apply the staleness
+/// guard, build the state on miss, upload the instance records ONCE into the
+/// shared buffer — and return the per-mesh VAOs (Copy handles, so no borrow
+/// is carried into the draw loop).
+///
+/// Staleness: the cache is keyed by asset locator, so an asset
+/// evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
+/// vertex-buffer mismatch — drop the whole entry and rebuild. Nothing else
+/// in the tree deletes mesh VBOs, so a handle mismatch is a reliable
+/// staleness signal (and entries stay bounded by the model files a session
+/// actually instanced).
+unsafe fn acquire_model_vaos(
+    gl: &glow::Context,
+    cache: &mut HashMap<String, ModelInstancedState>,
+    file: &str,
+    handles: &[MeshBufferHandles],
+    bytes: &[u8],
+    skinned: bool,
+) -> Vec<glow::VertexArray> {
+    let stale = cache.get(file).is_some_and(|state| {
+        state.meshes.len() != handles.len()
+            || state
+                .meshes
+                .iter()
+                .zip(handles.iter())
+                .any(|(cached, live)| cached.vertex_buffer != live.vbo)
+    });
+    if stale {
+        let state = cache.remove(file).expect("checked above");
+        let counters = crate::gpu_counters::gpu_counters();
+        for cached in &state.meshes {
+            gl.delete_vertex_array(cached.vao);
+            counters.vao_deleted();
+        }
+        gl.delete_buffer(state.instance_buffer);
+        counters.buffer_deleted();
+    }
+    let state = match cache.get_mut(file) {
+        Some(state) => state,
+        None => {
+            let state = create_model_state(gl, handles, skinned);
+            cache.entry(file.to_string()).or_insert(state)
+        }
+    };
+    gl.bind_buffer(glow::ARRAY_BUFFER, Some(state.instance_buffer));
+    upload_instances(gl, bytes, &mut state.instance_capacity);
+    gl.bind_buffer(glow::ARRAY_BUFFER, None);
+    state.meshes.iter().map(|cached| cached.vao).collect()
+}
+
+/// Create a model's instanced GPU state: one shared instance buffer, plus a
+/// VAO per mesh primitive — mesh attributes from the mesh's own VBO and the
+/// instance layout from the shared buffer.
+///
+/// Rigid (`skinned == false`): the joint/weight channels are skipped —
+/// their locations 4/5 carry the instance TRS instead (base 4). Skinned:
+/// every mesh channel is enabled (joints/weights at 4/5 feed the palette
+/// blend) and the instance layout sits at locations 6-8.
+///
+/// No tint attribute either way: a bare model template has no material
+/// colors for the tint to multiply, so the STAMP ignores it — the hardware
+/// paths pin the tint location's generic value instead.
+unsafe fn create_model_state(
+    gl: &glow::Context,
+    handles: &[MeshBufferHandles],
+    skinned: bool,
+) -> ModelInstancedState {
+    let counters = crate::gpu_counters::gpu_counters();
+    let instance_buffer = gl.create_buffer().expect("model instance data");
+    counters.buffer_created();
+    let meshes = handles
+        .iter()
+        .map(|live| {
+            let vao = gl.create_vertex_array().expect("model instanced VAO");
+            counters.vao_created();
+            gl.bind_vertex_array(Some(vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(live.vbo));
+            let stride = VertexPositionTextureSkinned::get_total_size() as i32;
+            for (location, attribute) in VertexPositionTextureSkinned::get_vertex_attributes()
+                .iter()
+                .enumerate()
+            {
+                // On the rigid path, joints/weights sit at locations 4/5 —
+                // exactly where the instance channels live — and rigid
+                // meshes never read them, so leave those arrays disabled by
+                // CHANNEL (not by positional prefix, which would silently
+                // mis-bind if the attribute table were ever reordered).
+                if !skinned
+                    && matches!(
+                        attribute.attribute_channel,
+                        BuiltInVertexChannel::JointIndices | BuiltInVertexChannel::JointWeights
+                    )
+                {
+                    continue;
+                }
+                gl.enable_vertex_attrib_array(location as u32);
+                match attribute.attribute_type {
+                    VertexAttributeType::Float => gl.vertex_attrib_pointer_f32(
+                        location as u32,
+                        attribute.size,
+                        glow::FLOAT,
+                        false,
+                        stride,
+                        attribute.offset as i32,
+                    ),
+                }
+            }
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
+            instance_attrib_layout(gl, if skinned { 6 } else { 4 }, false);
+            gl.bind_vertex_array(None);
+            ModelMeshVao {
+                vao,
+                vertex_buffer: live.vbo,
+            }
+        })
+        .collect();
+    gl.bind_buffer(glow::ARRAY_BUFFER, None);
+    ModelInstancedState {
+        instance_buffer,
+        instance_capacity: 0,
+        meshes,
+    }
+}
 
 /// Look up the shared forward-uniform set on a freshly linked program (the
 /// plain and skinned forward programs share one uniform contract).
