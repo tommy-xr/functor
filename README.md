@@ -7,7 +7,7 @@
 > deprecation path. Binaries and changelogs are published on the
 > [releases page](https://github.com/tommy-xr/functor/releases).
 
-![Live-editing the hero scene's color so it hot-reloads with the model preserved, then scrubbing the running scene back through its recorded timeline and extrapolating its future](docs/media/readme-hero.gif)
+![A 2D sprite platformer: the character runs up and jumps the chasm, the timeline rewinds to the moment of takeoff, extrapolation projects the jump's future arc, and lowering jumpVelocity in the live code editor hot-reloads with the model preserved so the predicted arc falls short](docs/media/readme-hero.gif)
 
 ## Core Principles
 
