@@ -198,13 +198,6 @@ export interface MultiplayerPanesOptions {
   setPill: (state: PaneState, text: string, detail: string) => void;
   /** The current editor buffer, so a mirror added mid-session catches up. */
   getSource: () => string;
-  /**
-   * Ask the PAGE for a client count — the "+" tile's one job. It routes through
-   * the host rather than calling `setCount` directly so that the spatial
-   * affordance and the CLIENTS dropdown are the same path: the same clamp, the
-   * same `#clients=` hash write, the same control re-render.
-   */
-  requestCount: (n: number) => void;
 }
 
 export interface MultiplayerPanes {
@@ -283,7 +276,6 @@ export function initMultiplayerPanes({
   statusBar,
   setPill,
   getSource,
-  requestCount,
 }: MultiplayerPanesOptions): MultiplayerPanes {
   const previewPane = frame.closest(".preview-pane") as HTMLElement;
   previewPane.classList.add("mp");
@@ -362,38 +354,10 @@ export function initMultiplayerPanes({
   grid.className = "mp-grid";
   grid.dataset.view = "tiled";
 
-  // The "+" tile (Addendum 5a.7): the SPATIAL way to add a client — the CLIENTS
-  // dropdown stays the numeric one, and both go through the same host call. It
-  // is always the LAST grid child (Addendum 5b.1): an open seat placed in "the
-  // cell the next client takes" can land mid-layout, where it reads as a hole
-  // rather than an invitation, so it lives at the EDGE of the arrangement,
-  // after every occupied cell. It is a real <button>, so it is
-  // tab-reachable and answers to Enter/Space for free; it is
-  // a grid child so it takes a slot in tiled/grid, and CSS hides it in tabs
-  // (which has its own "+" tab) and in network. NETWORK gets no ghost spoke: a
-  // wire is measured between two panes that are actually talking, and drawing
-  // one to a card that is not a participant would be the one lie this view
-  // cannot afford.
-  const addTile = document.createElement("button");
-  addTile.type = "button";
-  addTile.className = "mp-add-tile";
-  addTile.title = "Add a client";
-  addTile.innerHTML = `<span class="mp-add-plus" aria-hidden="true">+</span>
-    <span class="mp-add-label">add a client</span>`;
-  grid.appendChild(addTile);
-
-  const addTab = document.createElement("button");
-  addTab.type = "button";
-  addTab.className = "mp-tab add";
-  addTab.title = "Add a client";
-  addTab.textContent = "+";
-  addTab.setAttribute("aria-label", "Add a client");
-  tabsStrip.appendChild(addTab);
-
   // The stage holds the grid plus the layers the NETWORK view adds (mounted by
   // the graph itself: the wires under the cards, the chips over them). They are
   // siblings of the grid, never children of it — the grid's children are the
-  // pane cells and the "+" tile, and another child would shift the
+  // pane cells, and another child would shift the
   // `:nth-child` rules the grid and network views lay out with.
   const stage = document.createElement("div");
   stage.className = "mp-stage";
@@ -556,12 +520,12 @@ export function initMultiplayerPanes({
     const cell = document.createElement("div");
     cell.className = client ? "mp-cell" : "mp-cell server";
     cell.appendChild(shell);
-    // A client cell is INSERTED BEFORE the server's (and both before the "+"
-    // seat, which is always last — Addendum 5b.1), never appended after them:
+    // A client cell is INSERTED BEFORE the server's (which is always last),
+    // never appended after it:
     // re-appending a mounted node is a remove + insert, and that reloads an
     // iframe — the same invariant that keeps pane 1 in place would be broken
     // for the authority, wiping the world every time the count changed.
-    grid.insertBefore(cell, (client && serverPane?.pane.cell) || addTile);
+    grid.insertBefore(cell, (client && serverPane?.pane.cell) || null);
 
     const tab = document.createElement("button");
     tab.className = client ? "mp-tab" : "mp-tab server";
@@ -569,9 +533,8 @@ export function initMultiplayerPanes({
     tab.innerHTML = `${client ? `<span class="mp-digit">${index + 1}</span> client` : "SERVER"}
       <span class="mp-pf"><b>#f</b> <span class="mp-pf-n">—</span></span>
       <span class="mp-st" data-state="busy"></span>`;
-    // Same rule in the tab strip, with the "+" tab pinned last: a client's tab
-    // goes before the server's, and both go before the "+".
-    tabsStrip.insertBefore(tab, (client && serverPane?.pane.tab) || addTab);
+    // Same rule in the tab strip: a client's tab goes before the server's.
+    tabsStrip.insertBefore(tab, (client && serverPane?.pane.tab) || null);
 
     const pane: Pane = {
       role,
@@ -878,7 +841,7 @@ export function initMultiplayerPanes({
   const inFlight = new Map<HTMLElement, Animation>();
 
   const flipViews = (apply: () => void) => {
-    const nodes = [...allPanes().map((pane) => pane.shell), addTile];
+    const nodes = allPanes().map((pane) => pane.shell);
     // Reduced motion: the layout still changes, it just arrives instantly.
     if (reduceMotion.matches) {
       apply();
@@ -963,9 +926,6 @@ export function initMultiplayerPanes({
     network.title = viewAvailable("network")
       ? "Network: the server as the hub, with live packet flow along each link (f cycles)"
       : "Network needs an authority — this example declares no server role, so there is no hub to arrange the clients around";
-    // The "+" affordances: hidden at MAX_CLIENTS (there is nothing to add), and
-    // hidden in the single-pane layout, which drops every other piece of
-    // multiplayer chrome with it.
     // The strip carries the pane readouts in EVERY multi-pane view, not just
     // network: the headers clip by their own width (a tiled row of four is
     // thumbnails too), so the frame counters need a home wherever that happens.
@@ -976,9 +936,6 @@ export function initMultiplayerPanes({
     // so the tab is absent rather than empty (the NETWORK view's gate, and the
     // CLIENTS control's discipline).
     statusBar.setWirePresent(serverPane !== null);
-    const canAdd = !single && panes.length < MAX_CLIENTS;
-    addTile.hidden = !canAdd;
-    addTab.hidden = !canAdd;
     // Grid's odd-last-client rule needs "is there an authority" as data: the
     // strip is a cell like any other, so no structural selector answers it.
     grid.dataset.server = serverPane ? "yes" : "no";
@@ -1014,10 +971,6 @@ export function initMultiplayerPanes({
       })
     );
   }
-
-  const requestAnotherClient = () => requestCount(panes.length + 1);
-  addTile.addEventListener("click", requestAnotherClient);
-  addTab.addEventListener("click", requestAnotherClient);
 
   // Live client-count change: grow or shrink the mirror set in place. Pane 1
   // is untouched, so its model (and the editor session) survive.

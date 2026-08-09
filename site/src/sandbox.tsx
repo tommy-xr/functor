@@ -142,9 +142,6 @@ mp = initMultiplayerPanes({
   statusBar,
   setPill: (state, text, detail) => pill.set({ state, text, detail }),
   getSource: () => view.state.doc.toString(),
-  // The pane grid's "+" tile asks for a count the same way the CLIENTS
-  // dropdown does — `selectClients` is the one path (clamp, hash, control).
-  requestCount: (n) => selectClients(n),
 });
 
 // The CLIENTS control only appears for multiplayer-structured samples (the
