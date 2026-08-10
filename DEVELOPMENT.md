@@ -45,7 +45,10 @@ Cloudflare deployment-control files. On close,
 `.github/workflows/pr-preview-cleanup.yml` detaches the domain and deletes the
 temporary Worker. A domain or Worker cleanup failure fails the job and marks the
 sticky PR comment with a warning; certificate cleanup is non-quota-critical and
-warns without failing the otherwise successful cleanup.
+warns without failing the otherwise successful cleanup. It resolves the
+certificate pack from Cloudflare's exact domain certificate ID, with bounded
+inventory retries, before detaching the domain; it never deletes a certificate
+using only a hostname match.
 
 These event workflows must already exist on the default branch, so the PR that
 introduces them cannot preview itself. After rollout, push a new commit to an
