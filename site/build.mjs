@@ -15,7 +15,7 @@ import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES, exampleEntryPath } from "./src/examples.ts";
 import { renderApiReference } from "./src/api-reference-html.mjs";
-import { injectHeader } from "./src/header.ts";
+import { ALPHA_BADGE_TITLE, injectHeader } from "./src/header.ts";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -97,7 +97,7 @@ await mkdir(`${dist}/examples`, { recursive: true });
 // all read "v0.0.0 · dev", so a working copy never mislabels itself as a release
 // it merely descends from.
 let badge = "v0.0.0 · dev";
-let badgeTitle = "Local development build";
+let badgeTitle = process.env.CI ? "Unversioned build" : "Local development build";
 const previewSha = process.env.FUNCTOR_SITE_PREVIEW_SHA;
 if (previewSha !== undefined) {
   if (!/^[0-9a-f]{40}$/i.test(previewSha)) {
@@ -120,7 +120,7 @@ if (previewSha !== undefined) {
       .trim();
     if (/^v\d+\.\d+\.\d+$/.test(tag)) {
       badge = `${tag} · alpha`;
-      badgeTitle = "Functor is alpha software — everything may change between releases";
+      badgeTitle = ALPHA_BADGE_TITLE;
     }
   } catch {}
 }

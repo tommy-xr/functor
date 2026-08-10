@@ -1,7 +1,8 @@
 name: Build PR Preview
 
 # This is deliberately the unprivileged half of preview deployment. It builds
-# PR code with a read-only token and no secrets, then uploads only site/dist.
+# PR code with a read-only token and requests no secrets, then uploads only
+# site/dist.
 # The default-branch workflow_run job independently authorizes the PR before it
 # exposes Cloudflare credentials or publishes these files as static assets.
 

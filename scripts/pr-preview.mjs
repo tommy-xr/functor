@@ -13,6 +13,7 @@
 
 // Required environment is command-specific:
 //   GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_OUTPUT
+//   GITHUB_STEP_SUMMARY (optional; records authorization rejections)
 //   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
 
 // Keep the allowlist and namespace here, in trusted default-branch code. A PR
@@ -23,6 +24,7 @@ import { resolve } from "node:path";
 
 const ALLOWED_AUTHOR = "tommy-xr";
 const ALLOWED_REPOSITORY = "tommy-xr/functor";
+const ALLOWED_REPOSITORY_API_URL = `https://api.github.com/repos/${ALLOWED_REPOSITORY}`;
 const BUILD_WORKFLOW_NAME = "Build PR Preview";
 const BUILD_WORKFLOW_PATH = ".github/workflows/pr-preview-build.yml";
 const ARTIFACT_NAME = "pr-preview-site";
@@ -30,6 +32,8 @@ const PREVIEW_ZONE = "functor.games";
 const COMMENT_MARKER = "<!-- functor-pr-preview -->";
 const MAX_ASSET_FILES = 20_000;
 const MAX_ASSET_BYTES = 25 * 1024 * 1024;
+const MAX_ASSET_TOTAL_BYTES = 100 * 1024 * 1024;
+const MAX_ARTIFACT_ARCHIVE_BYTES = 50 * 1024 * 1024;
 const FORBIDDEN_ASSET_FILES = new Set([".assetsignore", "_headers", "_redirects"]);
 
 const [, , command, ...rawArgs] = process.argv;
@@ -94,6 +98,13 @@ const githubRepository = () => {
   return repository;
 };
 
+// Workflow-run payloads embed a minimal repository object with only `url`,
+// while pull and repository endpoints include `full_name`. Accept either exact
+// representation without falling back to a name-only comparison.
+const isAllowedRepository = (repository) =>
+  repository?.full_name === ALLOWED_REPOSITORY ||
+  repository?.url === ALLOWED_REPOSITORY_API_URL;
+
 const githubRequest = async (path, init = {}) => {
   const response = await fetch(`https://api.github.com${path}`, {
     ...init,
@@ -128,7 +139,7 @@ const authorizeRun = async () => {
 
   let pullNumbers = [...new Set(
     (run.pull_requests ?? [])
-      .filter((pull) => pull.base?.repo?.full_name === ALLOWED_REPOSITORY)
+      .filter((pull) => isAllowedRepository(pull.base?.repo))
       .map((pull) => pull.number),
   )];
 
@@ -143,7 +154,7 @@ const authorizeRun = async () => {
       associated
         .filter(
           (pull) =>
-            pull.base?.repo?.full_name === ALLOWED_REPOSITORY &&
+            isAllowedRepository(pull.base?.repo) &&
             pull.head?.sha?.toLowerCase() === run.head_sha.toLowerCase(),
         )
         .map((pull) => pull.number),
@@ -151,7 +162,12 @@ const authorizeRun = async () => {
   }
 
   const reject = async (reason) => {
-    console.log(`PR preview skipped: ${safeLog(reason)}`);
+    const safeReason = safeLog(reason);
+    console.log(`PR preview skipped: ${safeReason}`);
+    const summary = process.env.GITHUB_STEP_SUMMARY;
+    if (summary) {
+      await appendFile(summary, `### PR preview skipped\n\n${safeReason}\n`);
+    }
     await writeOutput({ authorized: "false" });
   };
 
@@ -165,7 +181,7 @@ const authorizeRun = async () => {
   if (run.triggering_actor?.login && run.triggering_actor.login !== ALLOWED_AUTHOR) {
     return reject("rerun actor is not allowlisted");
   }
-  if (run.head_repository?.full_name !== ALLOWED_REPOSITORY) {
+  if (!isAllowedRepository(run.head_repository)) {
     return reject("source branch is not in the trusted repository");
   }
   if (pullNumbers.length !== 1) return reject("source run does not identify exactly one PR");
@@ -173,15 +189,33 @@ const authorizeRun = async () => {
   const prNumber = pullNumbers[0];
   const pull = await githubRequest(`/repos/${repository}/pulls/${prNumber}`);
   if (pull.user?.login !== ALLOWED_AUTHOR) return reject("PR author is not allowlisted");
-  if (pull.head?.repo?.full_name !== ALLOWED_REPOSITORY) {
+  if (!isAllowedRepository(pull.head?.repo)) {
     return reject("PR head repository is not allowlisted");
   }
-  if (pull.base?.repo?.full_name !== ALLOWED_REPOSITORY) {
+  if (!isAllowedRepository(pull.base?.repo)) {
     return reject("PR targets an unexpected repository");
   }
   if (pull.state !== "open") return reject("PR is no longer open");
   if (pull.head?.sha?.toLowerCase() !== run.head_sha?.toLowerCase()) {
     return reject("source artifact is stale for the current PR head");
+  }
+
+  const artifactQuery = new URLSearchParams({ name: ARTIFACT_NAME, per_page: "100" });
+  const artifactData = await githubRequest(
+    `/repos/${repository}/actions/runs/${runId}/artifacts?${artifactQuery}`,
+  );
+  const artifacts = (artifactData?.artifacts ?? []).filter(
+    (artifact) => artifact.name === ARTIFACT_NAME && artifact.expired !== true,
+  );
+  if (artifactData?.total_count !== 1 || artifacts.length !== 1) {
+    return reject(`source run must contain exactly one ${ARTIFACT_NAME} artifact`);
+  }
+  const archiveBytes = artifacts[0].size_in_bytes;
+  if (!Number.isSafeInteger(archiveBytes) || archiveBytes <= 0) {
+    return reject("source artifact reports an invalid archive size");
+  }
+  if (archiveBytes > MAX_ARTIFACT_ARCHIVE_BYTES) {
+    return reject("source artifact archive exceeds the 50 MiB preview limit");
   }
 
   const sha = pull.head.sha.toLowerCase();
@@ -190,11 +224,7 @@ const authorizeRun = async () => {
     authorized: "true",
     pr_number: prNumber,
     head_sha: sha,
-    short_sha: sha.slice(0, 7),
-    artifact_name: ARTIFACT_NAME,
     worker_name: target.worker,
-    hostname: target.hostname,
-    url: target.url,
   });
   console.log(`Authorized PR #${prNumber} at ${sha}`);
 };
@@ -202,6 +232,7 @@ const authorizeRun = async () => {
 const walkArtifact = async (directory) => {
   const root = resolve(directory);
   const files = [];
+  let totalBytes = 0;
   const pending = [root];
   while (pending.length > 0) {
     const current = pending.pop();
@@ -214,6 +245,10 @@ const walkArtifact = async (directory) => {
       } else if (info.isFile()) {
         if (info.size > MAX_ASSET_BYTES) {
           throw new Error("preview artifact contains a file larger than Cloudflare's 25 MiB limit");
+        }
+        totalBytes += info.size;
+        if (totalBytes > MAX_ASSET_TOTAL_BYTES) {
+          throw new Error("preview artifact exceeds the 100 MiB expanded-size limit");
         }
         files.push(path.slice(root.length + 1));
         if (files.length > MAX_ASSET_FILES) {
@@ -338,12 +373,15 @@ const attach = async () => {
 
 const listCertificatePacks = async (zoneId) => {
   const packs = [];
-  for (let page = 1; ; page += 1) {
-    const query = new URLSearchParams({ per_page: "50", page: String(page) });
+  for (let page = 1; page <= 20; page += 1) {
+    // A PR can close while its Custom Domain certificate is still provisioning,
+    // so include non-active packs when resolving Cloudflare's returned cert_id.
+    const query = new URLSearchParams({ status: "all", per_page: "50", page: String(page) });
     const data = await cloudflareRequest(`/zones/${zoneId}/ssl/certificate_packs?${query}`);
     packs.push(...(data?.result ?? []));
     if (page >= (data?.result_info?.total_pages ?? 1)) return packs;
   }
+  throw new Error("certificate pack inventory exceeds 20 pages");
 };
 
 const packOnlyCovers = (pack, hostname) => {
@@ -362,14 +400,15 @@ const cleanupCertificate = async (domain) => {
     const packs = (await listCertificatePacks(domain.zone_id)).filter(
       (pack) => !["deleted", "pending_deletion"].includes(pack.status),
     );
-    let candidates = packs.filter((pack) =>
-      pack.certificates?.some((certificate) => certificate.id === domain.cert_id),
+    const domainCertificateId = String(domain.cert_id).replaceAll("-", "").toLowerCase();
+    const candidates = packs.filter((pack) =>
+      pack.certificates?.some(
+        (certificate) =>
+          String(certificate.id).replaceAll("-", "").toLowerCase() === domainCertificateId,
+      ),
     );
-    if (candidates.length === 0) {
-      candidates = packs.filter(
-        (pack) => pack.type === "advanced" && packOnlyCovers(pack, domain.hostname),
-      );
-    }
+    // Never substitute a hostname-only guess: certificate cleanup is optional,
+    // and an exact ID miss is safer to leave for inventory review than delete.
     if (candidates.length !== 1 || !packOnlyCovers(candidates[0], domain.hostname)) {
       console.warn(
         `Could not safely identify the generated certificate for ${domain.hostname}; ` +
@@ -395,16 +434,16 @@ const cleanup = async () => {
   const pr = positiveInteger("pr");
   const account = cloudflareAccount();
   const target = preview(pr);
-  const failures = [];
   const detached = [];
 
-  let domains = [];
+  let domains;
   try {
     domains = await listDomains(target.hostname);
   } catch (error) {
-    failures.push(`list domain: ${error.message}`);
+    throw new Error(`preview cleanup incomplete: list domain: ${safeLog(error.message)}`);
   }
 
+  const failures = [];
   for (const domain of domains) {
     if (domain.service !== target.worker) {
       failures.push(`${target.hostname} belongs to unexpected Worker ${domain.service}`);
@@ -421,6 +460,12 @@ const cleanup = async () => {
     } catch (error) {
       failures.push(`detach domain: ${error.message}`);
     }
+  }
+
+  // Do not delete a Worker while one of its Custom Domains may still be
+  // attached. A later rerun can retry the detach without leaving a dangling URL.
+  if (failures.length > 0) {
+    throw new Error(`preview cleanup incomplete: ${failures.map(safeLog).join("; ")}`);
   }
 
   try {
@@ -468,7 +513,8 @@ const comment = async () => {
   let body;
   if (state === "ready") {
     body = `${COMMENT_MARKER}\n### Functor PR preview\n\n` +
-      `Ready for commit ${commit}. The stable URL updates after each push.\n\n` +
+      `Deployed commit ${commit}. The stable URL updates after each push. ` +
+      `On this PR's first deploy, TLS provisioning may take a few minutes.\n\n` +
       `[Site](${target.url}/) · ` +
       `[Sandbox](${target.url}/sandbox.html) · ` +
       `[IDE](${target.url}/ide.html) · ` +

@@ -35,6 +35,12 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Fast, hermetic coverage for the trusted preview authorization and
+      # static-artifact validation boundary. It needs only Node's standard
+      # library, so run it before the expensive toolchain/browser setup.
+      - name: Test PR preview lifecycle
+        run: npm run test:pr-preview
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

@@ -17,6 +17,44 @@ Install the following (the versions in parentheses are known-good):
 On Linux you also need the native GL/X11 dev packages (see
 `.github/workflows/build-native.yml` for the exact `apt` list).
 
+## PR preview infrastructure
+
+Eligible pull requests build the static site without secrets, then a trusted
+default-branch workflow independently authorizes and deploys the artifact to
+`pr-<number>.preview.functor.games`. Preview deployment is currently limited to
+PRs authored and pushed by `tommy-xr` from branches in `tommy-xr/functor`.
+
+The deploy and close-cleanup workflows require these repository secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID` — the account containing the `functor.games` zone.
+- `CLOUDFLARE_PREVIEW_API_TOKEN` — a dedicated token scoped to that account and
+  zone with **Account / Workers Scripts: Edit** and
+  **Zone / SSL and Certificates: Edit** for `functor.games`. Workers Scripts
+  covers Worker deploy/delete and Custom Domain attach/detach; the zone
+  permission is only for best-effort cleanup of the certificate Cloudflare
+  generates for each Custom Domain.
+
+The split is intentional: `.github/workflows/pr-preview-build.yml` runs PR code
+with read-only repository access and no secrets. After it uploads `site/dist`,
+`.github/workflows/pr-preview-deploy.yml` runs code from the default branch,
+rechecks the workflow, actor, repository, open PR, and current head SHA, validates
+the artifact as static data, and only then exposes the preview token. Authorization
+rejects duplicate/expired artifacts and archives over 50 MiB; validation rejects
+expanded bundles over 100 MiB, individual assets over 25 MiB, symlinks, and
+Cloudflare deployment-control files. On close,
+`.github/workflows/pr-preview-cleanup.yml` detaches the domain and deletes the
+temporary Worker. A domain or Worker cleanup failure fails the job and marks the
+sticky PR comment with a warning; certificate cleanup is non-quota-critical and
+warns without failing the otherwise successful cleanup.
+
+These event workflows must already exist on the default branch, so the PR that
+introduces them cannot preview itself. After rollout, push a new commit to an
+eligible open PR to exercise the full path. The hermetic lifecycle checks are:
+
+```sh
+npm run test:pr-preview
+```
+
 ## Building the CLI
 
 Build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compile

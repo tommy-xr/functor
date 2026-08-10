@@ -3,6 +3,9 @@ name: Deploy PR Preview
 # Privileged half of PR previews. GitHub loads this workflow and the lifecycle
 # script from main, not from the PR. The downloaded artifact is untrusted static
 # data: it is validated and uploaded, never sourced or executed.
+#
+# Requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_PREVIEW_API_TOKEN. The token
+# permissions and rollout/cleanup behavior are documented in DEVELOPMENT.md.
 
 on:
   workflow_run:
@@ -14,21 +17,17 @@ permissions:
   contents: read
   pull-requests: write
 
-# Serialize deploy and close cleanup for a PR. Stale runs are rejected against
-# the current head SHA, so canceling an in-flight cleanup is neither necessary
-# nor safe.
-concurrency:
-  group: pr-preview-${{ github.repository }}-${{ github.event.workflow_run.head_branch }}
-  queue: max
-  cancel-in-progress: false
-
 jobs:
-  deploy:
+  authorize:
     if: >-
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      authorized: ${{ steps.authorize.outputs.authorized }}
+      pr_number: ${{ steps.authorize.outputs.pr_number }}
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
     steps:
       - name: Check out trusted lifecycle code
         uses: actions/checkout@v6
@@ -42,27 +41,42 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/pr-preview.mjs authorize-run --run-id "${{ github.event.workflow_run.id }}"
 
+  deploy:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Serialize every mutation by immutable PR number, including close cleanup.
+    # Stale runs recheck the current SHA, so canceling an in-flight run is unsafe.
+    concurrency:
+      group: pr-preview-${{ github.repository }}-${{ needs.authorize.outputs.pr_number }}
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted lifecycle code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
       - name: Download this run's static artifact
-        if: steps.authorize.outputs.authorized == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: ${{ steps.authorize.outputs.artifact_name }}
+          name: pr-preview-site
           path: site/dist
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
 
       - name: Validate untrusted static artifact
-        if: steps.authorize.outputs.authorized == 'true'
         run: >-
           node scripts/pr-preview.mjs validate-artifact
           --dir site/dist
-          --sha "${{ steps.authorize.outputs.head_sha }}"
+          --sha "${{ needs.authorize.outputs.head_sha }}"
 
       # Close/push races can happen while the artifact downloads. Re-query the
       # PR immediately before the first step that receives a Cloudflare secret.
       - name: Recheck open state and current head
-        if: steps.authorize.outputs.authorized == 'true'
         id: recheck
         env:
           GITHUB_TOKEN: ${{ github.token }}

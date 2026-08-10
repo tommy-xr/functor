@@ -42,6 +42,8 @@ const NAV = [
 ];
 
 const GITHUB = "https://github.com/tommy-xr/functor";
+export const ALPHA_BADGE_TITLE =
+  "Functor is alpha software — everything may change between releases";
 
 /** The attributes a page may set on its `<!--@header-->` marker. */
 type HeaderKey = "prefix" | "suffix" | "active";
@@ -73,7 +75,7 @@ const renderHeader = ({
     `<a class="wordmark" href="${prefix || "./"}">${MARK}FUNCTOR${
       suffix ? `<span class="wordmark-accent">//${suffix}</span>` : ""
     }</a>`,
-    '<span class="version-badge" title="Functor is alpha software — everything may change between releases">alpha</span>',
+    `<span class="version-badge" title="${ALPHA_BADGE_TITLE}">alpha</span>`,
     BURGER,
     ...(controls ? [controls] : []),
     `<nav class="site-nav">\n        ${nav.join("\n        ")}\n      </nav>`,

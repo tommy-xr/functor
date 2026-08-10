@@ -3,6 +3,9 @@ name: Cleanup PR Preview
 # pull_request_target is intentional for close cleanup: GitHub loads this file
 # from the default branch, where a PR cannot alter the author gate or commands.
 # Never check out or execute the PR head in this workflow.
+#
+# Uses the same CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_PREVIEW_API_TOKEN documented
+# by pr-preview-deploy.yml and DEVELOPMENT.md.
 
 on:
   pull_request_target:
@@ -13,7 +16,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pr-preview-${{ github.repository }}-${{ github.event.pull_request.head.ref }}
+  group: pr-preview-${{ github.repository }}-${{ github.event.pull_request.number }}
   queue: max
   cancel-in-progress: false
 
