@@ -549,9 +549,9 @@ type Wire =
             Keeping both contracts and the protocol in one file means one edit cannot update a
             client-side copy while forgetting a server-side copy. <code>functor build</code>
             checks every role, and each local role runtime watches and reloads the same file with
-            its own model preserved. The browser sandbox has one narrower limitation today: live
-            editor pushes update the client panes, while the SERVER pane keeps the served source;
-            <strong>↺ reset</strong> reloads both sides from the built example.
+            its own model preserved. The browser sandbox reloads the same way: an editor push
+            reaches every pane, the authority included, and each one re-resolves its own role
+            from the edited buffer — one edit, one session-wide reload, every model preserved.
           </p>
 
           <h3>The transport</h3>
