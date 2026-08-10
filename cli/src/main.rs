@@ -347,9 +347,10 @@ async fn run(args: &Args) -> io::Result<()> {
         commands::init::execute(&working_directory, template)?;
         emit(Event::Info {
             message: format!(
-                "initialized {} Functor Lang project in {} (functor.json, game.fun)",
+                "initialized {} Functor Lang project in {} ({})",
                 template.as_str(),
-                working_directory.display()
+                working_directory.display(),
+                template.file_names().join(", ")
             ),
         });
         return Ok(());

@@ -30,25 +30,17 @@ impl Template {
 
     /// The file names this template writes — the scaffolder's own answer, so
     /// callers that report them (the `init_game` MCP tool) cannot drift.
-    pub fn file_names(&self) -> [&'static str; 2] {
-        self.files().map(|file| file.name)
+    pub fn file_names(&self) -> Vec<&'static str> {
+        self.files().iter().map(|file| file.name).collect()
     }
 
-    fn files(&self) -> [TemplateFile; 2] {
-        let (manifest, game) = match self {
-            Self::ThreeD => (MANIFEST_3D, GAME_3D),
-            Self::Fps => (MANIFEST_FPS, GAME_FPS),
-        };
-        [
-            TemplateFile {
-                name: "functor.json",
-                contents: manifest,
-            },
-            TemplateFile {
-                name: "game.fun",
-                contents: game,
-            },
-        ]
+    /// Every file this template writes, in write order. A template may ship any
+    /// number of files (siblings like `protocol.fun` or `assets.fun`).
+    fn files(&self) -> &'static [TemplateFile] {
+        match self {
+            Self::ThreeD => FILES_3D,
+            Self::Fps => FILES_FPS,
+        }
     }
 }
 
@@ -57,7 +49,32 @@ struct TemplateFile {
     contents: &'static str,
 }
 
-/// Create a project in `directory` without overwriting either scaffolded file.
+static FILES_3D: &[TemplateFile] = &[
+    TemplateFile {
+        name: "functor.json",
+        contents: MANIFEST_3D,
+    },
+    TemplateFile {
+        name: "game.fun",
+        contents: GAME_3D,
+    },
+];
+
+static FILES_FPS: &[TemplateFile] = &[
+    TemplateFile {
+        name: "functor.json",
+        contents: MANIFEST_FPS,
+    },
+    TemplateFile {
+        name: "game.fun",
+        contents: GAME_FPS,
+    },
+];
+
+/// Create a project in `directory` without overwriting any scaffolded file: if
+/// even one of the template's files already exists the whole call aborts before
+/// writing anything (no per-file skipping — a partially scaffolded project is
+/// worse than a refusal).
 /// Unrelated existing files are left alone. If a write fails, files created by
 /// this call are removed so the directory is not left half-initialized.
 pub fn execute(directory: &Path, template: &Template) -> io::Result<()> {
@@ -171,36 +188,46 @@ mod tests {
         assert!(diagnostics.is_empty(), "diagnostics: {diagnostics:#?}");
     }
 
-    #[test]
-    fn three_d_template_creates_a_typechecked_project() {
-        let directory = TestDir::new("3d");
-        execute(&directory.0, &Template::ThreeD).unwrap();
+    /// The template writes exactly `expected` — each name, each byte — and the
+    /// result typechecks. `expected` is spelled out independently of `files()`
+    /// so a template mapped to the wrong source still fails; comparing the whole
+    /// name list (rather than a fixed pair) is what generalizes to N files.
+    fn assert_template_scaffolds(
+        name: &str,
+        template: Template,
+        expected: &[(&str, &'static str)],
+    ) {
+        let directory = TestDir::new(name);
+        execute(&directory.0, &template).unwrap();
 
-        assert_eq!(
-            fs::read_to_string(directory.0.join("functor.json")).unwrap(),
-            MANIFEST_3D
-        );
-        assert_eq!(
-            fs::read_to_string(directory.0.join("game.fun")).unwrap(),
-            GAME_3D
-        );
+        let expected_names: Vec<&str> = expected.iter().map(|(name, _)| *name).collect();
+        assert_eq!(template.file_names(), expected_names);
+        for (name, contents) in expected {
+            assert_eq!(
+                fs::read_to_string(directory.0.join(name)).unwrap(),
+                *contents,
+                "{name} should be written verbatim"
+            );
+        }
         assert_project_typechecks(&directory.0);
     }
 
     #[test]
-    fn fps_template_creates_a_typechecked_project() {
-        let directory = TestDir::new("fps");
-        execute(&directory.0, &Template::Fps).unwrap();
+    fn three_d_template_creates_a_typechecked_project() {
+        assert_template_scaffolds(
+            "3d",
+            Template::ThreeD,
+            &[("functor.json", MANIFEST_3D), ("game.fun", GAME_3D)],
+        );
+    }
 
-        assert_eq!(
-            fs::read_to_string(directory.0.join("functor.json")).unwrap(),
-            MANIFEST_FPS
+    #[test]
+    fn fps_template_creates_a_typechecked_project() {
+        assert_template_scaffolds(
+            "fps",
+            Template::Fps,
+            &[("functor.json", MANIFEST_FPS), ("game.fun", GAME_FPS)],
         );
-        assert_eq!(
-            fs::read_to_string(directory.0.join("game.fun")).unwrap(),
-            GAME_FPS
-        );
-        assert_project_typechecks(&directory.0);
     }
 
     #[test]
