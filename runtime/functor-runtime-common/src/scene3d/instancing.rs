@@ -240,11 +240,20 @@ pub(crate) enum InstancedPrimitive {
     Plane,
 }
 
-/// A template the renderer can draw with one instanced call: a single
-/// primitive leaf, optionally under `Group` transform wrappers (folded into
-/// `local`) and at most one solid-color `Color`/`Emissive`/`Lit` material
-/// node.
-pub(crate) struct RecognizedTemplate<'a> {
+/// A template the renderer can draw with instanced calls.
+pub(crate) enum RecognizedTemplate<'a> {
+    /// A single primitive leaf, optionally under `Group` transform wrappers
+    /// (folded into `local`) and at most one solid-color
+    /// `Color`/`Emissive`/`Lit` material node.
+    Primitive(RecognizedPrimitive<'a>),
+    /// A rigid `Scene.model` leaf (no attached animation, no overrides),
+    /// optionally under `Group` transform wrappers. Whether the LOADED model
+    /// is actually rigid (no skeleton) is only known at render time — a
+    /// skinned model falls back to the stamp there.
+    Model(RecognizedModel<'a>),
+}
+
+pub(crate) struct RecognizedPrimitive<'a> {
     pub primitive: InstancedPrimitive,
     /// The material enclosing the leaf. `None` never reaches the hardware
     /// path — a bare-primitive template CPU-expands so it keeps rendering
@@ -255,15 +264,25 @@ pub(crate) struct RecognizedTemplate<'a> {
     pub local: Matrix4<f32>,
 }
 
+pub(crate) struct RecognizedModel<'a> {
+    pub description: &'a super::ModelDescription,
+    /// Group wrappers plus the leaf's own xform; each mesh primitive further
+    /// composes its glTF node transform on the right.
+    pub local: Matrix4<f32>,
+}
+
 /// Decide whether `template` is drawable by the instanced hardware path.
 ///
 /// Recognized: `Group` chains with exactly one child (their transforms
-/// compose into `local`), at most ONE material node — a solid
-/// `Color`, `Emissive` (no texture), or `Lit` (no texture, no normal map) —
-/// and a `Cube`/`Sphere`/`Cylinder`/`Quad`/`Plane` leaf. Everything else
-/// (models, terrain, multi-child groups, textured materials, bare leaves,
-/// nested instancing, opacity) answers `None` and renders through
-/// [`expand_instanced`].
+/// compose into `local`) ending in either a
+/// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Plane` leaf under at most ONE material
+/// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no texture, no
+/// normal map) — or a bare `Scene.model` leaf with no attached animation and
+/// no overrides (enclosing materials are ignored by the ordinary model draw,
+/// so a material-wrapped model falls back rather than pretending the wrapper
+/// does something). Everything else (terrain, multi-child groups, textured
+/// materials, bare primitive leaves, nested instancing, opacity) answers
+/// `None` and renders through [`expand_instanced`].
 pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
     fn walk<'a>(
         node: &'a Scene3D,
@@ -280,11 +299,28 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     Shape::Plane => InstancedPrimitive::Plane,
                     Shape::Heightmap { .. } | Shape::ConvexPolygon { .. } => return None,
                 };
-                Some(RecognizedTemplate {
+                Some(RecognizedTemplate::Primitive(RecognizedPrimitive {
                     primitive,
                     material: material?,
                     local: local * node.xform,
-                })
+                }))
+            }
+            SceneObject::Model(description) => {
+                // A pose-attached template is the shared-pose ladder rung
+                // (not yet instanced); overrides are legacy and untypical.
+                // An enclosing material would be IGNORED by the ordinary
+                // model draw — fall back so the stamp stays authoritative
+                // rather than encoding that quirk here too.
+                if material.is_some()
+                    || description.animation.is_some()
+                    || !description.overrides.is_empty()
+                {
+                    return None;
+                }
+                Some(RecognizedTemplate::Model(RecognizedModel {
+                    description,
+                    local: local * node.xform,
+                }))
             }
             SceneObject::Group(items) => match items.as_slice() {
                 [only] => walk(only, local * node.xform, material),
@@ -316,8 +352,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     _ => None,
                 }
             }
-            SceneObject::Model(_)
-            | SceneObject::Terrain(_)
+            SceneObject::Terrain(_)
             | SceneObject::Opacity(..)
             | SceneObject::Instanced { .. } => None,
         }
@@ -477,7 +512,11 @@ mod tests {
             obj: SceneObject::Group(vec![lit_cube()]),
             xform: Matrix4::from_nonuniform_scale(2.0, 1.0, 1.0),
         };
-        let recognized = recognize(&template).expect("lit cube under a transform");
+        let RecognizedTemplate::Primitive(recognized) =
+            recognize(&template).expect("lit cube under a transform")
+        else {
+            panic!("expected a primitive template");
+        };
         assert_eq!(recognized.primitive, InstancedPrimitive::Cube);
         assert!(matches!(
             recognized.material,
@@ -501,16 +540,65 @@ mod tests {
                 ),
                 xform: Matrix4::from_scale(1.0),
             };
-            assert_eq!(
-                recognize(&template).expect("solid primitive").primitive,
-                primitive
-            );
+            let RecognizedTemplate::Primitive(recognized) =
+                recognize(&template).expect("solid primitive")
+            else {
+                panic!("expected a primitive template");
+            };
+            assert_eq!(recognized.primitive, primitive);
         }
+    }
+
+    /// Rigid model templates are recognized (transform wrappers fold into
+    /// `local`); animated, override-carrying, or material-wrapped models fall
+    /// back to the stamp.
+    #[test]
+    fn recognizer_accepts_rigid_model_templates() {
+        use crate::scene3d::{ModelDescription, ModelHandle};
+
+        let model = |animation| {
+            Scene3D::model(ModelDescription {
+                handle: ModelHandle::File("barrel.glb".into()),
+                overrides: vec![],
+                animation,
+                while_pending: vec![],
+            })
+        };
+        let template = Scene3D {
+            obj: SceneObject::Group(vec![model(None)]),
+            xform: Matrix4::from_scale(0.02),
+        };
+        let RecognizedTemplate::Model(recognized) =
+            recognize(&template).expect("rigid model under a transform")
+        else {
+            panic!("expected a model template");
+        };
+        assert!(matches!(
+            recognized.description.handle,
+            ModelHandle::File(ref f) if f == "barrel.glb"
+        ));
+        assert_eq!(recognized.local, Matrix4::from_scale(0.02));
+
+        // A pose-attached template is the (not yet instanced) shared-pose
+        // rung — stamped for now.
+        let animated = model(Some(crate::anim::AnimExpr::Rest));
+        assert!(recognize(&animated).is_none());
+
+        // A material wrapper is IGNORED by the ordinary model draw; fall
+        // back so the stamp stays authoritative.
+        let wrapped = Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::color(1.0, 0.0, 0.0, 1.0),
+                vec![model(None)],
+            ),
+            xform: Matrix4::from_scale(1.0),
+        };
+        assert!(recognize(&wrapped).is_none());
     }
 
     #[test]
     fn recognizer_rejects_what_must_fall_back() {
-        use crate::scene3d::{ModelDescription, ModelHandle, TextureDescription};
+        use crate::scene3d::TextureDescription;
 
         // A bare primitive: correct only through the stamp (pass material).
         assert!(recognize(&Scene3D::cube()).is_none());
@@ -529,14 +617,6 @@ mod tests {
             xform: Matrix4::from_scale(1.0),
         };
         assert!(recognize(&pair).is_none());
-        // A model.
-        let model = Scene3D::model(ModelDescription {
-            handle: ModelHandle::File("m.glb".into()),
-            overrides: vec![],
-            animation: None,
-            while_pending: vec![],
-        });
-        assert!(recognize(&model).is_none());
         // Nested materials.
         let nested = Scene3D {
             obj: SceneObject::Material(

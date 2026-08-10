@@ -101,12 +101,16 @@ let opacity : (float, t) => t
 /// come FROM the template: `Scene.cube() |> Scene.lit(color)` instanced is
 /// lit and shadowed exactly like its copies would be.
 ///
-/// The renderer draws recognized templates as ONE hardware-instanced call —
-/// a single cube/sphere/cylinder/quad/plane leaf, under any transforms and at
-/// most one solid `Scene.color` / `Scene.lit` / `Scene.emissive` material.
+/// The renderer draws recognized templates with hardware instancing — a
+/// single cube/sphere/cylinder/quad/plane leaf under any transforms and at
+/// most one solid `Scene.color` / `Scene.lit` / `Scene.emissive` material
+/// (one draw call), or a rigid `Scene.model` leaf under transforms (one draw
+/// call per mesh primitive, textured exactly like the ordinary model draw).
 /// Any other template still renders correctly, expanded copy-by-copy on the
-/// CPU with a once-per-topology `[functor]` perf note — never worse than
-/// writing the group by hand, but not faster either.
+/// CPU with a once-per-topology `[functor]` perf note — comparable to
+/// writing the group by hand, but not faster. A SKINNED model template also
+/// expands (per-copy skinning, exact semantics, with the same note); the
+/// shared-pose instanced path for animated templates is the next rung.
 ///
 /// An empty list draws nothing. `Scene.opacity` inside the template is a
 /// teaching error — wrap the whole instanced node instead
