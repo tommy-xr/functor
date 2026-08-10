@@ -33,7 +33,7 @@ let setHeld = (held, key, isDown) =>
 let input = (model, key, isDown) =>
   { model with held: setHeld(model.held, key, isDown) }
 
-let clamp = (value, low, high) =>
+let clamp = (value: float, low, high) =>
   match value < low with
   | true => low
   | false => (match high < value with | true => high | false => value)
