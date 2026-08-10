@@ -147,6 +147,11 @@ fn collect_transforms(
         SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
             out.insert(path.clone(), w);
         }
+        // An instanced batch has one outer transform but many internal copies.
+        // The trajectory overlay cannot track or fade those copies
+        // independently, so omitting the node is less misleading than strobing
+        // the entire batch as one leaf.
+        SceneObject::Instanced { .. } => {}
     }
 }
 
@@ -194,6 +199,7 @@ fn collect_anchor(
                 },
             );
         }
+        SceneObject::Instanced { .. } => {}
     }
 }
 
@@ -339,6 +345,7 @@ fn collect_sample_leaves<'a>(
                 },
             );
         }
+        SceneObject::Instanced { .. } => {}
     }
 }
 
@@ -1103,7 +1110,10 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
                 scale_presence(item, presence);
             }
         }
-        SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+        SceneObject::Geometry(_)
+        | SceneObject::Model(_)
+        | SceneObject::Terrain(_)
+        | SceneObject::Instanced { .. } => {}
     }
 }
 
@@ -1394,6 +1404,26 @@ mod tests {
 
     fn ball_at(x: f32, y: f32) -> Scene3D {
         Scene3D::sphere().transform(Matrix4::from_translation(vec3(x, y, 0.0)))
+    }
+
+    /// An instanced batch is one node with many internal copies the overlay
+    /// cannot track or fade independently — it must be OMITTED from every
+    /// trajectory walk rather than misrepresented as a single leaf.
+    #[test]
+    fn instanced_batches_are_not_misrepresented_as_one_trajectory_leaf() {
+        let scene = Scene3D::instanced(
+            Scene3D {
+                obj: SceneObject::Material(
+                    MaterialDescription::lit(0.9, 0.4, 0.2, 1.0),
+                    vec![Scene3D::cube()],
+                ),
+                xform: Matrix4::identity(),
+            },
+            vec![crate::InstanceData::at([1.0, 2.0, 3.0])],
+        );
+        assert!(transforms_by_path(&scene).is_empty());
+        assert!(anchor_leaves(&scene).is_empty());
+        assert!(sample_leaves_by_path(&scene).is_empty());
     }
 
     #[test]
@@ -2098,7 +2128,10 @@ mod tests {
                     material_alphas(item, out);
                 }
             }
-            SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+            SceneObject::Geometry(_)
+            | SceneObject::Model(_)
+            | SceneObject::Terrain(_)
+            | SceneObject::Instanced { .. } => {}
         }
     }
 

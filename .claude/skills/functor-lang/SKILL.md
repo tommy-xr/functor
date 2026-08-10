@@ -980,7 +980,8 @@ The generated modules:
 
 | Module | What it is |
 | --- | --- |
-| `Scene` | 3D scene nodes: primitives, models, terrain, materials, transforms |
+| `Scene` | 3D scene nodes: primitives, models, terrain, materials, transforms, instancing |
+| `Instance` | per-copy placement values (position/rotation/scale/tint) for `Scene.instanced` |
 | `Sprite` | pure 2D picture values: shapes, text, images, transforms |
 | `Camera3D` | 3D cameras (`lookAt`, `firstPerson`), clip planes, screen→world rays |
 | `Camera2D` | center-origin 2D camera: pan, zoom, screen→world |
@@ -1059,6 +1060,24 @@ error, and `Scene.opacity(1.0, s)` is exactly `s` (so it does not perturb
 back-to-front by the average world position of their leaves, with depth writing
 off and no shadow — see the `Scene.opacity` reference for what that granularity
 does and does not fix. The 2D analogue is `Sprite.fade`.
+
+**Instancing stamps the template** — `scene |> Scene.instanced(instances)` is
+semantically a group of per-instance transformed copies of the template scene,
+so materials come FROM the template (`Scene.cube() |> Scene.lit(c)` instanced
+is lit and shadowed), and `Instance.tint` is a per-instance MULTIPLIER over the
+template's material colors, not a second material system. `Instance.t` is a
+CHANNEL record, not a transform chain: the copy's transform always applies
+scale → rotation → translation whatever order you pipe the combinators, and
+each combinator composes within its own channel (rotations multiply with the
+outer pipe applying last; scales and tints multiply componentwise). The
+renderer hardware-instances a recognized template — one
+cube/sphere/cylinder/quad/plane leaf under transforms and at most one solid
+`Scene.color`/`Scene.lit`/`Scene.emissive` material — in ONE draw call;
+anything else (models, textured materials, groups, bare leaves) still renders
+correctly via CPU expansion with a once-per-topology `[functor]` perf note.
+`Scene.opacity` inside a template is a teaching error — wrap the whole
+instanced node instead. `Scene.equals` compares instanced nodes structurally
+(template + every instance's channels).
 
 **Zero-argument constructors take their parens** — `Scene.cube()`,
 `Sprite.blank()`, `Anim.rest()`, `Effect.none()`, `Map.empty()`,

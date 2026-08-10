@@ -1,0 +1,48 @@
+//! Per-copy placement for `Scene.instanced`.
+//!
+//! Build one `Instance.t` per copy — where it sits, how it is scaled and
+//! rotated, and an optional color tint — then hand the list to
+//! `Scene.instanced`, which stamps its template scene once per instance.
+//!
+//! Instances are CHANNELS, not free-form transform chains: the copy's
+//! transform always applies scale, then rotation, then translation, whatever
+//! order the combinators were piped in. Combinators compose within their own
+//! channel — rotations multiply (the outer pipe applies last, like
+//! `Scene.rotate*`), scales multiply componentwise, and tints multiply
+//! componentwise.
+
+/// One copy's placement: position, rotation, per-axis scale, and tint.
+type t = host
+
+/// Start an instance at `position`, with no rotation, unit scale, and no
+/// tint.
+let at : (Vec3.t) => t
+
+/// Multiply the instance's scale uniformly.
+let scale : (float, t) => t
+
+/// Multiply the instance's per-axis scale componentwise.
+let scaleXYZ : (float, float, float, t) => t
+
+/// Rotate the instance about the X axis; piped later means applied later.
+let rotateX : (Angle.t, t) => t
+
+/// Rotate the instance about the Y axis; piped later means applied later.
+let rotateY : (Angle.t, t) => t
+
+/// Rotate the instance about the Z axis; piped later means applied later.
+let rotateZ : (Angle.t, t) => t
+
+/// The flat fast path: position, yaw, and per-axis scale in ONE call.
+///
+/// Exactly `Instance.at(position) |> Instance.scaleXYZ(sx, sy, sz)
+/// |> Instance.rotateY(rotationY)`, minus the per-copy builder-call overhead —
+/// reach for it when a large per-frame field makes construction cost visible.
+/// Compose further channels (another rotation axis, `Instance.tint`) on top.
+let trs : (Vec3.t, Angle.t, float, float, float) => t
+
+/// Multiply the copy's material colors by `color` — a per-instance tint over
+/// the template's material, not a second material system. Tints compose by
+/// multiplying; white is the identity. The tint is RGB only — a copy's alpha
+/// always comes from the template's material.
+let tint : (Color.t, t) => t

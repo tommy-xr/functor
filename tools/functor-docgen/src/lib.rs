@@ -55,6 +55,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
         "Scene & rendering",
         &[
             "Scene",
+            "Instance",
             "Frame",
             "Camera3D",
             "Camera2D",
@@ -669,7 +670,7 @@ mod tests {
             let items: usize = modules.iter().map(|module| module.items.len()).sum();
             (modules.len(), items)
         };
-        assert_eq!(count(ApiGroup::Engine), (27, 309));
+        assert_eq!(count(ApiGroup::Engine), (28, 319));
         assert_eq!(count(ApiGroup::Stdlib), (10, 97));
         assert!(reference
             .modules

@@ -76,7 +76,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `{"type":"gamepad_clear"}` (the `xr`/`xr_clear` contract for the gamepad
 /// domain) — and the optional `gamepad` field on `GET /state`'s input
 /// snapshot.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 12;
+///
+/// 13 adds the `Instanced` scene node returned by `GET /scene` — a template
+/// subtree plus compact per-copy channel records (position, quaternion
+/// rotation, per-axis scale, tint). Clients that decode scene variants
+/// exhaustively must gate before reading it.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 13;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -1007,7 +1012,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 12);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 13);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

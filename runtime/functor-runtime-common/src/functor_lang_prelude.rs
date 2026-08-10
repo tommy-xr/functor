@@ -171,7 +171,8 @@ use crate::math::Angle;
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{
-    MaterialDescription, ModelDescription, ModelHandle, SpriteSampling, TextureDescription,
+    InstanceData, MaterialDescription, ModelDescription, ModelHandle, SpriteSampling,
+    TextureDescription,
 };
 use crate::skybox::SkyboxDescription;
 use crate::terrain::TerrainDescription;
@@ -183,6 +184,12 @@ mod sprite;
 
 /// A [`Scene3D`] as an opaque Functor Lang value.
 pub struct FunctorLangScene(pub Scene3D);
+
+/// One `Instance.t` — a copy's placement channels for `Scene.instanced`
+/// (position, rotation, per-axis scale, tint), built by the `Instance.*`
+/// combinators. Plain data underneath, so it is reload-safe.
+#[derive(Clone)]
+pub struct FunctorLangInstance(pub InstanceData);
 
 /// A [`TerrainDescription`] as an opaque, immutable Functor Lang value.
 pub struct FunctorLangTerrain(pub TerrainDescription);
@@ -1346,6 +1353,20 @@ impl HostData for FunctorLangScene {
     }
 }
 
+impl HostData for FunctorLangInstance {
+    fn type_name(&self) -> &'static str {
+        "Instance"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    // Plain channel data — a model holding Instance values stays hot-reload
+    // and time-travel safe.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
 impl HostData for FunctorLangTerrain {
     fn type_name(&self) -> &'static str {
         "Terrain"
@@ -1449,6 +1470,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_ui_anchors(&mut reg);
         register_terrain(&mut reg);
         register_scene(&mut reg);
+        register_instance(&mut reg);
         sprite::register(&mut reg);
         register_camera(&mut reg);
         register_light(&mut reg);
@@ -1618,6 +1640,7 @@ crate::host_returnable!(
     FunctorLangUiAnchor,
     FunctorLangTerrain,
     FunctorLangScene,
+    FunctorLangInstance,
     FunctorLangCamera,
     FunctorLangFrame,
     FunctorLangLight,
@@ -1972,6 +1995,79 @@ four texture Assets and a positive finite tile size in world units";
 /// The Scene vocabulary — geometry constructors, assets, composition,
 /// materials, and transforms. Materials/transforms are scene-LAST
 /// (subject-last), so they pipe: `Scene.cube() |> Scene.lit(color)`.
+/// `Instance.t` builders (instance.funi): the per-copy placement channels
+/// for `Scene.instanced`. Channels compose within themselves — rotations
+/// multiply (the outer pipe applies last), scales and tints multiply
+/// componentwise — and the copy's transform always applies
+/// translate * rotate * scale. Subject-last, like every prelude builder.
+fn register_instance(reg: &mut crate::host_registry::Registry) {
+    use cgmath::{Quaternion, Rad, Rotation3};
+
+    reg.fn1("Instance.at", "Instance.at(position)", |v: FunctorLangVec3| {
+        let (x, y, z) = v.0;
+        FunctorLangInstance(InstanceData::at([x, y, z]))
+    });
+    reg.fn2(
+        "Instance.scale",
+        "Instance.scale(factor, instance)",
+        |factor: f64, instance: FunctorLangInstance| {
+            FunctorLangInstance(instance.0.scaled(factor as f32))
+        },
+    );
+    reg.fn4(
+        "Instance.scaleXYZ",
+        "Instance.scaleXYZ(x, y, z, instance)",
+        |x: f64, y: f64, z: f64, instance: FunctorLangInstance| {
+            FunctorLangInstance(instance.0.scaled_xyz(x as f32, y as f32, z as f32))
+        },
+    );
+    reg.fn2(
+        "Instance.rotateX",
+        "Instance.rotateX(angle, instance)",
+        |angle: FunctorLangAngle, instance: FunctorLangInstance| {
+            let angle: Rad<f32> = angle.0.into();
+            FunctorLangInstance(instance.0.rotated(Quaternion::from_angle_x(angle)))
+        },
+    );
+    reg.fn2(
+        "Instance.rotateY",
+        "Instance.rotateY(angle, instance)",
+        |angle: FunctorLangAngle, instance: FunctorLangInstance| {
+            let angle: Rad<f32> = angle.0.into();
+            FunctorLangInstance(instance.0.rotated(Quaternion::from_angle_y(angle)))
+        },
+    );
+    reg.fn2(
+        "Instance.rotateZ",
+        "Instance.rotateZ(angle, instance)",
+        |angle: FunctorLangAngle, instance: FunctorLangInstance| {
+            let angle: Rad<f32> = angle.0.into();
+            FunctorLangInstance(instance.0.rotated(Quaternion::from_angle_z(angle)))
+        },
+    );
+    reg.fn5(
+        "Instance.trs",
+        "Instance.trs(position, rotationY, scaleX, scaleY, scaleZ)",
+        |v: FunctorLangVec3, angle: FunctorLangAngle, sx: f64, sy: f64, sz: f64| {
+            let (x, y, z) = v.0;
+            let angle: Rad<f32> = angle.0.into();
+            FunctorLangInstance(
+                InstanceData::at([x, y, z])
+                    .scaled_xyz(sx as f32, sy as f32, sz as f32)
+                    .rotated(Quaternion::from_angle_y(angle)),
+            )
+        },
+    );
+    reg.fn2(
+        "Instance.tint",
+        "Instance.tint(color, instance)",
+        |color: FunctorLangColor, instance: FunctorLangInstance| {
+            let (r, g, b) = color.0;
+            FunctorLangInstance(instance.0.tinted([r, g, b]))
+        },
+    );
+}
+
 fn register_scene(reg: &mut crate::host_registry::Registry) {
     // Primitive geometry: constructors take no arguments — the registry
     // rejects any with the usage error, so a guessed `Scene.cube(size)`
@@ -2187,6 +2283,29 @@ row 0 has {cols} heights, row {r} has {}",
                 obj: SceneObject::Opacity(alpha, vec![scene.0]),
                 xform: Matrix4::from_scale(1.0),
             }))
+        },
+    );
+    // Stamp a template subtree once per instance — semantically the group of
+    // transformed, tinted copies; hardware-instanced when the renderer
+    // recognizes the template. `Scene.opacity` INSIDE the template is
+    // rejected: translucency defers whole subtrees by reference, which a
+    // per-copy expansion cannot flow through — wrapping the instanced node
+    // expresses the same thing and is supported.
+    reg.fn2(
+        "Scene.instanced",
+        "Scene.instanced(instances, scene)",
+        |instances: Vec<FunctorLangInstance>, scene: FunctorLangScene| {
+            if scene.0.has_opacity() {
+                return Err(
+                    "Scene.instanced: the template contains Scene.opacity — wrap the whole \
+instanced node instead: scene |> Scene.instanced(instances) |> Scene.opacity(alpha)"
+                        .to_string(),
+                );
+            }
+            Ok(FunctorLangScene(Scene3D::instanced(
+                scene.0,
+                instances.into_iter().map(|instance| instance.0).collect(),
+            )))
         },
     );
     // Attach an animation expression to the Model node(s) in a scene
@@ -4099,6 +4218,7 @@ macro_rules! handle_arg {
 handle_arg!(
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
+    FunctorLangInstance => "an Instance",
     FunctorLangLight => "a Light",
     FunctorLangCamera => "a Camera3D",
     FunctorLangFrame => "a Frame",
@@ -7843,6 +7963,90 @@ Vec3.make(x, y, z)"
         assert!(json.contains("\"Blend\""), "json: {json}");
         let back: Scene3D = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // --- Scene.instanced / Instance.t ---
+
+    /// The builder chain decodes into the exact channel record: `at` sets
+    /// position, `scaleXYZ` multiplies per-axis scale, `rotateY` composes the
+    /// rotation quaternion, `tint` multiplies the tint.
+    #[test]
+    fn instance_builders_decode_into_channel_records() {
+        let source = "let main = () => Scene.cube() \
+             |> Scene.lit(Color.rgb(1.0, 1.0, 1.0)) \
+             |> Scene.instanced([ \
+                Instance.at(Vec3.make(1.0, 2.0, 3.0)) \
+                  |> Instance.scaleXYZ(0.5, 1.0, 2.0) \
+                  |> Instance.scale(2.0) \
+                  |> Instance.rotateY(Angle.degrees(90.0)) \
+                  |> Instance.tint(Color.rgb(0.2, 0.4, 0.8))])";
+        let value = eval(source);
+        let scene = scene_of(&value).expect("Scene.instanced returns a Scene");
+        let SceneObject::Instanced {
+            template,
+            instances,
+        } = &scene.obj
+        else {
+            panic!("expected Instanced, got {:?}", scene.obj);
+        };
+        assert!(matches!(&template.obj, SceneObject::Material(..)));
+        assert_eq!(instances.len(), 1);
+        let instance = &instances[0];
+        assert_eq!(instance.position, [1.0, 2.0, 3.0]);
+        assert_eq!(instance.scale, [1.0, 2.0, 4.0]);
+        assert_eq!(instance.tint, [0.2, 0.4, 0.8]);
+        // A 90° yaw: [0, sin 45°, 0, cos 45°].
+        assert!((instance.rotation[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((instance.rotation[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert_eq!(instance.rotation[0], 0.0);
+        assert_eq!(instance.rotation[2], 0.0);
+    }
+
+    /// Non-finite instance data is refused at the host boundary, and a
+    /// template containing `Scene.opacity` is a teaching error naming the
+    /// supported spelling.
+    #[test]
+    fn instanced_rejects_non_finite_data_and_opacity_templates() {
+        let non_finite = "let main = () => Instance.at(Vec3.make(1.0 / 0.0, 0.0, 0.0))";
+        let module = functor_lang::lower(functor_lang::parse(non_finite).unwrap()).unwrap();
+        let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("non-finite instance data must fail at the host boundary");
+        assert_eq!(failure.error.message, "expected a finite number, got inf");
+
+        let opacity_template = "let main = () => Scene.cube() \
+             |> Scene.lit(Color.rgb(1.0, 0.0, 0.0)) \
+             |> Scene.opacity(0.5) \
+             |> Scene.instanced([Instance.at(Vec3.make(0.0, 0.0, 0.0))])";
+        let module = functor_lang::lower(functor_lang::parse(opacity_template).unwrap()).unwrap();
+        let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("an opacity-bearing template must be a teaching error");
+        assert!(
+            failure.error.message.contains("wrap the whole instanced node"),
+            "unexpected message: {}",
+            failure.error.message
+        );
+    }
+
+    /// `Scene.equals` sees the instanced node structurally — template AND
+    /// per-instance channels.
+    #[test]
+    fn instanced_nodes_compare_structurally() {
+        let node = |tint: &str| {
+            format!(
+                "Scene.cube() |> Scene.lit(Color.rgb(1.0, 1.0, 1.0)) \
+                 |> Scene.instanced([Instance.at(Vec3.make(1.0, 2.0, 3.0)) \
+                 |> Instance.tint(Color.rgb({tint}))])"
+            )
+        };
+        let same = node("0.2, 0.4, 0.8");
+        assert!(equality(&format!("Scene.equals({same}, {same})")));
+        assert!(!equality(&format!(
+            "Scene.equals({}, {})",
+            node("0.2, 0.4, 0.8"),
+            node("0.8, 0.4, 0.2")
+        )));
     }
 
     // --- Scene.equals / Frame.equals (structural equality for draw tests) ---

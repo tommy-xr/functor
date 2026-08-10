@@ -17,9 +17,7 @@ use crate::{
         },
         AssetCache, AssetHandle, AssetPollState, BuiltAssetPipeline,
     },
-    composite::{
-        COMPOSITE_FRAGMENT_SHADER_SOURCE, COMPOSITE_VERTEX_SHADER_SOURCE, MAX_COMPOSITE,
-    },
+    composite::{COMPOSITE_FRAGMENT_SHADER_SOURCE, COMPOSITE_VERTEX_SHADER_SOURCE, MAX_COMPOSITE},
     geometry::{self, Geometry},
     material::{
         BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
@@ -37,11 +35,17 @@ use crate::{
     DebugRenderMode, RenderContext, RenderPass,
 };
 
+mod instanced_renderer;
+mod instancing;
 mod material_description;
 mod model_description;
 mod texture_description;
 
+pub use instancing::InstanceData;
 pub use material_description::*;
+
+use instanced_renderer::InstancedRenderer;
+pub(crate) use instancing::expand_instanced;
 pub use model_description::*;
 pub use texture_description::*;
 
@@ -56,6 +60,9 @@ pub struct SceneContext {
     sphere: RefCell<Box<dyn Geometry>>,
     quad: RefCell<Box<dyn Geometry>>,
     plane: RefCell<Box<dyn Geometry>>,
+    // Lazily created: scenes without `Scene.instanced` allocate no instancing
+    // GPU resources and take no instancing branch.
+    instanced: RefCell<Option<InstancedRenderer>>,
     // One persistent mesh per grid size. Animated terrain (heights change every
     // frame) re-uploads its vertex buffer in place instead of rebuilding a fresh
     // GL mesh each frame; static terrain uploads exactly once. Keyed by
@@ -159,11 +166,7 @@ impl TerrainDecodeResidency {
         );
     }
 
-    fn mark_unsettled(
-        &mut self,
-        locators: &[String],
-        mut is_unsettled: impl FnMut(&str) -> bool,
-    ) {
+    fn mark_unsettled(&mut self, locators: &[String], mut is_unsettled: impl FnMut(&str) -> bool) {
         self.mark(
             locators
                 .iter()
@@ -230,6 +233,7 @@ impl SceneContext {
             cylinder: RefCell::new(geometry::Cylinder::create()),
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
+            instanced: RefCell::new(None),
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -294,9 +298,7 @@ impl SceneContext {
                 // same handle anyway); just accumulate the completion token.
                 if let Some(token) = cmd.token.filter(|token| !entry.tokens.contains(token)) {
                     entry.tokens.push(token);
-                    if entry.tokens.len()
-                        > crate::asset::preload::TOKENS_PER_TARGET_CAP
-                    {
+                    if entry.tokens.len() > crate::asset::preload::TOKENS_PER_TARGET_CAP {
                         entry.tokens.remove(0);
                     }
                 }
@@ -304,8 +306,7 @@ impl SceneContext {
             }
             let handle = match cmd.kind {
                 PreloadKind::Model => PreloadHandle::Model(
-                    asset_cache
-                        .load_asset_with_pipeline(self.model_pipeline.clone(), &cmd.locator),
+                    asset_cache.load_asset_with_pipeline(self.model_pipeline.clone(), &cmd.locator),
                 ),
                 PreloadKind::Texture => PreloadHandle::Texture(
                     asset_cache
@@ -449,8 +450,7 @@ impl SceneContext {
             &terrain.while_pending,
         );
         let source_descriptor = terrain.source();
-        let primary_is_loading =
-            matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
+        let primary_is_loading = matches!(&resolved, crate::asset::WhilePendingState::Loading(_));
         self.terrain_decode_residency.borrow_mut().mark_source(
             &terrain.heightmap,
             &terrain.while_pending,
@@ -577,7 +577,10 @@ impl SceneContext {
 
     /// The texture materials sample for a target id, if it exists.
     pub fn render_target_read_texture(&self, id: &str) -> Option<glow::Texture> {
-        self.render_targets.borrow().get(id).map(|b| b.read_texture())
+        self.render_targets
+            .borrow()
+            .get(id)
+            .map(|b| b.read_texture())
     }
 
     /// A 1x1 magenta texture bound when a material references a render target
@@ -654,8 +657,25 @@ impl SceneContext {
 
     /// Log `message` the first time `key` is seen (per-key, once per run) —
     /// render-loop warnings must not spam every frame.
+    /// Like [`SceneContext::warn_once`], but the message is built only on the
+    /// first sighting — for render-loop call sites where formatting the
+    /// message every frame would itself be a per-frame cost.
+    pub fn warn_once_with(&self, key: &str, message: impl FnOnce() -> String) {
+        if self
+            .render_target_warned
+            .borrow_mut()
+            .insert(key.to_string())
+        {
+            warn_line(&message());
+        }
+    }
+
     pub fn warn_once(&self, key: &str, message: &str) {
-        if self.render_target_warned.borrow_mut().insert(key.to_string()) {
+        if self
+            .render_target_warned
+            .borrow_mut()
+            .insert(key.to_string())
+        {
             warn_line(message);
         }
     }
@@ -676,8 +696,7 @@ impl SceneContext {
                 desc.faces()
                     .iter()
                     .map(|path| {
-                        asset_cache
-                            .load_asset_with_pipeline(self.raw_image_pipeline.clone(), path)
+                        asset_cache.load_asset_with_pipeline(self.raw_image_pipeline.clone(), path)
                     })
                     .collect(),
             )
@@ -717,8 +736,7 @@ disabled for this set"
                 // All six decoded: validate (square, uniform, non-empty —
                 // a 0x0 face is the raw pipeline's undecodable sentinel).
                 let (w, h) = (faces[0].width, faces[0].height);
-                let valid =
-                    w > 0 && w == h && faces.iter().all(|f| f.width == w && f.height == h);
+                let valid = w > 0 && w == h && faces.iter().all(|f| f.width == w && f.height == h);
                 if !valid {
                     *entry = SkyboxEntry::Failed;
                     drop(skyboxes);
@@ -956,7 +974,9 @@ pub enum Shape {
     /// Convexity is a precondition established at construction — `Sprite.polygon`
     /// rejects a non-convex outline rather than let a fan fill it wrongly — so
     /// rendering does no validation.
-    ConvexPolygon { points: Vec<[f32; 2]> },
+    ConvexPolygon {
+        points: Vec<[f32; 2]>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -975,6 +995,18 @@ pub enum SceneObject {
     /// that never calls `Scene.opacity` is bit-for-bit the scene it was before
     /// the variant existed.
     Opacity(f32, Vec<Scene3D>),
+    /// `Scene.instanced` — one template subtree stamped once per instance.
+    ///
+    /// Semantically equivalent to the group [`expand_instanced`] builds (a
+    /// transformed, tinted copy of `template` per [`InstanceData`]); the
+    /// renderer hardware-instances recognized template shapes and CPU-expands
+    /// the rest with a once-per-topology perf note. The prelude rejects a
+    /// template containing `Scene.opacity` (wrap the instanced node instead),
+    /// so this variant never participates in the deferred transparent pass.
+    Instanced {
+        template: Box<Scene3D>,
+        instances: Vec<InstanceData>,
+    },
 }
 
 /// A scene node: what it draws, under a transform.
@@ -1098,6 +1130,18 @@ impl Scene3D {
         }
     }
 
+    /// `Scene.instanced`: stamp `template` once per instance — see
+    /// [`SceneObject::Instanced`].
+    pub fn instanced(template: Scene3D, instances: Vec<InstanceData>) -> Self {
+        Scene3D {
+            obj: SceneObject::Instanced {
+                template: Box::new(template),
+                instances,
+            },
+            xform: Matrix4::identity(),
+        }
+    }
+
     /// Set the animation expression on every `Model` node in this subtree —
     /// `Scene.animate`'s semantics. Piping right after `Scene.model` targets
     /// that one model; applying over a group animates each model in it.
@@ -1127,6 +1171,16 @@ impl Scene3D {
                     .map(|item| item.with_animation(expr.clone()))
                     .collect(),
             ),
+            // The template is the animation target: `Scene.model(x) |>
+            // Scene.animate(pose) |> Scene.instanced(xs)` animates every
+            // stamped copy identically (exactly what the expansion would do).
+            SceneObject::Instanced {
+                template,
+                instances,
+            } => SceneObject::Instanced {
+                template: Box::new(template.with_animation(expr)),
+                instances,
+            },
             leaf @ (SceneObject::Geometry(_) | SceneObject::Terrain(_)) => leaf,
         };
         Scene3D { obj, ..self }
@@ -1142,7 +1196,13 @@ impl Scene3D {
             SceneObject::Group(items) | SceneObject::Material(_, items) => {
                 items.iter().any(Scene3D::has_opacity)
             }
-            SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => false,
+            // The prelude rejects `Scene.opacity` inside a template, so an
+            // instanced node is opaque; an OUTER `Scene.opacity` wrapping it
+            // is seen at that outer node like any other subtree.
+            SceneObject::Geometry(_)
+            | SceneObject::Model(_)
+            | SceneObject::Terrain(_)
+            | SceneObject::Instanced { .. } => false,
         }
     }
 
@@ -1175,6 +1235,19 @@ impl Scene3D {
             SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {
                 *sum += (world * self.xform).w.truncate();
                 *count += 1;
+            }
+            // Each copy contributes its template's leaf origins under its own
+            // instance transform — the same walk the stamp expansion would
+            // produce, so a translucent wrapper around an instanced node sorts
+            // by the batch's true centroid even for transformed templates.
+            SceneObject::Instanced {
+                template,
+                instances,
+            } => {
+                let w = world * self.xform;
+                for instance in instances {
+                    template.accumulate_leaf_origins(&(w * instance.matrix()), sum, count);
+                }
             }
         }
     }
@@ -1235,7 +1308,10 @@ impl Scene3D {
                     item.collect_transparent(world, Some(next_material), out);
                 }
             }
-            SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_) => {}
+            SceneObject::Geometry(_)
+            | SceneObject::Model(_)
+            | SceneObject::Terrain(_)
+            | SceneObject::Instanced { .. } => {}
         }
     }
 
@@ -1372,9 +1448,7 @@ impl Scene3D {
                                 }
                                 DebugRenderMode::Default
                                 | DebugRenderMode::Transparent
-                                | DebugRenderMode::Physics => {
-                                    BasicMaterial::create()
-                                }
+                                | DebugRenderMode::Physics => BasicMaterial::create(),
                                 DebugRenderMode::Normals if is_skinned => {
                                     SkinnedNormalDebugMaterial::create()
                                 }
@@ -1429,7 +1503,7 @@ named \"{name}\" — ignoring it (functor inspect lists a model's joints)"
                                                     "[anim] model \"{str}\" joints \
 \"{root}\" -> \"{middle}\" -> \"{end}\" are not a direct, non-degenerate \
 two-bone chain — ignoring Anim.reach"
-                                            ),
+                                                ),
                                             ),
                                             crate::anim::AnimWarning::NonUniformRootScale {
                                                 root,
@@ -1670,9 +1744,7 @@ so the reach is ignored"
                     }
                     render_context.opacity.set(accumulated);
                     unsafe {
-                        render_context
-                            .gl
-                            .blend_color(0.0, 0.0, 0.0, accumulated);
+                        render_context.gl.blend_color(0.0, 0.0, 0.0, accumulated);
                     }
                 }
                 for item in items.into_iter() {
@@ -1692,6 +1764,67 @@ so the reach is ignored"
                     }
                 }
             }
+            SceneObject::Instanced {
+                template,
+                instances,
+            } => {
+                if instances.is_empty() {
+                    return;
+                }
+                let xform = world_matrix * self.xform;
+                match instancing::recognize(template) {
+                    Some(recognized) => {
+                        let mut renderer = scene_context.instanced.borrow_mut();
+                        let renderer = renderer.get_or_insert_with(|| {
+                            InstancedRenderer::new(
+                                &render_context.gl,
+                                render_context.shader_version,
+                            )
+                        });
+                        renderer.draw(
+                            render_context,
+                            &recognized,
+                            instances,
+                            &xform,
+                            projection_matrix,
+                            view_matrix,
+                        );
+                    }
+                    // The honest fallback: render the stamp-equivalent group
+                    // (the semantics itself), with a once-per-topology perf
+                    // note so the cost is visible. The note is emitted from
+                    // the forward pass only and its message formats lazily —
+                    // the steady-state cost is the key summary, which is
+                    // O(template size) and dwarfed by the expansion itself.
+                    None => {
+                        if !depth_pass {
+                            let summary = instancing::template_summary(template);
+                            let copies = instances.len();
+                            scene_context.warn_once_with(
+                                &format!("instanced-fallback:{summary}"),
+                                || {
+                                    format!(
+                                        "[functor] Scene.instanced template `{summary}` is not hardware-instanced \
+— rendering {copies} copies as a stamped group, comparable to writing \
+the group by hand (hardware templates are one cube/sphere/cylinder/quad/plane \
+leaf under transforms and at most one solid Scene.color / Scene.lit / \
+Scene.emissive material)"
+                                    )
+                                },
+                            );
+                        }
+                        expand_instanced(template, instances).render(
+                            render_context,
+                            scene_context,
+                            &xform,
+                            projection_matrix,
+                            view_matrix,
+                            current_material,
+                        );
+                    }
+                }
+            }
+
             SceneObject::Geometry(Shape::Cube) => {
                 let xform = world_matrix * self.xform;
                 geometry_material.draw_opaque(
@@ -1749,7 +1882,11 @@ so the reach is ignored"
                 );
                 scene_context.plane.borrow_mut().draw(&render_context.gl);
             }
-            SceneObject::Geometry(Shape::Heightmap { rows, cols, heights }) => {
+            SceneObject::Geometry(Shape::Heightmap {
+                rows,
+                cols,
+                heights,
+            }) => {
                 let xform = world_matrix * self.xform;
                 geometry_material.draw_opaque(
                     &render_context,
@@ -2252,9 +2389,10 @@ mod opacity_tests {
         let scene = group(vec![
             cube_at(0.0),
             Scene3D {
-                obj: SceneObject::Material(MaterialDescription::color(1.0, 0.0, 0.0, 1.0), vec![
-                    cube_at(1.0),
-                ]),
+                obj: SceneObject::Material(
+                    MaterialDescription::color(1.0, 0.0, 0.0, 1.0),
+                    vec![cube_at(1.0)],
+                ),
                 xform: Matrix4::identity(),
             },
         ]);
@@ -2302,7 +2440,10 @@ mod opacity_tests {
         // The parent world matrix is everything accumulated ABOVE the node —
         // rendering the node re-applies its own xform, exactly like the opaque
         // walk does.
-        assert_eq!(draw.parent_world, Matrix4::from_translation(vec3(3.0, 0.0, 0.0)));
+        assert_eq!(
+            draw.parent_world,
+            Matrix4::from_translation(vec3(3.0, 0.0, 0.0))
+        );
         assert_eq!(draw.centroid, vec3(3.0, 0.0, 0.0));
     }
 
@@ -2325,11 +2466,11 @@ mod opacity_tests {
     fn the_centroid_averages_the_subtree_leaf_origins() {
         // A translate INSIDE the opacity node still lands in the sort key —
         // this is why the key is a leaf average, not the node's own origin.
-        let node = opacity(
-            0.5,
-            group(vec![cube_at(0.0), cube_at(10.0), cube_at(20.0)]),
+        let node = opacity(0.5, group(vec![cube_at(0.0), cube_at(10.0), cube_at(20.0)]));
+        assert_eq!(
+            node.leaf_centroid(&Matrix4::identity()),
+            vec3(10.0, 0.0, 0.0)
         );
-        assert_eq!(node.leaf_centroid(&Matrix4::identity()), vec3(10.0, 0.0, 0.0));
     }
 
     #[test]
@@ -2338,7 +2479,10 @@ mod opacity_tests {
             obj: SceneObject::Opacity(0.5, vec![]),
             xform: Matrix4::from_translation(vec3(0.0, 7.0, 0.0)),
         };
-        assert_eq!(node.leaf_centroid(&Matrix4::identity()), vec3(0.0, 7.0, 0.0));
+        assert_eq!(
+            node.leaf_centroid(&Matrix4::identity()),
+            vec3(0.0, 7.0, 0.0)
+        );
     }
 
     /// A camera at +Z looking back toward the origin (`look_at_rh`), matching
@@ -2441,7 +2585,10 @@ mod opacity_tests {
         match &scene.obj {
             SceneObject::Opacity(_, items) => match &items[0].obj {
                 SceneObject::Model(description) => {
-                    assert!(description.animation.is_some(), "the pose reached the model")
+                    assert!(
+                        description.animation.is_some(),
+                        "the pose reached the model"
+                    )
                 }
                 other => panic!("expected the model, got {other:?}"),
             },
@@ -2459,7 +2606,10 @@ mod opacity_tests {
 
         // The debug runtime's `GET /scene` and the golden path both read this.
         let json = serde_json::to_string(&a).expect("the scene serializes");
-        assert!(json.contains("\"Opacity\""), "the node names itself: {json}");
+        assert!(
+            json.contains("\"Opacity\""),
+            "the node names itself: {json}"
+        );
         assert!(json.contains("0.35"), "the alpha is on the wire: {json}");
         let round_tripped: Scene3D = serde_json::from_str(&json).expect("and deserializes");
         assert_eq!(round_tripped, a);
