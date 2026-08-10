@@ -510,6 +510,46 @@ test("gamepad() posts a flat, tagged partial sample; gamepadClear() releases it"
   ]);
 });
 
+test("touchInput returns the typed optional input domain", async () => {
+  const touch = {
+    touches: [{ id: 0, x: 120, y: 48 }],
+    pressed: [],
+    released: [{ id: 1, x: 10, y: 10 }],
+  };
+  const http = {
+    getJson: async () => ({
+      frame: 1,
+      tts: 0,
+      viewport: { width: 1, height: 1 },
+      views: [],
+      model: "{}",
+      input: { held_keys: [], mouse: { x: 0, y: 0 }, touch },
+    }),
+  } as unknown as HttpClient;
+  const client = new FunctorClient(http);
+
+  assert.deepEqual(await client.touchInput(), touch);
+});
+
+test("touch() posts one tagged transition per call", async () => {
+  const calls: Array<{ path: string; body: unknown }> = [];
+  const http = {
+    postText: async (path: string, body: unknown) => {
+      calls.push({ path, body });
+      return "ok";
+    },
+  } as HttpClient;
+  const client = new FunctorClient(http);
+
+  await client.touch("begin", 0, 40, 30);
+  await client.touch("end", 0, 41, 29);
+
+  assert.deepEqual(calls, [
+    { path: "/input", body: { type: "touch", phase: "begin", id: 0, x: 40, y: 30 } },
+    { path: "/input", body: { type: "touch", phase: "end", id: 0, x: 41, y: 29 } },
+  ]);
+});
+
 test("reloadAssets uploads binary envelopes then finalizes the manifest", async () => {
   const calls: Array<{ path: string; body: unknown }> = [];
   const http = {
