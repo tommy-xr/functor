@@ -16,6 +16,14 @@ let create2D : (Camera2D.t, Sprite.t) => t
 /// `Light.castShadows` there. A scene that samples the very target it is drawn
 /// into sees the previous frame's image. The main frame is last for piping.
 let withRenderTarget : (RenderTarget.t, t, t) => t
+/// Paint a UI view into a target before rendering the main frame.
+///
+/// The view is a `Ui.*` tree painted at the target's declared size and read
+/// back like any render target (`Scene.quad() |> Scene.screen(target)`) — a
+/// monitor mesh, a cockpit panel. Views on targets are display-only for now:
+/// interactive widgets (buttons, sliders, text inputs) render, but their
+/// handlers are ignored. The main frame is last for piping.
+let withUiTarget : (RenderTarget.t, Ui.view, t) => t
 /// Attach fog to a frame; the frame is last for piping.
 let withFog : (Fog.t, t) => t
 /// Attach a cubemap skybox to a frame; the frame is last for piping.

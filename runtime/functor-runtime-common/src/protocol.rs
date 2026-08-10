@@ -843,6 +843,14 @@ mod tests {
                 target: RenderTargetDescriptor::new("feed"),
                 frame: Frame::new(Camera::default(), Scene3D::cube()),
             }],
+            ui_targets: vec![crate::UiTargetPass {
+                target: RenderTargetDescriptor::new("hud"),
+                view: crate::ui::View::Column(vec![crate::ui::View::Text {
+                    text: "score 3".to_string(),
+                    color: [255, 255, 255],
+                    font: None,
+                }]),
+            }],
             fog: Some(crate::fog::Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7)),
             skybox: Some(crate::skybox::SkyboxDescription::new(
                 "px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg",
@@ -862,6 +870,7 @@ mod tests {
                 .expect("frame without lights decodes");
         assert!(legacy.lights.is_empty());
         assert!(legacy.render_targets.is_empty());
+        assert!(legacy.ui_targets.is_empty());
         assert!(legacy.fog.is_none());
         assert!(legacy.skybox.is_none());
         assert!(legacy.clear_color.is_none());
@@ -882,6 +891,19 @@ mod tests {
         assert_wire(
             &RenderTargetDescriptor::new("feed"),
             r#"{"id":"feed","width":512,"height":512}"#,
+        );
+        // A ui-target pass: the same descriptor plus the View painted into it
+        // (`Frame.withUiTarget`).
+        assert_wire(
+            &crate::UiTargetPass {
+                target: RenderTargetDescriptor::new("hud"),
+                view: crate::ui::View::Text {
+                    text: "score 3".to_string(),
+                    color: [255, 255, 255],
+                    font: None,
+                },
+            },
+            r#"{"target":{"id":"hud","width":512,"height":512},"view":{"Text":{"text":"score 3","color":[255,255,255],"font":null}}}"#,
         );
     }
 

@@ -1006,6 +1006,17 @@ impl GameProducer for FunctorLangEmbeddedGame {
                 self.reporter.report_once(rendered);
             }
         }
+        // Handlers registered during the `draw` eval (interactive widgets in
+        // `Frame.withUiTarget` trees) are display-only for now: drop them so
+        // they neither accumulate across frames nor pollute the `ui`/`webview`
+        // tables adopted below.
+        if !take_ui_handlers().is_empty() {
+            self.reporter.report_once(
+                "[functor-lang] interactive Ui widgets in a draw-eval tree (e.g. \
+Frame.withUiTarget) are display-only for now; their handlers are ignored"
+                    .to_string(),
+            );
+        }
         // The optional HUD, evaluated beside `draw` (same settled model) and
         // cached — `ui()` is a `&self` accessor, and errors need `&mut`
         // dedupe. A bad `ui` keeps the last good view (the last_frame rule).

@@ -45,7 +45,7 @@ impl Label {
 /// *bytes* live in the shell's font registry; a `View` only ever names a font, so
 /// the tree stays serializable/inspectable. Only the default font is wired today —
 /// the family is carried for forward-compatibility and unknown names fall back.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FontRef {
     pub family: String,
     pub size: f32,
@@ -53,7 +53,7 @@ pub struct FontRef {
 
 /// Which screen position a [`View::Panel`] pins its subtree to — the four
 /// corners, or the screen center (for menus).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Anchor {
     TopLeft,
     TopRight,
@@ -66,7 +66,7 @@ pub enum Anchor {
 /// API (`ui : 'model -> View`). It carries only text, layout, colors and *names*
 /// (e.g. fonts), never bytes, so it round-trips as JSON across the wasm boundary
 /// and stays introspectable. [`View::lower`] flattens it to absolute [`Label`]s.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum View {
     /// Renders nothing — the default `ui` for games that don't draw a HUD.
     Empty,
@@ -609,6 +609,139 @@ impl TextOverlay {
         // DEPTH_TEST as-is) and does not restore it. The shared 3D path enables
         // DEPTH_TEST only once at startup and re-arms SCISSOR per frame, so reset
         // to the slate the next 3D frame expects.
+        restore_gl_after_egui(&self.gl);
+    }
+}
+
+/// Paints `Frame.withUiTarget` passes: each declared [`View`] is rendered into
+/// its render target's texture — at the target's declared size, with
+/// `pixels_per_point` 1.0 — so the main pass can sample it via `Scene.screen`.
+/// Call [`Self::render`] BEFORE the frame's main pass; like a 3D target pass,
+/// the write is published with `swap()`, so readers see this frame's image.
+///
+/// Owns its own egui context rather than sharing [`TextOverlay`]'s: an egui
+/// context retains the last pointer position across runs, so reusing the
+/// overlay's would replay window-space hover state onto target widgets. This
+/// context never receives an input event — target views are display-only for
+/// now (interactive widgets render in their resting state; their handlers are
+/// dropped by the producer).
+pub struct UiTargetRenderer {
+    ctx: egui::Context,
+    painter: egui_glow::Painter,
+    gl: Arc<glow::Context>,
+}
+
+impl UiTargetRenderer {
+    pub fn new(gl: Arc<glow::Context>) -> Self {
+        let painter = egui_glow::Painter::new(gl.clone(), "", None, false)
+            .expect("failed to create egui_glow painter");
+        Self {
+            ctx: egui::Context::default(),
+            painter,
+            gl,
+        }
+    }
+
+    /// Render every `Frame.withUiTarget` pass, in declaration order (a later
+    /// write to the same id wins, matching `Frame.withRenderTarget`).
+    pub fn render(
+        &mut self,
+        scene_context: &crate::SceneContext,
+        passes: &[crate::frame::UiTargetPass],
+    ) {
+        for pass in passes {
+            self.render_pass(scene_context, pass);
+        }
+    }
+
+    fn render_pass(&mut self, scene_context: &crate::SceneContext, pass: &crate::frame::UiTargetPass) {
+        // UI targets clear to the engine default backdrop — there is no target
+        // frame to take a fog/clear color from.
+        let clear = crate::fog::clear_color(None);
+        scene_context.ensure_render_target(&self.gl, &pass.target, clear);
+        let Some((fbo, width, height)) = scene_context.render_target_write(&pass.target.id)
+        else {
+            return;
+        };
+        let gl = &self.gl;
+        let previous_fbo = unsafe {
+            // Remember the caller's render target and restore it after the
+            // pass (the shadow-pass rule, shadow.rs): XR shells render into
+            // per-eye swapchain FBOs, so resetting to the default would send
+            // the forward pass into an invisible pbuffer. Reconstructing the
+            // key from the GL query is native-only; on wasm the canvas default
+            // framebuffer IS the target, so `None` is exact there.
+            #[cfg(not(target_arch = "wasm32"))]
+            let previous_fbo = std::num::NonZeroU32::new(
+                gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32,
+            )
+            .map(glow::NativeFramebuffer);
+            #[cfg(target_arch = "wasm32")]
+            let previous_fbo: Option<glow::Framebuffer> = None;
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            // The forward pass may have left SCISSOR_TEST clipped to a window
+            // pane; the target owns its whole texture.
+            gl.disable(glow::SCISSOR_TEST);
+            gl.viewport(0, 0, width as i32, height as i32);
+            gl.clear_color(clear[0], clear[1], clear[2], 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            previous_fbo
+        };
+        self.paint(width, height, &pass.view);
+        unsafe {
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
+        }
+        scene_context.finish_render_target_write(&pass.target.id);
+    }
+
+    /// One display-only egui pass into the bound framebuffer. Interaction
+    /// state is fresh locals: no events are ever fed, so no `UiEvent` can
+    /// arise and the stateful-widget buffers have nothing to reconcile.
+    fn paint(&mut self, width: u32, height: u32, view: &View) {
+        if matches!(view, View::Empty) || width == 0 || height == 0 {
+            return;
+        }
+        self.ctx.set_pixels_per_point(1.0);
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width as f32, height as f32),
+            )),
+            ..Default::default()
+        };
+        let mut events = Vec::new();
+        let mut sliders = std::collections::HashMap::new();
+        let mut seen_sliders = std::collections::HashSet::new();
+        let mut texts = std::collections::HashMap::new();
+        let mut seen_texts = std::collections::HashSet::new();
+        let output = self.ctx.run_ui(raw_input, |ui| {
+            let mut state = UiFrameState {
+                events: &mut events,
+                sliders: &mut sliders,
+                seen_sliders: &mut seen_sliders,
+                texts: &mut texts,
+                seen_texts: &mut seen_texts,
+            };
+            match view {
+                // A panel anchors itself (to the TARGET's rect); a bare root
+                // sits at the top-left with a margin, like the overlay.
+                View::Panel { .. } => render_view(ui, view, &mut state),
+                other => {
+                    let ctx = ui.ctx().clone();
+                    egui::Area::new(egui::Id::new("functor_ui_target_root"))
+                        .anchor(egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN))
+                        .interactable(false)
+                        .show(&ctx, |ui| render_view(ui, other, &mut state));
+                }
+            }
+        });
+        let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        self.painter.paint_and_update_textures(
+            [width, height],
+            output.pixels_per_point,
+            &primitives,
+            &output.textures_delta,
+        );
         restore_gl_after_egui(&self.gl);
     }
 }

@@ -1462,6 +1462,13 @@ let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; conti
                                             // frame (needs no `update`)
 ```
 
+**UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
+`Ui.*` tree into a render target (declared once with
+`RenderTarget.named("id") |> RenderTarget.sized(w, h)`) before the main pass;
+read it back with `Scene.quad() |> Scene.screen(target)` — a monitor mesh, a
+cockpit panel. Display-only for now: interactive widgets render, but their
+handlers are ignored (a one-time warning says so).
+
 The three mouse hooks receive captured shell input by default. Set
 `"mouseCapture":false` to disable that path, or use `"cursor":"visible"` for
 absolute pointer input (which also disables capture). Programs without
