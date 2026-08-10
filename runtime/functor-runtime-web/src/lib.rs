@@ -1965,7 +1965,7 @@ async fn run_async() -> Result<(), JsValue> {
             // `Frame.withUiTarget` passes go first, so the main pass below
             // samples this frame's image.
             if !frame.ui_targets.is_empty() {
-                ui_target_renderer.render(&scene_context, &frame.ui_targets);
+                ui_target_renderer.render(&scene_context, &frame);
             }
             // Shadow + forward passes, shared with the desktop runtime.
             functor_runtime_common::render_frame_with_view(

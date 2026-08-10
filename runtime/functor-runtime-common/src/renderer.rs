@@ -214,6 +214,16 @@ target frame are ignored (depth 1 only)",
                 ),
             );
         }
+        if !pass.frame.ui_targets.is_empty() {
+            scene_context.warn_once(
+                &format!("nested-ui:{}", pass.target.id),
+                &format!(
+                    "[render-target] \"{}\": ui targets inside a target frame \
+are ignored — declare Frame.withUiTarget on the main frame",
+                    pass.target.id
+                ),
+            );
+        }
 
         let shadow = shadow_pass(
             gl,

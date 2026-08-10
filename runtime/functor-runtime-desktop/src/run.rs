@@ -3079,7 +3079,7 @@ Escape again to quit"
             // `Frame.withUiTarget` passes go first, so the passes below —
             // including each eye of a stereo pair — sample this frame's image.
             if !drawn_frame.ui_targets.is_empty() {
-                ui_target_renderer.render(&scene_context, &drawn_frame.ui_targets);
+                ui_target_renderer.render(&scene_context, drawn_frame);
             }
 
             // Shadow + forward passes, shared with the web runtime. In stereo

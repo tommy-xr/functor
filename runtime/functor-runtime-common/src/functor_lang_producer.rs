@@ -2256,6 +2256,9 @@ pub fn ghost_frames(
                 frames.push((frame.clone(), FrameTime { dts: 0.0, tts }));
             }
         }
+        // Draw-eval handlers (Frame.withUiTarget widgets) are display-only;
+        // an auxiliary draw must not leave them for the next live drain.
+        let _ = take_ui_handlers();
     }
     frames
 }
@@ -2390,6 +2393,9 @@ pub fn history_frames(
                 ));
             }
         }
+        // Draw-eval handlers (Frame.withUiTarget widgets) are display-only;
+        // an auxiliary draw must not leave them for the next live drain.
+        let _ = take_ui_handlers();
     }
     frames
 }

@@ -4993,6 +4993,21 @@ pub fn take_ui_handlers() -> Vec<UiHandler> {
     UI_HANDLERS.with(|h| std::mem::take(&mut *h.borrow_mut()))
 }
 
+/// Drop whatever handlers the just-finished `draw` evaluation registered
+/// (interactive widgets in `Frame.withUiTarget` trees — display-only for
+/// now), so they neither accumulate across frames nor pollute the
+/// `ui`/`webview` tables the producer adopts next. Returns whether anything
+/// was dropped, so the caller can report [`DRAW_EVAL_HANDLERS_WARNING`] once.
+pub fn drop_draw_eval_ui_handlers() -> bool {
+    !take_ui_handlers().is_empty()
+}
+
+/// The one-time warning both producers report when
+/// [`drop_draw_eval_ui_handlers`] drops something.
+pub const DRAW_EVAL_HANDLERS_WARNING: &str =
+    "[functor-lang] interactive Ui widgets in a draw-eval tree (e.g. \
+Frame.withUiTarget) are display-only for now; their handlers are ignored";
+
 /// Put a saved handler table back — the inspector-replay bracket: replaying a
 /// journaled call (or draw) that evaluates `Ui.*` pushes handlers the NEXT
 /// real `ui` pass would take as its own, shifting every slot. The replay

@@ -1364,6 +1364,17 @@ pub fn android_main(app: AndroidApp) {
             debug.frame_count += 1;
         }
         let frame = game.render(frame_time.clone());
+        if !frame.ui_targets.is_empty() {
+            // Frame.withUiTarget is not wired on this shell yet — the screen
+            // samples the magenta fallback. Warn once so the gap is loud.
+            static UI_TARGETS_WARNED: std::sync::Once = std::sync::Once::new();
+            UI_TARGETS_WARNED.call_once(|| {
+                log::warn!(
+                    "Frame.withUiTarget is not supported on the VR runtime yet; \
+ui-target screens render the fallback texture"
+                );
+            });
+        }
         // No audio/HTTP hosts on device yet: drain their command queues so
         // they don't grow unbounded. Preloads and physics terrain requests
         // are driven above through the shared asset cache.

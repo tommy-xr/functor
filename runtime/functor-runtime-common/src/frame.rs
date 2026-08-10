@@ -139,7 +139,8 @@ impl Frame {
     /// Paint `view` (a `Ui.*` tree) into `target` each frame, before this
     /// frame's main pass, at the target's declared size. Subject-first so it
     /// pipes (`frame |> Frame.withUiTarget(…)`); declaration order is paint
-    /// order, so a later write to the same id wins.
+    /// order, and — matching `withRenderTarget` — the FIRST declaration of an
+    /// id wins (duplicates warn once and are skipped).
     pub fn with_ui_target(mut frame: Frame, target: RenderTargetDescriptor, view: View) -> Frame {
         frame.ui_targets.push(UiTargetPass { target, view });
         frame
@@ -201,11 +202,7 @@ mod tests {
             obj: SceneObject::Group(vec![]),
             xform: Matrix4::identity(),
         };
-        assert!(!Frame::with_2d(
-            Frame::new(Camera::default(), empty_3d),
-            layer
-        )
-        .is_pure_2d());
+        assert!(!Frame::with_2d(Frame::new(Camera::default(), empty_3d), layer).is_pure_2d());
     }
 
     #[test]
