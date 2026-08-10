@@ -723,20 +723,10 @@ in this frame; only the first declaration is rendered"
         pass: &crate::frame::UiTargetPass,
     ) {
         let gl = &self.gl;
-        // Remember the caller's render target BEFORE ensure_render_target —
-        // (re)allocating buffers leaves the FBO binding on `None` — and
-        // restore it after the pass (the shadow-pass rule, shadow.rs): XR
-        // shells render into per-eye swapchain FBOs, so resetting to the
-        // default would send the forward pass into an invisible pbuffer.
-        // Reconstructing the key from the GL query is native-only; on wasm
-        // the canvas default framebuffer IS the target, so `None` is exact.
-        #[cfg(not(target_arch = "wasm32"))]
-        let previous_fbo = std::num::NonZeroU32::new(unsafe {
-            gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32
-        })
-        .map(glow::NativeFramebuffer);
-        #[cfg(target_arch = "wasm32")]
-        let previous_fbo: Option<glow::Framebuffer> = None;
+        // The caller's render target, restored after the pass — captured
+        // BEFORE ensure_render_target, since (re)allocating buffers leaves
+        // the FBO binding on `None`.
+        let previous_fbo = crate::renderer::ambient_framebuffer(gl);
         // UI targets clear to the engine default backdrop for now — there is
         // no target frame to take a fog/clear color from.
         let clear = crate::fog::clear_color(None);
