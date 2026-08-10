@@ -46,6 +46,10 @@ import type { PillState } from "./components/StatusPill.js";
 import { asPlayerMessage } from "./protocol.js";
 import type { ProjectFile } from "./protocol.js";
 import { zipFiles } from "./zip.js";
+// The project-file rule lives with the share-link codec, which enforces the
+// same thing on a decoded fragment — one definition for both entrances into
+// the IDE's flat module space.
+import { MODULE_FILE } from "./share-link.js";
 
 /** The in-memory project: a flat module space plus the open file's path. */
 interface Project {
@@ -106,11 +110,6 @@ const playerUrl = () => {
   if (cursorPolicy) params.set("cursor", cursorPolicy);
   return `player.html?${params}`;
 };
-// A valid project file: a bare module name + `.fun` (the project is a flat
-// module space — no path separators). Enforced on BOTH created and loaded
-// files, so a hand-edited/corrupt localStorage can't smuggle in a `../x.fun`
-// (which would be a zip-slip entry on download and a bad module at load).
-const MODULE_FILE = /^[A-Za-z][A-Za-z0-9_]*\.fun$/;
 
 // A two-file starter: game.fun draws using constants from palette.fun (a
 // sibling module — file = module, so palette.fun is module `Palette`), to show
