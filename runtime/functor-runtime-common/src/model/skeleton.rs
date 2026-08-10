@@ -223,6 +223,19 @@ impl Skeleton {
     }
 }
 
+/// Flatten a joint palette into the column-major f32 stream
+/// `set_uniform_matrix4fv` expects — the one shared upload shape for every
+/// skinned program (the stamped materials and the instanced shared-pose
+/// path).
+pub fn flatten_joint_matrices(joints: &[Matrix4<f32>]) -> Vec<f32> {
+    let mut joint_matrices = Vec::with_capacity(joints.len() * 16);
+    for joint in joints {
+        let matrix_array: &[f32; 16] = joint.as_ref();
+        joint_matrices.extend_from_slice(matrix_array);
+    }
+    joint_matrices
+}
+
 /// One node of the full glTF document hierarchy (every node, not just skin
 /// joints) — enough to resolve joint parents and the ancestor chain above a
 /// skin's root joints.

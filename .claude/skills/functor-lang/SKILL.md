@@ -1073,10 +1073,12 @@ outer pipe applying last; scales and tints multiply componentwise). The
 renderer hardware-instances a recognized template — one
 cube/sphere/cylinder/quad/plane leaf under transforms and at most one solid
 `Scene.color`/`Scene.lit`/`Scene.emissive` material (ONE draw call), or a
-rigid `Scene.model` leaf under transforms (one draw call per mesh primitive,
-textured like the ordinary model draw); anything else (skinned or animated
-models, textured materials, groups, bare leaves) still renders correctly via
-CPU expansion with a once-per-topology `[functor]` perf note.
+`Scene.model` leaf under transforms (one draw call per mesh primitive,
+textured like the ordinary model draw; a SKINNED model — via `Scene.animate`
+or the first-clip autoplay — instances at the SHARED pose, sampled and
+uploaded once for every copy); anything else (textured materials, groups,
+bare leaves) still renders correctly via CPU expansion with a
+once-per-topology `[functor]` perf note.
 `Scene.opacity` inside a template is a teaching error — wrap the whole
 instanced node instead. `Scene.equals` compares instanced nodes structurally
 (template + every instance's channels).

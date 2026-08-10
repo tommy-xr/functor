@@ -246,10 +246,11 @@ pub(crate) enum RecognizedTemplate<'a> {
     /// (folded into `local`) and at most one solid-color
     /// `Color`/`Emissive`/`Lit` material node.
     Primitive(RecognizedPrimitive<'a>),
-    /// A rigid `Scene.model` leaf (no attached animation, no overrides),
-    /// optionally under `Group` transform wrappers. Whether the LOADED model
-    /// is actually rigid (no skeleton) is only known at render time — a
-    /// skinned model falls back to the stamp there.
+    /// A `Scene.model` leaf (no overrides; an attached `Scene.animate` pose
+    /// is allowed — every copy shows the same sampled pose), optionally under
+    /// `Group` transform wrappers. Whether the LOADED model is rigid or
+    /// skinned is only known at render time; each gets its own instanced
+    /// draw path there.
     Model(RecognizedModel<'a>),
 }
 
@@ -277,9 +278,10 @@ pub(crate) struct RecognizedModel<'a> {
 /// compose into `local`) ending in either a
 /// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Plane` leaf under at most ONE material
 /// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no texture, no
-/// normal map) — or a bare `Scene.model` leaf with no attached animation and
-/// no overrides (enclosing materials are ignored by the ordinary model draw,
-/// so a material-wrapped model falls back rather than pretending the wrapper
+/// normal map) — or a `Scene.model` leaf with no overrides, with or without
+/// an attached `Scene.animate` pose (every copy shows the same sampled pose;
+/// enclosing materials are ignored by the ordinary model draw, so a
+/// material-wrapped model falls back rather than pretending the wrapper
 /// does something). Everything else (terrain, multi-child groups, textured
 /// materials, bare primitive leaves, nested instancing, opacity) answers
 /// `None` and renders through [`expand_instanced`].
@@ -306,15 +308,14 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                 }))
             }
             SceneObject::Model(description) => {
-                // A pose-attached template is the shared-pose ladder rung
-                // (not yet instanced); overrides are legacy and untypical.
-                // An enclosing material would be IGNORED by the ordinary
-                // model draw — fall back so the stamp stays authoritative
-                // rather than encoding that quirk here too.
-                if material.is_some()
-                    || description.animation.is_some()
-                    || !description.overrides.is_empty()
-                {
+                // A pose-attached (`Scene.animate`) model is recognized too —
+                // every copy shows the SAME sampled pose (the stamp of a
+                // shared-tts group is exactly that), drawn by the skinned
+                // instanced path. Overrides are legacy and untypical. An
+                // enclosing material would be IGNORED by the ordinary model
+                // draw — fall back so the stamp stays authoritative rather
+                // than encoding that quirk here too.
+                if material.is_some() || !description.overrides.is_empty() {
                     return None;
                 }
                 Some(RecognizedTemplate::Model(RecognizedModel {
@@ -579,10 +580,15 @@ mod tests {
         ));
         assert_eq!(recognized.local, Matrix4::from_scale(0.02));
 
-        // A pose-attached template is the (not yet instanced) shared-pose
-        // rung — stamped for now.
+        // A pose-attached template is recognized too — the shared-pose rung:
+        // every copy renders the same sampled pose.
         let animated = model(Some(crate::anim::AnimExpr::Rest));
-        assert!(recognize(&animated).is_none());
+        let RecognizedTemplate::Model(recognized) =
+            recognize(&animated).expect("pose-attached model template")
+        else {
+            panic!("expected a model template");
+        };
+        assert!(recognized.description.animation.is_some());
 
         // A material wrapper is IGNORED by the ordinary model draw; fall
         // back so the stamp stays authoritative.

@@ -36,23 +36,51 @@ use super::MaterialDescription;
 
 // The instance transform is `translate * rotate * scale` applied on top of
 // the template's internal `local` matrix, all under the node's accumulated
-// `world`. Shared by the forward and depth vertex shaders so the two passes'
-// instance placement is provably identical.
-const INSTANCE_TRANSFORM_GLSL: &str = r#"
-        layout (location = 4) in vec3 instancePosition;
-        layout (location = 5) in vec4 instanceRotation;
-        layout (location = 6) in vec3 instanceScale;
+// `world`. Shared by every instanced vertex shader so all passes' instance
+// placement is provably identical. `base` is the first instance-attribute
+// location: 4 for the primitive/rigid-model shaders, 6 for the skinned ones
+// (whose 4/5 carry the mesh's joint indices/weights).
+fn instance_transform_glsl(base: u32) -> String {
+    format!(
+        r#"
+        layout (location = {p}) in vec3 instancePosition;
+        layout (location = {r}) in vec4 instanceRotation;
+        layout (location = {s}) in vec3 instanceScale;
 
         uniform mat4 world;
         uniform mat4 local;
 
-        vec3 rotate(vec4 q, vec3 v) {
+        vec3 rotate(vec4 q, vec3 v) {{
             return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
-        }
+        }}
 
-        vec3 instanceLocal(vec3 pos) {
+        vec3 instanceLocal(vec3 pos) {{
             vec4 lp = local * vec4(pos, 1.0);
             return rotate(instanceRotation, lp.xyz * instanceScale) + instancePosition;
+        }}
+"#,
+        p = base,
+        r = base + 1,
+        s = base + 2
+    )
+}
+
+// The joint blend shared by the skinned instanced vertex shaders — the same
+// palette blend as `SkinnedMaterial` (200-joint uniform array), evaluated
+// ONCE per node and read by every copy (the shared-pose contract).
+const SKINNING_GLSL: &str = r#"
+        #define MAX_JOINTS 200
+
+        layout (location = 4) in vec4 inJointIndices;
+        layout (location = 5) in vec4 inWeights;
+
+        uniform mat4 jointTransforms[MAX_JOINTS];
+
+        mat4 skinMatrix() {
+            return inWeights.x * jointTransforms[int(inJointIndices.x)] +
+                   inWeights.y * jointTransforms[int(inJointIndices.y)] +
+                   inWeights.z * jointTransforms[int(inJointIndices.z)] +
+                   inWeights.w * jointTransforms[int(inJointIndices.w)];
         }
 "#;
 
@@ -159,6 +187,65 @@ const DEPTH_FRAGMENT_SHADER_SOURCE: &str = r#"
         }
 "#;
 
+// Skinned instanced forward vertex shader: skin in mesh space (the skeleton
+// carries the chain to the model root — glTF ignores a skinned mesh's node
+// transform), then the shared instance placement. Outputs match
+// `FRAGMENT_SHADER_SOURCE`, which draws lit+textured here (materialMode 1,
+// useTexture 1) — the same shading as `SkinnedMaterial`'s stamped copies.
+// Normals/tangents take the joint blend first (the `SkinnedMaterial`
+// convention, which assumes rigid joint transforms), then the same
+// per-stage inverse-transpose treatment as the primitive shader. The tint
+// attribute sits at location 9, pinned to white for bare model templates.
+const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
+        layout (location = 0) in vec3 inPos;
+        layout (location = 1) in vec2 inTex;
+        layout (location = 2) in vec3 inNormal;
+        layout (location = 3) in vec4 inTangent;
+        layout (location = 9) in vec3 instanceTint;
+
+        uniform mat3 normalMatrix;
+        uniform mat3 localNormalMatrix;
+        uniform mat4 view;
+        uniform mat4 projection;
+
+        out vec2 texCoord;
+        out vec3 worldPos;
+        out vec3 worldNormal;
+        out vec3 worldTangent;
+        out vec3 tintColor;
+
+        void main() {
+            mat4 skin = skinMatrix();
+            vec3 sp = (skin * vec4(inPos, 1.0)).xyz;
+            vec4 wp = world * vec4(instanceLocal(sp), 1.0);
+            texCoord = inTex;
+            worldPos = wp.xyz;
+            tintColor = instanceTint;
+            vec3 ln = localNormalMatrix * (mat3(skin) * inNormal);
+            vec3 safeScale = mix(instanceScale, vec3(1.0),
+                vec3(lessThan(abs(instanceScale), vec3(1e-8))));
+            worldNormal = normalMatrix * rotate(instanceRotation, ln / safeScale);
+            vec3 lt = mat3(local) * (mat3(skin) * inTangent.xyz);
+            worldTangent = mat3(world) * rotate(instanceRotation, lt * instanceScale);
+            gl_Position = projection * view * wp;
+        }
+"#;
+
+// Skinned depth-pass twin: skin, place, packDepth — so animated instanced
+// copies cast a correctly deforming shadow (the `SkinnedDepthMaterial`
+// contract).
+const SKINNED_DEPTH_VERTEX_SHADER_SOURCE: &str = r#"
+        layout (location = 0) in vec3 inPos;
+
+        uniform mat4 view;
+        uniform mat4 projection;
+
+        void main() {
+            vec3 sp = (skinMatrix() * vec4(inPos, 1.0)).xyz;
+            gl_Position = projection * view * world * vec4(instanceLocal(sp), 1.0);
+        }
+"#;
+
 struct ForwardUniforms {
     world: UniformLocation,
     local: UniformLocation,
@@ -211,6 +298,60 @@ struct ModelMeshVao {
     vertex_buffer: glow::Buffer,
 }
 
+/// The skinned program pair (forward + depth) with their uniform sets and
+/// palette locations — built lazily on the FIRST skinned instanced draw, so
+/// a scene that only instances primitives or rigid models never pays their
+/// compile/link.
+struct SkinnedPrograms {
+    forward: ShaderProgram,
+    forward_uniforms: ForwardUniforms,
+    forward_joints: UniformLocation,
+    depth: ShaderProgram,
+    depth_uniforms: DepthUniforms,
+    depth_joints: UniformLocation,
+}
+
+impl SkinnedPrograms {
+    fn new(gl: &glow::Context, shader_version: &str) -> Self {
+        let forward = build_program(
+            gl,
+            shader_version,
+            &format!(
+                "{}\n{}\n{}",
+                instance_transform_glsl(6),
+                SKINNING_GLSL,
+                SKINNED_VERTEX_SHADER_SOURCE
+            ),
+            &forward_fragment_source(),
+        );
+        let forward_uniforms = forward_uniforms_of(&forward, gl);
+        let forward_joints = forward.get_uniform_location(gl, "jointTransforms");
+
+        let depth = build_program(
+            gl,
+            shader_version,
+            &format!(
+                "{}\n{}\n{}",
+                instance_transform_glsl(6),
+                SKINNING_GLSL,
+                SKINNED_DEPTH_VERTEX_SHADER_SOURCE
+            ),
+            &depth_fragment_source(),
+        );
+        let depth_uniforms = depth_uniforms_of(&depth, gl);
+        let depth_joints = depth.get_uniform_location(gl, "jointTransforms");
+
+        Self {
+            forward,
+            forward_uniforms,
+            forward_joints,
+            depth,
+            depth_uniforms,
+            depth_joints,
+        }
+    }
+}
+
 /// Persistent GPU state for `Scene.instanced`'s hardware path.
 pub(super) struct InstancedRenderer {
     meshes: HashMap<InstancedPrimitive, MeshBuffers>,
@@ -220,79 +361,50 @@ pub(super) struct InstancedRenderer {
     // against the meshes' live vertex-buffer handles and rebuilds on
     // mismatch) instead of stranding a dead generation.
     model_meshes: HashMap<String, ModelInstancedState>,
+    // The skinned twin — same state shape, but its VAOs enable the joint
+    // channels and carry the instance layout at locations 6-8.
+    skinned_model_meshes: HashMap<String, ModelInstancedState>,
     forward: ShaderProgram,
     forward_uniforms: ForwardUniforms,
     depth: ShaderProgram,
     depth_uniforms: DepthUniforms,
+    // Lazily built (see `SkinnedPrograms`); needs the shader version kept.
+    skinned: Option<SkinnedPrograms>,
+    shader_version: String,
 }
 
 impl InstancedRenderer {
     pub(super) fn new(gl: &glow::Context, shader_version: &str) -> Self {
-        let forward_vertex_source =
-            format!("{}\n{}", INSTANCE_TRANSFORM_GLSL, VERTEX_SHADER_SOURCE);
-        let vertex_shader = Shader::build(
+        let forward = build_program(
             gl,
-            ShaderType::Vertex,
-            &forward_vertex_source,
             shader_version,
+            &format!("{}\n{}", instance_transform_glsl(4), VERTEX_SHADER_SOURCE),
+            &forward_fragment_source(),
         );
-        let fragment_source = format!(
-            "{}\n{}\n{}",
-            FOG_GLSL,
-            lighting_glsl(),
-            FRAGMENT_SHADER_SOURCE
-        );
-        let fragment_shader =
-            Shader::build(gl, ShaderType::Fragment, &fragment_source, shader_version);
-        let forward = ShaderProgram::link(gl, &vertex_shader, &fragment_shader);
-        let forward_uniforms = ForwardUniforms {
-            world: forward.get_uniform_location(gl, "world"),
-            local: forward.get_uniform_location(gl, "local"),
-            normal_matrix: forward.get_uniform_location(gl, "normalMatrix"),
-            local_normal_matrix: forward.get_uniform_location(gl, "localNormalMatrix"),
-            view: forward.get_uniform_location(gl, "view"),
-            projection: forward.get_uniform_location(gl, "projection"),
-            base_color: forward.get_uniform_location(gl, "baseColor"),
-            texture1: forward.get_uniform_location(gl, "texture1"),
-            use_texture: forward.get_uniform_location(gl, "useTexture"),
-            material_mode: forward.get_uniform_location(gl, "materialMode"),
-            debug_mode: forward.get_uniform_location(gl, "debugMode"),
-            lighting: LightingUniforms::get(&forward, gl),
-            fog: FogUniforms::get(&forward, gl),
-        };
+        let forward_uniforms = forward_uniforms_of(&forward, gl);
 
-        let depth_vertex_source = format!(
-            "{}\n{}",
-            INSTANCE_TRANSFORM_GLSL, DEPTH_VERTEX_SHADER_SOURCE
-        );
-        let depth_vertex =
-            Shader::build(gl, ShaderType::Vertex, &depth_vertex_source, shader_version);
-        let depth_fragment_source = format!(
-            "{}\n{}",
-            crate::material::depth_material::PACK_DEPTH_GLSL,
-            DEPTH_FRAGMENT_SHADER_SOURCE
-        );
-        let depth_fragment = Shader::build(
+        let depth = build_program(
             gl,
-            ShaderType::Fragment,
-            &depth_fragment_source,
             shader_version,
+            &format!(
+                "{}\n{}",
+                instance_transform_glsl(4),
+                DEPTH_VERTEX_SHADER_SOURCE
+            ),
+            &depth_fragment_source(),
         );
-        let depth = ShaderProgram::link(gl, &depth_vertex, &depth_fragment);
-        let depth_uniforms = DepthUniforms {
-            world: depth.get_uniform_location(gl, "world"),
-            local: depth.get_uniform_location(gl, "local"),
-            view: depth.get_uniform_location(gl, "view"),
-            projection: depth.get_uniform_location(gl, "projection"),
-        };
+        let depth_uniforms = depth_uniforms_of(&depth, gl);
 
         Self {
             meshes: HashMap::new(),
             model_meshes: HashMap::new(),
+            skinned_model_meshes: HashMap::new(),
             forward,
             forward_uniforms,
             depth,
             depth_uniforms,
+            skinned: None,
+            shader_version: shader_version.to_string(),
         }
     }
 
@@ -346,7 +458,7 @@ impl InstancedRenderer {
                 }
 
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-                instance_attrib_layout(gl, true);
+                instance_attrib_layout(gl, 4, true);
 
                 gl.bind_vertex_array(None);
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
@@ -361,60 +473,6 @@ impl InstancedRenderer {
                 }
             }
         })
-    }
-
-    /// Set the depth program's uniforms for one instanced draw.
-    fn set_depth_uniforms(
-        &self,
-        ctx: &RenderContext,
-        world: &Matrix4<f32>,
-        local: &Matrix4<f32>,
-        projection: &Matrix4<f32>,
-        view: &Matrix4<f32>,
-    ) {
-        let u = &self.depth_uniforms;
-        self.depth.use_program(ctx.gl);
-        self.depth.set_uniform_matrix4(ctx.gl, &u.world, world);
-        self.depth.set_uniform_matrix4(ctx.gl, &u.local, local);
-        self.depth.set_uniform_matrix4(ctx.gl, &u.view, view);
-        self.depth
-            .set_uniform_matrix4(ctx.gl, &u.projection, projection);
-    }
-
-    /// Set the forward program's uniforms for one instanced draw.
-    #[allow(clippy::too_many_arguments)]
-    fn set_forward_uniforms(
-        &self,
-        ctx: &RenderContext,
-        world: &Matrix4<f32>,
-        local: &Matrix4<f32>,
-        projection: &Matrix4<f32>,
-        view: &Matrix4<f32>,
-        color: &cgmath::Vector4<f32>,
-        use_texture: bool,
-        lit: bool,
-    ) {
-        let u = &self.forward_uniforms;
-        let p = &self.forward;
-        p.use_program(ctx.gl);
-        p.set_uniform_matrix4(ctx.gl, &u.world, world);
-        p.set_uniform_matrix4(ctx.gl, &u.local, local);
-        p.set_uniform_matrix3(ctx.gl, &u.normal_matrix, &normal_matrix(world));
-        p.set_uniform_matrix3(ctx.gl, &u.local_normal_matrix, &normal_matrix(local));
-        p.set_uniform_matrix4(ctx.gl, &u.view, view);
-        p.set_uniform_matrix4(ctx.gl, &u.projection, projection);
-        p.set_uniform_vec4(ctx.gl, &u.base_color, color);
-        p.set_uniform_1i(ctx.gl, &u.texture1, 0);
-        p.set_uniform_1i(ctx.gl, &u.use_texture, use_texture as i32);
-        p.set_uniform_1i(ctx.gl, &u.material_mode, lit as i32);
-        let debug_mode = match ctx.debug_render_mode {
-            DebugRenderMode::Normals => 1,
-            DebugRenderMode::Tangents => 2,
-            DebugRenderMode::Default | DebugRenderMode::Transparent | DebugRenderMode::Physics => 0,
-        };
-        p.set_uniform_1i(ctx.gl, &u.debug_mode, debug_mode);
-        u.lighting.set(p, ctx, view);
-        u.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
     }
 
     /// Draw one recognized PRIMITIVE instanced node — in the depth pass with
@@ -444,7 +502,15 @@ impl InstancedRenderer {
             (mesh.index_buffer, mesh.index_count)
         };
         if depth_pass {
-            self.set_depth_uniforms(ctx, world, &template.local, projection, view);
+            set_depth_uniforms(
+                &self.depth,
+                &self.depth_uniforms,
+                ctx,
+                world,
+                &template.local,
+                projection,
+                view,
+            );
         } else {
             let (color, lit) = match template.material {
                 MaterialDescription::Lit { color, .. } => (*color, true),
@@ -456,7 +522,9 @@ impl InstancedRenderer {
                     (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false)
                 }
             };
-            self.set_forward_uniforms(
+            set_forward_uniforms(
+                &self.forward,
+                &self.forward_uniforms,
                 ctx,
                 world,
                 &template.local,
@@ -515,49 +583,8 @@ impl InstancedRenderer {
             .iter()
             .map(|mesh| mesh.mesh.buffers(ctx.gl))
             .collect();
-        // Staleness guard: the cache is keyed by asset locator, so an asset
-        // evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
-        // vertex-buffer mismatch — drop the whole entry and rebuild. Nothing
-        // else in the tree deletes mesh VBOs, so a handle mismatch is a
-        // reliable staleness signal (and entries stay bounded by the model
-        // files a session actually instanced).
-        let stale = self.model_meshes.get(file).is_some_and(|state| {
-            state.meshes.len() != handles.len()
-                || state
-                    .meshes
-                    .iter()
-                    .zip(handles.iter())
-                    .any(|(cached, live)| cached.vertex_buffer != live.vbo)
-        });
-        if stale {
-            let state = self.model_meshes.remove(file).expect("checked above");
-            let counters = crate::gpu_counters::gpu_counters();
-            unsafe {
-                for cached in &state.meshes {
-                    ctx.gl.delete_vertex_array(cached.vao);
-                    counters.vao_deleted();
-                }
-                ctx.gl.delete_buffer(state.instance_buffer);
-                counters.buffer_deleted();
-            }
-        }
-        // Build (or reuse) the per-model state, then upload the instance
-        // records ONCE into its shared buffer; carry out only Copy VAOs.
-        let vaos: Vec<glow::VertexArray> = {
-            let state = match self.model_meshes.get_mut(file) {
-                Some(state) => state,
-                None => {
-                    let state = unsafe { Self::create_model_state(ctx.gl, &handles) };
-                    self.model_meshes.entry(file.to_string()).or_insert(state)
-                }
-            };
-            unsafe {
-                ctx.gl
-                    .bind_buffer(glow::ARRAY_BUFFER, Some(state.instance_buffer));
-                upload_instances(ctx.gl, bytes, &mut state.instance_capacity);
-                ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            }
-            state.meshes.iter().map(|cached| cached.vao).collect()
+        let vaos = unsafe {
+            acquire_model_vaos(ctx.gl, &mut self.model_meshes, file, &handles, bytes, false)
         };
         // Location 7's array is disabled in the model VAOs — pin the generic
         // tint value to white (identity), matching the stamp's tint-ignoring
@@ -572,10 +599,20 @@ impl InstancedRenderer {
             // template-internal transform (skinned models never reach here).
             let mesh_local = local * mesh.transform;
             if depth_pass {
-                self.set_depth_uniforms(ctx, world, &mesh_local, projection, view);
+                set_depth_uniforms(
+                    &self.depth,
+                    &self.depth_uniforms,
+                    ctx,
+                    world,
+                    &mesh_local,
+                    projection,
+                    view,
+                );
             } else {
                 mesh.base_color_texture.bind(0, ctx);
-                self.set_forward_uniforms(
+                set_forward_uniforms(
+                    &self.forward,
+                    &self.forward_uniforms,
                     ctx,
                     world,
                     &mesh_local,
@@ -604,72 +641,350 @@ impl InstancedRenderer {
         }
     }
 
-    /// Create a rigid model's instanced GPU state: one shared instance
-    /// buffer, plus a VAO per mesh primitive — mesh attributes from the
-    /// mesh's own VBO (skipping the skinned joint/weight channels, whose
-    /// locations 4/5 carry the instance TRS instead) and the instance layout
-    /// from the shared buffer.
-    unsafe fn create_model_state(
-        gl: &glow::Context,
-        handles: &[MeshBufferHandles],
-    ) -> ModelInstancedState {
-        let counters = crate::gpu_counters::gpu_counters();
-        let instance_buffer = gl.create_buffer().expect("model instance data");
-        counters.buffer_created();
-        let meshes = handles
+    /// Draw one recognized SKINNED instanced node at the SHARED pose: the
+    /// pose's joint palette uploads once, then one instanced call per mesh
+    /// primitive — lit and textured like `SkinnedMaterial`'s stamped copies
+    /// in the forward pass, skinning in the depth pass too (so animated
+    /// copies cast a correctly deforming shadow).
+    ///
+    /// Per glTF, a skinned mesh's node transform is ignored (the skeleton
+    /// carries the chain), so every primitive shares the template-local
+    /// matrix unmodified.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn draw_skinned_model(
+        &mut self,
+        ctx: &RenderContext,
+        file: &str,
+        model: &Arc<Model>,
+        joints: &[Matrix4<f32>],
+        local: &Matrix4<f32>,
+        instances: &[InstanceData],
+        world: &Matrix4<f32>,
+        projection: &Matrix4<f32>,
+        view: &Matrix4<f32>,
+    ) {
+        if model.meshes.is_empty() {
+            return;
+        }
+        let depth_pass = ctx.render_pass == RenderPass::DepthOnly;
+        let bytes = crate::terrain_renderer::slice_bytes(instances);
+        let handles: Vec<MeshBufferHandles> = model
+            .meshes
             .iter()
-            .map(|live| {
-                let vao = gl.create_vertex_array().expect("model instanced VAO");
-                counters.vao_created();
-                gl.bind_vertex_array(Some(vao));
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(live.vbo));
-                let stride = VertexPositionTextureSkinned::get_total_size() as i32;
-                for (location, attribute) in VertexPositionTextureSkinned::get_vertex_attributes()
-                    .iter()
-                    .enumerate()
-                {
-                    // Joints/weights sit at locations 4/5 — exactly where the
-                    // instance channels live — and rigid meshes never read
-                    // them, so leave those arrays disabled by CHANNEL (not by
-                    // positional prefix, which would silently mis-bind if the
-                    // attribute table were ever reordered).
-                    if matches!(
-                        attribute.attribute_channel,
-                        BuiltInVertexChannel::JointIndices | BuiltInVertexChannel::JointWeights
-                    ) {
-                        continue;
-                    }
-                    gl.enable_vertex_attrib_array(location as u32);
-                    match attribute.attribute_type {
-                        VertexAttributeType::Float => gl.vertex_attrib_pointer_f32(
-                            location as u32,
-                            attribute.size,
-                            glow::FLOAT,
-                            false,
-                            stride,
-                            attribute.offset as i32,
-                        ),
-                    }
-                }
-                // No tint attribute: a bare model template has no material
-                // colors for the tint to multiply, so the STAMP ignores it —
-                // the hardware path pins location 7's generic value instead.
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-                instance_attrib_layout(gl, false);
-                gl.bind_vertex_array(None);
-                ModelMeshVao {
-                    vao,
-                    vertex_buffer: live.vbo,
-                }
-            })
+            .map(|mesh| mesh.mesh.buffers(ctx.gl))
             .collect();
-        gl.bind_buffer(glow::ARRAY_BUFFER, None);
-        ModelInstancedState {
-            instance_buffer,
-            instance_capacity: 0,
-            meshes,
+        // The programs compile on the first skinned draw (see
+        // `SkinnedPrograms`).
+        if self.skinned.is_none() {
+            self.skinned = Some(SkinnedPrograms::new(ctx.gl, &self.shader_version));
+        }
+        let programs = self.skinned.as_ref().expect("just built");
+        let vaos = unsafe {
+            acquire_model_vaos(
+                ctx.gl,
+                &mut self.skinned_model_meshes,
+                file,
+                &handles,
+                bytes,
+                true,
+            )
+        };
+        // The tint attribute (location 9) has no array in the skinned VAOs —
+        // pin the generic value to white, matching the stamp's tint-ignoring
+        // semantics for model templates.
+        unsafe {
+            ctx.gl.vertex_attrib_3_f32(9, 1.0, 1.0, 1.0);
+        }
+        // ONE palette upload per node per pass — the shared-pose contract.
+        let (program, joints_loc) = if depth_pass {
+            (&programs.depth, &programs.depth_joints)
+        } else {
+            (&programs.forward, &programs.forward_joints)
+        };
+        program.use_program(ctx.gl);
+        let joint_matrices = crate::model::flatten_joint_matrices(joints);
+        program.set_uniform_matrix4fv(ctx.gl, joints_loc, &joint_matrices);
+        for ((mesh, live), vao) in model.meshes.iter().zip(handles.iter()).zip(vaos.iter()) {
+            if depth_pass {
+                set_depth_uniforms(
+                    &programs.depth,
+                    &programs.depth_uniforms,
+                    ctx,
+                    world,
+                    local,
+                    projection,
+                    view,
+                );
+            } else {
+                mesh.base_color_texture.bind(0, ctx);
+                set_forward_uniforms(
+                    &programs.forward,
+                    &programs.forward_uniforms,
+                    ctx,
+                    world,
+                    local,
+                    projection,
+                    view,
+                    &cgmath::vec4(1.0, 1.0, 1.0, 1.0),
+                    true,
+                    true,
+                );
+            }
+            unsafe {
+                ctx.gl.bind_vertex_array(Some(*vao));
+                ctx.gl
+                    .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(live.ebo));
+                ctx.gl.draw_elements_instanced(
+                    glow::TRIANGLES,
+                    live.index_count,
+                    glow::UNSIGNED_INT,
+                    0,
+                    instances.len() as i32,
+                );
+            }
+        }
+        unsafe {
+            ctx.gl.bind_vertex_array(None);
         }
     }
+}
+
+/// Compile and link one instanced program.
+fn build_program(
+    gl: &glow::Context,
+    shader_version: &str,
+    vertex_source: &str,
+    fragment_source: &str,
+) -> ShaderProgram {
+    let vertex = Shader::build(gl, ShaderType::Vertex, vertex_source, shader_version);
+    let fragment = Shader::build(gl, ShaderType::Fragment, fragment_source, shader_version);
+    ShaderProgram::link(gl, &vertex, &fragment)
+}
+
+/// The forward fragment source shared by the plain and skinned programs.
+fn forward_fragment_source() -> String {
+    format!(
+        "{}\n{}\n{}",
+        FOG_GLSL,
+        lighting_glsl(),
+        FRAGMENT_SHADER_SOURCE
+    )
+}
+
+/// The depth fragment source shared by the plain and skinned programs.
+fn depth_fragment_source() -> String {
+    format!(
+        "{}\n{}",
+        crate::material::depth_material::PACK_DEPTH_GLSL,
+        DEPTH_FRAGMENT_SHADER_SOURCE
+    )
+}
+
+/// Acquire one model's per-file instanced GPU state — apply the staleness
+/// guard, build the state on miss, upload the instance records ONCE into the
+/// shared buffer — and return the per-mesh VAOs (Copy handles, so no borrow
+/// is carried into the draw loop).
+///
+/// Staleness: the cache is keyed by asset locator, so an asset
+/// evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
+/// vertex-buffer mismatch — drop the whole entry and rebuild. Nothing else
+/// in the tree deletes mesh VBOs, so a handle mismatch is a reliable
+/// staleness signal (and entries stay bounded by the model files a session
+/// actually instanced).
+unsafe fn acquire_model_vaos(
+    gl: &glow::Context,
+    cache: &mut HashMap<String, ModelInstancedState>,
+    file: &str,
+    handles: &[MeshBufferHandles],
+    bytes: &[u8],
+    skinned: bool,
+) -> Vec<glow::VertexArray> {
+    let stale = cache.get(file).is_some_and(|state| {
+        state.meshes.len() != handles.len()
+            || state
+                .meshes
+                .iter()
+                .zip(handles.iter())
+                .any(|(cached, live)| cached.vertex_buffer != live.vbo)
+    });
+    if stale {
+        let state = cache.remove(file).expect("checked above");
+        let counters = crate::gpu_counters::gpu_counters();
+        for cached in &state.meshes {
+            gl.delete_vertex_array(cached.vao);
+            counters.vao_deleted();
+        }
+        gl.delete_buffer(state.instance_buffer);
+        counters.buffer_deleted();
+    }
+    let state = match cache.get_mut(file) {
+        Some(state) => state,
+        None => {
+            let state = create_model_state(gl, handles, skinned);
+            cache.entry(file.to_string()).or_insert(state)
+        }
+    };
+    gl.bind_buffer(glow::ARRAY_BUFFER, Some(state.instance_buffer));
+    upload_instances(gl, bytes, &mut state.instance_capacity);
+    gl.bind_buffer(glow::ARRAY_BUFFER, None);
+    state.meshes.iter().map(|cached| cached.vao).collect()
+}
+
+/// Create a model's instanced GPU state: one shared instance buffer, plus a
+/// VAO per mesh primitive — mesh attributes from the mesh's own VBO and the
+/// instance layout from the shared buffer.
+///
+/// Rigid (`skinned == false`): the joint/weight channels are skipped —
+/// their locations 4/5 carry the instance TRS instead (base 4). Skinned:
+/// every mesh channel is enabled (joints/weights at 4/5 feed the palette
+/// blend) and the instance layout sits at locations 6-8.
+///
+/// No tint attribute either way: a bare model template has no material
+/// colors for the tint to multiply, so the STAMP ignores it — the hardware
+/// paths pin the tint location's generic value instead.
+unsafe fn create_model_state(
+    gl: &glow::Context,
+    handles: &[MeshBufferHandles],
+    skinned: bool,
+) -> ModelInstancedState {
+    let counters = crate::gpu_counters::gpu_counters();
+    let instance_buffer = gl.create_buffer().expect("model instance data");
+    counters.buffer_created();
+    let meshes = handles
+        .iter()
+        .map(|live| {
+            let vao = gl.create_vertex_array().expect("model instanced VAO");
+            counters.vao_created();
+            gl.bind_vertex_array(Some(vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(live.vbo));
+            let stride = VertexPositionTextureSkinned::get_total_size() as i32;
+            for (location, attribute) in VertexPositionTextureSkinned::get_vertex_attributes()
+                .iter()
+                .enumerate()
+            {
+                // On the rigid path, joints/weights sit at locations 4/5 —
+                // exactly where the instance channels live — and rigid
+                // meshes never read them, so leave those arrays disabled by
+                // CHANNEL (not by positional prefix, which would silently
+                // mis-bind if the attribute table were ever reordered).
+                if !skinned
+                    && matches!(
+                        attribute.attribute_channel,
+                        BuiltInVertexChannel::JointIndices | BuiltInVertexChannel::JointWeights
+                    )
+                {
+                    continue;
+                }
+                gl.enable_vertex_attrib_array(location as u32);
+                match attribute.attribute_type {
+                    VertexAttributeType::Float => gl.vertex_attrib_pointer_f32(
+                        location as u32,
+                        attribute.size,
+                        glow::FLOAT,
+                        false,
+                        stride,
+                        attribute.offset as i32,
+                    ),
+                }
+            }
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
+            instance_attrib_layout(gl, if skinned { 6 } else { 4 }, false);
+            gl.bind_vertex_array(None);
+            ModelMeshVao {
+                vao,
+                vertex_buffer: live.vbo,
+            }
+        })
+        .collect();
+    gl.bind_buffer(glow::ARRAY_BUFFER, None);
+    ModelInstancedState {
+        instance_buffer,
+        instance_capacity: 0,
+        meshes,
+    }
+}
+
+/// Look up the shared forward-uniform set on a freshly linked program (the
+/// plain and skinned forward programs share one uniform contract).
+fn forward_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> ForwardUniforms {
+    ForwardUniforms {
+        world: program.get_uniform_location(gl, "world"),
+        local: program.get_uniform_location(gl, "local"),
+        normal_matrix: program.get_uniform_location(gl, "normalMatrix"),
+        local_normal_matrix: program.get_uniform_location(gl, "localNormalMatrix"),
+        view: program.get_uniform_location(gl, "view"),
+        projection: program.get_uniform_location(gl, "projection"),
+        base_color: program.get_uniform_location(gl, "baseColor"),
+        texture1: program.get_uniform_location(gl, "texture1"),
+        use_texture: program.get_uniform_location(gl, "useTexture"),
+        material_mode: program.get_uniform_location(gl, "materialMode"),
+        debug_mode: program.get_uniform_location(gl, "debugMode"),
+        lighting: LightingUniforms::get(program, gl),
+        fog: FogUniforms::get(program, gl),
+    }
+}
+
+/// Look up the shared depth-uniform set (plain and skinned depth programs).
+fn depth_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> DepthUniforms {
+    DepthUniforms {
+        world: program.get_uniform_location(gl, "world"),
+        local: program.get_uniform_location(gl, "local"),
+        view: program.get_uniform_location(gl, "view"),
+        projection: program.get_uniform_location(gl, "projection"),
+    }
+}
+
+/// Set a depth program's uniforms for one instanced draw.
+fn set_depth_uniforms(
+    program: &ShaderProgram,
+    u: &DepthUniforms,
+    ctx: &RenderContext,
+    world: &Matrix4<f32>,
+    local: &Matrix4<f32>,
+    projection: &Matrix4<f32>,
+    view: &Matrix4<f32>,
+) {
+    program.use_program(ctx.gl);
+    program.set_uniform_matrix4(ctx.gl, &u.world, world);
+    program.set_uniform_matrix4(ctx.gl, &u.local, local);
+    program.set_uniform_matrix4(ctx.gl, &u.view, view);
+    program.set_uniform_matrix4(ctx.gl, &u.projection, projection);
+}
+
+/// Set a forward program's uniforms for one instanced draw.
+#[allow(clippy::too_many_arguments)]
+fn set_forward_uniforms(
+    program: &ShaderProgram,
+    u: &ForwardUniforms,
+    ctx: &RenderContext,
+    world: &Matrix4<f32>,
+    local: &Matrix4<f32>,
+    projection: &Matrix4<f32>,
+    view: &Matrix4<f32>,
+    color: &cgmath::Vector4<f32>,
+    use_texture: bool,
+    lit: bool,
+) {
+    let p = program;
+    p.use_program(ctx.gl);
+    p.set_uniform_matrix4(ctx.gl, &u.world, world);
+    p.set_uniform_matrix4(ctx.gl, &u.local, local);
+    p.set_uniform_matrix3(ctx.gl, &u.normal_matrix, &normal_matrix(world));
+    p.set_uniform_matrix3(ctx.gl, &u.local_normal_matrix, &normal_matrix(local));
+    p.set_uniform_matrix4(ctx.gl, &u.view, view);
+    p.set_uniform_matrix4(ctx.gl, &u.projection, projection);
+    p.set_uniform_vec4(ctx.gl, &u.base_color, color);
+    p.set_uniform_1i(ctx.gl, &u.texture1, 0);
+    p.set_uniform_1i(ctx.gl, &u.use_texture, use_texture as i32);
+    p.set_uniform_1i(ctx.gl, &u.material_mode, lit as i32);
+    let debug_mode = match ctx.debug_render_mode {
+        DebugRenderMode::Normals => 1,
+        DebugRenderMode::Tangents => 2,
+        DebugRenderMode::Default | DebugRenderMode::Transparent | DebugRenderMode::Physics => 0,
+    };
+    p.set_uniform_1i(ctx.gl, &u.debug_mode, debug_mode);
+    u.lighting.set(p, ctx, view);
+    u.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
 }
 
 /// Upload the instance records into the currently bound `ARRAY_BUFFER`.
@@ -686,27 +1001,22 @@ unsafe fn upload_instances(gl: &glow::Context, bytes: &[u8], capacity: &mut usiz
     crate::gpu_counters::gpu_counters().uploaded(bytes.len());
 }
 
-/// Declare the per-instance attribute layout — TRS at locations 4/5/6, tint
-/// at 7 when `with_tint` — on the currently bound VAO, sourced from the
-/// currently bound `ARRAY_BUFFER`. Kept in ONE place so the primitive and
-/// model VAOs cannot drift from the shaders' shared location contract.
-unsafe fn instance_attrib_layout(gl: &glow::Context, with_tint: bool) {
+/// Declare the per-instance attribute layout — TRS at locations
+/// `base`/`base+1`/`base+2` (matching `instance_transform_glsl(base)`), tint
+/// at `base+3` when `with_tint` — on the currently bound VAO, sourced from
+/// the currently bound `ARRAY_BUFFER`. Kept in ONE place so the primitive
+/// and model VAOs cannot drift from the shaders' shared location contract.
+unsafe fn instance_attrib_layout(gl: &glow::Context, base: u32, with_tint: bool) {
     let instance_stride = size_of::<InstanceData>() as i32;
-    let channels: &[(u32, i32, usize)] = if with_tint {
-        &[
-            (4, 3, offset_of!(InstanceData, position)),
-            (5, 4, offset_of!(InstanceData, rotation)),
-            (6, 3, offset_of!(InstanceData, scale)),
-            (7, 3, offset_of!(InstanceData, tint)),
-        ]
-    } else {
-        &[
-            (4, 3, offset_of!(InstanceData, position)),
-            (5, 4, offset_of!(InstanceData, rotation)),
-            (6, 3, offset_of!(InstanceData, scale)),
-        ]
-    };
-    for &(location, size, offset) in channels {
+    let mut channels: Vec<(u32, i32, usize)> = vec![
+        (base, 3, offset_of!(InstanceData, position)),
+        (base + 1, 4, offset_of!(InstanceData, rotation)),
+        (base + 2, 3, offset_of!(InstanceData, scale)),
+    ];
+    if with_tint {
+        channels.push((base + 3, 3, offset_of!(InstanceData, tint)));
+    }
+    for (location, size, offset) in channels {
         gl.enable_vertex_attrib_array(location);
         gl.vertex_attrib_pointer_f32(
             location,
