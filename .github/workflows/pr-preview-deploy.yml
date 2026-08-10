@@ -1,0 +1,113 @@
+name: Deploy PR Preview
+
+# Privileged half of PR previews. GitHub loads this workflow and the lifecycle
+# script from main, not from the PR. The downloaded artifact is untrusted static
+# data: it is validated and uploaded, never sourced or executed.
+#
+# Requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_PREVIEW_API_TOKEN. The token
+# permissions and rollout/cleanup behavior are documented in DEVELOPMENT.md.
+
+on:
+  workflow_run:
+    workflows: ["Build PR Preview"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  authorize:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      authorized: ${{ steps.authorize.outputs.authorized }}
+      pr_number: ${{ steps.authorize.outputs.pr_number }}
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
+    steps:
+      - name: Check out trusted lifecycle code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Independently authorize source run
+        id: authorize
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pr-preview.mjs authorize-run --run-id "${{ github.event.workflow_run.id }}"
+
+  deploy:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Serialize every mutation by immutable PR number, including close cleanup.
+    # Stale runs recheck the current SHA, so canceling an in-flight run is unsafe.
+    concurrency:
+      group: pr-preview-${{ github.repository }}-${{ needs.authorize.outputs.pr_number }}
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Check out trusted lifecycle code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Download this run's static artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-preview-site
+          path: site/dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate untrusted static artifact
+        run: >-
+          node scripts/pr-preview.mjs validate-artifact
+          --dir site/dist
+          --sha "${{ needs.authorize.outputs.head_sha }}"
+
+      # Close/push races can happen while the artifact downloads. Re-query the
+      # PR immediately before the first step that receives a Cloudflare secret.
+      - name: Recheck open state and current head
+        id: recheck
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pr-preview.mjs authorize-run --run-id "${{ github.event.workflow_run.id }}"
+
+      - name: Deploy temporary static-assets Worker
+        if: steps.recheck.outputs.authorized == 'true'
+        # Pin the secret-bearing third-party action to an immutable revision.
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
+        with:
+          wranglerVersion: "4.110.0"
+          apiToken: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            deploy
+            --name ${{ steps.recheck.outputs.worker_name }}
+            --message "PR #${{ steps.recheck.outputs.pr_number }} at ${{ steps.recheck.outputs.head_sha }}"
+
+      - name: Attach stable preview domain
+        if: steps.recheck.outputs.authorized == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/pr-preview.mjs attach --pr "${{ steps.recheck.outputs.pr_number }}"
+
+      - name: Create or update sticky PR comment
+        if: steps.recheck.outputs.authorized == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/pr-preview.mjs comment
+          --pr "${{ steps.recheck.outputs.pr_number }}"
+          --sha "${{ steps.recheck.outputs.head_sha }}"
+          --state ready

@@ -42,6 +42,8 @@ const NAV = [
 ];
 
 const GITHUB = "https://github.com/tommy-xr/functor";
+export const ALPHA_BADGE_TITLE =
+  "Functor is alpha software — everything may change between releases";
 
 /** The attributes a page may set on its `<!--@header-->` marker. */
 type HeaderKey = "prefix" | "suffix" | "active";
@@ -52,9 +54,9 @@ const NAV_IDS = new Set(NAV.map(({ id }) => id));
 
 type HeaderOptions = Partial<Record<HeaderKey, string>> & { controls?: string };
 
-// The badge ships as the literal "alpha"; build.mjs stamps the release tag
-// over it afterwards (one regex, unchanged by this module — which is why a
-// page may carry only ONE header block; injectHeader enforces that).
+// The badge ships as the literal "alpha"; build.mjs stamps the release tag or
+// PR head SHA over it afterwards (one regex — which is why a page may carry
+// only ONE header block; injectHeader enforces that).
 const renderHeader = ({
   prefix = "",
   suffix = "",
@@ -73,7 +75,7 @@ const renderHeader = ({
     `<a class="wordmark" href="${prefix || "./"}">${MARK}FUNCTOR${
       suffix ? `<span class="wordmark-accent">//${suffix}</span>` : ""
     }</a>`,
-    '<span class="version-badge" title="Functor is alpha software — everything may change between releases">alpha</span>',
+    `<span class="version-badge" title="${ALPHA_BADGE_TITLE}">alpha</span>`,
     BURGER,
     ...(controls ? [controls] : []),
     `<nav class="site-nav">\n        ${nav.join("\n        ")}\n      </nav>`,
