@@ -19,10 +19,15 @@ npm run test:editor-keybindings # headless e2e — opt-in Vim in the sandbox and
 
 - `player.html` — the runtime host page; the sibling of the CLI dev server's
   `index-functor-lang.html`, but the `.fun` entry comes from `?game=` (one file) or
-  `?project=inline` (the IDE pushes the whole file set by postMessage). Keep its
+  `?project=inline` (the sandbox and the IDE push the whole file set by
+  postMessage). Keep its
   input mapping and set-source/set-project seam in sync with that page.
-- `sandbox.html` / `src/sandbox.tsx` — the single-buffer editor over a served
-  example (pushes `functor-lang-set-source`).
+- `sandbox.html` / `src/sandbox.tsx` — the example editor: it fetches the
+  selected example's whole file set and pushes it as a project
+  (`functor-lang-set-project` via `src/project-bridge.ts`, to a
+  `player.html?project=inline` preview), while editing ONE buffer — the entry.
+  A file switcher is a follow-up. Binary assets are still served by the site and
+  resolved as URLs against `player.html`.
 - `ide.html` / `src/ide.tsx` — the multi-file IDE: a file sidebar, per-file
   editing, a live preview fed the whole project via `functor-lang-set-project`
   (`src/project-bridge.ts`), localStorage persistence, and project download as a

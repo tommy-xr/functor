@@ -201,9 +201,9 @@
       const requestedFiles = params
         .getAll("file")
         .filter((path) => path && !path.startsWith("/") && !path.includes(":"));
-      // ?project=inline: the HOSTING page owns the whole file set (the IDE)
-      // and delivers it by postMessage — nothing is fetched. The boot is
-      // deferred until the first `functor-lang-set-project` arrives (see the
+      // ?project=inline: the HOSTING page owns the whole file set (the sandbox
+      // and the IDE) and delivers it by postMessage — nothing is fetched. The
+      // boot is deferred until the first `functor-lang-set-project` arrives (see the
       // bottom of this script), so no game path is set here.
       const inlineProject = params.get("project") === "inline";
       // Same-origin relative paths only: reject absolute/protocol-relative
@@ -708,8 +708,9 @@
       };
 
       // The live-edit seam: the hosting page (the sandbox / the IDE) posts
-      // .fun source (`functor-lang-set-source`) or a whole file set
-      // (`functor-lang-set-project`, the IDE) and the runtime hot-swaps it,
+      // .fun source (`functor-lang-set-source`, the VSCode preview panel) or a
+      // whole file set (`functor-lang-set-project`, the site's sandbox and IDE)
+      // and the runtime hot-swaps it,
       // model preserved. ONE listener, installed synchronously below, so no
       // push is lost in the async init() → producer-ready window (a
       // fast-typing IDE pushes exactly there); pushes that arrive before the
