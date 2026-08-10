@@ -131,6 +131,19 @@ test("decodes the docs' legacy #src= fragment as a single game.fun", async () =>
   assert.deepEqual(project, { files: [{ path: "game.fun", source }] });
 });
 
+test("finds its param anywhere in a multi-param hash", async () => {
+  // The sandbox writes `#clients=2&src=…` (site/src/sandbox.tsx), so a share
+  // param is not necessarily the first thing after the `#`.
+  const source = "let init = 0\n";
+  const legacy = await decodeShare(`#clients=2&src=${docsToBase64Url(source)}`);
+  assert.deepEqual(legacy, { files: [{ path: "game.fun", source }] });
+
+  const code = (await encodeShare({ files: [{ path: "game.fun", source }] })).slice("#".length);
+  assert.deepEqual(await decodeShare(`#clients=3&${code}`), {
+    files: [{ path: "game.fun", source }],
+  });
+});
+
 // --- hostile input -----------------------------------------------------------
 
 test("rejects everything that is not a valid fragment", async () => {
@@ -200,6 +213,15 @@ test("rejects a malformed envelope shape", async () => {
     // a role declares at most one of module / prefix
     { v: 1, f: { "game.fun": "x" }, c: { entries: { c: { file: "game.fun", module: "C", prefix: "c" } } } },
     { v: 1, f: { "game.fun": "x" }, c: { entries: { c: { file: "game.fun", module: "not an ident" } } } },
+    // inherited object properties are not project files
+    { v: 1, f: { "game.fun": "x" }, e: "__proto__" },
+    { v: 1, f: { "game.fun": "x" }, e: "constructor" },
+    { v: 1, f: { "game.fun": "x" }, c: { entries: { s: "toString" } } },
+    { v: 1, f: { "game.fun": "x" }, c: { entries: { s: { file: "constructor" } } } },
+    // nothing to boot: no roles, and no (default) entry file
+    { v: 1, f: { "main.fun": "x" } },
+    // a module space that could not exist on a case-insensitive filesystem
+    { v: 1, f: { "game.fun": "x", "Game.fun": "y" } },
     { v: 1, f: { "game.fun": "x" }, o: { cursor: "hidden" } },
     { v: 1, f: { "game.fun": "x" }, o: { mouseCapture: true } },
     { v: 1, f: { "game.fun": "x" }, o: "nope" },
@@ -221,15 +243,33 @@ test("rejects a malformed envelope shape", async () => {
 test("rejects an oversize payload without inflating all of it", async () => {
   // Highly compressible: ~4MB of source in a tiny fragment — the deflate-bomb
   // shape. It must come back null, not as a 4MB project.
-  const files: Record<string, string> = {};
-  for (let i = 0; i < 8; i++) files[`m${i}.fun` as const] = "a".repeat(512 * 1024);
+  const files: Record<string, string> = { "game.fun": "let init = 0\n" };
+  for (let i = 0; i < 8; i++) files[`m${i}.fun`] = "a".repeat(512 * 1024);
   const hash = await rawCode({ v: 1, f: files });
   assert.ok(hash.length < 20_000, "the bomb should be small on the wire");
   assert.equal(await decodeShare(hash), null);
 });
 
 test("rejects too many files", async () => {
-  const files: Record<string, string> = {};
+  const files: Record<string, string> = { "game.fun": "let init = 0\n" };
   for (let i = 0; i < 200; i++) files[`m${i}.fun`] = "let x = 0\n";
   assert.equal(await decodeShare(await rawCode({ v: 1, f: files })), null);
+});
+
+test("refuses to mint a link that would not decode", async () => {
+  const source = "let init = 0\n";
+  const unshareable: ShareProject[] = [
+    { files: [{ path: "game.fun", source }, { path: "game.fun", source }] }, // dupe
+    { files: [{ path: "../x.fun", source }] },
+    { files: [] },
+    { files: [{ path: "main.fun", source }] }, // no boot target
+    { files: [{ path: "game.fun", source }], config: { entries: { c: "missing.fun" } } },
+  ];
+  for (const project of unshareable) {
+    await assert.rejects(
+      () => encodeShare(project),
+      /share-link/,
+      `expected ${JSON.stringify(project)} to be refused`
+    );
+  }
 });

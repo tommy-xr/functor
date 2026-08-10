@@ -37,8 +37,9 @@ const DEFAULT_ENTRY = "game.fun";
 // few KB) but far below what a browser will hand back from a URL, so a hostile
 // fragment is rejected before it costs anything.
 const MAX_FILES = 64;
-/** Total UTF-8 bytes of source across all files. */
-const MAX_SOURCE_BYTES = 512 * 1024;
+/** Total source characters across all files (the total BYTES are capped by
+ * MAX_JSON_BYTES below, so this is the "sane project" bound, not the memory one). */
+const MAX_SOURCE_CHARS = 512 * 1024;
 /** Encoded fragment length, checked before any inflation. */
 const MAX_CODE_CHARS = 256 * 1024;
 /** Inflated envelope bytes — the guard against a deflate bomb. */
@@ -102,26 +103,37 @@ const fromBase64Url = (code: string): Uint8Array<ArrayBuffer> | null => {
 
 // --- deflate ----------------------------------------------------------------
 
-/**
- * Push `bytes` through a (de)compression stream and read it back whole, giving
- * up if the output passes `limit`. Returns null on a stream error — which for
- * decompression means "not a deflate-raw stream", the common hostile case.
- */
-const pump = async (
-  bytes: Uint8Array,
-  transform: GenericTransformStream,
-  limit: number
-): Promise<Uint8Array<ArrayBuffer> | null> => {
-  const source = new ReadableStream<Uint8Array>({
+// Typed as BufferSource — what a (De)CompressionStream's writable end accepts.
+const oneChunk = (bytes: Uint8Array<ArrayBuffer>): ReadableStream<BufferSource> =>
+  new ReadableStream<BufferSource>({
     start(controller) {
       controller.enqueue(bytes);
       controller.close();
     },
   });
-  const reader = source.pipeThrough(transform).getReader();
+
+const deflate = async (bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> => {
+  const stream = oneChunk(bytes).pipeThrough(new CompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+};
+
+/**
+ * Inflate `bytes`, or null if they are not a deflate-raw stream — or if they
+ * expand past `limit`, which is what stops a deflate bomb: the read is
+ * incremental and abandoned mid-stream, so a fragment claiming gigabytes never
+ * allocates them. Constructing the stream is inside the `try` too: an engine
+ * without `deflate-raw` must yield null, not throw at a URL.
+ */
+const inflate = async (
+  bytes: Uint8Array<ArrayBuffer>,
+  limit: number
+): Promise<Uint8Array<ArrayBuffer> | null> => {
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
+    const reader = oneChunk(bytes)
+      .pipeThrough(new DecompressionStream("deflate-raw"))
+      .getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -159,20 +171,28 @@ interface Envelope {
  * Serialize a project into the URL fragment that reproduces it — the full hash
  * including the leading `#`, so a caller can assign it straight to
  * `location.hash` or append it to a page URL.
+ *
+ * Throws if the project cannot round-trip: the envelope is run through the
+ * DECODER's validation first, so an unshareable project fails here (where a
+ * caller can say so) rather than becoming a link that opens to nothing.
  */
 export async function encodeShare(project: ShareProject): Promise<string> {
-  const f: Record<string, string> = {};
-  for (const file of project.files) f[file.path] = file.source;
+  const f: Record<string, string> = Object.create(null);
+  for (const file of project.files) {
+    // A record would silently collapse two same-named files into one.
+    if (f[file.path] !== undefined) {
+      throw new Error(`share-link: duplicate file ${file.path}`);
+    }
+    f[file.path] = file.source;
+  }
   const envelope: Envelope = { v: 1, f };
   if (project.entry && project.entry !== DEFAULT_ENTRY) envelope.e = project.entry;
   if (project.config && project.config.entries) envelope.c = { entries: project.config.entries };
   if (project.options && Object.keys(project.options).length > 0) envelope.o = project.options;
+  if (!validEnvelope(envelope)) throw new Error("share-link: unshareable project");
 
   const json = new TextEncoder().encode(JSON.stringify(envelope));
-  const deflated = await pump(json, new CompressionStream("deflate-raw"), Infinity);
-  // CompressionStream cannot fail on a valid input; the null branch is the type.
-  if (!deflated) throw new Error("share-link: compression failed");
-  return `#code=${toBase64Url(deflated)}`;
+  return `#code=${toBase64Url(await deflate(json))}`;
 }
 
 // --- decode -----------------------------------------------------------------
@@ -228,14 +248,23 @@ const validEnvelope = (parsed: unknown): ShareProject | null => {
   if (parsed.v !== 1) return null;
   if (!isRecord(parsed.f)) return null;
 
-  const files: Record<string, string> = {};
-  let bytes = 0;
+  // Prototype-free: on a plain `{}`, `files["__proto__"]` and
+  // `files["toString"]` are inherited truthy values, so every `!== undefined`
+  // membership test below would wave through a file the project doesn't have.
+  const files: Record<string, string> = Object.create(null);
+  const lowered = new Set<string>();
+  let chars = 0;
   for (const [path, source] of Object.entries(parsed.f)) {
     if (!MODULE_FILE.test(path)) return null;
     if (typeof source !== "string") return null;
+    // The IDE's module space is case-INsensitively unique (a mac/Windows
+    // checkout of the same project could not hold both), so a link carrying
+    // game.fun AND Game.fun describes a project that can't exist.
+    if (lowered.has(path.toLowerCase())) return null;
+    lowered.add(path.toLowerCase());
     files[path] = source;
-    bytes += source.length; // a char-count lower bound on UTF-8 bytes; exact for the ASCII norm
-    if (bytes > MAX_SOURCE_BYTES) return null;
+    chars += source.length;
+    if (chars > MAX_SOURCE_CHARS) return null;
   }
   const paths = Object.keys(files);
   if (paths.length === 0 || paths.length > MAX_FILES) return null;
@@ -251,6 +280,10 @@ const validEnvelope = (parsed: unknown): ShareProject | null => {
     if (!config) return null;
     if (config.entries) project.config = config;
   }
+  // Something has to be bootable: either named roles, or an entry file (the
+  // explicit one, or the default) that the project actually contains. A
+  // roles-only project need not have a `game.fun` at all (examples/lobby).
+  if (!project.config && files[project.entry ?? DEFAULT_ENTRY] === undefined) return null;
   if (parsed.o !== undefined) {
     const options = validOptions(parsed.o);
     if (!options) return null;
@@ -259,12 +292,15 @@ const validEnvelope = (parsed: unknown): ShareProject | null => {
   return project;
 };
 
-/** Pull `name`'s value out of a hash, with or without its leading `#`. */
-const fragment = (hash: string, name: string): string | null => {
-  const body = hash.startsWith("#") ? hash.slice(1) : hash;
-  const prefix = `${name}=`;
-  return body.startsWith(prefix) ? body.slice(prefix.length) : null;
-};
+/**
+ * Pull `name`'s value out of a hash, with or without its leading `#`.
+ *
+ * A hash is a query string, not one parameter: the sandbox already writes
+ * `#clients=2&src=…` (sandbox.tsx), so a share param can arrive anywhere in it.
+ * base64url has no `+`, so URLSearchParams' space rewriting can't corrupt one.
+ */
+const fragment = (hash: string, name: string): string | null =>
+  new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash).get(name);
 
 /**
  * Decode a share fragment back into a project, or null if it is not a valid
@@ -272,23 +308,33 @@ const fragment = (hash: string, name: string): string | null => {
  * "try it" links (an uncompressed single program, loaded as `game.fun`).
  */
 export async function decodeShare(hash: string): Promise<ShareProject | null> {
-  const legacy = fragment(hash, "src");
-  if (legacy !== null) {
-    if (legacy.length > MAX_CODE_CHARS) return null;
-    const bytes = fromBase64Url(legacy);
-    if (!bytes || bytes.length === 0) return null;
-    return { files: [{ path: DEFAULT_ENTRY, source: new TextDecoder().decode(bytes) }] };
-  }
+  // Strict UTF-8: mojibake in a program is worse than a rejected link.
+  const text = new TextDecoder("utf-8", { fatal: true });
 
   const code = fragment(hash, "code");
-  if (code === null || code.length === 0 || code.length > MAX_CODE_CHARS) return null;
-  const deflated = fromBase64Url(code);
-  if (!deflated) return null;
-  const json = await pump(deflated, new DecompressionStream("deflate-raw"), MAX_JSON_BYTES);
-  if (!json) return null;
-  try {
-    return validEnvelope(JSON.parse(new TextDecoder().decode(json)));
-  } catch {
-    return null; // inflated to something that isn't JSON
+  if (code !== null) {
+    if (code.length === 0 || code.length > MAX_CODE_CHARS) return null;
+    const deflated = fromBase64Url(code);
+    if (!deflated) return null;
+    const json = await inflate(deflated, MAX_JSON_BYTES);
+    if (!json) return null;
+    try {
+      return validEnvelope(JSON.parse(text.decode(json)));
+    } catch {
+      return null; // inflated to something that isn't UTF-8 JSON
+    }
   }
+
+  const legacy = fragment(hash, "src");
+  if (legacy !== null) {
+    if (legacy.length === 0 || legacy.length > MAX_CODE_CHARS) return null;
+    const bytes = fromBase64Url(legacy);
+    if (!bytes || bytes.length === 0) return null;
+    try {
+      return { files: [{ path: DEFAULT_ENTRY, source: text.decode(bytes) }] };
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
