@@ -18,58 +18,18 @@
 //
 //   npm run build:cli:debug   # once, so target/debug/functor embeds the runtime
 //   node e2e/gamepad-wasm.mjs
-import { execFileSync } from "node:child_process";
-import { createReadStream, statSync } from "node:fs";
-import http from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { chromium } from "@playwright/test";
+import {
+  ROOT,
+  expect,
+  launchSoftwareGL,
+  serveExportedBundle,
+  waitFor,
+} from "./wasm-harness.mjs";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DIR = path.join(ROOT, "e2e", "fixtures", "gamepad");
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-console.log(
-  execFileSync(path.join(ROOT, "target/debug/functor"), ["-d", DIR, "build", "wasm"], {
-    encoding: "utf8",
-  })
-);
-
-const TYPES = {
-  ".html": "text/html",
-  ".js": "text/javascript",
-  ".wasm": "application/wasm",
-  ".fun": "text/plain",
-};
-const root = path.join(DIR, "dist", "web");
-const server = http.createServer((req, res) => {
-  let rel = decodeURIComponent(req.url.split("?")[0]);
-  if (rel === "/") rel = "/index.html";
-  const file = path.join(root, rel);
-  try {
-    statSync(file);
-  } catch {
-    res.writeHead(404).end("not found");
-    return;
-  }
-  res.writeHead(200, {
-    "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream",
-  });
-  createReadStream(file).pipe(res);
-});
-await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const { port } = server.address();
-
-// Software WebGL2 (swiftshader) so the runtime's GL context comes up on any
-// runner — no real GPU needed; this check compares no pixels.
-const browser = await chromium.launch({
-  args: [
-    "--use-gl=angle",
-    "--use-angle=swiftshader",
-    "--enable-unsafe-swiftshader",
-    "--ignore-gpu-blocklist",
-  ],
-});
+const { server, port } = await serveExportedBundle(DIR);
+const browser = await launchSoftwareGL();
 try {
   const page = await browser.newPage({ viewport: { width: 640, height: 480 } });
   const log = [];
@@ -107,23 +67,10 @@ try {
   });
 
   await page.goto(`http://127.0.0.1:${port}/`);
-  const waitFor = async (pattern, what) => {
-    const until = Date.now() + 30000;
-    while (Date.now() < until) {
-      if (log.some((line) => pattern.test(line))) return;
-      await sleep(200);
-    }
-    throw new Error(`timed out waiting for ${what}\n--- console ---\n${log.join("\n")}`);
-  };
-
-  await waitFor(/\[functor-lang\] loaded/, "the game to load");
-  await waitFor(/e2e-gamepad/, "the sampled pad to reach the game");
+  await waitFor(log, /\[functor-lang\] loaded/, "the game to load");
+  await waitFor(log, /e2e-gamepad/, "the sampled pad to reach the game");
 
   const line = log.find((l) => l.includes("e2e-gamepad"));
-  const expect = (cond, what) => {
-    console.log(`  ${cond ? "✓" : "✗"} ${what}`);
-    if (!cond) process.exitCode = 1;
-  };
   expect(line.includes("x=0.5"), `stick X crossed raw (${line})`);
   expect(line.includes("y=1"), "browser down-positive Y negated to up-positive");
   expect(line.includes("rt=0.25"), "analog trigger value (not the digital shadow)");

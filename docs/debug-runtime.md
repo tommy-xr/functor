@@ -485,8 +485,9 @@ unfocused or the clock is pinned. `--headless` has no GLFW instance, so there
 injection is the domain's only source. `touch` carries active contacts plus
 one-step `pressed`/`released` transition lists (the keyboard contract for
 fingers); `Some` with empty lists means a touch surface exists but is idle.
-No shell produces the domain from hardware yet on ANY target — debug
-injection is its only source until the web touch-event wiring lands.
+The web runtime supplies the domain from real touch events (capability
+declared up front on touch-capable devices); desktop has no touch hardware,
+so there debug injection is its only source.
 Further devices
 should add typed sibling fields rather than target-specific endpoints or
 string-keyed capability bags.

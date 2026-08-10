@@ -110,6 +110,12 @@ jobs:
       - name: Run gamepad wasm e2e
         run: npm run test:gamepad-wasm
 
+      # Real dispatched TouchEvents → the page bridge (ordinal remap,
+      # preventDefault, phase mapping) → the shared reducer → sampledInput:
+      # capability-before-contact plus a tap's press/release edges.
+      - name: Run touch wasm e2e
+        run: npm run test:touch-wasm
+
       # The multiplayer session hosted in the browser: a server + two client
       # panes, each its own `player.html?net=embedder` runtime, routed by the
       # host page's net coordinator over the embedder seam. Same "works native,
