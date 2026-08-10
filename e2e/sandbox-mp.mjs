@@ -25,8 +25,8 @@
 //      full-width strip below them — and switching layout reloads no pane;
 //   6. switching to a single-role example removes the server pane again;
 //   7. every pane CARD letterboxes to a 16:9 body inside its cell in the grid
-//      and network views, the "+" seat is last in reading order, and the
-//      network wires anchor to the cards rather than to the cells;
+//      and network views, and the network wires anchor to the cards rather
+//      than to the cells;
 //   8. parked, the wires and the pinned wire log replay the packet LOG at the
 //      playhead rather than showing a frozen live feed;
 //   9. the WIRE TAB — the same traffic monitor docked in the status bar — is
@@ -56,13 +56,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Wait for the view transition to finish. Switching layout FLIPs the cards
  * (mp-panes.ts, 420ms), and a transform moves a card's measured box without
  * resizing anything — so geometry read mid-flight is the card's *animated*
- * box, not its laid-out one. The "+" seat FLIPs alongside the cards and its
- * band geometry is asserted too, so it has to be waited on as well.
+ * box, not its laid-out one.
  */
 const settle = (page) =>
   page.waitForFunction(
     () =>
-      [...document.querySelectorAll(".mp-pane, .mp-add-tile")].every(
+      [...document.querySelectorAll(".mp-pane")].every(
         (node) => node.getAnimations().length === 0
       ),
     null,
@@ -366,20 +365,6 @@ const installProbe = (page) =>
           frame: shown(".mp-pf"),
         };
       },
-      // The "+" affordances (tile in tiled/grid, tab in tabs).
-      addTile: () => {
-        const tile = document.querySelector(".mp-add-tile");
-        return {
-          present: !!tile,
-          hidden: !tile || tile.hidden,
-          display: tile ? getComputedStyle(tile).display : "none",
-          tag: tile?.tagName,
-          // Addendum 5b.1: the seat is the LAST thing in the arrangement.
-          last: !!tile && tile.parentElement.lastElementChild === tile,
-          tabDisplay: getComputedStyle(document.querySelector(".mp-tab.add")).display,
-        };
-      },
-      clickAddTile: () => document.querySelector(".mp-add-tile").click(),
       // Click a view button and read back, IN THE SAME TASK, how many pane
       // cards are mid-animation — the FLIP has to have started before the
       // browser has painted anything.
@@ -504,63 +489,43 @@ try {
       await sleep(200);
     }
 
-    // The "+" tile: the spatial way to add a client, same path as the dropdown.
-    const tile = await page.evaluate(() => window.__mpProbe.addTile());
+    // The "+" affordances are retired: the CLIENTS dropdown is the one way to
+    // change the count, and no ghost seat/tab renders in any view.
+    const addAffordances = await page.evaluate(() => ({
+      tile: !!document.querySelector(".mp-add-tile"),
+      tab: !!document.querySelector(".mp-tab.add"),
+    }));
     check(
-      tile.present && !tile.hidden && tile.display !== "none" && tile.tag === "BUTTON",
-      "a + tile sits after the client panes, as a real button",
-      JSON.stringify(tile)
+      !addAffordances.tile && !addAffordances.tab,
+      "no + tile or + tab renders (the CLIENTS dropdown is the only count control)",
+      JSON.stringify(addAffordances)
     );
-    check(
-      tile.last,
-      "the seat is LAST in reading order, after every occupied cell"
-    );
-    await page.evaluate(() => window.__mpProbe.clickAddTile());
+    await page.selectOption("#client-count", "2");
     await sleep(2500);
     const afterAdd = await page.evaluate(() => ({
       roles: window.__mpProbe.roles(),
       hash: window.location.hash,
-      control: document.getElementById("client-count").value,
     }));
     check(
       afterAdd.roles.join(", ") === "client 1, client 2, server" &&
-        afterAdd.control === "2" &&
         afterAdd.hash.includes("clients=2"),
-      "clicking + adds a client through the same path as the CLIENTS dropdown",
+      "the CLIENTS dropdown adds a client (roles + hash follow)",
       JSON.stringify(afterAdd)
-    );
-    await page.selectOption("#client-count", "3");
-    await sleep(2500);
-    const atMax = await page.evaluate(() => window.__mpProbe.addTile());
-    // The ATTRIBUTE is not the picture: the seat sets its own `display`, which
-    // outranks the UA's `[hidden]` rule — so assert what is painted.
-    check(
-      atMax.hidden && atMax.display === "none",
-      "the + tile is hidden at MAX_CLIENTS",
-      JSON.stringify(atMax)
     );
     await page.selectOption("#client-count", "1");
     await sleep(1500);
 
-    // Grid with a LONE client: the client takes the whole row (no peer to match)
-    // and the open seat closes the layout as a band UNDER everything — never
-    // between the client and the authority (Addendum 5b.1).
+    // Grid with a LONE client: the client takes the whole row (no peer to
+    // match), over the authority strip.
     await page.click("#mp-view-grid");
     await settle(page);
     const [client, server] = await page.evaluate(() => window.__mpProbe.boxes());
-    const seat = await page.evaluate(() => {
-      const box = document.querySelector(".mp-add-tile").getBoundingClientRect();
-      return { x: Math.round(box.x), y: Math.round(box.y), w: Math.round(box.width), h: Math.round(box.height) };
-    });
     check(
-      seat.y >= server.y + server.h &&
-        Math.abs(seat.w - client.cell.w) < 2 &&
-        seat.h < client.h &&
-        server.gridColumn === "1 / -1" &&
+      server.gridColumn === "1 / -1" &&
         server.y >= client.y + client.h &&
         server.h < client.h,
-      "grid closes with the open seat as a band under the client and the strip",
-      JSON.stringify([client, seat, server])
+      "grid keeps the lone client over the authority strip",
+      JSON.stringify([client, server])
     );
     await page.close();
   }
@@ -882,6 +847,13 @@ try {
         three[3].cell.w > three[2].cell.w * 1.8,
       "a third client keeps its half-width cell above the full-width strip",
       JSON.stringify(three.map((b) => [b.role, b.x, b.y, b.w, b.h]))
+    );
+    // The strip stays a STRIP at max count: shorter than a client card (the
+    // data-clients="3" span override in styles.css exists for exactly this).
+    check(
+      three[3].h < three[0].h,
+      "the server strip stays shorter than a client card at three clients",
+      `server ${three[3].h} vs client ${three[0].h}`
     );
     await page.close();
   }

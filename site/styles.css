@@ -3235,9 +3235,7 @@ a:hover {
 
 /* TILED is one row, and says so: a flex row rather than auto-fit columns, which
    wrapped into a second row as soon as a fourth cell existed (three clients and
-   an authority, or two and the open seat) — the one thing "tiled" promises not
-   to do. The seat rides the end of the row as a slim rail instead of taking a
-   pane's worth of it. */
+   an authority) — the one thing "tiled" promises not to do. */
 .mp-grid[data-view="tiled"] {
   display: flex;
 }
@@ -3271,14 +3269,6 @@ a:hover {
    context, so the cell has to be raised, not just the menu. */
 .mp-cell:has(.mp-link-menu:not([hidden])) {
   z-index: 20;
-}
-
-.mp-grid[data-view="tiled"] .mp-add-tile {
-  flex: 0 0 clamp(44px, 5%, 68px);
-}
-
-.mp-grid[data-view="tiled"] .mp-add-label {
-  display: none;
 }
 
 .mp-grid[data-view="tabs"] {
@@ -3379,10 +3369,10 @@ a:hover {
    players are peers of equal size, and the one full-width band belongs to the
    authority — the SHAPE says which is which before you read a label.
 
-   The strip is half a client row tall, expressed as spans over one set of
-   equal implicit rows rather than per-count track sizes: a client takes two
-   rows, the server one. It stays a thumbnail at every count with no CSS that
-   knows how many panes there are.
+   The strip stays a thumbnail at every count, expressed as spans over one set
+   of equal implicit rows rather than per-count track sizes: a client takes
+   three rows (two when a third client adds a second client row), the server
+   one.
 
    An odd LAST client under an authority (three of them: 2 + 1) keeps its
    half-width cell instead of stretching: it has peers on the row above, and
@@ -3396,16 +3386,22 @@ a:hover {
 
    Each card then letterboxes inside the cell it is given, centred across it
    and anchored towards the layout's middle (see the aspect block); the cells
-   themselves are what this section places.
-
-   The open SEAT is not one of these cells: it rides the bottom edge as a band
-   (Addendum 5b.1, and see its own block below). */
+   themselves are what this section places. */
 
 .mp-grid[data-view="grid"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* Client cells take three row-shares to the server strip's one, so the
+   authority reads as a STRIP under the gameplay — never a peer-sized pane. */
 .mp-grid[data-view="grid"] .mp-cell {
+  grid-row: span 3;
+}
+
+/* At three clients the second client row would compound that share (3+3+1
+   leaves the strip a 1/7 sliver), so each client backs off to two rows and
+   the strip keeps the proportion it has at every other count. */
+.mp-grid[data-view="grid"][data-clients="3"] .mp-cell {
   grid-row: span 2;
 }
 
@@ -3415,8 +3411,8 @@ a:hover {
 }
 
 /* Three clients and no authority: nothing closes the bottom row (no server
-   strip, and the seat is full at MAX_CLIENTS), so the odd last client stretches
-   rather than leaving a whole empty quadrant. */
+   strip), so the odd last client stretches rather than leaving a whole empty
+   quadrant. */
 .mp-grid[data-view="grid"][data-clients="3"][data-server="no"] .mp-cell:nth-child(3) {
   grid-column: 1 / -1;
 }
@@ -4660,7 +4656,7 @@ button.mp-vt-row:focus-visible {
   }
 
   /* Tiled's flex row becomes a flex column — the same stack the grid views
-     collapse to, with the seat as a short band at the end of it. */
+     collapse to. */
   .preview-pane.mp .mp-grid[data-view="tiled"] {
     flex-direction: column;
   }
@@ -4693,87 +4689,8 @@ button.mp-vt-row:focus-visible {
   }
 }
 
-/* ---- the "+" seat: add a client at the edge of the arrangement ----
-
-   Addendum 5a.7, revised by 5b.1. The CLIENTS dropdown is the numeric control;
-   this is the spatial one — an empty seat at the table. It sits AFTER every
-   occupied cell, never between them: a seat placed in "the cell the next
-   client takes" lands mid-layout and reads as a hole in the arrangement, and
-   an invitation should sit at the edge you would reach for. So it is the last
-   grid child (mp-panes.ts) and takes an edge shape rather than a pane's: a
-   slim rail at the end of the tiled row, a short band under the grid.
-   Hidden at MAX_CLIENTS, and in TABS (which has its own "+" tab) and NETWORK
-   (a topology of real participants only — see mp-panes.ts). */
-
-.mp-add-tile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  min-height: 0;
-  cursor: pointer;
-  color: var(--text-dim);
-  background: transparent;
-  border: 1px dashed color-mix(in srgb, var(--cyan) 22%, rgba(43, 37, 66, 0.9));
-  border-radius: 5px;
-  font: 10px/1 var(--font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  transition: border-color 0.18s, color 0.18s, background 0.18s;
-}
-
-.mp-add-tile:hover,
-.mp-add-tile:focus-visible {
-  color: var(--cyan);
-  border-color: color-mix(in srgb, var(--cyan) 55%, transparent);
-  background: rgba(65, 216, 230, 0.05);
-}
-
-.mp-add-plus {
-  font-size: 30px;
-  line-height: 1;
-  font-weight: 300;
-  opacity: 0.8;
-}
-
-/* In GRID the seat closes the layout as a band across the bottom — under the
-   clients, under the authority strip, last in reading order at every count. It
-   opts out of the row's stretch, so an empty seat never outweighs the panes
-   that are actually running. */
-.mp-grid[data-view="grid"] .mp-add-tile {
-  grid-column: 1 / -1;
-  grid-row: span 1;
-  align-self: center;
-  height: clamp(56px, 100%, 96px);
-}
-
-.mp-grid[data-view="tabs"] .mp-add-tile,
-.mp-grid[data-view="network"] .mp-add-tile {
-  display: none;
-}
-
-/* The tab-strip twin: the same action, at the size the tab strip allows. */
-.mp-tab.add {
-  --pc: var(--cyan);
-  font-size: 13px;
-  line-height: 1;
-  padding: 6px 12px;
-  filter: none;
-  background: transparent;
-  border-style: dashed;
-}
-
-.mp-tab.add:hover {
-  color: var(--cyan);
-  border-color: color-mix(in srgb, var(--cyan) 55%, transparent);
-}
-
 /* `hidden` must win over the display rules above. */
 .mp-tabs[hidden],
-.mp-add-tile[hidden],
-.mp-tab.add[hidden],
 .mp-link-menu[hidden] {
   display: none;
 }
