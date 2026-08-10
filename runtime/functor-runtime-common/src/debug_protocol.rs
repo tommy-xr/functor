@@ -1060,7 +1060,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 13);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 14);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
