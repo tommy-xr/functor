@@ -41,6 +41,14 @@ Asset management, animation, physics, and spatial audio — in the box. Stream a
 
 > Try it yourself at https://functor.games/sandbox?example=batteries
 
+### Multiplayer
+
+Client and server are just roles of the same game, running side by side in the browser — and the network view makes the wire itself visible: every intent and every snapshot is a real packet flying at its real delay, decoded as `Steer` and `Snapshot` values rather than bytes. Degrade a client's link to `mobile` and watch that wire fall behind while the LAN client keeps pace.
+
+![The sandbox network view: an authoritative server hub wired to two client panes, with intent and snapshot packets flying along the wires, one client's link degraded to mobile so its packets visibly lag, and the wire log showing decoded Steer and Snapshot values](site/media/feature-multiplayer.gif)
+
+> try it yourself at https://functor.games/sandbox?example=orbs#clients=2
+
 ### AI native
 
 Games run and respond headlessly. Drive and inspect a running game entirely over HTTP — read its live state and render tree, inject input, capture frames — the way a coding agent would.

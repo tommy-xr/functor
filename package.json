@@ -55,7 +55,8 @@
     "demo:batteries-included": "node site/demos/batteries-included.mjs",
     "demo:introspective": "node site/demos/introspective.mjs",
     "demo:llm-native": "node site/demos/llm-native.mjs",
-    "demo:mcp-drive": "node site/demos/mcp-drive.mjs"
+    "demo:mcp-drive": "node site/demos/mcp-drive.mjs",
+    "demo:multiplayer": "node site/demos/multiplayer.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",
