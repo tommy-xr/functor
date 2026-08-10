@@ -35,6 +35,7 @@ const MAX_ASSET_BYTES = 25 * 1024 * 1024;
 const MAX_ASSET_TOTAL_BYTES = 100 * 1024 * 1024;
 const MAX_ARTIFACT_ARCHIVE_BYTES = 50 * 1024 * 1024;
 const FORBIDDEN_ASSET_FILES = new Set([".assetsignore", "_headers", "_redirects"]);
+const CERTIFICATE_PACK_LOOKUP_DELAYS_MS = [0, 1_000, 3_000, 7_000];
 
 const [, , command, ...rawArgs] = process.argv;
 
@@ -394,30 +395,50 @@ const packOnlyCovers = (pack, hostname) => {
   return hosts.length > 0 && hosts.every((host) => host === hostname);
 };
 
-const cleanupCertificate = async (domain) => {
-  if (!domain.zone_id || !domain.cert_id) return;
-  try {
-    const packs = (await listCertificatePacks(domain.zone_id)).filter(
-      (pack) => !["deleted", "pending_deletion"].includes(pack.status),
-    );
-    const domainCertificateId = String(domain.cert_id).replaceAll("-", "").toLowerCase();
-    const candidates = packs.filter((pack) =>
-      pack.certificates?.some(
-        (certificate) =>
-          String(certificate.id).replaceAll("-", "").toLowerCase() === domainCertificateId,
-      ),
-    );
-    // Never substitute a hostname-only guess: certificate cleanup is optional,
-    // and an exact ID miss is safer to leave for inventory review than delete.
-    if (candidates.length !== 1 || !packOnlyCovers(candidates[0], domain.hostname)) {
-      console.warn(
-        `Could not safely identify the generated certificate for ${domain.hostname}; ` +
-          "leaving it for manual review",
+const normalizeCloudflareId = (value) => String(value).replaceAll("-", "").toLowerCase();
+
+const resolveCertificatePack = async (domain) => {
+  if (!domain.zone_id || !domain.cert_id) return null;
+  const domainCertificateId = normalizeCloudflareId(domain.cert_id);
+  let lastInventoryError = null;
+  for (const delay of CERTIFICATE_PACK_LOOKUP_DELAYS_MS) {
+    if (delay > 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
+    try {
+      const packs = await listCertificatePacks(domain.zone_id);
+      lastInventoryError = null;
+      const candidates = packs.filter(
+        (pack) =>
+          !["deleted", "pending_deletion"].includes(pack.status) &&
+          pack.certificates?.some(
+            (certificate) => normalizeCloudflareId(certificate.id) === domainCertificateId,
+          ),
       );
-      return;
+      if (candidates.length === 1 && packOnlyCovers(candidates[0], domain.hostname)) {
+        return candidates[0];
+      }
+    } catch (error) {
+      lastInventoryError = error;
     }
+  }
+  if (lastInventoryError) {
+    console.warn(
+      `Certificate inventory warning after retries: ${safeLog(lastInventoryError.message)}`,
+    );
+  }
+  // Never substitute a hostname-only guess: certificate cleanup is optional,
+  // and an exact ID miss is safer to leave for inventory review than delete.
+  console.warn(
+    `Could not safely identify the generated certificate for ${domain.hostname}; ` +
+      "leaving it for manual review",
+  );
+  return null;
+};
+
+const cleanupCertificate = async (domain, pack) => {
+  if (!pack) return;
+  try {
     await cloudflareRequest(
-      `/zones/${domain.zone_id}/ssl/certificate_packs/${candidates[0].id}`,
+      `/zones/${domain.zone_id}/ssl/certificate_packs/${pack.id}`,
       { method: "DELETE" },
       { allowNotFound: true },
     );
@@ -449,13 +470,17 @@ const cleanup = async () => {
       failures.push(`${target.hostname} belongs to unexpected Worker ${domain.service}`);
       continue;
     }
+    // Resolve the generated certificate while Cloudflare still exposes its
+    // Custom Domain record. Detaching first made the certificate-pack lookup
+    // race the provider's eventually consistent inventory.
+    const certificatePack = await resolveCertificatePack(domain);
     try {
       await cloudflareRequest(
         `/accounts/${account}/workers/domains/${domain.id}`,
         { method: "DELETE" },
         { allowNotFound: true },
       );
-      detached.push(domain);
+      detached.push({ domain, certificatePack });
       console.log(`Detached ${target.hostname}`);
     } catch (error) {
       failures.push(`detach domain: ${error.message}`);
@@ -479,7 +504,9 @@ const cleanup = async () => {
     failures.push(`delete Worker: ${error.message}`);
   }
 
-  for (const domain of detached) await cleanupCertificate(domain);
+  for (const { domain, certificatePack } of detached) {
+    await cleanupCertificate(domain, certificatePack);
+  }
 
   if (failures.length > 0) {
     throw new Error(`preview cleanup incomplete: ${failures.map(safeLog).join("; ")}`);

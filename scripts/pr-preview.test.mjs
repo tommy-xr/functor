@@ -118,7 +118,13 @@ const writeGitHubStub = async (
 
 const writeCloudflareStub = async (
   t,
-  { failDomainList = false, failDomainDetach = false, foreignDomain = false } = {},
+  {
+    certificateInventoryFailures = 0,
+    certificateInventoryMisses = 0,
+    failDomainList = false,
+    failDomainDetach = false,
+    foreignDomain = false,
+  } = {},
 ) => {
   const root = await temporaryDirectory(t, "functor-pr-preview-cloudflare-");
   const stub = join(root, "fetch-stub.mjs");
@@ -131,6 +137,10 @@ const writeCloudflareStub = async (
       `const failDomainList = ${JSON.stringify(failDomainList)};\n` +
       `const failDomainDetach = ${JSON.stringify(failDomainDetach)};\n` +
       `const foreignDomain = ${JSON.stringify(foreignDomain)};\n` +
+      `const certificateInventoryFailures = ${JSON.stringify(certificateInventoryFailures)};\n` +
+      `const certificateInventoryMisses = ${JSON.stringify(certificateInventoryMisses)};\n` +
+      `let certificateInventoryRequests = 0;\n` +
+      `globalThis.setTimeout = (callback) => { callback(); return 0; };\n` +
       `const json = (body, status = 200) => new Response(JSON.stringify(body), {\n` +
       `  status, headers: { "Content-Type": "application/json" },\n` +
       `});\n` +
@@ -148,6 +158,13 @@ const writeCloudflareStub = async (
       `    }] });\n` +
       `  }\n` +
       `  if (method === "GET" && url.pathname.endsWith("/ssl/certificate_packs")) {\n` +
+      `    certificateInventoryRequests += 1;\n` +
+      `    if (certificateInventoryRequests <= certificateInventoryFailures) {\n` +
+      `      return json({ success: false, errors: [{ message: "temporarily unavailable" }] }, 503);\n` +
+      `    }\n` +
+      `    if (certificateInventoryRequests <= certificateInventoryFailures + certificateInventoryMisses) {\n` +
+      `      return json({ success: true, result: [], result_info: { total_pages: 1 } });\n` +
+      `    }\n` +
       `    return json({ success: true, result: [{\n` +
       `      id: ${JSON.stringify(certificatePackId)}, status: "active",\n` +
       `      hosts: [${JSON.stringify(previewHostname)}],\n` +
@@ -464,11 +481,81 @@ test("cleans up the exact certificate despite Cloudflare's ID formatting", async
   const { log, stub } = await writeCloudflareStub(t);
   const result = await runCleanup(stub);
   assert.equal(result.code, 0, result.stderr);
-  const requests = await readFile(log, "utf8");
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
+  const inventoryIndex = requests.findIndex(
+    (request) => request.method === "GET" && request.path.includes("/ssl/certificate_packs?"),
+  );
+  const detachIndex = requests.findIndex(
+    (request) => request.method === "DELETE" && request.path.endsWith("/workers/domains/domain-id"),
+  );
+  const certificateDeleteIndex = requests.findIndex(
+    (request) => request.method === "DELETE" &&
+      request.path === `/client/v4/zones/${zoneId}/ssl/certificate_packs/${certificatePackId}`,
+  );
+  assert.ok(inventoryIndex >= 0 && inventoryIndex < detachIndex);
+  assert.ok(detachIndex < certificateDeleteIndex);
+});
+
+test("retries exact certificate inventory before detaching the domain", async (t) => {
+  const { log, stub } = await writeCloudflareStub(t, { certificateInventoryMisses: 2 });
+  const result = await runCleanup(stub);
+  assert.equal(result.code, 0, result.stderr);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
+  const inventoryIndexes = requests.flatMap((request, index) =>
+    request.method === "GET" && request.path.includes("/ssl/certificate_packs?") ? [index] : [],
+  );
+  const detachIndex = requests.findIndex(
+    (request) => request.method === "DELETE" && request.path.endsWith("/workers/domains/domain-id"),
+  );
+  assert.equal(inventoryIndexes.length, 3);
+  assert.ok(inventoryIndexes.every((index) => index < detachIndex));
   assert.match(
-    requests,
+    await readFile(log, "utf8"),
     new RegExp(`"method":"DELETE","path":"/client/v4/zones/${zoneId}/ssl/certificate_packs/${certificatePackId}"`),
   );
+});
+
+test("retries a transient certificate inventory error before detaching", async (t) => {
+  const { log, stub } = await writeCloudflareStub(t, { certificateInventoryFailures: 1 });
+  const result = await runCleanup(stub);
+  assert.equal(result.code, 0, result.stderr);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
+  const inventoryIndexes = requests.flatMap((request, index) =>
+    request.method === "GET" && request.path.includes("/ssl/certificate_packs?") ? [index] : [],
+  );
+  const detachIndex = requests.findIndex(
+    (request) => request.method === "DELETE" && request.path.endsWith("/workers/domains/domain-id"),
+  );
+  assert.equal(inventoryIndexes.length, 2);
+  assert.ok(inventoryIndexes.every((index) => index < detachIndex));
+  assert.match(
+    await readFile(log, "utf8"),
+    new RegExp(`"method":"DELETE","path":"/client/v4/zones/${zoneId}/ssl/certificate_packs/${certificatePackId}"`),
+  );
+});
+
+test("does not guess a certificate pack when the exact ID stays unavailable", async (t) => {
+  const { log, stub } = await writeCloudflareStub(t, { certificateInventoryMisses: 99 });
+  const result = await runCleanup(stub);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /leaving it for manual review/);
+  const requests = await readFile(log, "utf8");
+  assert.match(requests, /"method":"DELETE","path":"\/client\/v4\/accounts\//);
+  assert.doesNotMatch(
+    requests,
+    new RegExp(`"method":"DELETE","path":"/client/v4/zones/${zoneId}/ssl/certificate_packs/`),
+  );
+});
+
+test("does not report a recovered inventory error as the final outcome", async (t) => {
+  const { stub } = await writeCloudflareStub(t, {
+    certificateInventoryFailures: 1,
+    certificateInventoryMisses: 99,
+  });
+  const result = await runCleanup(stub);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /leaving it for manual review/);
+  assert.doesNotMatch(result.stderr, /inventory warning after retries/i);
 });
 
 test("refuses to replace a preview domain owned by another Worker", async (t) => {
@@ -495,5 +582,10 @@ test("does not delete the Worker when domain detach fails", async (t) => {
   const result = await runCleanup(stub);
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /preview cleanup incomplete: detach domain/);
-  assert.doesNotMatch(await readFile(log, "utf8"), /workers\/scripts\/functor-pr-690/);
+  const requests = await readFile(log, "utf8");
+  assert.doesNotMatch(requests, /workers\/scripts\/functor-pr-690/);
+  assert.doesNotMatch(
+    requests,
+    new RegExp(`"method":"DELETE","path":"/client/v4/zones/${zoneId}/ssl/certificate_packs/`),
+  );
 });
