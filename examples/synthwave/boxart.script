@@ -1,0 +1,10 @@
+# No input at all — synthwave has no model: the whole scene is a pure function
+# of time. The script exists because `--capture-at-frame N` (the only
+# frame-indexed, byte-reproducible capture trigger) requires `--input-script`,
+# and `--fixed-time` would pin the clock and freeze the rolling hills. So this
+# is the empty scenario, and frames advance by --script-dt alone.
+#
+# Format: <frame:int> <KeyName> <down|up>; `#` starts a comment.
+#
+#   functor -d examples/synthwave run native --input-script boxart.script \
+#     --script-dt 0.0166667 --capture-at-frame 60 --capture-frame /tmp/sw.png

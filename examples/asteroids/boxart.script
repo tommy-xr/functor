@@ -1,0 +1,70 @@
+# Box art drive for the landing-page games carousel (site/demos/box-art.mjs).
+# Enter leaves the menu, then the ship flies wave 1: held rotate + thrust
+# (levels, so down/up brackets the hold) with Space fired every 15 frames.
+# The captured window (frames 150-266) is mid-wave, rocks already splitting.
+#
+#   functor -d examples/asteroids run native --input-script boxart.script \
+#     --script-dt 0.0166667 --capture-at-frame 150 --capture-frame /tmp/ast.png
+
+12 Enter down
+13 Enter up
+30 Right down
+40 Up down
+45 Space down
+46 Space up
+54 Right up
+60 Space down
+61 Space up
+75 Space down
+76 Space up
+90 Space down
+91 Space up
+105 Space down
+106 Space up
+110 Up up
+120 Space down
+121 Space up
+130 Left down
+135 Space down
+136 Space up
+150 Space down
+151 Space up
+160 Left up
+165 Space down
+166 Space up
+170 Up down
+180 Space down
+181 Space up
+195 Space down
+196 Space up
+210 Space down
+211 Space up
+220 Up up
+225 Space down
+226 Space up
+240 Right down
+240 Space down
+241 Space up
+255 Space down
+256 Space up
+270 Right up
+270 Space down
+271 Space up
+280 Up down
+285 Space down
+286 Space up
+300 Space down
+301 Space up
+315 Space down
+316 Space up
+330 Up up
+330 Space down
+331 Space up
+345 Space down
+346 Space up
+360 Space down
+361 Space up
+375 Space down
+376 Space up
+390 Space down
+391 Space up

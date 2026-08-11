@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { execSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import esbuild from "esbuild";
-import { EXAMPLES, exampleEntryPath } from "./src/examples.ts";
+import { EXAMPLES, GALLERY, exampleEntryPath } from "./src/examples.ts";
 import { renderApiReference } from "./src/api-reference-html.mjs";
 import { ALPHA_BADGE_TITLE, injectHeader } from "./src/header.ts";
 
@@ -262,6 +262,27 @@ for (const example of EXAMPLES) {
     await cp(`${root}${source}`, `${dist}/${output}`);
   }
 }
+
+// The games gallery as data, at a stable URL: the same box-art metadata the
+// landing page renders, for anything that wants the shortlist without scraping
+// markup (site/demos/box-art.mjs captures FROM the source list, not from this).
+await writeFile(
+  `${dist}/examples/gallery.json`,
+  JSON.stringify(
+    GALLERY.map(({ id, gallery }) => ({
+      id,
+      title: gallery.title,
+      blurb: gallery.blurb,
+      ...(gallery.controls ? { controls: gallery.controls } : {}),
+      order: gallery.order,
+      play: `sandbox.html?example=${encodeURIComponent(id)}`,
+      poster: `media/box-art/${id}.png`,
+      animation: `media/box-art/${id}.gif`,
+    })),
+    null,
+    2
+  ) + "\n"
+);
 
 // The language-intelligence wasm, if it has been built. Absent → skip (build on).
 let langPkgPresent = false;

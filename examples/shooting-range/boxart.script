@@ -1,0 +1,30 @@
+# Box art drive for the landing-page games carousel (site/demos/box-art.mjs).
+#
+# Mouse.Move coordinates are logical window points (the capture pins the window
+# to 640x400) and the camera turns on their DELTAS, so the run below settles the
+# aim DOWN onto the target line over half a second and then leaves the pointer
+# alone: the only camera motion left is the recoil spring's climb under sustained
+# fire. That is deliberate — a panning camera changes every pixel of every frame,
+# which no palette-quantized GIF can compress into a card-sized file.
+#
+# The weapon is full-auto, so one `Mouse.Left down` is a sustained burst: the
+# targets go down, the muzzle flashes, the gun climbs. R reloads once the
+# magazine is out, so a longer capture window still has something happening.
+# Captured window: frames 60-176.
+#
+#   functor -d examples/shooting-range run native --input-script boxart.script \
+#     --script-dt 0.0166667 --capture-at-frame 100 --capture-frame /tmp/sr.png
+
+0 Mouse.Move 320 200
+4 Mouse.Move 320 203
+8 Mouse.Move 320 206
+12 Mouse.Move 320 209
+16 Mouse.Move 320 212
+20 Mouse.Move 320 215
+24 Mouse.Move 320 218
+24 Mouse.Left down
+190 Mouse.Left up
+196 R down
+197 R up
+230 Mouse.Left down
+360 Mouse.Left up
