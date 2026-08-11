@@ -690,6 +690,223 @@ a:hover {
   margin: 0;
 }
 
+/* ── The games shelf ────────────────────────────────────────────────────────
+   A rack of game CASES, seen at an angle: every card is tilted the same way in
+   a shared perspective (the same `perspective` / `preserve-3d` vocabulary the
+   boot animation's extruded mark uses), with a cyan→pink spine down its left
+   edge. Hovering or focusing a case squares it up to the reader and its box art
+   starts moving — the one place on the page where the reward for pointing at
+   something is the game itself playing.
+
+   The rail is a scroll-snap carousel because ten cases are a shelf you browse,
+   not a grid you survey: the horizontal overflow IS the affordance. */
+.games-section {
+  padding-bottom: var(--space-md);
+}
+
+.games-lede {
+  max-width: 640px;
+  margin: 12px auto 0;
+  padding: 0 var(--space-md);
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.games-lede code {
+  color: var(--cyan);
+}
+
+/* The shelf is the scroll container and a keyboard-operable region, so it takes
+   focus itself; the ring is drawn inside to avoid a clipped outline. */
+.games-shelf {
+  margin-top: var(--space-lg);
+  border-radius: 12px;
+}
+
+.games-shelf:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 6px;
+}
+
+.games-rail {
+  --case-w: 320px;
+  display: flex;
+  gap: var(--space-lg);
+  align-items: start;
+  margin: 0;
+  /* Deep side padding so the FIRST and LAST case can sit in the middle of the
+     shelf like every other one, and so a tilted case's near edge is never
+     clipped by the scrollport. */
+  padding: 26px max(var(--space-md), calc(50vw - var(--case-w) * 1.6)) 30px;
+  list-style: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-padding: 0 var(--space-md);
+  perspective: 1500px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.games-rail::-webkit-scrollbar {
+  height: 8px;
+}
+
+.games-rail::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+}
+
+.game-card {
+  flex: 0 0 var(--case-w);
+  scroll-snap-align: center;
+  transform-style: preserve-3d;
+}
+
+/* The case: one link, so one tab stop per game. */
+.game-case {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  text-decoration: none;
+  background: linear-gradient(170deg, var(--bg-raised), var(--bg-panel));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  /* Tilted away from the reader, like a case standing on a shelf. */
+  transform: rotateY(-9deg) translateZ(0);
+  transform-origin: left center;
+  box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.9);
+  transition: transform 0.4s ease, box-shadow 0.4s ease, border-color 0.3s ease;
+}
+
+.game-case:hover,
+.game-case:focus-visible {
+  text-decoration: none;
+  transform: rotateY(0deg) translateY(-6px);
+  border-color: rgba(65, 216, 230, 0.4);
+  box-shadow: 0 34px 70px -30px rgba(0, 0, 0, 0.95), 0 0 60px -34px rgba(65, 216, 230, 0.5);
+}
+
+.game-case:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+/* The spine — the site's cyan→pink rule stood on end. */
+.game-spine {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 7px;
+  z-index: 2;
+  background: linear-gradient(180deg, var(--cyan), var(--pink));
+  opacity: 0.55;
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.5);
+  transition: opacity 0.3s ease;
+}
+
+.game-case:hover .game-spine,
+.game-case:focus-visible .game-spine {
+  opacity: 1;
+}
+
+/* The art keeps its box before either image loads: the frame owns the ratio and
+   both images are absolutely stacked inside it, so swapping the poster for the
+   animation moves nothing. */
+.game-art {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: #0d0221;
+  border-bottom: 1px solid var(--line);
+  line-height: 0;
+}
+
+.game-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.game-anim {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.game-card.is-playing .game-anim {
+  opacity: 1;
+}
+
+.game-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px 18px;
+}
+
+.game-title {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.game-blurb {
+  color: var(--text-dim);
+  font-size: 0.86rem;
+  line-height: 1.6;
+}
+
+/* The control legend reads as a hardware label: dim, ruled off, monospace. */
+.game-controls {
+  color: #7f7799;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+}
+
+.game-play {
+  margin-top: 2px;
+  color: var(--pink);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Narrow viewports: one case at a time, squared up (a 9° tilt on a nearly
+   full-width card just wastes the width) and centred by the snap. */
+@media (max-width: 760px) {
+  .games-rail {
+    --case-w: min(300px, 82vw);
+    gap: var(--space-md);
+    padding: 16px var(--space-md) 22px;
+    perspective: none;
+  }
+  .game-case {
+    transform: none;
+  }
+  .game-case:hover,
+  .game-case:focus-visible {
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No tilt animation, and — since src/gallery.ts never loads an animation in
+     this mode — no moving art either. The shelf is posters. */
+  .game-case,
+  .game-spine,
+  .game-anim {
+    transition: none;
+  }
+}
+
 .how-it-works {
   max-width: 1100px;
   margin: 0 auto;

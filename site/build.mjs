@@ -15,6 +15,7 @@ import { dirname } from "node:path";
 import esbuild from "esbuild";
 import { EXAMPLES, GALLERY, exampleEntryPath } from "./src/examples.ts";
 import { renderApiReference } from "./src/api-reference-html.mjs";
+import { renderGalleryCards } from "./src/gallery-html.ts";
 import { ALPHA_BADGE_TITLE, injectHeader } from "./src/header.ts";
 
 const site = fileURLToPath(new URL(".", import.meta.url));
@@ -157,6 +158,20 @@ for (const page of PAGES) {
       /<span class="version-badge"[^>]*>[^<]*<\/span>/,
       `<span class="version-badge" title="${badgeTitle}">${badge}</span>`
     );
+    if (page === "index.html") {
+      // The games carousel, prerendered from the same `gallery` metadata the
+      // box-art capture reads — so a no-JS visitor gets the whole shelf, and the
+      // cards can't disagree with the media. Exactly one slot, like the docs
+      // prerender: a `String.replace` only rewrites the first match, so a second
+      // marker would silently stay empty.
+      const token = "<!--games-gallery-->";
+      const occurrences = html.split(token).length - 1;
+      if (occurrences !== 1) {
+        console.error(`index.html has ${occurrences} ${token} markers — expected exactly 1`);
+        process.exit(1);
+      }
+      html = html.replace(token, () => renderGalleryCards(GALLERY));
+    }
     if (page === "docs/index.html") {
       for (const [marker, markup] of Object.entries(PRERENDER)) {
         const token = `<!--${marker}-->`;
@@ -341,6 +356,7 @@ await esbuild.build({
     `${site}src/docs.ts`,
     `${site}src/api-docs.ts`,
     `${site}src/features.ts`,
+    `${site}src/gallery.ts`,
   ],
 });
 

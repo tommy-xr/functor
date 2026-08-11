@@ -205,6 +205,30 @@
       </div>
     </section>
 
+    <!-- The games shelf. The cards are prerendered into the <ul> below by
+         build.mjs from the `gallery` metadata in src/examples.ts (the same list
+         site/demos/box-art.mjs captures the art from), so a no-JS visitor gets
+         the whole shelf; assets/gallery.js only swaps a poster for its
+         animation. The rail is focusable on purpose: a scrollable region has to
+         be operable from the keyboard. -->
+    <section class="games-section">
+      <h2 class="section-title">Ten games, no build step</h2>
+      <p class="games-lede">
+        Each one is a complete game in a single <code>.fun</code> file the runtime interprets.
+        Open one and edit it while it runs.
+      </p>
+      <div
+        class="games-shelf"
+        role="region"
+        aria-label="Playable games — scroll for more"
+        tabindex="0"
+      >
+        <ul class="games-rail">
+          <!--games-gallery-->
+        </ul>
+      </div>
+    </section>
+
     <section class="how-it-works">
       <h2>How does it work?</h2>
       <p>
@@ -274,5 +298,6 @@
     <link rel="modulepreload" href="assets/hero-hero-app.js" />
     <script type="module" src="assets/hero.js"></script>
     <script type="module" src="assets/features.js"></script>
+    <script type="module" src="assets/gallery.js"></script>
   </body>
 </html>
