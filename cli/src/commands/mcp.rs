@@ -2085,10 +2085,12 @@ in the list have already advanced; the group is no longer in lockstep."
         let template = match name {
             "3d" => crate::commands::init::Template::ThreeD,
             "fps" => crate::commands::init::Template::Fps,
+            "multiplayer" => crate::commands::init::Template::Multiplayer,
             other => {
                 return tool_error(format!(
                     "unknown template {other:?}: expected \"3d\" (a small lit 3D scene) \
-or \"fps\" (a first-person WASD + mouse-look scene)"
+or \"fps\" (a first-person WASD + mouse-look scene) or \"multiplayer\" (an \
+authoritative client/server starter)"
                 ))
             }
         };

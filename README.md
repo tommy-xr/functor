@@ -238,7 +238,7 @@ use `./target/release/functor` instead — see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 | Command | Description |
 | --- | --- |
-| `functor -d <dir> init [3d\|fps]` | Scaffold a new Functor Lang project (`3d` is the default) |
+| `functor -d <dir> init [3d\|fps\|multiplayer]` | Scaffold a new Functor Lang project (`3d` is the default; `multiplayer` scaffolds client + server roles) |
 | `functor -d <dir> build [native\|wasm]` | Typecheck the `.fun` project (diagnostics are errors) |
 | `functor -d <dir> run [native\|wasm]` | Interpret and run the game (native window / browser) |
 | `functor -d <dir> develop [native\|wasm]` | Same as `run` — Functor Lang hot-reload is built into the runtime — plus, on native, the debug runtime on `localhost:8077` (`--no-debug` to skip it) |

@@ -9,6 +9,8 @@ const MANIFEST_3D: &str = include_str!("../../templates/functor.json");
 const MANIFEST_FPS: &str = include_str!("../../templates/fps/functor.json");
 const GAME_3D: &str = include_str!("../../templates/3d/game.fun");
 const GAME_FPS: &str = include_str!("../../templates/fps/game.fun");
+const MANIFEST_MULTIPLAYER: &str = include_str!("../../templates/multiplayer/functor.json");
+const GAME_MULTIPLAYER: &str = include_str!("../../templates/multiplayer/game.fun");
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum Template {
@@ -18,6 +20,8 @@ pub enum Template {
     ThreeD,
     /// A first-person WASD + mouse-look scene.
     Fps,
+    /// An authoritative client/server multiplayer starter (both roles in one file).
+    Multiplayer,
 }
 
 impl Template {
@@ -25,6 +29,7 @@ impl Template {
         match self {
             Self::ThreeD => "3d",
             Self::Fps => "fps",
+            Self::Multiplayer => "multiplayer",
         }
     }
 
@@ -40,6 +45,7 @@ impl Template {
         match self {
             Self::ThreeD => FILES_3D,
             Self::Fps => FILES_FPS,
+            Self::Multiplayer => FILES_MULTIPLAYER,
         }
     }
 }
@@ -68,6 +74,17 @@ static FILES_FPS: &[TemplateFile] = &[
     TemplateFile {
         name: "game.fun",
         contents: GAME_FPS,
+    },
+];
+
+static FILES_MULTIPLAYER: &[TemplateFile] = &[
+    TemplateFile {
+        name: "functor.json",
+        contents: MANIFEST_MULTIPLAYER,
+    },
+    TemplateFile {
+        name: "game.fun",
+        contents: GAME_MULTIPLAYER,
     },
 ];
 
@@ -151,7 +168,10 @@ fn rollback(directory: &Path, created_directory: bool, created_files: &[PathBuf]
 
 #[cfg(test)]
 mod tests {
-    use super::{execute, Template, GAME_3D, GAME_FPS, MANIFEST_3D, MANIFEST_FPS};
+    use super::{
+        execute, Template, GAME_3D, GAME_FPS, GAME_MULTIPLAYER, MANIFEST_3D, MANIFEST_FPS,
+        MANIFEST_MULTIPLAYER,
+    };
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -228,6 +248,39 @@ mod tests {
             Template::Fps,
             &[("functor.json", MANIFEST_FPS), ("game.fun", GAME_FPS)],
         );
+    }
+
+    /// The multiplayer template declares TWO roles, so typechecking is not the
+    /// whole gate: `build` also validates each declared role's contract. This
+    /// walks the same path — every role in the scaffolded `functor.json`,
+    /// resolved and contract-checked against the loaded project.
+    #[test]
+    fn multiplayer_template_creates_a_typechecked_project() {
+        assert_template_scaffolds(
+            "multiplayer",
+            Template::Multiplayer,
+            &[
+                ("functor.json", MANIFEST_MULTIPLAYER),
+                ("game.fun", GAME_MULTIPLAYER),
+            ],
+        );
+
+        let directory = TestDir::new("multiplayer-roles");
+        execute(&directory.0, &Template::Multiplayer).unwrap();
+        let config = crate::commands::functor_lang_project::detect(&directory.0.to_string_lossy())
+            .expect("the scaffolded functor.json is a Functor Lang project");
+        let project = functor_lang::project::load_with_bundled_modules(
+            &directory.0.join("game.fun"),
+            &HashMap::new(),
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|error| panic!("template should load: {}", error.render()));
+        let roles = config.all().expect("both roles resolve");
+        assert_eq!(roles.len(), 2, "client and server");
+        for role in roles {
+            role.check_contract(&project)
+                .unwrap_or_else(|error| panic!("role contract should validate: {error}"));
+        }
     }
 
     #[test]
