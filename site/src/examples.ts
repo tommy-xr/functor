@@ -237,24 +237,29 @@ export const EXAMPLES: Example[] = [
     mouseCapture: false,
   },
   // The arcade clone: three sibling modules and four checked-in CC0 sounds. The
-  // ship model is the one asset NOT in the repo — `npm run fetch:assets` unzips
-  // it from the Kenney pack and `*.glb` is gitignored — so, exactly like the
-  // `animation` entry above, the site swaps in an equivalent manifest whose
-  // model locator is a CORS-friendly CDN copy of the SAME file (the sounds stay
-  // local, copied below).
+  // ship model is the one asset NOT in the sample dir — `npm run fetch:assets`
+  // unzips it from the Kenney "Space Kit" pack and `examples/asteroids`
+  // gitignores `*.glb` — so the site keeps its OWN copy of that same CC0 file
+  // (19 KB, like examples/glove's checked-in glb) and copies it to the locator
+  // the canonical manifest already names. That keeps the generated
+  // `assets.fun` unforked: the site uses the sample's own manifest verbatim.
   {
     id: "asteroids",
     label: "Asteroids",
     source: "examples/asteroids/game.fun",
     siblings: [
       {
-        source: "site/examples/asteroids/assets.fun",
+        source: "examples/asteroids/assets.fun",
         output: "examples/asteroids/assets.fun",
       },
       { source: "examples/asteroids/lib.fun", output: "examples/asteroids/lib.fun" },
       { source: "examples/asteroids/font.fun", output: "examples/asteroids/font.fun" },
     ],
     assets: [
+      // Kenney "Space Kit" v2.0 `Models/GLTF format/craft_racer.glb` (CC0) —
+      // byte-identical to what `fetch:assets` unzips for the desktop sample;
+      // provenance in examples/asteroids/ASSETS.md.
+      { source: "site/examples/asteroids/ship.glb", output: "ship.glb" },
       { source: "examples/asteroids/laser.ogg", output: "laser.ogg" },
       { source: "examples/asteroids/explosion.ogg", output: "explosion.ogg" },
       { source: "examples/asteroids/ship-explosion.ogg", output: "ship-explosion.ogg" },
@@ -290,6 +295,7 @@ export const EXAMPLES: Example[] = [
       { source: "examples/synthwave/sky.png", output: "sky.png" },
     ],
   },
+  // --- Runtime showcases -------------------------------------------------
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm
   // runtime fetch()es those cross-origin (CORS-permitting), so unlike the
   // local-asset examples this one runs in the single-buffer sandbox.
