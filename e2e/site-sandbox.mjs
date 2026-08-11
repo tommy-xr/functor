@@ -1024,6 +1024,44 @@ check("picker exposes the expanded example set", examples.length >= 10, examples
 // Duplicate ids would silently overwrite each other's dist/examples/<id>.fun and
 // under-test the set — a unique-count mismatch is a real drift bug, not a nit.
 check("picker example ids are unique", new Set(examples).size === examples.length, examples.join(", "));
+// An IN-PLACE example switch, between two examples whose player URLs are now
+// byte-identical (the sources are pushed, so nothing distinguishes them in the
+// query). The switch must still replace the player document — a fresh model, the
+// new program — rather than leave the old one running or hang on "reloading…".
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.goto(`${BASE}/sandbox.html?example=hero`);
+  await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+    timeout: 30000,
+  });
+  const before = await page.evaluate(() => {
+    // Mark the live document so a surviving one is detectable.
+    document.getElementById("player").contentWindow.__docMark = "first";
+    return document.getElementById("player").getAttribute("src");
+  });
+  await page.selectOption("#example-picker", "orbit");
+  const switched = await page
+    .waitForFunction(
+      () =>
+        window.__sandbox.status().state === "live" &&
+        window.__sandbox.getSource().includes("orbit"),
+      null,
+      { timeout: 30000 }
+    )
+    .then(() => true)
+    .catch(() => false);
+  const after = await page.evaluate(() => ({
+    src: document.getElementById("player").getAttribute("src"),
+    mark: document.getElementById("player").contentWindow.__docMark ?? "(fresh)",
+    status: window.__sandbox.status(),
+  }));
+  check(
+    "an in-place switch between same-URL examples reboots the player",
+    switched && after.mark === "(fresh)" && before === after.src,
+    JSON.stringify({ before, ...after })
+  );
+  await page.close();
+}
 for (const example of examples) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const consoleLog = [];
@@ -2146,13 +2184,16 @@ for (const example of examples) {
 
   await problemsTab.click();
   const row = page.locator(".problem-row");
+  // The row names the file being edited — the loaded example's REAL entry path
+  // (the sandbox pushes it as part of a multi-file project), not a `game.fun`
+  // no example is called.
   const rowText = await waitFor(
     async () => ((await row.count()) ? await row.first().textContent() : ""),
-    (t) => t.includes("game.fun")
+    (t) => t.includes("examples/hero.fun")
   );
   check(
     "problems panel lists the diagnostic with its location",
-    rowText.includes("float") && rowText.includes("game.fun"),
+    rowText.includes("float") && rowText.includes("examples/hero.fun"),
     rowText
   );
 

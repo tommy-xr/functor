@@ -1,8 +1,15 @@
 // The sandbox page: a CodeMirror editor wired to the runtime iframe over the
-// editor↔player postMessage seam (player-bridge.ts — the same protocol the
-// VSCode live-preview panel uses). Edits are debounced and pushed as
-// `functor-lang-set-source`; the runtime hot-swaps the program with the model
-// preserved and replies `functor-lang-set-source-result`.
+// editor↔player postMessage seam. It speaks the IDE's MULTI-FILE seam
+// (project-bridge.ts): the page owns every source of the loaded example, boots
+// the player as `player.html?project=inline`, and pushes the whole file set as
+// `functor-lang-set-project` — the runtime hot-swaps the program with the model
+// preserved and replies `functor-lang-set-source-result`. The editor still
+// edits ONE buffer (the entry); a file switcher is a separate concern.
+//
+// Binary assets are NOT part of that push: the runtime resolves an `Asset.*`
+// locator as a URL against player.html, so an example's png/glb/ogg is served
+// from the built site (examples.ts `assets` copies them) exactly as before.
+// Only `.fun` sources travel over the seam.
 //
 // The page shell is static HTML; the CHROME around the editor (the picker, the
 // pill, the external-runtime panel, the status bar) renders as React islands
@@ -33,7 +40,7 @@ import {
   currentCoverage,
   currentExpects,
 } from "./lang-intel.js";
-import { PlayerBridge } from "./player-bridge.js";
+import { ProjectBridge } from "./project-bridge.js";
 import { createStatusBarStore } from "./status-bar-store.js";
 import { createRuntimeTargetCore } from "./runtime-target-core.js";
 import type { RuntimeTargetState } from "./runtime-target-core.js";
@@ -41,10 +48,11 @@ import { createStore } from "./store.js";
 import { SandboxControls } from "./components/SandboxControls.js";
 import type { PickerState, ClientsState } from "./components/SandboxControls.js";
 import { initMultiplayerPanes, MAX_CLIENTS } from "./mp-panes.js";
-import type { MultiplayerPanes } from "./mp-panes.js";
+import type { MultiplayerPanes, PaneProgram } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { asPlayerMessage } from "./protocol.js";
+import type { ProjectFile } from "./protocol.js";
 import { EXAMPLES, exampleEntryPath } from "./examples.js";
 
 /** The sandbox's e2e seam (driven by e2e/site-sandbox.mjs). */
@@ -76,8 +84,8 @@ interface LangSeam {
 const frame = document.getElementById("player") as HTMLIFrameElement;
 
 // An inline program from the URL fragment (the docs' "try it" buttons):
-// #src=<base64url> becomes the editor buffer and the player's ?src= data:
-// URL, so it starts with a fresh init — no served file involved.
+// #src=<base64url> becomes the editor buffer and a ONE-FILE project pushed to a
+// fresh player, so it starts with a fresh init — no served file involved.
 const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
 const pageParams = new URLSearchParams(window.location.search);
 const requested = pageParams.get("example");
@@ -133,15 +141,15 @@ const statusBar = createStatusBarStore();
 
 // One instrument at every client count: the chrono bar is the transport UI
 // for a single client and for N — the players mount their __scrub seam with
-// no bar of their own (?scrubber=hidden). `getSource` lets a mirror added
-// mid-session catch up to the edited buffer (`view` exists by the time any
-// pane is added).
+// no bar of their own (?scrubber=hidden). `getProject` is how a pane added
+// mid-session BOOTS (the project push is the boot) already carrying the edited
+// buffer (`view` exists by the time any pane is added).
 mp = initMultiplayerPanes({
   frame,
   count: requestedClients,
   statusBar,
   setPill: (state, text, detail) => pill.set({ state, text, detail }),
-  getSource: () => view.state.doc.toString(),
+  getProject: () => projectFiles(),
 });
 
 // The CLIENTS control only appears for multiplayer-structured samples (the
@@ -190,14 +198,27 @@ window.addEventListener("hashchange", () => {
     updateClientsStore();
   }
 });
-// The sandbox edits only the entry buffer, but some examples also load sibling
-// modules (for example the platformer's generated assets.fun manifest). Keep those
-// fetched sources so an external runtime receives the same complete project as
-// the in-page wasm preview.
-let siblingSources: [string, string][] = [];
+// The loaded example's whole file set, ENTRY FIRST — the paths are the ones the
+// built site serves, so `file = module` derives the same module names the
+// player used to get by fetching them. The editor's buffer is the entry's
+// source (the only file it edits for now); every push carries the rest
+// unchanged, so a multi-entry example's other roles keep resolving.
+let project: ProjectFile[] = [];
+// Binary assets stay a fetched, page-relative concern (see the header note);
+// they are only forwarded to an external runtime target, which has no site to
+// fetch them from.
 let assetSources: [string, Uint8Array][] = [];
 
-const bridge = new PlayerBridge(frame, {
+/** The file the editor is showing — the entry, until a file switcher lands. */
+const activePath = () => project[0]?.path ?? "";
+
+// Mirror the live buffer into the entry and hand back the file set to push.
+const projectFiles = (): ProjectFile[] => {
+  if (project[0]) project[0].source = view.state.doc.toString();
+  return project;
+};
+
+const bridge = new ProjectBridge(frame, {
   onReloading: () => setStatus("busy", "◌ reloading…"),
   onLive: () => {
     dismissBootLoader();
@@ -235,8 +256,16 @@ window.addEventListener("message", (event) => {
 
 // Created once, outside React: this controller carries the live link's queued
 // pushes and its `/state` poll chain, so a re-render must never restart it.
+// The external runtime target keeps its own FLAT naming: the entry is pushed as
+// `game.fun` and siblings by basename, as it was before the preview moved to the
+// multi-file seam (the device push has no site paths to mirror).
 const runtimeTarget = createRuntimeTargetCore({
-  getProject: () => [["game.fun", view.state.doc.toString()], ...siblingSources],
+  getProject: () =>
+    projectFiles().map((file, index): [string, string] => [
+      // Every path has at least one segment, so `pop` always yields one.
+      index === 0 ? "game.fun" : file.path.split("/").pop()!,
+      file.source,
+    ]),
   getAssets: () => assetSources,
   onOutput: (level, message) => statusBar.appendOutput(level, message),
 });
@@ -257,8 +286,9 @@ const view = new EditorView({
     synthwaveEditorTheme,
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !programmaticEdit) {
-        bridge.push(view.state.doc.toString());
-        mp?.push(view.state.doc.toString());
+        const files = projectFiles();
+        bridge.setProject(files);
+        mp?.push(files);
         runtimeTarget.projectChanged();
       }
     }),
@@ -283,13 +313,17 @@ wireLiveTrace(view, statusBar, frame, langReady);
 // Each lint pass refreshes the Problems panel; clicking a problem jumps the
 // editor to it. Positions re-clamp at click time (the doc may have moved on).
 onDiagnostics((diags) => {
+  // The lint pass is of the file the editor is showing — name it, rather than
+  // asserting a `game.fun` no example is actually called (the IDE's rule, with
+  // the entry standing in for its `project.active`).
+  const file = activePath();
   statusBar.setProblems(
     diags.map((d) => {
       const line = view.state.doc.lineAt(Math.min(d.from, view.state.doc.length));
       return {
         severity: d.severity,
         message: d.message,
-        loc: `game.fun ${line.number}:${d.from - line.from + 1}`,
+        loc: `${file} ${line.number}:${d.from - line.from + 1}`,
         jump: () => {
           const len = view.state.doc.length;
           const from = Math.min(d.from, len);
@@ -313,20 +347,18 @@ onDiagnostics((diags) => {
   expects: () => currentExpects(view),
 };
 
-const setDoc = (
-  source: string,
-  siblings: [string, string][] = [],
-  assets: [string, Uint8Array][] = []
-) => {
+// Load a fresh file set (example switch, inline load, reset): `files[0]` is the
+// entry and becomes the editor's buffer.
+const setDoc = (files: ProjectFile[], assets: [string, Uint8Array][] = []) => {
   bridge.reset();
   mp?.reset();
   // Wholesale document replacement (example switch, inline load, reset): drop
   // the wasm completion cache so the previous program's candidates can't leak.
   resetIntel();
-  siblingSources = siblings;
+  project = files;
   assetSources = assets;
   programmaticEdit = true;
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: files[0].source } });
   programmaticEdit = false;
   // …and drop the outgoing program's decorations (the IDE's setDoc does the
   // same): if the incoming source doesn't analyze cleanly, the keep-stale
@@ -341,6 +373,29 @@ const fromBase64Url = (b64u: string) =>
   );
 
 let inlineB64: string | null = null;
+
+// An inline (#src=) program is a one-file project; `main.fun` is module `Main`,
+// which is what the old `?src=` data: URL boot derived for it.
+const INLINE_ENTRY = "main.fun";
+
+// The player iframe's boot params, common to every load:
+//   project=inline — the PAGE owns every source and delivers it by postMessage
+//     (project-bridge.ts); the player fetches no `.fun` at all;
+//   scrubber=hidden — the page's chrono bar is the transport UI, so the player
+//     mounts the __scrub seam with no bar of its own;
+//   net=embedder, UNCONDITIONALLY — this host always routes pane networking
+//     through its own coordinator (net-coordinator.ts) rather than letting a
+//     pane open browser sockets. A program that declares no `Sub.connect` /
+//     `Sub.listen` posts nothing, so the declaration costs it nothing.
+const playerParams = (
+  cursorPolicy: "visible" | null = pageCursorPolicy,
+  mouseCapture: false | null = pageMouseCapture
+) => {
+  const params = new URLSearchParams({ project: "inline", scrubber: "hidden", net: "embedder" });
+  if (mouseCapture === false) params.set("mouseCapture", "false");
+  if (cursorPolicy) params.set("cursor", cursorPolicy);
+  return params;
+};
 
 // A monotonically increasing load token: each picker change / reset / inline
 // load claims a new one, and a fetch that finishes after a newer load started
@@ -366,21 +421,13 @@ const loadInline = (b64u: string) => {
     selected: "__inline",
   });
   loadToken += 1; // supersede any in-flight example fetch
-  setDoc(source);
+  setDoc([{ path: INLINE_ENTRY, source }]);
   setStatus("busy", "◌ loading…");
-  // A fresh iframe on a `?src=` data: URL, so the inline program runs its OWN
-  // `init` (a set-source push would preserve the default entry's model). The
-  // loader derives module `Main` for a non-identifier entry label.
-  // scrubber=hidden: the page's chrono bar is the transport UI; the player
-  // mounts the __scrub seam with no bar of its own.
-  // net=embedder, UNCONDITIONALLY: this host always routes pane networking
-  // through its own coordinator (net-coordinator.ts) rather than letting a
-  // pane open browser sockets. A program that declares no `Sub.connect`/
-  // `Sub.listen` posts nothing, so the declaration costs it nothing.
-  const params = new URLSearchParams({ src: b64u, scrubber: "hidden", net: "embedder" });
-  if (pageMouseCapture === false) params.set("mouseCapture", "false");
-  if (pageCursorPolicy) params.set("cursor", pageCursorPolicy);
-  frame.src = `player.html?${params}`;
+  // A fresh iframe, booted BY the initial project push, so the inline program
+  // runs its OWN `init` (a hot-swap push would preserve the previous program's
+  // model). `main.fun` keeps the module the old `?src=` data: URL derived.
+  frame.src = `player.html?${playerParams()}`;
+  bridge.setProject(project);
   mp?.setSrc(frame.src);
   return true;
 };
@@ -415,28 +462,18 @@ const loadExample = async (id: string) => {
     ])
   );
   if (token !== loadToken) return;
-  const url = files[0];
-  const source = sources[0];
-  const siblings = files.slice(1).map((path, index): [string, string] => [
-    // Every path here has at least one segment, so `pop` always yields one.
-    path.split("/").pop()!,
-    sources[index + 1],
-  ]);
-  // A fresh iframe (fresh model: init runs) rather than a source push, so
-  // switching examples resets state; the ready announcement re-arms pushes.
-  setDoc(source, siblings, assets);
+  // A fresh iframe (fresh model: init runs) rather than a hot-swap push, so
+  // switching examples resets state; the project-waiting handshake boots it.
+  setDoc(
+    files.map((path, index): ProjectFile => ({ path, source: sources[index] })),
+    assets
+  );
   setStatus("busy", "◌ loading…");
-  // scrubber=hidden / net=embedder: as in loadInline above.
-  const params = new URLSearchParams({ game: url, scrubber: "hidden", net: "embedder" });
   const cursorPolicy = example?.cursor ?? pageCursorPolicy;
   const mouseCapture = cursorPolicy
     ? null
     : example?.mouseCapture ?? pageMouseCapture;
-  if (mouseCapture === false) params.set("mouseCapture", "false");
-  if (cursorPolicy) {
-    params.set("cursor", cursorPolicy);
-  }
-  for (const file of files) params.append("file", file);
+  const params = playerParams(cursorPolicy, mouseCapture);
   // A same-file-entries sample plays its declared role: in the preferred form
   // the role's inline module (e.g. orbs' Client.init/Client.tick/…)…
   if (example?.module) params.set("module", example.module);
@@ -444,19 +481,18 @@ const loadExample = async (id: string) => {
   // player takes one of the two.
   if (example?.prefix) params.set("prefix", example.prefix);
   frame.src = `player.html?${params}`;
+  bridge.setProject(project);
   // A sample with a SERVER role (examples.ts `server`) also boots a server
-  // pane: the SAME file list re-entered at the server file. `?file=` is the
-  // whole project with the ENTRY FIRST, so the two roles differ only in which
-  // module the runtime looks the entry points up in.
+  // pane: the SAME file set re-entered at the server file. The pushed project
+  // is entry-first, so the pane grid hoists that file to the front — the two
+  // roles differ only in their entry and (for a same-file sample) their module.
   const serverFile = example?.server?.file;
-  let serverSrc: string | null = null;
+  let server: PaneProgram | null = null;
   if (serverFile) {
     // Derived from the client's params, so every project setting the sample
     // declares (cursor, mouseCapture) reaches the server pane too — only the
-    // entry, the file ORDER, and the ROLE differ.
+    // entry and the ROLE differ.
     const serverParams = new URLSearchParams(params);
-    serverParams.set("game", serverFile);
-    serverParams.delete("file");
     // The client's ROLE must not leak into the server pane — neither form, so
     // both are dropped before the server's own is applied. A same-file sample
     // (orbs) has both roles in the one entry and differs only here; absent a
@@ -465,12 +501,9 @@ const loadExample = async (id: string) => {
     serverParams.delete("prefix");
     if (example?.server?.module) serverParams.set("module", example.server.module);
     if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
-    for (const file of [serverFile, ...files.filter((f) => f !== serverFile)]) {
-      serverParams.append("file", file);
-    }
-    serverSrc = `player.html?${serverParams}`;
+    server = { src: `player.html?${serverParams}`, entry: serverFile };
   }
-  mp?.setSrc(frame.src, serverSrc);
+  mp?.setSrc(frame.src, server);
 };
 
 const selectExample = (value: string) => {

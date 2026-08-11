@@ -1,8 +1,9 @@
 // The multi-file editor ↔ player bridge — the whole-project sibling of
-// player-bridge.ts (which pushes a single source buffer). The IDE owns every
-// .fun in memory, so it pushes the full file set over `functor-lang-set-project`
-// to a `player.html?project=inline` iframe: the player boots from memory (no
-// fetch) on the first push, then hot-swaps (model preserved) on each edit.
+// player-bridge.ts (which pushes a single source buffer). The IDE and the
+// sandbox both own every .fun in memory, so they push the full file set over
+// `functor-lang-set-project` to a `player.html?project=inline` iframe: the
+// player boots from memory (no fetch) on the first push, then hot-swaps (model
+// preserved) on each edit.
 //
 // The boot handshake: the player announces `functor-lang-project-waiting` when
 // its listener is armed; only then may we push. It replies
@@ -28,6 +29,9 @@ export class ProjectBridge {
   private readonly errorGraceMs: number;
 
   private waiting = false; // player announced project-waiting (safe to push)
+  // Has a push already BOOTED the current document? The boot push is a load,
+  // not a reload — the host's "loading…" stands until the player reports in.
+  private booted = false;
   private files: ProjectFile[] | null = null; // latest full file set
   private pushTimer: ReturnType<typeof setTimeout> | undefined;
   private errorTimer: ReturnType<typeof setTimeout> | undefined;
@@ -43,6 +47,7 @@ export class ProjectBridge {
       onResult,
       debounceMs = PUSH_DEBOUNCE_MS,
       errorGraceMs = ERROR_GRACE_MS,
+      signal,
     }: BridgeOptions
   ) {
     this.iframe = iframe;
@@ -52,7 +57,13 @@ export class ProjectBridge {
     this.debounceMs = debounceMs;
     this.errorGraceMs = errorGraceMs;
 
-    window.addEventListener("message", (event) => this.#onMessage(event));
+    // `signal` detaches the listener with a disposable pane (the sandbox's
+    // mirror/server panes), exactly as PlayerBridge's does.
+    window.addEventListener(
+      "message",
+      (event) => this.#onMessage(event),
+      signal !== undefined ? { signal } : undefined
+    );
   }
 
   // Debounced whole-project push: swap in the file set once edits settle.
@@ -68,6 +79,7 @@ export class ProjectBridge {
     clearTimeout(this.pushTimer);
     clearTimeout(this.errorTimer);
     this.waiting = false;
+    this.booted = false;
   }
 
   // Surface a hot-swap result — but hold errors back. A rejected edit keeps the
@@ -86,11 +98,18 @@ export class ProjectBridge {
 
   #send(): void {
     clearTimeout(this.pushTimer); // an early flush cancels the pending timer
-    if (!this.iframe.contentWindow || !this.files) return;
+    // An EMPTY set is rejected by the player as a malformed push, whose error
+    // arrives as "live now, error in 4s" — so never send one; a bridge with
+    // nothing to push simply waits for a real project.
+    if (!this.iframe.contentWindow || !this.files?.length) return;
     // The player drops anything sent before it announces `project-waiting`;
     // hold the push and flush it on that signal (below).
     if (!this.waiting) return;
-    this.onReloading();
+    // The BOOT push is this document's load — the host already says "loading…",
+    // and calling it a reload would report a program that has never run as one
+    // being swapped. Every later push is a real hot-swap.
+    if (this.booted) this.onReloading();
+    else this.booted = true;
     this.pushId += 1;
     const message: SetProject = {
       type: "functor-lang-set-project",

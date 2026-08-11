@@ -237,9 +237,9 @@ fn net_transport() -> NetTransport {
 
 /// The project's full file list (entry FIRST, then siblings), as the CLI's Functor Lang
 /// index page injects it (`window.__functorLangProjectFiles`, mirroring `__functorLangGamePath`
-/// — see `wasm_dev_server.rs`). Absent (a page that only set the single entry,
-/// e.g. the site sandbox) → `None`, and the caller falls back to the entry
-/// alone.
+/// — see `wasm_dev_server.rs`). Absent (a page that sets only the single entry,
+/// or one that pushes its sources in memory instead) → `None`, and the caller
+/// falls back to the entry alone.
 fn functor_lang_project_files() -> Option<Vec<String>> {
     use wasm_bindgen::JsCast;
     let value =
@@ -251,8 +251,8 @@ fn functor_lang_project_files() -> Option<Vec<String>> {
 
 /// In-memory project sources (`window.__functorLangProjectSources`, an array of
 /// `{path, source}` objects, entry FIRST) — set by a page that holds the
-/// whole project in memory instead of serving it (the IDE's inline boot,
-/// see `player.html?project=inline`). Absent or malformed → `None`, and the
+/// whole project in memory instead of serving it (the site sandbox's and IDE's
+/// inline boot, see `player.html?project=inline`). Absent or malformed → `None`, and the
 /// caller uses the fetch path.
 fn functor_lang_project_sources() -> Option<Vec<(String, String)>> {
     let value =
@@ -351,9 +351,9 @@ pub fn functor_lang_uses_captured_mouse_input() -> bool {
     })
 }
 
-/// A queued push: the classic single-buffer text push (the sandbox / VSCode
-/// preview editing the entry over served siblings), or the whole-project
-/// push (the IDE, which owns every file in memory).
+/// A queued push: the classic single-buffer text push (the VSCode preview panel
+/// editing the entry over served siblings), or the whole-project push (the
+/// site's sandbox and IDE, which own every file in memory).
 enum PendingPush {
     Source(String),
     Project(Vec<(String, String)>),

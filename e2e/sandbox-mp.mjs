@@ -36,7 +36,10 @@
 //  10. LINK IMPAIRMENT: a pane's link chip really delays that client's packets
 //      (sent → delivered on every row), only that client's, never out of order,
 //      and without breaking convergence — while loss stays a labelled datagram
-//      setting (design Addendum 8.2).
+//      setting (design Addendum 8.2);
+//  11. an EDIT reaches every role: the sandbox pushes the whole file set, so a
+//      netpong session (roles as separate FILES) hot-reloads its clients AND
+//      its authority — each at its own entry file, each model preserved.
 //
 // Run manually (needs the web-runtime wasm bundle):
 //
@@ -573,12 +576,16 @@ try {
         params[1].get("module") === "Client" &&
         params[2].get("module") === "Server",
       "every pane boots its role as a MODULE — clients Client, authority Server",
-      params.map((p) => `${p.get("game")}?module=${p.get("module")}`).join(" | ")
+      params.map((p) => `${p.get("project")}?module=${p.get("module")}`).join(" | ")
     );
+    // The sources are PUSHED now (project=inline — the page owns every file and
+    // delivers it over `functor-lang-set-project`), so no pane names a `?game=`
+    // to fetch: they all boot the one file set the sandbox pushes, and only the
+    // `?module=` above tells the two roles of orbs' single buffer apart.
     check(
-      params.every((p) => p.get("game") === params[0].get("game")),
-      "all three panes boot the same file",
-      params.map((p) => p.get("game")).join(" | ")
+      params.every((p) => p.get("project") === "inline" && !p.has("game") && !p.has("file")),
+      "every pane boots the pushed project rather than fetching a file",
+      params.map((p) => p.toString()).join(" | ")
     );
 
     // The link indicator: every pane linked through the coordinator.
@@ -1686,6 +1693,63 @@ try {
         .map((row) => `${row.link} ${row.frame}→${row.delivered}`)
         .join(", ")}`
     );
+    await page.close();
+  }
+
+  // --- 4i. An EDIT reaches every role — netpong, whose roles are FILES. -------
+  // The sandbox pushes the whole file set (`functor-lang-set-project`), so a
+  // role is the file it is entered at rather than "whatever the buffer holds":
+  // the authority hot-reloads with its clients instead of being left on the
+  // served build (which is what the single-buffer set-source seam forced).
+  {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const consoleLog = [];
+    page.on("console", (m) => consoleLog.push(m.text()));
+    page.on("pageerror", (e) => consoleLog.push(`pageerror: ${e}`));
+    await page.goto(`${BASE}/sandbox.html?example=netpong#clients=2`);
+    await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+      timeout: 40000,
+    });
+    await installProbe(page);
+    const roles = await page.evaluate(() => window.__mpProbe.roles());
+    check(
+      roles.join(", ") === "client 1, client 2, server",
+      "netpong (roles as files) runs two clients under one authority",
+      roles.join(", ")
+    );
+    await page.evaluate(() =>
+      window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// pushed-project marker\n`)
+    );
+    // Each pane's own reload line, prefixed with the pane id by the console
+    // relay, names the file that pane was entered at.
+    const reloads = await page
+      .waitForFunction(
+        () => {
+          const lines = [...document.querySelectorAll(".output-line")].map((n) => n.textContent);
+          return ["[client 1]", "[client 2]", "[server]"].every((who) =>
+            lines.some((line) => line.includes(who) && line.includes("model preserved"))
+          );
+        },
+        null,
+        { timeout: 30000 }
+      )
+      .then(() => true)
+      .catch(() => false);
+    const lines = await page.locator(".output-line").allTextContents();
+    check(
+      reloads,
+      "one edit hot-reloads both clients AND the authority, each model preserved",
+      lines.filter((line) => line.includes("model preserved")).slice(-3).join(" / ")
+    );
+    check(
+      lines.some(
+        (line) => line.includes("[server]") && line.includes("examples/netpong/server.fun")
+      ),
+      "the authority reloads at its OWN entry file, not the client's",
+      lines.filter((line) => line.includes("[server]")).slice(-2).join(" / ")
+    );
+    const errors = consoleLog.filter((line) => /unknown external|panic|pageerror/i.test(line));
+    check(errors.length === 0, "no pane reported a load error", errors.slice(0, 2).join(" | "));
     await page.close();
   }
 

@@ -49,14 +49,15 @@ export interface SetSource {
 }
 
 /**
- * Boot from / hot-swap a whole in-memory project (the IDE's push).
+ * Boot from / hot-swap a whole in-memory project (the sandbox's and the IDE's
+ * push).
  *
  * `files` must be non-empty and every `path` non-blank — the player rejects
  * anything else as a "malformed project push" (player.html). That is a runtime
- * precondition rather than a type: the only producer is ide.ts, which builds
- * this list from user-editable localStorage, so a non-empty-tuple type here
- * would be an unchecked assertion at the boundary rather than a real
- * guarantee.
+ * precondition rather than a type: the producers build this list from
+ * user-editable localStorage (ide.tsx) or fetched example sources
+ * (sandbox.tsx), so a non-empty-tuple type here would be an unchecked
+ * assertion at the boundary rather than a real guarantee.
  */
 export interface SetProject {
   type: "functor-lang-set-project";

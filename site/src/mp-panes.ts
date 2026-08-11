@@ -31,8 +31,9 @@
 // OUTSIDE the React islands (like CodeMirror owns #editor), and publishes to
 // the page through the injected `setPill` / `statusBar` seams.
 
-import { PlayerBridge } from "./player-bridge.js";
+import { ProjectBridge } from "./project-bridge.js";
 import { asPlayerMessage } from "./protocol.js";
+import type { ProjectFile } from "./protocol.js";
 import type { StatusBar } from "./status-bar-store.js";
 import type { PillState } from "./components/StatusPill.js";
 import { NetCoordinator, TIMELINE_FPS } from "./net-coordinator.js";
@@ -196,18 +197,30 @@ export interface MultiplayerPanesOptions {
   statusBar: StatusBar;
   /** Writes the header pill (the page's pill store). */
   setPill: (state: PaneState, text: string, detail: string) => void;
-  /** The current editor buffer, so a mirror added mid-session catches up. */
-  getSource: () => string;
+  /**
+   * The editor's whole file set (entry first) — every pane is booted BY a
+   * project push, so this is both a new pane's program and how one added
+   * mid-session catches up to the edited buffer.
+   */
+  getProject: () => ProjectFile[];
+}
+
+/** A pane's program: its `player.html?project=inline` URL plus its ENTRY file. */
+export interface PaneProgram {
+  src: string;
+  /** The project path this role enters at — hoisted to the front of the push. */
+  entry: string;
 }
 
 export interface MultiplayerPanes {
   /**
-   * Load a fresh program into every pane. `serverSrc` is the player URL of the
-   * example's SERVER role (examples.ts `server`), or null for a sample that
-   * declares none — passing it mounts the server pane, passing null removes it.
+   * Load a fresh program into every pane. `server` is the example's SERVER role
+   * (examples.ts `server`) — its player URL and its entry file — or null for a
+   * sample that declares none: passing it mounts the server pane, passing null
+   * removes it.
    */
-  setSrc(src: string, serverSrc?: string | null): void;
-  push(source: string): void;
+  setSrc(src: string, server?: PaneProgram | null): void;
+  push(files: ProjectFile[]): void;
   reset(): void;
   aggregateStatus(state: PaneState, text: string, detail: string): void;
   setCount(n: number): void;
@@ -275,7 +288,7 @@ export function initMultiplayerPanes({
   count,
   statusBar,
   setPill,
-  getSource,
+  getProject,
 }: MultiplayerPanesOptions): MultiplayerPanes {
   const previewPane = frame.closest(".preview-pane") as HTMLElement;
   previewPane.classList.add("mp");
@@ -437,7 +450,10 @@ export function initMultiplayerPanes({
   // about "every running pane" — the scrub broadcasts, the aggregate pill, the
   // frame labels, the coordinator's routing table — goes through `allPanes()`,
   // with the server always LAST so client indices (and their digits) never move.
-  let serverPane: { pane: Pane; bridge: PlayerBridge } | null = null;
+  let serverPane: { pane: Pane; bridge: ProjectBridge } | null = null;
+  // The project path the server pane enters at (its role's file), from the
+  // example's declaration — see `serverFiles`.
+  let serverEntry: string | null = null;
   const allPanes = (): Pane[] => (serverPane ? [...panes, serverPane.pane] : panes);
 
   // The NETWORK view's wires and packet dots. It measures the pane cards the
@@ -592,13 +608,13 @@ export function initMultiplayerPanes({
   // added and removed LIVE — pane 1's iframe never moves again after this
   // wrap, so its running model survives every count change.
   makePane("client", 0, frame);
-  const mirrors: { pane: Pane; bridge: PlayerBridge }[] = [];
+  const mirrors: { pane: Pane; bridge: ProjectBridge }[] = [];
 
   // Everything a pane the module created itself needs: its own status bridge
   // and its own prefixed console relay. Pane 1 is excluded by construction —
   // the PAGE owns its bridge (see `aggregateStatus`).
-  const attachBridge = (pane: Pane): PlayerBridge => {
-    const bridge = new PlayerBridge(pane.iframe, {
+  const attachBridge = (pane: Pane): ProjectBridge => {
+    const bridge = new ProjectBridge(pane.iframe, {
       onReloading: () => setPaneState(pane, "busy"),
       onLive: () => setPaneState(pane, "live"),
       onResult: (ok, message) => {
@@ -620,7 +636,11 @@ export function initMultiplayerPanes({
     return bridge;
   };
 
-  const addMirror = (pushCurrent: boolean) => {
+  // `bootProgram` is false for the panes created during THIS call (below): the
+  // page has not loaded a program yet, and its `getProject` closes over state
+  // declared after this module is initialized — the `setSrc` that follows a load
+  // is what arms every mirror. A pane added mid-session passes true.
+  const addMirror = (bootProgram: boolean) => {
     const index = panes.length;
     const iframe = document.createElement("iframe");
     iframe.title = `client ${index + 1} preview`;
@@ -628,11 +648,12 @@ export function initMultiplayerPanes({
     const pane = makePane("client", index, iframe);
     const bridge = attachBridge(pane);
     mirrors.push({ pane, bridge });
-    // A mirror added mid-session boots the served program, then catches up to
-    // the (possibly edited) buffer; the bridge holds the push until ready.
+    // A mirror boots FROM the project push (`?project=inline` fetches nothing),
+    // so it starts on the edited buffer rather than on a served build it then
+    // has to catch up to; the bridge holds the push until the pane is armed.
     if (frame.getAttribute("src")) {
       iframe.src = frame.src; // already carries ?scrubber=hidden (the page adds it)
-      if (pushCurrent) bridge.push(getSource());
+      if (bootProgram) bridge.setProject(getProject());
     }
   };
 
@@ -642,20 +663,44 @@ export function initMultiplayerPanes({
   // not a client's. It runs the same project files with the server file as the
   // entry, and its packets reach the clients through the same coordinator.
   //
-  // It does NOT take editor pushes: `functor-lang-set-source` replaces the
-  // ENTRY module's source, and the sandbox's buffer is the client entry —
-  // pushing it here would swap the server's program for the client's. So an
-  // edit hot-reloads the clients live while the server keeps running the
-  // served build. Editing server.fun needs the multi-file `set-project` path
-  // (the IDE already speaks it); until the sandbox grows a file switcher,
-  // `↺ reset` reboots both roles from disk.
-  const mountServer = (src: string) => {
+  // It DOES take editor pushes, because the seam is now the multi-file one:
+  // every pane receives the whole project, and a role is the file it enters at
+  // (plus its `?module=`), so pushing the client's edit no longer overwrites
+  // the server's program — an edit hot-reloads the authority and its clients
+  // together, each with its own model preserved. The editor still shows one
+  // buffer (the client entry); editing server.fun itself waits on a file
+  // switcher, and `↺ reset` still reboots every role from the served sources.
+  // The authority's view of the project: the SAME files, re-entered at its own
+  // role's file (the runtime takes `files[0]` as the entry module). A sample
+  // whose roles share one file (orbs) hoists nothing — the entry is already
+  // that file, and `?module=` alone tells the two roles apart.
+  const serverFiles = (files: ProjectFile[]): ProjectFile[] => {
+    if (!serverEntry) return files;
+    const role = files.find((file) => file.path === serverEntry);
+    // A declared server file that isn't IN the pushed set is a sample bug (the
+    // `server?:` note in examples.ts). Under the fetch path it was a visible
+    // 404; say so loudly here rather than booting the CLIENT entry as the
+    // authority (its role params are already gone), which would look like a
+    // working session that quietly has no server.
+    if (!role) {
+      console.error(
+        `[mp] the server role's file ${serverEntry} is not in the pushed project; ` +
+          "the authority has no entry to boot (add it to the example's siblings)"
+      );
+      return files;
+    }
+    return [role, ...files.filter((file) => file !== role)];
+  };
+
+  const mountServer = (program: PaneProgram, files: ProjectFile[]) => {
     const iframe = document.createElement("iframe");
     iframe.title = "server preview";
     iframe.allow = "pointer-lock";
     const pane = makePane("server", panes.length, iframe);
-    serverPane = { pane, bridge: attachBridge(pane) };
-    iframe.src = src;
+    const bridge = attachBridge(pane);
+    serverPane = { pane, bridge };
+    iframe.src = program.src;
+    bridge.setProject(serverFiles(files));
   };
 
   const unmountServer = () => {
@@ -1755,19 +1800,25 @@ export function initMultiplayerPanes({
   return {
     // Mirror a fresh program load into the extra panes, and mount/remove the
     // server pane to match what the newly loaded example declares.
-    setSrc(src, serverSrc = null) {
+    setSrc(src, server = null) {
+      const files = getProject();
       for (const { pane, bridge } of mirrors) {
         bridge.reset();
         setPaneState(pane, "busy");
         pane.iframe.src = src;
+        // The push IS the boot under `?project=inline`, so re-arm it after the
+        // reset: the fresh document announces project-waiting and gets this.
+        bridge.setProject(files);
       }
-      if (!serverSrc) unmountServer();
+      serverEntry = server?.entry ?? null;
+      if (!server) unmountServer();
       else if (serverPane) {
         serverPane.bridge.reset();
         setPaneState(serverPane.pane, "busy");
-        serverPane.pane.iframe.src = serverSrc;
+        serverPane.pane.iframe.src = server.src;
+        serverPane.bridge.setProject(serverFiles(files));
       } else {
-        mountServer(serverSrc);
+        mountServer(server, files);
       }
       // A different program is a different session: the packet log, and the
       // per-link totals the reduced-motion badge shows, start over with it —
@@ -1780,18 +1831,20 @@ export function initMultiplayerPanes({
       paintAggregate();
     },
     // Mirror a debounced hot-reload push. EVERY pane is a target, the
-    // authority included: a same-file project (`module Client` / `module
-    // Server`) boots both roles from the buffer being edited, and the runtime
-    // re-resolves each pane's own role on reload (`load_source(.., &self.role)`
-    // in the embedded producer), so the server swaps its Server module while
-    // the clients swap theirs — one edit, one atomic session-wide reload, every
-    // model preserved.
-    push(source) {
-      for (const { bridge } of mirrors) bridge.push(source);
-      serverPane?.bridge.push(source);
+    // authority included: each role gets the same file set entered at its own
+    // file (see mountServer), and the runtime re-resolves each pane's own role
+    // on reload (`load_source(.., &self.role)` in the embedded producer), so
+    // the server swaps its Server module while the clients swap theirs — one
+    // edit, one atomic session-wide reload, every model preserved.
+    push(files) {
+      for (const { bridge } of mirrors) bridge.setProject(files);
+      serverPane?.bridge.setProject(serverFiles(files));
     },
     reset() {
+      // Every pane the module owns, authority included — it takes pushes now,
+      // so leaving its bridge armed across a program change is an asymmetry.
       for (const { bridge } of mirrors) bridge.reset();
+      serverPane?.bridge.reset();
     },
     // The page's own status writer delegates here. It has ALREADY written the
     // pill (its single-client wording); with more than one pane the aggregate
