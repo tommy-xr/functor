@@ -1733,9 +1733,10 @@ Escape releases while captured"
             // desktop GL only encodes on write to sRGB attachments (the render
             // targets) when FRAMEBUFFER_SRGB is on — enable it ONCE here to
             // match the always-on ES/WebGL2 semantics. A no-op for non-sRGB
-            // attachments, including this GLFW backbuffer (not created
-            // sRGB-capable), which is why the backbuffer keeps the shader
-            // epilogue encode instead.
+            // attachments; whether the BACKBUFFER is sRGB-capable is
+            // driver-dependent (macOS says yes even without
+            // GLFW_SRGB_CAPABLE), so the output colorspace is PROBED where
+            // the SceneContext is declared below, not assumed.
             {
                 use glow::HasContext;
                 gl.enable(glow::FRAMEBUFFER_SRGB);
@@ -1927,9 +1928,27 @@ Escape releases while captured"
         let mut last_asset_poll = Instant::now();
 
         let scene_context = SceneContext::new();
-        // The GLFW backbuffer is non-sRGB: the shader epilogue encodes.
-        scene_context
-            .set_output_colorspace(functor_runtime_common::OutputColorspace::NonSrgb);
+        // Declare what the GLFW backbuffer actually stores, by PROBING its
+        // color encoding rather than assuming: with FRAMEBUFFER_SRGB enabled
+        // (init above), an sRGB-capable backbuffer (macOS reports one even
+        // without GLFW_SRGB_CAPABLE) hardware-encodes every write AND clear —
+        // so the shader epilogue must pass through there or every pixel
+        // double-encodes (washed out). A linear backbuffer ignores the toggle
+        // and needs the epilogue encode. Either way the declared colorspace
+        // matches the surface's real behavior.
+        let backbuffer_srgb = unsafe {
+            use glow::HasContext;
+            gl.get_framebuffer_attachment_parameter_i32(
+                glow::FRAMEBUFFER,
+                glow::BACK_LEFT,
+                glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
+            ) == glow::SRGB as i32
+        };
+        scene_context.set_output_colorspace(if backbuffer_srgb {
+            functor_runtime_common::OutputColorspace::Srgb
+        } else {
+            functor_runtime_common::OutputColorspace::NonSrgb
+        });
 
         // The directional shadow map: a depth texture rendered from the casting
         // light each frame, sampled by the lit material.
