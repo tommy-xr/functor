@@ -14,7 +14,9 @@
 //   4. analysis is project-wide: client.fun's calls into its sibling modules
 //      (Protocol.*, Game.*) resolve, and the Problems rows name the file the
 //      editor is actually showing;
-//   5. a single-file example shows no sidebar at all — unchanged from before
+//   5. an ordinary single-role multi-file example (asteroids) lists and edits
+//      its siblings too — the switcher isn't coupled to a server role;
+//   6. a single-file example shows no sidebar at all — unchanged from before
 //      the switcher existed.
 //
 // Run manually (needs the web-runtime wasm bundle):
@@ -228,7 +230,46 @@ const browser = await chromium.launch();
   await page.close();
 }
 
-// --- 5. A single-file example has no sidebar. ---------------------------------
+// --- 5. A multi-file SINGLE-ROLE example edits its siblings too. --------------
+// netpong proves the multiplayer path; asteroids is the ordinary case — one
+// pane, four files — so the switcher can't be quietly coupled to a server role.
+{
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.goto(`${BASE}/sandbox.html?example=asteroids`);
+  await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
+    timeout: 40000,
+  });
+  const listed = await sidebar(page);
+  check(
+    listed.shown &&
+      listed.rows.join(", ") === "asteroids.fun, assets.fun, lib.fun, font.fun",
+    "a single-role multi-file example lists its siblings",
+    listed.rows.join(", ")
+  );
+  await page.click(".file-row:has(.file-label:text-is('lib.fun')) .file-name");
+  await page.evaluate(() =>
+    window.__sandbox.setSource(`${window.__sandbox.getSource()}\n// sibling edit\n`)
+  );
+  const swapped = await page
+    .waitForFunction(
+      () =>
+        [...document.querySelectorAll(".output-line")].some((n) =>
+          n.textContent.includes("model preserved")
+        ),
+      null,
+      { timeout: 30000 }
+    )
+    .then(() => true)
+    .catch(() => false);
+  check(
+    swapped && (await page.evaluate(() => window.__sandbox.status().state)) === "live",
+    "editing a sibling module hot-reloads the preview",
+    (await page.locator(".output-line").allTextContents()).slice(-1).join("")
+  );
+  await page.close();
+}
+
+// --- 6. A single-file example has no sidebar. ---------------------------------
 {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`${BASE}/sandbox.html?example=hero`);
