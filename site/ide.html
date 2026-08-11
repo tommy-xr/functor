@@ -32,6 +32,14 @@
         <button id="download" type="button" title="Download the project as a .zip">
           ↓ project.zip
         </button>
+        <button
+          id="share"
+          type="button"
+          data-tone="idle"
+          title="Copy a link that carries this project — files, entry, roles"
+        >
+          ⧉ share
+        </button>
         <button id="restart" type="button" title="Reload the preview with a fresh model">
           ↻ restart
         </button>
@@ -56,6 +64,9 @@
       </aside>
       <section class="editor-pane">
         <div class="editor-tab"><span id="active-file">game.fun</span></div>
+        <!-- The share advisory's island host (src/components/ShareBanner.tsx).
+             Empty until a link's assets can't follow it. -->
+        <div class="share-banner-host"></div>
         <!-- NOT an island: CodeMirror owns this subtree. -->
         <div id="editor"></div>
       </section>

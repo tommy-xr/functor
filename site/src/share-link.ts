@@ -77,7 +77,12 @@ export interface ShareProject {
 
 // --- base64url ---------------------------------------------------------------
 
-const toBase64Url = (bytes: Uint8Array): string => {
+/**
+ * base64url — the URL-safe alphabet, unpadded. Exported because the docs page
+ * emits the legacy `#src=` fragment with it (docs.ts), and two hand-rolled
+ * copies of an encoding are two chances to disagree about `+`, `/` and `=`.
+ */
+export const toBase64Url = (bytes: Uint8Array): string => {
   // Chunked: `String.fromCharCode(...bytes)` blows the argument limit somewhere
   // north of ~100KB, which real projects reach.
   let binary = "";
@@ -290,6 +295,39 @@ const validEnvelope = (parsed: unknown): ShareProject | null => {
     if (Object.keys(options).length > 0) project.options = options;
   }
   return project;
+};
+
+// --- what a link cannot carry ------------------------------------------------
+
+// An `Asset.*("…")` locator, as the checker sees one: a literal string argument
+// to any member of the `Asset` module (`model`/`texture`/`sound`). Only literals
+// are findable from text — a locator computed at runtime is nobody's to check —
+// and that is exactly the set `functor build` verifies on disk, so the two
+// agree on what "an asset this project names" means.
+const ASSET_LOCATOR = /\bAsset\.[A-Za-z][A-Za-z0-9_]*\s*\(\s*"([^"\n\\]*)"/g;
+
+/**
+ * The RELATIVE `Asset.*` locators a project names, de-duplicated and sorted.
+ *
+ * A link carries `.fun` sources and nothing else, so a URL locator (a CDN
+ * asset) needs no help — it is skipped. A relative one resolves against
+ * whatever site the link opens on, which is a promise this codec cannot keep
+ * for the caller; `site/src/share.ts` is what checks whether the site actually
+ * serves each of these.
+ */
+export const assetLocators = (files: ProjectFile[]): string[] => {
+  const found = new Set<string>();
+  for (const file of files) {
+    for (const [, locator] of file.source.matchAll(ASSET_LOCATOR)) {
+      // A scheme-relative `//host/x.glb` is a URL too, and an empty locator is
+      // the game's own bug, not the link's.
+      if (locator === "" || /^[a-z][a-z0-9+.-]*:/i.test(locator) || locator.startsWith("//")) {
+        continue;
+      }
+      found.add(locator);
+    }
+  }
+  return [...found].sort();
 };
 
 /**

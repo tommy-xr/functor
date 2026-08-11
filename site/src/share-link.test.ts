@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { encodeShare, decodeShare } from "./share-link.ts";
+import { encodeShare, decodeShare, assetLocators } from "./share-link.ts";
 import type { ShareProject } from "./share-link.ts";
 
 const EXAMPLES = new URL("../../examples", import.meta.url).pathname;
@@ -114,6 +114,38 @@ test("round-trips every example project, and each stays pasteable", async (t) =>
       `${name} encodes to ${encoded} chars, over the ${MAX_ENCODED_CHARS} cap`
     );
   }
+});
+
+// --- the locators a link cannot carry ----------------------------------------
+
+test("finds the relative Asset locators, and only those", async () => {
+  const files = [
+    {
+      path: "game.fun",
+      source: `let ship = Asset.model("ship.glb")
+let shot = Asset.sound("sfx/shot.ogg")
+let cdn = Asset.model("https://cdn.example/x.glb")
+let proto = Asset.texture("//cdn.example/y.png")
+let spaced = Asset.texture(
+  "grid.png")
+// Not asset coercion: a texture FILE and a clip NAME keep their strings.
+let tex = Texture.file("nope.png")
+let clip = Anim.clip("walk", tts)
+`,
+    },
+    // The same locator twice is one asset; a sibling's locators count too.
+    { path: "lib.fun", source: `let again = Asset.model("ship.glb")\nlet hit = Asset.sound("hit.ogg")\n` },
+  ];
+  assert.deepEqual(assetLocators(files), [
+    "grid.png",
+    "hit.ogg",
+    "sfx/shot.ogg",
+    "ship.glb",
+  ]);
+});
+
+test("a project with no local assets has nothing to warn about", () => {
+  assert.deepEqual(assetLocators([{ path: "game.fun", source: "let init = 0\n" }]), []);
 });
 
 // --- the legacy docs fragment ------------------------------------------------

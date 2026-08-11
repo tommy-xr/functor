@@ -52,8 +52,15 @@ import type { RuntimeTargetState } from "./runtime-target-core.js";
 import { createStore } from "./store.js";
 import { SandboxControls } from "./components/SandboxControls.js";
 import type { PickerState, ClientsState } from "./components/SandboxControls.js";
+import { SHARE_IDLE } from "./components/ShareButton.js";
+import type { ShareState } from "./components/ShareButton.js";
+import { ShareBanner } from "./components/ShareBanner.js";
+import type { BannerState } from "./components/ShareBanner.js";
 import { FilePane } from "./components/FilePane.js";
 import type { FileListState } from "./components/FilePane.js";
+import { decodeShare } from "./share-link.js";
+import type { ShareProject, ShareRole } from "./share-link.js";
+import { shareHref, copyLink, unservedAssets, assetWarning } from "./share.js";
 import { initMultiplayerPanes, MAX_CLIENTS } from "./mp-panes.js";
 import type { MultiplayerPanes, PaneProgram } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
@@ -92,10 +99,17 @@ interface LangSeam {
 
 const frame = document.getElementById("player") as HTMLIFrameElement;
 
-// An inline program from the URL fragment (the docs' "try it" buttons):
-// #src=<base64url> becomes the editor buffer and a ONE-FILE project pushed to a
-// fresh player, so it starts with a fresh init — no served file involved.
-const inlineSrc = new URLSearchParams(window.location.hash.slice(1)).get("src");
+// A project carried IN the URL, decoded by the one codec (share-link.ts):
+//   #code=… — a Share link: the whole project (files, entry, roles, pointer
+//     options), so an edited example — or a multiplayer one, server role and all
+//     — reopens exactly as it was shared;
+//   #src=…  — the docs' "try it" buttons: a single uncompressed program.
+// Either becomes the editor's file set and a project pushed to a fresh player,
+// so it starts with a fresh init — no served file involved. A fragment BEATS
+// `?example=`: it is the more specific request, and it is the only copy of that
+// project that exists.
+const hashParams = new URLSearchParams(window.location.hash.slice(1));
+const fragmentKind = hashParams.has("code") ? "code" : hashParams.has("src") ? "src" : null;
 const pageParams = new URLSearchParams(window.location.search);
 const requested = pageParams.get("example");
 // Inline programs have no manifest, so `?mouseCapture=false` /
@@ -112,6 +126,9 @@ const picker = createStore<PickerState>({
   selected: initialExample,
 });
 const pill = createStore<PillState>({ state: "busy", text: "◌ loading…", detail: "" });
+// The Share button's own label (it confirms itself) and the assets advisory.
+const share = createStore<ShareState>(SHARE_IDLE);
+const banner = createStore<BannerState>({ text: "" });
 
 // Multiplayer pane-grid prototype (mp-panes.ts): #clients=2|3 turns the
 // preview column into a chrono bar + N client panes. A HASH param, not a
@@ -427,17 +444,6 @@ const openFile = (path: string) => {
   refreshLiveValues(view);
 };
 
-const fromBase64Url = (b64u: string) =>
-  new TextDecoder().decode(
-    Uint8Array.from(atob(b64u.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))
-  );
-
-let inlineB64: string | null = null;
-
-// An inline (#src=) program is a one-file project; `main.fun` is module `Main`,
-// which is what the old `?src=` data: URL boot derived for it.
-const INLINE_ENTRY = "main.fun";
-
 // The player iframe's boot params, common to every load:
 //   project=inline — the PAGE owns every source and delivers it by postMessage
 //     (project-bridge.ts); the player fetches no `.fun` at all;
@@ -462,34 +468,134 @@ const playerParams = (
 // is ignored — a slow earlier response must not overwrite a newer selection.
 let loadToken = 0;
 
-const loadInline = (b64u: string) => {
-  let source: string;
-  try {
-    source = fromBase64Url(b64u);
-  } catch {
-    setStatus("error", "✖ error", "the #src= fragment is not valid base64");
-    return false;
+// The picker row a URL-carried project occupies. The value is `__inline` from
+// the days when `#src=` was the only such fragment — it is an internal id (the
+// site e2e filters the picker by it), so the LABEL is what says which kind of
+// link is loaded.
+const SHARED_OPTION = "__inline";
+
+/**
+ * How the loaded project BOOTS: the role the editable pane plays, the server
+ * role (if the project declares one), and the pointer policy. Set by every
+ * loader; read by `bootPanes` to mount the panes and by `shareProject` to put
+ * the same shape in a link — so a shared multiplayer sample reopens as a
+ * multiplayer sample rather than as a lone client.
+ */
+// Every field is explicitly `| undefined`: a loader builds the whole record at
+// once from optional sources (an example's fields, a decoded config), so under
+// exactOptionalPropertyTypes "absent" and "undefined" have to be the same
+// thing here.
+interface Boot {
+  module?: string | undefined;
+  prefix?: string | undefined;
+  /** The server pane's entry FILE (a path in `project`) and its role. */
+  server?: { file: string; module?: string | undefined; prefix?: string | undefined } | undefined;
+  cursor?: "visible" | undefined;
+  mouseCapture?: false | undefined;
+}
+let boot: Boot = {};
+
+/** A share role in `Boot`'s shape: the bare-string form names only a file. */
+const bootRole = (role: ShareRole): { file: string; module?: string; prefix?: string } =>
+  typeof role === "string" ? { file: role } : role;
+
+// Mount the panes for the loaded project's declared roles: a FRESH iframe per
+// pane (fresh model — `init` runs), each booted BY the project push rather than
+// by fetching a served build.
+const bootPanes = () => {
+  const params = playerParams(boot.cursor ?? null, boot.mouseCapture ?? null);
+  // A same-file-entries sample plays its declared role: in the preferred form
+  // the role's inline module (e.g. orbs' Client.init/Client.tick/…)…
+  if (boot.module) params.set("module", boot.module);
+  // …or the transitional prefixed contract (clientInit/clientTick/…); the
+  // player takes one of the two.
+  if (boot.prefix) params.set("prefix", boot.prefix);
+  frame.src = `player.html?${params}`;
+  bridge.setProject(project);
+  // A project with a SERVER role also boots a server pane: the SAME file set
+  // re-entered at the server file. The pushed project is entry-first, so the
+  // pane grid hoists that file to the front — the two roles differ only in
+  // their entry and (for a same-file project) their module.
+  let server: PaneProgram | null = null;
+  if (boot.server) {
+    // Derived from the client's params, so every project setting (cursor,
+    // mouseCapture) reaches the server pane too — only the entry and the ROLE
+    // differ.
+    const serverParams = new URLSearchParams(params);
+    // The client's ROLE must not leak into the server pane — neither form, so
+    // both are dropped before the server's own is applied. A same-file sample
+    // (orbs) has both roles in the one entry and differs only here; absent a
+    // declared role, the server file's plain top-level contract is the role.
+    serverParams.delete("module");
+    serverParams.delete("prefix");
+    if (boot.server.module) serverParams.set("module", boot.server.module);
+    if (boot.server.prefix) serverParams.set("prefix", boot.server.prefix);
+    server = { src: `player.html?${serverParams}`, entry: boot.server.file };
   }
-  inlineB64 = b64u;
-  // Reflect the inline program in the picker so it (and Reset) don't lie
-  // about what's loaded.
+  mp?.setSrc(frame.src, server);
+};
+
+// The assets advisory: the project's relative `Asset.*` locators that this site
+// does not serve — the only thing a link genuinely drops (share.ts explains
+// why the site-served ones are fine). Fire-and-forget on both ends of a link.
+const warnAboutAssets = (files: ProjectFile[]) => {
+  void unservedAssets(files).then((missing) => {
+    if (missing.length === 0) return;
+    const text = assetWarning(missing);
+    banner.set({ text });
+    statusBar.appendOutput("warn", text);
+  });
+};
+
+// The project the fragment carried, kept so Reset can reload it (there is no
+// served copy to re-fetch) and so the picker can name it.
+let shared: { project: ShareProject; label: string } | null = null;
+
+// Load a project that arrived IN the URL. The fragment is the storage, so this
+// is a complete load: its file set becomes the editor's, and its declared roles
+// boot the panes.
+const loadShared = (project_: ShareProject, label: string) => {
+  shared = { project: project_, label };
+  const entries = project_.config?.entries;
+  const client = entries?.client ? bootRole(entries.client) : null;
+  // The editable pane's entry: the client role's file, the declared entry, or
+  // the codec's default. A decoded project always contains the roles' files and
+  // its declared entry, but a roles-only project need not have a `game.fun` —
+  // fall back to its first file rather than to a name that isn't there.
+  const wanted = client?.file ?? project_.entry ?? "game.fun";
+  const entry = project_.files.some((file) => file.path === wanted)
+    ? wanted
+    : project_.files[0].path;
+  const files = [
+    ...project_.files.filter((file) => file.path === entry),
+    ...project_.files.filter((file) => file.path !== entry),
+  ];
+  boot = {
+    module: client?.module,
+    prefix: client?.prefix,
+    server: entries?.server ? bootRole(entries.server) : undefined,
+    cursor: project_.options?.cursor,
+    mouseCapture: project_.options?.mouseCapture,
+  };
+  // Reflect the loaded link in the picker so it (and Reset) don't lie about
+  // what's running.
   const options = picker.getSnapshot().options;
   picker.set({
-    options: options.some((option) => option.value === "__inline")
-      ? options
-      : [...options, { value: "__inline", label: "docs snippet" }],
-    selected: "__inline",
+    options: options.some((option) => option.value === SHARED_OPTION)
+      ? options.map((option) =>
+          option.value === SHARED_OPTION ? { value: SHARED_OPTION, label } : option
+        )
+      : [...options, { value: SHARED_OPTION, label }],
+    selected: SHARED_OPTION,
   });
   loadToken += 1; // supersede any in-flight example fetch
-  setDoc([{ path: INLINE_ENTRY, source }]);
+  setDoc(files);
   setStatus("busy", "◌ loading…");
-  // A fresh iframe, booted BY the initial project push, so the inline program
-  // runs its OWN `init` (a hot-swap push would preserve the previous program's
-  // model). `main.fun` keeps the module the old `?src=` data: URL derived.
-  frame.src = `player.html?${playerParams()}`;
-  bridge.setProject(project);
-  mp?.setSrc(frame.src);
-  return true;
+  bootPanes();
+  // A shared multiplayer project keeps the CLIENTS control: its server role is
+  // as much a reason to show it as an example's `multiplayer` flag.
+  if (boot.server) clients.set({ count: mp!.count(), visible: true });
+  warnAboutAssets(files);
 };
 
 const loadExample = async (id: string) => {
@@ -529,65 +635,115 @@ const loadExample = async (id: string) => {
     assets
   );
   setStatus("busy", "◌ loading…");
+  shared = null;
   const cursorPolicy = example?.cursor ?? pageCursorPolicy;
-  const mouseCapture = cursorPolicy
-    ? null
-    : example?.mouseCapture ?? pageMouseCapture;
-  const params = playerParams(cursorPolicy, mouseCapture);
-  // A same-file-entries sample plays its declared role: in the preferred form
-  // the role's inline module (e.g. orbs' Client.init/Client.tick/…)…
-  if (example?.module) params.set("module", example.module);
-  // …or the transitional prefixed contract (clientInit/clientTick/…); the
-  // player takes one of the two.
-  if (example?.prefix) params.set("prefix", example.prefix);
-  frame.src = `player.html?${params}`;
-  bridge.setProject(project);
-  // A sample with a SERVER role (examples.ts `server`) also boots a server
-  // pane: the SAME file set re-entered at the server file. The pushed project
-  // is entry-first, so the pane grid hoists that file to the front — the two
-  // roles differ only in their entry and (for a same-file sample) their module.
-  const serverFile = example?.server?.file;
-  let server: PaneProgram | null = null;
-  if (serverFile) {
-    // Derived from the client's params, so every project setting the sample
-    // declares (cursor, mouseCapture) reaches the server pane too — only the
-    // entry and the ROLE differ.
-    const serverParams = new URLSearchParams(params);
-    // The client's ROLE must not leak into the server pane — neither form, so
-    // both are dropped before the server's own is applied. A same-file sample
-    // (orbs) has both roles in the one entry and differs only here; absent a
-    // declared role, the server file's plain top-level contract is the role.
-    serverParams.delete("module");
-    serverParams.delete("prefix");
-    if (example?.server?.module) serverParams.set("module", example.server.module);
-    if (example?.server?.prefix) serverParams.set("prefix", example.server.prefix);
-    server = { src: `player.html?${serverParams}`, entry: serverFile };
-  }
-  mp?.setSrc(frame.src, server);
+  boot = {
+    module: example?.module,
+    prefix: example?.prefix,
+    // examples.ts `server` — the sample's declared server role, whose file the
+    // fetched list above already contains.
+    server: example?.server,
+    cursor: cursorPolicy ?? undefined,
+    // A visible cursor already implies no capture, so only the capture-only
+    // samples carry the flag.
+    mouseCapture:
+      !cursorPolicy && (example?.mouseCapture ?? pageMouseCapture) === false ? false : undefined,
+  };
+  bootPanes();
 };
 
 const selectExample = (value: string) => {
   picker.set({ ...picker.getSnapshot(), selected: value });
-  if (value === "__inline") {
-    // The `__inline` option only exists once loadInline has stored its source.
-    loadInline(inlineB64!);
+  if (value === SHARED_OPTION) {
+    // That option only exists once a fragment has been decoded into `shared`.
+    loadShared(shared!.project, shared!.label);
     return;
   }
   const url = new URL(window.location.href);
   url.searchParams.set("example", value);
-  // Drop a stale inline program from the hash, but keep #clients=N alive.
+  // Drop the URL-carried project from the hash — both forms, since either would
+  // outrank `?example=` on the next reload — but keep #clients=N alive.
   const hash = new URLSearchParams(window.location.hash.slice(1));
   hash.delete("src");
+  hash.delete("code");
   url.hash = hash.toString();
   window.history.replaceState(null, "", url);
   updateClientsStore();
+  banner.set({ text: "" }); // the outgoing project's advisory, not this one's
   loadExample(value);
 };
 
 const resetExample = () => {
   const selected = picker.getSnapshot().selected;
-  if (selected === "__inline") loadInline(inlineB64!);
+  if (selected === SHARED_OPTION) loadShared(shared!.project, shared!.label);
   else loadExample(selected);
+};
+
+// Share: encode the LIVE project — every file with its edits, the entry, the
+// roles (so a shared multiplayer sample reopens with its server pane) and the
+// pointer options — into this page's own URL, then copy that URL. The fragment
+// goes in with replaceState (no navigation, and #clients=N survives), which is
+// also what makes the address bar a real fallback when the clipboard says no.
+const shareProject = (): ShareProject => {
+  // Flattened to bare module files: the codec's module space has no
+  // directories, and the runtime names a module by its file STEM — so
+  // `examples/netpong/server.fun` and `server.fun` are the same module `Server`.
+  const files = projectFiles().map((file) => ({
+    path: fileName(file.path),
+    source: file.source,
+  }));
+  const role = (
+    file: string,
+    of: { module?: string | undefined; prefix?: string | undefined }
+  ): ShareRole =>
+    of.module ? { file, module: of.module } : of.prefix ? { file, prefix: of.prefix } : file;
+  const carried: ShareProject = { files, entry: files[0].path };
+  if (boot.server) {
+    carried.config = {
+      entries: {
+        client: role(files[0].path, boot),
+        server: role(fileName(boot.server.file), boot.server),
+      },
+    };
+  } else if (boot.module || boot.prefix) {
+    carried.config = { entries: { client: role(files[0].path, boot) } };
+  }
+  if (boot.cursor) carried.options = { cursor: boot.cursor };
+  else if (boot.mouseCapture === false) carried.options = { mouseCapture: false };
+  return carried;
+};
+
+let shareFlash = 0;
+const flashShare = (state: ShareState) => {
+  share.set(state);
+  window.clearTimeout(shareFlash);
+  shareFlash = window.setTimeout(() => share.set(SHARE_IDLE), 2600);
+};
+
+const shareLink = async () => {
+  let url: string;
+  try {
+    url = await shareHref(shareProject(), window.location.href);
+  } catch (error) {
+    // Too large, or a project the codec refuses (a name collision after
+    // flattening). The Output panel keeps the reason after the button calms.
+    const message = error instanceof Error ? error.message : String(error);
+    statusBar.appendOutput("error", message);
+    flashShare({ label: "✖ can't share", tone: "error", detail: message });
+    return;
+  }
+  window.history.replaceState(null, "", url);
+  const copied = await copyLink(url);
+  flashShare(
+    copied
+      ? { label: "✓ copied", tone: "ok", detail: url }
+      : {
+          label: "⧉ copy the URL",
+          tone: "error",
+          detail: "the clipboard refused — the link is in the address bar",
+        }
+  );
+  warnAboutAssets(projectFiles());
 };
 
 // Mount the islands into the static shell's containers. Both keep their
@@ -598,11 +754,18 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
     picker={picker}
     pill={pill}
     clients={clients}
+    share={share}
     runtimeTarget={runtimeTarget}
     onSelect={selectExample}
     onReset={resetExample}
     onClients={selectClients}
+    onShare={shareLink}
   />
+);
+// The one thing a link can't promise (share.ts): a strip above the editor, so
+// it is read where the sources it is about are.
+createRoot(document.querySelector(".share-banner-host")!).render(
+  <ShareBanner store={banner} onDismiss={() => banner.set({ text: "" })} />
 );
 // Rows only: `onNew`/`onDelete` are the IDE's, and an example's file set is
 // the sample's rather than the reader's. The host element carries the
@@ -616,7 +779,23 @@ createRoot(statusBarHost).render(
   <StatusBar store={statusBar} editorKeybindings={editorKeybindings} />
 );
 
-if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initialExample);
+// A fragment wins over `?example=`, but only if it decodes: a mangled link (a
+// chat client that broke the URL) says why and falls back to an example rather
+// than leaving the page empty.
+if (fragmentKind) {
+  void decodeShare(window.location.hash).then((carried) => {
+    if (carried) {
+      loadShared(carried, fragmentKind === "code" ? "shared link" : "docs snippet");
+      return;
+    }
+    const message = `the #${fragmentKind}= fragment is not a valid project — loading an example instead`;
+    statusBar.appendOutput("error", message);
+    setStatus("error", "✖ error", message);
+    loadExample(initialExample);
+  });
+} else {
+  loadExample(initialExample);
+}
 
 // Test seam for the headless e2e (e2e/site-sandbox.mjs): set the buffer and
 // observe results without synthesizing keyboard events.

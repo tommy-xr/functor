@@ -34,6 +34,14 @@
         <button id="reset" type="button" title="Reload the example (resets the model)">
           ↺ reset
         </button>
+        <button
+          id="share"
+          type="button"
+          data-tone="idle"
+          title="Copy a link that carries this project — files, entry, roles"
+        >
+          ⧉ share
+        </button>
         <div id="runtime-target"></div>
         <span id="status" class="status-pill" data-state="busy">◌ loading…</span>
       </div>
@@ -48,6 +56,10 @@
       -->
       <aside class="file-pane" hidden></aside>
       <section class="editor-pane">
+        <!-- The share advisory's island host (src/components/ShareBanner.tsx).
+             Empty until a link's assets can't follow it — the strip renders
+             nothing otherwise, so there is no skeleton to keep in step. -->
+        <div class="share-banner-host"></div>
         <div id="editor"></div>
       </section>
       <section class="preview-pane">
