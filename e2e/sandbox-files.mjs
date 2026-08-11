@@ -245,6 +245,11 @@ const browser = await chromium.launch();
   // …and switching TO a multi-file example brings it back live, without a
   // reload: the sidebar is a function of the loaded project, not of boot.
   await page.selectOption("#example-picker", "netpong");
+  // The pill is still "live" from the outgoing example for a moment, so wait
+  // on the PROJECT arriving, then on the new panes reporting in.
+  await page.waitForFunction(() => window.__sandbox?.files().paths.length === 4, null, {
+    timeout: 40000,
+  });
   await page.waitForFunction(() => window.__sandbox?.status().state === "live", {
     timeout: 40000,
   });
