@@ -109,21 +109,67 @@ const pageScrollsSideways = (page) =>
   await last.hover();
   await sleep(400);
   check("hovering a card plays it", await last.evaluate((el) => el.classList.contains("is-playing")));
-
-  await page.locator(".games-shelf").focus();
+  // Nothing may be left running once the shelf is behind the reader — a card
+  // hovered as it scrolls away must still stop, or it animates off screen
+  // forever (it gets no further observer callback).
+  await page.mouse.move(2, 2);
+  await page.locator(".cta-band").scrollIntoViewIfNeeded();
+  await sleep(800);
   check(
-    "the scrollable shelf is keyboard focusable",
-    await page.evaluate(() => document.activeElement?.classList.contains("games-shelf"))
+    "nothing is left playing once the shelf is off screen",
+    (await page.locator(".game-card.is-playing").count()) === 0,
+    `${await page.locator(".game-card.is-playing").count()} still playing`
   );
+  await page.locator(".games-section").scrollIntoViewIfNeeded();
+  await sleep(600);
+
+  const rail = page.locator(".games-rail");
+  check(
+    "the rail scrolls sideways",
+    await rail.evaluate((el) => el.scrollWidth > el.clientWidth + 200)
+  );
+  // The KEYBOARD must be able to operate the scroll region — which means the
+  // focusable, labelled element has to be the one that actually scrolls.
+  // Park the rail back at the start and WAIT for it to settle: a snap scroll is
+  // animated, and keys pressed mid-animation are absorbed.
+  await rail.evaluate((el) => el.scrollTo({ left: 0, behavior: "instant" }));
+  await page.waitForFunction(
+    () => document.querySelector(".games-rail").scrollLeft === 0,
+    null,
+    { timeout: 5000 }
+  );
+  await rail.focus();
+  check(
+    "the scrolling rail is the focusable, labelled region",
+    await page.evaluate(
+      () =>
+        document.activeElement?.classList.contains("games-rail") &&
+        document.activeElement?.getAttribute("role") === "region" &&
+        Boolean(document.activeElement?.getAttribute("aria-label"))
+    )
+  );
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press("ArrowRight");
+    await sleep(120);
+  }
+  const scrolled = await rail
+    .evaluate(
+      (el) =>
+        new Promise((resolve) => {
+          const started = Date.now();
+          const poll = () => {
+            if (el.scrollLeft > 0 || Date.now() - started > 3000) resolve(el.scrollLeft);
+            else requestAnimationFrame(poll);
+          };
+          poll();
+        })
+    );
+  check("arrow keys scroll the shelf", scrolled > 0, `scrollLeft ${scrolled}`);
+
   const third = cards.nth(2);
   await third.locator(".game-case").focus();
   await sleep(300);
   check("focusing a card plays it", await third.evaluate((el) => el.classList.contains("is-playing")));
-
-  check(
-    "the rail scrolls sideways",
-    await page.locator(".games-rail").evaluate((el) => el.scrollWidth > el.clientWidth + 200)
-  );
   check("the page itself does not scroll sideways", !(await pageScrollsSideways(page)));
   await page.close();
 }

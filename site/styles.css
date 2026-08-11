@@ -716,36 +716,37 @@ a:hover {
   color: var(--cyan);
 }
 
-/* The shelf is the scroll container and a keyboard-operable region, so it takes
-   focus itself; the ring is drawn inside to avoid a clipped outline. */
-.games-shelf {
-  margin-top: var(--space-lg);
-  border-radius: 12px;
-}
-
-.games-shelf:focus-visible {
-  outline: 2px solid var(--cyan);
-  outline-offset: 6px;
-}
-
+/* The rail is BOTH the scroll container and the keyboard-operable region (see
+   index.html): arrow keys scroll the element that overflows, so that has to be
+   the one carrying `tabindex`. */
 .games-rail {
   --case-w: 320px;
+  --rail-pad: max(var(--space-md), calc((100% - 1100px) / 2));
   display: flex;
   gap: var(--space-lg);
   align-items: start;
-  margin: 0;
-  /* Deep side padding so the FIRST and LAST case can sit in the middle of the
-     shelf like every other one, and so a tilted case's near edge is never
-     clipped by the scrollport. */
-  padding: 26px max(var(--space-md), calc(50vw - var(--case-w) * 1.6)) 30px;
+  margin: var(--space-lg) 0 0;
+  /* Vertical padding so a lifted, squared-up case is never clipped by the
+     scrollport; horizontal padding lines the shelf up with the sections above
+     it and gives the last case somewhere to rest. */
+  padding: 26px var(--rail-pad) 30px;
   list-style: none;
   overflow-x: auto;
   overflow-y: hidden;
+  /* Snap to a case's leading edge, and offset the snap by the rail's own
+     padding so a snapped case sits where the copy above it starts — with
+     `center` the first and last cases have snap points no scroll position can
+     reach, and mandatory snapping then fights the reader at both ends. */
   scroll-snap-type: x mandatory;
-  scroll-padding: 0 var(--space-md);
+  scroll-padding-left: var(--rail-pad);
   perspective: 1500px;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
+}
+
+.games-rail:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
 }
 
 .games-rail::-webkit-scrollbar {
@@ -759,7 +760,7 @@ a:hover {
 
 .game-card {
   flex: 0 0 var(--case-w);
-  scroll-snap-align: center;
+  scroll-snap-align: start;
   transform-style: preserve-3d;
 }
 
@@ -774,8 +775,10 @@ a:hover {
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
-  /* Tilted away from the reader, like a case standing on a shelf. */
-  transform: rotateY(-9deg) translateZ(0);
+  /* Tilted like a case standing on a shelf, seen from its left: the SPINE edge
+     is the near one and the case turns away behind it. (The other direction
+     brings the far edge forward and the spine reads as painted on.) */
+  transform: rotateY(12deg) translateZ(0);
   transform-origin: left center;
   box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.9);
   transition: transform 0.4s ease, box-shadow 0.4s ease, border-color 0.3s ease;
@@ -864,7 +867,7 @@ a:hover {
 
 /* The control legend reads as a hardware label: dim, ruled off, monospace. */
 .game-controls {
-  color: #7f7799;
+  color: var(--text-dim);
   font-size: 0.72rem;
   line-height: 1.5;
   border-left: 2px solid var(--line);
@@ -879,13 +882,14 @@ a:hover {
   text-transform: uppercase;
 }
 
-/* Narrow viewports: one case at a time, squared up (a 9° tilt on a nearly
-   full-width card just wastes the width) and centred by the snap. */
+/* Narrow viewports: one case at a time, squared up — a tilt on a nearly
+   full-width card only wastes the width it is turning away. */
 @media (max-width: 760px) {
   .games-rail {
     --case-w: min(300px, 82vw);
+    --rail-pad: var(--space-md);
     gap: var(--space-md);
-    padding: 16px var(--space-md) 22px;
+    padding: 16px var(--rail-pad) 22px;
     perspective: none;
   }
   .game-case {

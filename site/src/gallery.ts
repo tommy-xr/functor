@@ -9,20 +9,39 @@
 const rail = document.querySelector<HTMLElement>(".games-rail");
 
 if (rail && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-  /**
-   * Start the animation for a card, loading it on first use. The GIF sits in its
-   * own image stacked over the poster and fades in once decoded, so a card never
-   * flashes empty mid-swap and its box never resizes.
-   */
-  const play = (card: HTMLElement) => {
+  // A card can be wanted for more than one reason at once (in view AND hovered),
+  // so each is tracked by name: it plays while any reason holds and stops only
+  // when the last one is released. Without that, moving the pointer off a card
+  // that is still on screen would stop it — or, worse, a card hovered as it
+  // scrolls away would never receive another observer callback and would animate
+  // off screen forever.
+  const reasons = new WeakMap<HTMLElement, Set<string>>();
+  const reasonsFor = (card: HTMLElement) => {
+    const existing = reasons.get(card);
+    if (existing) return existing;
+    const created = new Set<string>();
+    reasons.set(card, created);
+    return created;
+  };
+
+  const want = (card: HTMLElement, reason: string) => {
+    reasonsFor(card).add(reason);
     const anim = card.querySelector<HTMLImageElement>(".game-anim");
     if (!anim) return;
-    if (!anim.src && anim.dataset.anim) anim.src = anim.dataset.anim;
+    if (!anim.getAttribute("src") && anim.dataset.anim) {
+      // A card whose art fails to load stays a poster rather than fading a
+      // broken image over one, and never retries.
+      anim.addEventListener("error", () => card.classList.remove("is-playing"), { once: true });
+      anim.src = anim.dataset.anim;
+    }
     card.classList.add("is-playing");
   };
-  // Stopping only hides the animation; the loaded image is kept, so returning to
-  // a card is instant and re-entry costs no fetch.
-  const stop = (card: HTMLElement) => card.classList.remove("is-playing");
+
+  const release = (card: HTMLElement, reason: string) => {
+    const held = reasonsFor(card);
+    held.delete(reason);
+    if (held.size === 0) card.classList.remove("is-playing");
+  };
 
   const cards = [...rail.querySelectorAll<HTMLElement>(".game-card")];
 
@@ -30,8 +49,9 @@ if (rail && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (entry.isIntersecting) play(entry.target as HTMLElement);
-          else stop(entry.target as HTMLElement);
+          const card = entry.target as HTMLElement;
+          if (entry.isIntersecting) want(card, "view");
+          else release(card, "view");
         }
       },
       // Against the VIEWPORT, not the rail: intersection already accounts for
@@ -45,10 +65,13 @@ if (rail && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
     for (const card of cards) io.observe(card);
   }
 
-  // Pointer and keyboard both play immediately — a hovered or focused card should
-  // not wait to satisfy the observer's threshold.
+  // Pointer and keyboard both play immediately — a hovered or focused card
+  // should not wait to satisfy the observer's threshold, and on a touch device
+  // (no hover at all) the observer is the only thing that ever plays one.
   for (const card of cards) {
-    card.addEventListener("pointerenter", () => play(card));
-    card.addEventListener("focusin", () => play(card));
+    card.addEventListener("pointerenter", () => want(card, "pointer"));
+    card.addEventListener("pointerleave", () => release(card, "pointer"));
+    card.addEventListener("focusin", () => want(card, "focus"));
+    card.addEventListener("focusout", () => release(card, "focus"));
   }
 }
