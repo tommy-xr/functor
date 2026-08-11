@@ -106,7 +106,7 @@ const RECIPES = {
   // processes would seed a different asteroid field and the "loop" would be 30
   // unrelated runs spliced together (it was, before this moved). One browser
   // process is one continuous sim, so the motion is coherent.
-  asteroids: { backend: "web", clients: 1, drive: "arcade", frames: 30, everyMs: 66, warmup: 30 },
+  asteroids: { backend: "web", clients: 1, drive: "arcade", frames: 34, everyMs: 8, warmup: 40 },
   // The committed verification drive: run off the left platform, clear the
   // chasm, land on the right. Exactly the jump the landing hero parks on.
   platformer: { backend: "native", dir: "examples/platformer", script: "jump.script", from: 6, step: 3, frames: 30 },
@@ -130,11 +130,11 @@ const RECIPES = {
   },
   // Both roles play themselves once a server is seated: the client's `autopilot`
   // starts true, so one client pane is a full AI rally.
-  netpong: { backend: "web", clients: 1, networked: true, drive: "idle", frames: 40, everyMs: 60 },
+  netpong: { backend: "web", clients: 1, networked: true, drive: "idle", frames: 40, everyMs: 8 },
   // Two rivals, shot from client 1: the flown ship AND the other pilot's.
   orbs: {
     backend: "web", clients: 2, networked: true, drive: "fly",
-    frames: 40, everyMs: 70, warmup: 40,
+    frames: 40, everyMs: 8, warmup: 60,
   },
 };
 
@@ -347,12 +347,13 @@ const DRIVES = {
 const DRIVE_KEYS = ["KeyA", "KeyD", "KeyW", "Space", "Enter"];
 
 async function captureWeb(spec, framesDir, browser) {
-  // Wide enough that the sandbox lays out its pane grid at full size (only the
-  // captured pane's body is ever in shot), and at 2× so the pane — which is
-  // smaller than the 640x400 poster — downsamples into it instead of being
-  // upscaled to fit.
+  // Sized for the SHOT, not for the page: 2× so the pane (which is smaller than
+  // the 640x400 poster) downsamples into it rather than being upscaled, and no
+  // wider than it has to be — a screenshot rasters the whole viewport, so a
+  // 1760x900 page at 2× costs ~half a second per frame and the sampled rate
+  // collapses to 2 fps. This is wide enough for the pane grid to lay out.
   const page = await browser.newPage({
-    viewport: { width: 1760, height: 900 },
+    viewport: { width: 1180, height: 660 },
     deviceScaleFactor: 2,
   });
   const drive = DRIVES[spec.drive];
