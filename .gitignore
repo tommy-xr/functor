@@ -77,3 +77,7 @@ tools/functor-lang-vscode/images/functor-lang-extension.png
 # `npm run generate:docs` recreates them; site:build regenerates its JSON input.
 docs/api-reference.md
 site/generated/api-reference.json
+
+# Local save slots written by `Persistence.save` — a player's (or an example run's)
+# progress, not source. `<project>/.functor/saves/<slot>.json`.
+.functor/
