@@ -60,12 +60,12 @@ import { FilePane } from "./components/FilePane.js";
 import type { FileListState } from "./components/FilePane.js";
 import { decodeShare } from "./share-link.js";
 import type { ShareProject, ShareRole } from "./share-link.js";
-import { shareHref, copyLink, unservedAssets, assetWarning } from "./share.js";
+import { createShareController } from "./share.js";
 import { initMultiplayerPanes, MAX_CLIENTS } from "./mp-panes.js";
 import type { MultiplayerPanes, PaneProgram } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
 import { StatusBar } from "./components/StatusBar.js";
-import { asPlayerMessage, fileName } from "./protocol.js";
+import { asPlayerMessage, entryFirst, fileName } from "./protocol.js";
 import type { ProjectFile } from "./protocol.js";
 import { EXAMPLES, exampleEntryPath } from "./examples.js";
 
@@ -535,20 +535,10 @@ const bootPanes = () => {
   mp?.setSrc(frame.src, server);
 };
 
-// The assets advisory: the project's relative `Asset.*` locators that this site
-// does not serve — the only thing a link genuinely drops (share.ts explains
-// why the site-served ones are fine). Fire-and-forget on both ends of a link.
-const warnAboutAssets = (files: ProjectFile[]) => {
-  void unservedAssets(files).then((missing) => {
-    if (missing.length === 0) return;
-    const text = assetWarning(missing);
-    banner.set({ text });
-    statusBar.appendOutput("warn", text);
-  });
-};
-
 // The project the fragment carried, kept so Reset can reload it (there is no
-// served copy to re-fetch) and so the picker can name it.
+// served copy to re-fetch) and so the picker can name it. It outlives an example
+// switch, exactly as the inline snippet used to: its picker row stays, so
+// selecting that row again has to still find it.
 let shared: { project: ShareProject; label: string } | null = null;
 
 // Load a project that arrived IN the URL. The fragment is the storage, so this
@@ -566,16 +556,24 @@ const loadShared = (project_: ShareProject, label: string) => {
   const entry = project_.files.some((file) => file.path === wanted)
     ? wanted
     : project_.files[0].path;
-  const files = [
-    ...project_.files.filter((file) => file.path === entry),
-    ...project_.files.filter((file) => file.path !== entry),
-  ];
+  // COPIES: these become the live buffers, which every keystroke mutates in
+  // place (projectFiles) — handing over the retained objects would quietly turn
+  // Reset into "reload my edits".
+  const files = entryFirst(project_.files, entry).map((file) => ({ ...file }));
   boot = {
     module: client?.module,
     prefix: client?.prefix,
     server: entries?.server ? bootRole(entries.server) : undefined,
-    cursor: project_.options?.cursor,
-    mouseCapture: project_.options?.mouseCapture,
+    // The page's own `?cursor=` / `?mouseCapture=` seam still applies to a
+    // URL-carried project that declares nothing (that is how the docs' `#src=`
+    // snippets have always taken a pointer policy).
+    cursor: project_.options?.cursor ?? pageCursorPolicy ?? undefined,
+    mouseCapture:
+      project_.options?.cursor || pageCursorPolicy
+        ? undefined
+        : (project_.options?.mouseCapture ?? pageMouseCapture) === false
+          ? false
+          : undefined,
   };
   // Reflect the loaded link in the picker so it (and Reset) don't lie about
   // what's running.
@@ -595,7 +593,10 @@ const loadShared = (project_: ShareProject, label: string) => {
   // A shared multiplayer project keeps the CLIENTS control: its server role is
   // as much a reason to show it as an example's `multiplayer` flag.
   if (boot.server) clients.set({ count: mp!.count(), visible: true });
-  warnAboutAssets(files);
+  // Every LOAD re-runs the advisory (`sharing` is initialized before any load
+  // happens — see the boot block at the bottom), so the strip always describes
+  // the project that is open, however it arrived.
+  sharing.checkAssets();
 };
 
 const loadExample = async (id: string) => {
@@ -650,6 +651,7 @@ const loadExample = async (id: string) => {
       !cursorPolicy && (example?.mouseCapture ?? pageMouseCapture) === false ? false : undefined,
   };
   bootPanes();
+  sharing.checkAssets();
 };
 
 const selectExample = (value: string) => {
@@ -669,7 +671,6 @@ const selectExample = (value: string) => {
   url.hash = hash.toString();
   window.history.replaceState(null, "", url);
   updateClientsStore();
-  banner.set({ text: "" }); // the outgoing project's advisory, not this one's
   loadExample(value);
 };
 
@@ -713,38 +714,21 @@ const shareProject = (): ShareProject => {
   return carried;
 };
 
-let shareFlash = 0;
-const flashShare = (state: ShareState) => {
-  share.set(state);
-  window.clearTimeout(shareFlash);
-  shareFlash = window.setTimeout(() => share.set(SHARE_IDLE), 2600);
-};
-
-const shareLink = async () => {
-  let url: string;
-  try {
-    url = await shareHref(shareProject(), window.location.href);
-  } catch (error) {
-    // Too large, or a project the codec refuses (a name collision after
-    // flattening). The Output panel keeps the reason after the button calms.
-    const message = error instanceof Error ? error.message : String(error);
-    statusBar.appendOutput("error", message);
-    flashShare({ label: "✖ can't share", tone: "error", detail: message });
-    return;
-  }
-  window.history.replaceState(null, "", url);
-  const copied = await copyLink(url);
-  flashShare(
-    copied
-      ? { label: "✓ copied", tone: "ok", detail: url }
-      : {
-          label: "⧉ copy the URL",
-          tone: "error",
-          detail: "the clipboard refused — the link is in the address bar",
-        }
-  );
-  warnAboutAssets(projectFiles());
-};
+const sharing = createShareController({
+  share,
+  banner,
+  project: shareProject,
+  files: () => projectFiles(),
+  onOutput: (level, message) => statusBar.appendOutput(level, message),
+  // `?example=` is dropped from a share URL: the fragment carries the project,
+  // and a query still naming the sample it came from would only mislabel the
+  // link (and lose, on the next reload, to the fragment anyway).
+  href: () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("example");
+    return url.toString();
+  },
+});
 
 // Mount the islands into the static shell's containers. Both keep their
 // element ids and class names, so styles.css and every e2e selector match the
@@ -759,7 +743,7 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
     onSelect={selectExample}
     onReset={resetExample}
     onClients={selectClients}
-    onShare={shareLink}
+    onShare={sharing.shareLink}
   />
 );
 // The one thing a link can't promise (share.ts): a strip above the editor, so

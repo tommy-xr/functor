@@ -31,6 +31,20 @@ export interface ProjectFile {
  */
 export const fileName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
 
+/**
+ * `files` with `entry` first, order otherwise preserved.
+ *
+ * The loaders' contract — for the preview, for language analysis, and for the
+ * pane grid — is that `files[0]` IS the entry (its module is the program root).
+ * Every producer of a file set has to establish that, whether the set came from
+ * localStorage, a share link, or a fetched example, so the reordering lives here
+ * with the type it reorders.
+ */
+export const entryFirst = (files: ProjectFile[], entry: string): ProjectFile[] => [
+  ...files.filter((file) => file.path === entry),
+  ...files.filter((file) => file.path !== entry),
+];
+
 // --- editor → player ---------------------------------------------------------
 
 /**

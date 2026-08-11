@@ -82,12 +82,25 @@ const live = (page, timeout = 40000) =>
     { timeout }
   );
 
-/** Click Share and hand back the URL it minted (the page's own address). */
+/**
+ * Click Share and hand back the URL it minted (the page's own address).
+ *
+ * The wait is on the BUTTON's confirmation, not on the hash: a page that has
+ * already shared once carries a `#code=` from that first click, so waiting for
+ * the fragment to exist would hand back the previous link.
+ */
 const clickShare = async (page) => {
+  const idle = () =>
+    page.waitForFunction(() => !document.querySelector("#share").textContent.includes("copied"), null, {
+      timeout: 15000,
+    });
+  await idle();
   await page.click("#share");
-  await page.waitForFunction(() => window.location.hash.includes("code="), null, {
-    timeout: 15000,
-  });
+  await page.waitForFunction(
+    () => document.querySelector("#share").textContent.includes("copied"),
+    null,
+    { timeout: 15000 }
+  );
   return page.url();
 };
 
@@ -157,6 +170,29 @@ const bannerText = (page) =>
   );
   check(state.picker === "shared link", "the picker names the loaded link", String(state.picker));
   check(state.status.state === "live", "the shared program is live", JSON.stringify(state.status));
+  // Reset restores the LINK's project, not the edits made after opening it —
+  // the shared snapshot is the only copy there is, so it must not be the live
+  // buffer in disguise.
+  await opened.evaluate(() =>
+    window.__sandbox.setSource(`// edited after opening the link\n${window.__sandbox.getSource()}`)
+  );
+  await opened.waitForFunction(() => window.__sandbox.status().state === "live", null, {
+    timeout: 30000,
+  });
+  await opened.click("#reset");
+  await opened.waitForFunction(
+    () => !window.__sandbox.getSource().includes("edited after opening the link"),
+    null,
+    { timeout: 30000 }
+  ).catch(() => {});
+  const reset = await opened.evaluate(() => window.__sandbox.getSource());
+  check(
+    reset.startsWith("// shared-edit marker 4711") &&
+      !reset.includes("edited after opening the link"),
+    "Reset restores the shared project as linked",
+    reset.split("\n")[0]
+  );
+
   const errors = consoleLog.filter((line) => /unknown external|panic|pageerror/i.test(line));
   check(errors.length === 0, "no load error on either page", errors.slice(0, 2).join(" | "));
   await opened.close();
@@ -164,6 +200,8 @@ const bannerText = (page) =>
 }
 
 // --- 2. Sandbox: netpong, with an edit to the SERVER file. --------------------
+// Kept for section 4: a link with client/server ROLES is one the IDE must refuse.
+let rolesUrl = null;
 {
   const page = await context.newPage();
   await page.goto(`${BASE}/sandbox.html?example=netpong`);
@@ -174,6 +212,12 @@ const bannerText = (page) =>
   );
   await sleep(500);
   const url = await clickShare(page);
+  rolesUrl = url;
+  check(
+    !new URL(url).searchParams.has("example"),
+    "a share URL drops ?example= — the fragment IS the project",
+    new URL(url).search || "(no query)"
+  );
   await page.close();
 
   const opened = await context.newPage();
@@ -229,8 +273,9 @@ const bannerText = (page) =>
 
   const opened = await context.newPage();
   // The query asks for `tetris`; the fragment carries `counter`. The fragment is
-  // the only copy of its project, so it wins.
-  await opened.goto(url.replace("example=counter", "example=tetris"));
+  // the only copy of its project, so it wins. (Share strips `?example=` itself,
+  // so this puts one back to make the precedence explicit.)
+  await opened.goto(`${url.split("#")[0]}?example=tetris#${url.split("#")[1]}`);
   await live(opened);
   const loaded = await opened.evaluate(() => window.__sandbox.files().paths[0]);
   check(loaded === "counter.fun", "#code= outranks ?example=", loaded);
@@ -319,6 +364,41 @@ const bannerText = (page) =>
     afterEdit.slice(0, 50)
   );
   await accepted.close();
+
+  // A link the IDE cannot represent (a sandbox multiplayer project: roles, and
+  // an entry that isn't game.fun) is refused BEFORE anything is asked or lost.
+  const refused = await context.newPage();
+  const asked = [];
+  refused.on("dialog", (dialog) => {
+    asked.push(dialog.message());
+    dialog.accept();
+  });
+  await refused.goto(`${BASE}/ide.html#${rolesUrl.split("#")[1]}`);
+  // Watch for the refusal as it is published: the preview reporting in
+  // afterwards overwrites the pill, so a second read can miss it.
+  const told = await refused
+    .waitForFunction(
+      () => window.__ide?.status().message.includes("open it in the sandbox instead"),
+      null,
+      { timeout: 30000 }
+    )
+    .then(() => true)
+    .catch(() => false);
+  const refusal = await refused.evaluate(() => ({
+    entry: window.__ide.files()[0].path,
+    source: window.__ide.files()[0].source,
+  }));
+  check(
+    told && asked.length === 0,
+    "a project the IDE can't run is refused, not prompted for",
+    `told=${told} prompts=${asked.length}`
+  );
+  check(
+    refusal.entry === "game.fun" && refusal.source.includes("// SHARED then mine"),
+    "…and the reader's own project is still the one open",
+    refusal.source.split("\n")[0]
+  );
+  await refused.close();
 }
 
 // --- 5. The assets advisory. --------------------------------------------------

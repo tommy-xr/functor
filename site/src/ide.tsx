@@ -47,7 +47,7 @@ import { StatusBar } from "./components/StatusBar.js";
 import { FilePane, ActiveFileTab } from "./components/FilePane.js";
 import type { FileListState } from "./components/FilePane.js";
 import type { PillState } from "./components/StatusPill.js";
-import { asPlayerMessage } from "./protocol.js";
+import { asPlayerMessage, entryFirst } from "./protocol.js";
 import type { ProjectFile } from "./protocol.js";
 import { zipFiles } from "./zip.js";
 // The project-file rule lives with the share-link codec, which enforces the
@@ -55,7 +55,7 @@ import { zipFiles } from "./zip.js";
 // the IDE's flat module space.
 import { MODULE_FILE, decodeShare } from "./share-link.js";
 import type { ShareProject } from "./share-link.js";
-import { shareHref, copyLink, unservedAssets, assetWarning } from "./share.js";
+import { createShareController } from "./share.js";
 
 /** The in-memory project: a flat module space plus the open file's path. */
 interface Project {
@@ -208,10 +208,7 @@ function loadProject(): Project {
       // The loader's contract (preview AND language analysis): the ENTRY is
       // files[0] — its module is the program root. Every mutation here keeps
       // that order, but a hand-edited localStorage could reorder.
-      const files = [
-        ...stored.files!.filter((f) => f.path === ENTRY),
-        ...stored.files!.filter((f) => f.path !== ENTRY),
-      ];
+      const files = entryFirst(stored.files!, ENTRY);
       storedProject = true;
       return { files, active };
     }
@@ -494,76 +491,34 @@ const restart = () => {
 
 // ---------------------------------------------------------------- sharing
 
-// The assets advisory: the project's relative `Asset.*` locators this site does
-// not serve — the only thing a link genuinely drops (share.ts explains why the
-// site-served ones are fine). The IDE serves nothing of its own, so an authored
-// locator that isn't already on the site shows up here.
-const warnAboutAssets = () => {
-  void unservedAssets(project.files).then((missing) => {
-    if (missing.length === 0) return;
-    const text = assetWarning(missing);
-    banner.set({ text });
-    statusBar.appendOutput("warn", text);
-  });
-};
-
-let shareFlash = 0;
-const flashShare = (state: ShareState) => {
-  share.set(state);
-  window.clearTimeout(shareFlash);
-  shareFlash = window.setTimeout(() => share.set(SHARE_IDLE), 2600);
-};
-
-// Share: the whole in-memory project in the page's own URL. The IDE's paths are
-// already bare module files and its entry is always `game.fun`, so there is
-// nothing to flatten — only the pointer options ride along, matching the
-// manifest the zip download writes.
-const shareLink = async () => {
-  const carried: ShareProject = { files: project.files, entry: ENTRY };
-  if (cursorPolicy) carried.options = { cursor: cursorPolicy };
-  else if (mouseCapture === false) carried.options = { mouseCapture: false };
-  let url: string;
-  try {
-    url = await shareHref(carried, window.location.href);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    statusBar.appendOutput("error", message);
-    flashShare({ label: "✖ can't share", tone: "error", detail: message });
-    return;
-  }
-  window.history.replaceState(null, "", url);
-  const copied = await copyLink(url);
-  flashShare(
-    copied
-      ? { label: "✓ copied", tone: "ok", detail: url }
-      : {
-          label: "⧉ copy the URL",
-          tone: "error",
-          detail: "the clipboard refused — the link is in the address bar",
-        }
-  );
-  warnAboutAssets();
-};
+// The Share workflow lives in share.ts, so both editor pages behave identically;
+// the IDE supplies only what its project IS. Its paths are already bare module
+// files and its entry is always `game.fun`, so there is nothing to flatten — and
+// nothing to put in `options` either: the IDE takes its pointer policy from the
+// QUERY (`?cursor=` / `?mouseCapture=`), which a share URL preserves, so
+// declaring it in the fragment too would only let the two disagree.
+const sharing = createShareController({
+  share,
+  banner,
+  project: () => ({ files: project.files, entry: ENTRY }),
+  files: () => project.files,
+  onOutput: (level, message) => statusBar.appendOutput(level, message),
+  href: () => window.location.href,
+});
 
 // Open a project that arrived in a `#code=` link. It is NOT saved: `persist`
 // stays false until the reader changes something, so the project already in
 // this browser is still there if they reload without the link.
 const openShared = (carried: ShareProject) => {
   persist = false;
-  project = {
-    active: ENTRY,
-    files: [
-      ...carried.files.filter((file) => file.path === ENTRY),
-      ...carried.files.filter((file) => file.path !== ENTRY),
-    ],
-  };
+  project = { active: ENTRY, files: entryFirst(carried.files, ENTRY) };
   // The incoming module space is a different program: the last-good completion
   // cache would otherwise keep offering the outgoing one's members.
   resetIntel();
   publishFiles();
   setDoc(activeFile()!.source);
   restart(); // a fresh iframe, so the shared program runs its OWN init
-  warnAboutAssets();
+  sharing.checkAssets();
 };
 
 // ---------------------------------------------------------------- boot
@@ -578,7 +533,7 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
     runtimeTarget={runtimeTarget}
     onDownload={download}
     onRestart={restart}
-    onShare={shareLink}
+    onShare={sharing.shareLink}
   />
 );
 // The one thing a link can't promise (share.ts): a strip above the editor.
@@ -608,6 +563,9 @@ setStatus("busy", "◌ loading…");
 // moment the player announces it's ready (no lost first push).
 bridge.setProject(project.files);
 els.player.src = playerUrl();
+// The advisory describes whatever is open, not only what arrived in a link — a
+// stored project naming an asset this site can't serve says so on load.
+sharing.checkAssets();
 
 // A `#code=` link outranks the stored project — but never silently, and never
 // destructively:
@@ -617,21 +575,34 @@ els.player.src = playerUrl();
 //     the URL, so a reload doesn't ask again;
 //   • either way the shared project is not written to localStorage until the
 //     reader changes something (`persist`), so their work survives a look.
-// A shared project whose entry isn't `game.fun` (a sandbox example's link, say)
-// is refused rather than renamed: renaming the entry would silently rename its
-// MODULE and break every sibling that calls into it.
+// A shared project the IDE cannot represent is REFUSED rather than mangled — and
+// refused before the reader is asked anything, so a link it can't open never
+// costs them their project. Two cases: an entry that isn't `game.fun` (renaming
+// it would silently rename its MODULE and break every sibling that calls into
+// it), and a project with declared ROLES, which the IDE has no seam for (it
+// always boots the one entry, with no `module=`/`prefix=`).
 if (new URLSearchParams(window.location.hash.slice(1)).has("code")) {
   void decodeShare(window.location.hash).then((carried) => {
     if (!carried) {
       setStatus("error", "✖ error", "this share link doesn't carry a valid project");
       return;
     }
-    if (!carried.files.some((file) => file.path === ENTRY)) {
+    const entry = carried.entry ?? ENTRY;
+    if (entry !== ENTRY || !carried.files.some((file) => file.path === ENTRY)) {
       setStatus(
         "error",
         "✖ error",
-        `this link's project starts at ${carried.entry ?? carried.files[0].path}; ` +
-          `the IDE's entry is ${ENTRY}`
+        `this link's project starts at ${entry}; the IDE's entry is ${ENTRY} — ` +
+          "open it in the sandbox instead"
+      );
+      return;
+    }
+    if (carried.config?.entries) {
+      setStatus(
+        "error",
+        "✖ error",
+        "this link's project declares client/server roles, which the IDE cannot " +
+          "run — open it in the sandbox instead"
       );
       return;
     }
