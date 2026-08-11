@@ -217,6 +217,85 @@ export const EXAMPLES: Example[] = [
       { source: "examples/platformer/jump.script", output: "examples/platformer.jump.script" },
     ],
   },
+  // --- Complete games ---------------------------------------------------
+  // Single-file and asset-free (every glyph and block is a primitive), so they
+  // need no sibling/asset plumbing; each mirrors its own functor.json input
+  // policy below.
+  { id: "tetris", label: "Tetris", source: "examples/tetris/game.fun" },
+  {
+    id: "breakout",
+    label: "Breakout",
+    source: "examples/breakout/game.fun",
+    // Paddle-follows-pointer: an absolute cursor, like its functor.json.
+    cursor: "visible",
+  },
+  {
+    id: "roguelike",
+    label: "Roguelike",
+    source: "examples/roguelike/game.fun",
+    // Keyboard-only, like its functor.json.
+    mouseCapture: false,
+  },
+  // The arcade clone: three sibling modules and four checked-in CC0 sounds. The
+  // ship model is the one asset NOT in the sample dir — `npm run fetch:assets`
+  // unzips it from the Kenney "Space Kit" pack and `examples/asteroids`
+  // gitignores `*.glb` — so the site keeps its OWN copy of that same CC0 file
+  // (19 KB, like examples/glove's checked-in glb) and copies it to the locator
+  // the canonical manifest already names. That keeps the generated
+  // `assets.fun` unforked: the site uses the sample's own manifest verbatim.
+  {
+    id: "asteroids",
+    label: "Asteroids",
+    source: "examples/asteroids/game.fun",
+    siblings: [
+      {
+        source: "examples/asteroids/assets.fun",
+        output: "examples/asteroids/assets.fun",
+      },
+      { source: "examples/asteroids/lib.fun", output: "examples/asteroids/lib.fun" },
+      { source: "examples/asteroids/font.fun", output: "examples/asteroids/font.fun" },
+    ],
+    assets: [
+      // Kenney "Space Kit" v2.0 `Models/GLTF format/craft_racer.glb` (CC0) —
+      // byte-identical to what `fetch:assets` unzips for the desktop sample;
+      // provenance in examples/asteroids/ASSETS.md.
+      { source: "site/examples/asteroids/ship.glb", output: "ship.glb" },
+      { source: "examples/asteroids/laser.ogg", output: "laser.ogg" },
+      { source: "examples/asteroids/explosion.ogg", output: "explosion.ogg" },
+      { source: "examples/asteroids/ship-explosion.ogg", output: "ship-explosion.ogg" },
+      { source: "examples/asteroids/thrust-loop.ogg", output: "thrust-loop.ogg" },
+    ],
+  },
+  // The FPS: captured mouse (the sandbox default, and its functor.json's) so
+  // free-look aiming and click-to-shoot work in the player.
+  {
+    id: "shooting-range",
+    label: "Shooting range",
+    source: "examples/shooting-range/game.fun",
+    siblings: [
+      {
+        source: "examples/shooting-range/assets.fun",
+        output: "examples/shooting-range/assets.fun",
+      },
+    ],
+    assets: [
+      { source: "examples/shooting-range/shot.ogg", output: "shot.ogg" },
+      { source: "examples/shooting-range/hit.ogg", output: "hit.ogg" },
+    ],
+  },
+  // Single-file, with two tiny checked-in textures (`Texture.file` locators
+  // resolved against the site root, so they copy to the root like every other
+  // asset).
+  {
+    id: "synthwave",
+    label: "Synthwave",
+    source: "examples/synthwave/game.fun",
+    assets: [
+      { source: "examples/synthwave/grid-neon.png", output: "grid-neon.png" },
+      { source: "examples/synthwave/sky.png", output: "sky.png" },
+    ],
+  },
+  // --- Runtime showcases -------------------------------------------------
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm
   // runtime fetch()es those cross-origin (CORS-permitting), so unlike the
   // local-asset examples this one runs in the single-buffer sandbox.
