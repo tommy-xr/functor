@@ -1055,8 +1055,9 @@ pub enum Shape {
     /// The shape itself is camera-free plain data — the view-dependence
     /// exists only at draw time (in both the CPU and hardware-instanced
     /// paths), so stamping semantics, `Scene.equals`, and replay stay honest.
-    /// One consequence of "the active pass's view": in the depth/shadow pass
-    /// the billboard faces the LIGHT, casting a full-quad shadow.
+    /// Billboards cast NO shadow: a light-facing depth quad would make the
+    /// camera-facing forward quad straddle its own shadow plane and
+    /// self-shadow, so both draw paths skip billboards in the depth pass.
     Billboard,
     Plane,
     /// A subdivided XZ grid displaced by per-vertex heights (row-major,
@@ -1171,6 +1172,117 @@ pub struct TransparentDraw<'a> {
 /// which `sort_by` is allowed to panic on.
 ///
 /// Free of GL, so the ordering is testable headlessly.
+/// The billboard model matrix: split the accumulated transform `acc` into its
+/// translation `T` and linear part `L` (scale and any authored rotation) and
+/// rebuild it as `T * R_view⁻¹ * L`. The inverse view rotation (the transpose
+/// of the view's upper 3×3 — every view in the tree comes from `look_at_rh`,
+/// so it is orthonormal) maps local X/Y onto the camera's right/up. Keeping
+/// the FULL linear part (not just its per-column scale) is what makes
+/// `Scene.rotateZ` spin the quad in the screen plane, exactly like the
+/// hardware instanced path, which rotates the vertex before mapping it onto
+/// the camera axes. Pure — the testable core of billboard placement.
+pub(crate) fn billboard_xform(
+    acc: &Matrix4<f32>,
+    view_matrix: &Matrix4<f32>,
+) -> Matrix4<f32> {
+    let view_rotation_inverse = Matrix4::from(
+        cgmath::Matrix3::from_cols(
+            view_matrix.x.truncate(),
+            view_matrix.y.truncate(),
+            view_matrix.z.truncate(),
+        )
+        .transpose(),
+    );
+    let linear = Matrix4::from(cgmath::Matrix3::from_cols(
+        acc.x.truncate(),
+        acc.y.truncate(),
+        acc.z.truncate(),
+    ));
+    Matrix4::from_translation(acc.w.truncate()) * view_rotation_inverse * linear
+}
+
+#[cfg(test)]
+mod billboard_xform_tests {
+    use super::billboard_xform;
+    use cgmath::{vec3, Deg, Matrix4, Point3, SquareMatrix, Vector4};
+
+    fn assert_vec4_near(a: Vector4<f32>, b: Vector4<f32>) {
+        for (x, y) in [(a.x, b.x), (a.y, b.y), (a.z, b.z), (a.w, b.w)] {
+            assert!((x - y).abs() < 1e-5, "{a:?} != {b:?}");
+        }
+    }
+
+    #[test]
+    fn identity_view_is_identity() {
+        let acc = Matrix4::from_translation(vec3(3.0, -2.0, 7.0))
+            * Matrix4::from_angle_z(Deg(30.0))
+            * Matrix4::from_nonuniform_scale(2.0, 0.5, 1.0);
+        let out = billboard_xform(&acc, &Matrix4::identity());
+        assert_vec4_near(out.x, acc.x);
+        assert_vec4_near(out.y, acc.y);
+        assert_vec4_near(out.z, acc.z);
+        assert_vec4_near(out.w, acc.w);
+    }
+
+    #[test]
+    fn camera_on_x_turns_the_quad_normal_to_x() {
+        // Camera at +X looking at the origin: the quad's local +Z normal must
+        // come out along world +X (toward the camera).
+        let view = Matrix4::look_at_rh(
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+        );
+        let out = billboard_xform(&Matrix4::identity(), &view);
+        let n = out * Vector4::new(0.0, 0.0, 1.0, 0.0);
+        assert_vec4_near(n, Vector4::new(1.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn translation_is_preserved_exactly() {
+        let acc = Matrix4::from_translation(vec3(123.0, -4.5, 0.25));
+        let view = Matrix4::look_at_rh(
+            Point3::new(5.0, 8.0, -3.0),
+            Point3::new(0.0, 1.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+        );
+        let out = billboard_xform(&acc, &view);
+        assert_vec4_near(out.w, acc.w);
+    }
+
+    #[test]
+    fn rotate_z_survives_as_screen_plane_spin() {
+        // Under ANY view, a local Z-rotation must keep the quad's corners in
+        // the plane spanned by the (billboarded) local X/Y axes — i.e. the Z
+        // rotation composes INSIDE the view alignment instead of tilting it.
+        let view = Matrix4::look_at_rh(
+            Point3::new(4.0, 2.0, 9.0),
+            Point3::new(0.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+        );
+        let plain = billboard_xform(&Matrix4::identity(), &view);
+        let spun = billboard_xform(&Matrix4::from_angle_z(Deg(90.0)), &view);
+        // 90° spin: spun X axis == plain Y axis, spun Y axis == -plain X.
+        assert_vec4_near(spun * Vector4::unit_x(), plain * Vector4::unit_y());
+        assert_vec4_near(spun * Vector4::unit_y(), -(plain * Vector4::unit_x()));
+        // The normal is untouched by an in-plane spin.
+        assert_vec4_near(spun * Vector4::unit_z(), plain * Vector4::unit_z());
+    }
+
+    #[test]
+    fn nonuniform_scale_reads_as_screen_plane_size() {
+        let view = Matrix4::look_at_rh(
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(0.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+        );
+        let out = billboard_xform(&Matrix4::from_nonuniform_scale(3.0, 0.5, 1.0), &view);
+        let plain = billboard_xform(&Matrix4::identity(), &view);
+        assert_vec4_near(out * Vector4::unit_x(), plain * Vector4::unit_x() * 3.0);
+        assert_vec4_near(out * Vector4::unit_y(), plain * Vector4::unit_y() * 0.5);
+    }
+}
+
 pub fn sort_back_to_front(draws: &mut [TransparentDraw<'_>], view_matrix: &Matrix4<f32>) {
     let view_depth = |draw: &TransparentDraw<'_>| {
         let c = draw.centroid;
@@ -1959,55 +2071,27 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
 
                 scene_context.sphere.borrow_mut().draw(&render_context.gl);
             }
-            SceneObject::Geometry(Shape::Quad) => {
-                let xform = world_matrix * self.xform;
-                geometry_material.draw_opaque(
-                    &render_context,
-                    &projection_matrix,
-                    &view_matrix,
-                    &xform,
-                    &skinning_data,
-                );
-                scene_context.quad.borrow_mut().draw(&render_context.gl);
-            }
-            SceneObject::Geometry(Shape::Billboard) => {
-                // Billboarding happens HERE, at draw time: the accumulated
-                // matrix splits into its translation `T` and linear part `L`
-                // (scale and any authored rotation), and the model matrix is
-                // rebuilt as `T * R_view⁻¹ * L` — the inverse view rotation
-                // (the transpose of the view's upper 3×3; the view has no
-                // scale) maps local X/Y onto the ACTIVE PASS's camera
-                // right/up. Keeping the full linear part (not just its
-                // per-column scale) is what makes `Scene.rotateZ` spin the
-                // quad in the screen plane, exactly like the hardware
-                // instanced path, which rotates the vertex before mapping it
-                // onto the camera axes. In the depth pass the "camera" is the
-                // light, so a billboard casts a full-quad shadow.
-                let acc = world_matrix * self.xform;
-                let view_rotation_inverse = Matrix4::from(
-                    cgmath::Matrix3::from_cols(
-                        view_matrix.x.truncate(),
-                        view_matrix.y.truncate(),
-                        view_matrix.z.truncate(),
-                    )
-                    .transpose(),
-                );
-                let linear = Matrix4::from(cgmath::Matrix3::from_cols(
-                    acc.x.truncate(),
-                    acc.y.truncate(),
-                    acc.z.truncate(),
-                ));
-                let xform = Matrix4::from_translation(acc.w.truncate())
-                    * view_rotation_inverse
-                    * linear;
-                geometry_material.draw_opaque(
-                    &render_context,
-                    &projection_matrix,
-                    &view_matrix,
-                    &xform,
-                    &skinning_data,
-                );
-                scene_context.quad.borrow_mut().draw(&render_context.gl);
+            SceneObject::Geometry(shape @ (Shape::Quad | Shape::Billboard)) => {
+                let is_billboard = matches!(shape, Shape::Billboard);
+                // Billboards cast no shadow (see `Shape::Billboard`): skip
+                // them in the depth pass, matching the instanced hardware
+                // path's skip.
+                if !(is_billboard && depth_pass) {
+                    let acc = world_matrix * self.xform;
+                    let xform = if is_billboard {
+                        billboard_xform(&acc, view_matrix)
+                    } else {
+                        acc
+                    };
+                    geometry_material.draw_opaque(
+                        &render_context,
+                        &projection_matrix,
+                        &view_matrix,
+                        &xform,
+                        &skinning_data,
+                    );
+                    scene_context.quad.borrow_mut().draw(&render_context.gl);
+                }
             }
             SceneObject::Geometry(Shape::Plane) => {
                 let xform = world_matrix * self.xform;

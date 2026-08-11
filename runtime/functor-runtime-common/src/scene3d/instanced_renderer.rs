@@ -43,12 +43,13 @@ use super::MaterialDescription;
 //
 // `billboardMode` (0/1) is the billboard template's draw-time seam: when 1,
 // the copy's world-space center is kept and the vertex OFFSET around it is
-// re-expressed on the ACTIVE PASS's camera axes (the transpose of the bound
-// `view`'s upper 3×3 — its rows are camera right/up/back), so every copy
-// faces the viewer while the instance rotation still spins it in the screen
-// plane and the instance scale reads as screen-plane width/height. Because
-// it uses the pass's own view, the depth pass billboards toward the LIGHT —
-// a full-quad shadow — keeping the two passes' placement rule identical.
+// re-expressed on the camera axes (the transpose of the bound `view`'s upper
+// 3×3 — its rows are camera right/up/back), so every copy faces the viewer
+// while the instance rotation still spins it in the screen plane and the
+// instance scale reads as screen-plane width/height. Only the forward pass
+// billboards: billboarded copies are excluded from the depth pass entirely
+// (billboards cast no shadow — a light-facing depth quad would make the
+// camera-facing forward quad straddle its own shadow plane and self-shadow).
 fn instance_transform_glsl(base: u32) -> String {
     format!(
         r#"
@@ -71,15 +72,18 @@ fn instance_transform_glsl(base: u32) -> String {
         }}
 
         vec4 instanceWorld(vec3 pos) {{
-            vec3 p = instanceLocal(pos);
             if (billboardMode == 1) {{
+                // The offset is formed DIRECTLY (never as a difference of two
+                // world-magnitude points, which would cancel catastrophically
+                // for instances far from the origin).
+                vec3 offset = mat3(world) * rotate(instanceRotation,
+                    (mat3(local) * pos) * instanceScale);
                 vec3 center = rotate(instanceRotation,
-                    (local * vec4(0.0, 0.0, 0.0, 1.0)).xyz * instanceScale) + instancePosition;
+                    local[3].xyz * instanceScale) + instancePosition;
                 vec4 wc = world * vec4(center, 1.0);
-                vec3 offset = mat3(world) * (p - center);
                 return vec4(wc.xyz + transpose(mat3(view)) * offset, 1.0);
             }}
-            return world * vec4(p, 1.0);
+            return world * vec4(instanceLocal(pos), 1.0);
         }}
 "#,
         p = base,
@@ -136,20 +140,19 @@ const VERTEX_SHADER_SOURCE: &str = r#"
             texCoord = inTex;
             worldPos = wp.xyz;
             tintColor = instanceTint;
-            if (billboardMode == 1) {
-                // A billboarded copy faces the viewer by construction: its
-                // normal is the view's back axis (row 2) and its tangent the
-                // view's right axis (row 0).
-                worldNormal = vec3(view[0][2], view[1][2], view[2][2]);
-                worldTangent = vec3(view[0][0], view[1][0], view[2][0]);
-            } else {
-                vec3 ln = localNormalMatrix * inNormal;
-                vec3 safeScale = mix(instanceScale, vec3(1.0),
-                    vec3(lessThan(abs(instanceScale), vec3(1e-8))));
-                worldNormal = normalMatrix * rotate(instanceRotation, ln / safeScale);
-                vec3 lt = mat3(local) * inTangent.xyz;
-                worldTangent = mat3(world) * rotate(instanceRotation, lt * instanceScale);
-            }
+            vec3 ln = localNormalMatrix * inNormal;
+            vec3 safeScale = mix(instanceScale, vec3(1.0),
+                vec3(lessThan(abs(instanceScale), vec3(1e-8))));
+            vec3 wn = normalMatrix * rotate(instanceRotation, ln / safeScale);
+            vec3 lt = mat3(local) * inTangent.xyz;
+            vec3 wt = mat3(world) * rotate(instanceRotation, lt * instanceScale);
+            // A billboarded copy's frame rotates with its offset: the same
+            // inverse view rotation applies to normal and tangent, matching
+            // the CPU-expanded reference (`billboard_xform`'s T * R_view⁻¹ * L
+            // — R_view⁻¹ is orthonormal, so it is its own inverse-transpose).
+            mat3 bb = billboardMode == 1 ? transpose(mat3(view)) : mat3(1.0);
+            worldNormal = bb * wn;
+            worldTangent = bb * wt;
             gl_Position = projection * view * wp;
         }
 "#;
@@ -204,7 +207,7 @@ const DEPTH_VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 projection;
 
         void main() {
-            gl_Position = projection * view * instanceWorld(inPos);
+            gl_Position = projection * view * world * vec4(instanceLocal(inPos), 1.0);
         }
 "#;
 
@@ -245,7 +248,7 @@ const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
         void main() {
             mat4 skin = skinMatrix();
             vec3 sp = (skin * vec4(inPos, 1.0)).xyz;
-            vec4 wp = instanceWorld(sp);
+            vec4 wp = world * vec4(instanceLocal(sp), 1.0);
             texCoord = inTex;
             worldPos = wp.xyz;
             tintColor = instanceTint;
@@ -269,7 +272,7 @@ const SKINNED_DEPTH_VERTEX_SHADER_SOURCE: &str = r#"
 
         void main() {
             vec3 sp = (skinMatrix() * vec4(inPos, 1.0)).xyz;
-            gl_Position = projection * view * instanceWorld(sp);
+            gl_Position = projection * view * world * vec4(instanceLocal(sp), 1.0);
         }
 "#;
 
@@ -295,7 +298,6 @@ struct DepthUniforms {
     local: UniformLocation,
     view: UniformLocation,
     projection: UniformLocation,
-    billboard_mode: UniformLocation,
 }
 
 /// One primitive's persistent buffers: the static mesh plus that mesh's
@@ -438,13 +440,18 @@ impl InstancedRenderer {
     }
 
     fn mesh(&mut self, gl: &glow::Context, primitive: InstancedPrimitive) -> &mut MeshBuffers {
+        // The billboard IS the quad mesh — only its draw-time placement
+        // differs (`billboardMode`) — so both share ONE cache entry rather
+        // than allocating duplicate VAO/VBO/EBO sets.
+        let primitive = match primitive {
+            InstancedPrimitive::Billboard => InstancedPrimitive::Quad,
+            other => other,
+        };
         self.meshes.entry(primitive).or_insert_with(|| {
             let (vertices, indices) = match primitive {
                 InstancedPrimitive::Cube => cube_mesh_data(),
                 InstancedPrimitive::Sphere => sphere_mesh_data(),
                 InstancedPrimitive::Cylinder => cylinder_mesh_data(),
-                // The billboard IS the quad mesh — only its draw-time
-                // placement differs (`billboardMode`).
                 InstancedPrimitive::Quad | InstancedPrimitive::Billboard => quad_mesh_data(),
                 InstancedPrimitive::Plane => plane_mesh_data(),
             };
@@ -520,6 +527,13 @@ impl InstancedRenderer {
     ) {
         let depth_pass = ctx.render_pass == RenderPass::DepthOnly;
         let billboard = template.primitive == InstancedPrimitive::Billboard;
+        // Billboards cast no shadow: a light-facing depth quad would make the
+        // camera-facing forward quad straddle its own shadow plane and
+        // self-shadow, so billboarded copies skip the depth pass outright
+        // (matching the CPU-expand arm in `Scene3D::render`).
+        if depth_pass && billboard {
+            return;
+        }
         let bytes = crate::terrain_renderer::slice_bytes(instances);
         // Scope the mutable mesh borrow: upload the instance records, then
         // carry only the Copy GL handles into the uniform/draw phase.
@@ -542,7 +556,6 @@ impl InstancedRenderer {
                 &template.local,
                 projection,
                 view,
-                billboard,
             );
         } else {
             let (color, lit) = match template.material {
@@ -641,7 +654,6 @@ impl InstancedRenderer {
                     &mesh_local,
                     projection,
                     view,
-                    false,
                 );
             } else {
                 mesh.base_color_texture.bind(0, ctx);
@@ -750,7 +762,6 @@ impl InstancedRenderer {
                     local,
                     projection,
                     view,
-                    false,
                 );
             } else {
                 mesh.base_color_texture.bind(0, ctx);
@@ -970,12 +981,10 @@ fn depth_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> DepthUnifor
         local: program.get_uniform_location(gl, "local"),
         view: program.get_uniform_location(gl, "view"),
         projection: program.get_uniform_location(gl, "projection"),
-        billboard_mode: program.get_uniform_location(gl, "billboardMode"),
     }
 }
 
 /// Set a depth program's uniforms for one instanced draw.
-#[allow(clippy::too_many_arguments)]
 fn set_depth_uniforms(
     program: &ShaderProgram,
     u: &DepthUniforms,
@@ -984,14 +993,12 @@ fn set_depth_uniforms(
     local: &Matrix4<f32>,
     projection: &Matrix4<f32>,
     view: &Matrix4<f32>,
-    billboard: bool,
 ) {
     program.use_program(ctx.gl);
     program.set_uniform_matrix4(ctx.gl, &u.world, world);
     program.set_uniform_matrix4(ctx.gl, &u.local, local);
     program.set_uniform_matrix4(ctx.gl, &u.view, view);
     program.set_uniform_matrix4(ctx.gl, &u.projection, projection);
-    program.set_uniform_1i(ctx.gl, &u.billboard_mode, billboard as i32);
 }
 
 /// Set a forward program's uniforms for one instanced draw.

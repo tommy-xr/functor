@@ -26,9 +26,9 @@ let quad : () => t
 ///
 /// At draw time its local XY axes map to the active view's right/up, so it
 /// always faces the viewer, `Scene.rotateZ` / `Instance.rotateZ` spins it in
-/// the screen plane, and scale reads as screen-plane width/height. It faces
-/// each PASS's own view — so in the shadow pass it faces the light and casts
-/// a full-quad shadow.
+/// the screen plane, and scale reads as screen-plane width/height. Billboards
+/// cast NO shadow: a light-facing shadow quad would cut the camera-facing
+/// quad in half with its own shadow, so they skip the shadow pass entirely.
 let billboard : () => t
 /// Create a unit plane in the XZ ground plane.
 let plane : () => t

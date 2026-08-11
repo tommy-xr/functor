@@ -1098,8 +1098,9 @@ value stays camera-free plain data (so stamping, `Scene.equals`, and replay
 are unaffected); only at DRAW time do its local XY axes map onto the active
 pass's camera right/up (spherical billboarding). `Scene.rotateZ` /
 `Instance.rotateZ` spins it in the screen plane, and scale reads as
-screen-plane width/height. It faces each pass's OWN view, so in the shadow
-pass it faces the light and casts a full-quad shadow.
+screen-plane width/height. Billboards cast NO shadow — a light-facing shadow
+quad would cut the camera-facing quad in half with its own shadow, so both
+draw paths skip billboards in the shadow pass.
 
 **Zero-argument constructors take their parens** — `Scene.cube()`,
 `Sprite.blank()`, `Anim.rest()`, `Effect.none()`, `Map.empty()`,

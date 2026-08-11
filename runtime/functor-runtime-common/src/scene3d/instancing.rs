@@ -279,7 +279,7 @@ pub(crate) struct RecognizedModel<'a> {
 ///
 /// Recognized: `Group` chains with exactly one child (their transforms
 /// compose into `local`) ending in either a
-/// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Plane` leaf under at most ONE material
+/// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Billboard`/`Plane` leaf under at most ONE material
 /// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no texture, no
 /// normal map) — or a `Scene.model` leaf with no overrides, with or without
 /// an attached `Scene.animate` pose (every copy shows the same sampled pose;
