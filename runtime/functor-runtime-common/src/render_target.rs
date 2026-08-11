@@ -8,7 +8,9 @@ pub const DEFAULT_RENDER_TARGET_SIZE: u32 = 512;
 /// into it each frame) and the reader (`TextureDescription::RenderTarget`,
 /// sampling it from a material). The name is the cross-frame identity — the
 /// runtime keys its GPU buffers by it, so it survives hot reloads and frame
-/// rebuilds. RGBA8 only for now (the one unconditionally WebGL2-safe format).
+/// rebuilds. SRGB8_ALPHA8 only for now — color-renderable on every target we
+/// ship (GL 4.1 / WebGL2 / GLES3), and the sRGB storage is what keeps target
+/// passes gamma-correct with hardware encode/decode (see `crate::color_space`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RenderTargetDescriptor {
     pub id: String,
@@ -36,13 +38,15 @@ impl RenderTargetDescriptor {
     }
 }
 
-/// The GPU side of a render target: a double-buffered FBO pair (own RGBA8 color
-/// texture each, one shared depth renderbuffer). Readers sample the *read*
-/// texture while the pass writes the other one, then the pair swaps — so a
-/// scene that samples its own target (a monitor visible to its own camera) sees
-/// last frame's image instead of a GL feedback loop. The texture recipe follows
-/// `ShadowMap::new` (RGBA8 + single declared mip level for macOS completeness),
-/// but with LINEAR filtering — this is an albedo, not a depth map.
+/// The GPU side of a render target: a double-buffered FBO pair (own
+/// SRGB8_ALPHA8 color texture each, one shared depth renderbuffer). Readers
+/// sample the *read* texture while the pass writes the other one, then the
+/// pair swaps — so a scene that samples its own target (a monitor visible to
+/// its own camera) sees last frame's image instead of a GL feedback loop. The
+/// texture recipe follows `ShadowMap::new` (single declared mip level for
+/// macOS completeness), but sRGB (this is color — writes hardware-encode,
+/// reads hardware-decode; see `crate::color_space`) and with LINEAR filtering
+/// — an albedo, not a depth map.
 pub struct RenderTargetBuffers {
     fbos: [glow::Framebuffer; 2],
     textures: [glow::Texture; 2],
@@ -80,7 +84,7 @@ impl RenderTargetBuffers {
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
                     0,
-                    glow::RGBA8 as i32,
+                    glow::SRGB8_ALPHA8 as i32,
                     width as i32,
                     height as i32,
                     0,
@@ -130,9 +134,11 @@ impl RenderTargetBuffers {
                 // Clear to the pass's background (the fog color when the
                 // target frame declares fog) so a read before the first write
                 // (frame 1 of a self-viewing target) shows the clear color,
-                // never uninitialized memory.
+                // never uninitialized memory. sRGB attachment: decode the
+                // authored clear; the hardware encodes it back on write.
                 gl.disable(glow::SCISSOR_TEST);
                 gl.viewport(0, 0, width as i32, height as i32);
+                let clear = crate::color_space::srgb_to_linear3(clear);
                 gl.clear_color(clear[0], clear[1], clear[2], 1.0);
                 gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
 

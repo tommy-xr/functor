@@ -31,7 +31,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform vec4 color;
 
         void main() {
-            fragColor = vec4(applyFog(color.rgb, worldPos), color.a);
+            fragColor = functorOutput(vec4(applyFog(color.rgb, worldPos), color.a));
         }
 "#;
 
@@ -41,6 +41,7 @@ struct Uniforms {
     projection_loc: UniformLocation,
     color_loc: UniformLocation,
     fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -86,6 +87,7 @@ impl Material for ColorMaterial {
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
                     color_loc: shader.get_uniform_location(ctx.gl, "color"),
                     fog: FogUniforms::get(&shader, ctx.gl),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -111,8 +113,14 @@ impl Material for ColorMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                p.set_uniform_vec4(ctx.gl, &uniforms.color_loc, &self.0);
+                // Authored color: decode sRGB→linear at the uniform boundary.
+                p.set_uniform_vec4(
+                    ctx.gl,
+                    &uniforms.color_loc,
+                    &crate::color_space::srgb_to_linear_vec4(self.0),
+                );
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
             }
         }
 

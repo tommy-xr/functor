@@ -83,7 +83,7 @@ pub const COMPOSITE_FRAGMENT_SHADER_SOURCE: &str = r#"
             acc += uWeight[5] * texture(uTex[5], vUv).rgb;
             acc += uWeight[6] * texture(uTex[6], vUv).rgb;
             acc += uWeight[7] * texture(uTex[7], vUv).rgb;
-            fragColor = vec4(acc, 1.0);
+            fragColor = functorOutput(vec4(acc, 1.0));
         }
 "#;
 

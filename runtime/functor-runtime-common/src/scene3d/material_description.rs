@@ -170,14 +170,27 @@ impl MaterialDescription {
                 color_material
             }
             MaterialDescription::Texture(t) => {
-                bind_texture_description(t, 0, SpriteSampling::Linear, context, scene_context);
+                bind_texture_description(
+                    t,
+                    0,
+                    SpriteSampling::Linear,
+                    &scene_context.texture_pipeline,
+                    context,
+                    scene_context,
+                );
 
                 let mut basic_material = BasicMaterial::create();
                 basic_material.initialize(&context);
                 basic_material
             }
             MaterialDescription::Emissive { color, texture } => {
-                let use_texture = bind_optional_texture(texture, 0, context, scene_context);
+                let use_texture = bind_optional_texture(
+                    texture,
+                    0,
+                    &scene_context.texture_pipeline,
+                    context,
+                    scene_context,
+                );
                 let mut emissive_material = EmissiveMaterial::create(*color, use_texture);
                 emissive_material.initialize(&context);
                 emissive_material
@@ -188,9 +201,23 @@ impl MaterialDescription {
                 normal_map,
             } => {
                 // Albedo on unit 0, the normal map on unit 2 (the shadow map
-                // uses unit 1).
-                let use_texture = bind_optional_texture(texture, 0, context, scene_context);
-                let use_normal_map = bind_optional_texture(normal_map, 2, context, scene_context);
+                // uses unit 1). Albedo decodes through the color (sRGB)
+                // pipeline; the normal map through the LINEAR one — its
+                // texels are vectors, and an sRGB decode would bend them.
+                let use_texture = bind_optional_texture(
+                    texture,
+                    0,
+                    &scene_context.texture_pipeline,
+                    context,
+                    scene_context,
+                );
+                let use_normal_map = bind_optional_texture(
+                    normal_map,
+                    2,
+                    &scene_context.linear_texture_pipeline,
+                    context,
+                    scene_context,
+                );
                 let mut lit_material = LitMaterial::create(*color, use_texture, use_normal_map);
                 lit_material.initialize(&context);
                 lit_material
@@ -201,7 +228,14 @@ impl MaterialDescription {
                 source_pixels,
                 sampling,
             } => {
-                bind_texture_description(texture, 0, *sampling, context, scene_context);
+                bind_texture_description(
+                    texture,
+                    0,
+                    *sampling,
+                    &scene_context.texture_pipeline,
+                    context,
+                    scene_context,
+                );
                 let mut material =
                     EmissiveMaterial::create_sprite(*color, source_pixels.map(Vector4::from));
                 material.initialize(&context);
@@ -213,29 +247,40 @@ impl MaterialDescription {
 
 /// Bind an optional texture to unit `unit`; returns whether one was bound (the
 /// shaders sample the texture only when their corresponding `use…` uniform is
-/// set).
+/// set). `pipeline` picks the decode: the color (sRGB) pipeline for albedo,
+/// the linear one for data maps.
 fn bind_optional_texture(
     texture: &Option<TextureDescription>,
     unit: u32,
+    pipeline: &std::sync::Arc<crate::asset::BuiltAssetPipeline<crate::texture::Texture2D>>,
     context: &RenderContext,
     scene_context: &SceneContext,
 ) -> bool {
     match texture {
         Some(t) => {
-            bind_texture_description(t, unit, SpriteSampling::Linear, context, scene_context);
+            bind_texture_description(
+                t,
+                unit,
+                SpriteSampling::Linear,
+                pipeline,
+                context,
+                scene_context,
+            );
             true
         }
         None => false,
     }
 }
 
-/// Bind a texture description to unit `unit`: a file texture through the asset
-/// pipeline, or a render target's read texture (last completed write). A target
-/// id no frame declares binds a 1x1 magenta fallback and warns once.
+/// Bind a texture description to unit `unit`: a file texture through `pipeline`
+/// (the color/sRGB pipeline for albedo, the linear one for data maps such as
+/// normal maps), or a render target's read texture (last completed write). A
+/// target id no frame declares binds a 1x1 magenta fallback and warns once.
 fn bind_texture_description(
     texture: &TextureDescription,
     unit: u32,
     sampling: SpriteSampling,
+    pipeline: &std::sync::Arc<crate::asset::BuiltAssetPipeline<crate::texture::Texture2D>>,
     context: &RenderContext,
     scene_context: &SceneContext,
 ) {
@@ -243,7 +288,7 @@ fn bind_texture_description(
         TextureDescription::File(file) => {
             let asset = context
                 .asset_cache
-                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+                .load_asset_with_pipeline(pipeline.clone(), file);
             asset.get().bind(unit, context);
             set_bound_texture_wrap(unit, true, context);
             set_bound_texture_filter(unit, sampling, context);
@@ -251,7 +296,7 @@ fn bind_texture_description(
         TextureDescription::FileClamped(file) => {
             let asset = context
                 .asset_cache
-                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+                .load_asset_with_pipeline(pipeline.clone(), file);
             asset.get().bind(unit, context);
             set_bound_texture_wrap(unit, false, context);
             set_bound_texture_filter(unit, sampling, context);
@@ -265,10 +310,10 @@ fn bind_texture_description(
         } => {
             let asset = context
                 .asset_cache
-                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+                .load_asset_with_pipeline(pipeline.clone(), file);
             crate::asset::resolve_while_pending(
                 &context.asset_cache,
-                &scene_context.texture_pipeline,
+                pipeline,
                 &asset,
                 while_pending,
             )
@@ -282,10 +327,10 @@ fn bind_texture_description(
         } => {
             let asset = context
                 .asset_cache
-                .load_asset_with_pipeline(scene_context.texture_pipeline.clone(), file);
+                .load_asset_with_pipeline(pipeline.clone(), file);
             crate::asset::resolve_while_pending(
                 &context.asset_cache,
-                &scene_context.texture_pipeline,
+                pipeline,
                 &asset,
                 while_pending,
             )

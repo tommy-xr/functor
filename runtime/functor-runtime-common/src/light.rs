@@ -176,7 +176,9 @@ const TYPE_POINT: i32 = 2;
 const TYPE_SPOT: i32 = 3;
 
 /// Lights packed into fixed-length, flattened arrays for upload to the lit
-/// shader's bounded uniform arrays. `color` is premultiplied by intensity.
+/// shader's bounded uniform arrays. `color` is decoded sRGB→linear (packing IS
+/// the uniform-set boundary — the serialized `Light` keeps its authored
+/// values) and premultiplied by intensity, which scales linear light.
 pub struct LightUniforms {
     pub count: i32,
     pub types: [i32; MAX_LIGHTS],
@@ -203,9 +205,10 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
         let i = u.count as usize;
         let c3 = i * 3;
         let mut set_color = |col: &[f32; 3], intensity: f32| {
-            u.colors[c3] = col[0] * intensity;
-            u.colors[c3 + 1] = col[1] * intensity;
-            u.colors[c3 + 2] = col[2] * intensity;
+            let linear = crate::color_space::srgb_to_linear3(*col);
+            u.colors[c3] = linear[0] * intensity;
+            u.colors[c3 + 1] = linear[1] * intensity;
+            u.colors[c3 + 2] = linear[2] * intensity;
         };
         match light {
             Light::Ambient { color } => {
@@ -490,6 +493,16 @@ mod tests {
         assert_eq!(&u.colors[6..9], &[4.0, 0.0, 0.0]);
         // Spot: cone_cos = cos(0) = 1.
         assert!((u.cone_cos[3] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn packing_decodes_authored_colors_to_linear() {
+        // The serialized Light keeps authored sRGB values; packing (the
+        // uniform-set boundary) decodes them. Mid-gray is the checkpoint.
+        let u = pack_lights(&[Light::ambient(0.5, 0.5, 0.5)]);
+        for channel in &u.colors[0..3] {
+            assert!((channel - 0.214_041_14).abs() < 1e-6, "{channel}");
+        }
     }
 
     #[test]

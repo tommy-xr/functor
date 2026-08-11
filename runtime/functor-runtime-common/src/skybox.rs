@@ -70,7 +70,7 @@ pub const SKYBOX_FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform samplerCube skybox;
 
         void main() {
-            fragColor = texture(skybox, texDir);
+            fragColor = functorOutput(texture(skybox, texDir));
         }
 "#;
 

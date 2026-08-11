@@ -255,7 +255,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
             float sky = texture(macroTex, terrainUv).r;
             float occlusion = mix(1.0, sky * sky, MACRO_STRENGTH);
             vec3 shaded = albedo * diffuseLight * occlusion + specularLight;
-            fragColor = vec4(applyFog(shaded, worldPos), 1.0);
+            fragColor = functorOutput(vec4(applyFog(shaded, worldPos), 1.0));
         }
 "#;
 
@@ -353,7 +353,7 @@ const GRASS_FRAGMENT_SHADER_SOURCE: &str = r#"
             if (visibility < 0.08) {
                 discard;
             }
-            fragColor = vec4(applyFog(grassColor * shade, worldPos), 1.0);
+            fragColor = functorOutput(vec4(applyFog(grassColor * shade, worldPos), 1.0));
         }
 "#;
 
@@ -386,6 +386,7 @@ struct TerrainUniforms {
     detail_averages: [UniformLocation; 4],
     lighting: LightingUniforms,
     fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 struct TerrainProgram {
@@ -405,6 +406,7 @@ struct GrassUniforms {
     time: UniformLocation,
     color: UniformLocation,
     fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 struct GrassProgram {
@@ -669,12 +671,14 @@ impl TerrainRenderer {
                 ),
             };
             p.set_uniform_1i(gl, &u.use_layers, use_layers);
+            // Authored band colors: decode sRGB→linear at the uniform boundary.
             for (location, color) in [
                 (&u.low_color, low),
                 (&u.high_color, high),
                 (&u.rock_color, rock),
                 (&u.snow_color, snow),
             ] {
+                let color = crate::color_space::srgb_to_linear3(color);
                 p.set_uniform_vec3(gl, location, &Vector3::new(color[0], color[1], color[2]));
             }
             p.set_uniform_1f(gl, &u.min_terrain_height, description.min_height);
@@ -686,14 +690,11 @@ impl TerrainRenderer {
                 &u.skirt_depth,
                 ((description.max_height - description.min_height) * 0.03).max(2.0),
             );
+            let terrain_color = crate::color_space::srgb_to_linear3(description.color);
             p.set_uniform_vec3(
                 gl,
                 &u.color,
-                &Vector3::new(
-                    description.color[0],
-                    description.color[1],
-                    description.color[2],
-                ),
+                &Vector3::new(terrain_color[0], terrain_color[1], terrain_color[2]),
             );
             let debug_mode = match ctx.debug_render_mode {
                 DebugRenderMode::Normals => 1,
@@ -732,6 +733,7 @@ impl TerrainRenderer {
             }
             u.lighting.set(p, ctx, view);
             u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
+            u.output.set(p, gl, ctx.output_srgb_encode);
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(height_texture));
@@ -826,6 +828,7 @@ impl TerrainRenderer {
             }),
             lighting: LightingUniforms::get(&program, ctx.gl),
             fog: FogUniforms::get(&program, ctx.gl),
+            output: crate::color_space::OutputEncodeUniform::get(&program, ctx.gl),
         };
         self.program = Some(TerrainProgram { program, uniforms });
     }
@@ -903,12 +906,15 @@ impl TerrainRenderer {
             p.set_uniform_1f(gl, &u.snow_height, snow_height);
             p.set_uniform_1f(gl, &u.blade_height, grass.blade_height);
             p.set_uniform_1f(gl, &u.time, ctx.frame_time.tts);
+            // Authored grass color: decode sRGB→linear at the uniform boundary.
+            let grass_color = crate::color_space::srgb_to_linear3(grass.color);
             p.set_uniform_vec3(
                 gl,
                 &u.color,
-                &Vector3::new(grass.color[0], grass.color[1], grass.color[2]),
+                &Vector3::new(grass_color[0], grass_color[1], grass_color[2]),
             );
             u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
+            u.output.set(p, gl, ctx.output_srgb_encode);
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(height_texture));
@@ -954,6 +960,7 @@ impl TerrainRenderer {
             time: program.get_uniform_location(ctx.gl, "time"),
             color: program.get_uniform_location(ctx.gl, "grassColor"),
             fog: FogUniforms::get(&program, ctx.gl),
+            output: crate::color_space::OutputEncodeUniform::get(&program, ctx.gl),
         };
         self.grass_program = Some(GrassProgram { program, uniforms });
     }

@@ -34,6 +34,13 @@ pub struct TextureOptions {
     /// Off by default: it is an O(pixels) scan that only terrain detail maps
     /// consume, and every sprite and UI texture would otherwise pay it.
     pub compute_average: bool,
+    /// Upload with an sRGB internal format (`SRGB8` / `SRGB8_ALPHA8`) so the
+    /// hardware decodes to linear at sample time (see `crate::color_space`).
+    ///
+    /// On for COLOR images (albedo, sprites, detail maps); off — the default,
+    /// so no upload site becomes sRGB by accident — for DATA (normal maps,
+    /// heightmaps, packed values), whose bytes are numbers, not colors.
+    pub srgb: bool,
 }
 
 /// Taps for textures that do not say otherwise. Hardware commonly reports 16;
@@ -56,6 +63,7 @@ impl Default for TextureOptions {
             mipmap: false,
             anisotropy: DEFAULT_ANISOTROPY,
             compute_average: false,
+            srgb: false,
         }
     }
 }
@@ -79,7 +87,7 @@ impl Texture2D {
     pub fn init_from_data(data: TextureData, opts: TextureOptions) -> Texture2D {
         let average = opts
             .compute_average
-            .then(|| average_color(&data))
+            .then(|| average_color(&data, opts.srgb))
             .unwrap_or([1.0; 3]);
         Texture2D {
             ora: RuntimeRenderableAsset::new(data, opts),
@@ -94,19 +102,22 @@ impl Texture2D {
     /// rather than color; reading it from the texture's top mip instead would
     /// cost a fetch per map per fragment to recover a constant.
     ///
-    /// Deliberately in the same (non-linear) space as the samples that divide
-    /// by it: textures upload as `RGB`/`RGBA`, never `SRGB8_*`, and
-    /// `FRAMEBUFFER_SRGB` is never enabled, so `texture()` returns the stored
-    /// bytes unmodified. Switching either of those would silently invalidate
-    /// this divisor.
+    /// Deliberately in the same space as the samples that divide by it, which
+    /// is whatever `TextureOptions::srgb` makes `texture()` return: an sRGB
+    /// upload's texels decode to LINEAR in hardware, so its mean is the mean
+    /// of the decoded texels; a linear upload's mean is the mean of the raw
+    /// bytes. The two must move together — an upload-format change that skips
+    /// this divisor silently invalidates it.
     pub fn average_color(&self) -> [f32; 3] {
         self.average
     }
 }
 
-/// Mean RGB over every texel. Ignores alpha: these are albedo maps, and a
-/// transparent texel's color still contributes to what the eye averages.
-fn average_color(data: &TextureData) -> [f32; 3] {
+/// Mean RGB over every texel, in the space `texture()` will return the texels
+/// in (`srgb` = decode each byte sRGB→linear first — matching the hardware
+/// decode of an `SRGB8_*` upload). Ignores alpha: these are albedo maps, and
+/// a transparent texel's color still contributes to what the eye averages.
+fn average_color(data: &TextureData, srgb: bool) -> [f32; 3] {
     let stride = match data.format {
         PixelFormat::RGB => 3,
         PixelFormat::RGBA => 4,
@@ -115,13 +126,23 @@ fn average_color(data: &TextureData) -> [f32; 3] {
     if texels == 0 {
         return [1.0, 1.0, 1.0];
     }
-    let mut totals = [0u64; 3];
-    for texel in data.bytes.chunks_exact(stride) {
-        for channel in 0..3 {
-            totals[channel] += texel[channel] as u64;
+    if srgb {
+        let mut totals = [0f64; 3];
+        for texel in data.bytes.chunks_exact(stride) {
+            for channel in 0..3 {
+                totals[channel] += crate::color_space::srgb_u8_to_linear(texel[channel]) as f64;
+            }
         }
+        std::array::from_fn(|channel| (totals[channel] / texels as f64) as f32)
+    } else {
+        let mut totals = [0u64; 3];
+        for texel in data.bytes.chunks_exact(stride) {
+            for channel in 0..3 {
+                totals[channel] += texel[channel] as u64;
+            }
+        }
+        std::array::from_fn(|channel| totals[channel] as f32 / texels as f32 / 255.0)
     }
-    std::array::from_fn(|channel| totals[channel] as f32 / texels as f32 / 255.0)
 }
 
 /// The minification filter for `options` — a pure function so the mip/filter
@@ -188,11 +209,20 @@ impl RenderableAsset for TextureData {
                 PixelFormat::RGB => glow::RGB,
                 PixelFormat::RGBA => glow::RGBA,
             };
+            // Color textures store sRGB so the hardware decodes to linear at
+            // sample time; data textures keep the raw (linear) format. See
+            // `crate::color_space` and `TextureOptions::srgb`.
+            let internal_format = match (self.format, options.srgb) {
+                (PixelFormat::RGB, true) => glow::SRGB8,
+                (PixelFormat::RGBA, true) => glow::SRGB8_ALPHA8,
+                (PixelFormat::RGB, false) => glow::RGB,
+                (PixelFormat::RGBA, false) => glow::RGBA,
+            };
 
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                format as i32,
+                internal_format as i32,
                 self.width as i32,
                 self.height as i32,
                 0,
@@ -253,9 +283,22 @@ mod tests {
         // Half black, half white: the mean is the midpoint, and alpha is
         // deliberately ignored.
         let data = rgba(&[[0, 0, 0, 0], [255, 255, 255, 255]]);
-        let average = average_color(&data);
+        let average = average_color(&data, false);
         for channel in average {
             assert!((channel - 0.5).abs() < 0.01, "{average:?}");
+        }
+    }
+
+    // An sRGB upload's texels decode to linear in hardware, so its mean must
+    // be the mean of the DECODED texels — mid-gray 128 decodes to ~0.216, not
+    // 0.502 (the divisor invariant documented on `average_color`).
+    #[test]
+    fn average_color_of_srgb_texture_is_in_linear_space() {
+        let data = rgba(&[[128, 128, 128, 255]]);
+        let average = average_color(&data, true);
+        let expected = crate::color_space::srgb_u8_to_linear(128);
+        for channel in average {
+            assert!((channel - expected).abs() < 1e-6, "{average:?}");
         }
     }
 
@@ -267,7 +310,7 @@ mod tests {
             height: 1,
             format: PixelFormat::RGB,
         };
-        let average = average_color(&data);
+        let average = average_color(&data, false);
         assert!((average[0] - 0.5).abs() < 0.01, "{average:?}");
         assert!(average[1].abs() < 0.01, "{average:?}");
         assert!((average[2] - 0.5).abs() < 0.01, "{average:?}");

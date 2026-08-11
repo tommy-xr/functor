@@ -53,6 +53,7 @@ pub mod animation;
 pub mod asset;
 pub mod audio;
 mod camera;
+pub mod color_space;
 pub mod composite;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod debug_http;
@@ -108,6 +109,7 @@ pub mod webview;
 mod viewport;
 
 pub use camera::*;
+pub use color_space::OutputColorspace;
 pub use fog::Fog;
 pub use frame::*;
 pub use frame_time::*;
