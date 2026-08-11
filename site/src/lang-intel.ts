@@ -1,10 +1,10 @@
 // Live language intelligence for the sandbox and IDE editors: loads the small
 // functor-lang analysis wasm (built by `npm run build:lang-wasm`, copied to
 // dist/pkg/ by build.mjs) and turns its type diagnostics into CodeMirror lint
-// underlines, plus hover types, inlay hints, and signature codelenses. The
-// sandbox analyzes its single buffer; the IDE registers a context provider
-// (setLangContext) so every pass runs over the whole file set with sibling
-// modules resolved.
+// underlines, plus hover types, inlay hints, and signature codelenses.
+// Both editor pages register a context provider (setLangContext) so every pass runs
+// over the whole file set with sibling modules resolved; without one (the hero
+// and demo editors) a pass analyzes the single buffer.
 // Optional by design — if the pkg is absent or fails to init, the setup
 // resolves to [] and the editor works exactly as before (no analysis, no
 // console spam beyond one info line).
@@ -33,6 +33,7 @@ import { RangeSet, StateEffect, StateField } from "@codemirror/state";
 import type { EditorState, Extension, Range, Text } from "@codemirror/state";
 import type { CompletionContext } from "@codemirror/autocomplete";
 import { functorLangLanguage } from "./functor-lang.js";
+import { fileName as pathFileName } from "./protocol.js";
 import type { ProjectFile } from "./protocol.js";
 import type { StatusBar } from "./status-bar-store.js";
 import { fromValueJson } from "./wire-value.js";
@@ -279,7 +280,7 @@ const toDiagnostics = (view: EditorView): Diagnostic[] => {
   // Inline expect tests ride the same heartbeat: refresh the gutter, and
   // surface failing/erroring expects as diagnostics too (squiggle + the
   // Problems panel carry the decomposed actual-vs-expected detail).
-  const rows = expectRowsCached(doc.toString());
+  const rows = expectRowsCached(doc.toString(), diagnostics.length === 0);
   if (rows !== null) {
     const marks = expectSetFor(rows, doc);
     queueMicrotask(() => {
@@ -829,17 +830,27 @@ const hintOffset = (source: string, b: { name: string; start: number; end: numbe
   return found >= 0 ? b.start + found + b.name.length : b.end;
 };
 
-// The wire's file name for the buffer being edited: the active path in
-// project mode (the IDE), else the trace's single user file (the sandbox
-// serves examples under their own names — `hero.fun`, not `game.fun`).
-// SINGLE-FILE ASSUMPTION: a sandbox program that ever loads sibling modules
-// would yield multiple sources here and the overlay stays hidden — the
-// sandbox is a one-buffer editor by design, so there is nothing to overlay
-// the siblings on anyway.
+// The wire's file name for the buffer being edited — the name the TRACE uses,
+// which is what every recorded site is keyed by. In project mode it is the
+// active path resolved against the trace's own naming: the IDE's flat modules
+// come back identical, while the sandbox pushes site paths
+// (`examples/netpong/server.fun`) that the runtime reports by their file name
+// (`server.fun`, the module stem). Matching exactly first keeps the IDE
+// unambiguous, and a name match is trusted only when exactly one source
+// carries it — two pushed paths sharing a stem hide the overlay rather than
+// bind it to the wrong file. Without a context provider there is one user file
+// and it is it.
 const liveFileName = (docString: string): string | null => {
-  const args = projectArgs(docString);
-  if (args) return args.active;
   const sources = liveTrace?.sources || [];
+  const args = projectArgs(docString);
+  if (args) {
+    const exact = sources.find((source) => source.file === args.active);
+    if (exact) return exact.file;
+    const named = sources.filter(
+      (source) => pathFileName(source.file) === pathFileName(args.active)
+    );
+    return named.length === 1 ? named[0].file : null;
+  }
   return sources.length === 1 ? sources[0].file : null;
 };
 
@@ -1107,10 +1118,33 @@ const expectGutter = gutter({
   markers: (view) => view.state.field(expectField, false) || RangeSet.empty,
 });
 
+// The browser evaluates expects HOSTLESS (the analysis wasm has no engine
+// prelude — `NoHost`), so a project whose module-level defs call an engine
+// external (netpong's `let cyan = Color.rgb(…)`) can't load its defs at all
+// and the wasm reports every expect as `error`. That is a limitation of where
+// the tests are being run, not a failing test — `functor -d <dir> test` runs
+// the same expects green under the real prelude. Report those rows as what
+// they are: UNRUNNABLE (a gray gutter dot, keeping the detail on hover), which
+// also keeps them out of the Problems panel.
+//
+// `clean` is the guard that keeps this from swallowing a real mistake: the
+// typechecker links the engine prelude's `.funi` declarations, so a MISSPELLED
+// external (`Color.rgbb`) is already a diagnostic on the same pass. Only a
+// project that typechecks clean can be failing purely for want of a host.
+const HOSTLESS_DEFS = /^defs failed to load: unknown external/;
+
+const hostless = (rows: ExpectRow[] | null, clean: boolean): ExpectRow[] | null =>
+  rows &&
+  rows.map((row) =>
+    clean && row.state === "error" && HOSTLESS_DEFS.test(row.detail ?? "")
+      ? { ...row, state: "unrunnable" }
+      : row
+  );
+
 // Evaluate the active file's expects, memoized per (doc, context) key like
 // analyzeCached. Returns rows ([{from, state, detail}]), null when the
 // project didn't load (keep the current gutter), or null when unavailable.
-const expectRowsCached = (docString: string): ExpectRow[] | null => {
+const expectRowsCached = (docString: string, clean: boolean): ExpectRow[] | null => {
   if (!expectsProjectFn) return null;
   const args = projectArgs(docString);
   const key = cacheKey(docString, args);
@@ -1121,7 +1155,7 @@ const expectRowsCached = (docString: string): ExpectRow[] | null => {
       ? args.filesJson
       : JSON.stringify([{ path: "game.fun", source: docString }]);
     const active = args ? args.active : "game.fun";
-    rows = JSON.parse(expectsProjectFn(filesJson, active, EXPECT_BUDGET)).rows;
+    rows = hostless(JSON.parse(expectsProjectFn(filesJson, active, EXPECT_BUDGET)).rows, clean);
   } catch (e) {
     // A wasm trap (e.g. a pathologically deep value exhausting the engine
     // stack on teardown — the browser has no big-stack worker seam) can

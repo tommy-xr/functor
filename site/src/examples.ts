@@ -9,8 +9,8 @@
 // `source` is a path relative to the repo root. Most entries are a single,
 // asset-free .fun (or use absolute CDN assets). A project that needs sibling
 // modules or local assets declares explicit sibling/asset
-// `{ source, output }` copies; the sandbox still edits only the canonical
-// `source` entry while the player fetches the complete project file list.
+// `{ source, output }` copies; the sandbox loads the complete file list and its
+// sidebar can open any of them, with `source` the entry every pane boots at.
 // Asset outputs are relative to the site root because browser fetches resolve
 // `Asset.*` locators against player.html.
 /** A file copied verbatim into the built site at `output` (relative to dist). */

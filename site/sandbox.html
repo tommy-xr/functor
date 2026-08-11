@@ -40,6 +40,13 @@
     <!--/@header-->
 
     <main class="sandbox-split">
+      <!--
+        The FilePane island's host. Empty and hidden on purpose — unlike the
+        IDE's, this sidebar only appears once the loaded example proves it has
+        more than one .fun (src/sandbox.tsx unhides it), so a pre-JS skeleton
+        would never be seen.
+      -->
+      <aside class="file-pane" hidden></aside>
       <section class="editor-pane">
         <div id="editor"></div>
       </section>
