@@ -1081,7 +1081,7 @@ scale → rotation → translation whatever order you pipe the combinators, and
 each combinator composes within its own channel (rotations multiply with the
 outer pipe applying last; scales and tints multiply componentwise). The
 renderer hardware-instances a recognized template — one
-cube/sphere/cylinder/quad/plane leaf under transforms and at most one solid
+cube/sphere/cylinder/quad/billboard/plane leaf under transforms and at most one solid
 `Scene.color`/`Scene.lit`/`Scene.emissive` material (ONE draw call), or a
 `Scene.model` leaf under transforms (one draw call per mesh primitive,
 textured like the ordinary model draw; a SKINNED model — via `Scene.animate`
@@ -1092,6 +1092,15 @@ once-per-topology `[functor]` perf note.
 `Scene.opacity` inside a template is a teaching error — wrap the whole
 instanced node instead. `Scene.equals` compares instanced nodes structurally
 (template + every instance's channels).
+
+**`Scene.billboard` is a camera-facing quad — a SHAPE, not a flag.** The scene
+value stays camera-free plain data (so stamping, `Scene.equals`, and replay
+are unaffected); only at DRAW time do its local XY axes map onto the active
+pass's camera right/up (spherical billboarding). `Scene.rotateZ` /
+`Instance.rotateZ` spins it in the screen plane, and scale reads as
+screen-plane width/height. Billboards cast NO shadow — a light-facing shadow
+quad would cut the camera-facing quad in half with its own shadow, so both
+draw paths skip billboards in the shadow pass.
 
 **Zero-argument constructors take their parens** — `Scene.cube()`,
 `Sprite.blank()`, `Anim.rest()`, `Effect.none()`, `Map.empty()`,

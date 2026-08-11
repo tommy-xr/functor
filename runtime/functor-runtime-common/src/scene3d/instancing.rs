@@ -237,6 +237,9 @@ pub(crate) enum InstancedPrimitive {
     Sphere,
     Cylinder,
     Quad,
+    /// The quad mesh, billboarded per instance at draw time (see
+    /// [`Shape::Billboard`]).
+    Billboard,
     Plane,
 }
 
@@ -276,7 +279,7 @@ pub(crate) struct RecognizedModel<'a> {
 ///
 /// Recognized: `Group` chains with exactly one child (their transforms
 /// compose into `local`) ending in either a
-/// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Plane` leaf under at most ONE material
+/// `Cube`/`Sphere`/`Cylinder`/`Quad`/`Billboard`/`Plane` leaf under at most ONE material
 /// node — a solid `Color`, `Emissive` (no texture), or `Lit` (no texture, no
 /// normal map) — or a `Scene.model` leaf with no overrides, with or without
 /// an attached `Scene.animate` pose (every copy shows the same sampled pose;
@@ -298,6 +301,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     Shape::Sphere => InstancedPrimitive::Sphere,
                     Shape::Cylinder => InstancedPrimitive::Cylinder,
                     Shape::Quad => InstancedPrimitive::Quad,
+                    Shape::Billboard => InstancedPrimitive::Billboard,
                     Shape::Plane => InstancedPrimitive::Plane,
                     Shape::Heightmap { .. } | Shape::ConvexPolygon { .. } => return None,
                 };
@@ -376,6 +380,7 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
                 Shape::Sphere => "sphere",
                 Shape::Cylinder => "cylinder",
                 Shape::Quad => "quad",
+                Shape::Billboard => "billboard",
                 Shape::Plane => "plane",
                 Shape::Heightmap { .. } => "heightmap",
                 Shape::ConvexPolygon { .. } => "polygon",
@@ -532,6 +537,7 @@ mod tests {
             (Scene3D::sphere(), InstancedPrimitive::Sphere),
             (Scene3D::cylinder(), InstancedPrimitive::Cylinder),
             (Scene3D::quad(), InstancedPrimitive::Quad),
+            (Scene3D::billboard(), InstancedPrimitive::Billboard),
             (Scene3D::plane(), InstancedPrimitive::Plane),
         ] {
             let template = Scene3D {
@@ -608,6 +614,8 @@ mod tests {
 
         // A bare primitive: correct only through the stamp (pass material).
         assert!(recognize(&Scene3D::cube()).is_none());
+        // A bare billboard behaves exactly like a bare quad — fall back.
+        assert!(recognize(&Scene3D::billboard()).is_none());
         // A textured material.
         let textured = Scene3D {
             obj: SceneObject::Material(

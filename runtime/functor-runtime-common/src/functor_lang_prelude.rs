@@ -2233,6 +2233,9 @@ fn register_scene(reg: &mut crate::host_registry::Registry) {
         FunctorLangScene(Scene3D::cylinder())
     });
     reg.fn0("Scene.quad", "Scene.quad()", || FunctorLangScene(Scene3D::quad()));
+    reg.fn0("Scene.billboard", "Scene.billboard()", || {
+        FunctorLangScene(Scene3D::billboard())
+    });
     reg.fn0("Scene.plane", "Scene.plane()", || FunctorLangScene(Scene3D::plane()));
     // A glTF model by file path (relative to the game dir), the Functor Lang
     // face of F#'s `Model.file |> Graphics.Scene3D.model`. Loading is the
@@ -8154,6 +8157,23 @@ Vec3.make(x, y, z)"
             scene_of(&with).expect("a Scene"),
             scene_of(&without).expect("a Scene")
         );
+    }
+
+    /// `Scene.billboard` builds the plain `Shape::Billboard` leaf — a
+    /// camera-FREE scene value (the view-dependence is the renderer's, at
+    /// draw time), so it stamps, compares, and replays like any other shape.
+    #[test]
+    fn scene_billboard_is_a_plain_camera_free_leaf() {
+        let value = eval("let main = () => Scene.billboard()");
+        let scene = scene_of(&value).expect("a Scene");
+        assert!(matches!(
+            scene.obj,
+            SceneObject::Geometry(Shape::Billboard)
+        ));
+
+        // And `Scene.equals` sees it structurally, like every shape.
+        let equal = eval("let main = () => Scene.equals(Scene.billboard(), Scene.billboard())");
+        assert!(matches!(equal, functor_lang::Value::Bool(true)));
     }
 
     /// The identity test happens AFTER narrowing to 32-bit, so an alpha that
