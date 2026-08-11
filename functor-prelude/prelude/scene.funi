@@ -22,6 +22,14 @@ let sphere : () => t
 let cylinder : () => t
 /// Create a unit quad in the XY plane, facing `+Z`.
 let quad : () => t
+/// Create a camera-facing unit quad (spherical billboarding).
+///
+/// At draw time its local XY axes map to the active view's right/up, so it
+/// always faces the viewer, `Scene.rotateZ` / `Instance.rotateZ` spins it in
+/// the screen plane, and scale reads as screen-plane width/height. It faces
+/// each PASS's own view — so in the shadow pass it faces the light and casts
+/// a full-quad shadow.
+let billboard : () => t
 /// Create a unit plane in the XZ ground plane.
 let plane : () => t
 
@@ -102,7 +110,7 @@ let opacity : (float, t) => t
 /// lit and shadowed exactly like its copies would be.
 ///
 /// The renderer draws recognized templates with hardware instancing — a
-/// single cube/sphere/cylinder/quad/plane leaf under any transforms and at
+/// single cube/sphere/cylinder/quad/billboard/plane leaf under any transforms and at
 /// most one solid `Scene.color` / `Scene.lit` / `Scene.emissive` material
 /// (one draw call), or a `Scene.model` leaf under transforms (one draw call
 /// per mesh primitive, textured exactly like the ordinary model draw). A

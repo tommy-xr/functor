@@ -6,7 +6,7 @@ use std::{
 
 use glow::HasContext;
 
-use cgmath::{vec3, Matrix4, SquareMatrix};
+use cgmath::{vec3, Matrix, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -1046,6 +1046,18 @@ pub enum Shape {
     Sphere,
     Cylinder,
     Quad,
+    /// A camera-facing unit quad (spherical billboarding) — the same mesh as
+    /// [`Shape::Quad`], but at draw time its local XY axes are mapped to the
+    /// ACTIVE PASS's camera right/up, so it always faces the viewer. A local
+    /// Z rotation (`Scene.rotateZ` / `Instance.rotateZ`) therefore spins it
+    /// in the screen plane, and scale applies as screen-plane width/height.
+    ///
+    /// The shape itself is camera-free plain data — the view-dependence
+    /// exists only at draw time (in both the CPU and hardware-instanced
+    /// paths), so stamping semantics, `Scene.equals`, and replay stay honest.
+    /// One consequence of "the active pass's view": in the depth/shadow pass
+    /// the billboard faces the LIGHT, casting a full-quad shadow.
+    Billboard,
     Plane,
     /// A subdivided XZ grid displaced by per-vertex heights (row-major,
     /// length `rows * cols`).
@@ -1192,6 +1204,14 @@ impl Scene3D {
     pub fn plane() -> Self {
         Scene3D {
             obj: SceneObject::Geometry(Shape::Plane),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    /// `Scene.billboard`: a camera-facing unit quad — see [`Shape::Billboard`].
+    pub fn billboard() -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Billboard),
             xform: Matrix4::identity(),
         }
     }
@@ -1885,7 +1905,7 @@ impl Scene3D {
                                     format!(
                                         "[functor] Scene.instanced template `{summary}` is not hardware-instanced \
 — rendering {copies} copies as a stamped group, comparable to writing \
-the group by hand (hardware templates are one cube/sphere/cylinder/quad/plane \
+the group by hand (hardware templates are one cube/sphere/cylinder/quad/billboard/plane \
 leaf under transforms and at most one solid Scene.color / Scene.lit / \
 Scene.emissive material, or a bare Scene.model leaf under transforms)"
                                     )
@@ -1941,6 +1961,45 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
             }
             SceneObject::Geometry(Shape::Quad) => {
                 let xform = world_matrix * self.xform;
+                geometry_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                scene_context.quad.borrow_mut().draw(&render_context.gl);
+            }
+            SceneObject::Geometry(Shape::Billboard) => {
+                // Billboarding happens HERE, at draw time: the accumulated
+                // matrix splits into its translation `T` and linear part `L`
+                // (scale and any authored rotation), and the model matrix is
+                // rebuilt as `T * R_view⁻¹ * L` — the inverse view rotation
+                // (the transpose of the view's upper 3×3; the view has no
+                // scale) maps local X/Y onto the ACTIVE PASS's camera
+                // right/up. Keeping the full linear part (not just its
+                // per-column scale) is what makes `Scene.rotateZ` spin the
+                // quad in the screen plane, exactly like the hardware
+                // instanced path, which rotates the vertex before mapping it
+                // onto the camera axes. In the depth pass the "camera" is the
+                // light, so a billboard casts a full-quad shadow.
+                let acc = world_matrix * self.xform;
+                let view_rotation_inverse = Matrix4::from(
+                    cgmath::Matrix3::from_cols(
+                        view_matrix.x.truncate(),
+                        view_matrix.y.truncate(),
+                        view_matrix.z.truncate(),
+                    )
+                    .transpose(),
+                );
+                let linear = Matrix4::from(cgmath::Matrix3::from_cols(
+                    acc.x.truncate(),
+                    acc.y.truncate(),
+                    acc.z.truncate(),
+                ));
+                let xform = Matrix4::from_translation(acc.w.truncate())
+                    * view_rotation_inverse
+                    * linear;
                 geometry_material.draw_opaque(
                     &render_context,
                     &projection_matrix,
