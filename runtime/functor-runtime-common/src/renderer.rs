@@ -178,6 +178,11 @@ fn render_frame_inner(
 ) {
     scene_context.begin_terrain_frame(gl, terrain_frame_id);
 
+    // The caller's render target, restored after every target pass below.
+    // Captured BEFORE the ensure phase — (re)allocating buffers leaves the
+    // binding on `None`.
+    let previous_fbo = ambient_framebuffer(gl);
+
     // Allocate buffers for EVERY declared target up front, so a target whose
     // scene samples a later-declared target reads last frame's image (initially
     // the clear color) rather than the magenta fallback. A duplicate id is a
@@ -210,6 +215,16 @@ frame — only the first declaration is rendered",
                 &format!(
                     "[render-target] \"{}\": nested render targets inside a \
 target frame are ignored (depth 1 only)",
+                    pass.target.id
+                ),
+            );
+        }
+        if !pass.frame.ui_targets.is_empty() {
+            scene_context.warn_once(
+                &format!("nested-ui:{}", pass.target.id),
+                &format!(
+                    "[render-target] \"{}\": ui targets inside a target frame \
+are ignored — declare Frame.withUiTarget on the main frame",
                     pass.target.id
                 ),
             );
@@ -275,7 +290,7 @@ target frame are ignored (depth 1 only)",
             None,
         );
         unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
         }
         scene_context.finish_render_target_write(&pass.target.id);
     }
@@ -521,6 +536,10 @@ pub fn render_composited_frames_with_view(
     let weights = normalize_weights(&weights[..n]);
     scene_context.begin_terrain_frame(gl, None);
 
+    // The caller's render target, restored after every offscreen pass below
+    // (captured before any buffer allocation can reset the binding).
+    let previous_fbo = ambient_framebuffer(gl);
+
     // 1. Render each input frame into its own full-viewport offscreen target,
     //    at its own frame time.
     let mut textures: Vec<glow::Texture> = Vec::with_capacity(n);
@@ -589,7 +608,7 @@ pub fn render_composited_frames_with_view(
             sprite_cameras.filter(|cameras| cameras.len() == frame.sprite_layers.len()),
         );
         unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
         }
         scene_context.finish_render_target_write(&id);
         textures.push(
@@ -658,6 +677,25 @@ fn shadow_pass(
                 light_index: light_index as i32,
             }
         })
+}
+
+/// The framebuffer currently bound — captured before an offscreen section and
+/// restored after it (the shadow-pass rule): XR shells render into per-eye
+/// swapchain FBOs, so resetting to the default would send the rest of the
+/// frame into an invisible pbuffer. Reconstructing the key from the GL query
+/// is native-only (glow's web backend uses opaque slotmap keys); on wasm the
+/// canvas default framebuffer IS the target, so `None` is exact there.
+pub(crate) fn ambient_framebuffer(gl: &glow::Context) -> Option<glow::Framebuffer> {
+    #[cfg(not(target_arch = "wasm32"))]
+    unsafe {
+        std::num::NonZeroU32::new(gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING) as u32)
+            .map(glow::NativeFramebuffer)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = gl;
+        None
+    }
 }
 
 /// Turn on the constant-alpha over-blend with depth writes off — the state both

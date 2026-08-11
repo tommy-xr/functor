@@ -654,8 +654,8 @@ impl FunctorLangGame {
         self.recorder
             .finish_reload(&self.model, self.physics_frame, live_model_was_safe);
         let replay_started = Instant::now();
-        let history_replay = match
-            functor_runtime_common::functor_lang_producer::materialize_counterfactual_history(
+        let history_replay =
+            match functor_runtime_common::functor_lang_producer::materialize_counterfactual_history(
                 &self.session,
                 &self.names,
                 &mut self.model,
@@ -663,16 +663,15 @@ impl FunctorLangGame {
                 self.has_physics,
                 self.has_subscriptions,
                 !self.input_buf.is_empty(),
-            )
-        {
-            Ok(frames) => frames.map(|frames| {
-                (frames, replay_started.elapsed().as_secs_f64() * 1000.0)
-            }),
-            Err(error) => {
-                self.reporter.report_once(format!("[functor-lang] {error}"));
-                None
-            }
-        };
+            ) {
+                Ok(frames) => {
+                    frames.map(|frames| (frames, replay_started.elapsed().as_secs_f64() * 1000.0))
+                }
+                Err(error) => {
+                    self.reporter.report_once(format!("[functor-lang] {error}"));
+                    None
+                }
+            };
         (report.rebound, history_replay)
     }
 
@@ -1287,6 +1286,14 @@ impl Game for FunctorLangGame {
                 )),
             },
             Err(err) => self.reporter.frame_error(self.names.draw, &err),
+        }
+        // Draw-eval handlers are display-only: drop them so they neither
+        // accumulate across frames nor pollute the ui/webview tables below.
+        if functor_runtime_common::functor_lang_prelude::drop_draw_eval_ui_handlers() {
+            self.reporter.report_once(
+                functor_runtime_common::functor_lang_prelude::DRAW_EVAL_HANDLERS_WARNING
+                    .to_string(),
+            );
         }
         // The optional HUD, evaluated beside `draw` (same settled model) and
         // cached — `Game::ui` is a `&self` accessor, and errors need `&mut`
@@ -2669,7 +2676,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             }
         }
 
-        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let platformer = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/platformer/game.fun"
+        );
         let mut game = FunctorLangGame::create(platformer);
         assert!(!game.has_physics, "platformer must have no physics hook");
 
@@ -2810,7 +2820,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             }
         }
 
-        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let platformer = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/platformer/game.fun"
+        );
         let mut game = FunctorLangGame::create(platformer);
 
         const SUB_DT: f32 = 1.0 / 60.0;
@@ -3023,7 +3036,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             }
         }
 
-        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let platformer = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/platformer/game.fun"
+        );
         let source = std::fs::read_to_string(platformer).expect("read platformer source");
         // `jumpVelocity` is the example's tuning knob, so read the CURRENT value
         // out of the source and weaken it, rather than hardcoding the literal:
@@ -3172,7 +3188,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
                 .collect()
         }
 
-        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let platformer = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/platformer/game.fun"
+        );
         let source = std::fs::read_to_string(platformer).expect("read platformer source");
         let mut game = FunctorLangGame::create(platformer);
         const SUB_DT: f32 = 1.0 / 60.0;
@@ -3224,7 +3243,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     fn scrub_drops_input_buffered_on_a_zero_substep_frame() {
         use functor_runtime_common::Key;
 
-        let platformer = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/platformer/game.fun");
+        let platformer = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/platformer/game.fun"
+        );
         let mut game = FunctorLangGame::create(platformer);
 
         // Record a few frames of history at the fixed step (each tick records).

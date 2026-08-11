@@ -1099,6 +1099,9 @@ pub fn android_main(app: AndroidApp) {
     let asset_cache = Arc::new(AssetCache::new());
     let scene_context = SceneContext::new();
     let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
+    // `Frame.withUiTarget` passes: constructed lazily on the first frame that
+    // declares one, so games without ui targets never build an egui painter.
+    let mut ui_target_renderer: Option<functor_runtime_common::ui::UiTargetRenderer> = None;
 
     // The real Functor Lang producer, booting the embedded scene. A broken embedded
     // scene is a build bug, not a runtime condition — fail loud.
@@ -1364,6 +1367,16 @@ pub fn android_main(app: AndroidApp) {
             debug.frame_count += 1;
         }
         let frame = game.render(frame_time.clone());
+        if !frame.ui_targets.is_empty() {
+            // Paint ui-target passes ONCE per frame, before the per-eye
+            // passes — both eyes sample the same published image. The
+            // renderer saves and restores the ambient FBO binding, so the
+            // eye swapchain bindings below are unaffected.
+            let renderer = ui_target_renderer.get_or_insert_with(|| {
+                functor_runtime_common::ui::UiTargetRenderer::new(gl.clone())
+            });
+            renderer.render(&scene_context, &frame);
+        }
         // No audio/HTTP hosts on device yet: drain their command queues so
         // they don't grow unbounded. Preloads and physics terrain requests
         // are driven above through the shared asset cache.

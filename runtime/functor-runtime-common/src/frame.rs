@@ -2,8 +2,8 @@ use cgmath::{Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    fog::Fog, render_target::RenderTargetDescriptor, skybox::SkyboxDescription, Camera, Light,
-    Scene3D, SceneObject, SpriteLayer,
+    fog::Fog, render_target::RenderTargetDescriptor, skybox::SkyboxDescription, ui::View, Camera,
+    Light, Scene3D, SceneObject, SpriteLayer,
 };
 
 fn is_false(value: &bool) -> bool {
@@ -19,12 +19,23 @@ pub struct RenderTargetPass {
     pub frame: Frame,
 }
 
+/// A named UI pass: `view` (a `Ui.*` tree) is painted into `target`'s texture
+/// before the owning frame's main pass, and sampled via `Scene.screen` like
+/// any render target. Display-only for now: interactive widgets render in
+/// their resting state and their handlers are inert.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct UiTargetPass {
+    pub target: RenderTargetDescriptor,
+    pub view: View,
+}
+
 /// What a game's `draw` returns each frame: a 3D pass plus any ordered 2D
 /// sprite layers. Intentionally a growable record (post-processing etc. can be
 /// added later) so the render boundary signature doesn't churn.
 ///
 /// `PartialEq` is the structural walk behind `Frame.equals`: every field —
-/// camera, scene, lights (ordered), render-target passes (ordered), fog,
+/// camera, scene, lights (ordered), render-target passes (ordered), ui-target
+/// passes (ordered), fog,
 /// skybox, clear color, 2D layers (ordered), and the `pure_2d` marker. It
 /// inherits [`Scene3D`]'s rules: floats compare exactly, assets compare by
 /// locator, and animation compares as declared.
@@ -38,6 +49,11 @@ pub struct Frame {
     /// targets inside a target's own frame are ignored (depth 1 for now).
     #[serde(default)]
     pub render_targets: Vec<RenderTargetPass>,
+    /// UI views painted into render targets (in order) before the main pass
+    /// (`Frame.withUiTarget`). Skipped when empty so older wire frames — and
+    /// frames that never use the feature — serialize unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ui_targets: Vec<UiTargetPass>,
     /// Frame-level distance fog; its color also drives the pass's clear color.
     #[serde(default)]
     pub fog: Option<Fog>,
@@ -69,6 +85,7 @@ impl Frame {
             scene,
             lights: vec![],
             render_targets: vec![],
+            ui_targets: vec![],
             fog: None,
             skybox: None,
             clear_color: None,
@@ -116,6 +133,16 @@ impl Frame {
             target,
             frame: target_frame,
         });
+        frame
+    }
+
+    /// Paint `view` (a `Ui.*` tree) into `target` each frame, before this
+    /// frame's main pass, at the target's declared size. Subject-first so it
+    /// pipes (`frame |> Frame.withUiTarget(…)`); declaration order is paint
+    /// order, and — matching `withRenderTarget` — the FIRST declaration of an
+    /// id wins (duplicates warn once and are skipped).
+    pub fn with_ui_target(mut frame: Frame, target: RenderTargetDescriptor, view: View) -> Frame {
+        frame.ui_targets.push(UiTargetPass { target, view });
         frame
     }
 
@@ -175,11 +202,7 @@ mod tests {
             obj: SceneObject::Group(vec![]),
             xform: Matrix4::identity(),
         };
-        assert!(!Frame::with_2d(
-            Frame::new(Camera::default(), empty_3d),
-            layer
-        )
-        .is_pure_2d());
+        assert!(!Frame::with_2d(Frame::new(Camera::default(), empty_3d), layer).is_pure_2d());
     }
 
     #[test]

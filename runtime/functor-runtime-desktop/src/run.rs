@@ -1737,6 +1737,9 @@ Escape releases while captured"
         // rest of the runtime keeps using `&gl`, which derefs through the Arc.
         let gl = std::sync::Arc::new(gl);
         let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
+        // `Frame.withUiTarget` passes: Ui views painted into render targets
+        // before the main pass samples them (`Scene.screen`).
+        let mut ui_target_renderer = functor_runtime_common::ui::UiTargetRenderer::new(gl.clone());
         // The game's HTML/CSS webview overlay (`webview model`), blitz-rendered
         // to a texture and composited between the game UI and the scrubber.
         let mut webview_overlay =
@@ -3072,6 +3075,12 @@ Escape again to quit"
                 _ => None,
             };
             let drawn_frame = display_frame.as_ref().unwrap_or(&frame);
+
+            // `Frame.withUiTarget` passes go first, so the passes below —
+            // including each eye of a stereo pair — sample this frame's image.
+            if !drawn_frame.ui_targets.is_empty() {
+                ui_target_renderer.render(&scene_context, drawn_frame);
+            }
 
             // Shadow + forward passes, shared with the web runtime. In stereo
             // mode, render the same frame twice — once per eye camera into each

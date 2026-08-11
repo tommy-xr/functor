@@ -1428,6 +1428,9 @@ async fn run_async() -> Result<(), JsValue> {
         // The 2D UI overlay (egui), painting the game's `ui model` View on top of
         // the 3D frame — the web sibling of the desktop runner's overlay.
         let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
+        // `Frame.withUiTarget` passes: Ui views painted into render targets
+        // before the main pass samples them (`Scene.screen`).
+        let mut ui_target_renderer = functor_runtime_common::ui::UiTargetRenderer::new(gl.clone());
 
         // In deterministic mode (?fixed-time, the golden) the canvas is sized
         // once and then left fixed (see below), and the render loop stops after
@@ -1958,6 +1961,11 @@ async fn run_async() -> Result<(), JsValue> {
             // Preview overlays go on the live frame.
             if let Some(p) = &preview {
                 p.apply_all_with_presence(&mut frame, display_presence);
+            }
+            // `Frame.withUiTarget` passes go first, so the main pass below
+            // samples this frame's image.
+            if !frame.ui_targets.is_empty() {
+                ui_target_renderer.render(&scene_context, &frame);
             }
             // Shadow + forward passes, shared with the desktop runtime.
             functor_runtime_common::render_frame_with_view(

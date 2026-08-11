@@ -45,7 +45,7 @@ impl Label {
 /// *bytes* live in the shell's font registry; a `View` only ever names a font, so
 /// the tree stays serializable/inspectable. Only the default font is wired today —
 /// the family is carried for forward-compatibility and unknown names fall back.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FontRef {
     pub family: String,
     pub size: f32,
@@ -53,7 +53,7 @@ pub struct FontRef {
 
 /// Which screen position a [`View::Panel`] pins its subtree to — the four
 /// corners, or the screen center (for menus).
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Anchor {
     TopLeft,
     TopRight,
@@ -66,7 +66,7 @@ pub enum Anchor {
 /// API (`ui : 'model -> View`). It carries only text, layout, colors and *names*
 /// (e.g. fonts), never bytes, so it round-trips as JSON across the wasm boundary
 /// and stays introspectable. [`View::lower`] flattens it to absolute [`Label`]s.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum View {
     /// Renders nothing — the default `ui` for games that don't draw a HUD.
     Empty,
@@ -264,6 +264,11 @@ struct UiFrameState<'a> {
     seen_sliders: &'a mut std::collections::HashSet<u32>,
     texts: &'a mut std::collections::HashMap<u32, TextBuffer>,
     seen_texts: &'a mut std::collections::HashSet<u32>,
+    /// Namespaces every `Area` id this pass creates (panels included), so
+    /// passes sharing one egui context — the window overlay, and each ui
+    /// render target — never share retained Area state (egui remembers an
+    /// Area's size, which right/bottom/center anchoring reads back).
+    salt: egui::Id,
 }
 
 /// Render a declarative [`View`] into `ui` using egui's own layout (vertical /
@@ -305,7 +310,7 @@ fn render_view(ui: &mut egui::Ui, view: &View, state: &mut UiFrameState) {
         View::Panel { anchor, child } => {
             let (align, offset) = anchor_align(*anchor);
             let ctx = ui.ctx().clone();
-            egui::Area::new(egui::Id::new(("functor_ui_panel", anchor_id(*anchor))))
+            egui::Area::new(state.salt.with(("functor_ui_panel", anchor_id(*anchor))))
                 .anchor(align, offset)
                 .interactable(contains_interactive(child))
                 .show(&ctx, |ui| render_view(ui, child, state));
@@ -376,6 +381,69 @@ fn render_view(ui: &mut egui::Ui, view: &View, state: &mut UiFrameState) {
             }
         }
     }
+}
+
+/// Lay out a [`View`]'s root: a `Panel` anchors itself (to the pass's screen
+/// rect), any other root sits at the top-left with a margin. Shared by the
+/// window overlay and the ui-target passes; `allow_interaction` is false for
+/// display-only passes (target views), which never receive input.
+fn render_root(ui: &mut egui::Ui, view: &View, state: &mut UiFrameState, allow_interaction: bool) {
+    match view {
+        View::Panel { .. } => render_view(ui, view, state),
+        other => {
+            let ctx = ui.ctx().clone();
+            egui::Area::new(state.salt.with("functor_ui_root"))
+                .anchor(egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN))
+                .interactable(allow_interaction && contains_interactive(other))
+                .show(&ctx, |ui| render_view(ui, other, state));
+        }
+    }
+}
+
+/// Run one egui frame (building the UI with `build`), tessellate, and paint to
+/// the bound framebuffer, restoring the GL state the 3D path expects. egui's
+/// fonts only exist *during* the run, so all layout/measurement happens in
+/// here. Shared by [`TextOverlay`] and [`UiTargetRenderer`], which each own a
+/// (context, painter) pair.
+fn run_and_paint_with(
+    ctx: &egui::Context,
+    painter: &mut egui_glow::Painter,
+    gl: &glow::Context,
+    width: u32,
+    height: u32,
+    pixels_per_point: f32,
+    events: Vec<egui::Event>,
+    build: impl FnMut(&mut egui::Ui),
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    ctx.set_pixels_per_point(pixels_per_point);
+    let screen_points = egui::vec2(
+        width as f32 / pixels_per_point,
+        height as f32 / pixels_per_point,
+    );
+    let raw_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_points)),
+        events,
+        ..Default::default()
+    };
+
+    let output = ctx.run_ui(raw_input, build);
+
+    let primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+    painter.paint_and_update_textures(
+        [width, height],
+        output.pixels_per_point,
+        &primitives,
+        &output.textures_delta,
+    );
+
+    // egui_glow mutates global GL state (enables BLEND + SCISSOR, leaves
+    // DEPTH_TEST as-is) and does not restore it. The shared 3D path enables
+    // DEPTH_TEST only once at startup and re-arms SCISSOR per frame, so reset
+    // to the slate the next 3D frame expects.
+    restore_gl_after_egui(gl);
 }
 
 /// egui alignment + inset offset for an [`Anchor`]. Center pins to the middle
@@ -544,18 +612,9 @@ impl TextOverlay {
                 seen_sliders: &mut seen_sliders,
                 texts: &mut texts,
                 seen_texts: &mut seen_texts,
+                salt: egui::Id::new("functor_overlay"),
             };
-            match view {
-                // A panel anchors itself; a bare root sits at the top-left with a margin.
-                View::Panel { .. } => render_view(ui, view, &mut state),
-                other => {
-                    let ctx = ui.ctx().clone();
-                    egui::Area::new(egui::Id::new("functor_ui_root"))
-                        .anchor(egui::Align2::LEFT_TOP, egui::vec2(MARGIN, MARGIN))
-                        .interactable(contains_interactive(other))
-                        .show(&ctx, |ui| render_view(ui, other, &mut state));
-                }
-            }
+            render_root(ui, view, &mut state, true);
         });
         // A slot that left the view is a different widget if it ever returns
         // (positional identity) — drop its buffer rather than resurrect it.
@@ -570,9 +629,7 @@ impl TextOverlay {
         }
     }
 
-    /// Run one egui frame (building the UI with `build`), tessellate, paint to the
-    /// bound framebuffer, and restore the GL state the 3D path expects. egui's
-    /// fonts only exist *during* `run`, so all layout/measurement happens in here.
+    /// One egui frame into the bound framebuffer — see [`run_and_paint_with`].
     fn run_and_paint(
         &mut self,
         width: u32,
@@ -581,35 +638,144 @@ impl TextOverlay {
         events: Vec<egui::Event>,
         build: impl FnMut(&mut egui::Ui),
     ) {
-        if width == 0 || height == 0 {
-            return;
-        }
-        self.ctx.set_pixels_per_point(pixels_per_point);
-        let screen_points = egui::vec2(
-            width as f32 / pixels_per_point,
-            height as f32 / pixels_per_point,
-        );
-        let raw_input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen_points)),
+        run_and_paint_with(
+            &self.ctx,
+            &mut self.painter,
+            &self.gl,
+            width,
+            height,
+            pixels_per_point,
             events,
-            ..Default::default()
-        };
-
-        let output = self.ctx.run_ui(raw_input, build);
-
-        let primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
-        self.painter.paint_and_update_textures(
-            [width, height],
-            output.pixels_per_point,
-            &primitives,
-            &output.textures_delta,
+            build,
         );
+    }
+}
 
-        // egui_glow mutates global GL state (enables BLEND + SCISSOR, leaves
-        // DEPTH_TEST as-is) and does not restore it. The shared 3D path enables
-        // DEPTH_TEST only once at startup and re-arms SCISSOR per frame, so reset
-        // to the slate the next 3D frame expects.
-        restore_gl_after_egui(&self.gl);
+/// Paints `Frame.withUiTarget` passes: each declared [`View`] is rendered into
+/// its render target's texture — at the target's declared size, with
+/// `pixels_per_point` 1.0 — so the main pass can sample it via `Scene.screen`.
+/// Call [`Self::render`] BEFORE the frame's main pass; like a 3D target pass,
+/// the write is published with `swap()`, so readers see this frame's image.
+///
+/// Owns its own egui context rather than sharing [`TextOverlay`]'s: an egui
+/// context retains the last pointer position across runs, so reusing the
+/// overlay's would replay window-space hover state onto target widgets. This
+/// context never receives an input event — target views are display-only for
+/// now (interactive widgets render in their resting state; their handlers are
+/// dropped by the producer).
+pub struct UiTargetRenderer {
+    ctx: egui::Context,
+    painter: egui_glow::Painter,
+    gl: Arc<glow::Context>,
+}
+
+impl UiTargetRenderer {
+    pub fn new(gl: Arc<glow::Context>) -> Self {
+        let painter = egui_glow::Painter::new(gl.clone(), "", None, false)
+            .expect("failed to create egui_glow painter");
+        Self {
+            ctx: egui::Context::default(),
+            painter,
+            gl,
+        }
+    }
+
+    /// Render a frame's `Frame.withUiTarget` passes, in declaration order.
+    /// Duplicate ids: the FIRST declaration wins, with a one-time warning —
+    /// matching `Frame.withRenderTarget`. An id also declared as a 3D target
+    /// pass (`Frame.withRenderTarget`) is skipped here with a warning: the two
+    /// writers would otherwise fight over one texture every frame (and a size
+    /// mismatch would delete/recreate the GPU buffers per frame).
+    pub fn render(&mut self, scene_context: &crate::SceneContext, frame: &crate::Frame) {
+        let mut rendered: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for pass in &frame.ui_targets {
+            let id = pass.target.id.as_str();
+            if frame
+                .render_targets
+                .iter()
+                .any(|rt| rt.target.id == pass.target.id)
+            {
+                scene_context.warn_once_with(&format!("ui-vs-3d:{id}"), || {
+                    format!(
+                        "[functor] render target \"{id}\" is declared by both \
+Frame.withUiTarget and Frame.withRenderTarget; the ui pass is skipped — use \
+two target ids"
+                    )
+                });
+                continue;
+            }
+            if !rendered.insert(id) {
+                scene_context.warn_once_with(&format!("duplicate-ui:{id}"), || {
+                    format!(
+                        "[functor] ui target \"{id}\" is declared more than once \
+in this frame; only the first declaration is rendered"
+                    )
+                });
+                continue;
+            }
+            self.render_pass(scene_context, pass);
+        }
+    }
+
+    fn render_pass(
+        &mut self,
+        scene_context: &crate::SceneContext,
+        pass: &crate::frame::UiTargetPass,
+    ) {
+        let gl = &self.gl;
+        // The caller's render target, restored after the pass — captured
+        // BEFORE ensure_render_target, since (re)allocating buffers leaves
+        // the FBO binding on `None`.
+        let previous_fbo = crate::renderer::ambient_framebuffer(gl);
+        // UI targets clear to the engine default backdrop for now — there is
+        // no target frame to take a fog/clear color from.
+        let clear = crate::fog::clear_color(None);
+        scene_context.ensure_render_target(gl, &pass.target, clear);
+        let Some((fbo, width, height)) = scene_context.render_target_write(&pass.target.id) else {
+            return;
+        };
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+            // The forward pass may have left SCISSOR_TEST clipped to a window
+            // pane; the target owns its whole texture.
+            gl.disable(glow::SCISSOR_TEST);
+            gl.viewport(0, 0, width as i32, height as i32);
+            gl.clear_color(clear[0], clear[1], clear[2], 1.0);
+            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+        }
+        // A display-only egui pass: interaction state is fresh locals — no
+        // events are ever fed, so no UiEvent can arise and the stateful-widget
+        // buffers have nothing to reconcile. Area ids are salted by target id
+        // so two targets sharing this context never share retained Area state.
+        let mut events = Vec::new();
+        let mut sliders = std::collections::HashMap::new();
+        let mut seen_sliders = std::collections::HashSet::new();
+        let mut texts = std::collections::HashMap::new();
+        let mut seen_texts = std::collections::HashSet::new();
+        run_and_paint_with(
+            &self.ctx,
+            &mut self.painter,
+            gl,
+            width,
+            height,
+            1.0,
+            Vec::new(),
+            |ui| {
+                let mut state = UiFrameState {
+                    events: &mut events,
+                    sliders: &mut sliders,
+                    seen_sliders: &mut seen_sliders,
+                    texts: &mut texts,
+                    seen_texts: &mut seen_texts,
+                    salt: egui::Id::new(("functor_ui_target", &pass.target.id)),
+                };
+                render_root(ui, &pass.view, &mut state, false);
+            },
+        );
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
+        }
+        scene_context.finish_render_target_write(&pass.target.id);
     }
 }
 
@@ -957,26 +1123,20 @@ impl Scrubber {
                                             };
                                             // Pink = future, cyan = past —
                                             // the trail's own two colors.
-                                            let future_band =
-                                                egui::Color32::from_rgba_unmultiplied(
-                                                    232, 88, 184, 200,
-                                                );
-                                            let future_cap =
-                                                egui::Color32::from_rgba_unmultiplied(
-                                                    232, 88, 184, 230,
-                                                );
-                                            let future_hot =
-                                                egui::Color32::from_rgb(255, 208, 238);
-                                            let past_band =
-                                                egui::Color32::from_rgba_unmultiplied(
-                                                    64, 217, 255, 200,
-                                                );
-                                            let past_cap =
-                                                egui::Color32::from_rgba_unmultiplied(
-                                                    64, 217, 255, 230,
-                                                );
-                                            let past_hot =
-                                                egui::Color32::from_rgb(150, 236, 255);
+                                            let future_band = egui::Color32::from_rgba_unmultiplied(
+                                                232, 88, 184, 200,
+                                            );
+                                            let future_cap = egui::Color32::from_rgba_unmultiplied(
+                                                232, 88, 184, 230,
+                                            );
+                                            let future_hot = egui::Color32::from_rgb(255, 208, 238);
+                                            let past_band = egui::Color32::from_rgba_unmultiplied(
+                                                64, 217, 255, 200,
+                                            );
+                                            let past_cap = egui::Color32::from_rgba_unmultiplied(
+                                                64, 217, 255, 230,
+                                            );
+                                            let past_hot = egui::Color32::from_rgb(150, 236, 255);
                                             // Start at the handle's edges so
                                             // neither band paints over the
                                             // handle itself.
@@ -989,10 +1149,9 @@ impl Scrubber {
                                             // band is simply shorter there
                                             // (the trail clips the same way).
                                             let back_x1 = x_of(f) - 5.0;
-                                            let back_x0 = x_of(
-                                                f.saturating_sub(future_frames).max(lo),
-                                            )
-                                            .min(back_x1);
+                                            let back_x0 =
+                                                x_of(f.saturating_sub(future_frames).max(lo))
+                                                    .min(back_x1);
                                             band(ui, back_x0, back_x1, past_band);
                                             if let Some(a) = cap(
                                                 ui,
@@ -1062,10 +1221,8 @@ impl Scrubber {
                             // Same two colors as the rail's bands: cyan for
                             // the recorded past, pink for the projected
                             // future.
-                            let cyan =
-                                egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
-                            let pink =
-                                egui::Color32::from_rgba_unmultiplied(232, 88, 184, 190);
+                            let cyan = egui::Color32::from_rgba_unmultiplied(64, 217, 255, 190);
+                            let pink = egui::Color32::from_rgba_unmultiplied(232, 88, 184, 190);
                             let mut segments: Vec<(String, egui::Color32)> = Vec::new();
                             match state.range {
                                 Some((lo, hi)) => {
@@ -1075,8 +1232,8 @@ impl Scrubber {
                                         // frame — report what actually exists,
                                         // matching where the rail's cyan band
                                         // stops.
-                                        let past_frames = future_frames
-                                            .min(state.frame.saturating_sub(lo));
+                                        let past_frames =
+                                            future_frames.min(state.frame.saturating_sub(lo));
                                         segments.push((format!("-{past_frames} "), cyan));
                                     }
                                     segments.push((format!("{}", state.frame), weak));
@@ -1117,10 +1274,7 @@ impl Scrubber {
                                                 crate::viewer::DebugCameraMode::Orbit,
                                             ] {
                                                 if ui
-                                                    .selectable_label(
-                                                        current == mode,
-                                                        mode.label(),
-                                                    )
+                                                    .selectable_label(current == mode, mode.label())
                                                     .clicked()
                                                 {
                                                     action = Some(
@@ -1142,8 +1296,7 @@ impl Scrubber {
                                             )
                                             .changed()
                                         {
-                                            action =
-                                                Some(ScrubberAction::SetDebugCameraFov(value));
+                                            action = Some(ScrubberAction::SetDebugCameraFov(value));
                                         }
                                     } else if let Some(zoom) = state.camera_zoom_2d {
                                         ui.separator();
@@ -1173,16 +1326,15 @@ impl Scrubber {
                                                 )
                                                 .clicked()
                                             {
-                                                action = Some(
-                                                    ScrubberAction::SetDebugMaterial(material),
-                                                );
+                                                action = Some(ScrubberAction::SetDebugMaterial(
+                                                    material,
+                                                ));
                                             }
                                         }
                                         ui.separator();
                                         let mut physics = state.debug_presentation.physics;
                                         if ui.checkbox(&mut physics, "Physics").changed() {
-                                            action =
-                                                Some(ScrubberAction::SetDebugPhysics(physics));
+                                            action = Some(ScrubberAction::SetDebugPhysics(physics));
                                         }
                                         let mut frustum =
                                             state.debug_presentation.authored_camera_frustum;
@@ -1197,8 +1349,7 @@ impl Scrubber {
                                     ui.separator();
                                     let mut game_ui = state.debug_presentation.show_game_ui;
                                     if ui.checkbox(&mut game_ui, "Game UI").changed() {
-                                        action =
-                                            Some(ScrubberAction::SetGameUiVisible(game_ui));
+                                        action = Some(ScrubberAction::SetGameUiVisible(game_ui));
                                     }
                                 });
                             }
@@ -1370,6 +1521,7 @@ mod tests {
                 seen_sliders: &mut seen_sliders,
                 texts,
                 seen_texts: &mut seen_texts,
+                salt: egui::Id::new("test"),
             };
             render_view(ui, view, &mut state);
         });
@@ -1413,7 +1565,10 @@ mod tests {
             modifiers: egui::Modifiers::default(),
         }];
         assert!(run_widget_frame(&ctx, release, &mut texts, &view("cube")).is_empty());
-        assert!(ctx.egui_wants_keyboard_input(), "click should focus the field");
+        assert!(
+            ctx.egui_wants_keyboard_input(),
+            "click should focus the field"
+        );
 
         // Frame 3: a typed character (the shell's Char event, lowered the
         // same way draw_view lowers it) must emit exactly one TextChanged.
@@ -1424,7 +1579,10 @@ mod tests {
         let UiEventKind::TextChanged(new_text) = &events[0].kind else {
             panic!("expected TextChanged, got {:?}", events[0].kind);
         };
-        assert!(new_text.contains('s'), "typed char should land: {new_text:?}");
+        assert!(
+            new_text.contains('s'),
+            "typed char should land: {new_text:?}"
+        );
         let emitted = new_text.clone();
 
         // Frame 4 — the ECHO: the model comes back equal to what we emitted;
@@ -1481,5 +1639,4 @@ mod tests {
             UiEventKind::TextChanged(s) if s == "a"
         ));
     }
-
 }

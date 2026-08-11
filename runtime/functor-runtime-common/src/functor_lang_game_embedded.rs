@@ -27,8 +27,8 @@ use functor_lang::{Session, Value};
 
 use crate::functor_lang_prelude::{
     audio_scene_of, clear_audio_completions, clear_http_taggers, clear_preload_completions,
-    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog,
-    EffectRunner, EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
+    frame_value, html_node_value, now_ms, take_ui_handlers, view_value, EffectLog, EffectRunner,
+    EffectTree, FunctorHost, NetEventKind, RealEffects, UiHandler,
 };
 use crate::functor_lang_producer::{
     journal_arm, journal_swap, rebase_connect_retry_deadlines, validate_contract,
@@ -1006,6 +1006,12 @@ impl GameProducer for FunctorLangEmbeddedGame {
                 self.reporter.report_once(rendered);
             }
         }
+        // Draw-eval handlers are display-only: drop them so they neither
+        // accumulate across frames nor pollute the ui/webview tables below.
+        if crate::functor_lang_prelude::drop_draw_eval_ui_handlers() {
+            self.reporter
+                .report_once(crate::functor_lang_prelude::DRAW_EVAL_HANDLERS_WARNING.to_string());
+        }
         // The optional HUD, evaluated beside `draw` (same settled model) and
         // cached — `ui()` is a `&self` accessor, and errors need `&mut`
         // dedupe. A bad `ui` keeps the last good view (the last_frame rule).
@@ -1252,6 +1258,39 @@ let draw = (model, tts) =>
         FrameTime { tts, dts }
     }
 
+    // The draw-eval drain: a `Frame.withUiTarget` button's handler must never
+    // reach the `ui` hook's adopted table — otherwise every HUD slot shifts
+    // and clicks resolve against the wrong handlers.
+    #[test]
+    fn draw_eval_ui_target_handlers_never_reach_the_ui_table() {
+        const SRC: &str = r#"
+let hud = RenderTarget.named("hud")
+type Msg = | FromScreen | FromHud
+let init = { n: 0.0 }
+let tick = (model, dt, tts) => model
+let update = (model, msg) => model
+let draw = (model, tts) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.quad() |> Scene.screen(hud))
+  |> Frame.withUiTarget(hud, Ui.button("screen", FromScreen))
+let ui = (model) => Ui.button("hud", FromHud)
+"#;
+        let mut game = FunctorLangEmbeddedGame::create(
+            vec![("game.fun".to_string(), SRC.to_string())],
+            Box::new(NativePlatform),
+        )
+        .expect("boot scene loads");
+        let ft = frame_time(0.016, 0.016);
+        game.tick(ft.clone());
+        let frame = game.render(ft);
+        assert_eq!(frame.ui_targets.len(), 1);
+        // The adopted table holds ONLY the ui hook's button, and the view's
+        // slot numbering starts at 0 — the draw eval's handler was dropped.
+        assert_eq!(game.ui_handlers.len(), 1);
+        assert!(matches!(game.ui(), View::Button { slot: 0, .. }));
+    }
+
     #[test]
     fn boots_ticks_renders_and_reloads_preserving_the_model() {
         let mut game = FunctorLangEmbeddedGame::create(
@@ -1318,7 +1357,10 @@ let draw = (model, tts) =>
             !matches!(&frame.scene.obj, crate::SceneObject::Group(children) if children.is_empty()),
             "serverDraw produced the game's scene, not the empty fallback"
         );
-        assert!(game.state_debug().contains("spin"), "serverTick advanced the model");
+        assert!(
+            game.state_debug().contains("spin"),
+            "serverTick advanced the model"
+        );
 
         // The prefixed sibling of the broken-push case below: a push missing
         // the role's tick names `serverTick`, never the canonical `tick`.
@@ -1465,7 +1507,11 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         )
         .expect("the declared role boots on the push");
         assert_eq!(game.names.tick, "Server.tick");
-        assert!(game.state_debug().contains("n: 7"), "{}", game.state_debug());
+        assert!(
+            game.state_debug().contains("n: 7"),
+            "{}",
+            game.state_debug()
+        );
 
         // A re-push re-resolves the same role and preserves the model.
         crate::protocol::reload_with_role(
@@ -1476,7 +1522,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         .expect("the re-push reloads");
         assert_eq!(game.names.tick, "Server.tick");
         assert_eq!(
-            game.session.global("Server.probe").expect("probe").to_string(),
+            game.session
+                .global("Server.probe")
+                .expect("probe")
+                .to_string(),
             "2",
             "the edit landed"
         );
@@ -1493,14 +1542,15 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert!(err.contains("module Server"), "{err}");
         assert_eq!(game.names.tick, "Server.tick", "the role is intact");
         assert_eq!(
-            game.session.global("Server.probe").expect("probe").to_string(),
+            game.session
+                .global("Server.probe")
+                .expect("probe")
+                .to_string(),
             "2",
             "the old program keeps running"
         );
-        crate::protocol::reload_with_role(&mut game, None, |game| {
-            game.reload_project(&files(3.0))
-        })
-        .expect("a role-less push runs the role already in force");
+        crate::protocol::reload_with_role(&mut game, None, |game| game.reload_project(&files(3.0)))
+            .expect("a role-less push runs the role already in force");
         assert_eq!(game.names.tick, "Server.tick");
 
         // A DIFFERENT role on the model-preserving route is refused: adopting
@@ -1736,10 +1786,10 @@ let draw = (model, tts) =>
         .expect("sampled-input game loads");
         let snapshot = |x| crate::InputSnapshot {
             mouse: crate::MouseSnapshot {
-                    x,
-                    y: 0,
-                    ..Default::default()
-                },
+                x,
+                y: 0,
+                ..Default::default()
+            },
             ..crate::InputSnapshot::default()
         };
 
@@ -1869,7 +1919,8 @@ let draw = (model, tts) =>
             .expect("re-adding the hook reloads");
         assert!(readded.contains("history recomputed"), "{readded}");
 
-        game.seek_scene_to(2).expect("rebuilt future remains seekable");
+        game.seek_scene_to(2)
+            .expect("rebuilt future remains seekable");
         let model = game.state_debug();
         assert!(model.contains("sum: 6"), "{model}");
     }
@@ -1916,7 +1967,8 @@ let draw = (model, tts) =>
         game.seek_scene_to(0).expect("frame zero is seekable");
         let status = game.reload_source(sampled).expect("later reload succeeds");
         assert!(status.contains("history recomputed"), "{status}");
-        game.seek_scene_to(1).expect("rebuilt future remains seekable");
+        game.seek_scene_to(1)
+            .expect("rebuilt future remains seekable");
         let model = game.state_debug();
         assert!(model.contains("sum: 3"), "{model}");
     }
@@ -1971,7 +2023,8 @@ let draw = (model, tts) =>
             .reload_source(sampled)
             .expect("same-hook reload revalidates the current branch");
         assert!(status.contains("history recomputed"), "{status}");
-        game.seek_scene_to(2).expect("rebuilt future remains seekable");
+        game.seek_scene_to(2)
+            .expect("rebuilt future remains seekable");
         let model = game.state_debug();
         assert!(model.contains("sum: 6"), "{model}");
     }

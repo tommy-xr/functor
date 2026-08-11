@@ -2723,6 +2723,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 scene: scene.0,
                 lights: lights.into_iter().map(|l| l.0).collect(),
                 render_targets: vec![],
+                ui_targets: vec![],
                 fog: None,
                 skybox: None,
                 clear_color: None,
@@ -2740,6 +2741,15 @@ is a Frame.create/createLit(…) rendered into the target each frame, before \
 frame's main pass",
         |target: FunctorLangRenderTarget, target_frame: FunctorLangFrame, frame: FunctorLangFrame| {
             FunctorLangFrame(Frame::with_render_target(frame.0, target.0, target_frame.0))
+        },
+    );
+    reg.fn3(
+        "Frame.withUiTarget",
+        "Frame.withUiTarget(target, view, frame) — view is a Ui.* tree \
+painted into the target each frame, before frame's main pass. Display-only: \
+interactive widgets render but their handlers are inert",
+        |target: FunctorLangRenderTarget, view: FunctorLangView, frame: FunctorLangFrame| {
+            FunctorLangFrame(Frame::with_ui_target(frame.0, target.0, view.0))
         },
     );
     reg.fn2(
@@ -4982,6 +4992,21 @@ pub fn push_ui_handler(handler: UiHandler) -> u32 {
 pub fn take_ui_handlers() -> Vec<UiHandler> {
     UI_HANDLERS.with(|h| std::mem::take(&mut *h.borrow_mut()))
 }
+
+/// Drop whatever handlers the just-finished `draw` evaluation registered
+/// (interactive widgets in `Frame.withUiTarget` trees — display-only for
+/// now), so they neither accumulate across frames nor pollute the
+/// `ui`/`webview` tables the producer adopts next. Returns whether anything
+/// was dropped, so the caller can report [`DRAW_EVAL_HANDLERS_WARNING`] once.
+pub fn drop_draw_eval_ui_handlers() -> bool {
+    !take_ui_handlers().is_empty()
+}
+
+/// The one-time warning both producers report when
+/// [`drop_draw_eval_ui_handlers`] drops something.
+pub const DRAW_EVAL_HANDLERS_WARNING: &str =
+    "[functor-lang] interactive Ui widgets in a draw-eval tree (e.g. \
+Frame.withUiTarget) are display-only for now; their handlers are ignored";
 
 /// Put a saved handler table back — the inspector-replay bracket: replaying a
 /// journaled call (or draw) that evaluates `Ui.*` pushes handlers the NEXT
@@ -8834,6 +8859,54 @@ Scene.cube() |> Scene.rotateY(Angle.radians(1.5707964)))",
         // And the whole frame round-trips through the protocol.
         let back: Frame = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // The ui-target vocabulary: a branded target declared once, written by a
+    // Ui.* tree (Frame.withUiTarget) and read by Scene.screen — the frame
+    // carries the (target, view) pass and it all speaks the protocol.
+    #[test]
+    fn functor_lang_snippet_declares_a_ui_target_frame() {
+        let frame = frame_of(
+            "let hud = RenderTarget.named(\"hud\") |> RenderTarget.sized(256.0, 128.0)\n\
+             let main = () =>\n\
+             Frame.create(\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.quad() |> Scene.screen(hud))\n\
+             |> Frame.withUiTarget(hud, Ui.column([Ui.text(\"score 3\")]))",
+        );
+        assert_eq!(frame.ui_targets.len(), 1);
+        let pass = &frame.ui_targets[0];
+        assert_eq!(pass.target.id, "hud");
+        assert_eq!((pass.target.width, pass.target.height), (256, 128));
+        assert!(matches!(&pass.view, View::Column(items) if items.len() == 1));
+        // The whole frame round-trips through the protocol.
+        let json = serde_json::to_string(&frame).expect("serialize");
+        let back: Frame = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // Interactive widgets in a ui-target tree are display-only: the draw eval
+    // pushes their handlers into the thread-local table, and the producers
+    // drop that table right after the draw eval (with a one-time warning) so
+    // it neither leaks across frames nor pollutes the `ui` hook's table.
+    // This pins WHERE those handlers land — the draw eval's table.
+    #[test]
+    fn ui_target_button_handlers_land_in_the_draw_eval_table() {
+        let _ = take_ui_handlers(); // isolate from other tests on this thread
+        let frame = frame_of(
+            "let hud = RenderTarget.named(\"hud\")\n\
+             let main = () =>\n\
+             Frame.create(\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.quad() |> Scene.screen(hud))\n\
+             |> Frame.withUiTarget(hud, Ui.button(\"go\", 1))",
+        );
+        assert!(matches!(
+            &frame.ui_targets[0].view,
+            View::Button { slot: 0, .. }
+        ));
+        let handlers = take_ui_handlers();
+        assert_eq!(handlers.len(), 1, "the button registered one handler");
     }
 
     // Scene.screen is an emissive (fullbright) white surface over the target's
