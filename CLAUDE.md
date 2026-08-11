@@ -213,7 +213,7 @@ by default; `--format json`, `--output <path>`, and `--check <path>` are availab
 `functor.json` or `game.fun`; `3d` is the default template:
 
 ```sh
-./target/debug/functor -d my-game init [3d|fps]
+./target/debug/functor -d my-game init [3d|fps|multiplayer]
 ```
 
 **Run / build a game.** The CLI operates on a directory with a `functor.json`
