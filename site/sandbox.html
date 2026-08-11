@@ -40,6 +40,17 @@
     <!--/@header-->
 
     <main class="sandbox-split">
+      <!--
+        The file sidebar, hidden until the loaded example proves it has more
+        than one .fun (src/sandbox.tsx unhides it, and the FilePane island
+        replaces these children on mount). A single-file example never sees it.
+      -->
+      <aside class="file-pane" hidden>
+        <div class="file-pane-head">
+          <span class="file-pane-title">Files</span>
+        </div>
+        <div id="file-list" class="file-list"></div>
+      </aside>
       <section class="editor-pane">
         <div id="editor"></div>
       </section>

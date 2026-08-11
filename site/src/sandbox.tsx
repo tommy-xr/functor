@@ -3,8 +3,11 @@
 // (project-bridge.ts): the page owns every source of the loaded example, boots
 // the player as `player.html?project=inline`, and pushes the whole file set as
 // `functor-lang-set-project` — the runtime hot-swaps the program with the model
-// preserved and replies `functor-lang-set-source-result`. The editor still
-// edits ONE buffer (the entry); a file switcher is a separate concern.
+// preserved and replies `functor-lang-set-source-result`. ANY file of the
+// example is editable: the sidebar (the IDE's FilePane, rows only — an example
+// is read, not authored, so there is no new/delete/rename) switches which one
+// the editor holds, and every edit pushes the whole set. So editing netpong's
+// server.fun hot-reloads the server pane, at its own entry, model preserved.
 //
 // Binary assets are NOT part of that push: the runtime resolves an `Asset.*`
 // locator as a URL against player.html, so an example's png/glb/ogg is served
@@ -30,10 +33,12 @@ import type { EditorKeybindings, EditorKeybindingsState } from "./editor-keybind
 import { functorLangLanguage, synthwaveEditorTheme } from "./functor-lang.js";
 import {
   setupLangIntel,
+  setLangContext,
   analyzeCached,
   completeAt,
   resetIntel,
   refreshIntel,
+  refreshLiveValues,
   onDiagnostics,
   wireLiveTrace,
   currentLiveHints,
@@ -47,6 +52,8 @@ import type { RuntimeTargetState } from "./runtime-target-core.js";
 import { createStore } from "./store.js";
 import { SandboxControls } from "./components/SandboxControls.js";
 import type { PickerState, ClientsState } from "./components/SandboxControls.js";
+import { FilePane } from "./components/FilePane.js";
+import type { FileListState } from "./components/FilePane.js";
 import { initMultiplayerPanes, MAX_CLIENTS } from "./mp-panes.js";
 import type { MultiplayerPanes, PaneProgram } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
@@ -62,6 +69,9 @@ interface SandboxSeam {
   status: () => { state: string; text: string; message: string };
   runtimeTarget: () => RuntimeTargetState;
   getSource: () => string;
+  /** The loaded example's file set (entry first) and which file is open. */
+  files: () => { paths: string[]; active: string };
+  openFile: (path: string) => void;
   triggerComplete(source: string, cursor: number): void;
   acceptCompletion: () => boolean;
   keybindings: () => EditorKeybindingsState;
@@ -200,22 +210,38 @@ window.addEventListener("hashchange", () => {
 });
 // The loaded example's whole file set, ENTRY FIRST — the paths are the ones the
 // built site serves, so `file = module` derives the same module names the
-// player used to get by fetching them. The editor's buffer is the entry's
-// source (the only file it edits for now); every push carries the rest
-// unchanged, so a multi-entry example's other roles keep resolving.
+// player used to get by fetching them. The order is load-bearing beyond
+// modules: every pane boots at `files[0]` (a role re-enters the same set at its
+// own file — see mp-panes), so switching the OPEN file must never reorder it.
+// `active` is a pointer, not a position.
 let project: ProjectFile[] = [];
+let active = "";
 // Binary assets stay a fetched, page-relative concern (see the header note);
 // they are only forwarded to an external runtime target, which has no site to
 // fetch them from.
 let assetSources: [string, Uint8Array][] = [];
 
-/** The file the editor is showing — the entry, until a file switcher lands. */
-const activePath = () => project[0]?.path ?? "";
+/** The file the editor is showing. */
+const activePath = () => active;
 
-// Mirror the live buffer into the entry and hand back the file set to push.
+const activeFile = () => project.find((file) => file.path === active);
+
+// Mirror the live buffer into the open file and hand back the file set to push.
 const projectFiles = (): ProjectFile[] => {
-  if (project[0]) project[0].source = view.state.doc.toString();
+  const file = activeFile();
+  if (file) file.source = view.state.doc.toString();
   return project;
+};
+
+// The sidebar's view of the project: the paths, and which one is open. The
+// list only appears for a multi-file example — a single-file sample looks
+// exactly as it did before the switcher existed.
+const fileList = createStore<FileListState>({ files: [], active: "" });
+const fileListHost = document.querySelector(".file-pane") as HTMLElement;
+
+const publishFiles = () => {
+  fileList.set({ files: project.map((file) => file.path), active });
+  fileListHost.hidden = project.length < 2;
 };
 
 const bridge = new ProjectBridge(frame, {
@@ -296,6 +322,13 @@ const view = new EditorView({
 });
 editorKeybindings.attach(view);
 
+// Project-aware language intelligence: the provider hands the whole loaded
+// file set plus the open path, so diagnostics and completion see the sibling
+// modules (netpong's client.fun calls `Protocol.*`, which single-file analysis
+// could only report as unknown). A single-file example is the same call with
+// one file.
+setLangContext(() => ({ active, files: project }));
+
 // Live type diagnostics: load the analysis wasm lazily and, once ready, append
 // the CodeMirror linter to the already-constructed editor. Degrades silently —
 // if the pkg is absent the promise resolves to no extensions and the sandbox is
@@ -314,8 +347,7 @@ wireLiveTrace(view, statusBar, frame, langReady);
 // editor to it. Positions re-clamp at click time (the doc may have moved on).
 onDiagnostics((diags) => {
   // The lint pass is of the file the editor is showing — name it, rather than
-  // asserting a `game.fun` no example is actually called (the IDE's rule, with
-  // the entry standing in for its `project.active`).
+  // asserting a `game.fun` no example is actually called (the IDE's rule).
   const file = activePath();
   statusBar.setProblems(
     diags.map((d) => {
@@ -325,6 +357,11 @@ onDiagnostics((diags) => {
         message: d.message,
         loc: `${file} ${line.number}:${d.from - line.from + 1}`,
         jump: () => {
+          // A row can outlive the buffer it was measured in (a file switch, or
+          // a whole example switch, during the lint debounce): reopen its file
+          // before seeking, and drop the row entirely if it's gone.
+          if (!project.some((candidate) => candidate.path === file)) return;
+          if (activePath() !== file) openFile(file);
           const len = view.state.doc.length;
           const from = Math.min(d.from, len);
           view.dispatch({
@@ -356,7 +393,9 @@ const setDoc = (files: ProjectFile[], assets: [string, Uint8Array][] = []) => {
   // the wasm completion cache so the previous program's candidates can't leak.
   resetIntel();
   project = files;
+  active = files[0].path; // a fresh load always opens the entry
   assetSources = assets;
+  publishFiles();
   programmaticEdit = true;
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: files[0].source } });
   programmaticEdit = false;
@@ -365,6 +404,28 @@ const setDoc = (files: ProjectFile[], assets: [string, Uint8Array][] = []) => {
   // lens rule would otherwise pin the old program's lenses to the new buffer.
   refreshIntel(view);
   runtimeTarget.projectChanged({ fresh: true });
+};
+
+// Switch which file the editor holds. Nothing is pushed: the file set is
+// unchanged, so the running panes stay exactly as they are — only the buffer
+// (and, through the language context, what analysis calls the active module)
+// moves.
+const openFile = (path: string) => {
+  if (path === active) return;
+  const next = project.find((file) => file.path === path);
+  if (!next) return;
+  const current = activeFile();
+  if (current) current.source = view.state.doc.toString();
+  active = path;
+  programmaticEdit = true;
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next.source } });
+  programmaticEdit = false;
+  publishFiles();
+  // A wholesale document replacement: drop the outgoing file's decorations and
+  // force a fresh pass rather than waiting out the lint debounce, then re-gate
+  // the paused trace's live values against the newly opened buffer.
+  refreshIntel(view);
+  refreshLiveValues(view);
 };
 
 const fromBase64Url = (b64u: string) =>
@@ -544,6 +605,13 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
     onClients={selectClients}
   />
 );
+// Rows only: `onNew`/`onDelete` are the IDE's, and an example's file set is
+// the sample's rather than the reader's. The host element carries the
+// sidebar's visibility (publishFiles), so a single-file example renders none.
+// `entry` is the delete guard and the entry tooltip — neither applies here, so
+// every row keeps its full path as the tooltip (the useful thing to show when
+// the rows are basenames of a directory).
+createRoot(fileListHost).render(<FilePane store={fileList} entry="" onOpen={openFile} />);
 const statusBarHost = document.getElementById("statusbar")!;
 statusBarHost.className = "statusbar";
 createRoot(statusBarHost).render(
@@ -567,6 +635,8 @@ if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initialExample);
     return { state, text, message: detail };
   },
   runtimeTarget: () => runtimeTarget.state(),
+  files: () => ({ paths: project.map((file) => file.path), active }),
+  openFile,
   keybindings: () => editorKeybindings.state.getSnapshot(),
   setKeybindings: (mode) => editorKeybindings.setMode(mode),
   getSource: () => view.state.doc.toString(),

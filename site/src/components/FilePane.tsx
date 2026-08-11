@@ -1,10 +1,15 @@
-// The IDE's file sidebar, and the editor tab that names the open file. Both
+// The file sidebar, and the editor tab that names the open file. Both
 // render one store — the project's file paths plus the active one — so opening,
 // adding, or deleting a file is a single `set` on the page's side instead of a
 // hand-built teardown-and-rebuild of the list.
 //
 // The page still owns the project itself (the buffers, localStorage, the push
 // to the preview); this island only shows the paths and reports clicks.
+//
+// Two pages render it. The IDE owns its project outright, so it passes `onNew`
+// and `onDelete` and gets the + / × affordances. The sandbox shows a LOADED
+// example — the file set is the sample's, not the reader's — so it passes
+// neither, and the same list is purely a switcher.
 
 import { useSyncExternalStore } from "react";
 import type { Store } from "../store.js";
@@ -20,9 +25,16 @@ export interface FilePaneProps {
   /** The program root — it names itself in the tooltip and cannot be deleted. */
   entry: string;
   onOpen: (path: string) => void;
-  onDelete: (path: string) => void;
-  onNew: () => void;
+  /** Omitted where the file set is not the reader's to change (the sandbox). */
+  onDelete?: (path: string) => void;
+  /** Omitted where the file set is not the reader's to change (the sandbox). */
+  onNew?: () => void;
 }
+
+// A sandbox example lives in a directory (`examples/netpong/server.fun`), and
+// the module is the STEM either way — so the row shows the file and the
+// tooltip keeps the full path. The IDE's flat names are their own basename.
+const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 // The Functor mark, shown on every .fun file row — the same art as the site
 // favicon and the VS Code file icon (docs/media/functor-icon.svg).
@@ -41,9 +53,11 @@ export const FilePane = ({ store, entry, onOpen, onDelete, onNew }: FilePaneProp
     <>
       <div className="file-pane-head">
         <span className="file-pane-title">Files</span>
-        <button id="new-file" type="button" title="New .fun file" onClick={onNew}>
-          +
-        </button>
+        {onNew && (
+          <button id="new-file" type="button" title="New .fun file" onClick={onNew}>
+            +
+          </button>
+        )}
       </div>
       <div id="file-list" className="file-list">
         {files.map((path) => (
@@ -54,10 +68,10 @@ export const FilePane = ({ store, entry, onOpen, onDelete, onNew }: FilePaneProp
               onClick={() => onOpen(path)}
             >
               <FileIcon />
-              <span className="file-label">{path}</span>
+              <span className="file-label">{basename(path)}</span>
             </button>
             {/* Every file but the entry can be deleted (the entry is the root). */}
-            {path !== entry && (
+            {onDelete && path !== entry && (
               <button
                 className="file-delete"
                 title={`Delete ${path}`}

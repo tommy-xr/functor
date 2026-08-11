@@ -1356,6 +1356,13 @@ a:hover {
   min-height: 0;
 }
 
+/* A multi-file example adds the file sidebar as a first column. It is narrower
+   than the IDE's (these rows are switched, not managed) and it comes out of the
+   editor's share, never the preview's — the scene keeps its width. */
+.sandbox-split:has(> .file-pane:not([hidden])) {
+  grid-template-columns: 164px minmax(320px, 38%) 1fr;
+}
+
 .editor-pane {
   display: flex;
   flex-direction: column;
@@ -1415,6 +1422,16 @@ a:hover {
     grid-template-rows: 1fr 1fr;
   }
 
+  /* Stacked, the sidebar keeps its column and spans both rows — the same shape
+     the IDE takes at its own breakpoint. */
+  .sandbox-split:has(> .file-pane:not([hidden])) {
+    grid-template-columns: 128px 1fr;
+  }
+
+  .sandbox-split > .file-pane {
+    grid-row: span 2;
+  }
+
   .editor-pane {
     border-right: none;
     border-bottom: 1px solid var(--line);
@@ -1439,6 +1456,12 @@ a:hover {
   border-right: 1px solid var(--line);
   background: var(--bg-panel);
   min-height: 0;
+}
+
+/* The sandbox hides the sidebar for a single-file example; `display: flex`
+   above would otherwise beat the attribute. */
+.file-pane[hidden] {
+  display: none;
 }
 
 .file-pane-head {

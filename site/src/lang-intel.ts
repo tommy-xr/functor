@@ -829,17 +829,24 @@ const hintOffset = (source: string, b: { name: string; start: number; end: numbe
   return found >= 0 ? b.start + found + b.name.length : b.end;
 };
 
-// The wire's file name for the buffer being edited: the active path in
-// project mode (the IDE), else the trace's single user file (the sandbox
-// serves examples under their own names — `hero.fun`, not `game.fun`).
-// SINGLE-FILE ASSUMPTION: a sandbox program that ever loads sibling modules
-// would yield multiple sources here and the overlay stays hidden — the
-// sandbox is a one-buffer editor by design, so there is nothing to overlay
-// the siblings on anyway.
+// The wire's file name for the buffer being edited — the name the TRACE uses,
+// which is what every recorded site is keyed by. In project mode it is the
+// active path resolved against the trace's own naming: the IDE's flat modules
+// come back identical, while the sandbox pushes site paths
+// (`examples/netpong/server.fun`) that the runtime reports by their file name
+// (`server.fun`, the module stem). Matching exactly first keeps the IDE
+// unambiguous. Without a context provider there is one user file and it is it.
+const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
 const liveFileName = (docString: string): string | null => {
-  const args = projectArgs(docString);
-  if (args) return args.active;
   const sources = liveTrace?.sources || [];
+  const args = projectArgs(docString);
+  if (args) {
+    const hit =
+      sources.find((source) => source.file === args.active) ??
+      sources.find((source) => fileName(source.file) === fileName(args.active));
+    return hit ? hit.file : null;
+  }
   return sources.length === 1 ? sources[0].file : null;
 };
 
@@ -1107,6 +1114,24 @@ const expectGutter = gutter({
   markers: (view) => view.state.field(expectField, false) || RangeSet.empty,
 });
 
+// The browser evaluates expects HOSTLESS (the analysis wasm has no engine
+// prelude — `NoHost`), so a project whose module-level defs call an engine
+// external (netpong's `let cyan = Color.rgb(…)`) can't load its defs at all
+// and the wasm reports every expect as `error`. That is a limitation of where
+// the tests are being run, not a failing test — `functor -d <dir> test` runs
+// the same expects green under the real prelude. Report those rows as what
+// they are: UNRUNNABLE (a gray gutter dot, keeping the detail on hover), which
+// also keeps them out of the Problems panel.
+const HOSTLESS_DEFS = /^defs failed to load: unknown external/;
+
+const hostless = (rows: ExpectRow[] | null): ExpectRow[] | null =>
+  rows &&
+  rows.map((row) =>
+    row.state === "error" && HOSTLESS_DEFS.test(row.detail ?? "")
+      ? { ...row, state: "unrunnable" }
+      : row
+  );
+
 // Evaluate the active file's expects, memoized per (doc, context) key like
 // analyzeCached. Returns rows ([{from, state, detail}]), null when the
 // project didn't load (keep the current gutter), or null when unavailable.
@@ -1121,7 +1146,7 @@ const expectRowsCached = (docString: string): ExpectRow[] | null => {
       ? args.filesJson
       : JSON.stringify([{ path: "game.fun", source: docString }]);
     const active = args ? args.active : "game.fun";
-    rows = JSON.parse(expectsProjectFn(filesJson, active, EXPECT_BUDGET)).rows;
+    rows = hostless(JSON.parse(expectsProjectFn(filesJson, active, EXPECT_BUDGET)).rows);
   } catch (e) {
     // A wasm trap (e.g. a pathologically deep value exhausting the engine
     // stack on teardown — the browser has no big-stack worker seam) can

@@ -42,6 +42,7 @@
     "test:site": "node e2e/site-sandbox.mjs",
     "test:net-coordinator": "node e2e/net-coordinator.mjs",
     "test:sandbox-mp": "node e2e/sandbox-mp.mjs",
+    "test:sandbox-files": "node e2e/sandbox-files.mjs",
     "test:editor-keybindings": "node e2e/editor-keybindings.mjs",
     "test:detached-camera": "node e2e/detached-camera.mjs",
     "test:ide": "node e2e/ide-project.mjs",
