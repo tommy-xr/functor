@@ -409,18 +409,14 @@ export const EXAMPLES: Example[] = [
 
 /**
  * The games carousel, in card order. Every consumer — build.mjs (which emits
- * `dist/examples/gallery.json` and injects the cards into index.html) and
- * site/demos/box-art.mjs (which captures the media) — reads THIS, so the set
- * and its order cannot drift between them. A duplicate `order` would make the
- * card sequence depend on `EXAMPLES` order, so refuse it outright.
+ * `dist/examples/gallery.json`) and site/demos/box-art.mjs (which captures the
+ * media) — reads THIS, so the set and its order cannot drift between them.
+ *
+ * Deliberately just a sort, with no validation: this module is in the SANDBOX
+ * bundle too (sandbox.tsx imports it), and a module-eval `throw` here would take
+ * a page down over a build-data mistake. build.mjs rejects a duplicate `order`
+ * instead, where it is a build error.
  */
-export const GALLERY: (Example & { gallery: ExampleGallery })[] = (() => {
-  const entries = EXAMPLES.filter(
-    (example): example is Example & { gallery: ExampleGallery } => example.gallery !== undefined
-  ).sort((a, b) => a.gallery.order - b.gallery.order);
-  const orders = new Set(entries.map((entry) => entry.gallery.order));
-  if (orders.size !== entries.length) {
-    throw new Error("two gallery examples declare the same `order`");
-  }
-  return entries;
-})();
+export const GALLERY: (Example & { gallery: ExampleGallery })[] = EXAMPLES.filter(
+  (example): example is Example & { gallery: ExampleGallery } => example.gallery !== undefined
+).sort((a, b) => a.gallery.order - b.gallery.order);

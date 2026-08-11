@@ -5,7 +5,8 @@
 # One piece every 20 frames: rotate, shuffle it a few columns off centre, then
 # hard-drop (Space). The column offsets cycle over the whole board so the stack
 # grows flat-ish and keeps clearing rows instead of topping out. Long enough to
-# cover the captured window (frames 300-474).
+# cover the window the box-art recipe captures (site/demos/box-art.mjs owns it —
+# do not restate the frame numbers here, they drift).
 #
 #   functor -d examples/tetris run native --input-script boxart.script \
 #     --script-dt 0.0166667 --capture-at-frame 300 --capture-frame /tmp/tetris.png

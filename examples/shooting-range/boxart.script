@@ -10,7 +10,7 @@
 # The weapon is full-auto, so one `Mouse.Left down` is a sustained burst: the
 # targets go down, the muzzle flashes, the gun climbs. R reloads once the
 # magazine is out, so a longer capture window still has something happening.
-# Captured window: frames 60-176.
+# The window the box-art recipe captures is named in site/demos/box-art.mjs.
 #
 #   functor -d examples/shooting-range run native --input-script boxart.script \
 #     --script-dt 0.0166667 --capture-at-frame 100 --capture-frame /tmp/sr.png
