@@ -140,6 +140,9 @@ jobs:
       - name: Run scrubber model tests
         run: npm run test:scrubber
 
+      - name: Run share-link codec tests
+        run: npm run test:share-link
+
       - name: Run detached-camera browser test
         run: npm run test:detached-camera
 
