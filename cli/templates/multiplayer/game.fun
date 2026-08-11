@@ -3,6 +3,8 @@
 //   functor -d . run native --entry server
 //   functor -d . run native                  # a player (repeat for a second)
 // Arrows or WASD move. Saving this file hot-reloads BOTH roles at once.
+// Start the authority FIRST: a client that finds nobody home says so in its
+// status line and keeps retrying, backing off up to 8s between attempts.
 //
 // Both roles are inline modules of this ONE file — `module Client` and
 // `module Server` at the bottom; each block's members ARE that role's contract
@@ -16,6 +18,7 @@ let bind = "127.0.0.1:9300"                  // the server's listen address…
 let serverUrl = "ws://127.0.0.1:9300/game"   // …and the string a client dials
 
 let half = 8.0          // arena half-extent (world units)
+let boxHalf = 0.6       // half a player square, so the clamp keeps it inside
 let moveSpeed = 7.0     // units/second
 
 type Player = { pid: float, x: float, y: float }
@@ -61,7 +64,7 @@ let newWorld = (): World => { pilots: [], nextPid: 0.0 }
 
 let join = (w: World): (World, float) =>      // allocate a pid and spawn it
   let pid = w.nextPid in
-  let spawn = { pid: pid, x: 0.0 - 6.0 + Math.mod(pid, 4.0) * 4.0, y: 0.0 } in
+  let spawn = { pid: pid, x: -6.0 + Math.mod(pid, 4.0) * 4.0, y: 0.0 } in
   ({ pilots: [{ player: spawn, intent: still }, ..w.pilots], nextPid: pid + 1.0 }, pid)
 
 let leave = (pid: float, w: World): World =>
@@ -74,11 +77,20 @@ let recv = (senderPid: float, wire: Wire, w: World): World =>
   | Steer(intent) =>
       { w with pilots: w.pilots |> List.map((p: Pilot) =>
           if p.player.pid == senderPid then { p with intent: intent } else p) }
-  | _ => w              // Join/Welcome/Snapshot: nothing to fold here
+  | Join => w             // the handshake, answered where seats are handed out
+  | Welcome(_) => w       // server -> client only; nothing to fold
+  | Snapshot(_) => w      // server -> client only; nothing to fold
 
+// The authority moves a player. NEVER TRUST THE CLIENT: an intent arrives over
+// the wire, so clamp it to one unit per axis here rather than believing a peer
+// that claims dx = 1000. Diagonals are evened out so they aren't 1.41x faster.
 let stepPlayer = (i: Intent, dt: float, p: Player): Player =>
-  { p with x: Math.clamp(0.0 - half, half, p.x + i.dx * moveSpeed * dt),
-           y: Math.clamp(0.0 - half, half, p.y + i.dy * moveSpeed * dt) }
+  let dx = Math.clamp(-1.0, 1.0, i.dx) in
+  let dy = Math.clamp(-1.0, 1.0, i.dy) in
+  let even = if dx != 0.0 && dy != 0.0 then 0.7071 else 1.0 in
+  let reach = half - boxHalf in
+  { p with x: Math.clamp(-reach, reach, p.x + dx * even * moveSpeed * dt),
+           y: Math.clamp(-reach, reach, p.y + dy * even * moveSpeed * dt) }
 
 let step = (dt: float, w: World): World =>
   { w with pilots: w.pilots |> List.map((p: Pilot) =>
@@ -112,24 +124,29 @@ let board = (me: float, status: string, players: List<Player>) =>
 
 module Client {
   type Model = { conn: Option.t<float>, myPid: float,
-                 players: List<Player>, intent: Intent }
+                 players: List<Player>, intent: Intent, note: string }
 
-  let init: Model = { conn: Option.None, myPid: 0.0 - 1.0,
-                      players: [], intent: still }
+  let init: Model = { conn: Option.None, myPid: -1.0, players: [],
+                      intent: still, note: "waiting for the server..." }
 
   // Declaring the connection in `subscriptions` keeps the socket open.
   let subscriptions = (m: Model) => Sub.connect(serverUrl, toMsg)
 
   let update = (m: Model, msg: Msg) =>
     match msg with
-    | Opened(id) => ({ m with conn: Option.Some(id) }, Effect.sendMsg(id, Join))
+    | Opened(id) => ({ m with conn: Option.Some(id), note: "" },
+                      Effect.sendMsg(id, Join))
     | Packet(_, wire) =>
         (match wire with
          | Welcome(pid) => { m with myPid: pid }
          | Snapshot(players) => { m with players: players }
-         | _ => m)                     // Join/Steer are client -> server only
-    | Closed(_) => { m with conn: Option.None, players: [] }
-    | Noise(_) => m                    // a hiccup is not a disconnect
+         | Join => m                   // Join/Steer are client -> server only
+         | Steer(_) => m)
+    | Closed(_) => { m with conn: Option.None, players: [],
+                            note: "the server went away..." }
+    // A hiccup is not a disconnect — but SHOW it: a server that never came up
+    // reports here ("connection refused"), and silence would be baffling.
+    | Noise(why) => { m with note: why }
 
   // Held LEVELS, read once per tick — exactly what the Steer forwards.
   let sampledInput = (m: Model, snap: Input.snapshot) =>
@@ -149,7 +166,7 @@ module Client {
 
   let draw = (m: Model, tts: float) =>
     match m.conn with
-    | Option.None => board(m.myPid, "connecting to the server...", m.players)
+    | Option.None => board(m.myPid, m.note, m.players)
     | Option.Some(_) => board(m.myPid, "arrows / WASD to move", m.players)
 }
 
@@ -160,7 +177,7 @@ module Client {
 module Server {
   type Seat = { cid: float, pid: float }   // connection -> the player it steers
 
-  let init = { world: newWorld(), seats: [] }
+  let init = { world: newWorld(), seats: [], note: "" }
 
   // Declaring the listener in `subscriptions` keeps the server bound.
   let subscriptions = (m) => Sub.listen(bind, toMsg)
@@ -170,7 +187,9 @@ module Server {
 
   let update = (m, msg: Msg) =>
     match msg with
-    | Opened(_) => m       // a socket, not yet a player: the Join seats it
+    // A socket, not yet a player: the Join seats it. An accepted socket also
+    // proves the listener is up, so it clears any earlier complaint.
+    | Opened(_) => { m with note: "" }
     | Packet(cid, wire) =>
         (match wire with
          | Join =>          // the handshake: seat a player, answer its identity
@@ -190,7 +209,9 @@ module Server {
            { m with world: m.world |> leave(pid),
                     seats: m.seats |> List.filter((s: Seat) => not (s.cid == cid)) }
          | Option.None => m)
-    | Noise(_) => m
+    // A failed bind (the port already in use) arrives here — show it rather
+    // than drawing a healthy-looking arena nobody can reach.
+    | Noise(why) => { m with note: why }
 
   let tick = (m, dt: float, tts: float) =>
     let stepped = m.world |> step(dt) in
@@ -199,6 +220,6 @@ module Server {
      Effect.batch(m.seats |> List.map((s: Seat) => Effect.sendMsg(s.cid, snap))))
 
   let draw = (m, tts: float) =>   // the authority holds no seat of its own
-    board(0.0 - 1.0, "server - the authority",
+    board(-1.0, if m.note == "" then "server - the authority" else m.note,
           m.world.pilots |> List.map((p: Pilot) => p.player))
 }

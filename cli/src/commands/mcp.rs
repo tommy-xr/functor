@@ -1067,7 +1067,10 @@ pub struct InitGameArgs {
     /// Directory to scaffold, absolute or relative to the MCP server's
     /// working directory. It is created if it does not exist.
     pub dir: String,
-    /// `"3d"` (default — a small lit scene) or `"fps"` (WASD + mouse-look).
+    /// `"3d"` (default — a small lit scene), `"fps"` (WASD + mouse-look), or
+    /// `"multiplayer"` (an authoritative client/server starter whose `client`
+    /// and `server` roles share one file; run the authority with
+    /// `launch_game`'s `entry: "server"`).
     pub template: Option<String>,
 }
 
@@ -2073,7 +2076,9 @@ in the list have already advanced; the group is no longer in lockstep."
 
     /// Scaffold a new project on disk — the same `functor.json` + `game.fun`
     /// starter `functor init` writes. `template` is `"3d"` (default, a small
-    /// lit scene) or `"fps"` (WASD + mouse-look). Existing files are never
+    /// lit scene), `"fps"` (WASD + mouse-look), or `"multiplayer"` (an
+    /// authoritative client/server starter — launch its authority with
+    /// `launch_game`'s `entry: "server"`). Existing files are never
     /// overwritten. The directory it returns is ready to pass straight to
     /// `launch_game`'s `dir`.
     #[tool]

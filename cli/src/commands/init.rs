@@ -216,7 +216,7 @@ mod tests {
         name: &str,
         template: Template,
         expected: &[(&str, &'static str)],
-    ) {
+    ) -> TestDir {
         let directory = TestDir::new(name);
         execute(&directory.0, &template).unwrap();
 
@@ -230,11 +230,12 @@ mod tests {
             );
         }
         assert_project_typechecks(&directory.0);
+        directory
     }
 
     #[test]
     fn three_d_template_creates_a_typechecked_project() {
-        assert_template_scaffolds(
+        let _ = assert_template_scaffolds(
             "3d",
             Template::ThreeD,
             &[("functor.json", MANIFEST_3D), ("game.fun", GAME_3D)],
@@ -243,7 +244,7 @@ mod tests {
 
     #[test]
     fn fps_template_creates_a_typechecked_project() {
-        assert_template_scaffolds(
+        let _ = assert_template_scaffolds(
             "fps",
             Template::Fps,
             &[("functor.json", MANIFEST_FPS), ("game.fun", GAME_FPS)],
@@ -256,7 +257,7 @@ mod tests {
     /// resolved and contract-checked against the loaded project.
     #[test]
     fn multiplayer_template_creates_a_typechecked_project() {
-        assert_template_scaffolds(
+        let directory = assert_template_scaffolds(
             "multiplayer",
             Template::Multiplayer,
             &[
@@ -265,8 +266,6 @@ mod tests {
             ],
         );
 
-        let directory = TestDir::new("multiplayer-roles");
-        execute(&directory.0, &Template::Multiplayer).unwrap();
         let config = crate::commands::functor_lang_project::detect(&directory.0.to_string_lossy())
             .expect("the scaffolded functor.json is a Functor Lang project");
         let project = functor_lang::project::load_with_bundled_modules(
@@ -275,8 +274,12 @@ mod tests {
             &functor_prelude::bundled_modules(),
         )
         .unwrap_or_else(|error| panic!("template should load: {}", error.render()));
+        // The role NAMES are part of the contract too: the header tells the
+        // user to run `--entry server`, and a bare `run` must pick the client.
         let roles = config.all().expect("both roles resolve");
-        assert_eq!(roles.len(), 2, "client and server");
+        let names: Vec<&str> = roles.iter().map(|role| role.role.as_str()).collect();
+        assert_eq!(names, ["client", "server"]);
+        assert_eq!(config.select(None).unwrap().role, "client");
         for role in roles {
             role.check_contract(&project)
                 .unwrap_or_else(|error| panic!("role contract should validate: {error}"));
