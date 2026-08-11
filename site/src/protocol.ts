@@ -22,6 +22,15 @@ export interface ProjectFile {
   source: string;
 }
 
+/**
+ * A project path's file name — its last segment. The IDE's paths are already
+ * bare, but the sandbox pushes the site's paths (`examples/netpong/server.fun`)
+ * and both the runtime (which names a file by its module stem) and the sidebar
+ * speak the last segment. Lives here because a `ProjectFile.path` is what it
+ * takes.
+ */
+export const fileName = (path: string): string => path.slice(path.lastIndexOf("/") + 1);
+
 // --- editor → player ---------------------------------------------------------
 
 /**

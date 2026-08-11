@@ -667,9 +667,10 @@ export function initMultiplayerPanes({
   // every pane receives the whole project, and a role is the file it enters at
   // (plus its `?module=`), so pushing the client's edit no longer overwrites
   // the server's program — an edit hot-reloads the authority and its clients
-  // together, each with its own model preserved. The editor still shows one
-  // buffer (the client entry); editing server.fun itself waits on a file
-  // switcher, and `↺ reset` still reboots every role from the served sources.
+  // together, each with its own model preserved. The editor's file sidebar can
+  // open the server's own file, so an edit to server.fun hot-reloads the
+  // authority directly; `↺ reset` still reboots every role from the served
+  // sources.
   // The authority's view of the project: the SAME files, re-entered at its own
   // role's file (the runtime takes `files[0]` as the entry module). A sample
   // whose roles share one file (orbs) hoists nothing — the entry is already

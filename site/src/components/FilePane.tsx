@@ -13,6 +13,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { Store } from "../store.js";
+import { fileName } from "../protocol.js";
 
 /** What the sidebar and the editor tab render: the paths, and which is open. */
 export interface FileListState {
@@ -22,8 +23,13 @@ export interface FileListState {
 
 export interface FilePaneProps {
   store: Store<FileListState>;
-  /** The program root — it names itself in the tooltip and cannot be deleted. */
-  entry: string;
+  /**
+   * The program root — it names itself in the tooltip and cannot be deleted.
+   * Optional: a host that doesn't hold one separately (the sandbox, whose root
+   * is whatever the loaded example leads with) falls back to `files[0]`, the
+   * entry-first order both pages already guarantee.
+   */
+  entry?: string;
   onOpen: (path: string) => void;
   /** Omitted where the file set is not the reader's to change (the sandbox). */
   onDelete?: (path: string) => void;
@@ -32,9 +38,8 @@ export interface FilePaneProps {
 }
 
 // A sandbox example lives in a directory (`examples/netpong/server.fun`), and
-// the module is the STEM either way — so the row shows the file and the
-// tooltip keeps the full path. The IDE's flat names are their own basename.
-const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+// the module is the STEM either way — so the row shows the file name and the
+// tooltip keeps the full path. The IDE's flat names are already their own.
 
 // The Functor mark, shown on every .fun file row — the same art as the site
 // favicon and the VS Code file icon (docs/media/functor-icon.svg).
@@ -48,6 +53,7 @@ const FileIcon = () => (
 
 export const FilePane = ({ store, entry, onOpen, onDelete, onNew }: FilePaneProps) => {
   const { files, active } = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const root = entry ?? files[0];
 
   return (
     <>
@@ -64,14 +70,14 @@ export const FilePane = ({ store, entry, onOpen, onDelete, onNew }: FilePaneProp
           <div className={`file-row${path === active ? " active" : ""}`} key={path}>
             <button
               className="file-name"
-              title={path === entry ? `${entry} — the program entry` : path}
+              title={path === root ? `${path} — the program entry` : path}
               onClick={() => onOpen(path)}
             >
               <FileIcon />
-              <span className="file-label">{basename(path)}</span>
+              <span className="file-label">{fileName(path)}</span>
             </button>
             {/* Every file but the entry can be deleted (the entry is the root). */}
-            {onDelete && path !== entry && (
+            {onDelete && path !== root && (
               <button
                 className="file-delete"
                 title={`Delete ${path}`}

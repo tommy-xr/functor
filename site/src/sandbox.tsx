@@ -58,7 +58,7 @@ import { initMultiplayerPanes, MAX_CLIENTS } from "./mp-panes.js";
 import type { MultiplayerPanes, PaneProgram } from "./mp-panes.js";
 import type { PillState } from "./components/StatusPill.js";
 import { StatusBar } from "./components/StatusBar.js";
-import { asPlayerMessage } from "./protocol.js";
+import { asPlayerMessage, fileName } from "./protocol.js";
 import type { ProjectFile } from "./protocol.js";
 import { EXAMPLES, exampleEntryPath } from "./examples.js";
 
@@ -71,7 +71,6 @@ interface SandboxSeam {
   getSource: () => string;
   /** The loaded example's file set (entry first) and which file is open. */
   files: () => { paths: string[]; active: string };
-  openFile: (path: string) => void;
   triggerComplete(source: string, cursor: number): void;
   acceptCompletion: () => boolean;
   keybindings: () => EditorKeybindingsState;
@@ -222,8 +221,6 @@ let active = "";
 let assetSources: [string, Uint8Array][] = [];
 
 /** The file the editor is showing. */
-const activePath = () => active;
-
 const activeFile = () => project.find((file) => file.path === active);
 
 // Mirror the live buffer into the open file and hand back the file set to push.
@@ -283,13 +280,15 @@ window.addEventListener("message", (event) => {
 // Created once, outside React: this controller carries the live link's queued
 // pushes and its `/state` poll chain, so a re-render must never restart it.
 // The external runtime target keeps its own FLAT naming: the entry is pushed as
-// `game.fun` and siblings by basename, as it was before the preview moved to the
-// multi-file seam (the device push has no site paths to mirror).
+// `game.fun` and siblings by file name, as it was before the preview moved to
+// the multi-file seam (the device push has no site paths to mirror). KNOWN GAP,
+// inherited: a sample whose sibling is itself named `game.fun` (netpong's
+// shared renderer) collides with that convention on the device — the site
+// preview, which pushes real paths, is unaffected.
 const runtimeTarget = createRuntimeTargetCore({
   getProject: () =>
     projectFiles().map((file, index): [string, string] => [
-      // Every path has at least one segment, so `pop` always yields one.
-      index === 0 ? "game.fun" : file.path.split("/").pop()!,
+      index === 0 ? "game.fun" : fileName(file.path),
       file.source,
     ]),
   getAssets: () => assetSources,
@@ -348,7 +347,7 @@ wireLiveTrace(view, statusBar, frame, langReady);
 onDiagnostics((diags) => {
   // The lint pass is of the file the editor is showing — name it, rather than
   // asserting a `game.fun` no example is actually called (the IDE's rule).
-  const file = activePath();
+  const file = active;
   statusBar.setProblems(
     diags.map((d) => {
       const line = view.state.doc.lineAt(Math.min(d.from, view.state.doc.length));
@@ -361,7 +360,7 @@ onDiagnostics((diags) => {
           // a whole example switch, during the lint debounce): reopen its file
           // before seeking, and drop the row entirely if it's gone.
           if (!project.some((candidate) => candidate.path === file)) return;
-          if (activePath() !== file) openFile(file);
+          if (active !== file) openFile(file);
           const len = view.state.doc.length;
           const from = Math.min(d.from, len);
           view.dispatch({
@@ -608,10 +607,9 @@ createRoot(document.querySelector(".sandbox-controls")!).render(
 // Rows only: `onNew`/`onDelete` are the IDE's, and an example's file set is
 // the sample's rather than the reader's. The host element carries the
 // sidebar's visibility (publishFiles), so a single-file example renders none.
-// `entry` is the delete guard and the entry tooltip — neither applies here, so
-// every row keeps its full path as the tooltip (the useful thing to show when
-// the rows are basenames of a directory).
-createRoot(fileListHost).render(<FilePane store={fileList} entry="" onOpen={openFile} />);
+// No `entry` either — the loaded example's root is `files[0]`, which the pane
+// falls back to for the tooltip.
+createRoot(fileListHost).render(<FilePane store={fileList} onOpen={openFile} />);
 const statusBarHost = document.getElementById("statusbar")!;
 statusBarHost.className = "statusbar";
 createRoot(statusBarHost).render(
@@ -636,7 +634,6 @@ if (!(inlineSrc && loadInline(inlineSrc))) loadExample(initialExample);
   },
   runtimeTarget: () => runtimeTarget.state(),
   files: () => ({ paths: project.map((file) => file.path), active }),
-  openFile,
   keybindings: () => editorKeybindings.state.getSnapshot(),
   setKeybindings: (mode) => editorKeybindings.setMode(mode),
   getSource: () => view.state.doc.toString(),
