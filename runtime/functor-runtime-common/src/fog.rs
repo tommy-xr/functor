@@ -127,7 +127,11 @@ impl FogUniforms {
         };
         p.set_uniform_1i(gl, &self.enabled_loc, 1);
         p.set_uniform_vec3(gl, &self.camera_pos_loc, camera_pos);
-        let c = fog.color();
+        // Authored color: decode sRGB→linear at the uniform boundary (the
+        // serialized Fog keeps its authored value). The clear color decodes
+        // the same way where an sRGB attachment is cleared, so fully fogged
+        // geometry still dissolves exactly into the background.
+        let c = crate::color_space::srgb_to_linear3(fog.color());
         p.set_uniform_vec3(gl, &self.color_loc, &Vector3::new(c[0], c[1], c[2]));
         match fog {
             Fog::Linear { near, far, .. } => {

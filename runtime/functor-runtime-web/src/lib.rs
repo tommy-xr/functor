@@ -1414,6 +1414,11 @@ async fn run_async() -> Result<(), JsValue> {
         // let asset = asset_cache.load_asset_with_pipeline(Arc::new(TexturePipeline), "crate.png");
 
         let scene_context = SceneContext::new();
+        // The WebGL2 canvas backbuffer is non-sRGB: the shader epilogue
+        // encodes (render-target attachments are sRGB and encode in hardware —
+        // WebGL2 has no FRAMEBUFFER_SRGB toggle; conversion is always on).
+        scene_context
+            .set_output_colorspace(functor_runtime_common::OutputColorspace::NonSrgb);
 
         // Read once from the page URL; they don't change over the session. The
         // `move` closure below captures them (both are `Copy`).
@@ -1977,6 +1982,7 @@ async fn run_async() -> Result<(), JsValue> {
                 functor_runtime_common::render_debug_lines(
                     &gl,
                     shader_version,
+                    &scene_context,
                     &view_camera,
                     viewport,
                     &debug_lines,

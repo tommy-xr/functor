@@ -126,6 +126,15 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
 // Concatenated after `FOG_GLSL` + `lighting_glsl()` so the lit mode's light
 // loop, shadow sampling, and uniforms match `LitMaterial` exactly.
+//
+// Color space: `baseColor` arrives RAW (sRGB-authored, NOT CPU-decoded like
+// the plain materials'), because the per-instance tint attribute is also
+// sRGB-authored and the CPU stamp multiplies tint into the material color
+// BEFORE its uniform-boundary decode — so matching it exactly requires
+// `srgbToLinear(base * tint)`, which only the shader can compute. Recognition
+// guarantees the two channels never mix with texturing: primitive templates
+// (tint active) never sample a texture, model templates (textured) pin the
+// tint to white.
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
@@ -147,11 +156,13 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
             } else if (debugMode == 2) {
                 fragColor = vec4(normalize(worldTangent) * 0.5 + 0.5, 1.0);
             } else {
-                vec4 base = baseColor;
+                vec3 albedo = functorSrgbToLinear(baseColor.rgb * tintColor);
+                float alpha = baseColor.a;
                 if (useTexture == 1) {
-                    base = base * texture(texture1, texCoord);
+                    vec4 texel = texture(texture1, texCoord); // linear (sRGB storage)
+                    albedo = albedo * texel.rgb;
+                    alpha = alpha * texel.a;
                 }
-                vec3 albedo = base.rgb * tintColor;
                 vec3 shaded = albedo;
                 if (materialMode == 1) {
                     vec3 n = normalize(worldNormal);
@@ -160,7 +171,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     accumulateLights(n, worldPos, diffuseLight, specularLight);
                     shaded = albedo * diffuseLight + specularLight;
                 }
-                fragColor = vec4(applyFog(shaded, worldPos), base.a);
+                fragColor = functorOutput(vec4(applyFog(shaded, worldPos), alpha));
             }
         }
 "#;
@@ -260,6 +271,7 @@ struct ForwardUniforms {
     debug_mode: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 struct DepthUniforms {
@@ -921,6 +933,7 @@ fn forward_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> ForwardUn
         debug_mode: program.get_uniform_location(gl, "debugMode"),
         lighting: LightingUniforms::get(program, gl),
         fog: FogUniforms::get(program, gl),
+        output: crate::color_space::OutputEncodeUniform::get(program, gl),
     }
 }
 
@@ -985,6 +998,7 @@ fn set_forward_uniforms(
     p.set_uniform_1i(ctx.gl, &u.debug_mode, debug_mode);
     u.lighting.set(p, ctx, view);
     u.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+    u.output.set(p, ctx.gl, ctx.output_srgb_encode);
 }
 
 /// Upload the instance records into the currently bound `ARRAY_BUFFER`.

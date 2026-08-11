@@ -91,7 +91,8 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
             if (useTexture == 1) {
                 albedo = texture(texture1, texCoord) * baseColor;
             }
-            fragColor = vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a);
+            fragColor = functorOutput(
+                vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a));
         }
 "#;
 
@@ -107,6 +108,7 @@ struct Uniforms {
     use_normal_map_loc: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -155,6 +157,7 @@ impl Material for LitMaterial {
                     use_normal_map_loc: shader.get_uniform_location(ctx.gl, "useNormalMap"),
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -185,7 +188,13 @@ impl Material for LitMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
 
-                p.set_uniform_vec4(ctx.gl, &uniforms.base_color_loc, &self.color);
+                // Authored albedo: decode sRGB→linear at the uniform boundary
+                // (the sampled texture decodes in hardware — sRGB storage).
+                p.set_uniform_vec4(
+                    ctx.gl,
+                    &uniforms.base_color_loc,
+                    &crate::color_space::srgb_to_linear_vec4(self.color),
+                );
                 p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
                 p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
 
@@ -200,6 +209,7 @@ impl Material for LitMaterial {
 
                 uniforms.lighting.set(p, ctx, view_matrix);
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
             }
         }
 

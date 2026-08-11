@@ -53,6 +53,8 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
                 // moves. The fallback checkerboard below deliberately keeps
                 // level 0 so a missing asset still reads as a flat marker.
                 mipmap: true,
+                // Albedo images are color: sRGB storage, hardware decode.
+                srgb: true,
                 ..TextureOptions::default()
             },
         )
@@ -60,6 +62,47 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
         let texture_data = TextureData::checkerboard_pattern(8, 8, [0, 255, 0, 255]);
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                srgb: true,
+                ..TextureOptions::default()
+            },
+        )
+    }
+}
+
+/// Non-color ("data") textures — normal maps today. Same decode as
+/// [`TexturePipeline`], but uploaded LINEAR: the texels are vectors, and an
+/// sRGB decode would bend every normal (see `crate::color_space`).
+pub struct LinearTexturePipeline;
+
+impl AssetPipeline<Texture2D> for LinearTexturePipeline {
+    fn process(
+        &self,
+        bytes: Vec<u8>,
+        _asset_cache: &AssetCache,
+        context: crate::asset::AssetPipelineContext,
+    ) -> Texture2D {
+        let Some(texture_data) = decode(&bytes) else {
+            return self.unloaded_asset(context);
+        };
+        Texture2D::init_from_data(
+            texture_data,
+            TextureOptions {
+                wrap: true,
+                linear: true,
+                mipmap: true,
+                ..TextureOptions::default()
+            },
+        )
+    }
+
+    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
+        // A flat "straight up" tangent-space normal: the identity stand-in
+        // for a missing/undecodable normal map (a color checkerboard would
+        // dent the surface it stands in for).
+        let texture_data = TextureData::solid_color([128, 128, 255, 255]);
         Texture2D::init_from_data(texture_data, TextureOptions::default())
     }
 }
@@ -91,6 +134,10 @@ impl AssetPipeline<Texture2D> for TerrainDetailPipeline {
                 mipmap: true,
                 anisotropy: TERRAIN_DETAIL_ANISOTROPY,
                 compute_average: true,
+                // Detail maps are color; `compute_average` follows the space
+                // `texture()` returns, so the divisor stays valid (the
+                // invariant documented on `Texture2D::average_color`).
+                srgb: true,
             },
         )
     }
@@ -103,6 +150,7 @@ impl AssetPipeline<Texture2D> for TerrainDetailPipeline {
             texture_data,
             TextureOptions {
                 compute_average: true,
+                srgb: true,
                 ..TextureOptions::default()
             },
         )

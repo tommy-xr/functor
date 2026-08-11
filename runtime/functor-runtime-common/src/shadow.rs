@@ -197,6 +197,9 @@ pub fn render_shadow_pass(
     let depth_ctx = RenderContext {
         gl,
         shader_version,
+        // The depth pass writes packed-depth DATA into a linear RGBA8
+        // attachment — no color, no encode.
+        output_srgb_encode: false,
         asset_cache,
         frame_time,
         debug_render_mode: crate::DebugRenderMode::Default,

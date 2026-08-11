@@ -240,19 +240,39 @@ fn process_node(
                 let image = &images[source.index()];
 
                 let texture_data = image.clone();
-                Texture2D::init_from_data(texture_data, TextureOptions::default())
+                // glTF base-color images are sRGB-encoded (per spec): sRGB
+                // storage, hardware decode.
+                Texture2D::init_from_data(
+                    texture_data,
+                    TextureOptions {
+                        srgb: true,
+                        ..TextureOptions::default()
+                    },
+                )
             } else {
                 // No texture: glTF defines the color as the base color factor
                 // alone, so sample a 1x1 solid of it (untextured materials —
                 // e.g. Xbot.glb, HVGirl.glb — are flat factor colors).
+                //
+                // Factors are LINEAR per the glTF spec, and this solid uploads
+                // into an sRGB texture the hardware will decode — so encode
+                // each channel to sRGB first; the decode then reproduces the
+                // linear factor (alpha stays raw: coverage, not color).
                 let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0) as u8;
+                let encode = |c: f32| to_u8(crate::color_space::linear_to_srgb(c.clamp(0.0, 1.0)));
                 let data = TextureData::solid_color([
-                    to_u8(base_color_factor[0]),
-                    to_u8(base_color_factor[1]),
-                    to_u8(base_color_factor[2]),
+                    encode(base_color_factor[0]),
+                    encode(base_color_factor[1]),
+                    encode(base_color_factor[2]),
                     to_u8(base_color_factor[3]),
                 ]);
-                Texture2D::init_from_data(data, TextureOptions::default())
+                Texture2D::init_from_data(
+                    data,
+                    TextureOptions {
+                        srgb: true,
+                        ..TextureOptions::default()
+                    },
+                )
             };
 
             let mesh = IndexedMesh::create(vertices, indices);

@@ -1729,6 +1729,18 @@ Escape releases while captured"
             let gl =
                 glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _);
 
+            // Gamma-correct pipeline (see functor_runtime_common::color_space):
+            // desktop GL only encodes on write to sRGB attachments (the render
+            // targets) when FRAMEBUFFER_SRGB is on — enable it ONCE here to
+            // match the always-on ES/WebGL2 semantics. A no-op for non-sRGB
+            // attachments, including this GLFW backbuffer (not created
+            // sRGB-capable), which is why the backbuffer keeps the shader
+            // epilogue encode instead.
+            {
+                use glow::HasContext;
+                gl.enable(glow::FRAMEBUFFER_SRGB);
+            }
+
             (gl, "#version 410", window, glfw, events)
         };
 
@@ -1915,6 +1927,9 @@ Escape releases while captured"
         let mut last_asset_poll = Instant::now();
 
         let scene_context = SceneContext::new();
+        // The GLFW backbuffer is non-sRGB: the shader epilogue encodes.
+        scene_context
+            .set_output_colorspace(functor_runtime_common::OutputColorspace::NonSrgb);
 
         // The directional shadow map: a depth texture rendered from the casting
         // light each frame, sampled by the lit material.
@@ -3154,6 +3169,7 @@ Escape again to quit"
                         functor_runtime_common::render_debug_lines(
                             &gl,
                             shader_version,
+                            &scene_context,
                             camera,
                             *eye_viewport,
                             &debug_lines,
@@ -3206,6 +3222,7 @@ Escape again to quit"
                 functor_runtime_common::render_debug_lines(
                     &gl,
                     shader_version,
+                    &scene_context,
                     &view_camera,
                     viewport,
                     &debug_lines,

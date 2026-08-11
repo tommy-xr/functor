@@ -137,6 +137,16 @@ pub enum OpacityStage {
 pub struct RenderContext<'a> {
     pub gl: &'a glow::Context,
     pub shader_version: &'a str,
+    /// Whether this pass's fragment shaders encode linear→sRGB in the
+    /// `functorOutput` epilogue. Derived by the RENDERER ALONE from "is the
+    /// current attachment sRGB?": always `false` for render-target /
+    /// composite-input passes (their `SRGB8_ALPHA8` attachments encode in
+    /// hardware), and the shell-declared
+    /// [`SceneContext::set_output_colorspace`](crate::SceneContext::set_output_colorspace)
+    /// for caller-framebuffer passes. Materials and effects must only FORWARD
+    /// this value to the uniform — never decide it — so double encoding is
+    /// impossible by construction (see `crate::color_space`).
+    pub output_srgb_encode: bool,
     pub asset_cache: Arc<AssetCache>,
     pub frame_time: FrameTime,
     pub debug_render_mode: DebugRenderMode,

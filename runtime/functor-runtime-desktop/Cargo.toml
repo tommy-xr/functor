@@ -64,6 +64,14 @@ keyboard-types = "0.7"
 functor_runtime_common = { path = "./../functor-runtime-common" }
 tiny_http = "0.12"
 
+# GLFW must run on the process main thread on macOS; the default test harness
+# runs tests on worker threads, so this GL test brings its own main() (it
+# self-skips unless invoked with `-- --ignored`, matching the golden test's
+# needs-a-display opt-in).
+[[test]]
+name = "srgb_clear"
+harness = false
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features=["HtmlCanvasElement", "WebGl2RenderingContext", "Window"] }
 wasm-bindgen = { version = "0.2" }
