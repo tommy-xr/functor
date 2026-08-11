@@ -40,6 +40,7 @@
     "site:serve": "node site/serve.mjs",
     "test:module-role": "node e2e/module-role-wasm.mjs",
     "test:site": "node e2e/site-sandbox.mjs",
+    "test:landing-gallery": "node e2e/landing-gallery.mjs",
     "test:net-coordinator": "node e2e/net-coordinator.mjs",
     "test:sandbox-mp": "node e2e/sandbox-mp.mjs",
     "test:sandbox-files": "node e2e/sandbox-files.mjs",

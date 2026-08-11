@@ -690,6 +690,227 @@ a:hover {
   margin: 0;
 }
 
+/* ── The games shelf ────────────────────────────────────────────────────────
+   A rack of game CASES, seen at an angle: every card is tilted the same way in
+   a shared perspective (the same `perspective` / `preserve-3d` vocabulary the
+   boot animation's extruded mark uses), with a cyan→pink spine down its left
+   edge. Hovering or focusing a case squares it up to the reader and its box art
+   starts moving — the one place on the page where the reward for pointing at
+   something is the game itself playing.
+
+   The rail is a scroll-snap carousel because ten cases are a shelf you browse,
+   not a grid you survey: the horizontal overflow IS the affordance. */
+.games-section {
+  padding-bottom: var(--space-md);
+}
+
+.games-lede {
+  max-width: 640px;
+  margin: 12px auto 0;
+  padding: 0 var(--space-md);
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.games-lede code {
+  color: var(--cyan);
+}
+
+/* The rail is BOTH the scroll container and the keyboard-operable region (see
+   index.html): arrow keys scroll the element that overflows, so that has to be
+   the one carrying `tabindex`. */
+.games-rail {
+  --case-w: 320px;
+  --rail-pad: max(var(--space-md), calc((100% - 1100px) / 2));
+  display: flex;
+  gap: var(--space-lg);
+  align-items: start;
+  margin: var(--space-lg) 0 0;
+  /* Vertical padding so a lifted, squared-up case is never clipped by the
+     scrollport; horizontal padding lines the shelf up with the sections above
+     it and gives the last case somewhere to rest. */
+  padding: 26px var(--rail-pad) 30px;
+  list-style: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Snap to a case's leading edge, and offset the snap by the rail's own
+     padding so a snapped case sits where the copy above it starts — with
+     `center` the first and last cases have snap points no scroll position can
+     reach, and mandatory snapping then fights the reader at both ends. */
+  scroll-snap-type: x mandatory;
+  scroll-padding-left: var(--rail-pad);
+  perspective: 1500px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.games-rail:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
+}
+
+.games-rail::-webkit-scrollbar {
+  height: 8px;
+}
+
+.games-rail::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+}
+
+.game-card {
+  flex: 0 0 var(--case-w);
+  scroll-snap-align: start;
+  transform-style: preserve-3d;
+}
+
+/* The case: one link, so one tab stop per game. */
+.game-case {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  text-decoration: none;
+  background: linear-gradient(170deg, var(--bg-raised), var(--bg-panel));
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  /* Tilted like a case standing on a shelf, seen from its left: the SPINE edge
+     is the near one and the case turns away behind it. (The other direction
+     brings the far edge forward and the spine reads as painted on.) */
+  transform: rotateY(12deg) translateZ(0);
+  transform-origin: left center;
+  box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.9);
+  transition: transform 0.4s ease, box-shadow 0.4s ease, border-color 0.3s ease;
+}
+
+.game-case:hover,
+.game-case:focus-visible {
+  text-decoration: none;
+  transform: rotateY(0deg) translateY(-6px);
+  border-color: rgba(65, 216, 230, 0.4);
+  box-shadow: 0 34px 70px -30px rgba(0, 0, 0, 0.95), 0 0 60px -34px rgba(65, 216, 230, 0.5);
+}
+
+.game-case:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+/* The spine — the site's cyan→pink rule stood on end. */
+.game-spine {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 7px;
+  z-index: 2;
+  background: linear-gradient(180deg, var(--cyan), var(--pink));
+  opacity: 0.55;
+  box-shadow: inset -1px 0 0 rgba(0, 0, 0, 0.5);
+  transition: opacity 0.3s ease;
+}
+
+.game-case:hover .game-spine,
+.game-case:focus-visible .game-spine {
+  opacity: 1;
+}
+
+/* The art keeps its box before either image loads: the frame owns the ratio and
+   both images are absolutely stacked inside it, so swapping the poster for the
+   animation moves nothing. */
+.game-art {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: #0d0221;
+  border-bottom: 1px solid var(--line);
+  line-height: 0;
+}
+
+.game-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.game-anim {
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.game-card.is-playing .game-anim {
+  opacity: 1;
+}
+
+.game-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px 18px;
+}
+
+.game-title {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.game-blurb {
+  color: var(--text-dim);
+  font-size: 0.86rem;
+  line-height: 1.6;
+}
+
+/* The control legend reads as a hardware label: dim, ruled off, monospace. */
+.game-controls {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.5;
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+}
+
+.game-play {
+  margin-top: 2px;
+  color: var(--pink);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Narrow viewports: one case at a time, squared up — a tilt on a nearly
+   full-width card only wastes the width it is turning away. */
+@media (max-width: 760px) {
+  .games-rail {
+    --case-w: min(300px, 82vw);
+    --rail-pad: var(--space-md);
+    gap: var(--space-md);
+    padding: 16px var(--rail-pad) 22px;
+    perspective: none;
+  }
+  .game-case {
+    transform: none;
+  }
+  .game-case:hover,
+  .game-case:focus-visible {
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No tilt animation, and — since src/gallery.ts never loads an animation in
+     this mode — no moving art either. The shelf is posters. */
+  .game-case,
+  .game-spine,
+  .game-anim {
+    transition: none;
+  }
+}
+
 .how-it-works {
   max-width: 1100px;
   margin: 0 auto;
