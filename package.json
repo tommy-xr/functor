@@ -61,7 +61,8 @@
     "demo:introspective": "node site/demos/introspective.mjs",
     "demo:llm-native": "node site/demos/llm-native.mjs",
     "demo:mcp-drive": "node site/demos/mcp-drive.mjs",
-    "demo:multiplayer": "node site/demos/multiplayer.mjs"
+    "demo:multiplayer": "node site/demos/multiplayer.mjs",
+    "demo:box-art": "node site/demos/box-art.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.3",

@@ -1,0 +1,92 @@
+# Box art drive for the landing-page games carousel (site/demos/box-art.mjs).
+# Format: <frame:int> <KeyName> <down|up>; the roguelike takes ONE turn per
+# PRESSED edge, so every move is a down/up pair, spaced 10 frames apart — slow
+# enough that the fog-of-war reveal and the enemy turns read as motion.
+#
+# The floor is fixed (seed NEON-77), so the route below is exact. The player
+# spawns at (1,12) with 5 integrity; Up is -y.
+#
+#   x2..x5   walk the ENTRY VAULT corridor east, over the data shard at (3,12)
+#   x5       two moves INTO the drone at (6,12) — moving into a hostile attacks
+#            it, and it has 2 integrity, so the second one kills it
+#   x6..x10  on east to the RELAY HALL, under the x=7 wall (open at y=12)
+#   y11..y4  north through the y=7 wall's only door at (10,7), onto the medkit
+#            at (10,4)
+#   y3..y1   on north, then east along the y=1 corridor to x=15
+#   (15,3)   south to the x=16 wall's door at (16,3)
+#   x17,x18  east through it and three moves into the second drone at (18,3)
+#
+# A wall move is a wasted turn, not an error, so the tail is deliberately a
+# route that stays legal all the way rather than the shortest one.
+#
+#   functor -d examples/roguelike run native --input-script boxart.script \
+#     --script-dt 0.0166667 --capture-at-frame 60 --capture-frame /tmp/rl.png
+
+6 Right down
+7 Right up
+16 Right down
+17 Right up
+26 Right down
+27 Right up
+36 Right down
+37 Right up
+46 Right down
+47 Right up
+56 Right down
+57 Right up
+66 Right down
+67 Right up
+76 Right down
+77 Right up
+86 Right down
+87 Right up
+96 Right down
+97 Right up
+106 Right down
+107 Right up
+116 Up down
+117 Up up
+126 Up down
+127 Up up
+136 Up down
+137 Up up
+146 Up down
+147 Up up
+156 Up down
+157 Up up
+166 Up down
+167 Up up
+176 Up down
+177 Up up
+186 Up down
+187 Up up
+196 Up down
+197 Up up
+206 Up down
+207 Up up
+216 Up down
+217 Up up
+226 Right down
+227 Right up
+236 Right down
+237 Right up
+246 Right down
+247 Right up
+256 Right down
+257 Right up
+266 Right down
+267 Right up
+276 Down down
+277 Down up
+286 Down down
+287 Down up
+296 Right down
+297 Right up
+306 Right down
+307 Right up
+316 Right down
+317 Right up
+326 Right down
+327 Right up
+336 Right down
+337 Right up
