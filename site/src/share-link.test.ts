@@ -12,12 +12,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { encodeShare, decodeShare } from "./share-link.ts";
+import { encodeShare, decodeShare, assetLocators, MAX_SHARE_CHARS } from "./share-link.ts";
 import type { ShareProject } from "./share-link.ts";
 
 const EXAMPLES = new URL("../../examples", import.meta.url).pathname;
-/** A share link must stay pasteable; the biggest example sets the bar. */
-const MAX_ENCODED_CHARS = 24_000;
+/**
+ * A share link must stay pasteable; the biggest example sets the bar. Imported
+ * rather than restated, so the cap this asserts against is the one the Share
+ * button actually enforces.
+ */
+const MAX_ENCODED_CHARS = MAX_SHARE_CHARS;
 
 const roundTrip = async (project: ShareProject) => {
   const hash = await encodeShare(project);
@@ -114,6 +118,44 @@ test("round-trips every example project, and each stays pasteable", async (t) =>
       `${name} encodes to ${encoded} chars, over the ${MAX_ENCODED_CHARS} cap`
     );
   }
+});
+
+// --- the locators a link cannot carry ----------------------------------------
+
+test("finds the relative file locators, and only those", () => {
+  const files = [
+    {
+      path: "game.fun",
+      source: `let ship = Asset.model("ship.glb")
+let shot = Asset.sound("sfx/shot.ogg")
+let cdn = Asset.model("https://cdn.example/x.glb")
+let proto = Asset.texture("//cdn.example/y.png")
+let spaced = Asset.texture(
+  "grid.png")
+// Not asset coercion, but still files read off the site — they don't travel
+// either, so they count.
+let tex = Texture.file("wall.png")
+let sky = Skybox.files("px.png", "nx.png")
+// A clip NAME is not a file.
+let clip = Anim.clip("walk", tts)
+`,
+    },
+    // The same locator twice is one asset; a sibling's locators count too.
+    { path: "lib.fun", source: `let again = Asset.model("ship.glb")\nlet hit = Asset.sound("hit.ogg")\n` },
+  ];
+  assert.deepEqual(assetLocators(files), [
+    "grid.png",
+    "hit.ogg",
+    "nx.png",
+    "px.png",
+    "sfx/shot.ogg",
+    "ship.glb",
+    "wall.png",
+  ]);
+});
+
+test("a project with no local assets has nothing to warn about", () => {
+  assert.deepEqual(assetLocators([{ path: "game.fun", source: "let init = 0\n" }]), []);
 });
 
 // --- the legacy docs fragment ------------------------------------------------

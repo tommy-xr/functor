@@ -4,6 +4,8 @@
 
 import { useSyncExternalStore } from "react";
 import { RuntimeTargetPanel } from "./RuntimeTargetPanel.js";
+import { ShareButton } from "./ShareButton.js";
+import type { ShareState } from "./ShareButton.js";
 import { StatusPill } from "./StatusPill.js";
 import type { PillState } from "./StatusPill.js";
 import type { RuntimeTargetCore } from "../runtime-target-core.js";
@@ -31,20 +33,24 @@ export interface SandboxControlsProps {
   picker: Store<PickerState>;
   pill: Store<PillState>;
   clients: Store<ClientsState>;
+  share: Store<ShareState>;
   runtimeTarget: RuntimeTargetCore;
   onSelect: (value: string) => void;
   onReset: () => void;
   onClients: (count: number) => void;
+  onShare: () => void;
 }
 
 export const SandboxControls = ({
   picker,
   pill,
   clients,
+  share,
   runtimeTarget,
   onSelect,
   onReset,
   onClients,
+  onShare,
 }: SandboxControlsProps) => {
   const { options, selected } = useSyncExternalStore(picker.subscribe, picker.getSnapshot);
   const clientsState = useSyncExternalStore(clients.subscribe, clients.getSnapshot);
@@ -85,6 +91,7 @@ export const SandboxControls = ({
       <button id="reset" type="button" title="Reload the example (resets the model)" onClick={onReset}>
         ↺ reset
       </button>
+      <ShareButton store={share} onShare={onShare} />
       <div id="runtime-target" className="runtime-target-host">
         <RuntimeTargetPanel core={runtimeTarget} />
       </div>

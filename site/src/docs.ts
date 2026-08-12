@@ -5,6 +5,10 @@
 // The tokenizer mirrors src/functor-lang.ts's CodeMirror StreamLanguage; it's a few
 // regexes, so a static-HTML variant beats dragging CodeMirror onto the docs
 // page. Keep the two classifications in sync.
+//
+// The fragment itself is encoded with the share-link codec's base64url (one
+// definition of the alphabet for both ends of a link).
+import { toBase64Url } from "./share-link.js";
 
 const KEYWORDS = new Set([
   "let",
@@ -126,12 +130,6 @@ const highlight = (source: string): string => {
   return html;
 };
 
-const toBase64Url = (s: string): string =>
-  btoa(String.fromCharCode(...new TextEncoder().encode(s)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
 for (const pre of document.querySelectorAll("pre.functor-lang")) {
   const source = pre.textContent!;
   pre.innerHTML = highlight(source);
@@ -141,7 +139,7 @@ for (const pre of document.querySelectorAll("pre.functor-lang")) {
     link.textContent = "▶ try it";
     link.title = "Open this program live in the sandbox";
     const sandboxHref = document.body.dataset.sandboxHref || "sandbox.html";
-    link.href = `${sandboxHref}#src=${toBase64Url(source)}`;
+    link.href = `${sandboxHref}#src=${toBase64Url(new TextEncoder().encode(source))}`;
     link.target = "_blank";
     pre.appendChild(link);
   }

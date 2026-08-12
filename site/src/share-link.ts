@@ -33,6 +33,52 @@ export const MODULE_FILE = /^[A-Za-z][A-Za-z0-9_]*\.fun$/;
 /** The default entry, omitted from the payload to keep short links short. */
 const DEFAULT_ENTRY = "game.fun";
 
+/**
+ * The longest `#code=` payload we will hand out, in characters. Chat clients,
+ * issue trackers and mail clients all mangle links well before a browser's own
+ * URL limit, and every example in the repo encodes far under this (this file's
+ * test pins that, against this constant). A project over the cap gets pointed at
+ * the zip download instead — `shareHref` (share.ts) is what enforces it.
+ *
+ * Lives here, beside MODULE_FILE, for the same reason: what a LINK can carry is
+ * one rule, and the pages, the encoder and the test all have to agree on it.
+ */
+export const MAX_SHARE_CHARS = 24_000;
+
+// A call that names a file, with its argument list: the `Asset` module's members
+// (`model`/`texture`/`sound` — the branded locators), plus the two string-taking
+// consumers that are NOT asset coercion but still read files off the site
+// (`Texture.file`, `Skybox.files`). Only literals are findable from text — a
+// locator computed at runtime is nobody's to check — which is the same set
+// `functor build` verifies on disk.
+const FILE_CALL = /\b(?:Asset\.[A-Za-z][A-Za-z0-9_]*|Texture\.file|Skybox\.files)\s*\(([^)]*)\)/g;
+const STRING_LITERAL = /"([^"\n\\]*)"/g;
+
+/**
+ * The RELATIVE file locators a project names, de-duplicated and sorted — the
+ * candidates for "this won't travel with the link". URL and scheme-relative
+ * locators are skipped: they carry themselves.
+ *
+ * A link carries `.fun` sources and nothing else, so whether a relative locator
+ * survives depends on the SITE the link opens on; `share.ts` is what checks that
+ * (and explains the cases). This half is pure text, so it is unit-tested.
+ */
+export const assetLocators = (files: ProjectFile[]): string[] => {
+  const found = new Set<string>();
+  for (const file of files) {
+    for (const [, args] of file.source.matchAll(FILE_CALL)) {
+      for (const [, locator] of args.matchAll(STRING_LITERAL)) {
+        // An empty locator is the game's own bug, not the link's.
+        if (locator === "" || /^[a-z][a-z0-9+.-]*:/i.test(locator) || locator.startsWith("//")) {
+          continue;
+        }
+        found.add(locator);
+      }
+    }
+  }
+  return [...found].sort();
+};
+
 // Caps. Generous next to the real projects (the largest example encodes to a
 // few KB) but far below what a browser will hand back from a URL, so a hostile
 // fragment is rejected before it costs anything.
@@ -77,7 +123,12 @@ export interface ShareProject {
 
 // --- base64url ---------------------------------------------------------------
 
-const toBase64Url = (bytes: Uint8Array): string => {
+/**
+ * base64url — the URL-safe alphabet, unpadded. Exported because the docs page
+ * emits the legacy `#src=` fragment with it (docs.ts), and two hand-rolled
+ * copies of an encoding are two chances to disagree about `+`, `/` and `=`.
+ */
+export const toBase64Url = (bytes: Uint8Array): string => {
   // Chunked: `String.fromCharCode(...bytes)` blows the argument limit somewhere
   // north of ~100KB, which real projects reach.
   let binary = "";
@@ -87,7 +138,9 @@ const toBase64Url = (bytes: Uint8Array): string => {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 
-const BASE64URL = /^[A-Za-z0-9_-]*$/;
+// Padding is optional: nothing here emits it, but a link rewriter that re-pads
+// a fragment must not turn a working link into "not a valid project".
+const BASE64URL = /^[A-Za-z0-9_-]*={0,2}$/;
 
 const fromBase64Url = (code: string): Uint8Array<ArrayBuffer> | null => {
   if (!BASE64URL.test(code)) return null; // atob is lenient about whitespace; we are not
