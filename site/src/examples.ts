@@ -391,13 +391,6 @@ export const EXAMPLES: Example[] = [
       { source: "examples/synthwave/grid-neon.png", output: "grid-neon.png" },
       { source: "examples/synthwave/sky.png", output: "sky.png" },
     ],
-    gallery: {
-      title: "Synthwave",
-      blurb:
-        "A neon wireframe landscape rolling under a low sun — the whole scene is a pure function of time, with no model at all.",
-      controls: "Nothing to press: it draws itself from the clock",
-      order: 9,
-    },
   },
   // --- Runtime showcases -------------------------------------------------
   // Single-file, and every model is an absolute Babylon CDN URL — the wasm

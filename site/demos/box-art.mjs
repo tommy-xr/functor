@@ -64,7 +64,7 @@ const CAPTURE = { width: 640, height: 400 };
 // so a shorter palette is invisible on the card and roughly halves the bytes a
 // full 256-color one spends on dither noise.
 // A card renders the GIF at 320 CSS px, so that is its default width. The LIT 3D
-// scenes (shooting-range's muzzle flash, synthwave's scrolling grid, code-garden's
+// scenes (shooting-range's muzzle flash, code-garden's
 // moving daylight) change every pixel of every frame, which defeats GIF's
 // inter-frame coding entirely — they override the encode down a notch to stay
 // inside the budget, paying a little softness while animating (their POSTER is
@@ -91,16 +91,22 @@ const fpsOf = (spec, measured) =>
  * name how many client panes to seat and how the captured pane is driven.
  */
 const RECIPES = {
+  // The three `Camera2D.create(32, 24)` games render a 4:3 logical space that the
+  // runtime pillarboxes inside the 16:10 capture, and the bars take the GL clear
+  // color — a visible steel-blue border on the card. `crop: 53` cuts exactly
+  // those bars off each side (640 − 2·53 = 534 ≈ 400 · 4/3), so their art ships
+  // 4:3 and the card mats it on its own background instead.
+  //
   // 30 frames × 6 = 3s of scripted play from frame 170, by which point the script
   // has stacked and cleared rows: pieces are landing, not just falling. It ends
   // before frame ~440, where the blind drive finally tops the board out.
-  tetris: { backend: "native", dir: "examples/tetris", script: "boxart.script", from: 170, step: 6, frames: 30 },
+  tetris: { backend: "native", dir: "examples/tetris", script: "boxart.script", from: 170, step: 6, frames: 30, crop: 53 },
   // Turn-based: one keypress every 10 frames, so a 5-frame step reads as a
   // continuous crawl through the fog.
-  roguelike: { backend: "native", dir: "examples/roguelike", script: "boxart.script", from: 60, step: 5, frames: 30 },
+  roguelike: { backend: "native", dir: "examples/roguelike", script: "boxart.script", from: 60, step: 5, frames: 30, crop: 53 },
   // Well past the launch (frame 30): the ball is among the bricks and the score
   // is climbing, with the sweeping paddle keeping the rally going.
-  breakout: { backend: "native", dir: "examples/breakout", script: "boxart.script", from: 160, step: 5, frames: 30 },
+  breakout: { backend: "native", dir: "examples/breakout", script: "boxart.script", from: 160, step: 5, frames: 30, crop: 53 },
   // WEB, and not native, despite being single-player: asteroids builds its wave
   // with `Effect.random` on Enter, a REAL effect, so each of the 30 native
   // processes would seed a different asteroid field and the "loop" would be 30
@@ -122,11 +128,6 @@ const RECIPES = {
     // the day about 3× real time, which is what makes the light move on a card.
     backend: "native", dir: "examples/code-garden", script: "idle.script",
     from: 1400, step: 15, frames: 20, fps: 12, gif: { width: 256, height: 160, colors: 64 },
-  },
-  // No model at all — a pure function of time, so the script is empty too.
-  synthwave: {
-    backend: "native", dir: "examples/synthwave", script: "boxart.script",
-    from: 60, step: 5, frames: 24, gif: { width: 256, height: 160, colors: 64 },
   },
   // Both roles play themselves once a server is seated: the client's `autopilot`
   // starts true, so one client pane is a full AI rally.
@@ -168,13 +169,22 @@ const targets = (ids.length ? GALLERY.filter((example) => ids.includes(example.i
  * normalizes whatever the backend handed us to the card's exact 16:10 box (a
  * no-op for the native captures, a hair off the sandbox pane's own aspect), and
  * the two-pass palette is the same clean-color recipe as the feature demos.
+ *
+ * A recipe's `crop` cuts that many pixels of runtime pillarbox off each SIDE of
+ * the capture first, and the output then keeps the cropped (4:3) aspect instead
+ * of being boxed back to 16:10 — the card `object-fit: contain`s it.
  */
 function assemble(spec, framesDir, count, measuredFps) {
   const id = spec.id;
   const fps = fpsOf(spec, measuredFps);
   const out = { ...GIF, ...spec.gif };
+  const bars = spec.crop
+    ? `crop=${CAPTURE.width - 2 * spec.crop}:${CAPTURE.height}:${spec.crop}:0,`
+    : "";
   const box = (w, h) =>
-    `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
+    spec.crop
+      ? `${bars}scale=-1:${h}:flags=lanczos`
+      : `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`;
   const seq = join(framesDir, "f%04d.png");
   const palette = join(framesDir, "palette.png");
   const gif = join(OUT_DIR, `${id}.gif`);

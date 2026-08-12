@@ -50,8 +50,8 @@ const escapeHtml = (text: string): string =>
  * image has loaded (no layout shift, and none when the animation swaps in).
  *
  * The poster's alt is empty on purpose: the link already carries the game's
- * title, blurb and controls as text, so describing the image again only makes a
- * screen reader say the title twice.
+ * title as text, so describing the image again only makes a screen reader say
+ * the title twice.
  */
 export const renderGalleryCards = (cards: GalleryCard[]): string =>
   cards
@@ -80,12 +80,6 @@ export const renderGalleryCards = (cards: GalleryCard[]): string =>
             </span>
             <span class="game-meta">
               <span class="game-title">${escapeHtml(card.title)}</span>
-              <span class="game-blurb">${escapeHtml(card.blurb)}</span>
-              ${
-                card.controls
-                  ? `<span class="game-controls">${escapeHtml(card.controls)}</span>`
-                  : ""
-              }
               <span class="game-play">Play in the sandbox<span aria-hidden="true"> ▸</span></span>
             </span>
           </a>

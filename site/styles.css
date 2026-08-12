@@ -691,14 +691,12 @@ a:hover {
 }
 
 /* ── The games shelf ────────────────────────────────────────────────────────
-   A rack of game CASES, seen at an angle: every card is tilted the same way in
-   a shared perspective (the same `perspective` / `preserve-3d` vocabulary the
-   boot animation's extruded mark uses), with a cyan→pink spine down its left
-   edge. Hovering or focusing a case squares it up to the reader and its box art
-   starts moving — the one place on the page where the reward for pointing at
-   something is the game itself playing.
+   A rack of game CASES, each with a cyan→pink spine down its left edge.
+   Hovering or focusing a case lifts it and its box art starts moving — the one
+   place on the page where the reward for pointing at something is the game
+   itself playing.
 
-   The rail is a scroll-snap carousel because ten cases are a shelf you browse,
+   The rail is a scroll-snap carousel because the cases are a shelf you browse,
    not a grid you survey: the horizontal overflow IS the affordance. */
 .games-section {
   padding-bottom: var(--space-md);
@@ -712,10 +710,6 @@ a:hover {
   color: var(--text-dim);
 }
 
-.games-lede code {
-  color: var(--cyan);
-}
-
 /* The rail is BOTH the scroll container and the keyboard-operable region (see
    index.html): arrow keys scroll the element that overflows, so that has to be
    the one carrying `tabindex`. */
@@ -726,9 +720,9 @@ a:hover {
   gap: var(--space-lg);
   align-items: start;
   margin: var(--space-lg) 0 0;
-  /* Vertical padding so a lifted, squared-up case is never clipped by the
-     scrollport; horizontal padding lines the shelf up with the sections above
-     it and gives the last case somewhere to rest. */
+  /* Vertical padding so a lifted case is never clipped by the scrollport;
+     horizontal padding lines the shelf up with the sections above it and
+     gives the last case somewhere to rest. */
   padding: 26px var(--rail-pad) 30px;
   list-style: none;
   overflow-x: auto;
@@ -739,7 +733,6 @@ a:hover {
      reach, and mandatory snapping then fights the reader at both ends. */
   scroll-snap-type: x mandatory;
   scroll-padding-left: var(--rail-pad);
-  perspective: 1500px;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
@@ -761,10 +754,13 @@ a:hover {
 .game-card {
   flex: 0 0 var(--case-w);
   scroll-snap-align: start;
-  transform-style: preserve-3d;
 }
 
-/* The case: one link, so one tab stop per game. */
+/* The case: one link, so one tab stop per game. Kept FLAT on purpose — an
+   earlier 3D shelf tilt (perspective + preserve-3d + rotateY over an
+   overflow:hidden case) broke hit-testing in Chromium AND WebKit, so clicks
+   never reached this link, and it mis-composited the art with bands of the
+   case background showing at both edges. The lift on hover is plenty. */
 .game-case {
   position: relative;
   display: flex;
@@ -775,11 +771,6 @@ a:hover {
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
-  /* Tilted like a case standing on a shelf, seen from its left: the SPINE edge
-     is the near one and the case turns away behind it. (The other direction
-     brings the far edge forward and the spine reads as painted on.) */
-  transform: rotateY(12deg) translateZ(0);
-  transform-origin: left center;
   box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.9);
   transition: transform 0.4s ease, box-shadow 0.4s ease, border-color 0.3s ease;
 }
@@ -787,7 +778,7 @@ a:hover {
 .game-case:hover,
 .game-case:focus-visible {
   text-decoration: none;
-  transform: rotateY(0deg) translateY(-6px);
+  transform: translateY(-6px);
   border-color: rgba(65, 216, 230, 0.4);
   box-shadow: 0 34px 70px -30px rgba(0, 0, 0, 0.95), 0 0 60px -34px rgba(65, 216, 230, 0.5);
 }
@@ -831,7 +822,10 @@ a:hover {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* `contain`, not `cover`: most box art is exactly the frame's 16:10, but the
+     4:3 (`Camera2D` 32×24) games ship cropped to their real aspect — matting
+     those on the frame's own dark background beats cropping the playfield. */
+  object-fit: contain;
 }
 
 .game-anim {
@@ -859,21 +853,6 @@ a:hover {
   color: var(--cyan);
 }
 
-.game-blurb {
-  color: var(--text-dim);
-  font-size: 0.86rem;
-  line-height: 1.6;
-}
-
-/* The control legend reads as a hardware label: dim, ruled off, monospace. */
-.game-controls {
-  color: var(--text-dim);
-  font-size: 0.72rem;
-  line-height: 1.5;
-  border-left: 2px solid var(--line);
-  padding-left: 10px;
-}
-
 .game-play {
   margin-top: 2px;
   color: var(--pink);
@@ -882,22 +861,13 @@ a:hover {
   text-transform: uppercase;
 }
 
-/* Narrow viewports: one case at a time, squared up — a tilt on a nearly
-   full-width card only wastes the width it is turning away. */
+/* Narrow viewports: one case at a time. */
 @media (max-width: 760px) {
   .games-rail {
     --case-w: min(300px, 82vw);
     --rail-pad: var(--space-md);
     gap: var(--space-md);
     padding: 16px var(--rail-pad) 22px;
-    perspective: none;
-  }
-  .game-case {
-    transform: none;
-  }
-  .game-case:hover,
-  .game-case:focus-visible {
-    transform: translateY(-4px);
   }
 }
 
