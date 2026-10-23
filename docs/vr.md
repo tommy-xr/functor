@@ -81,6 +81,18 @@ full, proven sequence. The short path is:
 5. Install a non-debuggable release APK, push the explicit workload, and run
    `npm run bench:quest -- --label NAME --warmup 10 --seconds 30`.
 
+### Display refresh rate
+
+The APK starts at the highest rate the display offers up to 80 Hz. To ask for a
+different one, use `functor -d yourgame run vr --refresh-rate 90` (or `120`).
+This requests the rate once, after the initial push, through
+`POST /display-refresh-rate`. The rate must be one the display offers; Quest 3
+offers 120 Hz only when it is enabled in the headset's display settings. The
+switch is asynchronous, so confirm it with `/state`'s
+`display_refresh_rate.current` (logged as `display refresh rate changed`).
+`bench:quest` prints the requested and current rate next to VrApi's FPS target,
+and fails if the rate changes during the sample.
+
 The first measured Quest 3 release run (`primitives`, 15 seconds after a
 5-second warmup) sustained 72.7 FPS mean / 72 FPS minimum, with zero stale or
 torn frames and 3.09 ms mean application time.
