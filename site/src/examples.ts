@@ -173,6 +173,17 @@ export const EXAMPLES: Example[] = [
       { source: "examples/terrain/heightmap.png", output: "heightmap.png" },
     ],
   },
+  // The night kata: one camera-mounted spot light, dark fog, and seeded
+  // instanced props stood on the ground by raycasts. Its heightmap is named
+  // apart from `terrain`'s because both land in the shared site root.
+  {
+    id: "night-terrain",
+    label: "Night terrain",
+    source: "examples/night-terrain/game.fun",
+    assets: [
+      { source: "examples/night-terrain/night-heightmap.png", output: "night-heightmap.png" },
+    ],
+  },
   // Single-file and asset-free: an L-system garden whose growth LAWS are
   // top-level constants, so editing one in the sandbox re-shapes the plants
   // already on screen instead of restarting them.
