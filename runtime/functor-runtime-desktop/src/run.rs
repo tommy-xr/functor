@@ -1096,6 +1096,7 @@ fn service_debug_request(
                 model: game.state_json(),
                 model_debug: game.state_debug(),
                 input: state_input,
+                display_refresh_rate: None,
             });
         }
         debug_server::DebugRequest::Scene(resp) => {
@@ -1170,6 +1171,11 @@ fn service_debug_request(
                 }
             }
             let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::DisplayRefreshRate(_, resp) => {
+            let _ = resp.send(Err(
+                "display refresh rate is a headset setting; the desktop runtime has none".to_string(),
+            ));
         }
         debug_server::DebugRequest::NetOutbound(resp) => {
             let _ = resp.send(if net_transport == NetTransportArg::Embedder {

@@ -32,7 +32,8 @@ use std::time::Instant;
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::debug_protocol::{
-    CaptureError, DebugRequest, InputCommand, RuntimeState, RuntimeView, RuntimeViewport,
+    CaptureError, DebugRequest, DisplayRefreshRate, InputCommand, RuntimeState, RuntimeView,
+    RuntimeViewport,
 };
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
@@ -44,11 +45,14 @@ use khronos_egl as egl;
 use openxr as xr;
 
 /// GLES version to request. Quest 3 supports 3.2.
-/// Display refresh rate to aim for, in Hz.
+/// Display refresh rate to aim for at startup, in Hz.
 ///
-/// Quest 3 offers 72/80/90/120; the runtime defaults to 72 and only changes on
-/// request. This picks the highest offered rate that does not exceed the
-/// target, so a headset advertising fewer options still gets a sane choice.
+/// Quest 3 offers 72/80/90/120 (120 only when enabled in headset settings);
+/// the runtime defaults to 72 and only changes on request. This picks the
+/// highest offered rate that does not exceed the target, so a headset
+/// advertising fewer options still gets a sane choice. A session can ask for
+/// another offered rate later via `POST /display-refresh-rate`
+/// (`functor run vr --refresh-rate <hz>`).
 ///
 /// Raising this raises the frame budget's difficulty in exact proportion —
 /// 13.8 ms at 72 Hz, 12.5 at 80, 11.1 at 90, 8.3 at 120 — so it is a measured
@@ -585,10 +589,42 @@ struct DebugLoopState {
     input_edges: functor_runtime_common::InputEdges,
     last_frame: Option<Frame>,
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
+    /// `None` when the runtime lacks XR_FB_display_refresh_rate.
+    display_refresh_rate: Option<DisplayRefreshRate>,
+}
+
+/// Ask the runtime for `hz`, which must be one of the display's offered rates.
+/// The switch is asynchronous: `current` only moves when the runtime confirms
+/// it with DisplayRefreshRateChangedFB.
+fn request_display_refresh_rate(
+    session: &xr::Session<xr::OpenGlEs>,
+    display: &mut DisplayRefreshRate,
+    hz: f32,
+) -> Result<String, String> {
+    let Some(rate) = display
+        .available
+        .iter()
+        .copied()
+        .find(|rate| (rate - hz).abs() <= 0.5)
+    else {
+        return Err(format!(
+            "{hz} Hz is not offered by this display (available: {:?}); 120 Hz must be enabled \
+in the headset's display settings",
+            display.available
+        ));
+    };
+    session
+        .request_display_refresh_rate(rate)
+        .map_err(|e| format!("display refresh rate {rate} Hz refused: {e}"))?;
+    display.requested = Some(rate);
+    let message = format!("requested {rate} Hz (current {} Hz)", display.current);
+    log::info!("{message}");
+    Ok(message)
 }
 
 fn service_debug_request(
     request: DebugRequest,
+    session: &xr::Session<xr::OpenGlEs>,
     game: &mut dyn GameProducer,
     clock: &mut GameClock,
     debug: &mut DebugLoopState,
@@ -649,6 +685,7 @@ fn service_debug_request(
                 model: game.state_json(),
                 model_debug: game.state_debug(),
                 input,
+                display_refresh_rate: debug.display_refresh_rate.clone(),
             });
         }
         DebugRequest::Scene(response) => {
@@ -815,6 +852,15 @@ desktop runtime's --headless/--debug-port path"
                 current.len(),
                 removed.len()
             )));
+        }
+        DebugRequest::DisplayRefreshRate(hz, response) => {
+            let _ = response.send(match debug.display_refresh_rate.as_mut() {
+                Some(display) => request_display_refresh_rate(session, display, hz),
+                None => Err(
+                    "this OpenXR runtime lacks XR_FB_display_refresh_rate; the rate cannot change"
+                        .to_string(),
+                ),
+            });
         }
         DebugRequest::Rewind(frame, response) => {
             let result = game.rewind_scene_to(frame);
@@ -1007,31 +1053,32 @@ pub fn android_main(app: AndroidApp) {
     // Display refresh rate. Requesting one is a *request*: the runtime may
     // refuse, and it can change underneath us (battery, thermals, system UI),
     // so report what was actually granted rather than what was asked for.
+    let mut display_refresh_rate = None;
     if available.fb_display_refresh_rate {
         match session.enumerate_display_refresh_rates() {
             Ok(rates) => {
-                let current = session.get_display_refresh_rate().ok();
-                log::info!("display refresh rates available: {rates:?} (current {current:?})");
+                let current = session.get_display_refresh_rate().unwrap_or(f32::NAN);
+                log::info!("display refresh rates available: {rates:?} (current {current} Hz)");
+                let mut display = DisplayRefreshRate {
+                    current,
+                    requested: None,
+                    available: rates,
+                };
                 // The highest the display offers that is no faster than the
-                // target. Asking for an unlisted rate is an error, and asking
-                // for more than the frame can sustain just converts headroom
-                // into stale frames.
-                let choice = rates
+                // target. Asking for more than the frame can sustain just
+                // converts headroom into stale frames.
+                let choice = display
+                    .available
                     .iter()
                     .copied()
                     .filter(|rate| *rate <= TARGET_REFRESH_RATE + 0.5)
                     .fold(f32::NAN, f32::max);
                 if choice.is_finite() {
-                    // The request is asynchronous: reading the rate back here
-                    // still returns the old one. The runtime confirms the
-                    // change with DisplayRefreshRateChangedFB, which the event
-                    // loop logs — so do not report a rate we have not been
-                    // told took effect.
-                    match session.request_display_refresh_rate(choice) {
-                        Ok(()) => log::info!("requested {choice} Hz"),
-                        Err(e) => log::warn!("display refresh rate {choice} Hz refused: {e}"),
+                    if let Err(e) = request_display_refresh_rate(&session, &mut display, choice) {
+                        log::warn!("{e}");
                     }
                 }
+                display_refresh_rate = Some(display);
             }
             Err(e) => log::warn!("cannot enumerate display refresh rates: {e}"),
         }
@@ -1127,7 +1174,10 @@ pub fn android_main(app: AndroidApp) {
 
     let mut clock = GameClock::new(None);
     let mut last_frame_at: Option<Instant> = None;
-    let mut debug = DebugLoopState::default();
+    let mut debug = DebugLoopState {
+        display_refresh_rate,
+        ..DebugLoopState::default()
+    };
     let mut session_running = false;
     let mut session_focused = false;
     // The first valid center-eye pose becomes the tracking origin for the
@@ -1175,6 +1225,9 @@ pub fn android_main(app: AndroidApp) {
                         e.from_display_refresh_rate(),
                         e.to_display_refresh_rate()
                     );
+                    if let Some(display) = debug.display_refresh_rate.as_mut() {
+                        display.current = e.to_display_refresh_rate();
+                    }
                 }
                 SessionStateChanged(e) => {
                     log::info!("session state: {:?}", e.state());
@@ -1224,6 +1277,7 @@ pub fn android_main(app: AndroidApp) {
             while let Ok(request) = rx.try_recv() {
                 service_debug_request(
                     request,
+                    &session,
                     &mut game,
                     &mut clock,
                     &mut debug,
