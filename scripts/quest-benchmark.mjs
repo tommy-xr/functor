@@ -96,6 +96,18 @@ function field(line, name) {
   return match ? Number(match[1]) : undefined;
 }
 
+// `FPS=72/72` is achieved/target: the target is the display rate VrApi saw.
+function fpsTarget(line) {
+  const match = line.match(/(?:^|[ ,])FPS=[0-9.]+\/([0-9.]+)/);
+  return match ? Number(match[1]) : undefined;
+}
+
+// `CPU4/GPU=3/3`: the CPU and GPU clock levels.
+function clockLevels(line) {
+  const match = line.match(/CPU\d*\/GPU=(\d+)\/(\d+)/);
+  return match ? { cpu: Number(match[1]), gpu: Number(match[2]) } : undefined;
+}
+
 function summarize(values) {
   if (values.length === 0) return undefined;
   const sorted = values.toSorted((a, b) => a - b);
@@ -118,8 +130,12 @@ function parseTelemetry(text) {
   if (lines.length < 2) throw new Error("not enough complete VrApi samples");
   const values = (name) =>
     lines.map((line) => field(line, name)).filter((value) => value !== undefined);
+  const levels = lines.map(clockLevels).filter((level) => level !== undefined);
   return {
     samples: lines.length,
+    target_hz: [...new Set(lines.map(fpsTarget).filter((hz) => hz !== undefined))],
+    cpu_level: summarize(levels.map((level) => level.cpu)),
+    gpu_level: summarize(levels.map((level) => level.gpu)),
     fps: summarize(values("FPS")),
     app_ms: summarize(values("App")),
     compositor_ms: summarize(values("TW")),
@@ -205,6 +221,16 @@ async function main() {
   }
 
   const telemetry = parseTelemetry(telemetryText);
+  const display = after.display_refresh_rate;
+  // A rate switch mid-sample would mix two frame budgets in one summary.
+  if (
+    display?.current !== before.display_refresh_rate?.current ||
+    telemetry.target_hz.length > 1
+  ) {
+    throw new Error(
+      `display refresh rate changed during the sample (${before.display_refresh_rate?.current} → ${display?.current} Hz; VrApi targets ${telemetry.target_hz.join(", ")})`,
+    );
+  }
   const memory = parseMemory(adb(["shell", "dumpsys", "meminfo", PACKAGE]));
   const views = (after.views ?? []).map((view) =>
     `${view.name} ${view.viewport.width}x${view.viewport.height}`,
@@ -215,6 +241,12 @@ async function main() {
   console.log(`- Device: ${model} (${serial})`);
   console.log(`- Runtime frames: ${before.frame} → ${after.frame}`);
   console.log(`- Views: ${views.length ? views.join(", ") : `${after.viewport.width}x${after.viewport.height}`}`);
+  console.log(
+    display
+      ? `- Display refresh rate: ${display.requested ?? "none"} Hz requested, ${display.current} Hz achieved (available ${display.available.join("/")} Hz)`
+      : "- Display refresh rate: not reported (runtime predates debug protocol v15)",
+  );
+  console.log(`- VrApi target rate: ${telemetry.target_hz.join(", ") || "not reported"} Hz`);
   console.log(`- Sample: ${telemetry.samples} complete VrApi one-second buckets after ${options.warmup}s warmup`);
   console.log(`- FPS: ${telemetry.fps.mean} mean, ${telemetry.fps.p5} p5, ${telemetry.fps.min} min`);
   console.log("");
@@ -225,6 +257,8 @@ async function main() {
   printMetric("CPU + GPU", telemetry.cpu_gpu_ms, " ms");
   printMetric("GPU load", telemetry.gpu_load);
   printMetric("CPU load", telemetry.cpu_load);
+  printMetric("CPU clock level", telemetry.cpu_level);
+  printMetric("GPU clock level", telemetry.gpu_level);
   console.log("");
   console.log(`- Stale frames: ${telemetry.stale_frames}`);
   console.log(`- Torn frames: ${telemetry.torn_frames}`);

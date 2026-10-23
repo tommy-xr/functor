@@ -77,14 +77,24 @@ Prefer the integrated loop:
 ```
 
 It launches, forwards port 8123, pushes the whole project, watches `.fun`/`.funi`
-and asset files, and streams logs. For individual operations:
+and asset files, and streams logs. Add `--refresh-rate 90` (or `120`) to request
+that display rate after every push; without it the APK keeps its startup rate
+(the highest offered up to 80 Hz) or whatever an earlier run requested, so
+restart with `am start -S` to measure the default. 120 Hz is only offered when
+enabled in the headset's display settings; an unoffered rate fails the run and
+lists the available ones. For individual operations:
 
 ```sh
 adb -s SERIAL forward tcp:8123 tcp:8123
 curl --fail-with-body http://127.0.0.1:8123/state | jq
 curl --fail-with-body http://127.0.0.1:8123/scene | jq
 curl --fail-with-body http://127.0.0.1:8123/trace | jq
+curl --fail-with-body http://127.0.0.1:8123/state | jq .display_refresh_rate
+curl --fail-with-body -X POST -d '{"hz":90}' http://127.0.0.1:8123/display-refresh-rate
 ```
+
+The rate switch is asynchronous: confirm it via `display_refresh_rate.current`
+or the `display refresh rate changed` logcat line, not the POST response.
 
 Use the TypeScript SDK for scripted `/input`, `/time`, reload, rewind, and
 multi-client assertions. Validate clock behavior by observing a stable frame
@@ -124,8 +134,11 @@ Push the exact workload first; the benchmark never installs or pushes. Then:
 npm run bench:quest -- --label primitives --warmup 10 --seconds 30
 ```
 
-Record device/model, view resolution, FPS mean/p5/min, stale/torn frames, App and
-Timewarp time, CPU/GPU load, and memory. Run a representative scene and a stress
+Record device/model, view resolution, requested and achieved display rate,
+FPS mean/p5/min, stale/torn frames, App and Timewarp time, CPU/GPU time,
+clock levels and load, and memory. The benchmark reads the rate from `/state`
+and cross-checks VrApi's `FPS=<achieved>/<target>` field; a run whose rate
+changed mid-sample fails rather than mixing two budgets. Run a representative scene and a stress
 scene. State explicitly when missing asset sync means a source-heavy workload
 is representative of CPU/geometry cost but not final texture behavior.
 
