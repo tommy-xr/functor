@@ -1055,9 +1055,11 @@ pub fn android_main(app: AndroidApp) {
     // so report what was actually granted rather than what was asked for.
     let mut display_refresh_rate = None;
     if available.fb_display_refresh_rate {
-        match session.enumerate_display_refresh_rates() {
-            Ok(rates) => {
-                let current = session.get_display_refresh_rate().unwrap_or(f32::NAN);
+        match session
+            .enumerate_display_refresh_rates()
+            .and_then(|rates| Ok((rates, session.get_display_refresh_rate()?)))
+        {
+            Ok((rates, current)) => {
                 log::info!("display refresh rates available: {rates:?} (current {current} Hz)");
                 let mut display = DisplayRefreshRate {
                     current,
@@ -1080,7 +1082,7 @@ pub fn android_main(app: AndroidApp) {
                 }
                 display_refresh_rate = Some(display);
             }
-            Err(e) => log::warn!("cannot enumerate display refresh rates: {e}"),
+            Err(e) => log::warn!("cannot read display refresh rates: {e}"),
         }
     } else {
         log::info!("XR_FB_display_refresh_rate unavailable; using the runtime default");

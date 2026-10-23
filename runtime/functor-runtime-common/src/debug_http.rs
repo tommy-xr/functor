@@ -410,17 +410,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 &mut reader,
                 content_length,
             ) {
-                Ok(command) if command.hz.is_finite() && command.hz > 0.0 => command,
-                Ok(_) => {
-                    respond_text(
-                        &mut stream,
-                        cors_origin,
-                        400,
-                        "Bad Request",
-                        "hz must be a positive number",
-                    );
-                    return Some(());
-                }
+                Ok(command) => command,
                 Err(error) => {
                     respond_text(
                         &mut stream,
@@ -1055,10 +1045,10 @@ Content-Length: {}\r\n\r\n{body}",
         assert!(response.ends_with("pinned by --fixed-time"));
     }
 
-    /// The requested rate reaches the runtime as Hz; a non-positive rate is
-    /// refused before it gets there, and the runtime's refusal is a 400.
+    /// The requested rate reaches the runtime as Hz; malformed JSON and the
+    /// runtime's refusal are 400s.
     #[test]
-    fn display_refresh_rate_forwards_hz_and_rejects_nonsense() {
+    fn display_refresh_rate_forwards_hz_and_reports_refusal() {
         let post = |body: &str, answer: Option<Result<String, String>>| {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let request = format!(
@@ -1086,8 +1076,8 @@ Content-Length: {}\r\n\r\n{body}",
         assert!(ok.starts_with("HTTP/1.1 200 OK\r\n"), "{ok}");
         let refused = post(r#"{"hz":90}"#, Some(Err("no display".into())));
         assert!(refused.starts_with("HTTP/1.1 400 "), "{refused}");
-        let zero = post(r#"{"hz":0}"#, None);
-        assert!(zero.starts_with("HTTP/1.1 400 "), "{zero}");
+        let malformed = post(r#"{"rate":90}"#, None);
+        assert!(malformed.starts_with("HTTP/1.1 400 "), "{malformed}");
     }
 
     /// The embedder transport's egress: the runtime's answer is the drained

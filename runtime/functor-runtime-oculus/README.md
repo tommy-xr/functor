@@ -82,7 +82,7 @@ request/response forms as desktop. `POST /display-refresh-rate` `{"hz":90}` is
 Quest-only: it requests one of the display's offered rates, and `/state`'s
 `display_refresh_rate` reports `current`, `requested`, and `available`. The
 APK starts at the highest offered rate up to 80 Hz; `functor run vr
---refresh-rate 90` requests 90 Hz after every push. `/state` reports `left` and `right` views;
+--refresh-rate 90` requests 90 Hz after the initial push. `/state` reports `left` and `right` views;
 `/capture` returns their raw framebuffer pixels as one left-then-right
 side-by-side PNG, before compositor warping. The server is reachable while the
 headset dozes, but capture correctly returns 503 until XR is rendering. After
