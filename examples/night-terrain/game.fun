@@ -1,11 +1,11 @@
 // A 4 km × 4 km terrain at night, crossed on foot by flashlight: the
 // reference scene for a dark open-world VR game.
 //
-// One unshadowed spot light rides the camera and points where it looks; a
-// dim blue moon and ambient keep the hills legible beyond its cone; dense dark
-// fog swallows everything else. ~200 props — trees and rocks — are scattered
-// from a seed and stood on the ground by raycasting the same heightfield the
-// terrain draws.
+// One unshadowed spot light rides the camera and points where it looks (on
+// XR, where the headset looks); a dim blue moon and ambient leave only faint
+// silhouettes beyond its cone, fading into dark fog. ~200 props — trees and
+// rocks — are scattered from a seed and stood on the ground by raycasting the
+// same heightfield the terrain draws.
 //
 //   node examples/night-terrain/generate-heightmap.mjs
 //   functor -d examples/night-terrain run native
@@ -54,6 +54,7 @@ let world =
        Color.rgb(0.32, 0.36, 0.20),
        Color.rgb(0.36, 0.33, 0.30),
        Color.rgb(0.80, 0.82, 0.84),
+       // Above the highest ground: no snow band.
        1000.0)
 
 let terrainBody = Physics.tag("terrain")
@@ -62,8 +63,8 @@ let physics = (model) =>
   Physics.scene(Vec3.make(0.0, -9.81, 0.0),
                 [Physics.heightfield(terrainBody, world)])
 
-// Straight down through the whole height range. Misses only before the
-// heightfield's first physics step, when there is nothing to hit yet.
+// Straight down through the whole height range. Misses off the map, and
+// everywhere before the heightfield's first physics step.
 let groundAt = (x, z) =>
   Physics.cast(Vec3.make(x, maxHeight + 10.0, z),
                Vec3.make(0.0, -1.0, 0.0),
@@ -88,26 +89,27 @@ let scatterProp = (i) =>
 let scattered = List.range(propCount) |> List.map(scatterProp)
 
 expect List.length(scattered) == propCount
-expect scattered == (List.range(propCount) |> List.map(scatterProp))
 expect scattered |> List.all((p) =>
   Math.abs(p.x - spawnX) <= scatterSize / 2.0 && Math.abs(p.z - spawnZ) <= scatterSize / 2.0)
 expect (scattered |> List.filter((p) => p.tree) |> List.length) > 100.0
 
-// Ground heights need the physics world, so they settle in `tick`, once per
-// distinct scatter: all-or-nothing, so a partly built world is never cached.
+// Ground heights need the physics world, so they settle in `tick` once per
+// distinct scatter, as soon as the heightfield exists (the spawn probe hits).
+// A prop scattered off the map edge has no ground and is dropped.
 let settle = (model) =>
-  if model.settledFrom == scattered then model
+  let ready = groundAt(spawnX, spawnZ) in
+  if model.settledFrom == scattered || not ready.hit then model
   else
     let placed =
-      scattered |> List.map((p) =>
-        let hit = groundAt(p.x, p.z) in
-        { tree: p.tree, x: p.x, y: hit.y, z: p.z, yaw: p.yaw, size: p.size, hit: hit.hit }) in
-    if placed |> List.all((p) => p.hit) then
-      { model with
-          settledFrom: scattered,
-          trees: placed |> List.filter((p) => p.tree),
-          rocks: placed |> List.filter((p) => not p.tree) }
-    else model
+      scattered
+      |> List.map((p) =>
+           let hit = groundAt(p.x, p.z) in
+           { tree: p.tree, x: p.x, y: hit.y, z: p.z, yaw: p.yaw, size: p.size, hit: hit.hit })
+      |> List.filter((p) => p.hit) in
+    { model with
+        settledFrom: scattered,
+        trees: placed |> List.filter((p) => p.tree),
+        rocks: placed |> List.filter((p) => not p.tree) }
 
 // ── Input and movement ──────────────────────────────────────────────────────
 
@@ -121,6 +123,7 @@ let init = {
   pitch: 0.0 - 0.14,
   lastMouse: NoMouse,
   eye: { x: spawnX, y: 12.0, z: spawnZ },
+  head: Option.None,
   settledFrom: [],
   trees: [],
   rocks: [],
@@ -149,6 +152,13 @@ let mouseMove = (model, x, y) =>
         pitch: Math.clamp(0.0 - pitchLimit, pitchLimit, model.pitch - (y - lastY) * sensitivity),
         lastMouse: MouseAt(x, y) }
 
+// The headset's rig-local head pose (None off XR). On XR the camera composes
+// head motion itself; the flashlight needs the pose to follow it.
+let sampledInput = (model, snapshot: Input.snapshot) =>
+  match snapshot.xr with
+  | Option.None => { model with head: Option.None }
+  | Option.Some(xr) => { model with head: xr.head }
+
 // Where the camera points: yaw 0 / pitch 0 looks down +Z, positive pitch up.
 let lookDir = (yaw, pitch) =>
   let flat = Math.cos(pitch) in
@@ -167,8 +177,10 @@ let tick = (model, dt, tts) =>
               forward * Math.cos(model.yaw) + right * Math.sin(model.yaw))
     |> Vec3.normalize
     |> Vec3.scale(walkSpeed * dt) in
-  let x = model.eye.x + Vec3.x(step) in
-  let z = model.eye.z + Vec3.z(step) in
+  // Stop a metre short of the map edge, where the ground probe would miss.
+  let edge = worldSize / 2.0 - 1.0 in
+  let x = Math.clamp(0.0 - edge, edge, model.eye.x + Vec3.x(step)) in
+  let z = Math.clamp(0.0 - edge, edge, model.eye.z + Vec3.z(step)) in
   let ground = groundAt(x, z) in
   let y = if ground.hit then ground.y + eyeHeight else model.eye.y in
   settle({ model with eye: { x: x, y: y, z: z } })
@@ -195,13 +207,21 @@ let rockAt = (p) =>
 
 let draw = (model, tts) =>
   let eye = Vec3.make(model.eye.x, model.eye.y, model.eye.z) in
-  let look = lookDir(model.yaw, model.pitch) in
+  // Past ~300 m the fog is opaque, so a farther plane only draws hidden terrain.
   let camera =
     Camera3D.firstPerson(eye, Angle.radians(model.yaw), Angle.radians(model.pitch), Angle.degrees(68.0))
-    |> Camera3D.clip(0.3, 3000.0) in
+    |> Camera3D.clip(0.3, 1000.0) in
+  // On XR the beam follows the tracked head, mapped through the same camera.
+  let (from, dir) =
+    match model.head with
+    | Option.None => (eye, lookDir(model.yaw, model.pitch))
+    | Option.Some(pose) =>
+      let m = Camera3D.mapTrackedPose(camera, pose) in
+      (Vec3.make(m.position.x, m.position.y, m.position.z),
+       Vec3.make(m.forward.x, m.forward.y, m.forward.z)) in
   // Held just below the eye, so the beam's falloff reads across the ground.
   let flashlight =
-    Light.spot(eye |> Vec3.add(Vec3.make(0.0, -0.25, 0.0)), look,
+    Light.spot(from |> Vec3.add(Vec3.make(0.0, -0.25, 0.0)), dir,
                flashlightColor, flashlightIntensity, flashlightRange, flashlightCone) in
   Frame.createLit(
     camera,

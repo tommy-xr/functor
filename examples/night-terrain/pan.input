@@ -1,5 +1,6 @@
-# pan.input — sweep the flashlight across the props and back (a seamless
-# 120-frame loop; the PR GIF captures every 5th frame).
+# pan.input — sweep the flashlight across the props and back; frame 120's
+# view equals frame 0's, so frames 5..120 loop. (Frame 0 renders before the
+# first physics step, so it has no props yet.)
 #
 #   functor -d examples/night-terrain run native \
 #     --input-script "$PWD/examples/night-terrain/pan.input" \
