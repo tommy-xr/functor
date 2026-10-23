@@ -780,8 +780,12 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
     /// watching and re-pushing on save (hot reload is built in, like
     /// native — `run` and `develop` are the same here too), streaming the
     /// headset's runtime log into this terminal. `refresh_rate` (Hz) is
-    /// requested after every successful push, so it survives an APK restart.
-    async fn run_vr(&self, working_directory: &str, refresh_rate: Option<f32>) -> Result<(), Error> {
+    /// requested once, after the initial load.
+    async fn run_vr(
+        &self,
+        working_directory: &str,
+        refresh_rate: Option<f32>,
+    ) -> Result<(), Error> {
         let entry_path = self.entry_path(working_directory)?;
         let project_root = Path::new(working_directory);
         // The device has no command line: every push DECLARES this entry's
@@ -962,17 +966,6 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
-                    if let Some(hz) = refresh_rate {
-                        match post_display_refresh_rate(&addr, hz) {
-                            Ok((200, _)) => {}
-                            Ok((status, body)) => emit(Event::Warning {
-                                message: format!("refresh rate {hz} Hz rejected ({status}): {body}"),
-                            }),
-                            Err(e) => emit(Event::Warning {
-                                message: format!("refresh rate request failed ({e})"),
-                            }),
-                        }
-                    }
                 }
                 Ok((status, body)) => {
                     emit(Event::Warning {
@@ -1571,27 +1564,15 @@ fn post_display_refresh_rate(addr: &str, hz: f32) -> Result<(u16, String), Error
 /// Pull `--refresh-rate <hz>` / `--refresh-rate=<hz>` out of `run vr`'s
 /// trailing args, returning the rate and the remaining args.
 fn take_refresh_rate_arg(runner_args: &[String]) -> Result<(Option<f32>, Vec<String>), Error> {
-    let parse = |value: &str| match value.parse::<f32>() {
-        Ok(hz) if hz.is_finite() && hz > 0.0 => Ok(hz),
-        _ => Err(Error::other(format!(
-            "--refresh-rate expects a rate in Hz, e.g. 90 (got `{value}`)"
-        ))),
-    };
-    let mut rate = None;
-    let mut rest = Vec::with_capacity(runner_args.len());
-    let mut iter = runner_args.iter();
-    while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--refresh-rate=") {
-            rate = Some(parse(value)?);
-        } else if arg == "--refresh-rate" {
-            let value = iter
-                .next()
-                .ok_or_else(|| Error::other("--refresh-rate requires a value (--refresh-rate <hz>)"))?;
-            rate = Some(parse(value)?);
-        } else {
-            rest.push(arg.clone());
-        }
-    }
+    let (value, rest) = crate::take_flag_arg(runner_args, "--refresh-rate")?;
+    let rate = value
+        .map(|value| match value.parse::<f32>() {
+            Ok(hz) if hz.is_finite() && hz > 0.0 => Ok(hz),
+            _ => Err(Error::other(format!(
+                "--refresh-rate expects a rate in Hz, e.g. 90 (got `{value}`)"
+            ))),
+        })
+        .transpose()?;
     Ok((rate, rest))
 }
 

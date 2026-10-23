@@ -1174,7 +1174,8 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::DisplayRefreshRate(_, resp) => {
             let _ = resp.send(Err(
-                "display refresh rate is a headset setting; the desktop runtime has none".to_string(),
+                "display refresh rate is a headset setting; the desktop runtime has none"
+                    .to_string(),
             ));
         }
         debug_server::DebugRequest::NetOutbound(resp) => {

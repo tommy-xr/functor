@@ -78,7 +78,7 @@ Prefer the integrated loop:
 
 It launches, forwards port 8123, pushes the whole project, watches `.fun`/`.funi`
 and asset files, and streams logs. Add `--refresh-rate 90` (or `120`) to request
-that display rate after every push; without it the APK keeps its startup rate
+that display rate after the initial push; without it the APK keeps its startup rate
 (the highest offered up to 80 Hz) or whatever an earlier run requested, so
 restart with `am start -S` to measure the default. 120 Hz is only offered when
 enabled in the headset's display settings; an unoffered rate fails the run and
@@ -136,9 +136,10 @@ npm run bench:quest -- --label primitives --warmup 10 --seconds 30
 
 Record device/model, view resolution, requested and achieved display rate,
 FPS mean/p5/min, stale/torn frames, App and Timewarp time, CPU/GPU time,
-clock levels and load, and memory. The benchmark reads the rate from `/state`
-and cross-checks VrApi's `FPS=<achieved>/<target>` field; a run whose rate
-changed mid-sample fails rather than mixing two budgets. Run a representative scene and a stress
+clock levels and load, and memory. The benchmark prints the requested and
+current display rate from `/state` beside VrApi's `FPS=<fps>/<target>` target
+(the FPS row is the achieved frame rate); a run whose rate changed mid-sample
+fails rather than mixing two budgets. Run a representative scene and a stress
 scene. State explicitly when missing asset sync means a source-heavy workload
 is representative of CPU/geometry cost but not final texture behavior.
 

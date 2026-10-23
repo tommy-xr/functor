@@ -243,7 +243,7 @@ async function main() {
   console.log(`- Views: ${views.length ? views.join(", ") : `${after.viewport.width}x${after.viewport.height}`}`);
   console.log(
     display
-      ? `- Display refresh rate: ${display.requested ?? "none"} Hz requested, ${display.current} Hz achieved (available ${display.available.join("/")} Hz)`
+      ? `- Display refresh rate: ${display.requested ?? "none"} Hz requested, ${display.current} Hz current (available ${display.available.join("/")} Hz)`
       : "- Display refresh rate: not reported (runtime predates debug protocol v15)",
   );
   console.log(`- VrApi target rate: ${telemetry.target_hz.join(", ") || "not reported"} Hz`);
