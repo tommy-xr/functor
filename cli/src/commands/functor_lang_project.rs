@@ -622,13 +622,15 @@ impl FunctorLangProject {
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
         if matches!(environment, Environment::Vr) {
+            let (refresh_rate, runner_args) = take_refresh_rate_arg(runner_args)?;
             if !runner_args.is_empty() {
                 emit(Event::Warning {
-                    message: "runner args are ignored on vr (they configure the desktop runtime)"
+                    message: "runner args are ignored on vr except --refresh-rate (they configure \
+the desktop runtime)"
                         .to_string(),
                 });
             }
-            return self.run_vr(working_directory).await;
+            return self.run_vr(working_directory, refresh_rate).await;
         }
         if matches!(environment, Environment::Wasm) {
             return self.run_wasm(working_directory, runner_args, develop).await;
@@ -777,8 +779,9 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
     /// app, forward the push port, push the whole project, then keep
     /// watching and re-pushing on save (hot reload is built in, like
     /// native — `run` and `develop` are the same here too), streaming the
-    /// headset's runtime log into this terminal.
-    async fn run_vr(&self, working_directory: &str) -> Result<(), Error> {
+    /// headset's runtime log into this terminal. `refresh_rate` (Hz) is
+    /// requested after every successful push, so it survives an APK restart.
+    async fn run_vr(&self, working_directory: &str, refresh_rate: Option<f32>) -> Result<(), Error> {
         let entry_path = self.entry_path(working_directory)?;
         let project_root = Path::new(working_directory);
         // The device has no command line: every push DECLARES this entry's
@@ -875,6 +878,18 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
 is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
             ))
         })?;
+        if let Some(hz) = refresh_rate {
+            // An unoffered rate (120 Hz disabled in headset settings) or a
+            // pre-v15 APK (404) fails the run: the user asked for a rate.
+            match post_display_refresh_rate(&addr, hz)? {
+                (200, body) => emit(Event::Info { message: body }),
+                (status, body) => {
+                    return Err(Error::other(format!(
+                        "refresh rate {hz} Hz rejected ({status}): {body}"
+                    )))
+                }
+            }
+        }
         emit(Event::Info {
             message: format!(
                 "watching {} + siblings + project assets — edit and save to hot-reload on the headset \
@@ -947,6 +962,17 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
+                    if let Some(hz) = refresh_rate {
+                        match post_display_refresh_rate(&addr, hz) {
+                            Ok((200, _)) => {}
+                            Ok((status, body)) => emit(Event::Warning {
+                                message: format!("refresh rate {hz} Hz rejected ({status}): {body}"),
+                            }),
+                            Err(e) => emit(Event::Warning {
+                                message: format!("refresh rate request failed ({e})"),
+                            }),
+                        }
+                    }
                 }
                 Ok((status, body)) => {
                     emit(Event::Warning {
@@ -1536,6 +1562,39 @@ fn post_project(
     http_post(addr, &path, "application/json", files_json)
 }
 
+/// Ask the headset for a display refresh rate (`POST /display-refresh-rate`).
+fn post_display_refresh_rate(addr: &str, hz: f32) -> Result<(u16, String), Error> {
+    let body = serde_json::json!({ "hz": hz }).to_string();
+    http_post(addr, "/display-refresh-rate", "application/json", &body)
+}
+
+/// Pull `--refresh-rate <hz>` / `--refresh-rate=<hz>` out of `run vr`'s
+/// trailing args, returning the rate and the remaining args.
+fn take_refresh_rate_arg(runner_args: &[String]) -> Result<(Option<f32>, Vec<String>), Error> {
+    let parse = |value: &str| match value.parse::<f32>() {
+        Ok(hz) if hz.is_finite() && hz > 0.0 => Ok(hz),
+        _ => Err(Error::other(format!(
+            "--refresh-rate expects a rate in Hz, e.g. 90 (got `{value}`)"
+        ))),
+    };
+    let mut rate = None;
+    let mut rest = Vec::with_capacity(runner_args.len());
+    let mut iter = runner_args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix("--refresh-rate=") {
+            rate = Some(parse(value)?);
+        } else if arg == "--refresh-rate" {
+            let value = iter
+                .next()
+                .ok_or_else(|| Error::other("--refresh-rate requires a value (--refresh-rate <hz>)"))?;
+            rate = Some(parse(value)?);
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Ok((rate, rest))
+}
+
 /// Minimal HTTP POST over std::net — one dependency-free request to the
 /// runner's shared debug HTTP server. Returns (status, body). `Connection: close`
 /// keeps the read side trivial (read to EOF, split headers off).
@@ -1642,6 +1701,20 @@ fn entry_escapes_project(entry: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refresh_rate_arg_is_extracted_in_both_forms_and_validated() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (rate, rest) =
+            super::take_refresh_rate_arg(&args(&["--refresh-rate", "120", "--x"])).unwrap();
+        assert_eq!((rate, rest), (Some(120.0), args(&["--x"])));
+        let (rate, rest) = super::take_refresh_rate_arg(&args(&["--refresh-rate=90"])).unwrap();
+        assert_eq!((rate, rest), (Some(90.0), vec![]));
+        assert_eq!(super::take_refresh_rate_arg(&[]).unwrap(), (None, vec![]));
+        assert!(super::take_refresh_rate_arg(&args(&["--refresh-rate"])).is_err());
+        assert!(super::take_refresh_rate_arg(&args(&["--refresh-rate", "fast"])).is_err());
+        assert!(super::take_refresh_rate_arg(&args(&["--refresh-rate", "0"])).is_err());
+    }
+
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
     use super::{

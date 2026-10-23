@@ -86,7 +86,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// transitions folded through the shared reducer (evented, like `key`, not
 /// whole-sample like `xr`) — and the optional `touch` field on `GET /state`'s
 /// input snapshot.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 14;
+///
+/// 15 adds `POST /display-refresh-rate` `{"hz":90}` — request a headset
+/// display rate (400 on runtimes without one, e.g. desktop) — and the optional
+/// `display_refresh_rate` field on `GET /state`, omitted where absent.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 15;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -196,6 +200,11 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/rewind",
         description: "coupled scene rewind — {\"frame\":42} restores model + physics to that rendered frame (pin the clock first); 400 if unrecorded/pruned",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/display-refresh-rate",
+        description: "request a headset display refresh rate — {\"hz\":90}; must be a rate the display offers (/state display_refresh_rate.available); the switch is asynchronous, so confirm it via display_refresh_rate.current; 400 on runtimes without a controllable display (desktop)",
     },
     DebugRoute {
         method: "GET",
@@ -311,6 +320,21 @@ pub struct RuntimeState {
     #[serde(default)]
     pub model_debug: String,
     pub input: InputSnapshot,
+    /// The headset display's refresh rate (v15). `None` — and omitted from the
+    /// JSON — on runtimes that do not control one, such as desktop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_refresh_rate: Option<DisplayRefreshRate>,
+}
+
+/// A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DisplayRefreshRate {
+    /// The rate the display is running at, as last confirmed by the runtime.
+    pub current: f32,
+    /// The rate this session last asked for; `None` before any request.
+    pub requested: Option<f32>,
+    /// The rates the display offers.
+    pub available: Vec<f32>,
 }
 
 impl RuntimeState {
@@ -414,6 +438,12 @@ fn one_frame() -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub struct RewindCommand {
     pub frame: u64,
+}
+
+/// A display refresh-rate request sent through `POST /display-refresh-rate`.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+pub struct DisplayRefreshRateCommand {
+    pub hz: f32,
 }
 
 /// Why `POST /capture` could not return pixels.
@@ -631,6 +661,9 @@ pub enum DebugRequest {
     ReloadAsset(ProjectAsset, Sender<Result<String, String>>),
     SyncAssets(ProjectAssetPaths, Sender<Result<String, String>>),
     Rewind(u64, Sender<Result<String, String>>),
+    /// Request this display refresh rate in Hz. `Err` when the runtime has no
+    /// controllable display or the display does not offer that rate.
+    DisplayRefreshRate(f32, Sender<Result<String, String>>),
     /// Embedder transport: take-and-consume the game's queued `ConnCommand`s.
     /// `Err` when the runtime is on the default socket transport, where the
     /// real dispatcher owns that queue.
@@ -739,6 +772,7 @@ mod tests {
                 xr: None,
                 ..InputSnapshot::default()
             },
+            display_refresh_rate: None,
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -1036,6 +1070,7 @@ mod tests {
             "POST /reload-asset",
             "POST /sync-assets",
             "POST /rewind",
+            "POST /display-refresh-rate",
             "GET /net/outbound",
             "POST /net/deliver",
         ]
@@ -1060,7 +1095,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 14);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 15);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
