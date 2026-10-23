@@ -78,7 +78,11 @@ curl --fail --show-error --retry 30 --retry-delay 1 \
 `POST /input`, `POST /time`, `POST /reload-source`, `POST /load-project`,
 `POST /reload-project`, `POST /reload-asset`, `POST /sync-assets`, and
 `POST /rewind` have the same
-request/response forms as desktop. `/state` reports `left` and `right` views;
+request/response forms as desktop. `POST /display-refresh-rate` `{"hz":90}` is
+Quest-only: it requests one of the display's offered rates, and `/state`'s
+`display_refresh_rate` reports `current`, `requested`, and `available`. The
+APK starts at the highest offered rate up to 80 Hz; `functor run vr
+--refresh-rate 90` requests 90 Hz after every push. `/state` reports `left` and `right` views;
 `/capture` returns their raw framebuffer pixels as one left-then-right
 side-by-side PNG, before compositor warping. The server is reachable while the
 headset dozes, but capture correctly returns 503 until XR is rendering. After
@@ -111,8 +115,9 @@ npm run bench:quest -- --label synthwave --warmup 10 --seconds 30
 ```
 
 The report uses Meta's on-device one-second telemetry buckets: FPS, stale/torn
-frames, application and compositor time, combined CPU/GPU time and load. It
-also includes PSS/RSS and graphics memory from `dumpsys meminfo`.
+frames, application and compositor time, CPU/GPU time, clock levels and load.
+It also reports the requested and achieved display refresh rate (from `/state`)
+and PSS/RSS and graphics memory from `dumpsys meminfo`.
 
 Semantics match desktop hot-reload: the **model is preserved** (closures
 stored in the model rebind by def-name), a broken push returns the rendered
