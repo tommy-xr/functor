@@ -35,7 +35,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         void main() {
             vec3 t = normalize(worldTangent);
-            fragColor = vec4(t * 0.5 + 0.5, 1.0);
+            // Store the raw value on every surface: decode, so the epilogue /
+            // sRGB attachment encodes it back.
+            fragColor = functorOutput(vec4(functorSrgbToLinear(t * 0.5 + 0.5), 1.0));
         }
 "#;
 
@@ -43,6 +45,7 @@ struct Uniforms {
     world_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -81,6 +84,7 @@ impl Material for TangentDebugMaterial {
                     world_loc: shader.get_uniform_location(ctx.gl, "world"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -105,6 +109,7 @@ impl Material for TangentDebugMaterial {
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
             }
         }
 

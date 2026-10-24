@@ -28,7 +28,13 @@ fn decode(bytes: &Vec<u8>) -> Option<TextureData> {
     }
 }
 
-pub struct TexturePipeline;
+/// Image files decoded for sampling. `srgb` picks the upload space: COLOR
+/// images (albedo) store sRGB and decode to linear in hardware; DATA images
+/// (normal maps) upload LINEAR — their texels are vectors, and an sRGB decode
+/// would bend every normal (see `crate::color_space`).
+pub struct TexturePipeline {
+    pub srgb: bool,
+}
 
 impl AssetPipeline<Texture2D> for TexturePipeline {
     fn process(
@@ -50,60 +56,32 @@ impl AssetPipeline<Texture2D> for TexturePipeline {
                 // Loaded textures are sampled on world geometry, which is
                 // usually minified: without a mip chain a distant surface
                 // samples one texel per fragment and crawls as the camera
-                // moves. The fallback checkerboard below deliberately keeps
-                // level 0 so a missing asset still reads as a flat marker.
+                // moves. The fallback below deliberately keeps level 0 so a
+                // missing asset still reads as a flat marker.
                 mipmap: true,
-                // Albedo images are color: sRGB storage, hardware decode.
-                srgb: true,
+                srgb: self.srgb,
                 ..TextureOptions::default()
             },
         )
     }
 
     fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
-        let texture_data = TextureData::checkerboard_pattern(8, 8, [0, 255, 0, 255]);
-        Texture2D::init_from_data(
-            texture_data,
-            TextureOptions {
-                srgb: true,
-                ..TextureOptions::default()
-            },
-        )
-    }
-}
-
-/// Non-color ("data") textures — normal maps today. Same decode as
-/// [`TexturePipeline`], but uploaded LINEAR: the texels are vectors, and an
-/// sRGB decode would bend every normal (see `crate::color_space`).
-pub struct LinearTexturePipeline;
-
-impl AssetPipeline<Texture2D> for LinearTexturePipeline {
-    fn process(
-        &self,
-        bytes: Vec<u8>,
-        _asset_cache: &AssetCache,
-        context: crate::asset::AssetPipelineContext,
-    ) -> Texture2D {
-        let Some(texture_data) = decode(&bytes) else {
-            return self.unloaded_asset(context);
-        };
-        Texture2D::init_from_data(
-            texture_data,
-            TextureOptions {
-                wrap: true,
-                linear: true,
-                mipmap: true,
-                ..TextureOptions::default()
-            },
-        )
-    }
-
-    fn unloaded_asset(&self, _context: crate::asset::AssetPipelineContext) -> Texture2D {
-        // A flat "straight up" tangent-space normal: the identity stand-in
-        // for a missing/undecodable normal map (a color checkerboard would
-        // dent the surface it stands in for).
-        let texture_data = TextureData::solid_color([128, 128, 255, 255]);
-        Texture2D::init_from_data(texture_data, TextureOptions::default())
+        if self.srgb {
+            let texture_data = TextureData::checkerboard_pattern(8, 8, [0, 255, 0, 255]);
+            Texture2D::init_from_data(
+                texture_data,
+                TextureOptions {
+                    srgb: true,
+                    ..TextureOptions::default()
+                },
+            )
+        } else {
+            // A flat "straight up" tangent-space normal: the identity stand-in
+            // for a missing/undecodable normal map (a color checkerboard would
+            // dent the surface it stands in for).
+            let texture_data = TextureData::solid_color([128, 128, 255, 255]);
+            Texture2D::init_from_data(texture_data, TextureOptions::default())
+        }
     }
 }
 
@@ -169,12 +147,16 @@ mod tests {
     fn corrupt_png_falls_back_instead_of_panicking() {
         // Valid PNG magic, truncated body.
         let corrupt = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
-        let _ = TexturePipeline.process(corrupt, &AssetCache::new(), AssetPipelineContext {});
+        let _ = TexturePipeline { srgb: true }.process(
+            corrupt,
+            &AssetCache::new(),
+            AssetPipelineContext {},
+        );
     }
 
     #[test]
     fn unknown_format_falls_back_instead_of_panicking() {
-        let _ = TexturePipeline.process(
+        let _ = TexturePipeline { srgb: true }.process(
             b"<html>not an image</html>".to_vec(),
             &AssetCache::new(),
             AssetPipelineContext {},

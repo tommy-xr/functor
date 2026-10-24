@@ -140,7 +140,9 @@ impl RenderTargetBuffers {
                 gl.viewport(0, 0, width as i32, height as i32);
                 let clear = crate::color_space::srgb_to_linear3(clear);
                 gl.clear_color(clear[0], clear[1], clear[2], 1.0);
+                crate::color_space::set_srgb_write(gl, true);
                 gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+                crate::color_space::set_srgb_write(gl, false);
 
                 fbos[i] = Some(fbo);
                 textures[i] = Some(texture);

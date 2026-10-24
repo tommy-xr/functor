@@ -211,12 +211,17 @@ impl RenderableAsset for TextureData {
             };
             // Color textures store sRGB so the hardware decodes to linear at
             // sample time; data textures keep the raw (linear) format. See
-            // `crate::color_space` and `TextureOptions::srgb`.
-            let internal_format = match (self.format, options.srgb) {
-                (PixelFormat::RGB, true) => glow::SRGB8,
-                (PixelFormat::RGBA, true) => glow::SRGB8_ALPHA8,
-                (PixelFormat::RGB, false) => glow::RGB,
-                (PixelFormat::RGBA, false) => glow::RGBA,
+            // `crate::color_space` and `TextureOptions::srgb`. sRGB uploads
+            // are RGBA only (every decoder emits RGBA): `SRGB8` is not
+            // color-renderable on GLES3/WebGL2, so it cannot generate mips.
+            debug_assert!(
+                !options.srgb || matches!(self.format, PixelFormat::RGBA),
+                "sRGB textures must be RGBA"
+            );
+            let internal_format = if options.srgb {
+                glow::SRGB8_ALPHA8
+            } else {
+                format
             };
 
             gl.tex_image_2d(

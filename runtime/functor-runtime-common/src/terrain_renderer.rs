@@ -179,12 +179,15 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         void main() {
             vec3 n = normalize(worldNormal);
+            // Debug views store their raw value on every surface: decode, so
+            // the epilogue / sRGB attachment encodes it back.
             if (debugMode == 1) {
-                fragColor = vec4(n * 0.5 + 0.5, 1.0);
+                fragColor = functorOutput(vec4(functorSrgbToLinear(n * 0.5 + 0.5), 1.0));
                 return;
             }
             if (debugMode == 2) {
-                fragColor = vec4(normalize(worldTangent) * 0.5 + 0.5, 1.0);
+                fragColor = functorOutput(
+                    vec4(functorSrgbToLinear(normalize(worldTangent) * 0.5 + 0.5), 1.0));
                 return;
             }
 

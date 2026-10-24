@@ -663,20 +663,177 @@ impl TextOverlay {
 /// context never receives an input event — target views are display-only for
 /// now (interactive widgets render in their resting state; their handlers are
 /// dropped by the producer).
+///
+/// Color space: egui paints gamma-encoded colors (and blends in gamma space),
+/// but render targets are `SRGB8_ALPHA8`, which ES/WebGL2 always encode on
+/// write — painting egui straight in would encode twice (washed out). So
+/// egui paints into a LINEAR `RGBA8` scratch, and a decode pass writes the
+/// scratch into the target as linear values the attachment encodes back:
+/// the target stores egui's bytes, and readers hardware-decode it like every
+/// other render target (see `crate::color_space`).
 pub struct UiTargetRenderer {
     ctx: egui::Context,
     painter: egui_glow::Painter,
     gl: Arc<glow::Context>,
+    /// The gamma-space scratch egui paints into; grown to the largest target
+    /// seen (a smaller target uses its bottom-left corner).
+    scratch: Option<GammaScratch>,
+    decode_program: crate::shader_program::ShaderProgram,
+    decode_vao: glow::VertexArray,
 }
 
+struct GammaScratch {
+    fbo: glow::Framebuffer,
+    texture: glow::Texture,
+    width: u32,
+    height: u32,
+}
+
+// Fullscreen triangle from gl_VertexID — no vertex buffer.
+const DECODE_VERTEX_SHADER_SOURCE: &str = r#"
+        void main() {
+            vec2 pos = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+            gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+        }
+"#;
+
+// The scratch pixel under this fragment (both passes use a (0,0,w,h)
+// viewport), decoded to linear; the sRGB attachment encodes it back.
+const DECODE_FRAGMENT_SHADER_SOURCE: &str = r#"
+        out vec4 fragColor;
+        uniform sampler2D uGamma;
+
+        void main() {
+            vec4 c = texelFetch(uGamma, ivec2(gl_FragCoord.xy), 0);
+            fragColor = vec4(functorSrgbToLinear(c.rgb), c.a);
+        }
+"#;
+
 impl UiTargetRenderer {
-    pub fn new(gl: Arc<glow::Context>) -> Self {
+    pub fn new(gl: Arc<glow::Context>, shader_version: &str) -> Self {
+        use crate::shader::{Shader, ShaderType};
         let painter = egui_glow::Painter::new(gl.clone(), "", None, false)
             .expect("failed to create egui_glow painter");
+        let vertex = Shader::build(
+            &gl,
+            ShaderType::Vertex,
+            DECODE_VERTEX_SHADER_SOURCE,
+            shader_version,
+        );
+        let fragment = Shader::build(
+            &gl,
+            ShaderType::Fragment,
+            DECODE_FRAGMENT_SHADER_SOURCE,
+            shader_version,
+        );
+        let decode_program = crate::shader_program::ShaderProgram::link(&gl, &vertex, &fragment);
+        let decode_vao =
+            unsafe { gl.create_vertex_array() }.expect("ui target: create decode vao");
         Self {
             ctx: egui::Context::default(),
             painter,
             gl,
+            scratch: None,
+            decode_program,
+            decode_vao,
+        }
+    }
+
+    /// Bind a gamma scratch at least `width`x`height`, (re)allocating it when
+    /// a larger target arrives.
+    fn bind_scratch(&mut self, width: u32, height: u32) {
+        let gl = &self.gl;
+        let fits = self
+            .scratch
+            .as_ref()
+            .is_some_and(|s| s.width >= width && s.height >= height);
+        if !fits {
+            let (width, height) = match &self.scratch {
+                Some(old) => (old.width.max(width), old.height.max(height)),
+                None => (width, height),
+            };
+            unsafe {
+                if let Some(old) = self.scratch.take() {
+                    gl.delete_framebuffer(old.fbo);
+                    gl.delete_texture(old.texture);
+                }
+                let texture = gl.create_texture().expect("ui target: create scratch");
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    width as i32,
+                    height as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                // Complete without mips (texelFetch ignores filtering).
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::NEAREST as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::NEAREST as i32,
+                );
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, 0);
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                let fbo = gl.create_framebuffer().expect("ui target: create scratch fbo");
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(texture),
+                    0,
+                );
+                self.scratch = Some(GammaScratch {
+                    fbo,
+                    texture,
+                    width,
+                    height,
+                });
+            }
+        }
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, self.scratch.as_ref().map(|s| s.fbo));
+        }
+    }
+
+    /// Write the scratch's bottom-left `width`x`height` into `target_fbo`,
+    /// decoded to linear (see the type doc).
+    fn decode_into(&self, target_fbo: glow::Framebuffer, width: u32, height: u32) {
+        let gl = &self.gl;
+        let Some(scratch) = &self.scratch else {
+            return;
+        };
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target_fbo));
+            gl.viewport(0, 0, width as i32, height as i32);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.disable(glow::BLEND);
+            gl.disable(glow::DEPTH_TEST);
+            self.decode_program.use_program(gl);
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(scratch.texture));
+            gl.uniform_1_i32(
+                gl.get_uniform_location(self.decode_program.program_id, "uGamma")
+                    .as_ref(),
+                0,
+            );
+            gl.bind_vertex_array(Some(self.decode_vao));
+            crate::color_space::set_srgb_write(gl, true);
+            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+            crate::color_space::set_srgb_write(gl, false);
+            gl.bind_vertex_array(None);
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            gl.use_program(None);
+            gl.enable(glow::DEPTH_TEST);
         }
     }
 
@@ -722,7 +879,8 @@ in this frame; only the first declaration is rendered"
         scene_context: &crate::SceneContext,
         pass: &crate::frame::UiTargetPass,
     ) {
-        let gl = &self.gl;
+        let gl = self.gl.clone();
+        let gl = &gl;
         // The caller's render target, restored after the pass — captured
         // BEFORE ensure_render_target, since (re)allocating buffers leaves
         // the FBO binding on `None`.
@@ -734,14 +892,15 @@ in this frame; only the first declaration is rendered"
         let Some((fbo, width, height)) = scene_context.render_target_write(&pass.target.id) else {
             return;
         };
+        self.bind_scratch(width, height);
         unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             // The forward pass may have left SCISSOR_TEST clipped to a window
-            // pane; the target owns its whole texture.
+            // pane; the scratch is cleared whole. Gamma scratch: the authored
+            // clear is stored as-is, like egui's colors.
             gl.disable(glow::SCISSOR_TEST);
             gl.viewport(0, 0, width as i32, height as i32);
             gl.clear_color(clear[0], clear[1], clear[2], 1.0);
-            gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            gl.clear(glow::COLOR_BUFFER_BIT);
         }
         // A display-only egui pass: interaction state is fresh locals — no
         // events are ever fed, so no UiEvent can arise and the stateful-widget
@@ -772,6 +931,7 @@ in this frame; only the first declaration is rendered"
                 render_root(ui, &pass.view, &mut state, false);
             },
         );
+        self.decode_into(fbo, width, height);
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
         }

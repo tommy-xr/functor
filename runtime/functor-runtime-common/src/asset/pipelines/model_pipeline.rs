@@ -258,7 +258,7 @@ fn process_node(
                 // into an sRGB texture the hardware will decode — so encode
                 // each channel to sRGB first; the decode then reproduces the
                 // linear factor (alpha stays raw: coverage, not color).
-                let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0) as u8;
+                let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
                 let encode = |c: f32| to_u8(crate::color_space::linear_to_srgb(c.clamp(0.0, 1.0)));
                 let data = TextureData::solid_color([
                     encode(base_color_factor[0]),

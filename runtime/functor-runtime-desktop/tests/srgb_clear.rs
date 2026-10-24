@@ -3,10 +3,11 @@
 //!
 //! The renderer decodes authored clear colors to LINEAR before `clear_color`
 //! on sRGB attachments, relying on the hardware to encode the cleared value on
-//! write (desktop GL: only with `FRAMEBUFFER_SRGB` enabled, which the desktop
-//! shell turns on once at init; ES/WebGL2: always). If a driver skipped the
-//! encode-on-clear, render-target backgrounds would come out dark — this test
-//! reads the cleared bytes back and pins the encoded value.
+//! write (desktop GL: only with `FRAMEBUFFER_SRGB` enabled, which the renderer
+//! turns on around each render-target write via `color_space::set_srgb_write`;
+//! ES/WebGL2: always). If a driver skipped the encode-on-clear, render-target
+//! backgrounds would come out dark — this test reads the cleared bytes back
+//! and pins the encoded value.
 //!
 //! Self-skipping by default: it needs a GL display, and GLFW must run on the
 //! process MAIN thread on macOS — so this test target is `harness = false`
@@ -68,13 +69,10 @@ fn read_pixel(gl: &glow::Context) -> [u8; 4] {
 
 fn clearing_an_srgb_render_target_stores_the_encoded_authored_color() {
     let (gl, _window, _glfw) = gl_context();
-    unsafe {
-        // What the desktop shell enables once at init.
-        gl.enable(glow::FRAMEBUFFER_SRGB);
-    }
 
     // The production path: RenderTargetBuffers decodes the authored clear
-    // internally; the sRGB attachment encodes it back on write. Authored
+    // internally and enables the encode around it; the sRGB attachment
+    // encodes it back on write. Authored
     // mid-gray 0.5 must read back as byte 128 (± rounding), NOT as the
     // linearized ~54 a skipped encode would leave.
     let authored = [0.5f32, 0.5, 0.5];
@@ -89,6 +87,12 @@ fn clearing_an_srgb_render_target_stores_the_encoded_authored_color() {
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
     }
     buffers.delete(&gl);
+    // The default-off invariant: nothing outside a render-target write runs
+    // with the encode on (a backbuffer write would double-encode on macOS).
+    assert!(
+        !unsafe { gl.is_enabled(glow::FRAMEBUFFER_SRGB) },
+        "FRAMEBUFFER_SRGB left on after a render-target clear"
+    );
 
     let expected = (authored[0] * 255.0).round() as i32; // 128
     for channel in &pixel[0..3] {

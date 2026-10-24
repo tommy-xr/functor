@@ -52,7 +52,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         void main() {
             vec3 n = normalize(worldNormal);
-            fragColor = vec4(n * 0.5 + 0.5, 1.0);
+            // Store the raw value on every surface: decode, so the epilogue /
+            // sRGB attachment encodes it back.
+            fragColor = functorOutput(vec4(functorSrgbToLinear(n * 0.5 + 0.5), 1.0));
         }
 "#;
 
@@ -61,6 +63,7 @@ struct Uniforms {
     normal_matrix_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
     joint_transforms_loc: UniformLocation,
 }
 
@@ -101,6 +104,7 @@ impl Material for SkinnedNormalDebugMaterial {
                     normal_matrix_loc: shader.get_uniform_location(ctx.gl, "normalMatrix"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
                     joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
                 };
 
@@ -131,6 +135,7 @@ impl Material for SkinnedNormalDebugMaterial {
                 );
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
 
                 let joint_matrices = crate::model::flatten_joint_matrices(skinning_data);
 

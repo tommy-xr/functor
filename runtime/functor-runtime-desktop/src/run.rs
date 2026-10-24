@@ -1729,19 +1729,6 @@ Escape releases while captured"
             let gl =
                 glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _);
 
-            // Gamma-correct pipeline (see functor_runtime_common::color_space):
-            // desktop GL only encodes on write to sRGB attachments (the render
-            // targets) when FRAMEBUFFER_SRGB is on — enable it ONCE here to
-            // match the always-on ES/WebGL2 semantics. A no-op for non-sRGB
-            // attachments; whether the BACKBUFFER is sRGB-capable is
-            // driver-dependent (macOS says yes even without
-            // GLFW_SRGB_CAPABLE), so the output colorspace is PROBED where
-            // the SceneContext is declared below, not assumed.
-            {
-                use glow::HasContext;
-                gl.enable(glow::FRAMEBUFFER_SRGB);
-            }
-
             (gl, "#version 410", window, glfw, events)
         };
 
@@ -1752,7 +1739,8 @@ Escape releases while captured"
         let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
         // `Frame.withUiTarget` passes: Ui views painted into render targets
         // before the main pass samples them (`Scene.screen`).
-        let mut ui_target_renderer = functor_runtime_common::ui::UiTargetRenderer::new(gl.clone());
+        let mut ui_target_renderer =
+            functor_runtime_common::ui::UiTargetRenderer::new(gl.clone(), shader_version);
         // The game's HTML/CSS webview overlay (`webview model`), blitz-rendered
         // to a texture and composited between the game UI and the scrubber.
         let mut webview_overlay =
@@ -1931,27 +1919,12 @@ Escape releases while captured"
         let mut last_asset_poll = Instant::now();
 
         let scene_context = SceneContext::new();
-        // Declare what the GLFW backbuffer actually stores, by PROBING its
-        // color encoding rather than assuming: with FRAMEBUFFER_SRGB enabled
-        // (init above), an sRGB-capable backbuffer (macOS reports one even
-        // without GLFW_SRGB_CAPABLE) hardware-encodes every write AND clear —
-        // so the shader epilogue must pass through there or every pixel
-        // double-encodes (washed out). A linear backbuffer ignores the toggle
-        // and needs the epilogue encode. Either way the declared colorspace
-        // matches the surface's real behavior.
-        let backbuffer_srgb = unsafe {
-            use glow::HasContext;
-            gl.get_framebuffer_attachment_parameter_i32(
-                glow::FRAMEBUFFER,
-                glow::BACK_LEFT,
-                glow::FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING,
-            ) == glow::SRGB as i32
-        };
-        scene_context.set_output_colorspace(if backbuffer_srgb {
-            functor_runtime_common::OutputColorspace::Srgb
-        } else {
-            functor_runtime_common::OutputColorspace::NonSrgb
-        });
+        // The GLFW backbuffer is driven as a non-sRGB surface (shader
+        // epilogue encodes), exactly like the WebGL2 canvas: FRAMEBUFFER_SRGB
+        // stays off outside render-target writes (see
+        // functor_runtime_common::color_space), so a driver that reports the
+        // backbuffer sRGB-capable (macOS) never hardware-encodes it.
+        scene_context.set_output_colorspace(functor_runtime_common::OutputColorspace::NonSrgb);
 
         // The directional shadow map: a depth texture rendered from the casting
         // light each frame, sampled by the lit material.
@@ -3197,7 +3170,7 @@ Escape again to quit"
                         functor_runtime_common::render_debug_lines(
                             &gl,
                             shader_version,
-                            &scene_context,
+                            scene_context.output_srgb_encode(),
                             camera,
                             *eye_viewport,
                             &debug_lines,
@@ -3250,7 +3223,7 @@ Escape again to quit"
                 functor_runtime_common::render_debug_lines(
                     &gl,
                     shader_version,
-                    &scene_context,
+                    scene_context.output_srgb_encode(),
                     &view_camera,
                     viewport,
                     &debug_lines,

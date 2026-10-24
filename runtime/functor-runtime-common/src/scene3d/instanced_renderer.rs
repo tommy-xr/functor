@@ -125,6 +125,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 3) in vec4 inTangent;
         layout (location = 7) in vec3 instanceTint;
 
+        uniform vec4 baseColor; // raw sRGB-authored — see FRAGMENT_SHADER_SOURCE
         uniform mat3 normalMatrix;
         uniform mat3 localNormalMatrix;
         uniform mat4 projection;
@@ -133,13 +134,13 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         out vec3 worldPos;
         out vec3 worldNormal;
         out vec3 worldTangent;
-        out vec3 tintColor;
+        out vec4 instanceColor; // linear rgb + alpha
 
         void main() {
             vec4 wp = instanceWorld(inPos);
             texCoord = inTex;
             worldPos = wp.xyz;
-            tintColor = instanceTint;
+            instanceColor = vec4(functorSrgbToLinear(baseColor.rgb * instanceTint), baseColor.a);
             vec3 ln = localNormalMatrix * inNormal;
             vec3 safeScale = mix(instanceScale, vec3(1.0),
                 vec3(lessThan(abs(instanceScale), vec3(1e-8))));
@@ -164,7 +165,8 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 // the plain materials'), because the per-instance tint attribute is also
 // sRGB-authored and the CPU stamp multiplies tint into the material color
 // BEFORE its uniform-boundary decode — so matching it exactly requires
-// `srgbToLinear(base * tint)`, which only the shader can compute. Recognition
+// `srgbToLinear(base * tint)`, which only the shader can compute (per vertex:
+// both factors are per-instance constants). Recognition
 // guarantees the two channels never mix with texturing: primitive templates
 // (tint active) never sample a texture, model templates (textured) pin the
 // tint to white.
@@ -175,22 +177,25 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec3 worldPos;
         in vec3 worldNormal;
         in vec3 worldTangent;
-        in vec3 tintColor;
+        in vec4 instanceColor;
 
-        uniform vec4 baseColor;
         uniform sampler2D texture1;
         uniform int useTexture;   // model albedo on unit 0 (glTF base color)
         uniform int materialMode; // 0 = unlit (color/emissive/model), 1 = lit
         uniform int debugMode;    // 0 = authored, 1 = normals, 2 = tangents
 
         void main() {
+            // Debug views store their raw value on every surface: decode, so
+            // the epilogue / sRGB attachment encodes it back.
             if (debugMode == 1) {
-                fragColor = vec4(normalize(worldNormal) * 0.5 + 0.5, 1.0);
+                fragColor = functorOutput(
+                    vec4(functorSrgbToLinear(normalize(worldNormal) * 0.5 + 0.5), 1.0));
             } else if (debugMode == 2) {
-                fragColor = vec4(normalize(worldTangent) * 0.5 + 0.5, 1.0);
+                fragColor = functorOutput(
+                    vec4(functorSrgbToLinear(normalize(worldTangent) * 0.5 + 0.5), 1.0));
             } else {
-                vec3 albedo = functorSrgbToLinear(baseColor.rgb * tintColor);
-                float alpha = baseColor.a;
+                vec3 albedo = instanceColor.rgb;
+                float alpha = instanceColor.a;
                 if (useTexture == 1) {
                     vec4 texel = texture(texture1, texCoord); // linear (sRGB storage)
                     albedo = albedo * texel.rgb;
@@ -246,6 +251,7 @@ const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 3) in vec4 inTangent;
         layout (location = 9) in vec3 instanceTint;
 
+        uniform vec4 baseColor; // raw sRGB-authored — see FRAGMENT_SHADER_SOURCE
         uniform mat3 normalMatrix;
         uniform mat3 localNormalMatrix;
         uniform mat4 projection;
@@ -254,7 +260,7 @@ const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
         out vec3 worldPos;
         out vec3 worldNormal;
         out vec3 worldTangent;
-        out vec3 tintColor;
+        out vec4 instanceColor; // linear rgb + alpha
 
         void main() {
             mat4 skin = skinMatrix();
@@ -262,7 +268,7 @@ const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
             vec4 wp = world * vec4(instanceLocal(sp), 1.0);
             texCoord = inTex;
             worldPos = wp.xyz;
-            tintColor = instanceTint;
+            instanceColor = vec4(functorSrgbToLinear(baseColor.rgb * instanceTint), baseColor.a);
             vec3 ln = localNormalMatrix * (mat3(skin) * inNormal);
             vec3 safeScale = mix(instanceScale, vec3(1.0),
                 vec3(lessThan(abs(instanceScale), vec3(1e-8))));

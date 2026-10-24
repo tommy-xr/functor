@@ -46,11 +46,12 @@ impl Shader {
 /**
  * convert converts an agnostic shader to either 320 es or 410
  *
- * Fragment shaders additionally get the shared color-space helpers
- * ([`crate::color_space::OUTPUT_ENCODE_GLSL`]): `functorOutput`, the
- * linear→sRGB output epilogue gated by `uOutputSrgbEncode`, and
- * `functorSrgbToLinear` for decoding sRGB-authored inputs. Shaders that never
- * reference them (depth/debug) have them optimized out.
+ * Every shader gets `functorSrgbToLinear`
+ * ([`crate::color_space::SRGB_DECODE_GLSL`]) for decoding sRGB-authored
+ * inputs; fragment shaders also get `functorOutput`
+ * ([`crate::color_space::OUTPUT_ENCODE_GLSL`]), the linear→sRGB output
+ * epilogue gated by `uOutputSrgbEncode`. Shaders that never reference them
+ * (depth) have them optimized out.
  */
 fn convert(shader: &str, shader_version: &str, shader_type: &ShaderType) -> String {
     // Compatibility context for shader
@@ -62,10 +63,18 @@ fn convert(shader: &str, shader_version: &str, shader_type: &ShaderType) -> Stri
             #endif
     "#;
 
-    let color_space = match shader_type {
+    let output_encode = match shader_type {
         ShaderType::Fragment => crate::color_space::OUTPUT_ENCODE_GLSL,
         ShaderType::Vertex => "",
     };
 
-    [shader_version, "\n", preamble, color_space, shader].join("\n")
+    [
+        shader_version,
+        "\n",
+        preamble,
+        crate::color_space::SRGB_DECODE_GLSL,
+        output_encode,
+        shader,
+    ]
+    .join("\n")
 }

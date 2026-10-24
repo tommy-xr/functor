@@ -265,6 +265,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             let [r, g, b] =
                 crate::color_space::srgb_to_linear3(pass.frame.resolved_clear_color());
             gl.clear_color(r, g, b, 1.0);
+            crate::color_space::set_srgb_write(gl, true);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
         forward_pass(
@@ -302,6 +303,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             None,
             false,
         );
+        crate::color_space::set_srgb_write(gl, false);
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
         }
@@ -602,6 +604,7 @@ pub fn render_composited_frames_with_view(
             // sRGB attachment: decode the authored clear; hardware re-encodes.
             let [r, g, b] = crate::color_space::srgb_to_linear3(clear);
             gl.clear_color(r, g, b, 1.0);
+            crate::color_space::set_srgb_write(gl, true);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
         forward_pass(
@@ -639,6 +642,7 @@ pub fn render_composited_frames_with_view(
             sprite_cameras.filter(|cameras| cameras.len() == frame.sprite_layers.len()),
             false,
         );
+        crate::color_space::set_srgb_write(gl, false);
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
         }
@@ -1013,7 +1017,9 @@ fn transparent_pass<'a>(
 pub fn render_debug_lines(
     gl: &glow::Context,
     shader_version: &str,
-    scene_context: &SceneContext,
+    // The shell's `SceneContext::output_srgb_encode()`: debug lines draw into
+    // the caller framebuffer, right after the main pass.
+    output_srgb_encode: bool,
     camera: &Camera,
     viewport: Viewport,
     lines: &[crate::physics::DebugLine],
@@ -1105,11 +1111,9 @@ pub fn render_debug_lines(
             false,
             mvp_raw,
         );
-        // Debug lines draw into the caller framebuffer (right after the main
-        // pass), so the epilogue follows the shell's declared surface.
         gl.uniform_1_i32(
             gl.get_uniform_location(program, "uOutputSrgbEncode").as_ref(),
-            scene_context.output_srgb_encode() as i32,
+            output_srgb_encode as i32,
         );
 
         let counters = crate::gpu_counters::gpu_counters();

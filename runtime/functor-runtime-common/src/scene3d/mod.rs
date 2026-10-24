@@ -13,8 +13,7 @@ use crate::{
     asset::{
         self,
         pipelines::{
-            HeightmapData, HeightmapPipeline, LinearTexturePipeline, ModelPipeline,
-            RawImagePipeline, TexturePipeline,
+            HeightmapData, HeightmapPipeline, ModelPipeline, RawImagePipeline, TexturePipeline,
         },
         AssetCache, AssetHandle, AssetPollState, BuiltAssetPipeline,
     },
@@ -129,7 +128,10 @@ struct PreloadEntry {
 
 enum PreloadHandle {
     Model(Arc<AssetHandle<Model>>),
-    Texture(Arc<AssetHandle<Texture2D>>),
+    /// Both upload spaces: a preload cannot know whether the texture will be
+    /// sampled as color (sRGB pipeline) or as a normal map (linear pipeline).
+    /// The download is shared; only the decode runs twice.
+    Texture([Arc<AssetHandle<Texture2D>>; 2]),
 }
 
 /// First texture unit for terrain detail maps; must match the terrain
@@ -341,8 +343,10 @@ impl SceneContext {
             terrain_requests: RefCell::new(BTreeSet::new()),
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
-            texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
-            linear_texture_pipeline: asset::build_pipeline(Box::new(LinearTexturePipeline)),
+            texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline { srgb: true })),
+            linear_texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline {
+                srgb: false,
+            })),
             terrain_detail_pipeline: asset::build_pipeline(Box::new(
                 crate::asset::pipelines::TerrainDetailPipeline,
             )),
@@ -426,8 +430,9 @@ impl SceneContext {
                     asset_cache.load_asset_with_pipeline(self.model_pipeline.clone(), &cmd.locator),
                 ),
                 PreloadKind::Texture => PreloadHandle::Texture(
-                    asset_cache
-                        .load_asset_with_pipeline(self.texture_pipeline.clone(), &cmd.locator),
+                    [&self.texture_pipeline, &self.linear_texture_pipeline].map(|pipeline| {
+                        asset_cache.load_asset_with_pipeline(pipeline.clone(), &cmd.locator)
+                    }),
                 ),
             };
             preloads.push(PreloadEntry {
@@ -443,9 +448,9 @@ impl SceneContext {
                 PreloadHandle::Model(handle) => {
                     matches!(handle.poll_state(), AssetPollState::Loading)
                 }
-                PreloadHandle::Texture(handle) => {
-                    matches!(handle.poll_state(), AssetPollState::Loading)
-                }
+                PreloadHandle::Texture(handles) => handles
+                    .iter()
+                    .any(|handle| matches!(handle.poll_state(), AssetPollState::Loading)),
             };
             if still_loading {
                 return true;

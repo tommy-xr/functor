@@ -1435,7 +1435,8 @@ async fn run_async() -> Result<(), JsValue> {
         let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
         // `Frame.withUiTarget` passes: Ui views painted into render targets
         // before the main pass samples them (`Scene.screen`).
-        let mut ui_target_renderer = functor_runtime_common::ui::UiTargetRenderer::new(gl.clone());
+        let mut ui_target_renderer =
+            functor_runtime_common::ui::UiTargetRenderer::new(gl.clone(), shader_version);
 
         // In deterministic mode (?fixed-time, the golden) the canvas is sized
         // once and then left fixed (see below), and the render loop stops after
@@ -1990,7 +1991,7 @@ async fn run_async() -> Result<(), JsValue> {
                 functor_runtime_common::render_debug_lines(
                     &gl,
                     shader_version,
-                    &scene_context,
+                    scene_context.output_srgb_encode(),
                     &view_camera,
                     viewport,
                     &debug_lines,

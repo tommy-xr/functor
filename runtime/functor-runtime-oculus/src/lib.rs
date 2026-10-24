@@ -1381,7 +1381,7 @@ pub fn android_main(app: AndroidApp) {
             // renderer saves and restores the ambient FBO binding, so the
             // eye swapchain bindings below are unaffected.
             let renderer = ui_target_renderer.get_or_insert_with(|| {
-                functor_runtime_common::ui::UiTargetRenderer::new(gl.clone())
+                functor_runtime_common::ui::UiTargetRenderer::new(gl.clone(), "#version 300 es")
             });
             renderer.render(&scene_context, &frame);
         }

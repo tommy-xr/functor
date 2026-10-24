@@ -15,11 +15,23 @@
 //! - **Shading happens in linear space**, and the result is encoded back to
 //!   sRGB exactly once per pixel:
 //!   - render-target / composite-input attachments are `SRGB8_ALPHA8`, so the
-//!     hardware encodes on write (desktop enables `GL_FRAMEBUFFER_SRGB` once
-//!     at init to match the always-on ES/WebGL2 semantics);
+//!     hardware encodes on write (ES/WebGL2 always; desktop GL only while
+//!     `GL_FRAMEBUFFER_SRGB` is on, which [`set_srgb_write`] enables around
+//!     exactly those writes);
 //!   - non-sRGB output surfaces (the desktop GLFW backbuffer, the WebGL2
 //!     canvas) get a shader epilogue instead: [`OUTPUT_ENCODE_GLSL`]'s
 //!     `functorOutput`, gated by the `uOutputSrgbEncode` uniform.
+//!
+//! **Desktop keeps `GL_FRAMEBUFFER_SRGB` OFF everywhere else.** Some drivers
+//! (macOS) report the GLFW backbuffer as sRGB-capable, and with the toggle on
+//! they would hardware-encode every backbuffer write on top of the epilogue —
+//! and on top of the already-gamma-encoded bytes egui and the webview overlay
+//! write. With it off, the desktop backbuffer behaves exactly like the WebGL2
+//! canvas: a plain non-sRGB surface.
+//!
+//! **egui renders in gamma space**, so it never draws into an sRGB attachment
+//! directly: `Frame.withUiTarget` views paint into a linear scratch texture,
+//! then a decode pass writes them into the target (`crate::ui`).
 //!
 //! **The no-double-encoding invariant:** the encode decision is derived in ONE
 //! place — the renderer sets [`crate::RenderContext::output_srgb_encode`] from
@@ -96,27 +108,30 @@ pub fn srgb_u8_to_linear(byte: u8) -> f32 {
     LUT.get_or_init(|| std::array::from_fn(|i| srgb_to_linear(i as f32 / 255.0)))[byte as usize]
 }
 
-/// Injected into every fragment shader's preamble (`shader::convert`).
-///
-/// - `functorSrgbToLinear` decodes sRGB-authored *inputs* that reach the
-///   shader undecoded (the instanced renderer's per-instance tint attribute,
-///   which multiplies its raw base color to match the CPU stamp's
-///   `decode(base * tint)` exactly).
-/// - `functorOutput` is the output epilogue: linear→sRGB encode when
-///   `uOutputSrgbEncode` is 1 (non-sRGB output surface), passthrough when 0
-///   (sRGB attachment — the hardware encodes). Every color-writing fragment
-///   shader routes its final `fragColor` through it; the uniform is set from
-///   `RenderContext::output_srgb_encode` (see the module doc's invariant).
-///   The clamp is not a tonemap — it mirrors the clamp a UNORM write always
-///   did; a tonemap would slot in right before the encode.
-pub const OUTPUT_ENCODE_GLSL: &str = r#"
-        uniform int uOutputSrgbEncode;
-
+/// Injected into every shader's preamble, both stages (`shader::convert`):
+/// `functorSrgbToLinear` decodes sRGB-authored *inputs* that reach a shader
+/// undecoded (the instanced renderer's per-instance tint, multiplied into its
+/// raw base color per vertex to match the CPU stamp's `decode(base * tint)`;
+/// debug visualizations that must store their raw value on every surface).
+pub const SRGB_DECODE_GLSL: &str = r#"
         vec3 functorSrgbToLinear(vec3 c) {
             vec3 lo = c / 12.92;
             vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
             return mix(hi, lo, vec3(lessThanEqual(c, vec3(0.04045))));
         }
+"#;
+
+/// Injected into every fragment shader's preamble (`shader::convert`).
+///
+/// `functorOutput` is the output epilogue: linear→sRGB encode when
+/// `uOutputSrgbEncode` is 1 (non-sRGB output surface), passthrough when 0
+/// (sRGB attachment — the hardware encodes). Every color-writing fragment
+/// shader routes its final `fragColor` through it; the uniform is set from
+/// `RenderContext::output_srgb_encode` (see the module doc's invariant). The
+/// clamp is not a tonemap — it mirrors the clamp a UNORM write always did; a
+/// tonemap would slot in right before the encode.
+pub const OUTPUT_ENCODE_GLSL: &str = r#"
+        uniform int uOutputSrgbEncode;
 
         vec4 functorOutput(vec4 color) {
             if (uOutputSrgbEncode == 1) {
@@ -130,10 +145,29 @@ pub const OUTPUT_ENCODE_GLSL: &str = r#"
         }
 "#;
 
+/// Turn desktop GL's encode-on-write for sRGB attachments on/off. Bracket
+/// every draw or clear into an sRGB render-target attachment with
+/// `set_srgb_write(gl, true)` … `set_srgb_write(gl, false)`; everything else
+/// runs with it off (see the module doc). A no-op on ES/WebGL2, which always
+/// encode sRGB attachments and have no toggle.
+pub fn set_srgb_write(gl: &glow::Context, on: bool) {
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    unsafe {
+        use glow::HasContext;
+        if on {
+            gl.enable(glow::FRAMEBUFFER_SRGB);
+        } else {
+            gl.disable(glow::FRAMEBUFFER_SRGB);
+        }
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    let _ = (gl, on);
+}
+
 /// The `uOutputSrgbEncode` uniform location of one color-writing shader
 /// program (the `FogUniforms` pattern). Programs whose fragment shader routes
 /// its output through `functorOutput` look this up in `initialize` and upload
-/// via [`OutputEncodeUniform::set`] each draw; depth/debug programs never
+/// via [`OutputEncodeUniform::set`] each draw; depth programs never
 /// reference the uniform (it is optimized out), so they must not look it up.
 pub struct OutputEncodeUniform {
     loc: UniformLocation,
@@ -207,7 +241,8 @@ mod tests {
         // The GLSL snippet duplicates the piecewise constants; pin them so a
         // drive-by edit to one side cannot silently diverge.
         for needle in ["0.04045", "12.92", "2.4", "0.055", "0.0031308"] {
-            assert!(OUTPUT_ENCODE_GLSL.contains(needle), "{needle}");
+            let glsl = [SRGB_DECODE_GLSL, OUTPUT_ENCODE_GLSL].concat();
+            assert!(glsl.contains(needle), "{needle}");
         }
     }
 }
