@@ -48,7 +48,7 @@ pub fn note_inbound_queued() {
 /// Shell: one queued inbound event has been delivered (or could not be
 /// queued at all). Saturating, so a miscounted shell cannot wrap the gauge.
 pub fn note_inbound_delivered() {
-    let _ = INBOUND_PENDING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+    let _ = INBOUND_PENDING.try_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
         Some(pending.saturating_sub(1))
     });
 }
