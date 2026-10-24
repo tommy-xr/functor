@@ -114,6 +114,14 @@ prelude-level Rust in `functor_runtime_common::functor_lang_prelude` (`drain_eff
 effect lands in a structured log, so under a fake/replay runner the same program is exactly
 deterministic (the test seam).
 
+**Desktop sim/render pipelining (`run native -- --pipelined`, experimental, default off).** The
+desktop loops reach the producer only through `SimDriver` (`runtime/functor-runtime-desktop/src/sim_driver.rs`):
+ordered `post`/`call` messages plus a per-frame `SimSnapshot` (an `Arc<Frame>`, drained effects,
+timeline reads). `--pipelined` runs the producer on a sim thread that steps frame N while the
+window renders N-1. The shell keeps the clock, so the call stream is unchanged. Feedback derived
+from a rendered frame (asset progress, preloads, terrain hydration) runs in lockstep while it is
+active, so scripted captures stay byte-identical (`npm run test:golden` checks this).
+
 **The Functor Lang producer is the seam between game logic and the shells.** `functor_lang_game.rs` (desktop) and
 its wasm sibling in `runtime/functor-runtime-web/` run `.fun` logic through an `functor_lang::Session` with
 the **Functor prelude** (`FunctorHost` in `functor_runtime_common::functor_lang_prelude`): the host-provided
