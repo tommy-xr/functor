@@ -1739,7 +1739,8 @@ Escape releases while captured"
         let mut text_overlay = functor_runtime_common::ui::TextOverlay::new(gl.clone());
         // `Frame.withUiTarget` passes: Ui views painted into render targets
         // before the main pass samples them (`Scene.screen`).
-        let mut ui_target_renderer = functor_runtime_common::ui::UiTargetRenderer::new(gl.clone());
+        let mut ui_target_renderer =
+            functor_runtime_common::ui::UiTargetRenderer::new(gl.clone(), shader_version);
         // The game's HTML/CSS webview overlay (`webview model`), blitz-rendered
         // to a texture and composited between the game UI and the scrubber.
         let mut webview_overlay =
@@ -1918,6 +1919,12 @@ Escape releases while captured"
         let mut last_asset_poll = Instant::now();
 
         let scene_context = SceneContext::new();
+        // The GLFW backbuffer is driven as a non-sRGB surface (shader
+        // epilogue encodes), exactly like the WebGL2 canvas: FRAMEBUFFER_SRGB
+        // stays off outside render-target writes (see
+        // functor_runtime_common::color_space), so a driver that reports the
+        // backbuffer sRGB-capable (macOS) never hardware-encodes it.
+        scene_context.set_output_colorspace(functor_runtime_common::OutputColorspace::NonSrgb);
 
         // The directional shadow map: a depth texture rendered from the casting
         // light each frame, sampled by the lit material.
@@ -3163,6 +3170,7 @@ Escape again to quit"
                         functor_runtime_common::render_debug_lines(
                             &gl,
                             shader_version,
+                            scene_context.output_srgb_encode(),
                             camera,
                             *eye_viewport,
                             &debug_lines,
@@ -3215,6 +3223,7 @@ Escape again to quit"
                 functor_runtime_common::render_debug_lines(
                     &gl,
                     shader_version,
+                    scene_context.output_srgb_encode(),
                     &view_camera,
                     viewport,
                     &debug_lines,

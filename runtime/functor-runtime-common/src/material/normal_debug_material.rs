@@ -40,7 +40,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         void main() {
             vec3 n = normalize(worldNormal);
-            fragColor = vec4(n * 0.5 + 0.5, 1.0);
+            // Store the raw value on every surface: decode, so the epilogue /
+            // sRGB attachment encodes it back.
+            fragColor = functorOutput(vec4(functorSrgbToLinear(n * 0.5 + 0.5), 1.0));
         }
 "#;
 
@@ -49,6 +51,7 @@ struct Uniforms {
     normal_matrix_loc: UniformLocation,
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
@@ -88,6 +91,7 @@ impl Material for NormalDebugMaterial {
                     normal_matrix_loc: shader.get_uniform_location(ctx.gl, "normalMatrix"),
                     view_loc: shader.get_uniform_location(ctx.gl, "view"),
                     projection_loc: shader.get_uniform_location(ctx.gl, "projection"),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -117,6 +121,7 @@ impl Material for NormalDebugMaterial {
                 );
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
             }
         }
 

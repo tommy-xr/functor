@@ -65,10 +65,14 @@ const GLES_MINOR: i32 = 2;
 
 /// Color format for the swapchains (GL_SRGB8_ALPHA8): the compositor expects
 /// sRGB-encoded output, and an sRGB internal format makes GL do the encode.
-/// TODO(device bring-up): the shared shaders are gamma-naive (desktop/web
-/// write raw values to non-sRGB targets), so the format-driven encode here
-/// will render brighter than the desktop reference — expect to make the
-/// shared pipeline gamma-explicit once it's visible on device.
+///
+/// The contract with the shared renderer (`functor_runtime_common::color_space`):
+/// this shell declares `OutputColorspace::Srgb` at init, so the shared
+/// shaders' `functorOutput` epilogue passes linear values through and THIS
+/// format's hardware encode is the single linear→sRGB conversion — the same
+/// linear-space shading desktop/web produce, encoded by the surface instead
+/// of the shader. Changing either side alone double- or un-encodes every
+/// pixel on device.
 const COLOR_FORMAT: u32 = glow::SRGB8_ALPHA8;
 
 struct EglContext {
@@ -1098,6 +1102,10 @@ pub fn android_main(app: AndroidApp) {
 
     let asset_cache = Arc::new(AssetCache::new());
     let scene_context = SceneContext::new();
+    // The eye swapchain is SRGB8_ALPHA8 (COLOR_FORMAT): the hardware encodes
+    // on write, so the shared shader epilogue must pass through — see the
+    // contract on COLOR_FORMAT.
+    scene_context.set_output_colorspace(functor_runtime_common::OutputColorspace::Srgb);
     let shadow_map = functor_runtime_common::shadow::ShadowMap::new(&gl, 2048);
     // `Frame.withUiTarget` passes: constructed lazily on the first frame that
     // declares one, so games without ui targets never build an egui painter.
@@ -1373,7 +1381,7 @@ pub fn android_main(app: AndroidApp) {
             // renderer saves and restores the ambient FBO binding, so the
             // eye swapchain bindings below are unaffected.
             let renderer = ui_target_renderer.get_or_insert_with(|| {
-                functor_runtime_common::ui::UiTargetRenderer::new(gl.clone())
+                functor_runtime_common::ui::UiTargetRenderer::new(gl.clone(), "#version 300 es")
             });
             renderer.render(&scene_context, &frame);
         }

@@ -79,7 +79,8 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
             accumulateLights(n, worldPos, diffuseLight, specularLight);
 
             vec4 albedo = texture(texture1, texCoord);
-            fragColor = vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a);
+            fragColor = functorOutput(
+                vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a));
         }
 "#;
 
@@ -92,6 +93,7 @@ struct Uniforms {
     joint_transforms_loc: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -141,6 +143,7 @@ impl Material for SkinnedMaterial {
                     joint_transforms_loc: shader.get_uniform_location(ctx.gl, "jointTransforms"),
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -178,6 +181,7 @@ impl Material for SkinnedMaterial {
                 p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);
                 uniforms.lighting.set(p, ctx, view_matrix);
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
             }
         }
 

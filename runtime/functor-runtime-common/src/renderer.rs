@@ -182,6 +182,12 @@ fn render_frame_inner(
     // Captured BEFORE the ensure phase — (re)allocating buffers leaves the
     // binding on `None`.
     let previous_fbo = ambient_framebuffer(gl);
+    // The ONE derivation of the encode decision (see `crate::color_space`):
+    // render-target passes draw into SRGB8_ALPHA8 attachments (hardware
+    // encodes → epilogue off, clear colors decoded to linear); the main pass
+    // draws into the caller's framebuffer, whose colorspace the shell declared
+    // once at init.
+    let shell_encode = scene_context.output_srgb_encode();
 
     // Allocate buffers for EVERY declared target up front, so a target whose
     // scene samples a later-declared target reads last frame's image (initially
@@ -253,8 +259,13 @@ are ignored — declare Frame.withUiTarget on the main frame",
             // The FBO owns the whole texture — no scissoring wanted (the main
             // pass re-enables it, clipped to its viewport pane).
             gl.disable(glow::SCISSOR_TEST);
-            let [r, g, b] = pass.frame.resolved_clear_color();
+            // sRGB attachment: the authored clear decodes to linear and the
+            // hardware encodes it back on write, so the stored bytes are the
+            // authored color.
+            let [r, g, b] =
+                crate::color_space::srgb_to_linear3(pass.frame.resolved_clear_color());
             gl.clear_color(r, g, b, 1.0);
+            crate::color_space::set_srgb_write(gl, true);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
         forward_pass(
@@ -278,6 +289,8 @@ are ignored — declare Frame.withUiTarget on the main frame",
             None,
             None,
             false,
+            // sRGB attachment — the hardware encodes; the epilogue must not.
+            false,
         );
         render_sprite_layers(
             gl,
@@ -288,7 +301,9 @@ are ignored — declare Frame.withUiTarget on the main frame",
             frame_time.clone(),
             Viewport::new(width, height),
             None,
+            false,
         );
+        crate::color_space::set_srgb_write(gl, false);
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
         }
@@ -325,7 +340,15 @@ are ignored — declare Frame.withUiTarget on the main frame",
             viewport.height as i32,
         );
         gl.enable(glow::SCISSOR_TEST);
-        let [r, g, b] = frame.resolved_clear_color();
+        // A non-sRGB surface stores the authored clear as-is (the epilogue
+        // encodes only shader writes); an sRGB surface (Quest) decodes it here
+        // and the hardware encodes it back — either way the surface holds the
+        // authored color.
+        let [r, g, b] = if shell_encode {
+            frame.resolved_clear_color()
+        } else {
+            crate::color_space::srgb_to_linear3(frame.resolved_clear_color())
+        };
         gl.clear_color(r, g, b, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
     }
@@ -351,6 +374,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         lod_view.map(|(_, _, _, viewport_height)| viewport_height),
         projection_matrix,
         false,
+        shell_encode,
     );
 
     render_sprite_layers(
@@ -362,6 +386,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame_time,
         viewport,
         sprite_cameras,
+        shell_encode,
     );
 }
 
@@ -369,6 +394,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
 /// the shared quad/material/asset path, but get an orthographic camera and
 /// explicit alpha blending with no depth test. Group list order is therefore
 /// painter's order: later sprites appear on top.
+#[allow(clippy::too_many_arguments)]
 fn render_sprite_layers(
     gl: &glow::Context,
     shader_version: &str,
@@ -378,6 +404,9 @@ fn render_sprite_layers(
     frame_time: FrameTime,
     viewport: Viewport,
     camera_overrides: Option<&[Camera2D]>,
+    // Renderer-derived (see `render_frame_inner`): whether this pass's target
+    // needs the shader epilogue's sRGB encode.
+    output_srgb_encode: bool,
 ) {
     if frame.sprite_layers.is_empty() {
         return;
@@ -441,6 +470,7 @@ fn render_sprite_layers(
             // The sprite pass already blends (straight alpha over) — a
             // translucent sprite material must not switch that back off.
             true,
+            output_srgb_encode,
         );
     }
 
@@ -571,8 +601,10 @@ pub fn render_composited_frames_with_view(
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.viewport(0, 0, width as i32, height as i32);
             gl.disable(glow::SCISSOR_TEST);
-            let [r, g, b] = clear;
+            // sRGB attachment: decode the authored clear; hardware re-encodes.
+            let [r, g, b] = crate::color_space::srgb_to_linear3(clear);
             gl.clear_color(r, g, b, 1.0);
+            crate::color_space::set_srgb_write(gl, true);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
         forward_pass(
@@ -596,6 +628,8 @@ pub fn render_composited_frames_with_view(
             None,
             None,
             false,
+            // Composite inputs render into sRGB attachments — hardware encode.
+            false,
         );
         render_sprite_layers(
             gl,
@@ -606,7 +640,9 @@ pub fn render_composited_frames_with_view(
             frame_time.clone(),
             Viewport::new(width, height),
             sprite_cameras.filter(|cameras| cameras.len() == frame.sprite_layers.len()),
+            false,
         );
+        crate::color_space::set_srgb_write(gl, false);
         unsafe {
             gl.bind_framebuffer(glow::FRAMEBUFFER, previous_fbo);
         }
@@ -637,7 +673,13 @@ pub fn render_composited_frames_with_view(
         gl.clear_color(0.0, 0.0, 0.0, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
     }
-    scene_context.draw_composite(gl, shader_version, &textures, &weights);
+    scene_context.draw_composite(
+        gl,
+        shader_version,
+        &textures,
+        &weights,
+        scene_context.output_srgb_encode(),
+    );
 }
 
 /// Shadow pass: render `scene` into `shadow_map` from the first shadow-casting
@@ -766,6 +808,9 @@ fn forward_pass(
     // True when the CALLER has already enabled GL blending for this pass (the
     // 2D sprite pass). See `RenderContext::pass_blends`.
     caller_blends: bool,
+    // Renderer-derived (see `render_frame_inner`): whether this pass's target
+    // needs the shader epilogue's sRGB encode.
+    output_srgb_encode: bool,
 ) {
     let default_lod_projection = lod_camera.projection_matrix(aspect);
     let mut terrain_frusta = [Matrix4::from_scale(1.0); 2];
@@ -782,6 +827,7 @@ fn forward_pass(
     let make_context = |pass_blends: bool, opacity_stage: OpacityStage| RenderContext {
         gl,
         shader_version,
+        output_srgb_encode,
         asset_cache: asset_cache.clone(),
         frame_time,
         debug_render_mode,
@@ -977,6 +1023,9 @@ fn transparent_pass<'a>(
 pub fn render_debug_lines(
     gl: &glow::Context,
     shader_version: &str,
+    // The shell's `SceneContext::output_srgb_encode()`: debug lines draw into
+    // the caller framebuffer, right after the main pass.
+    output_srgb_encode: bool,
     camera: &Camera,
     viewport: Viewport,
     lines: &[crate::physics::DebugLine],
@@ -986,11 +1035,16 @@ pub fn render_debug_lines(
     }
 
     // Interleave [pos.xyz, color.rgba] per vertex, two vertices per line.
+    // Authored colors decode to linear at this (vertex-upload) boundary; the
+    // fragment shader's epilogue encodes back per the shell's declared
+    // surface, so lines render the authored color on every target.
     let mut vertices: Vec<f32> = Vec::with_capacity(lines.len() * 14);
     for line in lines {
         for p in [line.a, line.b] {
             vertices.extend_from_slice(&p);
-            vertices.extend_from_slice(&line.color);
+            let [r, g, b] =
+                crate::color_space::srgb_to_linear3([line.color[0], line.color[1], line.color[2]]);
+            vertices.extend_from_slice(&[r, g, b, line.color[3]]);
         }
     }
 
@@ -1019,9 +1073,11 @@ pub fn render_debug_lines(
                 format!(
                     "{shader_version}\n\
                      precision mediump float;\n\
+                     {encode_glsl}\n\
                      in vec4 v_color;\n\
                      out vec4 frag_color;\n\
-                     void main() {{ frag_color = v_color; }}"
+                     void main() {{ frag_color = functorOutput(v_color); }}",
+                    encode_glsl = crate::color_space::OUTPUT_ENCODE_GLSL,
                 ),
             ),
         ];
@@ -1060,6 +1116,10 @@ pub fn render_debug_lines(
                 .as_ref(),
             false,
             mvp_raw,
+        );
+        gl.uniform_1_i32(
+            gl.get_uniform_location(program, "uOutputSrgbEncode").as_ref(),
+            output_srgb_encode as i32,
         );
 
         let counters = crate::gpu_counters::gpu_counters();

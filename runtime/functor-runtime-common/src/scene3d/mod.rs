@@ -52,6 +52,10 @@ pub use texture_description::*;
 pub struct SceneContext {
     model_pipeline: Arc<BuiltAssetPipeline<Model>>,
     texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
+    /// Normal maps (and future non-color maps) decode through their own
+    /// pipeline so they upload as LINEAR `RGBA8` — their texels are vectors,
+    /// and an sRGB decode would bend every normal (see `crate::color_space`).
+    linear_texture_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
     /// Terrain detail maps decode through their own pipeline so their reduced
     /// anisotropy and mean-color scan stay scoped to them.
     terrain_detail_pipeline: Arc<BuiltAssetPipeline<Texture2D>>,
@@ -103,6 +107,11 @@ pub struct SceneContext {
     // `drive_preloads` until they settle — asset futures advance only when
     // polled, and nothing else polls an asset `draw` isn't referencing yet.
     preloads: RefCell<Vec<PreloadEntry>>,
+    // What the shell's output surface stores — declared ONCE at shell init via
+    // `set_output_colorspace` and read by the renderer to derive the shader
+    // epilogue's encode bit (see `crate::color_space`). Defaults to `NonSrgb`
+    // (shader-encoded), the desktop/web surface.
+    output_colorspace: Cell<crate::color_space::OutputColorspace>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -119,7 +128,15 @@ struct PreloadEntry {
 
 enum PreloadHandle {
     Model(Arc<AssetHandle<Model>>),
-    Texture(Arc<AssetHandle<Texture2D>>),
+    /// Both upload spaces: a preload cannot know whether the texture will be
+    /// sampled as color (sRGB pipeline) or as a normal map (linear pipeline).
+    /// The linear decode starts only once the color load settles, so it reads
+    /// the cached bytes instead of fetching a second time; it stays CPU-side
+    /// until first sampled.
+    Texture {
+        color: Arc<AssetHandle<Texture2D>>,
+        data: Option<Arc<AssetHandle<Texture2D>>>,
+    },
 }
 
 /// First texture unit for terrain detail maps; must match the terrain
@@ -199,6 +216,7 @@ struct SkyboxUniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     skybox_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 struct CompositeUniforms {
@@ -206,6 +224,7 @@ struct CompositeUniforms {
     tex_loc: UniformLocation,
     /// `float uWeight[MAX_COMPOSITE]` — the per-input blend weight.
     weight_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
 }
 
 /// Resolve a model asset for drawing: the per-frame cache poll (which is ALSO
@@ -305,6 +324,7 @@ impl SceneContext {
     pub fn evict_asset(&self, path: &str) {
         self.model_pipeline.evict(path);
         self.texture_pipeline.evict(path);
+        self.linear_texture_pipeline.evict(path);
         self.terrain_detail_pipeline.evict(path);
         self.raw_image_pipeline.evict(path);
         self.heightmap_pipeline.evict(path);
@@ -328,7 +348,10 @@ impl SceneContext {
             terrain_requests: RefCell::new(BTreeSet::new()),
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
-            texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline)),
+            texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline { srgb: true })),
+            linear_texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline {
+                srgb: false,
+            })),
             terrain_detail_pipeline: asset::build_pipeline(Box::new(
                 crate::asset::pipelines::TerrainDetailPipeline,
             )),
@@ -342,7 +365,23 @@ impl SceneContext {
             skybox_program: RefCell::new(None),
             composite_program: RefCell::new(None),
             preloads: RefCell::new(Vec::new()),
+            output_colorspace: Cell::new(crate::color_space::OutputColorspace::NonSrgb),
         }
+    }
+
+    /// Declare (once, at shell init) what the output surface `render_frame*`
+    /// draws into stores. Desktop and web surfaces are non-sRGB
+    /// (shader-encoded); the Quest eye swapchain is `SRGB8_ALPHA8`
+    /// (hardware-encoded). The renderer derives every pass's encode bit from
+    /// this — nothing else may (see `crate::color_space`).
+    pub fn set_output_colorspace(&self, colorspace: crate::color_space::OutputColorspace) {
+        self.output_colorspace.set(colorspace);
+    }
+
+    /// Whether caller-framebuffer passes need the shader epilogue's
+    /// linear→sRGB encode (true = the declared surface is non-sRGB).
+    pub fn output_srgb_encode(&self) -> bool {
+        self.output_colorspace.get() == crate::color_space::OutputColorspace::NonSrgb
     }
 
     pub(crate) fn begin_terrain_frame(&self, gl: &glow::Context, external_frame: Option<u64>) {
@@ -395,10 +434,11 @@ impl SceneContext {
                 PreloadKind::Model => PreloadHandle::Model(
                     asset_cache.load_asset_with_pipeline(self.model_pipeline.clone(), &cmd.locator),
                 ),
-                PreloadKind::Texture => PreloadHandle::Texture(
-                    asset_cache
+                PreloadKind::Texture => PreloadHandle::Texture {
+                    color: asset_cache
                         .load_asset_with_pipeline(self.texture_pipeline.clone(), &cmd.locator),
-                ),
+                    data: None,
+                },
             };
             preloads.push(PreloadEntry {
                 kind: cmd.kind,
@@ -409,13 +449,24 @@ impl SceneContext {
         }
         let mut settled = Vec::new();
         preloads.retain_mut(|entry| {
-            let still_loading = match &entry.handle {
+            let still_loading = match &mut entry.handle {
                 PreloadHandle::Model(handle) => {
                     matches!(handle.poll_state(), AssetPollState::Loading)
                 }
-                PreloadHandle::Texture(handle) => {
-                    matches!(handle.poll_state(), AssetPollState::Loading)
-                }
+                PreloadHandle::Texture { color, data } => match color.poll_state() {
+                    AssetPollState::Loading => true,
+                    // Bytes are cached now: the linear decode costs no fetch.
+                    AssetPollState::Loaded(_) => {
+                        let data = data.get_or_insert_with(|| {
+                            asset_cache.load_asset_with_pipeline(
+                                self.linear_texture_pipeline.clone(),
+                                &entry.locator,
+                            )
+                        });
+                        matches!(data.poll_state(), AssetPollState::Loading)
+                    }
+                    _ => false,
+                },
             };
             if still_loading {
                 return true;
@@ -681,7 +732,9 @@ impl SceneContext {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGBA8 as i32,
+                // A color texture: sRGB storage, decoded by the hardware like
+                // every other albedo (255-magenta survives exactly).
+                glow::SRGB8_ALPHA8 as i32,
                 1,
                 1,
                 0,
@@ -727,7 +780,9 @@ impl SceneContext {
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
                     0,
-                    glow::RGBA8 as i32,
+                    // Sprite-font glyphs are color: sRGB storage (the atlas is
+                    // pure white/transparent, which sRGB maps exactly).
+                    glow::SRGB8_ALPHA8 as i32,
                     data.width as i32,
                     data.height as i32,
                     0,
@@ -842,7 +897,8 @@ skybox disabled for this set",
                         gl.tex_image_2d(
                             glow::TEXTURE_CUBE_MAP_POSITIVE_X + i as u32,
                             0,
-                            glow::RGBA8 as i32,
+                            // Sky faces are color images: sRGB storage.
+                            glow::SRGB8_ALPHA8 as i32,
                             w as i32,
                             h as i32,
                             0,
@@ -929,6 +985,7 @@ skybox disabled for this set",
                     view_loc: shader.get_uniform_location(gl, "view"),
                     projection_loc: shader.get_uniform_location(gl, "projection"),
                     skybox_loc: shader.get_uniform_location(gl, "skybox"),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, gl),
                 };
                 *program = Some((shader, uniforms));
             }
@@ -945,6 +1002,9 @@ skybox disabled for this set",
             shader.set_uniform_matrix4(gl, &uniforms.view_loc, &view);
             shader.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
             shader.set_uniform_1i(gl, &uniforms.skybox_loc, 0);
+            uniforms
+                .output
+                .set(shader, gl, render_context.output_srgb_encode);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(texture));
 
@@ -973,6 +1033,9 @@ skybox disabled for this set",
         shader_version: &str,
         textures: &[glow::Texture],
         weights: &[f32],
+        // Renderer-derived: whether the caller framebuffer needs the
+        // epilogue's encode (see `crate::color_space`).
+        output_srgb_encode: bool,
     ) {
         if textures.is_empty() {
             return;
@@ -997,6 +1060,7 @@ skybox disabled for this set",
                 let uniforms = CompositeUniforms {
                     tex_loc: shader.get_uniform_location(gl, "uTex"),
                     weight_loc: shader.get_uniform_location(gl, "uWeight"),
+                    output: crate::color_space::OutputEncodeUniform::get(&shader, gl),
                 };
                 *program = Some((shader, uniforms));
             }
@@ -1019,6 +1083,9 @@ skybox disabled for this set",
             shader.use_program(gl);
             shader.set_uniform_1iv(gl, &uniforms.tex_loc, &units);
             shader.set_uniform_1fv(gl, &uniforms.weight_loc, &weight_array);
+            // The composite draws into the caller framebuffer: its inputs are
+            // sRGB textures (hardware-decoded to linear).
+            uniforms.output.set(shader, gl, output_srgb_encode);
             for (i, unit) in units.iter().enumerate() {
                 gl.active_texture(glow::TEXTURE0 + *unit as u32);
                 let texture = if i < k { textures[i] } else { textures[0] };
