@@ -429,8 +429,7 @@ let input = (model, key, isDown) =>
   match key with
   | Key.Space =>
     if isDown && not model.spaceHeld then
-      { model with spaceHeld: true, flying: not model.flying,
-                   pitch: if model.flying then 0.12 else 0.0 - 0.45 }
+      { model with spaceHeld: true, flying: not model.flying }
     else { model with spaceHeld: isDown }
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
