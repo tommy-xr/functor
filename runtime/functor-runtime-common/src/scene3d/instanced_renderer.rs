@@ -305,7 +305,9 @@ struct ForwardUniforms {
     use_texture: UniformLocation,
     material_mode: UniformLocation,
     debug_mode: UniformLocation,
-    billboard_mode: UniformLocation,
+    // The skinned vertex shader never billboards, so its program compiles
+    // `billboardMode` out and has no location for it.
+    billboard_mode: Option<UniformLocation>,
     lighting: LightingUniforms,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
@@ -986,7 +988,7 @@ fn forward_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> ForwardUn
         use_texture: program.get_uniform_location(gl, "useTexture"),
         material_mode: program.get_uniform_location(gl, "materialMode"),
         debug_mode: program.get_uniform_location(gl, "debugMode"),
-        billboard_mode: program.get_uniform_location(gl, "billboardMode"),
+        billboard_mode: program.find_uniform_location(gl, "billboardMode"),
         lighting: LightingUniforms::get(program, gl),
         fog: FogUniforms::get(program, gl),
         output: crate::color_space::OutputEncodeUniform::get(program, gl),
@@ -1053,7 +1055,9 @@ fn set_forward_uniforms(
         DebugRenderMode::Default | DebugRenderMode::Transparent | DebugRenderMode::Physics => 0,
     };
     p.set_uniform_1i(ctx.gl, &u.debug_mode, debug_mode);
-    p.set_uniform_1i(ctx.gl, &u.billboard_mode, billboard as i32);
+    if let Some(billboard_mode) = &u.billboard_mode {
+        p.set_uniform_1i(ctx.gl, billboard_mode, billboard as i32);
+    }
     u.lighting.set(p, ctx, view);
     u.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
     u.output.set(p, ctx.gl, ctx.output_srgb_encode);

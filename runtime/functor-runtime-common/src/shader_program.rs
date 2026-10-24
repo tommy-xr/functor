@@ -40,6 +40,17 @@ impl ShaderProgram {
         }
     }
 
+    /// `get_uniform_location` for a uniform a program variant may compile out
+    /// (GLSL drops uniforms its code never reads): `None` instead of a panic.
+    pub fn find_uniform_location(
+        &self,
+        gl: &glow::Context,
+        uniform_name: &str,
+    ) -> Option<UniformLocation> {
+        unsafe { gl.get_uniform_location(self.program_id, uniform_name) }
+            .map(|native_uniform_location| UniformLocation { native_uniform_location })
+    }
+
     pub fn get_uniform_location(&self, gl: &glow::Context, uniform_name: &str) -> UniformLocation {
         unsafe {
             let native_uniform_location = gl
