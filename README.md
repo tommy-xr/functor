@@ -185,6 +185,9 @@ functor -d examples/terrain run native
 # The same scale at night: biome terrain, a camera-mounted flashlight, ~370 instanced props
 functor -d examples/night-terrain run native
 
+# A procedural synthwave city at night: thousands of instanced towers and neon signs
+functor -d examples/neon-city run native
+
 # Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
 functor -d examples/primitives run wasm
 ```

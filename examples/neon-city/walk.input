@@ -1,0 +1,121 @@
+# walk.input — a slow walk up the central avenue with a gentle pan, then a
+# lift-off to the overview. Drives the PR GIF; deterministic under --script-dt.
+#
+#   functor -d examples/neon-city run native --input-script walk.input \
+#     --script-dt 0.0166667 --capture-at-frame 120 --capture-frame /tmp/walk.png
+#
+#   f 0..   anchor the pointer, then walk north (W)
+#   f 20..  pan right, then back left past centre
+#   f 240   Space: rise to the overview
+0 Mouse.Move 640 400
+10 W down
+20 Mouse.Move 642 400
+22 Mouse.Move 644 400
+24 Mouse.Move 646 400
+26 Mouse.Move 648 400
+28 Mouse.Move 650 400
+30 Mouse.Move 652 400
+32 Mouse.Move 654 400
+34 Mouse.Move 656 400
+36 Mouse.Move 658 400
+38 Mouse.Move 660 400
+40 Mouse.Move 662 400
+42 Mouse.Move 664 400
+44 Mouse.Move 666 400
+46 Mouse.Move 668 400
+48 Mouse.Move 670 400
+50 Mouse.Move 672 400
+52 Mouse.Move 674 400
+54 Mouse.Move 676 400
+56 Mouse.Move 678 400
+58 Mouse.Move 680 400
+60 Mouse.Move 682 400
+62 Mouse.Move 684 400
+64 Mouse.Move 686 400
+66 Mouse.Move 688 400
+68 Mouse.Move 690 400
+70 Mouse.Move 692 400
+72 Mouse.Move 694 400
+74 Mouse.Move 696 400
+76 Mouse.Move 698 400
+78 Mouse.Move 700 400
+80 Mouse.Move 702 400
+82 Mouse.Move 704 400
+84 Mouse.Move 706 400
+86 Mouse.Move 708 400
+88 Mouse.Move 710 400
+90 Mouse.Move 712 400
+92 Mouse.Move 714 400
+94 Mouse.Move 716 400
+96 Mouse.Move 718 400
+98 Mouse.Move 720 400
+100 Mouse.Move 722 400
+102 Mouse.Move 724 400
+104 Mouse.Move 726 400
+106 Mouse.Move 728 400
+108 Mouse.Move 730 400
+110 Mouse.Move 732 400
+112 Mouse.Move 734 400
+114 Mouse.Move 736 400
+116 Mouse.Move 738 400
+118 Mouse.Move 740 400
+120 Mouse.Move 738 400
+122 Mouse.Move 736 400
+124 Mouse.Move 734 400
+126 Mouse.Move 732 400
+128 Mouse.Move 730 400
+130 Mouse.Move 728 400
+132 Mouse.Move 726 400
+134 Mouse.Move 724 400
+136 Mouse.Move 722 400
+138 Mouse.Move 720 400
+140 Mouse.Move 718 400
+142 Mouse.Move 716 400
+144 Mouse.Move 714 400
+146 Mouse.Move 712 400
+148 Mouse.Move 710 400
+150 Mouse.Move 708 400
+152 Mouse.Move 706 400
+154 Mouse.Move 704 400
+156 Mouse.Move 702 400
+158 Mouse.Move 700 400
+160 Mouse.Move 698 400
+162 Mouse.Move 696 400
+164 Mouse.Move 694 400
+166 Mouse.Move 692 400
+168 Mouse.Move 690 400
+170 Mouse.Move 688 400
+172 Mouse.Move 686 400
+174 Mouse.Move 684 400
+176 Mouse.Move 682 400
+178 Mouse.Move 680 400
+180 Mouse.Move 678 400
+182 Mouse.Move 676 400
+184 Mouse.Move 674 400
+186 Mouse.Move 672 400
+188 Mouse.Move 670 400
+190 Mouse.Move 668 400
+192 Mouse.Move 666 400
+194 Mouse.Move 664 400
+196 Mouse.Move 662 400
+198 Mouse.Move 660 400
+200 Mouse.Move 658 400
+202 Mouse.Move 656 400
+204 Mouse.Move 654 400
+206 Mouse.Move 652 400
+208 Mouse.Move 650 400
+210 Mouse.Move 648 400
+212 Mouse.Move 646 400
+214 Mouse.Move 644 400
+216 Mouse.Move 642 400
+218 Mouse.Move 640 400
+220 Mouse.Move 638 400
+222 Mouse.Move 636 400
+224 Mouse.Move 634 400
+226 Mouse.Move 632 400
+228 Mouse.Move 630 400
+230 Mouse.Move 628 400
+232 Mouse.Move 626 400
+234 Mouse.Move 624 400
+240 Space down
+242 Space up
