@@ -1101,7 +1101,26 @@ nothing per frame (`GET /state`'s `instance_uploads.count` reads 0). A list
 rebuilt in `draw` with identical content still skips the upload, but pays the
 rebuild every frame; a list whose content changes uploads each frame it
 changes. This is renderer-side caching only — the scene is still a plain
-value. (A `Scene.memo` to retain whole subtrees is planned, not implemented.)
+value.
+
+**`Scene.memo(key, deps, builder)` skips the rebuild too** — for a subtree
+derived from model data in `draw` (props placed from `model.trees`, a city
+from `model.seed`). It returns `builder(deps)` but runs the builder only when
+`deps` change structurally, and once after every hot reload (so edits to the
+builder, or to what it calls, still show). Otherwise it returns the SAME scene
+value, so neither the interpreter nor the GPU upload repeats:
+
+```functor
+let drawTrees = (trees) => Scene.model(Assets.fir) |> Scene.instanced(trees |> List.map(treeAt))
+let draw = (model, tts) => … Scene.memo("trees", model.trees, drawTrees) …
+```
+
+The builder takes `deps` as its ONE argument (a zero-arg lambda is an error)
+and must read only them plus top-level defs — a value it captures from `draw`
+(`tts`, the camera) is not compared, so the result would go stale. `deps` must
+be plain data: a function or engine value (`Vec3`, `Color`, `Scene`) in it is a
+teaching error. Give every site its own `key`. The cache is shell state (never
+in the model, invisible to replay); producers sweep keys unused for ~120 frames.
 
 **`Scene.billboard` is a camera-facing quad — a SHAPE, not a flag.** The scene
 value stays camera-free plain data (so stamping, `Scene.equals`, and replay

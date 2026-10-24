@@ -33,7 +33,7 @@ pub mod value;
 pub use eval::{
     render_trace, run, run_expects, run_expects_budgeted, run_with_host, ExpectOutcome,
     ExpectReport, FailedCompare,
-    Host, NoHost, RecordedBinding, RecordedInvocation, RecordedKind, RecordedSite, RunFailure,
+    Host, HostApply, HostReturn, NoHost, RecordedBinding, RecordedInvocation, RecordedKind, RecordedSite, RunFailure,
     RunOutcome, RunRecord, Session, Tracing,
 };
 pub use lower::lower;

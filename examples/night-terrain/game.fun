@@ -383,11 +383,14 @@ let draw = (model, tts) =>
                flashlightColor, flashlightIntensity, flashlightRange, flashlightCone) in
   Frame.createLit(
     camera,
-    Scene.group(
-      [Scene.terrain(world)]
-      |> List.append(forest(model.forest))
-      |> List.append(byVariant(logs, model.logs, logAt))
-      |> List.append(byVariant(rocks, model.boulders, rockAt))),
+    // The props rebuild only when they re-settle or regroup, or on a hot
+    // reload — every other frame reuses last frame's nodes and GPU buffers.
+    Scene.group([
+      Scene.terrain(world),
+      Scene.memo("forest", model.forest, (groups) => Scene.group(forest(groups))),
+      Scene.memo("logs", model.logs, (props) => Scene.group(byVariant(logs, props, logAt))),
+      Scene.memo("rocks", model.boulders, (props) => Scene.group(byVariant(rocks, props, rockAt))),
+    ]),
     [
       Light.ambient(ambientColor),
       Light.directional(moonDirection, moonColor, moonIntensity),

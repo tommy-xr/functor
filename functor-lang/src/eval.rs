@@ -332,7 +332,28 @@ pub trait Host {
     fn provides(&self, path: &str) -> bool;
 
     /// Perform a host call. Only invoked for paths `provides` accepted.
-    fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<Value, RunError>;
+    fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<HostReturn, RunError>;
+}
+
+/// What a host call produces: its value, or a Functor Lang function the host
+/// needs applied before it can finish (`Scene.memo` running its builder on a
+/// cache miss). The host cannot call back into the interpreter that is
+/// calling it, so it hands the application back instead.
+pub enum HostReturn {
+    Value(Value),
+    Apply(Box<HostApply>),
+}
+
+/// A [`HostReturn::Apply`] request: the interpreter calls `callee(args)` in
+/// the caller's context (same trace, depth cap, and step budget) and the host
+/// call's result is `then(value)`; a `then` error carries the call's span.
+pub struct HostApply {
+    pub callee: Value,
+    pub args: Vec<Value>,
+    /// The external asking, for arity errors ("the function passed to
+    /// Scene.memo …") and the trace label.
+    pub via: &'static str,
+    pub then: Box<dyn FnOnce(Value) -> Result<Value, String>>,
 }
 
 /// The hostless host: no externals beyond the builtin registry.
@@ -343,7 +364,7 @@ impl Host for NoHost {
         false
     }
 
-    fn call(&mut self, path: &str, _args: Vec<Value>, span: Span) -> Result<Value, RunError> {
+    fn call(&mut self, path: &str, _args: Vec<Value>, span: Span) -> Result<HostReturn, RunError> {
         Err(RunError {
             message: format!("internal: NoHost cannot call `{path}`"),
             span,
@@ -1946,7 +1967,11 @@ definition (a top-level initializer may only use globals defined above it)",
                 })
             }
             Value::Builtin(b) => self.call_builtin(*b, args, span),
-            Value::HostFn(path) => self.host.call(path, args, span),
+            Value::HostFn(path) => match self.host.call(path, args, span) {
+                Ok(HostReturn::Value(value)) => Ok(value),
+                Ok(HostReturn::Apply(apply)) => self.finish_host_apply(*apply, span),
+                Err(err) => Err(err),
+            },
             other => Err(RunError {
                 message: format!("cannot call {}", other.kind_name()),
                 span,
@@ -1957,6 +1982,21 @@ definition (a top-level initializer may only use globals defined above it)",
             self.trace_exit(value);
         }
         result
+    }
+
+    /// Run a host call's [`HostApply`] request. Cold, like the curried paths,
+    /// so [`Self::call`]'s hot frame does not grow.
+    #[cold]
+    #[inline(never)]
+    fn finish_host_apply(&mut self, apply: HostApply, span: Span) -> Result<Value, RunError> {
+        let HostApply {
+            callee,
+            args,
+            via,
+            then,
+        } = apply;
+        let value = self.call(callee, args, format!("<{via} function>"), span, Some(via))?;
+        then(value).map_err(|message| RunError { message, span })
     }
 
     /// Currying's COLD paths — under-application, over-application, and

@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 use functor_lang::value::Value;
-use functor_lang::{RunError, Span};
+use functor_lang::{HostReturn, RunError, Span};
 
 /// The FxHash multiply-xor hasher (rustc's map hasher, inlined to stay
 /// dependency-light): registry lookups sit on the per-frame hot path — every
@@ -168,18 +168,28 @@ impl FromArg for Value {
 /// Blanket impls over [`HostData`] fall foul of coherence (a foreign type
 /// could implement it), so host-data newtypes opt in explicitly with
 /// [`host_returnable!`] — one line per migrated type.
+///
+/// An external that must apply a Functor Lang function before it can finish
+/// (`Scene.memo`'s builder) returns a [`HostReturn`] directly.
 pub trait IntoHostResult {
-    fn into_host_result(self, span: Span) -> Result<Value, RunError>;
+    fn into_host_result(self, span: Span) -> Result<HostReturn, RunError>;
 }
 
 impl IntoHostResult for Value {
-    fn into_host_result(self, _span: Span) -> Result<Value, RunError> {
-        Ok(self)
+    fn into_host_result(self, _span: Span) -> Result<HostReturn, RunError> {
+        Ok(HostReturn::Value(self))
     }
 }
 
 impl IntoHostResult for Result<Value, String> {
-    fn into_host_result(self, span: Span) -> Result<Value, RunError> {
+    fn into_host_result(self, span: Span) -> Result<HostReturn, RunError> {
+        self.map(HostReturn::Value)
+            .map_err(|message| RunError { message, span })
+    }
+}
+
+impl IntoHostResult for Result<HostReturn, String> {
+    fn into_host_result(self, span: Span) -> Result<HostReturn, RunError> {
         self.map_err(|message| RunError { message, span })
     }
 }
@@ -193,19 +203,21 @@ macro_rules! host_returnable {
             fn into_host_result(
                 self,
                 _span: functor_lang::Span,
-            ) -> Result<functor_lang::value::Value, functor_lang::RunError> {
-                Ok(functor_lang::value::Value::HostData(std::rc::Rc::new(self)))
+            ) -> Result<functor_lang::HostReturn, functor_lang::RunError> {
+                Ok(functor_lang::HostReturn::Value(
+                    functor_lang::value::Value::HostData(std::rc::Rc::new(self)),
+                ))
             }
         }
         impl $crate::host_registry::IntoHostResult for Result<$ty, String> {
             fn into_host_result(
                 self,
                 span: functor_lang::Span,
-            ) -> Result<functor_lang::value::Value, functor_lang::RunError> {
+            ) -> Result<functor_lang::HostReturn, functor_lang::RunError> {
                 match self {
-                    Ok(value) => {
-                        Ok(functor_lang::value::Value::HostData(std::rc::Rc::new(value)))
-                    }
+                    Ok(value) => Ok(functor_lang::HostReturn::Value(
+                        functor_lang::value::Value::HostData(std::rc::Rc::new(value)),
+                    )),
                     Err(message) => Err(functor_lang::RunError { message, span }),
                 }
             }
@@ -221,7 +233,7 @@ struct External {
     /// signature's arity by the drift test, so the usage text and the
     /// interface cannot teach different shapes.
     arity: usize,
-    call: Box<dyn Fn(&str, &[Value], Span) -> Result<Value, RunError> + Send + Sync>,
+    call: Box<dyn Fn(&str, &[Value], Span) -> Result<HostReturn, RunError> + Send + Sync>,
 }
 
 /// The registry: external path → typed implementation. Built once at startup
@@ -293,7 +305,7 @@ impl Registry {
         path: &'static str,
         sig: &'static str,
         arity: usize,
-        call: impl Fn(&str, &[Value], Span) -> Result<Value, RunError> + Send + Sync + 'static,
+        call: impl Fn(&str, &[Value], Span) -> Result<HostReturn, RunError> + Send + Sync + 'static,
     ) {
         assert!(
             sig.starts_with(path),
@@ -317,7 +329,7 @@ impl Registry {
 
     /// Dispatch a call if `path` is registered; `None` means an unregistered
     /// path (the caller reports it).
-    pub fn call(&self, path: &str, args: &[Value], span: Span) -> Option<Result<Value, RunError>> {
+    pub fn call(&self, path: &str, args: &[Value], span: Span) -> Option<Result<HostReturn, RunError>> {
         self.fns.get(path).map(|ext| (ext.call)(path, args, span))
     }
 
@@ -359,10 +371,10 @@ mod tests {
 
     crate::host_returnable!(Marker);
 
-    fn unwrap_err(result: Result<Value, RunError>) -> RunError {
+    fn unwrap_err(result: Result<HostReturn, RunError>) -> RunError {
         match result {
             Err(e) => e,
-            Ok(v) => panic!("expected an error, got {v}"),
+            Ok(_) => panic!("expected an error"),
         }
     }
 
@@ -426,10 +438,10 @@ mod tests {
             .expect("registered")
             .expect("ok");
         match value {
-            Value::HostData(data) => {
+            HostReturn::Value(Value::HostData(data)) => {
                 assert_eq!(data.as_any().downcast_ref::<Marker>().unwrap().0, 3.0)
             }
-            other => panic!("expected host data, got {other}"),
+            _ => panic!("expected host data"),
         }
         assert!(reg.call("T.unknown", &[], span()).is_none());
         assert!(!reg.provides("T.unknown") && reg.provides("T.wrap"));
