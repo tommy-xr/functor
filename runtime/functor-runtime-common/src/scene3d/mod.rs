@@ -6,7 +6,7 @@ use std::{
 
 use glow::HasContext;
 
-use cgmath::{vec3, Matrix, Matrix4, SquareMatrix};
+use cgmath::{vec3, vec4, Matrix, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -20,7 +20,7 @@ use crate::{
     composite::{COMPOSITE_FRAGMENT_SHADER_SOURCE, COMPOSITE_VERTEX_SHADER_SOURCE, MAX_COMPOSITE},
     geometry::{self, Geometry},
     material::{
-        BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
+        BasicMaterial, DepthMaterial, LitMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
         SkinnedMaterial, SkinnedNormalDebugMaterial, SkinnedTangentDebugMaterial,
         TangentDebugMaterial,
     },
@@ -1727,6 +1727,17 @@ impl Scene3D {
                                     if is_skinned =>
                                 {
                                     SkinnedMaterial::create()
+                                }
+                                // A static model is lit like any lit surface
+                                // when the frame HAS lights; an unlit frame
+                                // (`Frame.create`) still draws its albedo,
+                                // where lit shading would turn it black.
+                                DebugRenderMode::Default
+                                | DebugRenderMode::Transparent
+                                | DebugRenderMode::Physics
+                                    if !render_context.lights.is_empty() =>
+                                {
+                                    LitMaterial::create(vec4(1.0, 1.0, 1.0, 1.0), true, false)
                                 }
                                 DebugRenderMode::Default
                                 | DebugRenderMode::Transparent

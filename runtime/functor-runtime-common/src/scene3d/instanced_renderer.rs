@@ -181,7 +181,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
 
         uniform sampler2D texture1;
         uniform int useTexture;   // model albedo on unit 0 (glTF base color)
-        uniform int materialMode; // 0 = unlit (color/emissive/model), 1 = lit
+        uniform int materialMode; // 0 = unlit (color/emissive/model in an unlit frame), 1 = lit
         uniform int debugMode;    // 0 = authored, 1 = normals, 2 = tangents
 
         void main() {
@@ -618,8 +618,9 @@ impl InstancedRenderer {
 
     /// Draw one recognized rigid-MODEL instanced node: one instanced call per
     /// mesh primitive, each with its glTF base-color texture on unit 0 and
-    /// its node transform composed into `local` — matching the unlit textured
-    /// shading (and shadow casting) of the model's stamped equivalent.
+    /// its node transform composed into `local` — matching the textured
+    /// shading (lit when the frame has lights) and shadow casting of the
+    /// model's stamped equivalent.
     ///
     /// The caller has already resolved the model and verified it is rigid
     /// (no skeleton); an unloaded/failed model resolves to zero meshes and
@@ -687,7 +688,8 @@ impl InstancedRenderer {
                     view,
                     &cgmath::vec4(1.0, 1.0, 1.0, 1.0),
                     true,
-                    false,
+                    // Lit when the frame has lights, like the stamped draw.
+                    !ctx.lights.is_empty(),
                     false,
                 );
             }
