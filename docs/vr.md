@@ -126,6 +126,39 @@ deadlines.
 With Touch action sampling enabled, a matched synthwave release rerun held 72
 FPS p5/min with 0.78 ms mean application time and zero stale/torn frames.
 
+### Pipelined sim thread and XR thread hints
+
+The APK can run the game logic on its own sim thread, like desktop
+`--pipelined`. There is no command line on the headset, so it is a launch-time
+opt-in read once at startup:
+
+```sh
+adb shell setprop debug.functor.pipelined 1        # 0 (default) = inline
+adb shell setprop debug.functor.thread_settings 0  # skip the XR thread hints
+adb shell am force-stop dev.functor.runner         # then launch / `functor run vr`
+```
+
+With `XR_KHR_android_thread_settings` available (Quest 3 has it), the shell
+tags the GL thread `RENDERER_MAIN` and, pipelined, the sim thread
+`APPLICATION_MAIN`, so the runtime can schedule both for XR. `/state.sim_thread`
+reports the result (e.g. `pipelined: APPLICATION_MAIN sim + RENDERER_MAIN
+render`), and logcat prints `stages over 300 frames: sim … ms, render … ms,
+sim-wait … ms` every 300 rendered frames.
+
+Quest 3 release APK, `terrain`, 30-second sample after a 10-second warmup
+(2026-10-23):
+
+| Mode | Rate | FPS mean / p5 / min | Stale / torn | App | CPU+GPU | CPU / GPU load | sim / render / wait |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| inline, `RENDERER_MAIN` | 90 | 90.6 / 90 / 90 | 3 / 6 | 8.25 ms | 14.77 ms | 0.11 / 0.95 | 0.33 / 0.75 / 0.00 ms |
+
+The remaining rows (inline untagged, pipelined tagged and untagged, at 90 and
+120 Hz) were not measurable that night: the headset lost 6DoF tracking
+(`TrackingService: no 6dof tracking`), Guardian blocked launches, and every
+later run, in any mode, fell to ~73–78 FPS with ~1000 stale frames. Terrain is
+GPU-bound on Quest (GPU load 0.95; sim and render CPU are each under 1 ms), so
+pipelining is not expected to move its FPS; it matters for sim-heavy katas.
+
 ## Desktop XR emulation
 
 Run a Functor Lang game with `--emulate-xr` to synthesize the same
