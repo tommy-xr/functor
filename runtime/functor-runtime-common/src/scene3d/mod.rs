@@ -20,7 +20,7 @@ use crate::{
     composite::{COMPOSITE_FRAGMENT_SHADER_SOURCE, COMPOSITE_VERTEX_SHADER_SOURCE, MAX_COMPOSITE},
     geometry::{self, Geometry},
     material::{
-        BasicMaterial, DepthMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
+        BasicMaterial, DepthMaterial, LitMaterial, Material, NormalDebugMaterial, SkinnedDepthMaterial,
         SkinnedMaterial, SkinnedNormalDebugMaterial, SkinnedTangentDebugMaterial,
         TangentDebugMaterial,
     },
@@ -1701,8 +1701,9 @@ impl Scene3D {
                         let matrix = world_matrix * self.xform;
 
                         // Skinned models pay for the joint-matrix uniform array;
-                        // static models (no skeleton) render with the basic
-                        // material instead. In a debug render mode, both swap to
+                        // static models (no skeleton) render with the lit model
+                        // material in a lit frame and the basic (albedo)
+                        // material in an unlit one. In a debug render mode, both swap to
                         // the matching diagnostic material (the skinned variant
                         // deforms the normal by the joint blend).
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
@@ -1727,6 +1728,17 @@ impl Scene3D {
                                     if is_skinned =>
                                 {
                                     SkinnedMaterial::create()
+                                }
+                                // A static model is lit like any lit surface
+                                // when the frame HAS lights; an unlit frame
+                                // (`Frame.create`) still draws its albedo,
+                                // where lit shading would turn it black.
+                                DebugRenderMode::Default
+                                | DebugRenderMode::Transparent
+                                | DebugRenderMode::Physics
+                                    if !render_context.lights.is_empty() =>
+                                {
+                                    LitMaterial::model()
                                 }
                                 DebugRenderMode::Default
                                 | DebugRenderMode::Transparent

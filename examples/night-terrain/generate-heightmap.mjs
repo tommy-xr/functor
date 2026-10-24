@@ -9,9 +9,9 @@
 // and a ridged mountain range to the north whose steep faces take the rock
 // band and whose peaks clear the snow line. 1024² over 4 km is about one
 // sample per four metres — the most `Physics.heightfield` collides against.
-import { deflateSync } from "node:zlib";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { encodePng } from "../../scripts/png.mjs";
 
 const size = 1024;
 const SEED = 0x6e16_7a1e;
@@ -128,53 +128,10 @@ for (let y = 0; y < size; y += 1) {
 
 // Rescale to the full 16-bit range so `Terrain.heightmap`'s min/max map onto
 // the actual extremes.
-const stride = size * 2;
-const pixels = Buffer.alloc(stride * size);
+const pixels = Buffer.alloc(size * size * 2);
 for (let i = 0; i < size * size; i += 1) {
   pixels.writeUInt16BE(Math.round(((height[i] - lo) / (hi - lo)) * 65535), i * 2);
 }
-// PNG "Up" filter: each byte minus the one above. Smooth terrain makes those
-// differences small, which deflates ~25% tighter than unfiltered rows.
-const raw = Buffer.alloc((stride + 1) * size);
-for (let y = 0; y < size; y += 1) {
-  raw[y * (stride + 1)] = 2;
-  for (let i = 0; i < stride; i += 1) {
-    const above = y > 0 ? pixels[(y - 1) * stride + i] : 0;
-    raw[y * (stride + 1) + 1 + i] = (pixels[y * stride + i] - above) & 0xff;
-  }
-}
-
-const crcTable = new Uint32Array(256);
-for (let n = 0; n < 256; n += 1) {
-  let c = n;
-  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  crcTable[n] = c >>> 0;
-}
-const crc32 = (bytes) => {
-  let crc = 0xffffffff;
-  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  return (crc ^ 0xffffffff) >>> 0;
-};
-const chunk = (name, data) => {
-  const body = Buffer.concat([Buffer.from(name, "ascii"), data]);
-  const result = Buffer.alloc(12 + data.length);
-  result.writeUInt32BE(data.length, 0);
-  body.copy(result, 4);
-  result.writeUInt32BE(crc32(body), 8 + data.length);
-  return result;
-};
-
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(size, 0);
-ihdr.writeUInt32BE(size, 4);
-ihdr[8] = 16; // bit depth
-ihdr[9] = 0; // grayscale
-
-const png = Buffer.concat([
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-  chunk("IHDR", ihdr),
-  chunk("IDAT", deflateSync(raw, { level: 9 })),
-  chunk("IEND", Buffer.alloc(0)),
-]);
+const png = encodePng(size, size, 16, 0, pixels); // 16-bit greyscale
 writeFileSync(fileURLToPath(new URL("night-heightmap.png", import.meta.url)), png);
 console.log(`wrote ${size}x${size} 16-bit heightmap (${png.length} bytes)`);

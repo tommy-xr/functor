@@ -175,18 +175,30 @@ export const EXAMPLES: Example[] = [
   },
   // The night kata: one camera-mounted spot light, fog, biome-banded detail
   // maps, and seeded instanced props stood on the ground by raycasts. Its
-  // assets are `night-`-prefixed because every example shares the site root.
+  // assets carry distinct names because every example shares the site root.
+  // Only the checked-in assets ship: the fir cards draw the forest, while the
+  // fetched Poly Haven meshes (rocks, logs, near trunks) are absent here and
+  // render as the empty fallback.
   {
     id: "night-terrain",
     label: "Night terrain",
     source: "examples/night-terrain/game.fun",
-    assets: [
-      { source: "examples/night-terrain/night-heightmap.png", output: "night-heightmap.png" },
-      { source: "examples/night-terrain/night-detail-valley.jpg", output: "night-detail-valley.jpg" },
-      { source: "examples/night-terrain/night-detail-hills.jpg", output: "night-detail-hills.jpg" },
-      { source: "examples/night-terrain/night-detail-rock.jpg", output: "night-detail-rock.jpg" },
-      { source: "examples/night-terrain/night-detail-snow.jpg", output: "night-detail-snow.jpg" },
+    siblings: [
+      { source: "examples/night-terrain/assets.fun", output: "examples/night-terrain/assets.fun" },
     ],
+    assets: [
+      "night-heightmap.png",
+      "night-detail-valley.jpg",
+      "night-detail-hills.jpg",
+      "night-detail-rock.jpg",
+      "night-detail-snow.jpg",
+      "impostor-fir-a-near.glb",
+      "impostor-fir-a-far.glb",
+      "impostor-fir-b-near.glb",
+      "impostor-fir-b-far.glb",
+      "impostor-fir-c-near.glb",
+      "impostor-fir-c-far.glb",
+    ].map((file) => ({ source: `examples/night-terrain/${file}`, output: file })),
   },
   // Single-file and asset-free: an L-system garden whose growth LAWS are
   // top-level constants, so editing one in the sandbox re-shapes the plants
