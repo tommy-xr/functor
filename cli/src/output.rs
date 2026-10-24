@@ -148,6 +148,12 @@ pub enum Event {
         gpu_cache_hits: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         gpu_cache_misses: Option<u64>,
+        /// `Scene.instanced` instance-buffer uploads per frame (count, bytes):
+        /// 0 after the first frame when instance lists are retained.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_instance_uploads_per_frame: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_instance_bytes_per_frame: Option<f64>,
     },
     /// A `--capture-frame` PNG was written.
     CaptureWritten { path: String },
@@ -192,6 +198,8 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 gpu_bytes_per_frame,
                 gpu_cache_hits,
                 gpu_cache_misses,
+                gpu_instance_uploads_per_frame,
+                gpu_instance_bytes_per_frame,
             } => Event::FrameStats {
                 tick_us,
                 draw_us,
@@ -208,6 +216,8 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 gpu_bytes_per_frame: Some(gpu_bytes_per_frame),
                 gpu_cache_hits: Some(gpu_cache_hits),
                 gpu_cache_misses: Some(gpu_cache_misses),
+                gpu_instance_uploads_per_frame: Some(gpu_instance_uploads_per_frame),
+                gpu_instance_bytes_per_frame: Some(gpu_instance_bytes_per_frame),
             },
             R::CaptureWritten { path } => Event::CaptureWritten { path },
             R::HotReload { ok, message } => Event::HotReload { ok, message },
@@ -387,6 +397,8 @@ impl PlainRenderer {
                 gpu_bytes_per_frame,
                 gpu_cache_hits,
                 gpu_cache_misses,
+                gpu_instance_uploads_per_frame,
+                gpu_instance_bytes_per_frame,
             } => {
                 let mut s = format!("tick {tick_us:.1}µs, draw {draw_us:.1}µs");
                 if let Some(render_us) = render_us {
@@ -417,6 +429,11 @@ impl PlainRenderer {
                 }
                 if let (Some(hits), Some(misses)) = (gpu_cache_hits, gpu_cache_misses) {
                     s.push_str(&format!(", cache {hits}hit/{misses}miss"));
+                }
+                if let (Some(uploads), Some(bytes)) =
+                    (gpu_instance_uploads_per_frame, gpu_instance_bytes_per_frame)
+                {
+                    s.push_str(&format!(", inst {uploads:.1}up/{bytes:.0}B/frame"));
                 }
                 vec![format!(
                     "{} {}",

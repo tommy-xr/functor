@@ -39,7 +39,9 @@ pub enum RuntimeEvent {
     /// `gpu_live_*` counts are instantaneous (latest snapshot) and stay flat when
     /// nothing leaks; `gpu_bytes_per_frame` is the average bytes uploaded per
     /// frame over the window; `gpu_cache_hits`/`gpu_cache_misses` are the
-    /// heightmap-mesh cache's window totals.
+    /// heightmap-mesh cache's window totals. `gpu_instance_uploads_per_frame` /
+    /// `gpu_instance_bytes_per_frame` average the `Scene.instanced` instance
+    /// buffer uploads — 0 in the steady state when instance lists are retained.
     ///
     /// `sim_us` is the whole sim stage (every producer call of the frame, on
     /// the producer's thread); `sim_wait_us` is how long the render side
@@ -60,6 +62,8 @@ pub enum RuntimeEvent {
         gpu_bytes_per_frame: f64,
         gpu_cache_hits: u64,
         gpu_cache_misses: u64,
+        gpu_instance_uploads_per_frame: f64,
+        gpu_instance_bytes_per_frame: f64,
     },
     /// A `--capture-frame` PNG was written to `path`.
     CaptureWritten { path: String },

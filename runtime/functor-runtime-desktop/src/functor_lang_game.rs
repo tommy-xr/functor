@@ -773,6 +773,12 @@ impl FunctorLangGame {
                 gpu_bytes_per_frame: round1(window.bytes_uploaded as f64 / STATS_EVERY as f64),
                 gpu_cache_hits: window.cache_hits,
                 gpu_cache_misses: window.cache_misses,
+                gpu_instance_uploads_per_frame: round1(
+                    window.instance_uploads as f64 / STATS_EVERY as f64,
+                ),
+                gpu_instance_bytes_per_frame: round1(
+                    window.instance_upload_bytes as f64 / STATS_EVERY as f64,
+                ),
             });
             self.tick_ns = 0;
             self.physics_ns = 0;

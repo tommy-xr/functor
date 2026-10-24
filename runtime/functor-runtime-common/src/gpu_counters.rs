@@ -67,7 +67,7 @@ pub struct GpuWindow {
 }
 
 /// One frame's `Scene.instanced` instance-buffer uploads.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstanceUploads {
     pub count: u64,
     pub bytes: u64,

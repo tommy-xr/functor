@@ -1079,6 +1079,8 @@ fn service_debug_request(
             let frame = *frame_count;
             let pending_steps = clock.pending_steps();
             let sim_thread = sim_thread.to_string();
+            let instance_uploads =
+                functor_runtime_common::gpu_counters::gpu_counters().last_frame_instance_uploads();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     frame,
@@ -1093,6 +1095,7 @@ fn service_debug_request(
                     input: state_input,
                     sim_thread: Some(sim_thread),
                     display_refresh_rate: None,
+                    instance_uploads,
                 });
             });
         }

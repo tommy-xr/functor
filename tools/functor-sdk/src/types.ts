@@ -203,6 +203,10 @@ export interface RuntimeState {
    * `"pipelined: user-interactive"`. Protocol v16+; omitted by runtimes that
    * don't report it. */
   sim_thread?: string;
+  /** The last rendered frame's `Scene.instanced` instance-buffer uploads — 0
+   * after the first frame when instance lists are retained. Protocol v17+; a
+   * pre-v17 runtime omits it. */
+  instance_uploads?: { count: number; bytes: number };
 }
 
 /** Camera block from `GET /scene`. */
