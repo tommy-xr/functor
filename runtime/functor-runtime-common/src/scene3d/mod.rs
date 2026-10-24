@@ -130,8 +130,13 @@ enum PreloadHandle {
     Model(Arc<AssetHandle<Model>>),
     /// Both upload spaces: a preload cannot know whether the texture will be
     /// sampled as color (sRGB pipeline) or as a normal map (linear pipeline).
-    /// The download is shared; only the decode runs twice.
-    Texture([Arc<AssetHandle<Texture2D>>; 2]),
+    /// The linear decode starts only once the color load settles, so it reads
+    /// the cached bytes instead of fetching a second time; it stays CPU-side
+    /// until first sampled.
+    Texture {
+        color: Arc<AssetHandle<Texture2D>>,
+        data: Option<Arc<AssetHandle<Texture2D>>>,
+    },
 }
 
 /// First texture unit for terrain detail maps; must match the terrain
@@ -429,11 +434,11 @@ impl SceneContext {
                 PreloadKind::Model => PreloadHandle::Model(
                     asset_cache.load_asset_with_pipeline(self.model_pipeline.clone(), &cmd.locator),
                 ),
-                PreloadKind::Texture => PreloadHandle::Texture(
-                    [&self.texture_pipeline, &self.linear_texture_pipeline].map(|pipeline| {
-                        asset_cache.load_asset_with_pipeline(pipeline.clone(), &cmd.locator)
-                    }),
-                ),
+                PreloadKind::Texture => PreloadHandle::Texture {
+                    color: asset_cache
+                        .load_asset_with_pipeline(self.texture_pipeline.clone(), &cmd.locator),
+                    data: None,
+                },
             };
             preloads.push(PreloadEntry {
                 kind: cmd.kind,
@@ -444,13 +449,24 @@ impl SceneContext {
         }
         let mut settled = Vec::new();
         preloads.retain_mut(|entry| {
-            let still_loading = match &entry.handle {
+            let still_loading = match &mut entry.handle {
                 PreloadHandle::Model(handle) => {
                     matches!(handle.poll_state(), AssetPollState::Loading)
                 }
-                PreloadHandle::Texture(handles) => handles
-                    .iter()
-                    .any(|handle| matches!(handle.poll_state(), AssetPollState::Loading)),
+                PreloadHandle::Texture { color, data } => match color.poll_state() {
+                    AssetPollState::Loading => true,
+                    // Bytes are cached now: the linear decode costs no fetch.
+                    AssetPollState::Loaded(_) => {
+                        let data = data.get_or_insert_with(|| {
+                            asset_cache.load_asset_with_pipeline(
+                                self.linear_texture_pipeline.clone(),
+                                &entry.locator,
+                            )
+                        });
+                        matches!(data.poll_state(), AssetPollState::Loading)
+                    }
+                    _ => false,
+                },
             };
             if still_loading {
                 return true;
@@ -1017,6 +1033,9 @@ skybox disabled for this set",
         shader_version: &str,
         textures: &[glow::Texture],
         weights: &[f32],
+        // Renderer-derived: whether the caller framebuffer needs the
+        // epilogue's encode (see `crate::color_space`).
+        output_srgb_encode: bool,
     ) {
         if textures.is_empty() {
             return;
@@ -1065,9 +1084,8 @@ skybox disabled for this set",
             shader.set_uniform_1iv(gl, &uniforms.tex_loc, &units);
             shader.set_uniform_1fv(gl, &uniforms.weight_loc, &weight_array);
             // The composite draws into the caller framebuffer: its inputs are
-            // sRGB textures (hardware-decoded to linear), and the epilogue
-            // follows the shell's declared surface.
-            uniforms.output.set(shader, gl, self.output_srgb_encode());
+            // sRGB textures (hardware-decoded to linear).
+            uniforms.output.set(shader, gl, output_srgb_encode);
             for (i, unit) in units.iter().enumerate() {
                 gl.active_texture(glow::TEXTURE0 + *unit as u32);
                 let texture = if i < k { textures[i] } else { textures[0] };

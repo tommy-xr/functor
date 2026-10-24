@@ -756,8 +756,10 @@ impl UiTargetRenderer {
                 if let Some(old) = self.scratch.take() {
                     gl.delete_framebuffer(old.fbo);
                     gl.delete_texture(old.texture);
+                    crate::gpu_counters::gpu_counters().texture_deleted();
                 }
                 let texture = gl.create_texture().expect("ui target: create scratch");
+                crate::gpu_counters::gpu_counters().texture_created();
                 gl.bind_texture(glow::TEXTURE_2D, Some(texture));
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
@@ -833,6 +835,7 @@ impl UiTargetRenderer {
             gl.bind_vertex_array(None);
             gl.bind_texture(glow::TEXTURE_2D, None);
             gl.use_program(None);
+            // Back to the 3D slate `restore_gl_after_egui` leaves.
             gl.enable(glow::DEPTH_TEST);
         }
     }

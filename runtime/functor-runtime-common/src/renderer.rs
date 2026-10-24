@@ -673,7 +673,13 @@ pub fn render_composited_frames_with_view(
         gl.clear_color(0.0, 0.0, 0.0, 1.0);
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
     }
-    scene_context.draw_composite(gl, shader_version, &textures, &weights);
+    scene_context.draw_composite(
+        gl,
+        shader_version,
+        &textures,
+        &weights,
+        scene_context.output_srgb_encode(),
+    );
 }
 
 /// Shadow pass: render `scene` into `shadow_map` from the first shadow-casting

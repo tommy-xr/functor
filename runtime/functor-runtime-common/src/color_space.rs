@@ -115,6 +115,7 @@ pub fn srgb_u8_to_linear(byte: u8) -> f32 {
 /// debug visualizations that must store their raw value on every surface).
 pub const SRGB_DECODE_GLSL: &str = r#"
         vec3 functorSrgbToLinear(vec3 c) {
+            c = max(c, vec3(0.0)); // pow of a negative base is NaN, and mix() keeps it
             vec3 lo = c / 12.92;
             vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
             return mix(hi, lo, vec3(lessThanEqual(c, vec3(0.04045))));
