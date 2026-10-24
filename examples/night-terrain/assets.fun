@@ -4,84 +4,20 @@
 
 // Models.
 let fir_a = Asset.model("fir-a.glb")
-
-type Fir_aJoints = {
-  lighting_joint: string,
-}
-
-let fir_aJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let fir_b = Asset.model("fir-b.glb")
-
-let fir_bJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let fir_c = Asset.model("fir-c.glb")
-
-let fir_cJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let impostor_fir_a_far = Asset.model("impostor-fir-a-far.glb")
-
-let impostor_fir_a_farJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let impostor_fir_a_near = Asset.model("impostor-fir-a-near.glb")
-
-let impostor_fir_a_nearJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let impostor_fir_b_far = Asset.model("impostor-fir-b-far.glb")
-
-let impostor_fir_b_farJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let impostor_fir_b_near = Asset.model("impostor-fir-b-near.glb")
-
-let impostor_fir_b_nearJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let impostor_fir_c_far = Asset.model("impostor-fir-c-far.glb")
-
-let impostor_fir_c_farJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let impostor_fir_c_near = Asset.model("impostor-fir-c-near.glb")
-
-let impostor_fir_c_nearJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let log = Asset.model("log.glb")
-
-let logJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let rock_a = Asset.model("rock-a.glb")
-
-let rock_aJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let rock_b = Asset.model("rock-b.glb")
-
-let rock_bJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let rock_c = Asset.model("rock-c.glb")
-
-let rock_cJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let rock_d = Asset.model("rock-d.glb")
-
-let rock_dJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 let stump = Asset.model("stump.glb")
-
-let stumpJoints: Fir_aJoints = {
-  lighting_joint: "lighting-joint",
-}
 
 // Textures.
 let night_detail_hills = Asset.texture("night-detail-hills.jpg")

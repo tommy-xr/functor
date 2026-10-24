@@ -206,9 +206,10 @@ let settle = (model) =>
         settledFor: Option.Some(placementKey),
         trees: trees,
         forestAt: Option.None,
-        // A log within its half-length of a trunk would pass through it.
+        // A log within its half-length (~2.1 m per unit size) of a trunk would
+        // pass through it.
         logs: placed |> List.filter((p) =>
-          p.kind == Log && not (trees |> List.any((t) => near(p, t, 1.6 * p.size)))),
+          p.kind == Log && not (trees |> List.any((t) => near(p, t, 2.2 * p.size)))),
         boulders: placed |> List.filter((p) => p.kind == Boulder) }
 
 // ── Input and movement ──────────────────────────────────────────────────────
@@ -340,24 +341,28 @@ let isNear = (eye, p) => near(p, eye, meshDistance)
 let regroupStep = 4.0
 let regroup = (model) =>
   let fresh = match model.forestAt with
-    | Option.Some(at) => near(at, model.eye, regroupStep)
+    // `distance` keys the split too, so a hot-reloaded `meshDistance` applies.
+    | Option.Some(at) => at.distance == meshDistance && near(at, model.eye, regroupStep)
     | Option.None => false in
   if fresh then model
   else
     { model with
-        forestAt: Option.Some({ x: model.eye.x, z: model.eye.z }),
-        forest: firs |> List.indexedMap((i, fir) =>
-          let mine = model.trees |> List.filter((t) => variantOf(3.0, t) == i) in
-          { fir: fir,
-            near: mine |> List.filter((t) => isNear(model.eye, t)),
+        forestAt: Option.Some({ x: model.eye.x, z: model.eye.z, distance: meshDistance }),
+        // One { near, far } per entry of `firs`, in order.
+        forest: List.range(List.length(firs)) |> List.map((i) =>
+          let mine = model.trees |> List.filter((t) => variantOf(List.length(firs), t) == i) in
+          { near: mine |> List.filter((t) => isNear(model.eye, t)),
             far: mine |> List.filter((t) => not isNear(model.eye, t)) }) }
 
 let forest = (groups) =>
-  groups |> List.concatMap((group) =>
-    let close = group.near |> List.map(treeAt) in
-    [ Scene.model(group.fir.mesh) |> Scene.instanced(close),
-      Scene.model(group.fir.near) |> Scene.instanced(close),
-      Scene.model(group.fir.far) |> Scene.instanced(group.far |> List.map(treeAt)) ])
+  groups
+  |> List.zip(firs)
+  |> List.concatMap((pair) =>
+       let (group, fir) = pair in
+       let close = group.near |> List.map(treeAt) in
+       [ Scene.model(fir.mesh) |> Scene.instanced(close),
+         Scene.model(fir.near) |> Scene.instanced(close),
+         Scene.model(fir.far) |> Scene.instanced(group.far |> List.map(treeAt)) ])
 
 let draw = (model, tts) =>
   let eye = Vec3.make(model.eye.x, model.eye.y, model.eye.z) in
@@ -405,8 +410,8 @@ let ui = (model) =>
   let draws =
     nonEmpty(close) * (firMeshPrimitives + 1.0)
     + nonEmpty(distant)
-    + nonEmpty(perVariant(2.0, model.logs))
-    + nonEmpty(perVariant(4.0, model.boulders)) in
+    + nonEmpty(perVariant(List.length(logs), model.logs))
+    + nonEmpty(perVariant(List.length(rocks), model.boulders)) in
   let instances =
     2.0 * List.sum(close) + List.sum(distant) + List.length(model.logs) + List.length(model.boulders) in
   Ui.text($"Night terrain · WASD + mouse · {List.length(model.trees)} trees ({List.sum(close)} mesh, {List.sum(distant)} card) · {List.length(model.logs)} logs · {List.length(model.boulders)} rocks · {instances} instances · {draws} draws")

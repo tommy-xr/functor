@@ -81,9 +81,8 @@ const ZIP_TARGETS = [
 ];
 
 // Poly Haven CC0 models, repacked to a single .glb and simplified to a Quest
-// budget (≤ ~5k triangles each). See `polyhaven-gltf.mjs` for the options;
-// `lit` routes a static model through lit shading, which a night scene needs.
-const FIR_BRANCHES = { id: "fir_sapling_medium", dropMaterials: ["fir_sapling_medium_twigs"], lit: true };
+// budget (≤ ~5k triangles each). See `polyhaven-gltf.mjs` for the options.
+const FIR_BRANCHES = { id: "fir_sapling_medium", dropMaterials: ["fir_sapling_medium_twigs"] };
 const POLYHAVEN_MODELS = [
   {
     dir: "examples/night-terrain",
@@ -93,13 +92,13 @@ const POLYHAVEN_MODELS = [
       { to: "fir-a.glb", ...FIR_BRANCHES, node: 0, simplify: 0.45 },
       { to: "fir-b.glb", ...FIR_BRANCHES, node: 1, simplify: 0.85 },
       { to: "fir-c.glb", ...FIR_BRANCHES, node: 2, simplify: 0.85 },
-      { to: "stump.glb", id: "tree_stump_01", simplify: 0.1, lit: true },
-      { to: "log.glb", id: "dead_tree_trunk", simplify: 0.045, lit: true },
+      { to: "stump.glb", id: "tree_stump_01", simplify: 0.1 },
+      { to: "log.glb", id: "dead_tree_trunk", simplify: 0.045 },
       // Four single boulders picked out of Poly Haven's two mossy rock sets.
-      { to: "rock-a.glb", id: "rock_moss_set_01", node: 0, simplify: 0.4, lit: true },
-      { to: "rock-b.glb", id: "rock_moss_set_01", node: 3, simplify: 0.45, lit: true },
-      { to: "rock-c.glb", id: "rock_moss_set_01", node: 4, simplify: 0.28, lit: true },
-      { to: "rock-d.glb", id: "rock_moss_set_02", node: 5, simplify: 0.6, lit: true },
+      { to: "rock-a.glb", id: "rock_moss_set_01", node: 0, simplify: 0.4 },
+      { to: "rock-b.glb", id: "rock_moss_set_01", node: 3, simplify: 0.45 },
+      { to: "rock-c.glb", id: "rock_moss_set_01", node: 4, simplify: 0.28 },
+      { to: "rock-d.glb", id: "rock_moss_set_02", node: 5, simplify: 0.6 },
     ],
   },
 ];

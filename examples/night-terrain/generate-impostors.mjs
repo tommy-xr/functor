@@ -8,24 +8,24 @@
 // renders it side-on through a long lens against a key colour with the
 // headless `--capture-frame` path, and turns the capture into crossed vertical
 // cards. The renderer has no alpha cutout or per-texel blending, so the cards
-// cut the silhouette out in GEOMETRY instead: the capture is gridded, and only
-// cells the tree covers become quads. The background texels are recoloured to
-// the foliage's mean so the stair-stepped edges never show the key colour.
+// cut the silhouette out in GEOMETRY instead: each band of rows becomes quads
+// spanning exactly the pixel columns the tree covers, so edges step only
+// vertically, at the band height. The background texels are recoloured to the
+// foliage's mean so the edges never show the key colour.
 //
-// The bake draws the model unlit (static glTF models are), so the capture IS
-// the foliage's albedo; the cards carry the lighting skin and are shaded in
-// game, with normals bent out from the trunk so every plane reads as part of
-// one lit crown rather than a flat board.
+// The bake frame has no lights, which draws the model at its albedo; in game
+// the cards are lit like any model, with normals bent out from the trunk so
+// every plane shades as part of one crown rather than a flat board.
 //
 // The output is deterministic for a given CLI build and checked in; the
 // full-detail models are fetched to a temp dir and discarded.
 import { execFileSync } from "node:child_process";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
-import { deflateSync, inflateSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
-import { appendView, skinForLighting, writeGlb } from "../../scripts/glb.mjs";
+import { appendView, writeGlb } from "../../scripts/glb.mjs";
+import { decodePng, encodePng } from "../../scripts/png.mjs";
 import { fetchPolyHavenGlb } from "../../scripts/polyhaven-gltf.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -41,95 +41,14 @@ const TREES = [
   { name: "c", node: 2, height: 5.14 },
 ];
 const TEXTURE = { width: 384, height: 512 }; // the card's 3:4 aspect
-// Near cards: three planes, fine cells. Far cards: two planes, coarse cells.
+// Near cards: three planes, fine bands. Far cards: two planes, coarse bands,
+// with small gaps bridged and slivers dropped to keep the triangle count low.
 const CARDS = [
-  { suffix: "near", planes: 3, cols: 72, rows: 96 },
-  { suffix: "far", planes: 2, cols: 36, rows: 48 },
+  { suffix: "near", planes: 3, rows: 96, bridge: 2, sliver: 2 },
+  { suffix: "far", planes: 2, rows: 40, bridge: 6, sliver: 5 },
 ];
 const KEY = [255, 0, 255];
 const FOV_DEGREES = 4.0; // a long lens: near-orthographic, so the card is to scale
-
-// ── PNG ─────────────────────────────────────────────────────────────────────
-
-const crcTable = new Uint32Array(256).map((_, n) => {
-  let c = n;
-  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  return c >>> 0;
-});
-const crc32 = (bytes) => {
-  let crc = 0xffffffff;
-  for (const b of bytes) crc = crcTable[(crc ^ b) & 0xff] ^ (crc >>> 8);
-  return (crc ^ 0xffffffff) >>> 0;
-};
-
-// 8-bit RGB or RGBA, non-interlaced: what the capture path writes.
-function decodePng(buf) {
-  let off = 8;
-  let width = 0, height = 0, channels = 0;
-  const idat = [];
-  while (off < buf.length) {
-    const len = buf.readUInt32BE(off);
-    const type = buf.toString("ascii", off + 4, off + 8);
-    const data = buf.subarray(off + 8, off + 8 + len);
-    if (type === "IHDR") {
-      width = data.readUInt32BE(0);
-      height = data.readUInt32BE(4);
-      if (data[8] !== 8 || data[12] !== 0) throw new Error("expected 8-bit, non-interlaced PNG");
-      channels = { 2: 3, 6: 4 }[data[9]];
-      if (!channels) throw new Error(`unsupported PNG colour type ${data[9]}`);
-    } else if (type === "IDAT") idat.push(data);
-    off += 12 + len;
-  }
-  const raw = inflateSync(Buffer.concat(idat));
-  const stride = width * channels;
-  const out = Buffer.alloc(stride * height);
-  for (let y = 0; y < height; y += 1) {
-    const filter = raw[y * (stride + 1)];
-    for (let i = 0; i < stride; i += 1) {
-      const x = raw[y * (stride + 1) + 1 + i];
-      const a = i >= channels ? out[y * stride + i - channels] : 0;
-      const b = y > 0 ? out[(y - 1) * stride + i] : 0;
-      const c = i >= channels && y > 0 ? out[(y - 1) * stride + i - channels] : 0;
-      const p = a + b - c;
-      const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-      const paeth = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-      out[y * stride + i] =
-        (x + [0, a, b, (a + b) >> 1, paeth][filter]) & 0xff;
-    }
-  }
-  return { width, height, channels, pixels: out };
-}
-
-function encodeRgbPng(width, height, rgb) {
-  const stride = width * 3;
-  const raw = Buffer.alloc((stride + 1) * height);
-  for (let y = 0; y < height; y += 1) {
-    raw[y * (stride + 1)] = 2; // Up
-    for (let i = 0; i < stride; i += 1) {
-      const above = y > 0 ? rgb[(y - 1) * stride + i] : 0;
-      raw[y * (stride + 1) + 1 + i] = (rgb[y * stride + i] - above) & 0xff;
-    }
-  }
-  const chunk = (name, data) => {
-    const body = Buffer.concat([Buffer.from(name, "ascii"), data]);
-    const out = Buffer.alloc(12 + data.length);
-    out.writeUInt32BE(data.length, 0);
-    body.copy(out, 4);
-    out.writeUInt32BE(crc32(body), 8 + data.length);
-    return out;
-  };
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 2; // RGB
-  return Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw, { level: 9 })),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
 
 // ── Bake ────────────────────────────────────────────────────────────────────
 
@@ -163,7 +82,8 @@ async function bake(tree) {
     const shot = path.join(dir, "bake.png");
     execFileSync(FUNCTOR, [
       "-d", dir, "run", "native", "--",
-      "--fixed-time", "1.0", "--capture-time", "3.0",
+      // Wall-clock seconds: the full-detail model must finish loading first.
+      "--fixed-time", "1.0", "--capture-time", "8.0",
       "--capture-size", `${TEXTURE.width}x${TEXTURE.height}`,
       "--capture-frame", shot,
     ], { stdio: "ignore" });
@@ -176,57 +96,76 @@ async function bake(tree) {
 
 // ── Cards ───────────────────────────────────────────────────────────────────
 
-// Row runs of covered cells, as [col0, col1) per row.
-function coverage(image, cols, rows) {
-  const { width, height, channels, pixels } = image;
-  const runs = [];
-  for (let r = 0; r < rows; r += 1) {
-    let start = -1;
-    for (let c = 0; c <= cols; c += 1) {
-      let on = false;
-      if (c < cols) {
-        let hit = 0, total = 0;
-        for (let y = Math.floor((r * height) / rows); y < Math.floor(((r + 1) * height) / rows); y += 1) {
-          for (let x = Math.floor((c * width) / cols); x < Math.floor(((c + 1) * width) / cols); x += 1) {
-            const i = (y * width + x) * channels;
-            hit += isTree(pixels[i], pixels[i + 1], pixels[i + 2]) ? 1 : 0;
-            total += 1;
-          }
-        }
-        on = hit / total >= 0.3;
-      }
-      if (on && start < 0) start = c;
-      if (!on && start >= 0) {
-        runs.push({ row: r, c0: start, c1: c });
-        start = -1;
-      }
-    }
+// The capture's tree mask, one boolean per pixel.
+function treeMask({ width, height, channels, pixels }) {
+  const mask = new Uint8Array(width * height);
+  for (let i = 0; i < width * height; i += 1) {
+    mask[i] = isTree(pixels[i * channels], pixels[i * channels + 1], pixels[i * channels + 2]) ? 1 : 0;
   }
-  return runs;
+  return mask;
 }
 
-// The capture with its background recoloured to the foliage's mean colour.
-function cardTexture(image) {
-  const { width, height, channels, pixels } = image;
+// Per band of rows, the pixel-column spans [x0, x1) the tree covers in at
+// least half the band's rows — gaps up to `bridge` px are filled, spans under
+// `sliver` px dropped.
+function spans(mask, width, height, card) {
+  const out = [];
+  for (let r = 0; r < card.rows; r += 1) {
+    const y0 = Math.floor((r * height) / card.rows);
+    const y1 = Math.floor(((r + 1) * height) / card.rows);
+    const covered = [];
+    for (let x = 0; x < width; x += 1) {
+      let hits = 0;
+      for (let y = y0; y < y1; y += 1) hits += mask[y * width + x];
+      covered.push(hits * 2 >= y1 - y0);
+    }
+    let start = -1, lastOn = -1;
+    const close = () => {
+      if (start >= 0 && lastOn + 1 - start >= card.sliver) out.push({ row: r, x0: start, x1: lastOn + 1 });
+      start = -1;
+    };
+    for (let x = 0; x < width; x += 1) {
+      if (!covered[x]) continue;
+      if (start >= 0 && x - lastOn - 1 > card.bridge) close();
+      if (start < 0) start = x;
+      lastOn = x;
+    }
+    close();
+  }
+  return out;
+}
+
+// Poly Haven's twig albedo is authored bright for daylight renders; scaled
+// down, the crowns sit with the terrain under the moon instead of glowing.
+const ALBEDO_SCALE = 0.7;
+
+// The capture, darkened by ALBEDO_SCALE, with its background recoloured to the
+// foliage's mean colour.
+function cardTexture({ width, height, channels, pixels }, mask) {
   const rgb = Buffer.alloc(width * height * 3);
   const sum = [0, 0, 0];
   let n = 0;
   for (let i = 0; i < width * height; i += 1) {
-    const [r, g, b] = [pixels[i * channels], pixels[i * channels + 1], pixels[i * channels + 2]];
-    if (isTree(r, g, b)) {
-      sum[0] += r; sum[1] += g; sum[2] += b; n += 1;
-    }
+    if (!mask[i]) continue;
+    for (let k = 0; k < 3; k += 1) sum[k] += pixels[i * channels + k];
+    n += 1;
   }
   const mean = sum.map((s) => Math.round(s / Math.max(n, 1)));
   for (let i = 0; i < width * height; i += 1) {
-    const px = [pixels[i * channels], pixels[i * channels + 1], pixels[i * channels + 2]];
-    const c = isTree(...px) ? px : mean;
-    rgb.set(c, i * 3);
+    for (let k = 0; k < 3; k += 1) {
+      rgb[i * 3 + k] = Math.round((mask[i] ? pixels[i * channels + k] : mean[k]) * ALBEDO_SCALE);
+    }
   }
-  return encodeRgbPng(width, height, rgb);
+  return encodePng(width, height, 8, 2, rgb);
 }
 
-// Crossed vertical planes through the Y axis, each carrying the covered runs.
+// How far each face of a card sits off its plane. The renderer lights only the
+// normal's side and draws no back faces differently, so every plane is two
+// quads, one per side, nudged apart: the face toward the viewer is the nearer
+// one and wins the depth test, so its normal is always the lit, facing one.
+const FACE_OFFSET = 0.01;
+
+// Crossed vertical planes through the Y axis, each carrying the spans.
 function cardGlb(runs, card, height, png) {
   const H = height * 1.03;
   const W = H * (TEXTURE.width / TEXTURE.height);
@@ -234,26 +173,32 @@ function cardGlb(runs, card, height, png) {
   for (let p = 0; p < card.planes; p += 1) {
     const angle = (Math.PI * p) / card.planes;
     const [ax, az] = [Math.cos(angle), -Math.sin(angle)];
-    for (const { row, c0, c1 } of runs) {
-      const base = pos.length / 3;
-      const [u0, u1] = [c0 / card.cols, c1 / card.cols];
-      const [v0, v1] = [row / card.rows, (row + 1) / card.rows];
-      for (const [u, v] of [[u0, v1], [u1, v1], [u1, v0], [u0, v0]]) {
-        // The bake looks down +Z, so screen-left is +X: u runs from +X to -X
-        // for plane 0 to overlay the real tree rather than its mirror image.
-        const s = (0.5 - u) * W;
-        pos.push(ax * s, (1 - v) * H, az * s);
-        // Out from the trunk and up, as if the crown were a solid cone: the
-        // planes shade together, and no face is ever turned fully away.
-        const out = (2 * s) / W;
-        const n = [ax * out, 0.6, az * out];
-        const len = Math.hypot(...n);
-        nor.push(n[0] / len, n[1] / len, n[2] / len);
-        uv.push(u, v);
+    const [px, pz] = [-az, ax]; // the plane's normal
+    for (const side of [1, -1]) {
+      for (const { row, x0, x1 } of runs) {
+        const base = pos.length / 3;
+        const [u0, u1] = [x0 / TEXTURE.width, x1 / TEXTURE.width];
+        const [v0, v1] = [row / card.rows, (row + 1) / card.rows];
+        for (const [u, v] of [[u0, v1], [u1, v1], [u1, v0], [u0, v0]]) {
+          // The bake looks down +Z, so screen-left is +X: u runs from +X to
+          // -X for plane 0 to overlay the real tree, not its mirror image.
+          const s = (0.5 - u) * W;
+          pos.push(ax * s + side * px * FACE_OFFSET, (1 - v) * H, az * s + side * pz * FACE_OFFSET);
+          // Facing out of this side, leaning away from the trunk and up, as
+          // if the crown were a solid cone: the planes shade as one crown.
+          const out = (2 * s) / W;
+          const n = [side * px + 0.6 * out * ax, 0.35, side * pz + 0.6 * out * az];
+          const len = Math.hypot(...n);
+          nor.push(n[0] / len, n[1] / len, n[2] / len);
+          uv.push(u, v);
+        }
+        idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
       }
-      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
     }
   }
+  const positions = new Float32Array(pos);
+  const bounds = (k, pick) =>
+    pick(...Array.from({ length: positions.length / 3 }, (_, i) => positions[i * 3 + k]));
   const json = {
     asset: { version: "2.0", generator: "night-terrain generate-impostors.mjs" },
     scene: 0,
@@ -274,21 +219,29 @@ function cardGlb(runs, card, height, png) {
     [bin, view] = appendView(json, bin, data, target);
     json.accessors.push({ bufferView: view, componentType, count, type, ...extra });
   };
-  accessor(Buffer.from(new Float32Array(pos).buffer), 5126, "VEC3", pos.length / 3, 34962,
-    { min: [-W / 2, 0, -W / 2], max: [W / 2, H, W / 2] });
+  accessor(Buffer.from(positions.buffer), 5126, "VEC3", positions.length / 3, 34962, {
+    min: [0, 1, 2].map((k) => bounds(k, Math.min)),
+    max: [0, 1, 2].map((k) => bounds(k, Math.max)),
+  });
   accessor(Buffer.from(new Float32Array(nor).buffer), 5126, "VEC3", nor.length / 3, 34962);
   accessor(Buffer.from(new Float32Array(uv).buffer), 5126, "VEC2", uv.length / 2, 34962);
   accessor(Buffer.from(new Uint32Array(idx).buffer), 5125, "SCALAR", idx.length, 34963);
   [bin, view] = appendView(json, bin, png);
   json.images.push({ bufferView: view, mimeType: "image/png" });
-  return { glb: skinForLighting(writeGlb(json, bin)), triangles: idx.length / 3 };
+  return { glb: writeGlb(json, bin), triangles: idx.length / 3 };
 }
 
 for (const tree of TREES) {
   const image = await bake(tree);
-  const png = cardTexture(image);
+  const mask = treeMask(image);
+  // A capture taken before the model loaded is all key colour: fail loudly
+  // rather than write an empty card.
+  const coverage = mask.reduce((a, b) => a + b, 0) / mask.length;
+  if (coverage < 0.05) throw new Error(`fir ${tree.name}: bake covers ${(coverage * 100).toFixed(1)}% — model not loaded?`);
+  const png = cardTexture(image, mask);
   for (const card of CARDS) {
-    const { glb, triangles } = cardGlb(coverage(image, card.cols, card.rows), card, tree.height, png);
+    const runs = spans(mask, image.width, image.height, card);
+    const { glb, triangles } = cardGlb(runs, card, tree.height, png);
     const file = `impostor-fir-${tree.name}-${card.suffix}.glb`;
     await writeFile(path.join(here, file), glb);
     console.log(`wrote ${file}: ${triangles} triangles, ${(glb.length / 1024).toFixed(0)} KB`);

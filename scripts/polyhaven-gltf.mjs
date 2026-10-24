@@ -6,11 +6,10 @@
 // The runtime loads only .glb with embedded buffers and images, and Poly Haven
 // ships multi-file .gltf — hence the repack. `-noq` keeps plain float vertex
 // data: the loader does not read KHR_mesh_quantization.
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rename, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { skinForLighting } from "./glb.mjs";
 
 const API = "https://api.polyhaven.com";
 const GLTFPACK = "gltfpack@0.24.0";
@@ -25,16 +24,15 @@ async function download(url, dest) {
  * @param {object} spec
  * @param {string} spec.id        Poly Haven asset id, e.g. "rock_moss_set_01"
  * @param {string} spec.out       destination .glb path
- * @param {number} [spec.node]    keep only this scene root, moved to the origin
+ * @param {number} [spec.node]    keep only this node (a mesh-bearing scene root), moved to the origin
  * @param {string[]} [spec.dropMaterials]  primitives using these materials are removed
  * @param {number} [spec.simplify]  gltfpack -si ratio (omit to keep every triangle)
- * @param {boolean} [spec.aggressive]  gltfpack -sa: reach the ratio regardless of error
- * @param {boolean} [spec.lit]  add the identity skin that gets it lit (see `skinForLighting`)
  * @returns {Promise<number>} the packed triangle count
  */
-export async function fetchPolyHavenGlb({ id, out, node, dropMaterials = [], simplify, aggressive, lit }) {
-  const files = await (await fetch(`${API}/files/${id}`)).json();
-  const gltf = files.gltf?.["1k"]?.gltf;
+export async function fetchPolyHavenGlb({ id, out, node, dropMaterials = [], simplify }) {
+  const response = await fetch(`${API}/files/${id}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status} listing ${id}`);
+  const gltf = (await response.json()).gltf?.["1k"]?.gltf;
   if (!gltf) throw new Error(`${id}: no 1k glTF on Poly Haven`);
   const tmp = await mkdtemp(path.join(os.tmpdir(), `functor-${id}-`));
   try {
@@ -58,12 +56,26 @@ export async function fetchPolyHavenGlb({ id, out, node, dropMaterials = [], sim
         mesh.primitives = mesh.primitives.filter((p) => !dropped.has(p.material));
       }
     }
+    // The runtime samples only the base colour; unreferenced normal/ORM maps
+    // are dropped by gltfpack, cutting each file by most of its size.
+    for (const material of json.materials ?? []) {
+      delete material.normalTexture;
+      delete material.occlusionTexture;
+      delete material.emissiveTexture;
+      if (material.pbrMetallicRoughness) delete material.pbrMetallicRoughness.metallicRoughnessTexture;
+    }
     await writeFile(source, JSON.stringify(json));
-    const args = ["-y", GLTFPACK, "-i", source, "-o", out, "-noq", "-v"];
+    // Pack beside the source, then move into place: an interrupted run leaves
+    // no partial `out` for the next fetch to mistake for a finished one.
+    const packed = path.join(tmp, "packed.glb");
+    const args = ["-y", GLTFPACK, "-i", source, "-o", packed, "-noq", "-v"];
     if (simplify !== undefined) args.push("-si", String(simplify));
-    if (aggressive) args.push("-sa");
     const report = execFileSync("npx", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    if (lit) await writeFile(out, skinForLighting(await readFile(out)));
+    await rename(packed, out).catch(async () => {
+      // Across filesystems (tmp → repo) rename fails; copy then swap in place.
+      await writeFile(`${out}.partial`, await readFile(packed));
+      await rename(`${out}.partial`, out);
+    });
     const match = report.match(/^output: \d+ mesh primitives \((\d+) triangles/m);
     return match ? Number(match[1]) : NaN;
   } finally {
