@@ -6,7 +6,9 @@
 //!
 //! Persistent GPU state is lazily created on first use — scenes that never
 //! instance allocate nothing here. Per-primitive static meshes upload once;
-//! each node re-uploads only its compact 52-byte-per-copy instance records.
+//! instance records (52 bytes per copy) live in retained buffers keyed by the
+//! node's instance list (see `instance_cache`), so an unchanged list uploads
+//! once — not once per node per pass per frame.
 
 use std::collections::HashMap;
 use std::mem::{offset_of, size_of};
@@ -31,8 +33,10 @@ use crate::{DebugRenderMode, RenderContext, RenderPass};
 
 use std::sync::Arc;
 
+use super::instance_cache::InstanceBufferCache;
 use super::instancing::{InstanceData, InstancedPrimitive, RecognizedPrimitive};
-use super::MaterialDescription;
+use super::{InstanceList, MaterialDescription};
+use crate::gpu_counters::InstanceUploads;
 
 // The instance transform is `translate * rotate * scale` applied on top of
 // the template's internal `local` matrix, all under the node's accumulated
@@ -322,24 +326,18 @@ struct DepthUniforms {
     projection: UniformLocation,
 }
 
-/// One primitive's persistent buffers: the static mesh plus that mesh's
-/// per-instance buffer (a VAO's attribute pointers bind to specific buffers,
-/// so each primitive owns its own instance buffer).
+/// One primitive's persistent static mesh. Its VAO's instance attributes are
+/// pointed at the drawn node's retained instance buffer at each draw.
 struct MeshBuffers {
     vao: glow::VertexArray,
     _vertex_buffer: glow::Buffer,
     index_buffer: glow::Buffer,
-    instance_buffer: glow::Buffer,
     index_count: i32,
-    instance_capacity: usize,
 }
 
-/// One rigid model's instanced GPU state: ONE shared instance buffer
-/// (uploaded once per node) plus a second VAO per mesh primitive over the
-/// mesh's own vertex/index buffers.
+/// One model's instanced GPU state: a VAO per mesh primitive over the mesh's
+/// own vertex/index buffers (instance attributes pointed per draw).
 struct ModelInstancedState {
-    instance_buffer: glow::Buffer,
-    instance_capacity: usize,
     meshes: Vec<ModelMeshVao>,
 }
 
@@ -424,6 +422,9 @@ pub(super) struct InstancedRenderer {
     // Lazily built (see `SkinnedPrograms`); needs the shader version kept.
     skinned: Option<SkinnedPrograms>,
     shader_version: String,
+    instance_buffers: InstanceBufferCache<glow::Buffer>,
+    // This frame's instance uploads, published at the next frame's start.
+    frame_uploads: InstanceUploads,
 }
 
 impl InstancedRenderer {
@@ -458,7 +459,43 @@ impl InstancedRenderer {
             depth_uniforms,
             skinned: None,
             shader_version: shader_version.to_string(),
+            instance_buffers: InstanceBufferCache::default(),
+            frame_uploads: InstanceUploads::default(),
         }
+    }
+
+    /// Start a frame: release instance buffers no longer drawn and publish
+    /// the previous frame's upload count. Idempotent per `frame` id.
+    pub(super) fn begin_frame(&mut self, gl: &glow::Context, frame: u64) {
+        let Some(released) = self.instance_buffers.begin_frame(frame) else {
+            return;
+        };
+        let counters = crate::gpu_counters::gpu_counters();
+        for buffer in released {
+            unsafe { gl.delete_buffer(buffer) };
+            counters.buffer_deleted();
+        }
+        counters.set_last_frame_instance_uploads(std::mem::take(&mut self.frame_uploads));
+    }
+
+    /// The retained buffer holding `instances`, uploaded only when its
+    /// content is new to the cache.
+    fn instance_buffer(&mut self, gl: &glow::Context, instances: &InstanceList) -> glow::Buffer {
+        let acquired = self.instance_buffers.acquire(instances, || {
+            crate::gpu_counters::gpu_counters().buffer_created();
+            unsafe { gl.create_buffer().expect("instance data") }
+        });
+        if let Some(capacity) = acquired.upload {
+            let bytes = crate::terrain_renderer::slice_bytes(instances);
+            unsafe {
+                gl.bind_buffer(glow::ARRAY_BUFFER, Some(acquired.buffer));
+                upload_instances(gl, bytes, capacity);
+                gl.bind_buffer(glow::ARRAY_BUFFER, None);
+            }
+            self.frame_uploads.count += 1;
+            self.frame_uploads.bytes += bytes.len() as u64;
+        }
+        acquired.buffer
     }
 
     fn mesh(&mut self, gl: &glow::Context, primitive: InstancedPrimitive) -> &mut MeshBuffers {
@@ -484,10 +521,8 @@ impl InstancedRenderer {
                 let vao = gl.create_vertex_array().expect("instanced VAO");
                 let vertex_buffer = gl.create_buffer().expect("instanced vertices");
                 let index_buffer = gl.create_buffer().expect("instanced indices");
-                let instance_buffer = gl.create_buffer().expect("instance data");
                 let counters = crate::gpu_counters::gpu_counters();
                 counters.vao_created();
-                counters.buffer_created();
                 counters.buffer_created();
                 counters.buffer_created();
 
@@ -517,9 +552,6 @@ impl InstancedRenderer {
                     }
                 }
 
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-                instance_attrib_layout(gl, 4, true);
-
                 gl.bind_vertex_array(None);
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
 
@@ -527,9 +559,7 @@ impl InstancedRenderer {
                     vao,
                     _vertex_buffer: vertex_buffer,
                     index_buffer,
-                    instance_buffer,
                     index_count: indices.len() as i32,
-                    instance_capacity: 0,
                 }
             }
         })
@@ -542,7 +572,7 @@ impl InstancedRenderer {
         &mut self,
         ctx: &RenderContext,
         template: &RecognizedPrimitive<'_>,
-        instances: &[InstanceData],
+        instances: &InstanceList,
         world: &Matrix4<f32>,
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
@@ -556,16 +586,16 @@ impl InstancedRenderer {
         if depth_pass && billboard {
             return;
         }
-        let bytes = crate::terrain_renderer::slice_bytes(instances);
-        // Scope the mutable mesh borrow: upload the instance records, then
-        // carry only the Copy GL handles into the uniform/draw phase.
+        let instance_buffer = self.instance_buffer(ctx.gl, instances);
+        // Scope the mutable mesh borrow: point the VAO at the instance
+        // records, then carry only the Copy GL handles into the draw phase.
         let (index_buffer, index_count) = {
             let mesh = self.mesh(ctx.gl, template.primitive);
             unsafe {
                 ctx.gl.bind_vertex_array(Some(mesh.vao));
-                ctx.gl
-                    .bind_buffer(glow::ARRAY_BUFFER, Some(mesh.instance_buffer));
-                upload_instances(ctx.gl, bytes, &mut mesh.instance_capacity);
+                ctx.gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
+                instance_attrib_layout(ctx.gl, 4, true);
+                ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
             }
             (mesh.index_buffer, mesh.index_count)
         };
@@ -627,8 +657,8 @@ impl InstancedRenderer {
     ///
     /// The caller has already resolved the model and verified it is rigid
     /// (no skeleton); an unloaded/failed model resolves to zero meshes and
-    /// draws nothing here. The instance records upload ONCE per node — every
-    /// mesh primitive's VAO reads the model's one shared instance buffer.
+    /// draws nothing here. Every mesh primitive's VAO reads the node's one
+    /// retained instance buffer.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_model(
         &mut self,
@@ -636,7 +666,7 @@ impl InstancedRenderer {
         file: &str,
         model: &Arc<Model>,
         local: &Matrix4<f32>,
-        instances: &[InstanceData],
+        instances: &InstanceList,
         world: &Matrix4<f32>,
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
@@ -645,7 +675,7 @@ impl InstancedRenderer {
             return;
         }
         let depth_pass = ctx.render_pass == RenderPass::DepthOnly;
-        let bytes = crate::terrain_renderer::slice_bytes(instances);
+        let instance_buffer = self.instance_buffer(ctx.gl, instances);
         // Hydrate (if needed) and fetch the live GL handles fresh each draw —
         // the cache stores only what staleness detection needs; index buffers
         // and counts are read from here.
@@ -655,7 +685,14 @@ impl InstancedRenderer {
             .map(|mesh| mesh.mesh.buffers(ctx.gl))
             .collect();
         let vaos = unsafe {
-            acquire_model_vaos(ctx.gl, &mut self.model_meshes, file, &handles, bytes, false)
+            acquire_model_vaos(
+                ctx.gl,
+                &mut self.model_meshes,
+                file,
+                &handles,
+                instance_buffer,
+                false,
+            )
         };
         // Location 7's array is disabled in the model VAOs — pin the generic
         // tint value to white (identity), matching the stamp's tint-ignoring
@@ -733,7 +770,7 @@ impl InstancedRenderer {
         model: &Arc<Model>,
         joints: &[Matrix4<f32>],
         local: &Matrix4<f32>,
-        instances: &[InstanceData],
+        instances: &InstanceList,
         world: &Matrix4<f32>,
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
@@ -742,7 +779,7 @@ impl InstancedRenderer {
             return;
         }
         let depth_pass = ctx.render_pass == RenderPass::DepthOnly;
-        let bytes = crate::terrain_renderer::slice_bytes(instances);
+        let instance_buffer = self.instance_buffer(ctx.gl, instances);
         let handles: Vec<MeshBufferHandles> = model
             .meshes
             .iter()
@@ -760,7 +797,7 @@ impl InstancedRenderer {
                 &mut self.skinned_model_meshes,
                 file,
                 &handles,
-                bytes,
+                instance_buffer,
                 true,
             )
         };
@@ -862,6 +899,9 @@ fn depth_fragment_source() -> String {
 /// shared buffer — and return the per-mesh VAOs (Copy handles, so no borrow
 /// is carried into the draw loop).
 ///
+/// Fetch (or build) a model's instanced VAOs and point each at
+/// `instance_buffer`.
+///
 /// Staleness: the cache is keyed by asset locator, so an asset
 /// evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
 /// vertex-buffer mismatch — drop the whole entry and rebuild. Nothing else
@@ -873,7 +913,7 @@ unsafe fn acquire_model_vaos(
     cache: &mut HashMap<String, ModelInstancedState>,
     file: &str,
     handles: &[MeshBufferHandles],
-    bytes: &[u8],
+    instance_buffer: glow::Buffer,
     skinned: bool,
 ) -> Vec<glow::VertexArray> {
     let stale = cache.get(file).is_some_and(|state| {
@@ -891,8 +931,6 @@ unsafe fn acquire_model_vaos(
             gl.delete_vertex_array(cached.vao);
             counters.vao_deleted();
         }
-        gl.delete_buffer(state.instance_buffer);
-        counters.buffer_deleted();
     }
     let state = match cache.get_mut(file) {
         Some(state) => state,
@@ -901,15 +939,19 @@ unsafe fn acquire_model_vaos(
             cache.entry(file.to_string()).or_insert(state)
         }
     };
-    gl.bind_buffer(glow::ARRAY_BUFFER, Some(state.instance_buffer));
-    upload_instances(gl, bytes, &mut state.instance_capacity);
+    gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
+    for cached in &state.meshes {
+        gl.bind_vertex_array(Some(cached.vao));
+        instance_attrib_layout(gl, if skinned { 6 } else { 4 }, false);
+    }
+    gl.bind_vertex_array(None);
     gl.bind_buffer(glow::ARRAY_BUFFER, None);
     state.meshes.iter().map(|cached| cached.vao).collect()
 }
 
-/// Create a model's instanced GPU state: one shared instance buffer, plus a
-/// VAO per mesh primitive — mesh attributes from the mesh's own VBO and the
-/// instance layout from the shared buffer.
+/// Create a model's instanced GPU state: a VAO per mesh primitive with the
+/// mesh attributes from the mesh's own VBO (the instance layout is pointed
+/// per draw, at the drawn node's retained buffer).
 ///
 /// Rigid (`skinned == false`): the joint/weight channels are skipped —
 /// their locations 4/5 carry the instance TRS instead (base 4). Skinned:
@@ -925,8 +967,6 @@ unsafe fn create_model_state(
     skinned: bool,
 ) -> ModelInstancedState {
     let counters = crate::gpu_counters::gpu_counters();
-    let instance_buffer = gl.create_buffer().expect("model instance data");
-    counters.buffer_created();
     let meshes = handles
         .iter()
         .map(|live| {
@@ -964,8 +1004,6 @@ unsafe fn create_model_state(
                     ),
                 }
             }
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
-            instance_attrib_layout(gl, if skinned { 6 } else { 4 }, false);
             gl.bind_vertex_array(None);
             ModelMeshVao {
                 vao,
@@ -974,11 +1012,7 @@ unsafe fn create_model_state(
         })
         .collect();
     gl.bind_buffer(glow::ARRAY_BUFFER, None);
-    ModelInstancedState {
-        instance_buffer,
-        instance_capacity: 0,
-        meshes,
-    }
+    ModelInstancedState { meshes }
 }
 
 /// Look up the shared forward-uniform set on a freshly linked program (the
@@ -1086,7 +1120,7 @@ unsafe fn upload_instances(gl: &glow::Context, bytes: &[u8], capacity: &mut usiz
     } else {
         gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, 0, bytes);
     }
-    crate::gpu_counters::gpu_counters().uploaded(bytes.len());
+    crate::gpu_counters::gpu_counters().instance_uploaded(bytes.len());
 }
 
 /// Declare the per-instance attribute layout — TRS at locations
@@ -1096,15 +1130,15 @@ unsafe fn upload_instances(gl: &glow::Context, bytes: &[u8], capacity: &mut usiz
 /// and model VAOs cannot drift from the shaders' shared location contract.
 unsafe fn instance_attrib_layout(gl: &glow::Context, base: u32, with_tint: bool) {
     let instance_stride = size_of::<InstanceData>() as i32;
-    let mut channels: Vec<(u32, i32, usize)> = vec![
+    let channels = [
         (base, 3, offset_of!(InstanceData, position)),
         (base + 1, 4, offset_of!(InstanceData, rotation)),
         (base + 2, 3, offset_of!(InstanceData, scale)),
+        (base + 3, 3, offset_of!(InstanceData, tint)),
     ];
-    if with_tint {
-        channels.push((base + 3, 3, offset_of!(InstanceData, tint)));
-    }
-    for (location, size, offset) in channels {
+    // Runs per draw now (pointing a VAO at the node's buffer): no allocation.
+    let used = if with_tint { 4 } else { 3 };
+    for &(location, size, offset) in &channels[..used] {
         gl.enable_vertex_attrib_array(location);
         gl.vertex_attrib_pointer_f32(
             location,

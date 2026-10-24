@@ -37,11 +37,12 @@ use crate::{
 
 mod instanced_renderer;
 mod instancing;
+mod instance_cache;
 mod material_description;
 mod model_description;
 mod texture_description;
 
-pub use instancing::InstanceData;
+pub use instancing::{InstanceData, InstanceList};
 pub use material_description::*;
 
 use instanced_renderer::InstancedRenderer;
@@ -384,13 +385,18 @@ impl SceneContext {
         self.output_colorspace.get() == crate::color_space::OutputColorspace::NonSrgb
     }
 
-    pub(crate) fn begin_terrain_frame(&self, gl: &glow::Context, external_frame: Option<u64>) {
+    /// Start a rendered frame for the frame-retained GPU caches (terrain,
+    /// instance buffers). `external_frame` lets a stereo pair share one id.
+    pub(crate) fn begin_frame(&self, gl: &glow::Context, external_frame: Option<u64>) {
         let frame = external_frame.unwrap_or_else(|| {
             let next = self.terrain_frame_serial.get().wrapping_add(1);
             self.terrain_frame_serial.set(next);
             next
         });
         self.terrain_renderer.borrow_mut().begin_frame(gl, frame);
+        if let Some(instanced) = self.instanced.borrow_mut().as_mut() {
+            instanced.begin_frame(gl, frame);
+        }
     }
 
     /// The shell's per-frame preload step (B.5): turn this frame's
@@ -1184,7 +1190,7 @@ pub enum SceneObject {
     /// so this variant never participates in the deferred transparent pass.
     Instanced {
         template: Box<Scene3D>,
-        instances: Vec<InstanceData>,
+        instances: InstanceList,
     },
 }
 
@@ -1430,11 +1436,11 @@ impl Scene3D {
 
     /// `Scene.instanced`: stamp `template` once per instance — see
     /// [`SceneObject::Instanced`].
-    pub fn instanced(template: Scene3D, instances: Vec<InstanceData>) -> Self {
+    pub fn instanced(template: Scene3D, instances: impl Into<InstanceList>) -> Self {
         Scene3D {
             obj: SceneObject::Instanced {
                 template: Box::new(template),
-                instances,
+                instances: instances.into(),
             },
             xform: Matrix4::identity(),
         }
@@ -1543,7 +1549,7 @@ impl Scene3D {
                 instances,
             } => {
                 let w = world * self.xform;
-                for instance in instances {
+                for instance in instances.iter() {
                     template.accumulate_leaf_origins(&(w * instance.matrix()), sum, count);
                 }
             }
