@@ -32,7 +32,9 @@ pub(crate) fn request_heightmap(source: TerrainSource) {
     });
 }
 
-pub(crate) fn take_heightmap_requests() -> Vec<TerrainSource> {
+/// Take the sources requested since the last take. Public for shells that run
+/// the producer on its own thread and carry requests across to the renderer.
+pub fn take_heightmap_requests() -> Vec<TerrainSource> {
     HEIGHTMAP_REQUESTS.with(|requests| {
         std::mem::take(&mut *requests.borrow_mut())
             .into_iter()
@@ -40,7 +42,7 @@ pub(crate) fn take_heightmap_requests() -> Vec<TerrainSource> {
     })
 }
 
-pub(crate) fn publish_heightmap(source: &TerrainSource, data: Arc<HeightmapData>) {
+pub fn publish_heightmap(source: &TerrainSource, data: Arc<HeightmapData>) {
     HEIGHTMAPS.with(|heightmaps| {
         let mut heightmaps = heightmaps.borrow_mut();
         let unchanged = heightmaps
@@ -58,7 +60,7 @@ pub(crate) fn publish_heightmap(source: &TerrainSource, data: Arc<HeightmapData>
     });
 }
 
-pub(crate) fn hydrated_heightmap(source: &TerrainSource) -> Option<Arc<HeightmapData>> {
+pub fn hydrated_heightmap(source: &TerrainSource) -> Option<Arc<HeightmapData>> {
     HEIGHTMAPS.with(|heightmaps| {
         let mut heightmaps = heightmaps.borrow_mut();
         let hydrated = heightmaps.get(source).and_then(Weak::upgrade);
@@ -67,6 +69,20 @@ pub(crate) fn hydrated_heightmap(source: &TerrainSource) -> Option<Arc<Heightmap
         }
         hydrated
     })
+}
+
+/// Every live entry on this thread's bridge, sorted by source, for a shell to
+/// mirror onto the producer's thread with [`publish_heightmap`].
+pub fn hydrated_heightmaps() -> Vec<(TerrainSource, Arc<HeightmapData>)> {
+    let mut hydrated: Vec<_> = HEIGHTMAPS.with(|heightmaps| {
+        heightmaps
+            .borrow()
+            .iter()
+            .filter_map(|(source, data)| Some((source.clone(), data.upgrade()?)))
+            .collect()
+    });
+    hydrated.sort_by(|a, b| a.0.cmp(&b.0));
+    hydrated
 }
 
 /// Clear the process-global render/physics hydration bridge when a whole shell

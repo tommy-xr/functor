@@ -40,11 +40,17 @@ pub enum RuntimeEvent {
     /// nothing leaks; `gpu_bytes_per_frame` is the average bytes uploaded per
     /// frame over the window; `gpu_cache_hits`/`gpu_cache_misses` are the
     /// heightmap-mesh cache's window totals.
+    ///
+    /// `sim_us` is the whole sim stage (every producer call of the frame, on
+    /// the producer's thread); `sim_wait_us` is how long the render side
+    /// blocked on it — zero unless the producer runs on its own thread.
     FrameStats {
         tick_us: f64,
         draw_us: f64,
         render_us: f64,
         swap_us: f64,
+        sim_us: f64,
+        sim_wait_us: f64,
         frame_us: f64,
         budget_pct: f64,
         over_n_frames: u32,

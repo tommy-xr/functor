@@ -211,7 +211,7 @@ used to `println!` directly. PR-2a routes them through the runtime event sink (b
 | `type`            | Fields                                                                           | Emitted when |
 | ----------------- | -------------------------------------------------------------------------------- | ------------ |
 | `runtime_ready`   | —                                                                                | the runtime loaded and is about to render |
-| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `frame_us`?, `budget_pct`?, `over_n_frames`, `gpu_live_vaos`?, `gpu_live_buffers`?, `gpu_live_textures`?, `gpu_bytes_per_frame`?, `gpu_cache_hits`?, `gpu_cache_misses`? | every `over_n_frames` frames (300) |
+| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `sim_us`?, `sim_wait_us`?, `frame_us`?, `budget_pct`?, `over_n_frames`, `gpu_live_vaos`?, `gpu_live_buffers`?, `gpu_live_textures`?, `gpu_bytes_per_frame`?, `gpu_cache_hits`?, `gpu_cache_misses`? | every `over_n_frames` frames (300) |
 | `capture_written` | `path` (string)                                                                  | a `--capture-frame` PNG was written |
 | `hot_reload`      | `ok` (bool), `message` (string)                                                  | a hot-reload settled (`ok:false` = rejected edit; old program kept) |
 | `asset_error`     | `path` (string?), `message` (string)                                             | an asset failed to load (fallback served) |
@@ -224,7 +224,10 @@ them out lets you tell interpreter cost from GL cost. `frame_us` is the **total*
 draw) and `budget_pct` is that against a 60 fps (16.666 ms) budget; `render_us`/`swap_us` are
 reported alongside but **not** folded into `frame_us` (swap's vsync block would peg `budget_pct`).
 All are rounded to one decimal. `render_us`/`swap_us` come from the native GL shell; under
-`--headless` there is no GL pass to measure, so they read `0.0`. `over_n_frames` is the averaging
+`--headless` there is no GL pass to measure, so they read `0.0`. `sim_us` is the whole sim stage
+(every producer call of the frame, timed where the producer runs) and `sim_wait_us` is how long the
+render side blocked on it — `0.0` unless the producer runs on its own thread (`--pipelined`), so
+under `--pipelined` `sim_us` and `render_us` are the two pipeline stages. `over_n_frames` is the averaging
 window (300). This is a per-window,
 **not** per-frame, emission — see the cadence note below.
 
@@ -241,7 +244,7 @@ Example tail of `functor -d examples/lighting run native --json` (frame stats + 
 
 ```json
 {"type":"runtime_ready"}
-{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"render_us":210.5,"swap_us":15980.2,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300,"gpu_live_vaos":6,"gpu_live_buffers":11,"gpu_live_textures":4,"gpu_bytes_per_frame":101376.0,"gpu_cache_hits":300,"gpu_cache_misses":0}
+{"type":"frame_stats","tick_us":16.4,"draw_us":163.8,"render_us":210.5,"swap_us":15980.2,"sim_us":190.1,"sim_wait_us":0.0,"frame_us":180.3,"budget_pct":1.1,"over_n_frames":300,"gpu_live_vaos":6,"gpu_live_buffers":11,"gpu_live_textures":4,"gpu_bytes_per_frame":101376.0,"gpu_cache_hits":300,"gpu_cache_misses":0}
 {"type":"capture_written","path":"/tmp/frame.png"}
 ```
 

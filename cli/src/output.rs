@@ -121,6 +121,12 @@ pub enum Event {
         render_us: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         swap_us: Option<f64>,
+        /// The sim stage (all producer work of a frame) and the render
+        /// side's wait on it; the wait is nonzero only under `--pipelined`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sim_us: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sim_wait_us: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         frame_us: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -175,6 +181,8 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 draw_us,
                 render_us,
                 swap_us,
+                sim_us,
+                sim_wait_us,
                 frame_us,
                 budget_pct,
                 over_n_frames,
@@ -189,6 +197,8 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 draw_us,
                 render_us: Some(render_us),
                 swap_us: Some(swap_us),
+                sim_us: Some(sim_us),
+                sim_wait_us: Some(sim_wait_us),
                 frame_us: Some(frame_us),
                 budget_pct: Some(budget_pct),
                 over_n_frames,
@@ -366,6 +376,8 @@ impl PlainRenderer {
                 draw_us,
                 render_us,
                 swap_us,
+                sim_us,
+                sim_wait_us,
                 frame_us,
                 budget_pct,
                 over_n_frames,
@@ -382,6 +394,12 @@ impl PlainRenderer {
                 }
                 if let Some(swap_us) = swap_us {
                     s.push_str(&format!(", swap {swap_us:.1}µs"));
+                }
+                if let Some(sim_us) = sim_us {
+                    s.push_str(&format!(", sim {sim_us:.1}µs"));
+                }
+                if let Some(sim_wait_us) = sim_wait_us {
+                    s.push_str(&format!(", sim-wait {sim_wait_us:.1}µs"));
                 }
                 if let Some(frame_us) = frame_us {
                     s.push_str(&format!(", frame {frame_us:.1}µs"));

@@ -19,6 +19,11 @@
 //! cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture
 //! ```
 //!
+//! Every scenario also runs with `--pipelined` (the game logic on its own sim
+//! thread), which must render the same image. A second test drives scripted
+//! samples under both modes and requires byte-identical captures: the fixed
+//! step sim must not observe which mode it runs in.
+//!
 //! Goldens are renderer/display-specific (GPU, driver, HiDPI scale). To
 //! regenerate the native references on your machine, run the same scenarios with
 //! `--capture-frame examples/<sample>/golden/<name>.png --capture-size 1600x1200`
@@ -105,10 +110,14 @@ fn functor_bin() -> PathBuf {
 /// Render `scenario`'s sample at its fixed time (plus any debug-render mode),
 /// capture to a temp PNG, and assert it matches the committed
 /// `examples/<sample>/golden/<name>.png` within tolerance.
-fn assert_scenario_matches(scenario: &Scenario) {
+fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
     let sample_dir = repo_root().join("examples").join(&scenario.sample);
 
-    let out = std::env::temp_dir().join(format!("functor-golden-{}.png", scenario.name));
+    let out = std::env::temp_dir().join(format!(
+        "functor-golden-{}{}.png",
+        scenario.name,
+        extra.join("")
+    ));
     let _ = std::fs::remove_file(&out);
 
     // `functor -d <sample_dir> run native` interprets the sample's Functor Lang entry
@@ -137,6 +146,7 @@ fn assert_scenario_matches(scenario: &Scenario) {
     if let Some(mode) = &scenario.debug_render {
         args.extend_from_slice(&["--debug-render", mode]);
     }
+    args.extend_from_slice(extra);
 
     let status = Command::new(functor_bin())
         .args(&args)
@@ -210,8 +220,65 @@ fn native_scenarios_match_golden() {
         "no native golden scenarios in manifest"
     );
 
-    for scenario in &scenarios {
-        println!("--- golden scenario: {} ---", scenario.name);
-        assert_scenario_matches(scenario);
+    // Inline, then with the game logic on its own sim thread.
+    for extra in [&[][..], &["--pipelined"]] {
+        for scenario in &scenarios {
+            println!("--- golden scenario: {} {extra:?} ---", scenario.name);
+            assert_scenario_matches(scenario, extra);
+        }
+    }
+}
+
+/// Scripted runs (`<sample>/<script>` captured at sim frame N) exercising
+/// input, physics, terrain heightfield hydration, and audio effects.
+const SCRIPTED: &[(&str, &str, u64)] = &[
+    ("physics-controller", "ride-and-jump.input", 400),
+    ("terrain", "launch-balls.input", 300),
+    ("shooting-range", "firing.input", 120),
+];
+
+fn scripted_capture(sample: &str, script: &str, frame: u64, extra: &[&str]) -> Vec<u8> {
+    let sample_dir = repo_root().join("examples").join(sample);
+    let out = std::env::temp_dir().join(format!("functor-scripted-{sample}{}.png", extra.join("")));
+    let _ = std::fs::remove_file(&out);
+    let frame = frame.to_string();
+    let script = sample_dir.join(script);
+    let mut args = vec![
+        "-d",
+        sample_dir.to_str().unwrap(),
+        "run",
+        "native",
+        "--",
+        "--input-script",
+        script.to_str().unwrap(),
+        "--script-dt",
+        "0.0166667",
+        "--capture-frame",
+        out.to_str().unwrap(),
+        "--capture-at-frame",
+        &frame,
+        "--capture-size",
+        "640x480",
+    ];
+    args.extend_from_slice(extra);
+    let status = Command::new(functor_bin())
+        .args(&args)
+        .status()
+        .expect("spawn functor");
+    assert!(status.success(), "functor exited with {status} for '{sample}'");
+    std::fs::read(&out).unwrap_or_else(|e| panic!("read {}: {e}", out.display()))
+}
+
+#[test]
+#[ignore = "needs a GL display; run with --ignored"]
+fn pipelined_scripted_captures_are_byte_identical() {
+    for (sample, script, frame) in SCRIPTED {
+        let inline = scripted_capture(sample, script, *frame, &[]);
+        let pipelined = scripted_capture(sample, script, *frame, &["--pipelined"]);
+        assert!(
+            inline == pipelined,
+            "'{sample}' frame {frame}: the --pipelined capture differs from inline"
+        );
+        println!("scripted {sample} @{frame}: identical ({} bytes)", inline.len());
     }
 }
