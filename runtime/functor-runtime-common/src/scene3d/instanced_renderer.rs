@@ -183,6 +183,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform int useTexture;   // model albedo on unit 0 (glTF base color)
         uniform int materialMode; // 0 = unlit (color/emissive/model in an unlit frame), 1 = lit
         uniform int debugMode;    // 0 = authored, 1 = normals, 2 = tangents
+        uniform float specularScale; // lit mode's highlight: 0 for rough static models
 
         void main() {
             // Debug views store their raw value on every surface: decode, so
@@ -207,7 +208,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     vec3 diffuseLight;
                     vec3 specularLight;
                     accumulateLights(n, worldPos, diffuseLight, specularLight);
-                    shaded = albedo * diffuseLight + specularLight;
+                    shaded = albedo * diffuseLight + specularLight * specularScale;
                 }
                 fragColor = functorOutput(vec4(applyFog(shaded, worldPos), alpha));
             }
@@ -305,6 +306,7 @@ struct ForwardUniforms {
     use_texture: UniformLocation,
     material_mode: UniformLocation,
     debug_mode: UniformLocation,
+    specular_scale: UniformLocation,
     // The skinned vertex shader never billboards, so its program compiles
     // `billboardMode` out and has no location for it.
     billboard_mode: Option<UniformLocation>,
@@ -599,6 +601,7 @@ impl InstancedRenderer {
                 &color,
                 false,
                 lit,
+                1.0,
                 billboard,
             );
         }
@@ -688,8 +691,10 @@ impl InstancedRenderer {
                     view,
                     &cgmath::vec4(1.0, 1.0, 1.0, 1.0),
                     true,
-                    // Lit when the frame has lights, like the stamped draw.
+                    // Lit when the frame has lights, and rough (no highlight),
+                    // like the stamped draw's `LitMaterial::model`.
                     !ctx.lights.is_empty(),
+                    0.0,
                     false,
                 );
             }
@@ -798,6 +803,7 @@ impl InstancedRenderer {
                     &cgmath::vec4(1.0, 1.0, 1.0, 1.0),
                     true,
                     true,
+                    1.0,
                     false,
                 );
             }
@@ -990,6 +996,7 @@ fn forward_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> ForwardUn
         use_texture: program.get_uniform_location(gl, "useTexture"),
         material_mode: program.get_uniform_location(gl, "materialMode"),
         debug_mode: program.get_uniform_location(gl, "debugMode"),
+        specular_scale: program.get_uniform_location(gl, "specularScale"),
         billboard_mode: program.find_uniform_location(gl, "billboardMode"),
         lighting: LightingUniforms::get(program, gl),
         fog: FogUniforms::get(program, gl),
@@ -1037,6 +1044,8 @@ fn set_forward_uniforms(
     color: &cgmath::Vector4<f32>,
     use_texture: bool,
     lit: bool,
+    // Multiplies the lit mode's highlight (0 for rough static models).
+    specular: f32,
     billboard: bool,
 ) {
     let p = program;
@@ -1051,6 +1060,7 @@ fn set_forward_uniforms(
     p.set_uniform_1i(ctx.gl, &u.texture1, 0);
     p.set_uniform_1i(ctx.gl, &u.use_texture, use_texture as i32);
     p.set_uniform_1i(ctx.gl, &u.material_mode, lit as i32);
+    p.set_uniform_1f(ctx.gl, &u.specular_scale, specular);
     let debug_mode = match ctx.debug_render_mode {
         DebugRenderMode::Normals => 1,
         DebugRenderMode::Tangents => 2,

@@ -71,6 +71,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         // tangent frame comes from the interpolated worldTangent/worldBitangent.
         uniform sampler2D normalMap;
         uniform int useNormalMap;
+        uniform float specularScale;
 
         void main() {
             vec3 n = normalize(worldNormal);
@@ -92,7 +93,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                 albedo = texture(texture1, texCoord) * baseColor;
             }
             fragColor = functorOutput(
-                vec4(applyFog(albedo.rgb * diffuseLight + specularLight, worldPos), albedo.a));
+                vec4(applyFog(albedo.rgb * diffuseLight + specularLight * specularScale, worldPos), albedo.a));
         }
 "#;
 
@@ -106,6 +107,7 @@ struct Uniforms {
     use_texture_loc: UniformLocation,
     normal_map_loc: UniformLocation,
     use_normal_map_loc: UniformLocation,
+    specular_scale_loc: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
@@ -117,6 +119,9 @@ pub struct LitMaterial {
     color: Vector4<f32>,
     use_texture: bool,
     use_normal_map: bool,
+    /// Multiplies the shared Blinn-Phong highlight: 1 for authored lit
+    /// surfaces, 0 for glTF models (see `LitMaterial::model`).
+    specular_scale: f32,
 }
 
 use crate::shader::Shader;
@@ -155,6 +160,7 @@ impl Material for LitMaterial {
                     use_texture_loc: shader.get_uniform_location(ctx.gl, "useTexture"),
                     normal_map_loc: shader.get_uniform_location(ctx.gl, "normalMap"),
                     use_normal_map_loc: shader.get_uniform_location(ctx.gl, "useNormalMap"),
+                    specular_scale_loc: shader.get_uniform_location(ctx.gl, "specularScale"),
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
@@ -206,6 +212,7 @@ impl Material for LitMaterial {
                     &uniforms.use_normal_map_loc,
                     self.use_normal_map as i32,
                 );
+                p.set_uniform_1f(ctx.gl, &uniforms.specular_scale_loc, self.specular_scale);
 
                 uniforms.lighting.set(p, ctx, view_matrix);
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
@@ -230,6 +237,21 @@ impl LitMaterial {
             color,
             use_texture,
             use_normal_map,
+            specular_scale: 1.0,
+        })
+    }
+
+    /// A static glTF model's lit material: its base-colour texture on unit 0,
+    /// and no highlight. The loader reads no metallic-roughness data, and
+    /// glTF's default roughness is 1 (fully rough), so the shared Blinn-Phong
+    /// highlight — sized for authored shiny primitives — would only paint
+    /// colourless glints across photoscanned rock and bark.
+    pub fn model() -> Box<dyn Material> {
+        Box::new(LitMaterial {
+            color: Vector4::new(1.0, 1.0, 1.0, 1.0),
+            use_texture: true,
+            use_normal_map: false,
+            specular_scale: 0.0,
         })
     }
 }

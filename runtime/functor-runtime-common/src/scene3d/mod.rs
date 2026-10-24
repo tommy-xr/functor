@@ -6,7 +6,7 @@ use std::{
 
 use glow::HasContext;
 
-use cgmath::{vec3, vec4, Matrix, Matrix4, SquareMatrix};
+use cgmath::{vec3, Matrix, Matrix4, SquareMatrix};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -1701,8 +1701,9 @@ impl Scene3D {
                         let matrix = world_matrix * self.xform;
 
                         // Skinned models pay for the joint-matrix uniform array;
-                        // static models (no skeleton) render with the basic
-                        // material instead. In a debug render mode, both swap to
+                        // static models (no skeleton) render with the lit model
+                        // material in a lit frame and the basic (albedo)
+                        // material in an unlit one. In a debug render mode, both swap to
                         // the matching diagnostic material (the skinned variant
                         // deforms the normal by the joint blend).
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
@@ -1737,7 +1738,7 @@ impl Scene3D {
                                 | DebugRenderMode::Physics
                                     if !render_context.lights.is_empty() =>
                                 {
-                                    LitMaterial::create(vec4(1.0, 1.0, 1.0, 1.0), true, false)
+                                    LitMaterial::model()
                                 }
                                 DebugRenderMode::Default
                                 | DebugRenderMode::Transparent
