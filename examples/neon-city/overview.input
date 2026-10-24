@@ -1,0 +1,10 @@
+# overview.input — rise from the street to the overview, then glide north.
+#
+#   functor -d examples/neon-city run native --input-script overview.input \
+#     --script-dt 0.0166667 --capture-at-frame 180 --capture-frame /tmp/roof.png
+#
+#   f 5     Space: lift off to the overview height
+#   f 60    W: glide up the avenue toward downtown
+5 Space down
+7 Space up
+60 W down

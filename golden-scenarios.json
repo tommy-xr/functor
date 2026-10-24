@@ -112,6 +112,15 @@
       ]
     },
     {
+      "name": "neon-city-t2",
+      "sample": "neon-city",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
+    },
+    {
       "name": "monitor-ui-t2",
       "sample": "monitor-ui",
       "fixedTime": 2.0,
