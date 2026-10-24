@@ -198,6 +198,11 @@ export interface RuntimeState {
    * parse it. v4 and later — a pre-v4 runtime omits it (and sends the text
    * under `model` instead). */
   model_debug: string;
+  /** Where the game logic runs (`inline` on the render thread, or `pipelined`
+   * on its own sim thread) and that thread's scheduling class, e.g.
+   * `"pipelined: user-interactive"`. Protocol v16+; omitted by runtimes that
+   * don't report it. */
+  sim_thread?: string;
 }
 
 /** Camera block from `GET /scene`. */

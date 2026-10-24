@@ -489,8 +489,8 @@ impl SceneContext {
     }
 
     /// Queue terrain hydration requests a producer on ANOTHER thread emitted
-    /// (taken there with `terrain::take_heightmap_requests`), for the next
-    /// [`Self::drive_preloads`].
+    /// (they arrive in `sim_driver::SimSnapshot::terrain_requests`), for the
+    /// next [`Self::drive_preloads`].
     pub fn queue_terrain_requests(&self, requests: Vec<crate::terrain::TerrainSource>) {
         self.terrain_requests.borrow_mut().extend(requests);
     }

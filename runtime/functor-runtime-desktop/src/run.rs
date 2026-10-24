@@ -25,7 +25,7 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
-use crate::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
+use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use crate::{
     asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
 };
@@ -1064,6 +1064,8 @@ fn service_debug_request(
     // Which transport owns the game's connection queues, so `/net/outbound`
     // and `/net/deliver` refuse rather than fight the real dispatcher.
     net_transport: NetTransportArg,
+    // `/state.sim_thread`: where the game logic runs, and its QoS.
+    sim_thread: &str,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
 ) -> bool {
     let mut sampled_input_changed = false;
@@ -1076,6 +1078,7 @@ fn service_debug_request(
         debug_server::DebugRequest::State(resp) => {
             let frame = *frame_count;
             let pending_steps = clock.pending_steps();
+            let sim_thread = sim_thread.to_string();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     frame,
@@ -1088,6 +1091,7 @@ fn service_debug_request(
                     model: g.state_json(),
                     model_debug: g.state_debug(),
                     input: state_input,
+                    sim_thread: Some(sim_thread),
                     display_refresh_rate: None,
                 });
             });
@@ -1381,6 +1385,7 @@ fn run_headless(
     input_script: Option<HashMap<u64, Vec<RecordedInput>>>,
     script_dt: f32,
     net_transport: NetTransportArg,
+    sim_thread: String,
 ) {
     // Stderr, not stdout: keep the CLI's `--json` ndjson stream (stdout) clean
     // even under `--headless`. This is an out-of-band notice, not an event.
@@ -1544,6 +1549,7 @@ fn run_headless(
                     None,
                     None, // no webview overlay in headless
                     net_transport,
+                    &sim_thread,
                     &|| {
                         Err(debug_server::CaptureError::Unavailable(
                             "capture is unavailable in --headless mode".to_string(),
@@ -1600,11 +1606,23 @@ pub fn run(args: Args) {
         }
     };
     let mut sim = if args.pipelined {
-        SimDriver::spawn(make_game)
+        SimDriver::spawn(move || {
+            crate::thread_qos::raise_current_thread();
+            make_game()
+        })
     } else {
         SimDriver::inline(make_game())
     };
     let mut caps = sim.caps();
+    // Read back on the thread itself, so `/state` reports what applied.
+    let sim_thread = format!(
+        "{}: {}",
+        if sim.is_threaded() { "pipelined" } else { "inline" },
+        sim.call(|_| crate::thread_qos::current_label())
+    );
+    if sim.is_threaded() {
+        eprintln!("[runner] game logic on its own sim thread ({sim_thread})");
+    }
 
     // Hidden/headless/emulated-XR sessions do not have a live captured-pointer
     // path; their debug/script injection remains available without physical
@@ -1694,6 +1712,7 @@ sockets)."
             input_script,
             args.script_dt,
             args.net_transport,
+            sim_thread,
         );
         return;
     }
@@ -2045,12 +2064,7 @@ Escape releases while captured"
         // time-travel chrome), so that feedback lands on the same fixed step
         // as inline. Startup always loads, so it starts on.
         let mut lockstep = true;
-        // The heightmaps mirrored onto the sim thread's hydration bridge, held
-        // weakly like the bridge itself so they don't outlive their assets.
-        let mut mirrored_heightmaps: Vec<(
-            functor_runtime_common::terrain::TerrainSource,
-            std::sync::Weak<functor_runtime_common::asset::pipelines::HeightmapData>,
-        )> = Vec::new();
+        let mut heightmap_mirror = functor_runtime_common::sim_driver::HeightmapMirror::default();
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
@@ -2116,29 +2130,7 @@ Escape releases while captured"
             }
             let loads_pending = scene_context.has_pending_loads();
 
-            // Heightmaps hydrate on this thread (the asset driver above and
-            // the terrain draw); physics reads them on the sim's, so mirror
-            // any change across.
-            if sim.is_threaded() {
-                let hydrated = functor_runtime_common::terrain::hydrated_heightmaps();
-                let unchanged = hydrated.len() == mirrored_heightmaps.len()
-                    && hydrated
-                        .iter()
-                        .zip(&mirrored_heightmaps)
-                        .all(|(a, b)| a.0 == b.0 && Arc::as_ptr(&a.1) == b.1.as_ptr());
-                if !unchanged {
-                    mirrored_heightmaps = hydrated
-                        .iter()
-                        .map(|(source, data)| (source.clone(), Arc::downgrade(data)))
-                        .collect();
-                    sim.post(move |_| {
-                        for (source, data) in hydrated {
-                            functor_runtime_common::terrain::publish_heightmap(&source, data);
-                        }
-                    });
-                    feedback = true;
-                }
-            }
+            feedback |= heightmap_mirror.sync(&mut sim);
 
             // Asset hot-reload, the twin of the .fun check above: a model/
             // texture saved on disk is evicted from the caches so the next
@@ -2850,7 +2842,7 @@ Escape again to quit"
                         );
                     }
                 }
-                if caps.samples_input {
+                if caps.samples_input || sim.is_threaded() {
                     if clock.is_fixed_time() && input_script.is_none() {
                         input_edges.apply_to(&mut fixed_input_snapshot);
                         sim.sampled_input(fixed_input_snapshot.clone());
@@ -3732,6 +3724,7 @@ Escape again to quit"
                             None
                         },
                         args.net_transport,
+                        &sim_thread,
                         // GL readback on the render thread (a real Failed on error).
                         &|| {
                             functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
@@ -3771,15 +3764,12 @@ Escape again to quit"
             sim.post(move |g| g.record_gl_timing(render_ns, swap_ns));
 
             if let Some(pushed) = pushed_progress {
-                let current = asset_cache.progress();
-                let loading = current != pushed
-                    || current.loaded + current.failed.len() < current.total;
                 lockstep = feedback
-                    || loading
+                    || functor_runtime_common::sim_driver::assets_busy(&pushed, &asset_cache.progress())
                     || loads_pending
                     // Widget events must resolve against the view shown.
                     || snapshot.webview_html.is_some()
-                    || crate::sim_driver::has_widgets(&snapshot.ui)
+                    || functor_runtime_common::sim_driver::has_widgets(&snapshot.ui)
                     // A debug driver reading /state then /scene or /capture
                     // must see the same frame.
                     || debug_active
