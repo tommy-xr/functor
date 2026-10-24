@@ -200,7 +200,7 @@ export interface RuntimeState {
   model_debug: string;
   /** Where the game logic runs (`inline` on the render thread, or `pipelined`
    * on its own sim thread) and that thread's scheduling class, e.g.
-   * `"pipelined: user-interactive"`. Protocol v15+; omitted by runtimes that
+   * `"pipelined: user-interactive"`. Protocol v16+; omitted by runtimes that
    * don't report it. */
   sim_thread?: string;
 }
