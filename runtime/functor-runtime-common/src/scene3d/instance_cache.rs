@@ -176,7 +176,11 @@ mod tests {
     }
 
     /// Acquire `list`, returning (buffer, uploaded?) and counting creations.
-    fn draw(cache: &mut InstanceBufferCache<u32>, list: &InstanceList, next: &mut u32) -> (u32, bool) {
+    fn draw(
+        cache: &mut InstanceBufferCache<u32>,
+        list: &InstanceList,
+        next: &mut u32,
+    ) -> (u32, bool) {
         let acquired = cache.acquire(list, || {
             *next += 1;
             *next

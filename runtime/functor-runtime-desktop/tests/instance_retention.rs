@@ -23,7 +23,11 @@ fn functor_bin() -> PathBuf {
         .parent()
         .and_then(|deps| deps.parent())
         .expect("target/<profile> dir");
-    let bin = target_dir.join(if cfg!(windows) { "functor.exe" } else { "functor" });
+    let bin = target_dir.join(if cfg!(windows) {
+        "functor.exe"
+    } else {
+        "functor"
+    });
     assert!(bin.exists(), "build the CLI first: {}", bin.display());
     bin
 }
@@ -71,7 +75,15 @@ fn launch(name: &str, trees: &str) -> Session {
     .unwrap();
     std::fs::write(dir.join("game.fun"), game(trees)).unwrap();
     let mut child = Command::new(functor_bin())
-        .args(["-d", dir.to_str().unwrap(), "run", "native", "--hidden", "--debug-port", "0"])
+        .args([
+            "-d",
+            dir.to_str().unwrap(),
+            "run",
+            "native",
+            "--hidden",
+            "--debug-port",
+            "0",
+        ])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()
