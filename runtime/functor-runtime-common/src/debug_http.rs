@@ -405,6 +405,37 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
             respond_result(&mut stream, cors_origin, recv(resp_rx), "rewind")
         }
+        ("POST", "/display-refresh-rate") => {
+            let command = match parse_json::<debug_protocol::DisplayRefreshRateCommand>(
+                &mut reader,
+                content_length,
+            ) {
+                Ok(command) => command,
+                Err(error) => {
+                    respond_text(
+                        &mut stream,
+                        cors_origin,
+                        400,
+                        "Bad Request",
+                        &format!("bad display refresh rate json: {error}"),
+                    );
+                    return Some(());
+                }
+            };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx
+                .send(DebugRequest::DisplayRefreshRate(command.hz, resp_tx))
+                .is_err()
+            {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_result(
+                &mut stream,
+                cors_origin,
+                recv(resp_rx),
+                "display refresh rate request",
+            )
+        }
         ("GET", "/net/outbound") => {
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::NetOutbound(resp_tx)).is_err() {
@@ -1012,6 +1043,41 @@ Content-Length: {}\r\n\r\n{body}",
             "{response}"
         );
         assert!(response.ends_with("pinned by --fixed-time"));
+    }
+
+    /// The requested rate reaches the runtime as Hz; malformed JSON and the
+    /// runtime's refusal are 400s.
+    #[test]
+    fn display_refresh_rate_forwards_hz_and_reports_refusal() {
+        let post = |body: &str, answer: Option<Result<String, String>>| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let request = format!(
+                "POST /display-refresh-rate HTTP/1.1\r\nHost: localhost\r\n\
+Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let client = connect(&listener, request);
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            if let Some(answer) = answer {
+                match rx.recv().unwrap() {
+                    DebugRequest::DisplayRefreshRate(hz, response) => {
+                        assert_eq!(hz, 90.0);
+                        response.send(answer).unwrap();
+                    }
+                    _ => panic!("expected a display refresh rate request"),
+                }
+            }
+            server.join().unwrap();
+            client.join().unwrap()
+        };
+
+        let ok = post(r#"{"hz":90}"#, Some(Ok("requested 90 Hz".into())));
+        assert!(ok.starts_with("HTTP/1.1 200 OK\r\n"), "{ok}");
+        let refused = post(r#"{"hz":90}"#, Some(Err("no display".into())));
+        assert!(refused.starts_with("HTTP/1.1 400 "), "{refused}");
+        let malformed = post(r#"{"rate":90}"#, None);
+        assert!(malformed.starts_with("HTTP/1.1 400 "), "{malformed}");
     }
 
     /// The embedder transport's egress: the runtime's answer is the drained

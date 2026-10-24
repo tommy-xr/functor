@@ -34,7 +34,7 @@ struct Args {
     /// Which named entry to use when functor.json declares an `entries` map
     /// (e.g. `--entry server`; defaults to `client`, or the sole entry).
     /// Accepted anywhere on the line — a late `--entry` lands in `run`'s
-    /// trailing runner args and is extracted there (see `take_entry_arg`).
+    /// trailing runner args and is extracted there (see `take_flag_arg`).
     #[arg(long, global = true)]
     entry: Option<String>,
 
@@ -149,6 +149,8 @@ enum Command {
         /// only). E.g. `run native --fixed-time 2 --capture-frame f.png`. A
         /// leading `--` is also accepted. On wasm these are ignored except
         /// `--no-open`, which keeps the dev server but skips launching the browser.
+        /// On vr only `--refresh-rate <hz>` is used: the headset display rate to
+        /// request (one it offers, e.g. 90 or 120).
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },
@@ -385,7 +387,7 @@ async fn run(args: &Args) -> io::Result<()> {
         // reject it with a confusing runtime-level error.
         let (trailing_entry, mut runner_args) = match &args.command {
             Command::Run { runner_args, .. } | Command::Develop { runner_args, .. } => {
-                take_entry_arg(runner_args)?
+                take_flag_arg(runner_args, "--entry")?
             }
             _ => (None, Vec::new()),
         };
@@ -495,31 +497,34 @@ async fn run(args: &Args) -> io::Result<()> {
     }
 }
 
-/// Pull `--entry <name>` / `--entry=<name>` out of `run`/`develop`'s trailing
-/// runner args (clap's trailing_var_arg captures it before the global flag can
-/// see it), returning the entry and the remaining args to forward. A dangling
-/// `--entry` with no value is an error, not a silent default.
-fn take_entry_arg(runner_args: &[String]) -> io::Result<(Option<String>, Vec<String>)> {
-    let mut entry = None;
+/// Pull `<flag> <value>` / `<flag>=<value>` (e.g. `--entry server`) out of
+/// `run`/`develop`'s trailing runner args (clap's trailing_var_arg captures it
+/// before a global flag can see it), returning the value and the remaining
+/// args to forward. A dangling flag with no value is an error, not a silent
+/// default.
+pub(crate) fn take_flag_arg(
+    runner_args: &[String],
+    flag: &str,
+) -> io::Result<(Option<String>, Vec<String>)> {
+    let mut found = None;
     let mut rest = Vec::with_capacity(runner_args.len());
     let mut iter = runner_args.iter();
     while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--entry=") {
-            entry = Some(value.to_string());
-        } else if arg == "--entry" {
+        if let Some(value) = arg
+            .strip_prefix(flag)
+            .and_then(|tail| tail.strip_prefix('='))
+        {
+            found = Some(value.to_string());
+        } else if arg == flag {
             match iter.next() {
-                Some(value) => entry = Some(value.clone()),
-                None => {
-                    return Err(io::Error::other(
-                        "--entry requires a value (--entry <name>)",
-                    ))
-                }
+                Some(value) => found = Some(value.clone()),
+                None => return Err(io::Error::other(format!("{flag} requires a value"))),
             }
         } else {
             rest.push(arg.clone());
         }
     }
-    Ok((entry, rest))
+    Ok((found, rest))
 }
 
 fn command_name(command: &Command) -> &'static str {
@@ -622,7 +627,7 @@ fn get_working_directory(args: &Args) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{run, take_entry_arg, validate_args, Args};
+    use super::{run, take_flag_arg, validate_args, Args};
     use clap::Parser;
     use std::fs;
 
@@ -632,26 +637,33 @@ mod tests {
 
     #[test]
     fn take_entry_arg_extracts_both_forms_and_forwards_the_rest() {
-        let (entry, rest) =
-            take_entry_arg(&strings(&["--entry", "server", "--fixed-time", "2"])).unwrap();
+        let (entry, rest) = take_flag_arg(
+            &strings(&["--entry", "server", "--fixed-time", "2"]),
+            "--entry",
+        )
+        .unwrap();
         assert_eq!(entry.as_deref(), Some("server"));
         assert_eq!(rest, strings(&["--fixed-time", "2"]));
 
-        let (entry, rest) = take_entry_arg(&strings(&["--entry=server"])).unwrap();
+        let (entry, rest) = take_flag_arg(&strings(&["--entry=server"]), "--entry").unwrap();
         assert_eq!(entry.as_deref(), Some("server"));
         assert!(rest.is_empty());
     }
 
     #[test]
     fn take_entry_arg_leaves_unrelated_args_alone() {
-        let (entry, rest) = take_entry_arg(&strings(&["--capture-frame", "f.png"])).unwrap();
+        let (entry, rest) = take_flag_arg(
+            &strings(&["--capture-frame", "f.png", "--entryx"]),
+            "--entry",
+        )
+        .unwrap();
         assert_eq!(entry, None);
-        assert_eq!(rest, strings(&["--capture-frame", "f.png"]));
+        assert_eq!(rest, strings(&["--capture-frame", "f.png", "--entryx"]));
     }
 
     #[test]
     fn take_entry_arg_rejects_a_dangling_flag() {
-        let err = take_entry_arg(&strings(&["--entry"])).unwrap_err();
+        let err = take_flag_arg(&strings(&["--entry"]), "--entry").unwrap_err();
         assert!(err.to_string().contains("requires a value"), "{err}");
     }
 

@@ -81,6 +81,33 @@ full, proven sequence. The short path is:
 5. Install a non-debuggable release APK, push the explicit workload, and run
    `npm run bench:quest -- --label NAME --warmup 10 --seconds 30`.
 
+### Display refresh rate
+
+The APK starts at the highest rate the display offers up to 80 Hz. To ask for a
+different one, use `functor -d yourgame run vr --refresh-rate 90` (or `120`).
+This requests the rate once, after the initial push, through
+`POST /display-refresh-rate`. The rate must be one the display offers; Quest 3
+offers 120 Hz only when it is enabled in the headset's display settings. The
+switch is asynchronous, so confirm it with `/state`'s
+`display_refresh_rate.current` (logged as `display refresh rate changed`).
+`bench:quest` prints the requested and current rate next to VrApi's FPS target,
+and fails if the rate changes during the sample.
+
+Quest 3 release APK, 30-second samples after a 10-second warmup (2026-10-23).
+"Default" is a fresh start with no request. Times are VrApi means.
+
+| Scene | Rate | FPS mean / p5 / min | Stale / torn | App | Compositor | CPU+GPU | CPU / GPU load | CPU / GPU level |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| terrain | default (80) | 80.6 / 80 / 80 | 0 / 3 | 9.54 ms | 0.76 ms | 12.00 ms | 0.06 / 0.86 | 2 / 3 |
+| terrain | 90 | 90.2 / 90 / 90 | 0 / 0 | 8.41 ms | 0.69 ms | 10.69 ms | 0.06 / 0.85 | 2 / 4 |
+| terrain | 120 | 120.3 / 120 / 119 | 5 / 18 | 6.93 ms | 0.65 ms | 9.24 ms | 0.08 / 0.95 | 2 / 4 |
+| synthwave | default (80) | 80.7 / 80 / 80 | 0 / 1 | 0.80 ms | 1.03 ms | 8.84 ms | 0.25 / 0.17 | 2 / 2 |
+| synthwave | 90 | 90.5 / 90 / 90 | 0 / 0 | 0.79 ms | 1.04 ms | 7.97 ms | 0.26 / 0.19 | 2 / 2 |
+| synthwave | 120 | 120.3 / 120 / 120 | 7 / 0 | 0.90 ms | 1.00 ms | 7.06 ms | 0.28 / 0.26 | 2 / 2 |
+
+Terrain is GPU-bound. At 120 Hz its GPU load reaches 0.95, and it is the only
+run with a minimum below target (119 FPS) and many torn frames (18).
+
 The first measured Quest 3 release run (`primitives`, 15 seconds after a
 5-second warmup) sustained 72.7 FPS mean / 72 FPS minimum, with zero stale or
 torn frames and 3.09 ms mean application time.
