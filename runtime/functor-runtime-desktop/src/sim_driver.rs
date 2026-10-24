@@ -10,14 +10,17 @@
 //! Inline (the default) the producer runs on the shell's thread. With
 //! `--pipelined` it runs on a sim thread: calls queue in order, and each
 //! frame's snapshot lands in a single-slot mailbox the render side takes from,
-//! so the sim draws frame N while the shell renders N-1. Feedback the shell
-//! derives from a rendered frame (asset progress, preload settlement, terrain
-//! hydration) then reaches the sim one frame later, so the shell runs lockstep
-//! while that feedback is active and it lands on the same step as inline.
+//! so the sim draws frame N while the shell renders N-1. The shell takes
+//! exactly frame N-1 (or N in lockstep), never whichever happens to be ready,
+//! and the sim waits for the slot to empty, so when feedback derived from a
+//! rendered frame (asset progress, preload settlement, terrain hydration)
+//! reaches the sim does not depend on thread timing. The shell runs lockstep
+//! while that feedback is active, so it lands on the same step as inline.
 
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Instant;
 
+use functor_runtime_common::asset::preload::PreloadCommand;
 use functor_runtime_common::audio::{AudioCommand, AudioScene};
 use functor_runtime_common::net::{ConnCommand, NetCommand};
 use functor_runtime_common::physics::DebugLine;
@@ -67,7 +70,7 @@ pub(crate) struct SimSnapshot {
     pub audio_scene: Option<AudioScene>,
     pub net_commands: Vec<NetCommand>,
     pub conn_commands: Vec<ConnCommand>,
-    pub preload_commands: Vec<functor_runtime_common::asset::preload::PreloadCommand>,
+    pub preload_commands: Vec<PreloadCommand>,
     /// Heightmaps physics asked for, for the shell's asset driver.
     pub terrain_requests: Vec<TerrainSource>,
     /// Some requested heightmap is not yet hydrated on the producer's thread.
@@ -194,19 +197,20 @@ impl SimDriver {
         self.call(|g| caps(g))
     }
 
-    /// Request this frame's snapshot and return the newest one ready.
+    /// Request this frame's snapshot and return the one the shell renders.
     ///
-    /// Inline, that is this frame's. On the sim thread it is the previous
-    /// frame's (the sim draws frame N while the shell renders N-1), or this
-    /// frame's under `lockstep`. `None` means nothing new: the shell
-    /// re-renders what it has, which happens once each time lockstep ends.
+    /// Inline, that is this frame's. On the sim thread it is exactly the
+    /// previous frame's (the sim draws frame N while the shell renders N-1),
+    /// or this frame's under `lockstep`, with any skipped snapshot's effects
+    /// folded in. `None` means nothing new: the shell re-renders what it has,
+    /// which happens once each time lockstep ends.
     pub fn frame(&mut self, req: FrameRequest, lockstep: bool) -> Option<SimSnapshot> {
         self.posted += 1;
         let seq = self.posted;
         let snapshot = match &mut self.mode {
             Mode::Inline(game) => {
                 let started = Instant::now();
-                let mut snapshot = snapshot(&mut **game, req);
+                let mut snapshot = snapshot(&mut **game, req, false);
                 snapshot.seq = seq;
                 snapshot.sim_ns = std::mem::take(&mut self.busy_ns) + elapsed_ns(started);
                 Some(snapshot)
@@ -214,14 +218,18 @@ impl SimDriver {
             Mode::Threaded(worker) => {
                 worker.send(Job::Frame(req, seq));
                 let need = if lockstep { seq } else { (seq - 1).max(1) };
-                let started = Instant::now();
-                let snapshot = if need > self.consumed {
-                    Some(worker.mailbox.take_at_least(need, worker.thread.as_ref()))
-                } else {
-                    worker.mailbox.try_take()
-                };
-                self.wait_ns += elapsed_ns(started);
-                snapshot
+                (need > self.consumed).then(|| {
+                    let started = Instant::now();
+                    let thread = worker.thread.as_ref();
+                    let mut snapshot = worker.mailbox.take(thread);
+                    while snapshot.seq < need {
+                        let mut newer = worker.mailbox.take(thread);
+                        newer.absorb_older(snapshot);
+                        snapshot = newer;
+                    }
+                    self.wait_ns += elapsed_ns(started);
+                    snapshot
+                })
             }
         };
         if let Some(snapshot) = &snapshot {
@@ -233,6 +241,24 @@ impl SimDriver {
     /// The number of the frame last requested with [`Self::frame`].
     pub fn posted(&self) -> u64 {
         self.posted
+    }
+
+    /// Preloads queued since the last snapshot, read where the shell drives
+    /// them. Inline this includes those queued by input after the last
+    /// render; on the sim thread they ride the next snapshot instead.
+    pub fn drain_preloads(&mut self) -> Vec<PreloadCommand> {
+        if self.is_threaded() {
+            return Vec::new();
+        }
+        self.call(|g| parse_drain(&g.preload_drain_commands(), "preload"))
+    }
+
+    /// Take the heightmap requests the producer made outside a frame (the
+    /// physics prime at load) and queue them for the shell's asset driver.
+    pub fn queue_terrain_requests(&mut self, scene_context: &functor_runtime_common::SceneContext) {
+        scene_context.queue_terrain_requests(
+            self.call(|_| functor_runtime_common::terrain::take_heightmap_requests()),
+        );
     }
 
     pub fn take_wait_ns(&mut self) -> u64 {
@@ -276,8 +302,10 @@ impl SimDriver {
         match self.mode {
             Mode::Inline(mut game) => game.quit(),
             Mode::Threaded(mut worker) => {
-                // Closing the queue ends the worker, which then quits.
+                // Closing the queue ends the worker, which then quits; an
+                // untaken snapshot must not keep it waiting on the slot.
                 worker.jobs = None;
+                worker.mailbox.close();
                 if let Some(thread) = worker.thread.take() {
                     let _ = thread.join();
                 }
@@ -308,7 +336,7 @@ fn run_worker(mut game: Box<dyn Game>, jobs: mpsc::Receiver<Job>, mailbox: &Mail
                 busy_ns += elapsed_ns(started);
             }
             Job::Frame(req, seq) => {
-                let mut snapshot = snapshot(&mut *game, req);
+                let mut snapshot = snapshot(&mut *game, req, true);
                 snapshot.seq = seq;
                 snapshot.sim_ns = std::mem::take(&mut busy_ns) + elapsed_ns(started);
                 mailbox.put(snapshot);
@@ -318,35 +346,38 @@ fn run_worker(mut game: Box<dyn Game>, jobs: mpsc::Receiver<Job>, mailbox: &Mail
     game.quit();
 }
 
-/// The single-slot hand-off from the sim thread to the shell. Latest wins for
-/// what is drawn; the effects of a snapshot the shell never took carry into
-/// the newer one, so none are lost.
+/// The single-slot hand-off from the sim thread to the shell. The sim waits
+/// for the slot to empty before publishing, so the shell sees every snapshot
+/// in order and the sim runs at most one frame ahead.
 #[derive(Default)]
 struct Mailbox {
-    slot: Mutex<Option<SimSnapshot>>,
+    slot: Mutex<Slot>,
     ready: Condvar,
 }
 
+#[derive(Default)]
+struct Slot {
+    snapshot: Option<SimSnapshot>,
+    closed: bool,
+}
+
 impl Mailbox {
-    fn put(&self, mut snapshot: SimSnapshot) {
+    fn put(&self, snapshot: SimSnapshot) {
         let mut slot = self.slot.lock().unwrap();
-        if let Some(older) = slot.take() {
-            snapshot.absorb_older(older);
+        while slot.snapshot.is_some() && !slot.closed {
+            slot = self.ready.wait(slot).unwrap();
         }
-        *slot = Some(snapshot);
+        slot.snapshot = Some(snapshot);
         self.ready.notify_all();
     }
 
-    fn try_take(&self) -> Option<SimSnapshot> {
-        self.slot.lock().unwrap().take()
-    }
-
-    /// Wait for a snapshot numbered `seq` or newer.
-    fn take_at_least(&self, seq: u64, thread: Option<&std::thread::JoinHandle<()>>) -> SimSnapshot {
+    /// Wait for the next snapshot.
+    fn take(&self, thread: Option<&std::thread::JoinHandle<()>>) -> SimSnapshot {
         let mut slot = self.slot.lock().unwrap();
         loop {
-            if slot.as_ref().is_some_and(|s| s.seq >= seq) {
-                return slot.take().unwrap();
+            if let Some(snapshot) = slot.snapshot.take() {
+                self.ready.notify_all();
+                return snapshot;
             }
             // A panicked producer never publishes again.
             if thread.is_none_or(|t| t.is_finished()) {
@@ -359,10 +390,17 @@ impl Mailbox {
                 .0;
         }
     }
+
+    /// Stop the sim from waiting on the slot (shutdown).
+    fn close(&self) {
+        self.slot.lock().unwrap().closed = true;
+        self.ready.notify_all();
+    }
 }
 
 impl SimSnapshot {
-    /// Fold an older, never-taken snapshot's effects in ahead of ours.
+    /// Fold an older snapshot the shell skips (leaving pipelining) in ahead
+    /// of ours, so its effects are not lost.
     fn absorb_older(&mut self, mut older: SimSnapshot) {
         fn prepend<T>(newer: &mut Vec<T>, mut older: Vec<T>) {
             older.append(newer);
@@ -393,6 +431,16 @@ impl SimSnapshot {
     }
 }
 
+/// Whether `view` has interactive widgets, whose events resolve by slot.
+pub(crate) fn has_widgets(view: &View) -> bool {
+    match view {
+        View::Button { .. } | View::Slider { .. } | View::TextInput { .. } => true,
+        View::Column(children) | View::Row(children) => children.iter().any(has_widgets),
+        View::Panel { child, .. } => has_widgets(child),
+        View::Empty | View::Text { .. } => false,
+    }
+}
+
 fn elapsed_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos() as u64
 }
@@ -415,7 +463,10 @@ fn parse_drain<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Vec<T>
     })
 }
 
-fn snapshot(game: &mut dyn Game, req: FrameRequest) -> SimSnapshot {
+/// Draw and drain one frame. `drain_preloads` is false inline, where the
+/// shell reads preloads at the top of the next frame instead
+/// ([`SimDriver::drain_preloads`]).
+fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> SimSnapshot {
     let frame = Arc::new(game.render(req.time.clone()));
     let audio_scene = req.audio_scene.then(|| {
         serde_json::from_str::<AudioScene>(&game.audio_scene_json())
@@ -444,7 +495,11 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest) -> SimSnapshot {
         } else {
             Vec::new()
         },
-        preload_commands: serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default(),
+        preload_commands: if drain_preloads {
+            parse_drain(&game.preload_drain_commands(), "preload")
+        } else {
+            Vec::new()
+        },
         terrain_requests,
         terrain_pending,
         physics_lines: if req.physics_lines {

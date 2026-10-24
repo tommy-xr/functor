@@ -220,21 +220,12 @@ fn native_scenarios_match_golden() {
         "no native golden scenarios in manifest"
     );
 
-    for scenario in &scenarios {
-        println!("--- golden scenario: {} ---", scenario.name);
-        assert_scenario_matches(scenario, &[]);
-    }
-}
-
-#[test]
-#[ignore = "needs a GL display; run with --ignored"]
-fn native_scenarios_match_golden_pipelined() {
-    for scenario in load_scenarios()
-        .iter()
-        .filter(|s| s.targets.iter().any(|t| t == "native"))
-    {
-        println!("--- golden scenario (pipelined): {} ---", scenario.name);
-        assert_scenario_matches(scenario, &["--pipelined"]);
+    // Inline, then with the game logic on its own sim thread.
+    for extra in [&[][..], &["--pipelined"]] {
+        for scenario in &scenarios {
+            println!("--- golden scenario: {} {extra:?} ---", scenario.name);
+            assert_scenario_matches(scenario, extra);
+        }
     }
 }
 
