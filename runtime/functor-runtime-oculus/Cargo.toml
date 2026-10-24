@@ -36,6 +36,8 @@ log = "0.4"
 android_logger = "0.14"
 # Frame/trace debug responses.
 serde_json = "1.0"
+# gettid / __system_property_get for the sim-thread opt-in and XR thread hints.
+libc = "0.2"
 
 # cargo-apk packaging metadata (`cargo apk build` from this directory).
 # functor-runner-on-Quest is a tool APK, like functor-runner is a binary: the

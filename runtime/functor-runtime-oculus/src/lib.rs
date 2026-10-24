@@ -37,6 +37,7 @@ use functor_runtime_common::debug_protocol::{
 };
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
+use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputSnapshot, Key, SceneContext, TrackingPose, Viewport,
     XrControllerSnapshot, XrInputSnapshot,
@@ -591,7 +592,7 @@ struct DebugLoopState {
     input: InputSnapshot,
     // Debug requests may arrive while paused or between device fixed steps.
     input_edges: functor_runtime_common::InputEdges,
-    last_frame: Option<Frame>,
+    last_frame: Option<Arc<Frame>>,
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
     /// `None` when the runtime lacks XR_FB_display_refresh_rate.
     display_refresh_rate: Option<DisplayRefreshRate>,
@@ -626,10 +627,13 @@ in the headset's display settings",
     Ok(message)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn service_debug_request(
     request: DebugRequest,
     session: &xr::Session<xr::OpenGlEs>,
-    game: &mut dyn GameProducer,
+    sim: &mut SimDriver,
+    // `/state.sim_thread`: where the game logic runs and how it is tagged.
+    sim_thread: &str,
     clock: &mut GameClock,
     debug: &mut DebugLoopState,
     eyes: &[EyeTarget],
@@ -675,21 +679,29 @@ fn service_debug_request(
                 .collect();
             let mut input = debug.input.clone();
             debug.input_edges.apply_to(&mut input);
-            let _ = response.send(RuntimeState {
-                frame: debug.frame_count,
-                tts: clock.current_tts(),
-                pending_steps: clock.pending_steps(),
-                model_revision: game.model_revision(),
-                // The device shell delivers inbound net events through the same
-                // process-global gauge the desktop shell counts on; it reads 0
-                // until a device transport counts into it.
-                pending_net: functor_runtime_common::net::inbound_pending(),
-                viewport: RuntimeViewport::new(width, height),
-                views,
-                model: game.state_json(),
-                model_debug: game.state_debug(),
-                input,
-                display_refresh_rate: debug.display_refresh_rate.clone(),
+            let (frame, tts, pending_steps) =
+                (debug.frame_count, clock.current_tts(), clock.pending_steps());
+            let sim_thread = sim_thread.to_string();
+            let display_refresh_rate = debug.display_refresh_rate.clone();
+            // Replies from the sim side, after every call queued before it.
+            sim.post(move |g| {
+                let _ = response.send(RuntimeState {
+                    frame,
+                    tts,
+                    pending_steps,
+                    model_revision: g.model_revision(),
+                    // The device shell delivers inbound net events through the
+                    // same process-global gauge the desktop shell counts on; it
+                    // reads 0 until a device transport counts into it.
+                    pending_net: functor_runtime_common::net::inbound_pending(),
+                    viewport: RuntimeViewport::new(width, height),
+                    views,
+                    model: g.state_json(),
+                    model_debug: g.state_debug(),
+                    input,
+                    sim_thread: Some(sim_thread),
+                    display_refresh_rate,
+                });
             });
         }
         DebugRequest::Scene(response) => {
@@ -703,13 +715,16 @@ fn service_debug_request(
             let _ = response.send(json);
         }
         DebugRequest::Trace(response) => {
-            let _ = response.send(game.inspector_trace(clock.is_paused()));
+            let paused = clock.is_paused();
+            sim.post(move |g| {
+                let _ = response.send(g.inspector_trace(paused));
+            });
         }
         DebugRequest::Input(command, response) => {
             let result = match command {
                 InputCommand::Key { key, down } => match Key::from_name(&key) {
                     Some(key) if down => {
-                        game.key_event(key as i32, true);
+                        sim.key_event(key as i32, true);
                         functor_runtime_common::apply_key_transition_to_snapshot(
                             &mut debug.input,
                             &mut debug.input_edges,
@@ -727,7 +742,7 @@ fn service_debug_request(
                             false,
                             true,
                         ) {
-                            game.key_event(key as i32, false);
+                            sim.key_event(key as i32, false);
                         }
                         Ok(())
                     }
@@ -736,11 +751,11 @@ fn service_debug_request(
                 InputCommand::MouseMove { x, y } => {
                     debug.input.mouse.x = x;
                     debug.input.mouse.y = y;
-                    game.mouse_move(x, y);
+                    sim.mouse_move(x, y);
                     Ok(())
                 }
                 InputCommand::MouseWheel { delta } => {
-                    game.mouse_wheel(delta);
+                    sim.mouse_wheel(delta);
                     Ok(())
                 }
                 // Edge + held level, mirroring the injected-key discipline: a
@@ -757,7 +772,7 @@ fn service_debug_request(
                                     true,
                                     true,
                                 );
-                                game.mouse_button(b as i32, true);
+                                sim.mouse_button(b as i32, true);
                             } else if functor_runtime_common::apply_mouse_transition_to_snapshot(
                                 &mut debug.input,
                                 &mut debug.input_edges,
@@ -765,7 +780,7 @@ fn service_debug_request(
                                 false,
                                 true,
                             ) {
-                                game.mouse_button(b as i32, false);
+                                sim.mouse_button(b as i32, false);
                             }
                             Ok(())
                         }
@@ -773,11 +788,11 @@ fn service_debug_request(
                     }
                 }
                 InputCommand::UiEvent { slot, kind } => {
-                    game.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    sim.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
                 InputCommand::WebviewEvent { slot, kind } => {
-                    game.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    sim.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
                 // Rejected rather than honored: this runtime resamples the XR
@@ -805,7 +820,7 @@ desktop runtime's --headless/--debug-port path"
                 ),
             };
             if clock.is_paused() {
-                game.absorb_paused_input();
+                sim.post(|g| g.absorb_paused_input());
             }
             let _ = response.send(result);
         }
@@ -813,22 +828,34 @@ desktop runtime's --headless/--debug-port path"
             let _ = response.send(clock.apply(command));
         }
         DebugRequest::Project(response) => {
-            let _ = response.send(game.project_sources());
+            sim.post(move |g| {
+                let _ = response.send(g.project_sources());
+            });
         }
         DebugRequest::ReloadSource(source, response) => {
-            let _ = response.send(game.reload_source(&source));
+            sim.post(move |g| {
+                let _ = response.send(g.reload_source(&source));
+            });
         }
         DebugRequest::ReloadProject(files, role, response) => {
-            let _ = response.send(functor_runtime_common::protocol::reload_with_role(
-                game,
-                role,
-                |game| game.reload_project(&files),
-            ));
+            sim.post(move |g| {
+                let _ = response.send(functor_runtime_common::protocol::reload_with_role(
+                    g,
+                    role,
+                    |g| g.reload_project(&files),
+                ));
+            });
         }
         DebugRequest::LoadProject(files, role, response) => {
-            let result = functor_runtime_common::protocol::load_with_role(game, role, |game| {
-                game.load_project(&files)
+            // Waits: a successful load restarts the shell's clock.
+            let result = sim.call(move |g| {
+                functor_runtime_common::protocol::load_with_role(g, role, |g| {
+                    g.load_project(&files)
+                })
             });
+            // A fresh load primes physics, which requests its heightmaps
+            // outside any frame.
+            sim.queue_terrain_requests(scene_context);
             if result.is_ok() {
                 clock.restart();
                 debug.frame_count = 0;
@@ -867,11 +894,13 @@ desktop runtime's --headless/--debug-port path"
             });
         }
         DebugRequest::Rewind(frame, response) => {
-            let result = game.rewind_scene_to(frame);
-            if result.is_ok() {
-                if let Some(tts) = game.current_scene_tts() {
-                    clock.rebase(tts as f32);
-                }
+            let (result, tts) = sim.call(move |g| {
+                let result = g.rewind_scene_to(frame);
+                let tts = result.is_ok().then(|| g.current_scene_tts()).flatten();
+                (result, tts)
+            });
+            if let Some(tts) = tts {
+                clock.rebase(tts as f32);
             }
             let _ = response.send(result);
         }
@@ -1008,6 +1037,9 @@ pub fn android_main(app: AndroidApp) {
     // xrCreateInstance (XrInstanceCreateInfoAndroidKHR) when this is set —
     // without it the runtime can reject instance creation.
     extensions.khr_android_create_instance = true;
+    // Lets the runtime schedule the sim and render threads for XR (Meta pins
+    // them to the right cores and priorities); see `tag_xr_threads`.
+    extensions.khr_android_thread_settings = available.khr_android_thread_settings;
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -1162,11 +1194,39 @@ pub fn android_main(app: AndroidApp) {
 
     // The real Functor Lang producer, booting the embedded scene. A broken embedded
     // scene is a build bug, not a runtime condition — fail loud.
-    let mut game = FunctorLangEmbeddedGame::create(
-        vec![("boot.fun".to_string(), BOOT_SCENE.to_string())],
-        Box::new(NativePlatform),
-    )
-    .expect("embedded boot scene loads");
+    let make_game = || -> Box<dyn GameProducer> {
+        Box::new(
+            FunctorLangEmbeddedGame::create(
+                vec![("boot.fun".to_string(), BOOT_SCENE.to_string())],
+                Box::new(NativePlatform),
+            )
+            .expect("embedded boot scene loads"),
+        )
+    };
+    // Launch-time opt-in, like desktop `--pipelined` (the APK has no command
+    // line): `adb shell setprop debug.functor.pipelined 1`, then restart.
+    let pipelined = system_property("debug.functor.pipelined").as_deref() == Some("1");
+    let (sim_tid_tx, sim_tid_rx) = mpsc::channel();
+    let mut sim = if pipelined {
+        SimDriver::spawn(move || {
+            // SAFETY: gettid has no preconditions.
+            let _ = sim_tid_tx.send(unsafe { libc::gettid() });
+            make_game()
+        })
+    } else {
+        SimDriver::inline(make_game())
+    };
+    // SAFETY: gettid has no preconditions.
+    let render_tid = unsafe { libc::gettid() };
+    let sim_tid = if pipelined {
+        sim_tid_rx.recv().expect("the sim thread reports its id")
+    } else {
+        render_tid
+    };
+    let sim_thread = tag_xr_threads(&instance, &session, pipelined, sim_tid, render_tid);
+    log::info!("game logic: {sim_thread}");
+    let mut caps = sim.caps();
+    sim.queue_terrain_requests(&scene_context);
 
     // The isomorphic debug endpoint lives on device loopback. The dev PC and
     // browser reach it through `adb forward tcp:8123 tcp:8123` (see README).
@@ -1196,6 +1256,13 @@ pub fn android_main(app: AndroidApp) {
     let mut tracking_reference: Option<TrackingPose> = None;
     let mut tracking_reference_reset_at: Option<xr::Time> = None;
     let mut terrain_frame_id = 0_u64;
+    // Pipelined only (see the desktop loop): step in lockstep with the sim
+    // while render-derived feedback or a debug driver is active.
+    let mut lockstep = true;
+    let mut preloads = Vec::new();
+    let mut heightmap_mirror = functor_runtime_common::sim_driver::HeightmapMirror::default();
+    let mut shown: Option<SimSnapshot> = None;
+    let mut stages = StageStats::default();
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
 
@@ -1283,12 +1350,15 @@ pub fn android_main(app: AndroidApp) {
         if !session_running || !session_focused {
             debug.input.xr = None;
         }
+        let mut debug_active = false;
         if let Some(rx) = &debug_rx {
             while let Ok(request) = rx.try_recv() {
+                debug_active = true;
                 service_debug_request(
                     request,
                     &session,
-                    &mut game,
+                    &mut sim,
+                    &sim_thread,
                     &mut clock,
                     &mut debug,
                     &eyes,
@@ -1413,24 +1483,57 @@ pub fn android_main(app: AndroidApp) {
         // Frame.camera is the authored center-eye rig; live OpenXR eye deltas
         // compose onto it below, so the same camera positions the world on
         // every target.
-        game.check_hot_reload(frame_time.clone());
-        game.push_asset_progress(asset_cache.progress());
-        let preload_commands =
-            serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
-        for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
-            game.preload_push_settled(token);
+        sim.post(move |g| g.check_hot_reload(frame_time));
+        if !sim.is_threaded() {
+            caps = sim.caps();
         }
+        let progress = asset_cache.progress();
+        let pushed_progress = sim.is_threaded().then(|| progress.clone());
+        sim.post(move |g| g.push_asset_progress(progress));
+        let mut feedback = false;
+        preloads.extend(sim.drain_preloads());
+        for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
+            sim.post(move |g| g.preload_push_settled(token));
+        }
+        let loads_pending = scene_context.has_pending_loads();
+        feedback |= heightmap_mirror.sync(&mut sim);
         for sub_frame in &sub_frames {
-            if game.samples_input() {
+            if caps.samples_input {
                 debug.input_edges.apply_to(&mut debug.input);
-                game.sampled_input(&debug.input);
+                sim.sampled_input(debug.input.clone());
             }
             debug.input_edges.clear();
             debug.input.clear_edges();
-            game.tick(sub_frame.clone());
+            sim.tick(*sub_frame);
             debug.frame_count += 1;
         }
-        let frame = game.render(frame_time.clone());
+        let capture_due = debug.pending_capture.is_some();
+        let fresh = sim.frame(
+            FrameRequest {
+                time: frame_time,
+                ui: false,
+                webview: false,
+                audio_scene: false,
+                physics_lines: false,
+                conn_commands: true,
+            },
+            // A capture renders the newest frame.
+            lockstep || capture_due,
+        );
+        if let Some(mut fresh) = fresh {
+            caps = fresh.caps;
+            feedback |= !fresh.preload_commands.is_empty() || fresh.terrain_pending;
+            preloads.append(&mut fresh.preload_commands);
+            scene_context.queue_terrain_requests(std::mem::take(&mut fresh.terrain_requests));
+            stages.sim_ns += fresh.sim_ns;
+            shown = Some(fresh);
+        }
+        stages.wait_ns += sim.take_wait_ns();
+        let snapshot = shown.as_ref().expect("the first frame always yields a snapshot");
+        let frame = snapshot.frame.clone();
+        // The time `frame` was drawn at: render-time animation samples it.
+        let frame_time = snapshot.time;
+        let render_started = Instant::now();
         if !frame.ui_targets.is_empty() {
             // Paint ui-target passes ONCE per frame, before the per-eye
             // passes — both eyes sample the same published image. The
@@ -1441,14 +1544,11 @@ pub fn android_main(app: AndroidApp) {
             });
             renderer.render(&scene_context, &frame);
         }
-        // No audio/HTTP hosts on device yet: drain their command queues so
-        // they don't grow unbounded. Preloads and physics terrain requests
-        // are driven above through the shared asset cache.
-        let _ = game.audio_drain_commands();
-        let _ = game.net_drain_commands();
-        let _ = game.net_drain_conn_commands();
+        // No audio/HTTP hosts on device yet: their commands were drained into
+        // the snapshot and are dropped with it, so the queues don't grow.
+        // Preloads and physics terrain requests are driven above through the
+        // shared asset cache.
 
-        let capture_due = debug.pending_capture.is_some();
         let mut captured_eyes = capture_due.then(Vec::new);
         let mut capture_error = None;
 
@@ -1590,9 +1690,18 @@ pub fn android_main(app: AndroidApp) {
             )
             .expect("frame end");
 
-        // The current frame is no longer borrowed by either eye. Move it into
-        // the inspector cache instead of cloning its scene every rendered tick.
+        stages.render_ns += render_started.elapsed().as_nanos() as u64;
+        stages.frames += 1;
+        stages.report(&sim_thread);
+
+        // `/scene` serves the frame on screen.
         debug.last_frame = Some(frame);
+        if let Some(pushed) = pushed_progress {
+            lockstep = feedback
+                || functor_runtime_common::sim_driver::assets_busy(&pushed, &asset_cache.progress())
+                || loads_pending
+                || debug_active;
+        }
         if let Some(response) = debug.pending_capture.take() {
             let result = if let Some(error) = capture_error {
                 Err(CaptureError::Failed(error))
@@ -1625,5 +1734,93 @@ pub fn android_main(app: AndroidApp) {
             "capture cancelled because the XR runtime is exiting".to_string(),
         )));
     }
+    sim.quit();
     log::info!("functor oculus runtime exiting");
+}
+
+/// Per-stage frame cost, logged every [`StageStats::EVERY`] rendered frames:
+/// the sim stage (all producer work, timed where it runs), the render stage
+/// (both eyes, CPU submission), and the render thread's wait on the sim.
+#[derive(Default)]
+struct StageStats {
+    frames: u64,
+    sim_ns: u64,
+    render_ns: u64,
+    wait_ns: u64,
+}
+
+impl StageStats {
+    const EVERY: u64 = 300;
+
+    fn report(&mut self, sim_thread: &str) {
+        if self.frames < Self::EVERY {
+            return;
+        }
+        let ms = |ns: u64| ns as f64 / self.frames as f64 / 1e6;
+        log::info!(
+            "stages over {} frames: sim {:.2} ms, render {:.2} ms, sim-wait {:.2} ms ({sim_thread})",
+            self.frames,
+            ms(self.sim_ns),
+            ms(self.render_ns),
+            ms(self.wait_ns)
+        );
+        *self = Self::default();
+    }
+}
+
+/// An Android system property, e.g. `debug.functor.pipelined`.
+fn system_property(name: &str) -> Option<String> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut value = [0 as libc::c_char; libc::PROP_VALUE_MAX as usize];
+    // SAFETY: `value` is PROP_VALUE_MAX bytes, the documented bound.
+    let len = unsafe { libc::__system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+    (len > 0).then(|| {
+        // SAFETY: the call NUL-terminates within `value`.
+        unsafe { std::ffi::CStr::from_ptr(value.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+/// Tell the XR runtime which thread is which (`XR_KHR_android_thread_settings`)
+/// so it can schedule them for XR. Pipelined, the sim thread is the
+/// application main thread and this (GL) thread the renderer; inline, this
+/// thread is both and is tagged as the renderer. Opt out with
+/// `adb shell setprop debug.functor.thread_settings 0`. Returns the
+/// `/state.sim_thread` label.
+fn tag_xr_threads(
+    instance: &xr::Instance,
+    session: &xr::Session<xr::OpenGlEs>,
+    pipelined: bool,
+    sim_tid: i32,
+    render_tid: i32,
+) -> String {
+    let mode = if pipelined { "pipelined" } else { "inline" };
+    if system_property("debug.functor.thread_settings").as_deref() == Some("0") {
+        return format!("{mode}: untagged (disabled)");
+    }
+    let Some(ext) = instance.exts().khr_android_thread_settings else {
+        log::info!("XR_KHR_android_thread_settings unavailable; threads untagged");
+        return format!("{mode}: untagged (extension unavailable)");
+    };
+    let tag = |kind: xr::sys::AndroidThreadTypeKHR, tid: i32| {
+        // SAFETY: a live session handle and a thread id in this process.
+        let result = unsafe { (ext.set_android_application_thread)(session.as_raw(), kind, tid as u32) };
+        log::info!("XR thread tag {kind:?} -> tid {tid}: {result:?}");
+        result == xr::sys::Result::SUCCESS
+    };
+    let mut ok = tag(xr::sys::AndroidThreadTypeKHR::RENDERER_MAIN, render_tid);
+    if pipelined {
+        ok &= tag(xr::sys::AndroidThreadTypeKHR::APPLICATION_MAIN, sim_tid);
+    }
+    let applied = if pipelined {
+        "APPLICATION_MAIN sim + RENDERER_MAIN render"
+    } else {
+        "RENDERER_MAIN"
+    };
+    if ok {
+        format!("{mode}: {applied}")
+    } else {
+        format!("{mode}: tagging failed (see log)")
+    }
 }

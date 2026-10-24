@@ -99,6 +99,9 @@ mod sprite2d;
 mod sprite_font;
 pub mod storage;
 pub mod terrain;
+// The shell's ordered handle on a producer, inline or on a sim thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sim_driver;
 mod terrain_renderer;
 pub mod texture;
 pub mod timetravel;

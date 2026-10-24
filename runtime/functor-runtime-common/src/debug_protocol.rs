@@ -90,6 +90,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 15 adds `POST /display-refresh-rate` `{"hz":90}` — request a headset
 /// display rate (400 on runtimes without one, e.g. desktop) — and the optional
 /// `display_refresh_rate` field on `GET /state`, omitted where absent.
+///
+/// 15 adds the optional `sim_thread` field on `GET /state`: where the game
+/// logic runs and with what scheduling class (e.g. `"pipelined:
+/// user-interactive"`), omitted by runtimes that don't report it.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 15;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -320,6 +324,11 @@ pub struct RuntimeState {
     #[serde(default)]
     pub model_debug: String,
     pub input: InputSnapshot,
+    /// Where the game logic runs (`inline` on the render thread, or
+    /// `pipelined` on its own sim thread) and that thread's scheduling class
+    /// (v15). Omitted by runtimes that don't report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_thread: Option<String>,
     /// The headset display's refresh rate (v15). `None` — and omitted from the
     /// JSON — on runtimes that do not control one, such as desktop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -760,6 +769,7 @@ mod tests {
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: json!({ "label": "hello" }),
             model_debug: "Model {\n  label: \"hello\"\n}".into(),
+            sim_thread: None,
             input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
                 mouse: crate::MouseSnapshot {
