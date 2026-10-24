@@ -25,6 +25,7 @@ use glfw::{Action, Key};
 use glow::*;
 
 use crate::game::Game;
+use crate::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use crate::{
     asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
 };
@@ -193,7 +194,7 @@ fn desktop_input_snapshot(
 /// `deliver` is false while the clock is pinned: the level state must still
 /// clear, but an unlogged edge would diverge forward-step replay.
 fn release_held_mouse_buttons(
-    game: &mut dyn Game,
+    sim: &mut SimDriver,
     held_buttons: &mut MouseButtons,
     edges: &mut InputEdges,
     deliver: bool,
@@ -210,7 +211,7 @@ fn release_held_mouse_buttons(
             held_buttons.set(button, false);
             if deliver {
                 edges.mouse_transition(button, true, false);
-                game.mouse_button(button as i32, false);
+                sim.mouse_button(button as i32, false);
             }
         }
     }
@@ -272,7 +273,7 @@ fn route_visible_pointer_position(
 /// state even when it suppresses delivery (`ignore_user_input`), so a button
 /// held across a pin transition can't stick.
 fn apply_mouse_button_edge(
-    game: &mut dyn Game,
+    sim: &mut SimDriver,
     held_buttons: &mut MouseButtons,
     edges: &mut InputEdges,
     button: functor_runtime_common::MouseButton,
@@ -282,11 +283,11 @@ fn apply_mouse_button_edge(
         let was_down = held_buttons.is_down(button);
         held_buttons.set(button, true);
         edges.mouse_transition(button, was_down, true);
-        game.mouse_button(button as i32, true);
+        sim.mouse_button(button as i32, true);
     } else if held_buttons.is_down(button) {
         held_buttons.set(button, false);
         edges.mouse_transition(button, true, false);
-        game.mouse_button(button as i32, false);
+        sim.mouse_button(button as i32, false);
     }
 }
 
@@ -295,7 +296,7 @@ fn apply_mouse_button_edge(
 /// clears shell state. Only delivered transitions enter the fixed-step edge
 /// accumulator.
 fn apply_window_mouse_button_edge(
-    game: &mut dyn Game,
+    sim: &mut SimDriver,
     held_buttons: &mut MouseButtons,
     edges: &mut InputEdges,
     button: functor_runtime_common::MouseButton,
@@ -307,14 +308,14 @@ fn apply_window_mouse_button_edge(
             let was_down = held_buttons.is_down(button);
             held_buttons.set(button, true);
             edges.mouse_transition(button, was_down, true);
-            game.mouse_button(button as i32, true);
+            sim.mouse_button(button as i32, true);
         }
     } else {
         let was_held = held_buttons.is_down(button);
         held_buttons.set(button, false);
         if was_held && deliver {
             edges.mouse_transition(button, true, false);
-            game.mouse_button(button as i32, false);
+            sim.mouse_button(button as i32, false);
         }
     }
 }
@@ -365,7 +366,7 @@ fn refresh_fixed_input_levels(
 }
 
 fn apply_scripted_events(
-    game: &mut dyn Game,
+    sim: &mut SimDriver,
     mouse_pos: &mut (i32, i32),
     emulate_xr: bool,
     held_keys: &mut BTreeSet<InputKey>,
@@ -376,7 +377,7 @@ fn apply_scripted_events(
     for event in events {
         match event {
             RecordedInput::Key { code, is_down } => {
-                game.key_event(*code, *is_down);
+                sim.key_event(*code, *is_down);
                 if let Some(key) = InputKey::from_i32(*code) {
                     if *is_down {
                         let was_down = !held_keys.insert(key);
@@ -392,7 +393,7 @@ fn apply_scripted_events(
             // resolvable buttons, so `from_i32` cannot fail here.
             RecordedInput::MouseButton { button, is_down } => {
                 if let Some(b) = functor_runtime_common::MouseButton::from_i32(*button) {
-                    apply_mouse_button_edge(game, held_buttons, edges, b, *is_down);
+                    apply_mouse_button_edge(sim, held_buttons, edges, b, *is_down);
                 }
             }
             RecordedInput::MouseMove { x, y } => {
@@ -401,7 +402,7 @@ fn apply_scripted_events(
                 // pointer drives the synthesized controller sample instead of
                 // also reaching the game's legacy 2D mouse hook.
                 if !emulate_xr {
-                    game.mouse_move(*x, *y);
+                    sim.mouse_move(*x, *y);
                 }
             }
             // Listed rather than `_`, so adding a scriptable line shape (e.g.
@@ -941,7 +942,7 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
 /// something already received is still undelivered — which is the only
 /// direction a driver waiting for quiescence can safely trust.
 fn deliver_net_ws(
-    game: &mut dyn Game,
+    sim: &mut SimDriver,
     net_rx: &std::sync::mpsc::Receiver<net_dispatch::NetResult>,
     ws_rx: &std::sync::mpsc::Receiver<ws_host::HostNetEvent>,
 ) {
@@ -952,24 +953,26 @@ fn deliver_net_ws(
                 token,
                 status,
                 body,
-            } => game.net_push_http_response(token, status, body),
+            } => sim.post(move |g| g.net_push_http_response(token, status, body)),
             net_dispatch::NetResult::Error { token, message } => {
-                game.net_push_http_error(token, message)
+                sim.post(move |g| g.net_push_http_error(token, message))
             }
         }
     }
     while let Ok(event) = ws_rx.try_recv() {
         functor_runtime_common::net::note_inbound_delivered();
         match event {
-            ws_host::HostNetEvent::Connected { key, id } => game.net_push_connected(key, id as i32),
+            ws_host::HostNetEvent::Connected { key, id } => {
+                sim.post(move |g| g.net_push_connected(key, id as i32))
+            }
             ws_host::HostNetEvent::Message { key, id, text } => {
-                game.net_push_conn_message(key, id as i32, text)
+                sim.post(move |g| g.net_push_conn_message(key, id as i32, text))
             }
             ws_host::HostNetEvent::Disconnected { key, id } => {
-                game.net_push_disconnected(key, id as i32)
+                sim.post(move |g| g.net_push_disconnected(key, id as i32))
             }
             ws_host::HostNetEvent::Error { key, id, message } => {
-                game.net_push_conn_error(key, id as i32, message)
+                sim.post(move |g| g.net_push_conn_error(key, id as i32, message))
             }
         }
     }
@@ -978,52 +981,29 @@ fn deliver_net_ws(
 /// Perform the HTTP + WebSocket commands this frame's tick queued. HTTP requests
 /// run on tokio tasks (results return via `net_tx`); WS commands go to the manager.
 ///
-/// Under [`NetTransportArg::Embedder`] the connection half is SKIPPED entirely:
-/// the commands stay in the shared queue until the debug server's
-/// `GET /net/outbound` takes them, which is what makes the embedder path cost
-/// nothing per frame beyond the branch — and, more importantly, means no
-/// socket is ever opened. The HTTP half is untouched either way: `Effect.http`
-/// is not connection traffic and has no coordinator to route it.
+/// Under [`NetTransportArg::Embedder`] the snapshot carries NO connection
+/// commands ([`FrameRequest::conn_commands`] is false): they stay in the shared
+/// queue until the debug server's `GET /net/outbound` takes them, so no socket
+/// is ever opened. The HTTP half is untouched either way: `Effect.http` is not
+/// connection traffic and has no coordinator to route it.
 fn dispatch_net_ws(
-    game: &mut dyn Game,
+    snapshot: &mut SimSnapshot,
     net_tx: &std::sync::mpsc::Sender<net_dispatch::NetResult>,
     http_client: &reqwest::Client,
     ws_manager: &mut ws_host::WsManager,
-    net_transport: NetTransportArg,
 ) {
-    let commands_json = game.net_drain_commands();
-    if commands_json != "[]" {
-        match serde_json::from_str::<Vec<functor_runtime_common::net::NetCommand>>(&commands_json) {
-            Ok(commands) => {
-                for cmd in commands {
-                    let tx = net_tx.clone();
-                    let client = http_client.clone();
-                    tokio::spawn(async move {
-                        let result = net_dispatch::perform_http(&client, cmd).await;
-                        // The same counted hand-off `ws_host` uses: an HTTP
-                        // response is inbound network work like any other.
-                        functor_runtime_common::net::send_inbound(&tx, result);
-                    });
-                }
-            }
-            Err(e) => eprintln!("[net] bad commands json: {e}"),
-        }
+    for cmd in std::mem::take(&mut snapshot.net_commands) {
+        let tx = net_tx.clone();
+        let client = http_client.clone();
+        tokio::spawn(async move {
+            let result = net_dispatch::perform_http(&client, cmd).await;
+            // The same counted hand-off `ws_host` uses: an HTTP
+            // response is inbound network work like any other.
+            functor_runtime_common::net::send_inbound(&tx, result);
+        });
     }
-
-    if net_transport == NetTransportArg::Embedder {
-        return;
-    }
-
-    let conn_json = game.net_drain_conn_commands();
-    if conn_json != "[]" {
-        match serde_json::from_str::<Vec<functor_runtime_common::net::ConnCommand>>(&conn_json) {
-            Ok(commands) => {
-                for cmd in commands {
-                    ws_manager.handle(cmd);
-                }
-            }
-            Err(e) => eprintln!("[net] bad conn commands json: {e}"),
-        }
+    for cmd in std::mem::take(&mut snapshot.conn_commands) {
+        ws_manager.handle(cmd);
     }
 }
 
@@ -1041,7 +1021,7 @@ for the host process to be its network";
 #[allow(clippy::too_many_arguments)]
 fn service_debug_request(
     req: debug_server::DebugRequest,
-    game: &mut dyn Game,
+    sim: &mut SimDriver,
     frame: &Frame,
     frame_count: &mut u64,
     tts: f32,
@@ -1084,19 +1064,25 @@ fn service_debug_request(
         debug_server::DebugRequest::Capture(resp) => {
             let _ = resp.send(capture());
         }
+        // Producer reads reply from the sim side, after every call queued
+        // before them, so the shell never waits on them.
         debug_server::DebugRequest::State(resp) => {
-            let _ = resp.send(debug_server::RuntimeState {
-                frame: *frame_count,
-                tts,
-                pending_steps: clock.pending_steps(),
-                model_revision: game.model_revision(),
-                pending_net: functor_runtime_common::net::inbound_pending(),
-                viewport: debug_server::RuntimeViewport::new(width, height),
-                views: vec![debug_server::RuntimeView::new("main", width, height)],
-                model: game.state_json(),
-                model_debug: game.state_debug(),
-                input: state_input,
-                display_refresh_rate: None,
+            let frame = *frame_count;
+            let pending_steps = clock.pending_steps();
+            sim.post(move |g| {
+                let _ = resp.send(debug_server::RuntimeState {
+                    frame,
+                    tts,
+                    pending_steps,
+                    model_revision: g.model_revision(),
+                    pending_net: functor_runtime_common::net::inbound_pending(),
+                    viewport: debug_server::RuntimeViewport::new(width, height),
+                    views: vec![debug_server::RuntimeView::new("main", width, height)],
+                    model: g.state_json(),
+                    model_debug: g.state_debug(),
+                    input: state_input,
+                    display_refresh_rate: None,
+                });
             });
         }
         debug_server::DebugRequest::Scene(resp) => {
@@ -1108,24 +1094,36 @@ fn service_debug_request(
             // The paused-inspector trace (visual-debugger PR2). Paused-ness is a
             // clock property: while paused the last real frame's journal is
             // stable, so the producer replays it; otherwise it early-outs empty.
-            let _ = resp.send(game.inspector_trace(clock.is_paused()));
+            let paused = clock.is_paused();
+            sim.post(move |g| {
+                let _ = resp.send(g.inspector_trace(paused));
+            });
         }
         debug_server::DebugRequest::Project(resp) => {
-            let _ = resp.send(game.project_sources());
+            sim.post(move |g| {
+                let _ = resp.send(g.project_sources());
+            });
         }
         debug_server::DebugRequest::ReloadSource(source, resp) => {
-            let _ = resp.send(game.reload_source(&source));
+            sim.post(move |g| {
+                let _ = resp.send(g.reload_source(&source));
+            });
         }
         debug_server::DebugRequest::ReloadProject(files, role, resp) => {
-            let _ = resp.send(functor_runtime_common::protocol::reload_with_role(
-                game,
-                role,
-                |game| game.reload_project(&files),
-            ));
+            sim.post(move |g| {
+                let _ = resp.send(functor_runtime_common::protocol::reload_with_role(
+                    g,
+                    role,
+                    |g| g.reload_project(&files),
+                ));
+            });
         }
         debug_server::DebugRequest::LoadProject(files, role, resp) => {
-            let result = functor_runtime_common::protocol::load_with_role(game, role, |game| {
-                game.load_project(&files)
+            // Waits: a successful load restarts the shell's clock.
+            let result = sim.call(move |g| {
+                functor_runtime_common::protocol::load_with_role(g, role, |g| {
+                    g.load_project(&files)
+                })
             });
             if result.is_ok() {
                 clock.restart();
@@ -1160,15 +1158,17 @@ fn service_debug_request(
             )));
         }
         debug_server::DebugRequest::Rewind(frame, resp) => {
-            let result = game.rewind_scene_to(frame);
             // Rebase the game clock to the rewound frame's recorded `tts` so play
             // continues FROM the scrubbed scene time, not wall-clock "now" (the
             // resume seam — docs/time-travel.md). After the rewind branched the
             // future, `current_scene_tts` reports the newest (target) frame.
-            if result.is_ok() {
-                if let Some(tts) = game.current_scene_tts() {
-                    clock.rebase(tts as f32);
-                }
+            let (result, tts) = sim.call(move |g| {
+                let result = g.rewind_scene_to(frame);
+                let tts = result.is_ok().then(|| g.current_scene_tts()).flatten();
+                (result, tts)
+            });
+            if let Some(tts) = tts {
+                clock.rebase(tts as f32);
             }
             let _ = resp.send(result);
         }
@@ -1179,37 +1179,43 @@ fn service_debug_request(
             ));
         }
         debug_server::DebugRequest::NetOutbound(resp) => {
-            let _ = resp.send(if net_transport == NetTransportArg::Embedder {
-                Ok(game.net_drain_conn_commands())
+            if net_transport == NetTransportArg::Embedder {
+                sim.post(move |g| {
+                    let _ = resp.send(Ok(g.net_drain_conn_commands()));
+                });
             } else {
-                Err(EMBEDDER_TRANSPORT_REQUIRED.to_string())
-            });
+                let _ = resp.send(Err(EMBEDDER_TRANSPORT_REQUIRED.to_string()));
+            }
         }
         debug_server::DebugRequest::NetDeliver(events, resp) => {
-            let _ = resp.send(if net_transport == NetTransportArg::Embedder {
-                let count = events.len();
+            if net_transport == NetTransportArg::Embedder {
                 // Each push folds the event through `update` synchronously
-                // (`deliver_net_event`), so a 200 means the model has already
-                // absorbed the batch — the property the coordinator's
-                // step-ordering relies on.
-                for event in events {
-                    match event {
-                        DeliveredEvent::Connected { key, conn } => game.net_push_connected(key, conn),
-                        DeliveredEvent::Message { key, conn, text } => {
-                            game.net_push_conn_message(key, conn, text)
-                        }
-                        DeliveredEvent::Disconnected { key, conn } => {
-                            game.net_push_disconnected(key, conn)
-                        }
-                        DeliveredEvent::Error { key, conn, message } => {
-                            game.net_push_conn_error(key, conn, message)
+                // (`deliver_net_event`), and the reply is sent only after the
+                // whole batch, so a 200 means the model has already absorbed
+                // it — the property the coordinator's step-ordering relies on.
+                sim.post(move |g| {
+                    let count = events.len();
+                    for event in events {
+                        match event {
+                            DeliveredEvent::Connected { key, conn } => {
+                                g.net_push_connected(key, conn)
+                            }
+                            DeliveredEvent::Message { key, conn, text } => {
+                                g.net_push_conn_message(key, conn, text)
+                            }
+                            DeliveredEvent::Disconnected { key, conn } => {
+                                g.net_push_disconnected(key, conn)
+                            }
+                            DeliveredEvent::Error { key, conn, message } => {
+                                g.net_push_conn_error(key, conn, message)
+                            }
                         }
                     }
-                }
-                Ok(format!("delivered {count} net event(s)"))
+                    let _ = resp.send(Ok(format!("delivered {count} net event(s)")));
+                });
             } else {
-                Err(EMBEDDER_TRANSPORT_REQUIRED.to_string())
-            });
+                let _ = resp.send(Err(EMBEDDER_TRANSPORT_REQUIRED.to_string()));
+            }
         }
         debug_server::DebugRequest::Input(cmd, resp) => {
             sampled_input_changed = matches!(
@@ -1242,7 +1248,7 @@ fn service_debug_request(
                         } else {
                             match InputKey::from_name(&key) {
                                 Some(k) => {
-                                    game.key_event(k as i32, true);
+                                    sim.key_event(k as i32, true);
                                     let was_down = !held_keys.insert(k);
                                     edges.key_transition(k, was_down, true);
                                     Ok(())
@@ -1257,7 +1263,7 @@ fn service_debug_request(
                                 // the press (mirrors the GLFW release arm).
                                 if held_keys.remove(&k) {
                                     edges.key_transition(k, true, false);
-                                    game.key_event(k as i32, false);
+                                    sim.key_event(k as i32, false);
                                 }
                                 Ok(())
                             }
@@ -1268,12 +1274,12 @@ fn service_debug_request(
                 debug_server::InputCommand::MouseMove { x, y } => {
                     *mouse_pos = (x, y);
                     if !emulate_xr {
-                        game.mouse_move(x, y);
+                        sim.mouse_move(x, y);
                     }
                     Ok(())
                 }
                 debug_server::InputCommand::MouseWheel { delta } => {
-                    game.mouse_wheel(delta);
+                    sim.mouse_wheel(delta);
                     Ok(())
                 }
                 debug_server::InputCommand::MouseButton { button, down } => {
@@ -1283,18 +1289,18 @@ fn service_debug_request(
                     // scripted clicks are the whole point.
                     match functor_runtime_common::MouseButton::from_name(&button) {
                         Some(b) => {
-                            apply_mouse_button_edge(game, held_buttons, edges, b, down);
+                            apply_mouse_button_edge(sim, held_buttons, edges, b, down);
                             Ok(())
                         }
                         None => Err(format!("unknown mouse button: {}", button)),
                     }
                 }
                 debug_server::InputCommand::UiEvent { slot, kind } => {
-                    game.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    sim.ui_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
                 debug_server::InputCommand::WebviewEvent { slot, kind } => {
-                    game.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
+                    sim.webview_event(functor_runtime_common::ui::UiEvent { slot, kind });
                     Ok(())
                 }
                 debug_server::InputCommand::Xr(snapshot) => {
@@ -1340,7 +1346,7 @@ fn service_debug_request(
             // will sweep — fold them into the inspector's last-frame journal so
             // they show in `GET /trace` now, not as phantoms on resume (PR2).
             if clock.is_paused() {
-                game.absorb_paused_input();
+                sim.post(|g| g.absorb_paused_input());
             }
             let _ = resp.send(result);
         }
@@ -1358,7 +1364,7 @@ fn service_debug_request(
 /// (it returns a pure `Frame`, no GL) to power `GET /scene`; `POST /capture`
 /// returns an error since there is nothing rendered to read back.
 fn run_headless(
-    mut game: Box<dyn Game>,
+    mut sim: SimDriver,
     debug_requests: Option<std::sync::mpsc::Receiver<debug_server::DebugRequest>>,
     fixed_time: Option<f32>,
     emulate_xr: bool,
@@ -1401,6 +1407,8 @@ fn run_headless(
     let (net_tx, net_rx) = std::sync::mpsc::channel::<net_dispatch::NetResult>();
     let (ws_tx, ws_rx) = std::sync::mpsc::channel::<ws_host::HostNetEvent>();
     let mut ws_manager = ws_host::WsManager::new(ws_tx);
+    let mut caps = sim.caps();
+    let mut preloads = Vec::new();
 
     loop {
         let elapsed = start_time.elapsed().as_secs_f32();
@@ -1420,21 +1428,20 @@ fn run_headless(
 
         // Same per-frame ordering as the windowed loop (the source of truth),
         // minus everything that needs GL.
-        game.check_hot_reload(time.clone());
-        game.push_asset_progress(asset_cache.progress());
-        let preload_commands =
-            serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
-        for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
-            game.preload_push_settled(token);
+        sim.post(move |g| g.check_hot_reload(time));
+        let progress = asset_cache.progress();
+        sim.post(move |g| g.push_asset_progress(progress));
+        for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
+            sim.post(move |g| g.preload_push_settled(token));
         }
-        deliver_net_ws(&mut *game, &net_rx, &ws_rx);
+        deliver_net_ws(&mut sim, &net_rx, &ws_rx);
         for sub in &sub_frames {
             if let Some(events) = input_script
                 .as_ref()
                 .and_then(|script| script.get(&frame_count))
             {
                 apply_scripted_events(
-                    &mut *game,
+                    &mut sim,
                     &mut mouse_pos,
                     emulate_xr,
                     &mut held_keys,
@@ -1443,7 +1450,7 @@ fn run_headless(
                     events,
                 );
             }
-            if game.samples_input() {
+            if caps.samples_input {
                 let snapshot = desktop_input_snapshot(
                     &held_keys,
                     mouse_pos,
@@ -1457,19 +1464,28 @@ fn run_headless(
                     None,
                     touch_levels.as_ref(),
                 );
-                game.sampled_input(&snapshot);
+                sim.sampled_input(snapshot);
             }
             input_edges.clear();
-            game.tick(sub.clone());
+            sim.tick(sub.clone());
             frame_count += 1;
         }
-        dispatch_net_ws(&mut *game, &net_tx, &http_client, &mut ws_manager, net_transport);
 
-        // The frame is pure data (no GL); it powers GET /scene. Drain and drop
-        // audio commands so they do not pile up. Preloads and physics terrain
-        // requests are driven above through the CPU-only asset cache.
-        let frame = game.render(time.clone());
-        let _ = game.audio_drain_commands();
+        // The frame is pure data (no GL); it powers GET /scene. Its audio
+        // commands are dropped so they do not pile up. Preloads and physics
+        // terrain requests are driven next frame through the CPU-only cache.
+        let mut snapshot = sim.frame(FrameRequest {
+            time,
+            ui: false,
+            webview: false,
+            audio_scene: false,
+            physics_lines: false,
+            conn_commands: net_transport != NetTransportArg::Embedder,
+        });
+        caps = snapshot.caps;
+        preloads = std::mem::take(&mut snapshot.preload_commands);
+        dispatch_net_ws(&mut snapshot, &net_tx, &http_client, &mut ws_manager);
+        let frame = snapshot.frame;
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {
@@ -1488,7 +1504,7 @@ fn run_headless(
                 );
                 service_debug_request(
                     req,
-                    &mut *game,
+                    &mut sim,
                     &frame,
                     &mut frame_count,
                     time.tts,
@@ -1537,7 +1553,7 @@ pub fn run(args: Args) {
 
     let game_path = args.game_path.clone();
 
-    let mut game: Box<dyn Game> = if args.replay {
+    let game: Box<dyn Game> = if args.replay {
         Box::new(replay_game::ReplayGame::create(game_path.as_str()))
     } else if args.functor_lang {
         let role = functor_runtime_common::functor_lang_producer::EntryRole::from_parts(
@@ -1558,6 +1574,8 @@ pub fn run(args: Args) {
         );
         std::process::exit(1);
     };
+    let mut sim = SimDriver::inline(game);
+    let mut caps = sim.caps();
 
     // Hidden/headless/emulated-XR sessions do not have a live captured-pointer
     // path; their debug/script injection remains available without physical
@@ -1565,7 +1583,7 @@ pub fn run(args: Args) {
     let interactive_camera_warning =
         !args.headless && !args.hidden && args.capture_frame.is_none() && !args.emulate_xr;
     let mut warned_missing_mouse_capture = false;
-    if interactive_camera_warning && !args.mouse_capture && game.uses_captured_mouse_input() {
+    if interactive_camera_warning && !args.mouse_capture && caps.uses_captured_mouse_input {
         eprintln!(
             "[runner] warning: this game defines captured mouse hooks, but \
 `\"mouseCapture\": false` disables them; remove that setting (or set it to true), \
@@ -1640,7 +1658,7 @@ sockets)."
             );
         }
         run_headless(
-            game,
+            sim,
             debug_requests,
             args.fixed_time,
             args.emulate_xr,
@@ -1719,7 +1737,7 @@ sockets)."
                 && !args.emulate_xr
                 && args.mouse_capture
                 && args.cursor == CursorPolicyArg::Captured
-                && game.uses_captured_mouse_input()
+                && caps.uses_captured_mouse_input
             {
                 window.set_cursor_mode(glfw::CursorMode::Normal);
                 eprintln!(
@@ -1984,6 +2002,9 @@ Escape releases while captured"
             .xreal_tracking
             .then(|| xreal::XrealTracker::spawn(args.xreal_addr));
 
+        // Preloads the last frame queued, driven at the top of the next one.
+        let mut preloads = Vec::new();
+
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
             // Scripted deterministic playback (docs/time-travel.md T6b): advance
@@ -2024,19 +2045,18 @@ Escape releases while captured"
                 );
             }
 
-            game.check_hot_reload(time.clone());
+            sim.post(move |g| g.check_hot_reload(time));
 
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
-            game.push_asset_progress(asset_cache.progress());
+            let progress = asset_cache.progress();
+            sim.post(move |g| g.push_asset_progress(progress));
 
-            // Effect.preload (B.5): warm the cache with this frame's queued
-            // preloads and drive in-flight ones to settlement; a settled
+            // Effect.preload (B.5): warm the cache with the preloads last
+            // frame queued and drive in-flight ones to settlement; a settled
             // preloadThen delivers its message through update.
-            let preload_commands =
-                serde_json::from_str(&game.preload_drain_commands()).unwrap_or_default();
-            for token in scene_context.drive_preloads(&asset_cache, preload_commands) {
-                game.preload_push_settled(token);
+            for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
+                sim.post(move |g| g.preload_push_settled(token));
             }
 
             // Asset hot-reload, the twin of the .fun check above: a model/
@@ -2052,7 +2072,7 @@ Escape releases while captured"
                 if interactive_camera_warning
                     && !warned_missing_mouse_capture
                     && !args.mouse_capture
-                    && game.uses_captured_mouse_input()
+                    && caps.uses_captured_mouse_input
                 {
                     eprintln!(
                         "[runner] warning: this game defines captured mouse hooks, but \
@@ -2067,10 +2087,10 @@ then restart the runner"
                 // runtime-owned and therefore keeps its capture.
                 if cursor_captured
                     && !detached_camera.is_detached()
-                    && !game.uses_captured_mouse_input()
+                    && !caps.uses_captured_mouse_input
                 {
                     release_held_mouse_buttons(
-                        &mut *game,
+                        &mut sim,
                         &mut held_buttons,
                         &mut input_edges,
                         !clock.is_pinned(),
@@ -2191,7 +2211,7 @@ then restart the runner"
                             // Releasing the cursor stops delivering button
                             // events, so anything held must get its up edge now.
                             release_held_mouse_buttons(
-                                &mut *game,
+                                &mut sim,
                                 &mut held_buttons,
                                 &mut input_edges,
                                 !ignore_user_input,
@@ -2247,7 +2267,7 @@ Escape again to quit"
                         scrubber_visible = !scrubber_visible;
                         // Same reason as Escape: this arm can drop capture.
                         release_held_mouse_buttons(
-                            &mut *game,
+                            &mut sim,
                             &mut held_buttons,
                             &mut input_edges,
                             !ignore_user_input,
@@ -2272,7 +2292,7 @@ Escape again to quit"
                             } else if args.emulate_xr {
                                 window.set_cursor_mode(glfw::CursorMode::Normal);
                                 cursor_captured = false;
-                            } else if (game_mouse_capture && game.uses_captured_mouse_input())
+                            } else if (game_mouse_capture && caps.uses_captured_mouse_input)
                                 || detached_camera.is_detached()
                             {
                                 window.set_cursor_mode(glfw::CursorMode::Disabled);
@@ -2320,7 +2340,7 @@ Escape again to quit"
                                 } else if args.emulate_xr {
                                     xr_primary_down = !ignore_user_input;
                                     xr_primary_clicked = xr_primary_down;
-                                } else if (game_mouse_capture && game.uses_captured_mouse_input())
+                                } else if (game_mouse_capture && caps.uses_captured_mouse_input)
                                     || detached_camera.is_detached()
                                 {
                                     window.set_cursor_mode(glfw::CursorMode::Disabled);
@@ -2337,7 +2357,7 @@ Escape again to quit"
                                     }
                                 } else if visible_pointer {
                                     apply_window_mouse_button_edge(
-                                        &mut *game,
+                                        &mut sim,
                                         &mut held_buttons,
                                         &mut input_edges,
                                         functor_runtime_common::MouseButton::Left,
@@ -2359,7 +2379,7 @@ Escape again to quit"
                                 xr_primary_down = false;
                                 if args.cursor == CursorPolicyArg::Visible {
                                     apply_window_mouse_button_edge(
-                                        &mut *game,
+                                        &mut sim,
                                         &mut held_buttons,
                                         &mut input_edges,
                                         functor_runtime_common::MouseButton::Left,
@@ -2383,7 +2403,7 @@ Escape again to quit"
                             detached_camera.is_detached(),
                             ignore_user_input,
                         ) {
-                            game.mouse_move(game_mouse_pos.0, game_mouse_pos.1);
+                            sim.mouse_move(game_mouse_pos.0, game_mouse_pos.1);
                         }
                     }
                     // F1 recenters head tracking (runner-level, never reaches
@@ -2451,7 +2471,7 @@ Escape again to quit"
                             if was_held {
                                 input_edges.key_transition(k, true, false);
                             }
-                            game.key_event(k as i32, false);
+                            sim.key_event(k as i32, false);
                         }
                         if clock.is_fixed_time() && was_held {
                             refresh_fixed_input_levels(
@@ -2484,7 +2504,7 @@ Escape again to quit"
                         if mapped != functor_runtime_common::MouseButton::Unknown {
                             match action {
                                 Action::Press => apply_window_mouse_button_edge(
-                                    &mut *game,
+                                    &mut sim,
                                     &mut held_buttons,
                                     &mut input_edges,
                                     mapped,
@@ -2492,7 +2512,7 @@ Escape again to quit"
                                     !ignore_user_input,
                                 ),
                                 Action::Release => apply_window_mouse_button_edge(
-                                    &mut *game,
+                                    &mut sim,
                                     &mut held_buttons,
                                     &mut input_edges,
                                     mapped,
@@ -2526,7 +2546,7 @@ Escape again to quit"
                         if mapped != functor_runtime_common::MouseButton::Unknown {
                             match action {
                                 Action::Press => apply_window_mouse_button_edge(
-                                    &mut *game,
+                                    &mut sim,
                                     &mut held_buttons,
                                     &mut input_edges,
                                     mapped,
@@ -2538,7 +2558,7 @@ Escape again to quit"
                                     ),
                                 ),
                                 Action::Release => apply_window_mouse_button_edge(
-                                    &mut *game,
+                                    &mut sim,
                                     &mut held_buttons,
                                     &mut input_edges,
                                     mapped,
@@ -2565,7 +2585,7 @@ Escape again to quit"
                         for k in std::mem::take(&mut held_keys) {
                             if !ignore_user_input {
                                 input_edges.key_transition(k, true, false);
-                                game.key_event(k as i32, false);
+                                sim.key_event(k as i32, false);
                             }
                         }
                         // Hand the pointer back when the window loses focus
@@ -2587,7 +2607,7 @@ Escape again to quit"
                         // `held_keys` above, or a click held at alt-tab fires
                         // forever.
                         release_held_mouse_buttons(
-                            &mut *game,
+                            &mut sim,
                             &mut held_buttons,
                             &mut input_edges,
                             !ignore_user_input,
@@ -2673,7 +2693,7 @@ Escape again to quit"
                     }
                     glfw::WindowEvent::Key(key, _, Action::Press | Action::Repeat, _) => {
                         let k = map_key(key);
-                        game.key_event(k as i32, true);
+                        sim.key_event(k as i32, true);
                         if k != InputKey::Unknown {
                             let was_down = !held_keys.insert(k);
                             input_edges.key_transition(k, was_down, true);
@@ -2685,13 +2705,13 @@ Escape again to quit"
                     glfw::WindowEvent::CursorPos(x, y) if cursor_captured => {
                         mouse_pos = (x as i32, y as i32);
                         game_mouse_pos = mouse_pos;
-                        game.mouse_move(game_mouse_pos.0, game_mouse_pos.1)
+                        sim.mouse_move(game_mouse_pos.0, game_mouse_pos.1)
                     }
                     glfw::WindowEvent::Scroll(_, y)
                         if (cursor_captured || visible_pointer)
                             && !detached_camera.is_detached() =>
                     {
-                        game.mouse_wheel(y as i32)
+                        sim.mouse_wheel(y as i32)
                     }
                     _ => {}
                 }
@@ -2719,13 +2739,13 @@ Escape again to quit"
 
             // Deliver async HTTP + WebSocket results into the game's inbox before
             // tick (shared with the headless loop).
-            deliver_net_ws(&mut *game, &net_rx, &ws_rx);
+            deliver_net_ws(&mut sim, &net_rx, &ws_rx);
 
             // Deliver any `playThen` completions that finished since last frame,
             // before tick so this frame's executor drain delivers their messages.
             // (Windowed-only: the headless loop has no audio device.)
             while let Ok(token) = audio_rx.try_recv() {
-                game.audio_push_finished(token as i32);
+                sim.post(move |g| g.audio_push_finished(token as i32));
             }
 
             // Run this render frame's fixed model steps (0..N). Scripted input
@@ -2739,7 +2759,7 @@ Escape again to quit"
                 if let Some(script) = input_script.as_ref() {
                     if let Some(events) = script.get(&frame_count) {
                         apply_scripted_events(
-                            &mut *game,
+                            &mut sim,
                             &mut game_mouse_pos,
                             args.emulate_xr,
                             &mut held_keys,
@@ -2749,10 +2769,10 @@ Escape again to quit"
                         );
                     }
                 }
-                if game.samples_input() {
+                if caps.samples_input {
                     if clock.is_fixed_time() && input_script.is_none() {
                         input_edges.apply_to(&mut fixed_input_snapshot);
-                        game.sampled_input(&fixed_input_snapshot);
+                        sim.sampled_input(fixed_input_snapshot.clone());
                     } else {
                         let snapshot = desktop_input_snapshot(
                             &held_keys,
@@ -2767,39 +2787,52 @@ Escape again to quit"
                             polled_gamepad.as_ref(),
                             touch_levels.as_ref(),
                         );
-                        game.sampled_input(&snapshot);
+                        sim.sampled_input(snapshot);
                     }
                 }
                 input_edges.clear();
                 fixed_input_snapshot.clear_edges();
                 xr_primary_clicked = false;
-                game.tick(sub.clone());
+                sim.tick(sub.clone());
                 if args.capture_at_frame == Some(frame_count) {
                     capture_due = true;
                 }
                 frame_count += 1;
             }
 
+            // The game supplies the camera/scene/lights as part of its frame.
+            // Kept PRISTINE: the debug server's GET /scene serves this frame, and
+            // it must reflect exactly what the game's `draw` produced — the
+            // trajectory overlay goes on a render-only copy below.
+            let show_game_ui = !detached_camera.is_detached() || debug_presentation.show_game_ui;
+            let mut snapshot = sim.frame(FrameRequest {
+                time,
+                ui: show_game_ui,
+                webview: show_game_ui,
+                audio_scene: audio_player.is_some(),
+                // A superset of `diagnostics.physics` below, which also
+                // depends on the drawn frame.
+                physics_lines: (detached_camera.is_detached() && debug_presentation.physics)
+                    || matches!(
+                        launch_debug_render_mode,
+                        functor_runtime_common::DebugRenderMode::Physics
+                    ),
+                conn_commands: args.net_transport != NetTransportArg::Embedder,
+            });
+            caps = snapshot.caps;
+            preloads = std::mem::take(&mut snapshot.preload_commands);
+            let frame = snapshot.frame.clone();
+            // The time `frame` was drawn at: render-time animation samples it.
+            let frame_time = snapshot.time;
+
             // Perform the HTTP + WebSocket commands this frame's tick queued
             // (shared with the headless loop).
-            dispatch_net_ws(
-                &mut *game,
-                &net_tx,
-                &http_client,
-                &mut ws_manager,
-                args.net_transport,
-            );
+            dispatch_net_ws(&mut snapshot, &net_tx, &http_client, &mut ws_manager);
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
             let (fb_width, fb_height) = window.get_framebuffer_size();
             let viewport = functor_runtime_common::Viewport::new(fb_width as u32, fb_height as u32);
-
-            // The game supplies the camera/scene/lights as part of its frame.
-            // Kept PRISTINE: the debug server's GET /scene serves this frame, and
-            // it must reflect exactly what the game's `draw` produced — the
-            // trajectory overlay goes on a render-only copy below.
-            let frame = game.render(time.clone());
 
             // One wanted-set drives the future preview
             // (docs/time-travel.md T6): the scene-diff trail/strobe overlays.
@@ -2895,10 +2928,10 @@ Escape again to quit"
                 let window = preview_window_s;
                 let dt = window / divisions as f32;
                 let key = (
-                    game.current_scene_frame(),
-                    time.tts.to_bits(),
+                    snapshot.scene_frame,
+                    frame_time.tts.to_bits(),
                     clock.is_paused(),
-                    game.scene_program_revision(),
+                    snapshot.program_revision,
                     trail_wanted,
                     strobe_wanted,
                     divisions,
@@ -2906,7 +2939,7 @@ Escape again to quit"
                     // The BACKWARD side reads recorded history, so a branch or
                     // a reload that rewrites the rings invalidates it even
                     // when frame + program are unchanged.
-                    game.scene_timeline_generation(),
+                    snapshot.timeline_generation,
                 );
                 let interactive_live = scrubber_visible && !clock.is_paused();
                 let cache_hit = trail_cache.as_ref().is_some_and(|(k, _)| {
@@ -2944,38 +2977,44 @@ Escape again to quit"
                             let total = (divisions * steps_per_division) as u64;
                             // Live playback consumes the script, so the next
                             // unconsumed frame (k + 1) is the right anchor.
-                            let base = game.current_scene_frame().map_or(0, |k| k + 1);
+                            let base = snapshot.scene_frame.map_or(0, |k| k + 1);
                             (0..total)
                                 .map(|j| script.get(&(base + j)).cloned().unwrap_or_default())
                                 .collect()
                         });
-                    let p = functor_runtime_common::frame_preview(
-                        &*game,
-                        &frame,
-                        time.tts as f64,
-                        script_slice.as_deref(),
-                        &functor_runtime_common::PreviewOptions {
-                            divisions,
-                            window,
-                            // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut
-                            // respawn teleports (a reset covers many units in
-                            // one sample).
-                            eps: 0.04,
-                            max_step: 3.0,
-                            trail: trail_wanted,
-                            strobe: strobe_wanted.then(|| functor_runtime_common::StrobeOptions {
-                                copies: strobe_copies,
-                                ..Default::default()
-                            }),
-                            // One SYMMETRIC window: `window` seconds of recorded
-                            // past as well as projected future
-                            // (docs/time-travel.md T6e). The past side costs one
-                            // draw per division with no simulation, and shares
-                            // this cache — so live play redraws it on the same
-                            // ~10 Hz cadence as the forward sim, never per frame.
-                            backward: true,
-                        },
-                    );
+                    let anchor = frame.clone();
+                    let options = functor_runtime_common::PreviewOptions {
+                        divisions,
+                        window,
+                        // eps 0.04: ignore sub-mm jitter. max_step 3.0: cut
+                        // respawn teleports (a reset covers many units in
+                        // one sample).
+                        eps: 0.04,
+                        max_step: 3.0,
+                        trail: trail_wanted,
+                        strobe: strobe_wanted.then(|| functor_runtime_common::StrobeOptions {
+                            copies: strobe_copies,
+                            ..Default::default()
+                        }),
+                        // One SYMMETRIC window: `window` seconds of recorded
+                        // past as well as projected future
+                        // (docs/time-travel.md T6e). The past side costs one
+                        // draw per division with no simulation, and shares
+                        // this cache — so live play redraws it on the same
+                        // ~10 Hz cadence as the forward sim, never per frame.
+                        backward: true,
+                    };
+                    // The forward sim runs on the producer; it waits for it.
+                    let start_tts = frame_time.tts as f64;
+                    let p = sim.call(move |g| {
+                        functor_runtime_common::frame_preview(
+                            g,
+                            &anchor,
+                            start_tts,
+                            script_slice.as_deref(),
+                            &options,
+                        )
+                    });
                     if interactive_live {
                         trail_refresh = 0;
                         next_live_trail_refresh =
@@ -3027,19 +3066,9 @@ Escape again to quit"
             if let Some(player) = &mut audio_player {
                 player.set_listener(view_camera.eye, view_camera.target, view_camera.up);
             }
-            let audio_json = game.audio_drain_commands();
-            if audio_json != "[]" {
-                match serde_json::from_str::<Vec<functor_runtime_common::audio::AudioCommand>>(
-                    &audio_json,
-                ) {
-                    Ok(commands) => {
-                        if let Some(player) = &audio_player {
-                            for cmd in commands {
-                                player.handle(cmd);
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!("[audio] bad commands json: {e}"),
+            if let Some(player) = &audio_player {
+                for cmd in std::mem::take(&mut snapshot.audio_commands) {
+                    player.handle(cmd);
                 }
             }
 
@@ -3047,11 +3076,8 @@ Escape again to quit"
             // live ones, then re-aim the spatial voices at the (possibly moved)
             // listener so they pan/attenuate as the camera moves.
             if let Some(player) = &mut audio_player {
-                let scene_json = game.audio_scene_json();
-                match serde_json::from_str::<functor_runtime_common::audio::AudioScene>(&scene_json)
-                {
-                    Ok(scene) => player.reconcile_scene(&scene),
-                    Err(e) => eprintln!("[audio] bad scene json: {e}"),
+                if let Some(scene) = &snapshot.audio_scene {
+                    player.reconcile_scene(scene);
                 }
                 player.respatialize_voices();
             }
@@ -3064,16 +3090,11 @@ Escape again to quit"
                 frame.is_pure_2d(),
                 launch_debug_render_mode,
             );
-            let mut debug_lines = diagnostics
-                .physics
-                .then(|| {
-                    functor_runtime_common::physics::with_world(
-                        functor_runtime_common::physics::DEFAULT_WORLD,
-                        |w| w.debug_lines(),
-                    )
-                })
-                .flatten()
-                .unwrap_or_default();
+            let mut debug_lines = if diagnostics.physics {
+                std::mem::take(&mut snapshot.physics_lines)
+            } else {
+                Vec::new()
+            };
             if diagnostics.authored_camera_frustum {
                 debug_lines.extend(camera_frustum_lines(&frame.camera, viewport.aspect()));
             }
@@ -3082,13 +3103,13 @@ Escape again to quit"
             // preview overlays (`frame` itself stays pristine for GET /scene).
             let display_frame = match &preview {
                 Some(p) if !p.is_empty() => {
-                    let mut f = frame.clone();
+                    let mut f = (*frame).clone();
                     p.apply_all_with_presence(&mut f, display_presence);
                     Some(f)
                 }
                 _ => None,
             };
-            let drawn_frame = display_frame.as_ref().unwrap_or(&frame);
+            let drawn_frame = display_frame.as_ref().unwrap_or(&*frame);
 
             // `Frame.withUiTarget` passes go first, so the passes below —
             // including each eye of a stereo pair — sample this frame's image.
@@ -3169,7 +3190,7 @@ Escape again to quit"
                         fb_height as f32,
                         terrain_frame_id,
                         detached_camera.sprite_cameras(),
-                        time.clone(),
+                        frame_time.clone(),
                         *eye_viewport,
                         diagnostics.render_mode,
                     );
@@ -3189,15 +3210,15 @@ Escape again to quit"
                 // `clone` overlays the frame with itself (lossless check);
                 // `fork` overlays it with a world-space-offset copy of its scene
                 // (the fork+overlay demo — two visibly-different inputs).
-                let frame_a = frame.clone();
-                let mut frame_b = frame.clone();
+                let frame_a = (*frame).clone();
+                let mut frame_b = (*frame).clone();
                 if args.composite_demo == CompositeDemoArg::Fork {
                     frame_b.scene = functor_runtime_common::Scene3D {
                         obj: functor_runtime_common::SceneObject::Group(vec![frame.scene.clone()]),
                         xform: cgmath::Matrix4::from_translation(cgmath::vec3(6.0, 0.0, 0.0)),
                     };
                 }
-                let frames = [(frame_a, time.clone()), (frame_b, time.clone())];
+                let frames = [(frame_a, frame_time.clone()), (frame_b, frame_time.clone())];
                 functor_runtime_common::render_composited_frames_with_view(
                     &gl,
                     shader_version,
@@ -3221,7 +3242,7 @@ Escape again to quit"
                     drawn_frame,
                     &view_camera,
                     detached_camera.sprite_cameras(),
-                    time.clone(),
+                    frame_time.clone(),
                     viewport,
                     diagnostics.render_mode,
                 );
@@ -3301,12 +3322,10 @@ Escape again to quit"
             } else {
                 pointer
             };
-            let show_game_ui = !detached_camera.is_detached() || debug_presentation.show_game_ui;
-            let ui_view = if show_game_ui {
-                game.ui()
-            } else {
-                functor_runtime_common::ui::View::Empty
-            };
+            let ui_view = std::mem::replace(
+                &mut snapshot.ui,
+                functor_runtime_common::ui::View::Empty,
+            );
             let ui_out = text_overlay.draw_view(
                 fb_width as u32,
                 fb_height as u32,
@@ -3319,7 +3338,7 @@ Escape again to quit"
             ui_wants_keyboard = ui_out.wants_keyboard;
             if !ignore_user_input {
                 for event in ui_out.events {
-                    game.ui_event(event);
+                    sim.ui_event(event);
                 }
             }
 
@@ -3330,10 +3349,8 @@ Escape again to quit"
             // TODO(webview): `webview()` clones the tree and `to_html`
             // reserializes every frame — cache the serialized string in the
             // producer once the protocol shape settles (perf follow-up).
-            let webview_html = show_game_ui
-                .then(|| game.webview().map(|node| node.to_html()))
-                .flatten();
-            // `time.tts` as the CSS animation clock: `--fixed-time` pins it
+            let webview_html = snapshot.webview_html.take();
+            // `frame_time.tts` as the CSS animation clock: `--fixed-time` pins it
             // (deterministic captures) and pausing freezes overlay animations
             // coherently with the game.
             let webview_out = webview_overlay.frame(
@@ -3343,13 +3360,13 @@ Escape again to quit"
                 webview_html.as_deref(),
                 webview_pointer,
                 std::mem::take(&mut webview_keys),
-                time.tts as f64,
+                frame_time.tts as f64,
             );
             webview_wants_pointer = webview_out.wants_pointer;
             webview_wants_keyboard = webview_out.wants_keyboard;
             if !ignore_user_input {
                 for event in webview_out.events {
-                    game.webview_event(event);
+                    sim.webview_event(event);
                 }
             }
 
@@ -3363,8 +3380,8 @@ Escape again to quit"
                     1.0,
                     pointer,
                     functor_runtime_common::ui::ScrubberState {
-                        frame: game.current_scene_frame().unwrap_or(0),
-                        range: game.scene_frame_range(),
+                        frame: snapshot.scene_frame.unwrap_or(0),
+                        range: snapshot.scene_range,
                         paused: clock.is_paused(),
                         camera_detachable,
                         camera_catching_up: clock.pending_frames() > 0 || clock.pending_steps() > 0,
@@ -3394,7 +3411,7 @@ Escape again to quit"
                     // it's the newest recorded frame's `tts`, which already equals
                     // the frozen `game_time` — a harmless no-op.
                     if clock.is_paused() {
-                        match game.current_scene_tts() {
+                        match sim.call(|g| g.current_scene_tts()) {
                             Some(tts) => {
                                 if args.debug_clock {
                                     eprintln!("[clock] resume: rebase tts={tts:.3}");
@@ -3463,7 +3480,17 @@ Escape again to quit"
                     }
                 }
                 Some(functor_runtime_common::ui::ScrubberAction::SeekTo(f)) => {
-                    let newest = game.scene_frame_range().map(|(_, h)| h);
+                    // One producer round-trip: a seek past the recorded end
+                    // seeks to the end, and the clock then steps the rest.
+                    let (newest, seek, seek_tts) = sim.call(move |g| {
+                        let newest = g.scene_frame_range().map(|(_, h)| h);
+                        let target = match newest {
+                            Some(h) if f > h => h,
+                            _ => f,
+                        };
+                        let seek = g.seek_scene_to(target);
+                        (newest, seek, g.current_scene_tts())
+                    });
                     match newest {
                         Some(h) if f > h => {
                             // Dragged INTO the rail's cyan future segment:
@@ -3478,10 +3505,10 @@ Escape again to quit"
                                     f - h
                                 );
                             }
-                            if let Err(e) = game.seek_scene_to(h) {
+                            if let Err(e) = seek {
                                 eprintln!("[scrubber] {e}");
                             }
-                            if let Some(tts) = game.current_scene_tts() {
+                            if let Some(tts) = seek_tts {
                                 clock.rebase(tts as f32);
                             }
                             clock.step_frames((f - h) as u32);
@@ -3492,11 +3519,10 @@ Escape again to quit"
                             // (resuming from there is what commits the
                             // branch). Keep the clock's time aligned to the
                             // scrubbed frame so a resume continues from it.
-                            match game.seek_scene_to(f) {
-                                Ok(_) => {}
-                                Err(e) => eprintln!("[scrubber] {e}"),
+                            if let Err(e) = seek {
+                                eprintln!("[scrubber] {e}");
                             }
-                            if let Some(tts) = game.current_scene_tts() {
+                            if let Some(tts) = seek_tts {
                                 if args.debug_clock {
                                     eprintln!("[clock] seek frame={f}: rebase tts={tts:.3}");
                                 }
@@ -3575,7 +3601,7 @@ Escape again to quit"
                     };
                     let sampled_input_changed = service_debug_request(
                         req,
-                        &mut *game,
+                        &mut sim,
                         &frame,
                         &mut frame_count,
                         time.tts,
@@ -3639,7 +3665,7 @@ Escape again to quit"
 
             // Hand this frame's shell-measured GL cost to the producer, which
             // folds it into the same rolling window it averages tick/draw over.
-            game.record_gl_timing(render_ns, swap_ns);
+            sim.post(move |g| g.record_gl_timing(render_ns, swap_ns));
 
             // Hidden and `--fixed-time` runs skip vsync above, and a hidden
             // window's swap never blocks on the compositor — cap the loop near
@@ -3654,7 +3680,7 @@ Escape again to quit"
         }
     }
 
-    game.quit();
+    sim.quit();
 }
 
 #[cfg(test)]
