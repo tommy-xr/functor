@@ -91,10 +91,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// display rate (400 on runtimes without one, e.g. desktop) — and the optional
 /// `display_refresh_rate` field on `GET /state`, omitted where absent.
 ///
-/// 15 adds the optional `sim_thread` field on `GET /state`: where the game
+/// 16 adds the optional `sim_thread` field on `GET /state`: where the game
 /// logic runs and with what scheduling class (e.g. `"pipelined:
 /// user-interactive"`), omitted by runtimes that don't report it.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 15;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 16;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -326,7 +326,7 @@ pub struct RuntimeState {
     pub input: InputSnapshot,
     /// Where the game logic runs (`inline` on the render thread, or
     /// `pipelined` on its own sim thread) and that thread's scheduling class
-    /// (v15). Omitted by runtimes that don't report it.
+    /// (v16). Omitted by runtimes that don't report it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_thread: Option<String>,
     /// The headset display's refresh rate (v15). `None` — and omitted from the
@@ -1105,7 +1105,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 15);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 16);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

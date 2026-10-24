@@ -161,8 +161,16 @@ Quest 3 release APK, `terrain`, 30-second sample after a 10-second warmup
 | inline, `RENDERER_MAIN` | 90 | 90.6 / 90 / 90 | 3 / 6 | 8.25 ms | 14.77 ms | 0.11 / 0.95 | 0.33 / 0.75 / 0.00 ms |
 
 Terrain is GPU-bound on Quest (GPU load 0.95; sim and render CPU are each under
-1 ms), so pipelining is not expected to move its FPS; the pipelined rows are
-pending a session with working 6DoF tracking.
+1 ms), so pipelining is not expected to move its FPS. The full matrix (90 and
+120 Hz × inline/pipelined × untagged/tagged) reproduces with a release APK
+installed:
+
+```sh
+node scripts/quest-pipeline-matrix.mjs --functor target/release/functor \
+  -d examples/terrain --rates 90,120 --warmup 10 --seconds 30
+```
+
+Desktop per-stage numbers come from `node scripts/pipeline-stages.mjs`.
 
 ## Desktop XR emulation
 
