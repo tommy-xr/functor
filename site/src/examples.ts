@@ -200,6 +200,17 @@ export const EXAMPLES: Example[] = [
       "impostor-fir-c-far.glb",
     ].map((file) => ({ source: `examples/night-terrain/${file}`, output: file })),
   },
+  // A seeded procedural city: every tower and neon sign is one of a handful of
+  // `Scene.instanced` draws. The generated skybox faces are checked in.
+  {
+    id: "neon-city",
+    label: "Neon city",
+    source: "examples/neon-city/game.fun",
+    assets: ["px", "nx", "py", "ny", "pz", "nz"].map((face) => ({
+      source: `examples/neon-city/sky_${face}.png`,
+      output: `sky_${face}.png`,
+    })),
+  },
   // Single-file and asset-free: an L-system garden whose growth LAWS are
   // top-level constants, so editing one in the sandbox re-shapes the plants
   // already on screen instead of restarting them.
