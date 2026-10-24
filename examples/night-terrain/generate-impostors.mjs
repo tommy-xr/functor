@@ -44,8 +44,8 @@ const TEXTURE = { width: 384, height: 512 }; // the card's 3:4 aspect
 // Near cards: three planes, fine bands. Far cards: two planes, coarse bands,
 // with small gaps bridged and slivers dropped to keep the triangle count low.
 const CARDS = [
-  { suffix: "near", planes: 3, rows: 96, bridge: 2, sliver: 2 },
-  { suffix: "far", planes: 2, rows: 40, bridge: 6, sliver: 5 },
+  { suffix: "near", planes: 3, rows: 96, bridge: 2, sliver: 2, twoSided: true },
+  { suffix: "far", planes: 2, rows: 40, bridge: 6, sliver: 5, twoSided: false },
 ];
 const KEY = [255, 0, 255];
 const FOV_DEGREES = 4.0; // a long lens: near-orthographic, so the card is to scale
@@ -159,10 +159,13 @@ function cardTexture({ width, height, channels, pixels }, mask) {
   return encodePng(width, height, 8, 2, rgb);
 }
 
-// How far each face of a card sits off its plane. The renderer lights only the
-// normal's side and draws no back faces differently, so every plane is two
-// quads, one per side, nudged apart: the face toward the viewer is the nearer
-// one and wins the depth test, so its normal is always the lit, facing one.
+// How far each face of a two-sided card sits off its plane. The renderer
+// lights only the normal's side and draws no back faces differently, so a
+// near card's plane is two quads, one per side, nudged apart: the face toward
+// the viewer is the nearer one and wins the depth test, so its normal is the
+// lit, facing one. That only holds while depth precision resolves the gap —
+// within a near card's ~45 m, not at far-card range — so far cards are one
+// face, with a side-agnostic normal (out from the trunk and up).
 const FACE_OFFSET = 0.01;
 
 // Crossed vertical planes through the Y axis, each carrying the spans.
@@ -174,7 +177,7 @@ function cardGlb(runs, card, height, png) {
     const angle = (Math.PI * p) / card.planes;
     const [ax, az] = [Math.cos(angle), -Math.sin(angle)];
     const [px, pz] = [-az, ax]; // the plane's normal
-    for (const side of [1, -1]) {
+    for (const side of card.twoSided ? [1, -1] : [0]) {
       for (const { row, x0, x1 } of runs) {
         const base = pos.length / 3;
         const [u0, u1] = [x0 / TEXTURE.width, x1 / TEXTURE.width];
@@ -233,6 +236,11 @@ function cardGlb(runs, card, height, png) {
 
 for (const tree of TREES) {
   const image = await bake(tree);
+  // UVs are laid out for exactly TEXTURE; a HiDPI or clamped framebuffer
+  // would misalign the texture against the spans silently.
+  if (image.width !== TEXTURE.width || image.height !== TEXTURE.height) {
+    throw new Error(`fir ${tree.name}: bake is ${image.width}x${image.height}, expected ${TEXTURE.width}x${TEXTURE.height}`);
+  }
   const mask = treeMask(image);
   // A capture taken before the model loaded is all key colour: fail loudly
   // rather than write an empty card.

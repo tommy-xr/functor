@@ -71,11 +71,9 @@ export async function fetchPolyHavenGlb({ id, out, node, dropMaterials = [], sim
     const args = ["-y", GLTFPACK, "-i", source, "-o", packed, "-noq", "-v"];
     if (simplify !== undefined) args.push("-si", String(simplify));
     const report = execFileSync("npx", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    await rename(packed, out).catch(async () => {
-      // Across filesystems (tmp → repo) rename fails; copy then swap in place.
-      await writeFile(`${out}.partial`, await readFile(packed));
-      await rename(`${out}.partial`, out);
-    });
+    // Copied beside `out` first: a rename across filesystems (tmp → repo) fails.
+    await writeFile(`${out}.partial`, await readFile(packed));
+    await rename(`${out}.partial`, out);
     const match = report.match(/^output: \d+ mesh primitives \((\d+) triangles/m);
     return match ? Number(match[1]) : NaN;
   } finally {
