@@ -33,10 +33,11 @@ pub struct GpuCounters {
     cache_misses: AtomicU64,
     instance_uploads: AtomicU64,
     instance_upload_bytes: AtomicU64,
-    // The last COMPLETED frame's instance uploads, rolled by the instanced
-    // renderer at each frame start — what `GET /state` reports.
-    last_frame_instance_uploads: AtomicU64,
-    last_frame_instance_upload_bytes: AtomicU64,
+    // The current rendered frame's instance uploads, zeroed by the instanced
+    // renderer when a new frame begins — so read between frames (where the
+    // shells serve `GET /state`) they are the last rendered frame's.
+    frame_instance_uploads: AtomicU64,
+    frame_instance_upload_bytes: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -84,8 +85,8 @@ impl GpuCounters {
             cache_misses: AtomicU64::new(0),
             instance_uploads: AtomicU64::new(0),
             instance_upload_bytes: AtomicU64::new(0),
-            last_frame_instance_uploads: AtomicU64::new(0),
-            last_frame_instance_upload_bytes: AtomicU64::new(0),
+            frame_instance_uploads: AtomicU64::new(0),
+            frame_instance_upload_bytes: AtomicU64::new(0),
         }
     }
 
@@ -121,21 +122,22 @@ impl GpuCounters {
         self.instance_uploads.fetch_add(1, Ordering::Relaxed);
         self.instance_upload_bytes
             .fetch_add(bytes as u64, Ordering::Relaxed);
+        self.frame_instance_uploads.fetch_add(1, Ordering::Relaxed);
+        self.frame_instance_upload_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    /// Publish the frame that just completed as the last frame's uploads.
-    pub fn set_last_frame_instance_uploads(&self, uploads: InstanceUploads) {
-        self.last_frame_instance_uploads
-            .store(uploads.count, Ordering::Relaxed);
-        self.last_frame_instance_upload_bytes
-            .store(uploads.bytes, Ordering::Relaxed);
+    /// Zero the per-frame instance uploads (a new rendered frame began).
+    pub fn begin_instance_frame(&self) {
+        self.frame_instance_uploads.store(0, Ordering::Relaxed);
+        self.frame_instance_upload_bytes.store(0, Ordering::Relaxed);
     }
 
-    /// The last completed frame's instance uploads.
-    pub fn last_frame_instance_uploads(&self) -> InstanceUploads {
+    /// The instance uploads of the most recently rendered frame.
+    pub fn frame_instance_uploads(&self) -> InstanceUploads {
         InstanceUploads {
-            count: self.last_frame_instance_uploads.load(Ordering::Relaxed),
-            bytes: self.last_frame_instance_upload_bytes.load(Ordering::Relaxed),
+            count: self.frame_instance_uploads.load(Ordering::Relaxed),
+            bytes: self.frame_instance_upload_bytes.load(Ordering::Relaxed),
         }
     }
 

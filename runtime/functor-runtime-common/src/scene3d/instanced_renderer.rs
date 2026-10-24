@@ -36,7 +36,6 @@ use std::sync::Arc;
 use super::instance_cache::InstanceBufferCache;
 use super::instancing::{InstanceData, InstancedPrimitive, RecognizedPrimitive};
 use super::{InstanceList, MaterialDescription};
-use crate::gpu_counters::InstanceUploads;
 
 // The instance transform is `translate * rotate * scale` applied on top of
 // the template's internal `local` matrix, all under the node's accumulated
@@ -423,8 +422,6 @@ pub(super) struct InstancedRenderer {
     skinned: Option<SkinnedPrograms>,
     shader_version: String,
     instance_buffers: InstanceBufferCache<glow::Buffer>,
-    // This frame's instance uploads, published at the next frame's start.
-    frame_uploads: InstanceUploads,
 }
 
 impl InstancedRenderer {
@@ -460,12 +457,11 @@ impl InstancedRenderer {
             skinned: None,
             shader_version: shader_version.to_string(),
             instance_buffers: InstanceBufferCache::default(),
-            frame_uploads: InstanceUploads::default(),
         }
     }
 
-    /// Start a frame: release instance buffers no longer drawn and publish
-    /// the previous frame's upload count. Idempotent per `frame` id.
+    /// Start a frame: release instance buffers no longer drawn and zero the
+    /// per-frame upload count. Idempotent per `frame` id.
     pub(super) fn begin_frame(&mut self, gl: &glow::Context, frame: u64) {
         let Some(released) = self.instance_buffers.begin_frame(frame) else {
             return;
@@ -475,7 +471,7 @@ impl InstancedRenderer {
             unsafe { gl.delete_buffer(buffer) };
             counters.buffer_deleted();
         }
-        counters.set_last_frame_instance_uploads(std::mem::take(&mut self.frame_uploads));
+        counters.begin_instance_frame();
     }
 
     /// The retained buffer holding `instances`, uploaded only when its
@@ -492,8 +488,6 @@ impl InstancedRenderer {
                 upload_instances(gl, bytes, capacity);
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
             }
-            self.frame_uploads.count += 1;
-            self.frame_uploads.bytes += bytes.len() as u64;
         }
         acquired.buffer
     }

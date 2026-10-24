@@ -84,6 +84,9 @@ pub struct SceneContext {
     terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
     terrain_renderer: RefCell<TerrainRenderer>,
     terrain_frame_serial: Cell<u64>,
+    // The frame id `begin_frame` last started — a lazily created instanced
+    // renderer begins at it, so its first uploads count as this frame's.
+    current_frame: Cell<u64>,
     // Render targets persist across frames/hot reloads, keyed by the target's
     // string id (the cross-frame identity). Buffers for ids a game stops
     // declaring are kept until exit — TODO: evict.
@@ -349,6 +352,7 @@ impl SceneContext {
             terrain_requests: RefCell::new(BTreeSet::new()),
             terrain_renderer: RefCell::new(TerrainRenderer::default()),
             terrain_frame_serial: Cell::new(0),
+            current_frame: Cell::new(0),
             texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline { srgb: true })),
             linear_texture_pipeline: asset::build_pipeline(Box::new(TexturePipeline {
                 srgb: false,
@@ -393,10 +397,22 @@ impl SceneContext {
             self.terrain_frame_serial.set(next);
             next
         });
+        self.current_frame.set(frame);
         self.terrain_renderer.borrow_mut().begin_frame(gl, frame);
         if let Some(instanced) = self.instanced.borrow_mut().as_mut() {
             instanced.begin_frame(gl, frame);
         }
+    }
+
+    /// The instanced renderer, created on first use.
+    fn instanced_renderer(&self, ctx: &RenderContext) -> std::cell::RefMut<'_, InstancedRenderer> {
+        std::cell::RefMut::map(self.instanced.borrow_mut(), |slot| {
+            slot.get_or_insert_with(|| {
+                let mut renderer = InstancedRenderer::new(ctx.gl, ctx.shader_version);
+                renderer.begin_frame(ctx.gl, self.current_frame.get());
+                renderer
+            })
+        })
     }
 
     /// The shell's per-frame preload step (B.5): turn this frame's
@@ -2023,13 +2039,7 @@ impl Scene3D {
                 let xform = world_matrix * self.xform;
                 match instancing::recognize(template) {
                     Some(instancing::RecognizedTemplate::Primitive(recognized)) => {
-                        let mut renderer = scene_context.instanced.borrow_mut();
-                        let renderer = renderer.get_or_insert_with(|| {
-                            InstancedRenderer::new(
-                                &render_context.gl,
-                                render_context.shader_version,
-                            )
-                        });
+                        let mut renderer = scene_context.instanced_renderer(render_context);
                         renderer.draw_primitive(
                             render_context,
                             &recognized,
@@ -2066,13 +2076,7 @@ impl Scene3D {
                         } else {
                             vec![]
                         };
-                        let mut renderer = scene_context.instanced.borrow_mut();
-                        let renderer = renderer.get_or_insert_with(|| {
-                            InstancedRenderer::new(
-                                &render_context.gl,
-                                render_context.shader_version,
-                            )
-                        });
+                        let mut renderer = scene_context.instanced_renderer(render_context);
                         if is_skinned {
                             renderer.draw_skinned_model(
                                 render_context,

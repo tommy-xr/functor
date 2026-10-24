@@ -133,7 +133,7 @@ impl InstanceData {
 /// same `Arc` for the same Functor Lang list, and the renderer keeps one GPU
 /// buffer per `Arc` (pinning it, so a freed address cannot alias), so a list
 /// kept in the model converts and uploads once.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct InstanceList(Arc<[InstanceData]>);
 
@@ -160,12 +160,6 @@ impl std::ops::Deref for InstanceList {
 impl From<Vec<InstanceData>> for InstanceList {
     fn from(instances: Vec<InstanceData>) -> Self {
         InstanceList(instances.into())
-    }
-}
-
-impl PartialEq for InstanceList {
-    fn eq(&self, other: &Self) -> bool {
-        self.ptr_eq(other) || self[..] == other[..]
     }
 }
 

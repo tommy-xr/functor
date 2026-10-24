@@ -148,19 +148,14 @@ const KEY_SAMPLES: usize = 64;
 /// A constant-time key over the list's length and a fixed sample of its
 /// records (see the module doc for why not all of them).
 fn content_key(list: &[super::InstanceData]) -> u64 {
-    const K: u64 = 0x9E37_79B9_7F4A_7C15;
-    let mix = |h: u64, word: u64| (h ^ word).wrapping_mul(K).rotate_left(31);
+    use std::hash::Hasher;
+    let mut hasher = crate::host_registry::FxHasher::default();
+    hasher.write_usize(list.len());
     let stride = list.len().div_ceil(KEY_SAMPLES).max(1);
-    let sampled = list.iter().step_by(stride).chain(list.last());
-    sampled.fold(mix(K, list.len() as u64), |hash, record| {
-        crate::terrain_renderer::slice_bytes(std::slice::from_ref(record))
-            .chunks(8)
-            .fold(hash, |hash, word| {
-                let mut padded = [0u8; 8];
-                padded[..word.len()].copy_from_slice(word);
-                mix(hash, u64::from_le_bytes(padded))
-            })
-    })
+    for record in list.iter().step_by(stride).chain(list.last()) {
+        hasher.write(crate::terrain_renderer::slice_bytes(std::slice::from_ref(record)));
+    }
+    hasher.finish()
 }
 
 #[cfg(test)]
