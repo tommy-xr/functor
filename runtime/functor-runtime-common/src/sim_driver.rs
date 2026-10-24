@@ -291,8 +291,15 @@ impl SimDriver {
         self.post(move |g| g.webview_event(event));
     }
 
+    /// Deliver a fixed step's input sample if the producer samples input,
+    /// checked when it runs: the shell's [`SimCaps`] can lag a reload or load
+    /// by a frame on the sim thread, so pipelined shells send it regardless.
     pub fn sampled_input(&mut self, snapshot: InputSnapshot) {
-        self.post(move |g| g.sampled_input(&snapshot));
+        self.post(move |g| {
+            if g.samples_input() {
+                g.sampled_input(&snapshot);
+            }
+        });
     }
 
     pub fn tick(&mut self, frame_time: FrameTime) {

@@ -926,6 +926,8 @@ pub fn android_main(app: AndroidApp) {
             .with_tag("functor"),
     );
     log::info!("functor oculus runtime starting");
+    // Android drops stderr: route panics (including the sim thread's) to logcat.
+    std::panic::set_hook(Box::new(|info| log::error!("{info}")));
 
     // Route runtime events (asset errors, hot-reload status, Debug.log
     // traces) into logcat — without a sink they fall back to eprintln!,
@@ -1206,23 +1208,14 @@ pub fn android_main(app: AndroidApp) {
     // Launch-time opt-in, like desktop `--pipelined` (the APK has no command
     // line): `adb shell setprop debug.functor.pipelined 1`, then restart.
     let pipelined = system_property("debug.functor.pipelined").as_deref() == Some("1");
-    let (sim_tid_tx, sim_tid_rx) = mpsc::channel();
     let mut sim = if pipelined {
-        SimDriver::spawn(move || {
-            // SAFETY: gettid has no preconditions.
-            let _ = sim_tid_tx.send(unsafe { libc::gettid() });
-            make_game()
-        })
+        SimDriver::spawn(make_game)
     } else {
         SimDriver::inline(make_game())
     };
     // SAFETY: gettid has no preconditions.
     let render_tid = unsafe { libc::gettid() };
-    let sim_tid = if pipelined {
-        sim_tid_rx.recv().expect("the sim thread reports its id")
-    } else {
-        render_tid
-    };
+    let sim_tid = sim.call(|_| unsafe { libc::gettid() });
     let sim_thread = tag_xr_threads(&instance, &session, pipelined, sim_tid, render_tid);
     log::info!("game logic: {sim_thread}");
     let mut caps = sim.caps();
@@ -1498,7 +1491,7 @@ pub fn android_main(app: AndroidApp) {
         let loads_pending = scene_context.has_pending_loads();
         feedback |= heightmap_mirror.sync(&mut sim);
         for sub_frame in &sub_frames {
-            if caps.samples_input {
+            if caps.samples_input || sim.is_threaded() {
                 debug.input_edges.apply_to(&mut debug.input);
                 sim.sampled_input(debug.input.clone());
             }
@@ -1740,7 +1733,9 @@ pub fn android_main(app: AndroidApp) {
 
 /// Per-stage frame cost, logged every [`StageStats::EVERY`] rendered frames:
 /// the sim stage (all producer work, timed where it runs), the render stage
-/// (both eyes, CPU submission), and the render thread's wait on the sim.
+/// (both eyes, including swapchain waits and frame submission), and the
+/// render thread's waits on the sim (snapshots and blocking debug calls).
+/// The embedded producer has no stats reporter, so the shell logs them.
 #[derive(Default)]
 struct StageStats {
     frames: u64,
@@ -1785,9 +1780,9 @@ fn system_property(name: &str) -> Option<String> {
 /// Tell the XR runtime which thread is which (`XR_KHR_android_thread_settings`)
 /// so it can schedule them for XR. Pipelined, the sim thread is the
 /// application main thread and this (GL) thread the renderer; inline, this
-/// thread is both and is tagged as the renderer. Opt out with
-/// `adb shell setprop debug.functor.thread_settings 0`. Returns the
-/// `/state.sim_thread` label.
+/// thread is both and is tagged as the renderer. On by default only when
+/// pipelined; `debug.functor.thread_settings` 1/0 forces it on/off (A/B).
+/// Returns the `/state.sim_thread` label.
 fn tag_xr_threads(
     instance: &xr::Instance,
     session: &xr::Session<xr::OpenGlEs>,
@@ -1796,8 +1791,13 @@ fn tag_xr_threads(
     render_tid: i32,
 ) -> String {
     let mode = if pipelined { "pipelined" } else { "inline" };
-    if system_property("debug.functor.thread_settings").as_deref() == Some("0") {
-        return format!("{mode}: untagged (disabled)");
+    let enabled = match system_property("debug.functor.thread_settings").as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => pipelined,
+    };
+    if !enabled {
+        return format!("{mode}: untagged");
     }
     let Some(ext) = instance.exts().khr_android_thread_settings else {
         log::info!("XR_KHR_android_thread_settings unavailable; threads untagged");

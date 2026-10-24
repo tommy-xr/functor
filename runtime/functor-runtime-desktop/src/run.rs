@@ -2842,7 +2842,7 @@ Escape again to quit"
                         );
                     }
                 }
-                if caps.samples_input {
+                if caps.samples_input || sim.is_threaded() {
                     if clock.is_fixed_time() && input_script.is_none() {
                         input_edges.apply_to(&mut fixed_input_snapshot);
                         sim.sampled_input(fixed_input_snapshot.clone());

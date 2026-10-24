@@ -134,16 +134,24 @@ opt-in read once at startup:
 
 ```sh
 adb shell setprop debug.functor.pipelined 1        # 0 (default) = inline
-adb shell setprop debug.functor.thread_settings 0  # skip the XR thread hints
+adb shell setprop debug.functor.thread_settings 1  # 1/0 force the XR thread hints on/off
 adb shell am force-stop dev.functor.runner         # then launch / `functor run vr`
 ```
 
-With `XR_KHR_android_thread_settings` available (Quest 3 has it), the shell
-tags the GL thread `RENDERER_MAIN` and, pipelined, the sim thread
-`APPLICATION_MAIN`, so the runtime can schedule both for XR. `/state.sim_thread`
-reports the result (e.g. `pipelined: APPLICATION_MAIN sim + RENDERER_MAIN
-render`), and logcat prints `stages over 300 frames: sim … ms, render … ms,
-sim-wait … ms` every 300 rendered frames.
+Pipelined, and with `XR_KHR_android_thread_settings` available (Quest 3 has
+it), the shell tags the sim thread `APPLICATION_MAIN` and the GL thread
+`RENDERER_MAIN` so the runtime can schedule both for XR; inline runs stay
+untagged unless the property forces it. `/state.sim_thread` reports the result
+(e.g. `pipelined: APPLICATION_MAIN sim + RENDERER_MAIN render`), and logcat
+prints `stages over 300 frames: sim … ms, render … ms, sim-wait … ms` every 300
+rendered frames.
+
+Pipelined, the frame on screen was drawn one frame earlier than the head pose
+it is shown with: the head is late-latched, but anything the game places from
+controller input trails the controller by one frame (about 11 ms at 90 Hz).
+`/state` answers from the sim's newest frame while `/scene` and `/capture`
+show the frame on screen; the shell steps in lockstep after any debug request,
+so they agree from the next frame on.
 
 Quest 3 release APK, `terrain`, 30-second sample after a 10-second warmup
 (2026-10-23):
@@ -152,12 +160,9 @@ Quest 3 release APK, `terrain`, 30-second sample after a 10-second warmup
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | inline, `RENDERER_MAIN` | 90 | 90.6 / 90 / 90 | 3 / 6 | 8.25 ms | 14.77 ms | 0.11 / 0.95 | 0.33 / 0.75 / 0.00 ms |
 
-The remaining rows (inline untagged, pipelined tagged and untagged, at 90 and
-120 Hz) were not measurable that night: the headset lost 6DoF tracking
-(`TrackingService: no 6dof tracking`), Guardian blocked launches, and every
-later run, in any mode, fell to ~73–78 FPS with ~1000 stale frames. Terrain is
-GPU-bound on Quest (GPU load 0.95; sim and render CPU are each under 1 ms), so
-pipelining is not expected to move its FPS; it matters for sim-heavy katas.
+Terrain is GPU-bound on Quest (GPU load 0.95; sim and render CPU are each under
+1 ms), so pipelining is not expected to move its FPS; the pipelined rows are
+pending a session with working 6DoF tracking.
 
 ## Desktop XR emulation
 
