@@ -33,6 +33,8 @@ mod net_dispatch;
 mod replay_game;
 #[cfg(not(target_arch = "wasm32"))]
 mod run;
+#[cfg(not(target_arch = "wasm32"))]
+mod sim_driver;
 // The blitz-backed HTML/CSS webview overlay (native-only: the wasm runtime
 // renders the same tree as a real DOM overlay instead). `pub` for the
 // headless render test in tests/.
