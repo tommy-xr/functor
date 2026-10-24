@@ -37,6 +37,8 @@ struct Stats {
     draw_us: f64,
     render_us: Option<f64>,
     swap_us: Option<f64>,
+    sim_us: Option<f64>,
+    sim_wait_us: Option<f64>,
     frame_us: Option<f64>,
     budget_pct: Option<f64>,
     /// GPU-resource counters (native): (live vaos, buffers, textures). A leak
@@ -78,6 +80,12 @@ impl Panel {
                 }
                 if let Some(swap_us) = s.swap_us {
                     row.push_str(&format!(" · swap {}", format!("{swap_us:.0}µs").cyan()));
+                }
+                if let Some(sim_us) = s.sim_us {
+                    row.push_str(&format!(" · sim {}", format!("{sim_us:.0}µs").cyan()));
+                }
+                if let Some(wait_us) = s.sim_wait_us.filter(|w| *w > 0.0) {
+                    row.push_str(&format!(" · wait {}", format!("{wait_us:.0}µs").cyan()));
                 }
                 if let Some(frame_us) = s.frame_us {
                     row.push_str(&format!(" · frame {}", format!("{frame_us:.0}µs").cyan()));
@@ -242,6 +250,8 @@ impl Renderer for LiveRenderer {
                 draw_us,
                 render_us,
                 swap_us,
+                sim_us,
+                sim_wait_us,
                 frame_us,
                 budget_pct,
                 over_n_frames,
@@ -274,6 +284,8 @@ impl Renderer for LiveRenderer {
                         draw_us: *draw_us,
                         render_us: *render_us,
                         swap_us: *swap_us,
+                        sim_us: *sim_us,
+                        sim_wait_us: *sim_wait_us,
                         frame_us: *frame_us,
                         budget_pct: *budget_pct,
                         gpu_live,

@@ -882,6 +882,13 @@ pub struct Args {
     /// not a dead background thread.
     #[arg(long, default_value = xreal::DEFAULT_ADDR)]
     xreal_addr: std::net::SocketAddr,
+
+    /// Run the game logic on its own sim thread, pipelined with rendering:
+    /// the sim steps frame N while the window renders frame N-1, handed over
+    /// as an immutable snapshot. The fixed-step call sequence is unchanged.
+    /// Windowed only.
+    #[arg(long, conflicts_with = "headless")]
+    pipelined: bool,
 }
 
 /// `--script-dt` must be a positive, finite timestep: a zero/NaN dt would stall
@@ -1120,11 +1127,15 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::LoadProject(files, role, resp) => {
             // Waits: a successful load restarts the shell's clock.
-            let result = sim.call(move |g| {
-                functor_runtime_common::protocol::load_with_role(g, role, |g| {
+            let (result, terrain_requests) = sim.call(move |g| {
+                let result = functor_runtime_common::protocol::load_with_role(g, role, |g| {
                     g.load_project(&files)
-                })
+                });
+                // A fresh load primes physics, which requests its heightmaps
+                // on the producer's thread before any frame snapshot.
+                (result, functor_runtime_common::terrain::take_heightmap_requests())
             });
+            scene_context.queue_terrain_requests(terrain_requests);
             if result.is_ok() {
                 clock.restart();
                 *frame_count = 0;
@@ -1398,6 +1409,10 @@ fn run_headless(
     // asset path later.
     let asset_cache = Arc::new(AssetCache::new());
     let scene_context = SceneContext::new();
+    // Physics primed at load; its heightmap requests drive the first frame.
+    scene_context.queue_terrain_requests(
+        sim.call(|_| functor_runtime_common::terrain::take_heightmap_requests()),
+    );
 
     // Same networking machinery as the windowed loop — driving networked/stateful
     // games is the whole point of a headless runner. Audio is omitted (no device
@@ -1474,16 +1489,22 @@ fn run_headless(
         // The frame is pure data (no GL); it powers GET /scene. Its audio
         // commands are dropped so they do not pile up. Preloads and physics
         // terrain requests are driven next frame through the CPU-only cache.
-        let mut snapshot = sim.frame(FrameRequest {
-            time,
-            ui: false,
-            webview: false,
-            audio_scene: false,
-            physics_lines: false,
-            conn_commands: net_transport != NetTransportArg::Embedder,
-        });
+        let mut snapshot = sim
+            .frame(
+                FrameRequest {
+                    time,
+                    ui: false,
+                    webview: false,
+                    audio_scene: false,
+                    physics_lines: false,
+                    conn_commands: net_transport != NetTransportArg::Embedder,
+                },
+                false,
+            )
+            .expect("an inline frame always yields a snapshot");
         caps = snapshot.caps;
         preloads = std::mem::take(&mut snapshot.preload_commands);
+        scene_context.queue_terrain_requests(std::mem::take(&mut snapshot.terrain_requests));
         dispatch_net_ws(&mut snapshot, &net_tx, &http_client, &mut ws_manager);
         let frame = snapshot.frame;
 
@@ -1553,18 +1574,7 @@ pub fn run(args: Args) {
 
     let game_path = args.game_path.clone();
 
-    let game: Box<dyn Game> = if args.replay {
-        Box::new(replay_game::ReplayGame::create(game_path.as_str()))
-    } else if args.functor_lang {
-        let role = functor_runtime_common::functor_lang_producer::EntryRole::from_parts(
-            &args.entry_module,
-            &args.entry_prefix,
-        );
-        Box::new(functor_lang_game::FunctorLangGame::create_for_role(
-            game_path.as_str(),
-            role,
-        ))
-    } else {
+    if !args.replay && !args.functor_lang {
         // Functor Lang is the only game producer now (the F#/dylib path was removed in
         // E3). The CLI and SDK always pass --functor-lang; a bare invocation has no
         // producer to load.
@@ -1573,8 +1583,29 @@ pub fn run(args: Args) {
 (the F#/dylib producer was removed in E3)"
         );
         std::process::exit(1);
+    }
+    let replay = args.replay;
+    let role = functor_runtime_common::functor_lang_producer::EntryRole::from_parts(
+        &args.entry_module,
+        &args.entry_prefix,
+    );
+    // The producer is created where it runs: under --pipelined that is the
+    // sim thread, which it never leaves.
+    let make_game = move || -> Box<dyn Game> {
+        if replay {
+            Box::new(replay_game::ReplayGame::create(game_path.as_str()))
+        } else {
+            Box::new(functor_lang_game::FunctorLangGame::create_for_role(
+                game_path.as_str(),
+                role,
+            ))
+        }
     };
-    let mut sim = SimDriver::inline(game);
+    let mut sim = if args.pipelined {
+        SimDriver::spawn(make_game)
+    } else {
+        SimDriver::inline(make_game())
+    };
     let mut caps = sim.caps();
 
     // Hidden/headless/emulated-XR sessions do not have a live captured-pointer
@@ -1950,6 +1981,10 @@ Escape releases while captured"
         // functor_runtime_common::color_space), so a driver that reports the
         // backbuffer sRGB-capable (macOS) never hardware-encodes it.
         scene_context.set_output_colorspace(functor_runtime_common::OutputColorspace::NonSrgb);
+        // Physics primed at load; its heightmap requests drive the first frame.
+        scene_context.queue_terrain_requests(
+            sim.call(|_| functor_runtime_common::terrain::take_heightmap_requests()),
+        );
 
         // The directional shadow map: a depth texture rendered from the casting
         // light each frame, sampled by the lit material.
@@ -2004,6 +2039,21 @@ Escape releases while captured"
 
         // Preloads the last frame queued, driven at the top of the next one.
         let mut preloads = Vec::new();
+        // The snapshot on screen. Pipelined, a frame can bring nothing new,
+        // and the shell re-renders this one.
+        let mut shown: Option<SimSnapshot> = None;
+        // The frame `--capture-at-frame` is waiting to see rendered.
+        let mut capture_seq: Option<u64> = None;
+        // Pipelined only: step in lockstep with the sim while render-derived
+        // feedback is active (asset loads, preloads, terrain hydration, the
+        // time-travel chrome), so that feedback lands on the same fixed step
+        // as inline. Startup always loads, so it starts on.
+        let mut lockstep = true;
+        // The heightmaps mirrored onto the sim thread's hydration bridge.
+        let mut mirrored_heightmaps: Vec<(
+            functor_runtime_common::terrain::TerrainSource,
+            Arc<functor_runtime_common::asset::pipelines::HeightmapData>,
+        )> = Vec::new();
 
         while !window.should_close() {
             let elapsed_time = start_time.elapsed().as_secs_f32();
@@ -2050,13 +2100,39 @@ Escape releases while captured"
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
             let progress = asset_cache.progress();
+            let pushed_progress = sim.is_threaded().then(|| progress.clone());
             sim.post(move |g| g.push_asset_progress(progress));
+            // Whether this frame carries render-derived feedback to the sim.
+            let mut feedback = false;
 
             // Effect.preload (B.5): warm the cache with the preloads last
             // frame queued and drive in-flight ones to settlement; a settled
             // preloadThen delivers its message through update.
             for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
                 sim.post(move |g| g.preload_push_settled(token));
+            }
+            let loads_pending = scene_context.has_pending_loads();
+
+            // Heightmaps hydrate on this thread (the asset driver above and
+            // the terrain draw); physics reads them on the sim's, so mirror
+            // any change across.
+            if sim.is_threaded() {
+                let hydrated = functor_runtime_common::terrain::hydrated_heightmaps();
+                let unchanged = hydrated.len() == mirrored_heightmaps.len()
+                    && hydrated
+                        .iter()
+                        .zip(&mirrored_heightmaps)
+                        .all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1));
+                if !unchanged {
+                    let mirror = hydrated.clone();
+                    sim.post(move |_| {
+                        for (source, data) in mirror {
+                            functor_runtime_common::terrain::publish_heightmap(&source, data);
+                        }
+                    });
+                    mirrored_heightmaps = hydrated;
+                    feedback = true;
+                }
             }
 
             // Asset hot-reload, the twin of the .fun check above: a model/
@@ -2805,29 +2881,47 @@ Escape again to quit"
             // it must reflect exactly what the game's `draw` produced — the
             // trajectory overlay goes on a render-only copy below.
             let show_game_ui = !detached_camera.is_detached() || debug_presentation.show_game_ui;
-            let mut snapshot = sim.frame(FrameRequest {
-                time,
-                ui: show_game_ui,
-                webview: show_game_ui,
-                audio_scene: audio_player.is_some(),
-                // A superset of `diagnostics.physics` below, which also
-                // depends on the drawn frame.
-                physics_lines: (detached_camera.is_detached() && debug_presentation.physics)
-                    || matches!(
-                        launch_debug_render_mode,
-                        functor_runtime_common::DebugRenderMode::Physics
-                    ),
-                conn_commands: args.net_transport != NetTransportArg::Embedder,
-            });
-            caps = snapshot.caps;
-            preloads = std::mem::take(&mut snapshot.preload_commands);
+            let fresh = sim.frame(
+                FrameRequest {
+                    time,
+                    ui: show_game_ui,
+                    webview: show_game_ui,
+                    audio_scene: audio_player.is_some(),
+                    // A superset of `diagnostics.physics` below, which also
+                    // depends on the drawn frame.
+                    physics_lines: (detached_camera.is_detached() && debug_presentation.physics)
+                        || matches!(
+                            launch_debug_render_mode,
+                            functor_runtime_common::DebugRenderMode::Physics
+                        ),
+                    conn_commands: args.net_transport != NetTransportArg::Embedder,
+                },
+                lockstep,
+            );
+            if capture_due {
+                capture_seq = Some(sim.posted());
+            }
+            // A new snapshot's effects are consumed once, here.
+            let mut audio_commands = Vec::new();
+            if let Some(mut fresh) = fresh {
+                caps = fresh.caps;
+                feedback |= !fresh.preload_commands.is_empty() || fresh.terrain_pending;
+                preloads.append(&mut fresh.preload_commands);
+                scene_context.queue_terrain_requests(std::mem::take(&mut fresh.terrain_requests));
+                // Perform the HTTP + WebSocket commands this frame's tick queued
+                // (shared with the headless loop).
+                dispatch_net_ws(&mut fresh, &net_tx, &http_client, &mut ws_manager);
+                audio_commands = std::mem::take(&mut fresh.audio_commands);
+                let (sim_ns, wait_ns) = (fresh.sim_ns, sim.take_wait_ns());
+                sim.post(move |g| g.record_stage_timing(sim_ns, wait_ns));
+                shown = Some(fresh);
+            }
+            let snapshot = shown
+                .as_ref()
+                .expect("the first frame always yields a snapshot");
             let frame = snapshot.frame.clone();
             // The time `frame` was drawn at: render-time animation samples it.
             let frame_time = snapshot.time;
-
-            // Perform the HTTP + WebSocket commands this frame's tick queued
-            // (shared with the headless loop).
-            dispatch_net_ws(&mut snapshot, &net_tx, &http_client, &mut ws_manager);
 
             // Follow window resizes: query the drawable size each frame.
             // Framebuffer size is in pixels, so this handles HiDPI/retina.
@@ -3067,7 +3161,7 @@ Escape again to quit"
                 player.set_listener(view_camera.eye, view_camera.target, view_camera.up);
             }
             if let Some(player) = &audio_player {
-                for cmd in std::mem::take(&mut snapshot.audio_commands) {
+                for cmd in audio_commands {
                     player.handle(cmd);
                 }
             }
@@ -3091,7 +3185,7 @@ Escape again to quit"
                 launch_debug_render_mode,
             );
             let mut debug_lines = if diagnostics.physics {
-                std::mem::take(&mut snapshot.physics_lines)
+                snapshot.physics_lines.clone()
             } else {
                 Vec::new()
             };
@@ -3322,17 +3416,13 @@ Escape again to quit"
             } else {
                 pointer
             };
-            let ui_view = std::mem::replace(
-                &mut snapshot.ui,
-                functor_runtime_common::ui::View::Empty,
-            );
             let ui_out = text_overlay.draw_view(
                 fb_width as u32,
                 fb_height as u32,
                 1.0,
                 ui_pointer,
                 &ui_keyboard,
-                &ui_view,
+                &snapshot.ui,
             );
             ui_wants_pointer = ui_out.wants_pointer;
             ui_wants_keyboard = ui_out.wants_keyboard;
@@ -3349,7 +3439,7 @@ Escape again to quit"
             // TODO(webview): `webview()` clones the tree and `to_html`
             // reserializes every frame — cache the serialized string in the
             // producer once the protocol shape settles (perf follow-up).
-            let webview_html = snapshot.webview_html.take();
+            let webview_html = snapshot.webview_html.as_deref();
             // `frame_time.tts` as the CSS animation clock: `--fixed-time` pins it
             // (deterministic captures) and pausing freezes overlay animations
             // coherently with the game.
@@ -3357,7 +3447,7 @@ Escape again to quit"
                 fb_width as u32,
                 fb_height as u32,
                 dpi_scale,
-                webview_html.as_deref(),
+                webview_html,
                 webview_pointer,
                 std::mem::take(&mut webview_keys),
                 frame_time.tts as f64,
@@ -3562,7 +3652,7 @@ Escape again to quit"
                 // for scripted runs) or after --capture-time wall-clock seconds
                 // (the default, so assets have time to load).
                 let shoot = match args.capture_at_frame {
-                    Some(_) => capture_due,
+                    Some(_) => capture_seq.is_some_and(|seq| snapshot.seq >= seq),
                     None => elapsed_time >= args.capture_time,
                 };
                 if shoot {
@@ -3666,6 +3756,19 @@ Escape again to quit"
             // Hand this frame's shell-measured GL cost to the producer, which
             // folds it into the same rolling window it averages tick/draw over.
             sim.post(move |g| g.record_gl_timing(render_ns, swap_ns));
+
+            if let Some(pushed) = pushed_progress {
+                let current = asset_cache.progress();
+                let loading = current != pushed
+                    || current.loaded + current.failed.len() < current.total;
+                lockstep = feedback
+                    || loading
+                    || loads_pending
+                    // The time-travel chrome reads and seeks the live sim.
+                    || scrubber_visible
+                    || args.trajectory
+                    || args.strobe;
+            }
 
             // Hidden and `--fixed-time` runs skip vsync above, and a hidden
             // window's swap never blocks on the compositor — cap the loop near
