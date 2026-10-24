@@ -110,6 +110,25 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "monitor-ui-t2",
+      "sample": "monitor-ui",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": [
+        "native",
+        "wasm"
+      ]
+    },
+    {
+      "name": "webview-t2",
+      "sample": "webview",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }
