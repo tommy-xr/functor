@@ -46,6 +46,8 @@ struct Stats {
     gpu_live: Option<(u64, u64, u64)>,
     gpu_bytes_per_frame: Option<f64>,
     gpu_cache: Option<(u64, u64)>,
+    /// `Scene.instanced` instance-buffer uploads per frame.
+    gpu_instance_uploads: Option<f64>,
 }
 
 /// The sticky `run native` telemetry panel.
@@ -109,6 +111,9 @@ impl Panel {
                             " · cache {}",
                             format!("{hits}/{}", hits + misses).cyan()
                         ));
+                    }
+                    if let Some(uploads) = s.gpu_instance_uploads {
+                        gpu.push_str(&format!(" · inst {}", format!("{uploads:.1}up/f").cyan()));
                     }
                     lines.push(gpu);
                 }
@@ -261,6 +266,8 @@ impl Renderer for LiveRenderer {
                 gpu_bytes_per_frame,
                 gpu_cache_hits,
                 gpu_cache_misses,
+                gpu_instance_uploads_per_frame,
+                ..
             } => {
                 if let Some(panel) = inner.panel.as_mut() {
                     let now = Instant::now();
@@ -291,6 +298,7 @@ impl Renderer for LiveRenderer {
                         gpu_live,
                         gpu_bytes_per_frame: *gpu_bytes_per_frame,
                         gpu_cache,
+                        gpu_instance_uploads: *gpu_instance_uploads_per_frame,
                     });
                     panel.refresh();
                 } else {

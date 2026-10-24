@@ -9,6 +9,8 @@
 //! [`recognize`] accepts the template shape; everything else renders through
 //! [`expand_instanced`], which is the semantics itself.
 
+use std::sync::Arc;
+
 use cgmath::{Matrix4, Quaternion};
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +124,45 @@ impl InstanceData {
     }
 }
 
+/// The instance records of one [`SceneObject::Instanced`] node, shared by
+/// reference so cloning a scene never copies them.
+///
+/// Equality, `Debug`, and serde are by CONTENT — the wire shape is the plain
+/// array — so the node stays plain data for `Scene.equals`, `/scene`, and
+/// replay. The `Arc` is ALSO an identity token: the prelude hands back the
+/// same `Arc` for the same Functor Lang list, and the renderer's retained
+/// buffer for an identical `Arc` needs no compare or upload, so a list kept in
+/// the model converts and uploads once.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InstanceList(Arc<[InstanceData]>);
+
+impl InstanceList {
+    /// Whether both lists are the SAME allocation (not merely equal content).
+    pub fn ptr_eq(&self, other: &InstanceList) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::ops::Deref for InstanceList {
+    type Target = [InstanceData];
+    fn deref(&self) -> &[InstanceData] {
+        &self.0
+    }
+}
+
+impl From<Vec<InstanceData>> for InstanceList {
+    fn from(instances: Vec<InstanceData>) -> Self {
+        InstanceList(instances.into())
+    }
+}
+
+impl std::fmt::Debug for InstanceList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self[..].fmt(f)
+    }
+}
+
 /// The stamp expansion — the DEFINITION of `Scene.instanced`'s semantics, and
 /// the renderer's fallback for templates [`recognize`] does not accept.
 ///
@@ -175,18 +216,15 @@ fn tint_scene(scene: Scene3D, tint: [f32; 3]) -> Scene3D {
         ),
         SceneObject::Instanced {
             template,
-            mut instances,
-        } => {
-            for instance in &mut instances {
-                instance.tint[0] *= tint[0];
-                instance.tint[1] *= tint[1];
-                instance.tint[2] *= tint[2];
-            }
-            SceneObject::Instanced {
-                template,
-                instances,
-            }
-        }
+            instances,
+        } => SceneObject::Instanced {
+            template,
+            instances: instances
+                .iter()
+                .map(|instance| instance.clone().tinted(tint))
+                .collect::<Vec<_>>()
+                .into(),
+        },
         leaf @ (SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_)) => leaf,
     };
     Scene3D { obj, ..scene }

@@ -31,6 +31,13 @@ pub struct GpuCounters {
     bytes_uploaded: AtomicU64,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
+    instance_uploads: AtomicU64,
+    instance_upload_bytes: AtomicU64,
+    // The current rendered frame's instance uploads, zeroed by the instanced
+    // renderer when a new frame begins — so read between frames (where the
+    // shells serve `GET /state`) they are the last rendered frame's.
+    frame_instance_uploads: AtomicU64,
+    frame_instance_upload_bytes: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -54,6 +61,17 @@ pub struct GpuWindow {
     pub bytes_uploaded: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
+    /// `Scene.instanced` instance-buffer uploads (count, bytes) — zero in the
+    /// steady state when instance lists are retained.
+    pub instance_uploads: u64,
+    pub instance_upload_bytes: u64,
+}
+
+/// One frame's `Scene.instanced` instance-buffer uploads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InstanceUploads {
+    pub count: u64,
+    pub bytes: u64,
 }
 
 impl GpuCounters {
@@ -65,6 +83,10 @@ impl GpuCounters {
             bytes_uploaded: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
+            instance_uploads: AtomicU64::new(0),
+            instance_upload_bytes: AtomicU64::new(0),
+            frame_instance_uploads: AtomicU64::new(0),
+            frame_instance_upload_bytes: AtomicU64::new(0),
         }
     }
 
@@ -93,6 +115,32 @@ impl GpuCounters {
         self.bytes_uploaded.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
+    /// Record one instance-buffer upload of `bytes` (also counted in the
+    /// general upload bytes).
+    pub fn instance_uploaded(&self, bytes: usize) {
+        self.uploaded(bytes);
+        self.instance_uploads.fetch_add(1, Ordering::Relaxed);
+        self.instance_upload_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+        self.frame_instance_uploads.fetch_add(1, Ordering::Relaxed);
+        self.frame_instance_upload_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    /// Zero the per-frame instance uploads (a new rendered frame began).
+    pub fn begin_instance_frame(&self) {
+        self.frame_instance_uploads.store(0, Ordering::Relaxed);
+        self.frame_instance_upload_bytes.store(0, Ordering::Relaxed);
+    }
+
+    /// The instance uploads of the most recently rendered frame.
+    pub fn frame_instance_uploads(&self) -> InstanceUploads {
+        InstanceUploads {
+            count: self.frame_instance_uploads.load(Ordering::Relaxed),
+            bytes: self.frame_instance_upload_bytes.load(Ordering::Relaxed),
+        }
+    }
+
     pub fn cache_hit(&self) {
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
     }
@@ -116,6 +164,8 @@ impl GpuCounters {
             bytes_uploaded: self.bytes_uploaded.swap(0, Ordering::Relaxed),
             cache_hits: self.cache_hits.swap(0, Ordering::Relaxed),
             cache_misses: self.cache_misses.swap(0, Ordering::Relaxed),
+            instance_uploads: self.instance_uploads.swap(0, Ordering::Relaxed),
+            instance_upload_bytes: self.instance_upload_bytes.swap(0, Ordering::Relaxed),
         }
     }
 }

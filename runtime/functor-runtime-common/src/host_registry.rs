@@ -48,7 +48,7 @@ use functor_lang::{RunError, Span};
 /// frame_bench (~+30% us/cell), while Fx restores it. Not DoS-resistant,
 /// which is fine: keys are the fixed, host-authored external paths.
 #[derive(Default)]
-struct FxHasher(u64);
+pub(crate) struct FxHasher(u64);
 
 impl Hasher for FxHasher {
     fn write(&mut self, bytes: &[u8]) {

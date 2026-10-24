@@ -176,7 +176,7 @@ fn render_frame_inner(
     viewport: Viewport,
     debug_render_mode: DebugRenderMode,
 ) {
-    scene_context.begin_terrain_frame(gl, terrain_frame_id);
+    scene_context.begin_frame(gl, terrain_frame_id);
 
     // The caller's render target, restored after every target pass below.
     // Captured BEFORE the ensure phase — (re)allocating buffers leaves the
@@ -564,7 +564,7 @@ pub fn render_composited_frames_with_view(
         return;
     }
     let weights = normalize_weights(&weights[..n]);
-    scene_context.begin_terrain_frame(gl, None);
+    scene_context.begin_frame(gl, None);
 
     // The caller's render target, restored after every offscreen pass below
     // (captured before any buffer allocation can reset the binding).

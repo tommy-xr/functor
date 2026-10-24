@@ -683,6 +683,8 @@ fn service_debug_request(
                 (debug.frame_count, clock.current_tts(), clock.pending_steps());
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
+            let instance_uploads =
+                functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
@@ -701,6 +703,7 @@ fn service_debug_request(
                     input,
                     sim_thread: Some(sim_thread),
                     display_refresh_rate,
+                    instance_uploads,
                 });
             });
         }

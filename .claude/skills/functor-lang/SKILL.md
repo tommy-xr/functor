@@ -1093,6 +1093,16 @@ once-per-topology `[functor]` perf note.
 instanced node instead. `Scene.equals` compares instanced nodes structurally
 (template + every instance's channels).
 
+**Keep instance lists in the model (or otherwise reuse the same list value)
+and the renderer uploads them once.** Build a static list — trees, rocks,
+props — once in `init` and pass `model.trees` to `Scene.instanced` from
+`draw`: the same list value converts and uploads to the GPU once, then costs
+nothing per frame (`GET /state`'s `instance_uploads.count` reads 0). A list
+rebuilt in `draw` with identical content still skips the upload, but pays the
+rebuild every frame; a list whose content changes uploads each frame it
+changes. This is renderer-side caching only — the scene is still a plain
+value. (A `Scene.memo` to retain whole subtrees is planned, not implemented.)
+
 **`Scene.billboard` is a camera-facing quad — a SHAPE, not a flag.** The scene
 value stays camera-free plain data (so stamping, `Scene.equals`, and replay
 are unaffected); only at DRAW time do its local XY axes map onto the active

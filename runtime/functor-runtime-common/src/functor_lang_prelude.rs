@@ -171,7 +171,7 @@ use crate::math::Angle;
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{
-    InstanceData, MaterialDescription, ModelDescription, ModelHandle, SpriteSampling,
+    InstanceData, InstanceList, MaterialDescription, ModelDescription, ModelHandle, SpriteSampling,
     TextureDescription,
 };
 use crate::skybox::SkyboxDescription;
@@ -2452,7 +2452,7 @@ row 0 has {cols} heights, row {r} has {}",
     reg.fn2(
         "Scene.instanced",
         "Scene.instanced(instances, scene)",
-        |instances: Vec<FunctorLangInstance>, scene: FunctorLangScene| {
+        |instances: InstanceListArg, scene: FunctorLangScene| {
             if scene.0.has_opacity() {
                 return Err(
                     "Scene.instanced: the template contains Scene.opacity — wrap the whole \
@@ -2460,10 +2460,7 @@ instanced node instead: scene |> Scene.instanced(instances) |> Scene.opacity(alp
                         .to_string(),
                 );
             }
-            Ok(FunctorLangScene(Scene3D::instanced(
-                scene.0,
-                instances.into_iter().map(|instance| instance.0).collect(),
-            )))
+            Ok(FunctorLangScene(Scene3D::instanced(scene.0, instances.0)))
         },
     );
     // Attach an animation expression to the Model node(s) in a scene
@@ -4429,6 +4426,99 @@ handle_arg!(
     FunctorLangStyle => "a Style",
     FunctorLangAudioSource => "an AudioSource",
 );
+
+/// `Scene.instanced`'s instance list, converted once per Functor Lang list:
+/// the same list `Rc` (e.g. one kept in the model) yields the same
+/// [`InstanceList`] `Arc`, which is what lets the renderer skip the re-upload.
+struct InstanceListArg(InstanceList);
+
+/// Memo entries kept at most; the least recently used is evicted beyond it.
+/// Dead lists are pruned on every miss, so live entries are what the game
+/// holds — the cap only bounds lists kept alive elsewhere (e.g. in
+/// time-travel history) and keeps an eviction scan cheap.
+const INSTANCE_LIST_MEMO_CAP: usize = 256;
+
+struct InstanceListMemoEntry {
+    // Weak, so the memo never keeps a list alive — yet it keeps the `Rc`'s
+    // allocation (and so its address) from being reused while the entry
+    // lives, which is what makes the pointer key sound. Values are
+    // immutable, and `Rc::get_mut`/`make_mut` refuse while a weak exists.
+    list: std::rc::Weak<Vec<Value>>,
+    converted: InstanceList,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct InstanceListMemo {
+    entries: std::collections::HashMap<usize, InstanceListMemoEntry>,
+    clock: u64,
+}
+
+thread_local! {
+    /// Pure memoization (same list → same content), so it cannot affect
+    /// determinism, replay, or hot reload — only skip repeated conversions.
+    static INSTANCE_LISTS: std::cell::RefCell<InstanceListMemo> =
+        std::cell::RefCell::new(InstanceListMemo::default());
+}
+
+impl crate::host_registry::FromArg for InstanceListArg {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::List(items) = value else {
+            // Not a list: the generic conversion owns the error text.
+            return Vec::<FunctorLangInstance>::from_arg(value, path, span)
+                .map(|instances| InstanceListArg(instances_into_list(instances)));
+        };
+        let key = Rc::as_ptr(items) as usize;
+        let hit = INSTANCE_LISTS.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            memo.clock += 1;
+            let clock = memo.clock;
+            memo.entries.get_mut(&key).map(|entry| {
+                entry.last_used = clock;
+                entry.converted.clone()
+            })
+        });
+        if let Some(converted) = hit {
+            return Ok(InstanceListArg(converted));
+        }
+        let converted =
+            instances_into_list(Vec::<FunctorLangInstance>::from_arg(value, path, span)?);
+        INSTANCE_LISTS.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            // Dead lists can never be looked up again — drop them first, then
+            // the least recently used if still full.
+            memo.entries.retain(|_, entry| entry.list.strong_count() > 0);
+            if memo.entries.len() >= INSTANCE_LIST_MEMO_CAP {
+                if let Some(oldest) = memo
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| *key)
+                {
+                    memo.entries.remove(&oldest);
+                }
+            }
+            let last_used = memo.clock;
+            memo.entries.insert(
+                key,
+                InstanceListMemoEntry {
+                    list: Rc::downgrade(items),
+                    converted: converted.clone(),
+                    last_used,
+                },
+            );
+        });
+        Ok(InstanceListArg(converted))
+    }
+}
+
+fn instances_into_list(instances: Vec<FunctorLangInstance>) -> InstanceList {
+    instances
+        .into_iter()
+        .map(|instance| instance.0)
+        .collect::<Vec<_>>()
+        .into()
+}
 
 impl crate::host_registry::FromArg for FunctorLangAngle {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
@@ -8320,6 +8410,33 @@ Vec3.make(x, y, z)"
         );
     }
 
+    /// The SAME Functor Lang list converts once: both nodes share one
+    /// instance `Arc` (the renderer's upload-once identity). An equal but
+    /// separately built list gets its own `Arc` yet compares equal.
+    #[test]
+    fn instanced_lists_convert_once_per_list_identity() {
+        let source = "
+let xs = [Instance.at(Vec3.make(1.0, 0.0, 0.0)), Instance.at(Vec3.make(2.0, 0.0, 0.0))]
+let ys = [Instance.at(Vec3.make(1.0, 0.0, 0.0)), Instance.at(Vec3.make(2.0, 0.0, 0.0))]
+let t = Scene.cube() |> Scene.lit(Color.rgb(1.0, 1.0, 1.0))
+let main = () => (Scene.instanced(xs, t), Scene.instanced(xs, t), Scene.instanced(ys, t))
+";
+        let value = eval(source);
+        let Value::Tuple(items) = &value else {
+            panic!("expected a tuple");
+        };
+        let lists: Vec<&InstanceList> = items
+            .iter()
+            .map(|item| match &scene_of(item).expect("a Scene").obj {
+                SceneObject::Instanced { instances, .. } => instances,
+                other => panic!("expected Instanced, got {other:?}"),
+            })
+            .collect();
+        assert!(lists[0].ptr_eq(lists[1]));
+        assert!(!lists[0].ptr_eq(lists[2]));
+        assert_eq!(lists[0], lists[2]);
+    }
+
     /// `Scene.equals` sees the instanced node structurally — template AND
     /// per-instance channels.
     #[test]
@@ -10511,6 +10628,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             input: crate::InputSnapshot::default(),
             sim_thread: None,
             display_refresh_rate: None,
+            instance_uploads: Default::default(),
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
             .expect("a deep model must stay parseable by stock serde_json");
