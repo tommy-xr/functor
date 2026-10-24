@@ -4433,7 +4433,10 @@ handle_arg!(
 struct InstanceListArg(InstanceList);
 
 /// Memo entries kept at most; the least recently used is evicted beyond it.
-const INSTANCE_LIST_MEMO_CAP: usize = 64;
+/// Dead lists are pruned on every miss, so live entries are what the game
+/// holds — the cap only bounds lists kept alive elsewhere (e.g. in
+/// time-travel history) and keeps an eviction scan cheap.
+const INSTANCE_LIST_MEMO_CAP: usize = 256;
 
 struct InstanceListMemoEntry {
     // Weak, so the memo never keeps a list alive — yet it keeps the `Rc`'s

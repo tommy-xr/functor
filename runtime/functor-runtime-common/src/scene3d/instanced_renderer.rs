@@ -1130,7 +1130,7 @@ unsafe fn instance_attrib_layout(gl: &glow::Context, base: u32, with_tint: bool)
         (base + 2, 3, offset_of!(InstanceData, scale)),
         (base + 3, 3, offset_of!(InstanceData, tint)),
     ];
-    // Runs per draw now (pointing a VAO at the node's buffer): no allocation.
+    // Runs per draw (pointing a VAO at the node's buffer): no allocation.
     let used = if with_tint { 4 } else { 3 };
     for &(location, size, offset) in &channels[..used] {
         gl.enable_vertex_attrib_array(location);

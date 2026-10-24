@@ -3,11 +3,12 @@
 //!
 //! The scene stays a plain value; this is shell-side derived state (like
 //! physics reconciliation), so it cannot affect determinism, replay, or time
-//! travel. A draw whose [`InstanceList`] is the SAME `Arc` as a retained one
-//! reuses that buffer with no hashing and no upload (the prelude hands back
-//! the same `Arc` for the same Functor Lang list). A different `Arc` falls
-//! back to a content key verified byte-for-byte, so a list rebuilt with
-//! identical content still skips the upload; only changed content uploads.
+//! travel. Entries are found by a constant-time content key. A draw whose
+//! [`InstanceList`] is the SAME `Arc` as the retained one reuses its buffer
+//! with no compare and no upload (the prelude hands back the same `Arc` for
+//! the same Functor Lang list); any other list is verified byte-for-byte, so
+//! a list rebuilt with identical content still skips the upload and only
+//! changed content uploads.
 //!
 //! The key hashes a fixed SAMPLE of the records, not all of them: hashing a
 //! 28k-instance list (1.4 MB) costs about 3× a memcpy of it — comparable to
@@ -29,7 +30,7 @@ const RETAIN_FRAMES: u64 = 1;
 
 struct Retained<B> {
     // Pins the `Arc`: its address cannot be reused while retained, so a
-    // pointer match below is a sound identity check.
+    // pointer match is a sound identity check.
     list: InstanceList,
     buffer: B,
     capacity: usize,
@@ -45,9 +46,7 @@ pub(crate) struct Acquired<'a, B> {
 }
 
 pub(crate) struct InstanceBufferCache<B> {
-    by_key: HashMap<u64, Retained<B>>,
-    // `Arc` address → content key: the fast path that skips keying.
-    by_ptr: HashMap<usize, u64>,
+    entries: HashMap<u64, Retained<B>>,
     // Evicted buffers, reused before creating new ones and released if a
     // whole frame passes without reuse.
     spare: Vec<(B, usize)>,
@@ -57,8 +56,7 @@ pub(crate) struct InstanceBufferCache<B> {
 impl<B: Copy> Default for InstanceBufferCache<B> {
     fn default() -> Self {
         InstanceBufferCache {
-            by_key: HashMap::new(),
-            by_ptr: HashMap::new(),
+            entries: HashMap::new(),
             spare: Vec::new(),
             frame: 0,
         }
@@ -75,11 +73,10 @@ impl<B: Copy> InstanceBufferCache<B> {
         }
         self.frame = frame;
         let released = self.spare.drain(..).map(|(buffer, _)| buffer).collect();
-        let (by_ptr, spare) = (&mut self.by_ptr, &mut self.spare);
-        self.by_key.retain(|_, entry| {
+        let spare = &mut self.spare;
+        self.entries.retain(|_, entry| {
             let recent = frame.wrapping_sub(entry.last_used) <= RETAIN_FRAMES;
             if !recent {
-                by_ptr.remove(&entry.list.identity());
                 spare.push((entry.buffer, entry.capacity));
             }
             recent
@@ -91,32 +88,15 @@ impl<B: Copy> InstanceBufferCache<B> {
     /// no spare is free.
     pub fn acquire(&mut self, list: &InstanceList, create: impl FnOnce() -> B) -> Acquired<'_, B> {
         let frame = self.frame;
-        let ptr = list.identity();
-        // Same `Arc` as a retained entry: nothing to compare or upload.
-        if let Some(key) = self.by_ptr.get(&ptr).copied() {
-            if self
-                .by_key
-                .get(&key)
-                .is_some_and(|entry| entry.list.ptr_eq(list))
-            {
-                let entry = self.by_key.get_mut(&key).expect("checked above");
-                entry.last_used = frame;
-                return Acquired {
-                    buffer: entry.buffer,
-                    upload: None,
-                };
-            }
-        }
-        let key = content_key(list);
-        match self.by_key.entry(key) {
+        match self.entries.entry(content_key(list)) {
             Entry::Occupied(occupied) => {
                 let entry = occupied.into_mut();
-                // Verified byte-for-byte, so a key collision costs an upload,
-                // never a wrong draw.
+                // The same `Arc` needs no compare; any other list is verified
+                // byte-for-byte, so a key collision costs an upload, never a
+                // wrong draw.
                 let slice_bytes = crate::terrain_renderer::slice_bytes::<super::InstanceData>;
-                let unchanged = slice_bytes(&entry.list) == slice_bytes(list);
-                self.by_ptr.remove(&entry.list.identity());
-                self.by_ptr.insert(ptr, key);
+                let unchanged =
+                    entry.list.ptr_eq(list) || slice_bytes(&entry.list) == slice_bytes(list);
                 entry.list = list.clone();
                 entry.last_used = frame;
                 Acquired {
@@ -126,7 +106,6 @@ impl<B: Copy> InstanceBufferCache<B> {
             }
             Entry::Vacant(vacant) => {
                 let (buffer, capacity) = self.spare.pop().unwrap_or_else(|| (create(), 0));
-                self.by_ptr.insert(ptr, key);
                 let entry = vacant.insert(Retained {
                     list: list.clone(),
                     buffer,
@@ -216,7 +195,7 @@ mod tests {
         cache.begin_frame(2);
         let rebuilt = list(&[1.0, 2.0]);
         assert_eq!(draw(&mut cache, &rebuilt, &mut next), (1, false));
-        // The rebuilt `Arc` is now the retained identity: no re-keying.
+        // The rebuilt `Arc` is now the retained one: no byte compare.
         assert_eq!(draw(&mut cache, &rebuilt, &mut next), (1, false));
     }
 
@@ -244,12 +223,11 @@ mod tests {
             assert!(uploaded);
         }
         assert_eq!(next, 2);
-        assert_eq!(cache.by_key.len(), 2);
-        assert_eq!(cache.by_ptr.len(), 2);
+        assert_eq!(cache.entries.len(), 2);
         // Nothing drawn: the entries evict to spares, then the spares release.
         assert!(cache.begin_frame(20).unwrap().is_empty());
         assert_eq!(cache.begin_frame(21).unwrap().len(), 1);
-        assert!(cache.by_key.is_empty() && cache.by_ptr.is_empty());
+        assert!(cache.entries.is_empty());
         assert_eq!(cache.begin_frame(22).unwrap().len(), 1);
     }
 

@@ -130,9 +130,9 @@ impl InstanceData {
 /// Equality, `Debug`, and serde are by CONTENT — the wire shape is the plain
 /// array — so the node stays plain data for `Scene.equals`, `/scene`, and
 /// replay. The `Arc` is ALSO an identity token: the prelude hands back the
-/// same `Arc` for the same Functor Lang list, and the renderer keeps one GPU
-/// buffer per `Arc` (pinning it, so a freed address cannot alias), so a list
-/// kept in the model converts and uploads once.
+/// same `Arc` for the same Functor Lang list, and the renderer's retained
+/// buffer for an identical `Arc` needs no compare or upload, so a list kept in
+/// the model converts and uploads once.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct InstanceList(Arc<[InstanceData]>);
@@ -141,12 +141,6 @@ impl InstanceList {
     /// Whether both lists are the SAME allocation (not merely equal content).
     pub fn ptr_eq(&self, other: &InstanceList) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
-    }
-
-    /// The allocation's address — an identity key only while some clone of
-    /// this list is kept alive (else the address can be reused).
-    pub(crate) fn identity(&self) -> usize {
-        Arc::as_ptr(&self.0) as *const () as usize
     }
 }
 
