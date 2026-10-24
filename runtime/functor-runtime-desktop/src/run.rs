@@ -1092,6 +1092,7 @@ fn service_debug_request(
                     model_debug: g.state_debug(),
                     input: state_input,
                     sim_thread: Some(sim_thread),
+                    display_refresh_rate: None,
                 });
             });
         }
@@ -1184,6 +1185,12 @@ fn service_debug_request(
                 clock.rebase(tts as f32);
             }
             let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::DisplayRefreshRate(_, resp) => {
+            let _ = resp.send(Err(
+                "display refresh rate is a headset setting; the desktop runtime has none"
+                    .to_string(),
+            ));
         }
         debug_server::DebugRequest::NetOutbound(resp) => {
             if net_transport == NetTransportArg::Embedder {
