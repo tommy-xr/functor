@@ -129,6 +129,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "night-terrain-t2",
+      "sample": "night-terrain",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }
