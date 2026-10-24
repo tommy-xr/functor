@@ -172,6 +172,10 @@ node scripts/quest-pipeline-matrix.mjs --functor target/release/functor \
 
 Desktop per-stage numbers come from `node scripts/pipeline-stages.mjs`.
 
+`neon-city` (#724) is the next Quest baseline, inline at the default rate, 90 and
+120 Hz, and expected to be fill-rate or upload bound. It is still pending; run it
+with `--rates default,90,120 --modes inline -d <neon-city dir>`.
+
 ## Desktop XR emulation
 
 Run a Functor Lang game with `--emulate-xr` to synthesize the same
