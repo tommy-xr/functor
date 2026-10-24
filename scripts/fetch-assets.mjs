@@ -1,7 +1,7 @@
 // Fetch the sample assets referenced by the examples (glTF models, skybox
 // faces). None are checked into the repo (*.glb / example *.jpg are
-// gitignored). Sources: BabylonJS/Assets and Kenney (both credited in the
-// README / per-example ASSETS.md). Existing files are left alone, so this
+// gitignored). Sources: BabylonJS/Assets, Kenney, and Poly Haven (credited in
+// the README / per-example ASSETS.md). Existing files are left alone, so this
 // is safe to re-run.
 //
 // Usage: npm run fetch:assets
@@ -10,6 +10,7 @@ import { writeFile, stat, mkdtemp, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fetchPolyHavenGlb } from "./polyhaven-gltf.mjs";
 
 const MESHES_BASE = "https://raw.githubusercontent.com/BabylonJS/Assets/master/meshes";
 const SKYBOX_BASE =
@@ -76,6 +77,30 @@ const ZIP_TARGETS = [
     zipUrl:
       "https://kenney.nl/media/pages/assets/space-kit/20874c75ac-1677698978/kenney_space-kit.zip",
     members: [{ from: "Models/GLTF format/craft_racer.glb", to: "ship.glb" }],
+  },
+];
+
+// Poly Haven CC0 models, repacked to a single .glb and simplified to a Quest
+// budget (≤ ~5k triangles each). See `polyhaven-gltf.mjs` for the options;
+// `lit` routes a static model through lit shading, which a night scene needs.
+const FIR_BRANCHES = { id: "fir_sapling_medium", dropMaterials: ["fir_sapling_medium_twigs"], lit: true };
+const POLYHAVEN_MODELS = [
+  {
+    dir: "examples/night-terrain",
+    models: [
+      // The firs' trunks and branches only: their needles are dense geometry
+      // that simplification erases, so foliage comes from baked impostor cards.
+      { to: "fir-a.glb", ...FIR_BRANCHES, node: 0, simplify: 0.45 },
+      { to: "fir-b.glb", ...FIR_BRANCHES, node: 1, simplify: 0.85 },
+      { to: "fir-c.glb", ...FIR_BRANCHES, node: 2, simplify: 0.85 },
+      { to: "stump.glb", id: "tree_stump_01", simplify: 0.1, lit: true },
+      { to: "log.glb", id: "dead_tree_trunk", simplify: 0.045, lit: true },
+      // Four single boulders picked out of Poly Haven's two mossy rock sets.
+      { to: "rock-a.glb", id: "rock_moss_set_01", node: 0, simplify: 0.4, lit: true },
+      { to: "rock-b.glb", id: "rock_moss_set_01", node: 3, simplify: 0.45, lit: true },
+      { to: "rock-c.glb", id: "rock_moss_set_01", node: 4, simplify: 0.28, lit: true },
+      { to: "rock-d.glb", id: "rock_moss_set_02", node: 5, simplify: 0.6, lit: true },
+    ],
   },
 ];
 
@@ -159,6 +184,24 @@ for (const { dir, zipUrl, members } of ZIP_TARGETS) {
     failures++;
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+for (const { dir, models } of POLYHAVEN_MODELS) {
+  for (const { to, ...spec } of models) {
+    const dest = path.join(dir, to);
+    if (await exists(dest)) {
+      console.log(`ok       ${dest}`);
+      continue;
+    }
+    process.stdout.write(`fetching ${dest} (Poly Haven ${spec.id}) ... `);
+    try {
+      const triangles = await fetchPolyHavenGlb({ ...spec, out: dest });
+      console.log(`${triangles} triangles`);
+    } catch (error) {
+      console.log(`FAILED (${error.message})`);
+      failures++;
+    }
   }
 }
 

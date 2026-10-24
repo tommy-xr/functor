@@ -8,7 +8,9 @@
 // ground by raycasting the same heightfield the terrain draws, and thinned by
 // biome: dense on the low ground, sparse toward the treeline, none on cliffs.
 //
-//   node examples/night-terrain/generate-heightmap.mjs
+//   npm run fetch:assets                                # the Poly Haven props
+//   node examples/night-terrain/generate-heightmap.mjs  # checked in; to regenerate
+//   node examples/night-terrain/generate-impostors.mjs  # checked in; to regenerate
 //   functor -d examples/night-terrain run native
 
 // ── Tunables (hot-reload: save and the scene updates in place) ──────────────
@@ -28,12 +30,15 @@ let moonColor = Color.rgb(0.55, 0.66, 1.0)
 let moonDirection = Vec3.make(0.62, -0.42, 0.66)
 let ambientColor = Color.rgb(0.036, 0.042, 0.066)
 
-let candidateCount = 150.0
+let candidateCount = 900.0
 let propSeed = 23.0
 // Candidates spread over this square, centred on the view below the spawn.
-let scatterSize = 480.0
-let groveCount = 7.0
-let groveRadius = 38.0
+let scatterSize = 900.0
+let groveCount = 16.0
+let groveRadius = 55.0
+// Trees nearer than this draw as a real trunk-and-branch mesh under a
+// three-plane foliage card; farther ones as a light two-plane card alone.
+let meshDistance = 40.0
 // No prop within this radius of the spawn, so the first frame is unobstructed.
 let spawnClearance = 8.0
 // Scattered props also keep out of this wider clearing, leaving the opening
@@ -61,7 +66,7 @@ let scatterZ = spawnZ + 190.0
 // The renderer blends low → high by height, rock by slope, and snow above
 // `snowHeight`; the heightmap is shaped so those bands ARE the biomes.
 let world =
-  Terrain.heightmap(Asset.texture("night-heightmap.png"), worldSize, worldSize, minHeight, maxHeight)
+  Terrain.heightmap(Assets.night_heightmap, worldSize, worldSize, minHeight, maxHeight)
   |> Terrain.maxPixelError(2.0)
   |> Terrain.layered(
        Color.rgb(0.20, 0.27, 0.14),
@@ -71,10 +76,10 @@ let world =
        snowHeight)
   // 4 m tiles: fine enough that the flashlight shows structure at 1–10 m.
   |> Terrain.textured(
-       Asset.texture("night-detail-valley.jpg"),
-       Asset.texture("night-detail-hills.jpg"),
-       Asset.texture("night-detail-rock.jpg"),
-       Asset.texture("night-detail-snow.jpg"),
+       Assets.night_detail_valley,
+       Assets.night_detail_hills,
+       Assets.night_detail_rock,
+       Assets.night_detail_snow,
        4.0)
 
 let terrainBody = Physics.tag("terrain")
@@ -114,7 +119,7 @@ let groveCentre = (g) =>
 let scatterProp = (i) =>
   let s0 = Random.seed(propSeed) |> Random.fork(i) in
   let (pick, s1) = Random.step(s0) in
-  let kind = if pick < 0.66 then Tree else if pick < 0.76 then Log else Boulder in
+  let kind = if pick < 0.88 then Tree else if pick < 0.94 then Log else Boulder in
   let centre = groveCentre(Math.mod(i, groveCount)) in
   // Boulders spill twice as far, so groves sit among scattered rock.
   let spread = if kind == Boulder then 2.0 * groveRadius else groveRadius in
@@ -122,13 +127,17 @@ let scatterProp = (i) =>
   let (angle, s2) = Random.range(0.0, 2.0 * Math.pi, s1) in
   let (u, s3) = Random.step(s2) in
   let (yaw, s4) = Random.range(0.0, 2.0 * Math.pi, s3) in
-  let (size, s5) = Random.range(0.7, 1.4, s4) in
+  let (size, s5) = Random.range(0.8, 1.5, s4) in
   let (keep, s6) = Random.step(s5) in
-  let (shade, _) = Random.range(0.75, 1.15, s6) in
+  // Which model of its kind (see `variantOf`).
+  let (variant, _) = Random.step(s6) in
   { kind: kind,
     x: centre.x + Math.cos(angle) * spread * Math.sqrt(u),
     z: centre.z + Math.sin(angle) * spread * Math.sqrt(u),
-    yaw: yaw, size: size, keep: keep, shade: shade }
+    yaw: yaw, size: size, keep: keep, variant: variant }
+
+// Index of a prop's model among `count` variants of its kind.
+let variantOf = (count, p) => Math.min(count - 1.0, Math.floor(p.variant * count))
 
 let near = (a, b, d) => (a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.z - b.z) < d * d
 let spawn = { x: spawnX, z: spawnZ }
@@ -137,8 +146,8 @@ let spawn = { x: spawnX, z: spawnZ }
 // flashlight's opening view, the way a level designer dresses a spawn.
 // `keep: 0.0` survives any density; they still sit on the raycast ground.
 let landmarks = [
-  { kind: Log, x: spawnX - 1.5, z: spawnZ + 9.5, yaw: 0.35, size: 0.8, keep: 0.0, shade: 0.9 },
-  { kind: Boulder, x: spawnX + 4.0, z: spawnZ + 12.5, yaw: 0.6, size: 0.8, keep: 0.0, shade: 1.0 },
+  { kind: Log, x: spawnX - 1.5, z: spawnZ + 9.5, yaw: 0.35, size: 1.6, keep: 0.0, variant: 0.0 },
+  { kind: Boulder, x: spawnX + 4.0, z: spawnZ + 12.5, yaw: 0.6, size: 1.0, keep: 0.0, variant: 0.0 },
 ]
 
 // Top-level, so it is computed once per load — and again on every hot reload,
@@ -151,6 +160,7 @@ let scattered =
 
 expect scattered |> List.all((p) => not near(p, spawn, spawnClearance))
 expect List.length(scattered) > candidateCount * 0.9
+expect scattered |> List.all((p) => variantOf(3.0, p) >= 0.0 && variantOf(3.0, p) <= 2.0)
 expect scattered |> List.all((p) =>
   Math.abs(p.x - scatterX) <= scatterSize / 2.0 && Math.abs(p.z - scatterZ) <= scatterSize / 2.0)
 
@@ -188,16 +198,17 @@ let settle = (model) =>
       |> List.map((p) =>
            let hit = groundAt(p.x, p.z) in
            let h = (hit.y - minHeight) / (maxHeight - minHeight) in
-           { kind: p.kind, x: p.x, y: hit.y, z: p.z, yaw: p.yaw, size: p.size, shade: p.shade,
+           { kind: p.kind, x: p.x, y: hit.y, z: p.z, yaw: p.yaw, size: p.size, variant: p.variant,
              keep: hit.hit && p.keep < density(p.kind, h, hit.ny) })
       |> List.filter((p) => p.keep) in
     let trees = placed |> List.filter((p) => p.kind == Tree) in
     { model with
         settledFor: Option.Some(placementKey),
         trees: trees,
+        forestAt: Option.None,
         // A log within its half-length of a trunk would pass through it.
         logs: placed |> List.filter((p) =>
-          p.kind == Log && not (trees |> List.any((t) => near(p, t, 3.0 * p.size)))),
+          p.kind == Log && not (trees |> List.any((t) => near(p, t, 1.6 * p.size)))),
         boulders: placed |> List.filter((p) => p.kind == Boulder) }
 
 // ── Input and movement ──────────────────────────────────────────────────────
@@ -217,6 +228,10 @@ let init = {
   trees: [],
   logs: [],
   boulders: [],
+  // The trees split by fir variant and mesh/card distance, and where the eye
+  // stood when they were split (see `regroup`).
+  forest: [],
+  forestAt: Option.None,
 }
 
 let setHeld = (held, key, isDown) =>
@@ -273,69 +288,76 @@ let tick = (model, dt, tts) =>
   let z = Math.clamp(0.0 - edge, edge, model.eye.z + Vec3.z(step)) in
   let ground = groundAt(x, z) in
   let y = if ground.hit then ground.y + eyeHeight else model.eye.y in
-  settle({ model with eye: { x: x, y: y, z: z } })
+  regroup(settle({ model with eye: { x: x, y: y, z: z } }))
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
-// A unit cube stood on a corner: its body diagonal is vertical, so it is
-// pointed top and bottom. Stretched tall it is the nearest thing to a cone the
-// primitives offer; squashed it is a faceted rock. Still one leaf under
-// transforms, so it hardware-instances.
-let facet = (color) =>
-  Scene.cube()
-  |> Scene.lit(color)
-  |> Scene.rotateX(Angle.degrees(45.0))
-  |> Scene.rotateZ(Angle.degrees(35.26))
-
-// Three templates, three instanced draws: wood (standing trunks and fallen
-// logs), needles (every canopy tier), and stone. Per-copy tints vary them.
-// Wood is a box, not a cylinder: lit materials carry a fixed specular, and a
-// smooth cylinder catches it along its whole length as a polished-pipe streak.
-let wood = Scene.cube() |> Scene.lit(Color.rgb(0.11, 0.08, 0.06))
-let needles = facet(Color.rgb(0.09, 0.17, 0.11))
-let stone = facet(Color.rgb(0.34, 0.34, 0.35))
-
-let grey = (v) => Color.rgb(v, v, v)
-
-// Unit cube: 1 on a side, centred.
-let trunkAt = (p) =>
-  Instance.trs(Vec3.make(p.x, p.y + 2.5 * p.size, p.z), Angle.radians(p.yaw),
-               0.35 * p.size, 5.6 * p.size, 0.35 * p.size)
-
-// A spruce: four pointed tiers, each sunk well into the one below so the
-// silhouette steps in to a tip, the lowest hiding most of the trunk. Each
-// tier is twisted a little against the last so the facets don't line up.
-let firTiers = [
-  { radius: 2.7, height: 1.8, lift: 2.3, twist: 0.0 },
-  { radius: 2.1, height: 1.7, lift: 3.5, twist: 0.35 },
-  { radius: 1.5, height: 1.6, lift: 4.7, twist: 0.7 },
-  { radius: 0.85, height: 1.5, lift: 5.9, twist: 1.05 },
+// Every prop is a `Scene.model` template, which the renderer hardware-
+// instances: one draw per mesh primitive, however many copies. The models are
+// Poly Haven photoscans fetched by `npm run fetch:assets`; the fir cards are
+// baked from the same firs by `generate-impostors.mjs` (see ASSETS.md).
+//
+// A fir is three models deep. Its needles are dense geometry no Quest budget
+// survives, and the renderer has no alpha cutout for cards, so the foliage is
+// a card whose silhouette is cut out in geometry. Near, the real trunk and
+// branches stand inside a three-plane card; far, a two-plane card alone.
+let firs = [
+  { mesh: Assets.fir_a, near: Assets.impostor_fir_a_near, far: Assets.impostor_fir_a_far },
+  { mesh: Assets.fir_b, near: Assets.impostor_fir_b_near, far: Assets.impostor_fir_b_far },
+  { mesh: Assets.fir_c, near: Assets.impostor_fir_c_near, far: Assets.impostor_fir_c_far },
 ]
+let logs = [Assets.log, Assets.stump]
+let rocks = [Assets.rock_a, Assets.rock_b, Assets.rock_c, Assets.rock_d]
 
-let tiersAt = (p) =>
-  firTiers
-  |> List.map((t) =>
-       Instance.trs(Vec3.make(p.x, p.y + t.lift * p.size, p.z), Angle.radians(p.yaw + t.twist),
-                    t.radius * p.size, t.height * p.size, t.radius * p.size)
-       |> Instance.tint(Color.rgb(p.shade, p.shade * 1.05, p.shade)))
+// Draw calls per copy-set: the fir meshes carry two primitives (live and dead
+// branches); every other model, one.
+let firMeshPrimitives = 2.0
 
-let logAt = (p) =>
-  Instance.at(Vec3.make(p.x, p.y + 0.25 * p.size, p.z))
-  |> Instance.scaleXYZ(0.45 * p.size, 5.0 * p.size, 0.45 * p.size)
-  // An edge up along its length, then laid down and turned.
-  |> Instance.rotateY(Angle.degrees(45.0))
-  |> Instance.rotateZ(Angle.degrees(90.0))
-  |> Instance.rotateY(Angle.radians(p.yaw))
-  |> Instance.tint(grey(p.shade * 0.8))
+let placeAt = (p, lift, scale) =>
+  Instance.trs(Vec3.make(p.x, p.y + lift, p.z), Angle.radians(p.yaw), scale, scale, scale)
 
-let boulderAt = (p) =>
-  Instance.at(Vec3.make(p.x, p.y + 0.2 * p.size, p.z))
-  |> Instance.scaleXYZ(2.0 * p.size, 1.1 * p.size * p.shade, 1.6 * p.size)
-  // Squashed and tipped at its own angles, so no two sit alike.
-  |> Instance.rotateZ(Angle.radians((p.shade - 0.95) * 2.5))
-  |> Instance.rotateX(Angle.radians(0.5 - p.size * 0.4))
-  |> Instance.rotateY(Angle.radians(p.yaw))
-  |> Instance.tint(grey(p.shade))
+// One instanced node per model, holding the props that drew that variant.
+let byVariant = (models, props, place) =>
+  models
+  |> List.indexedMap((i, m) =>
+       Scene.model(m)
+       |> Scene.instanced(props
+                          |> List.filter((p) => variantOf(List.length(models), p) == i)
+                          |> List.map(place)))
+
+// Trees sink a little so slopes never show a gap under the trunk.
+let treeAt = (p) => placeAt(p, 0.0 - 0.15, p.size)
+// The log is 3 m and the stump half a metre: both read better a size up.
+let logAt = (p) => placeAt(p, 0.0 - 0.05, 1.4 * p.size)
+// Rock origins sit mid-height, so a little of each stays buried.
+let rockAt = (p) => placeAt(p, 0.15, p.size)
+
+let isNear = (eye, p) => near(p, eye, meshDistance)
+
+// Split the trees by variant and by mesh/card distance. Splitting walks every
+// tree, so `tick` redoes it only after the eye moves `regroupStep` metres —
+// near trees switch to cards up to that much late.
+let regroupStep = 4.0
+let regroup = (model) =>
+  let fresh = match model.forestAt with
+    | Option.Some(at) => near(at, model.eye, regroupStep)
+    | Option.None => false in
+  if fresh then model
+  else
+    { model with
+        forestAt: Option.Some({ x: model.eye.x, z: model.eye.z }),
+        forest: firs |> List.indexedMap((i, fir) =>
+          let mine = model.trees |> List.filter((t) => variantOf(3.0, t) == i) in
+          { fir: fir,
+            near: mine |> List.filter((t) => isNear(model.eye, t)),
+            far: mine |> List.filter((t) => not isNear(model.eye, t)) }) }
+
+let forest = (groups) =>
+  groups |> List.concatMap((group) =>
+    let close = group.near |> List.map(treeAt) in
+    [ Scene.model(group.fir.mesh) |> Scene.instanced(close),
+      Scene.model(group.fir.near) |> Scene.instanced(close),
+      Scene.model(group.fir.far) |> Scene.instanced(group.far |> List.map(treeAt)) ])
 
 let draw = (model, tts) =>
   let eye = Vec3.make(model.eye.x, model.eye.y, model.eye.z) in
@@ -356,13 +378,11 @@ let draw = (model, tts) =>
                flashlightColor, flashlightIntensity, flashlightRange, flashlightCone) in
   Frame.createLit(
     camera,
-    Scene.group([
-      Scene.terrain(world),
-      wood |> Scene.instanced(
-                (model.trees |> List.map(trunkAt)) |> List.append(model.logs |> List.map(logAt))),
-      needles |> Scene.instanced(model.trees |> List.concatMap(tiersAt)),
-      stone |> Scene.instanced(model.boulders |> List.map(boulderAt)),
-    ]),
+    Scene.group(
+      [Scene.terrain(world)]
+      |> List.append(forest(model.forest))
+      |> List.append(byVariant(logs, model.logs, logAt))
+      |> List.append(byVariant(rocks, model.boulders, rockAt))),
     [
       Light.ambient(ambientColor),
       Light.directional(moonDirection, moonColor, moonIntensity),
@@ -371,9 +391,23 @@ let draw = (model, tts) =>
   |> Frame.withFog(Fog.exp(fogDensity, fogColor))
   |> Frame.withClearColor(skyColor)
 
+// How many instanced props use each of `count` variants.
+let perVariant = (count, props) =>
+  List.range(count) |> List.map((i) =>
+    props |> List.filter((p) => variantOf(count, p) == i) |> List.length)
+
+let nonEmpty = (counts) => counts |> List.filter((n) => n > 0.0) |> List.length
+
+// The cost gauge: copies drawn, and the draw calls they take (terrain aside).
 let ui = (model) =>
-  let trees = List.length(model.trees) in
+  let close = model.forest |> List.map((g) => List.length(g.near)) in
+  let distant = model.forest |> List.map((g) => List.length(g.far)) in
+  let draws =
+    nonEmpty(close) * (firMeshPrimitives + 1.0)
+    + nonEmpty(distant)
+    + nonEmpty(perVariant(2.0, model.logs))
+    + nonEmpty(perVariant(4.0, model.boulders)) in
   let instances =
-    trees * (1.0 + List.length(firTiers)) + List.length(model.logs) + List.length(model.boulders) in
-  Ui.text($"Night terrain · WASD + mouse · {trees} trees · {List.length(model.logs)} logs · {List.length(model.boulders)} boulders · {instances} instances")
+    2.0 * List.sum(close) + List.sum(distant) + List.length(model.logs) + List.length(model.boulders) in
+  Ui.text($"Night terrain · WASD + mouse · {List.length(model.trees)} trees ({List.sum(close)} mesh, {List.sum(distant)} card) · {List.length(model.logs)} logs · {List.length(model.boulders)} rocks · {instances} instances · {draws} draws")
   |> Ui.panel(Ui.topLeft())
