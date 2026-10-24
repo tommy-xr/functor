@@ -40,9 +40,10 @@ const mix = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
 const skyAbove = (elevation, toSun) => {
   const band = mix(horizon, mid, smoothstep(0.0, 0.35, elevation));
   const sky = mix(band, zenith, smoothstep(0.3, 1.2, elevation));
-  // A warm glow hugging the horizon toward the sun; elsewhere the horizon is
-  // exactly the fog color.
-  const glowAmount = Math.exp(-elevation * 9) * Math.pow(Math.max(toSun, 0), 6);
+  // A warm glow just above the horizon toward the sun. It fades out AT the
+  // horizon, so elevation 0 is exactly the fog color in every direction.
+  const glowAmount =
+    Math.exp(-elevation * 9) * Math.pow(Math.max(toSun, 0), 6) * smoothstep(0.0, 0.06, elevation);
   return mix(sky, glow, clamp(glowAmount, 0, 1) * 0.8);
 };
 

@@ -34,8 +34,8 @@ let sidewalkHeight = 0.2
 let downtownX = 120.0
 let downtownZ = 420.0
 let downtownRadius = 430.0
-let midtownX = 0.0 - 560.0
-let midtownZ = 0.0 - 300.0
+let midtownX = -560.0
+let midtownZ = -300.0
 let midtownRadius = 300.0
 let midtownWeight = 0.75
 let sprawlHeight = 8.0
@@ -85,9 +85,8 @@ let hash = (s: float, a: float, b: float, salt: float): float =>
   let v = Math.sin(a * 127.1 + b * 311.7 + salt * 74.7 + s * 19.19) * 43758.5453 in
   v - Math.floor(v)
 
-let streetWidthAt = (k: float): float =>
-  if Math.mod(k, avenueEvery) == 0.0 then avenueWidth else streetWidth
 let isAvenue = (k: float): bool => Math.mod(k, avenueEvery) == 0.0
+let streetWidthAt = (k: float): float => if isAvenue(k) then avenueWidth else streetWidth
 // Avenues among streets 0..k.
 let avenuesUpTo = (k: float): float => Math.floor(k / avenueEvery) + 1.0
 let cityExtent =
@@ -106,7 +105,7 @@ let streets =
   |> List.map((k) => { lo: blockStart(k) - streetWidthAt(k), hi: blockStart(k) })
 
 let bump = (x: float, z: float, cx: float, cz: float, r: float): float =>
-  Math.exp(0.0 - ((x - cx) * (x - cx) + (z - cz) * (z - cz)) / (r * r))
+  Math.exp(-((x - cx) * (x - cx) + (z - cz) * (z - cz)) / (r * r))
 
 // 0 = low sprawl .. 1 = downtown core: two seeded cores plus a slow wobble.
 let district = (s: float, x: float, z: float): float =>
@@ -119,8 +118,9 @@ let buildingHeight = (d: float, roll: float): float =>
   (sprawlHeight + (downtownHeight - sprawlHeight) * Math.pow(d, heightCurve))
   * (0.55 + 0.9 * roll)
 
-// Which facade faces a street: 1 west, 2 east, 3 south, 4 north, 0 none
-// (the middle lot of a 3×3 block).
+// The street-facing facade that gets signs: 1 west, 2 east, 3 south, 4 north,
+// 0 none (the centre lot of a 3×3 block). Corner lots pick their west/east
+// side, so north/south facades only get signs on a 3×3 block's middle column.
 let streetSide = (li: float, lj: float, n: float): float =>
   if li == 0.0 then 1.0
   else if li == n - 1.0 then 2.0
@@ -186,7 +186,7 @@ let paletteSlot = (roll: float): float => Math.floor(roll * 4.999)
 let animGroup = (roll: float): float =>
   if roll < 0.1 then 1.0 else if roll < 0.2 then 2.0 else if roll < 0.25 then 3.0 else 0.0
 
-let corners = [{ u: 0.0 - 1.0, v: 0.0 - 1.0 }, { u: 1.0, v: 1.0 }, { u: 1.0, v: 0.0 - 1.0 }, { u: 0.0 - 1.0, v: 1.0 }]
+let corners = [{ u: -1.0, v: -1.0 }, { u: 1.0, v: 1.0 }, { u: 1.0, v: -1.0 }, { u: -1.0, v: 1.0 }]
 
 // Vertical strips up two or four corners of a mass.
 let edgeStrips = (m) =>
@@ -232,7 +232,7 @@ let streetSigns = (b) =>
     let east = b.side == 2.0 in
     let south = b.side == 3.0 in
     let alongZ = west || east in
-    let out = if west || south then 0.0 - 1.0 else 1.0 in
+    let out = if west || south then -1.0 else 1.0 in
     let fx = if alongZ then b.x + out * b.w / 2.0 else b.x in
     let fz = if alongZ then b.z else b.z + out * b.d / 2.0 in
     let facadeLength = if alongZ then b.d else b.w in
@@ -242,9 +242,10 @@ let streetSigns = (b) =>
       else [ neon(fx + (if alongZ then out * 0.2 else 0.0), 3.6, fz + (if alongZ then 0.0 else out * 0.2),
                   if alongZ then 0.3 else b.w * 0.9, 0.35, if alongZ then b.d * 0.9 else 0.3,
                   paletteSlot(r(43.0)), 1.0, 0.0) ] in
-    let h = 3.0 + 6.0 * r(44.0) in
+    // Blades hang from 4.5 m and stay below the roof.
+    let h = Math.min(3.0 + 6.0 * r(44.0), b.h - 5.5) in
     let blade =
-      if r(45.0) > streetSignChance then []
+      if h < 2.0 || r(45.0) > streetSignChance then []
       else [ neon(fx + (if alongZ then out * 1.1 else slide), 4.5 + h / 2.0,
                   fz + (if alongZ then slide else out * 1.1),
                   if alongZ then 1.8 else 0.35, h, if alongZ then 0.35 else 1.8,
@@ -344,7 +345,7 @@ let cars =
        let r = (salt) => hash(seed, c, 0.0, salt) in
        let k = List.nth(Math.floor(r(61.0) * List.length(avenues)), avenues)
                |> Option.defaultValue(0.0) in
-       let dir = if r(62.0) > 0.5 then 1.0 else 0.0 - 1.0 in
+       let dir = if r(62.0) > 0.5 then 1.0 else -1.0 in
        { alongZ: Math.mod(c, 2.0) == 0.0,
          lane: blockStart(k) - avenueWidth / 2.0 + dir * 5.0,
          dir: dir,
@@ -433,16 +434,13 @@ let input = (model, key, isDown) =>
     else { model with spaceHeld: isDown }
   | _ => { model with held: setHeld(model.held, key, isDown) }
 
-let clamp = (value: float, lo, hi) =>
-  if value < lo then lo else if hi < value then hi else value
-
 let mouseMove = (model, x, y) =>
   match model.lastMouse with
   | NoPointer => { model with lastMouse: PointerAt(x, y) }
   | PointerAt(lastX, lastY) =>
     { model with
         yaw: model.yaw - (x - lastX) * sensitivity,
-        pitch: clamp(model.pitch - (y - lastY) * sensitivity, 0.0 - pitchLimit, pitchLimit),
+        pitch: model.pitch - (y - lastY) * sensitivity |> Math.clamp(-pitchLimit, pitchLimit),
         lastMouse: PointerAt(x, y) }
 
 let axis = (negative, positive) =>
@@ -453,12 +451,14 @@ let tick = (model, dt, tts) =>
   let forward = axis(model.held.down, model.held.up) in
   let right = axis(model.held.left, model.held.right) in
   let speed = if model.flying then flySpeed else walkSpeed in
-  let dx = forward * Math.sin(model.yaw) - right * Math.cos(model.yaw) in
-  let dz = forward * Math.cos(model.yaw) + right * Math.sin(model.yaw) in
+  // Normalised so a diagonal is no faster than straight ahead.
+  let norm = Math.max(1.0, Math.sqrt(forward * forward + right * right)) in
+  let dx = (forward * Math.sin(model.yaw) - right * Math.cos(model.yaw)) / norm in
+  let dz = (forward * Math.cos(model.yaw) + right * Math.sin(model.yaw)) / norm in
   let target = if model.flying then flyEye else walkEye in
   { model with
-      x: clamp(model.x + dx * speed * dt, 0.0 - halfExtent, halfExtent),
-      z: clamp(model.z + dz * speed * dt, 0.0 - halfExtent, halfExtent),
+      x: model.x + dx * speed * dt |> Math.clamp(-halfExtent, halfExtent),
+      z: model.z + dz * speed * dt |> Math.clamp(-halfExtent, halfExtent),
       eyeY: model.eyeY + (target - model.eyeY) * Math.min(1.0, dt * climbRate) }
 
 let draw = (model, tts) =>
@@ -470,7 +470,7 @@ let draw = (model, tts) =>
   let city = Scene.group(cityLayers(tts)) in
   Frame.createLit(
     camera,
-    Scene.group([ city, city |> Scene.scaleXYZ(1.0, 0.0 - 1.0, 1.0), street ]),
+    Scene.group([ city, city |> Scene.scaleXYZ(1.0, -1.0, 1.0), street ]),
     [ Light.ambient(Color.rgb(0.42, 0.34, 0.58)),
       Light.directional(Vec3.make(0.2, -0.35, -1.0), Color.rgb(1.0, 0.45, 0.6), 0.7) ])
   |> Frame.withFog(Fog.linear(fogNear, fogFar, fogColor))
@@ -489,7 +489,7 @@ let overlaps = (lo1: float, hi1: float, lo2: float, hi2: float): bool => lo1 < h
 expect List.length(streets) == blocksPerSide + 1.0
 expect List.length(buildings) == 4456.0
 expect List.length(masses) == 4892.0
-expect neonCount == 22910.0
+expect neonCount == 22414.0
 expect drawCount == 13.0
 
 // Same seed, same city; a different seed, a different one.
@@ -505,8 +505,17 @@ expect (
 
 // The street grid tiles the city exactly: streets and blocks alternate edge to edge.
 expect Math.abs(blockStart(blocksPerSide) - halfExtent) < 0.001
-expect (streets |> List.head |> Option.map((st) => st.lo) |> Option.defaultValue(0.0)) == 0.0 - halfExtent
+expect (streets |> List.head |> Option.map((st) => st.lo) |> Option.defaultValue(0.0)) == -halfExtent
 
 // Downtown is taller than the sprawl.
 expect district(seed, downtownX, downtownZ) > 0.9
-expect district(seed, halfExtent, 0.0 - halfExtent) < 0.2
+expect district(seed, halfExtent, -halfExtent) < 0.2
+
+// A diagonal is no faster than straight ahead.
+expect (
+  let moved = (held) =>
+    let m = tick({ init with held: held }, 1.0, 0.0) in
+    Math.sqrt((m.x - init.x) * (m.x - init.x) + (m.z - init.z) * (m.z - init.z)) in
+  Math.abs(moved({ up: true, down: false, left: false, right: true })
+           - moved({ up: true, down: false, left: false, right: false })) < 0.001
+)
