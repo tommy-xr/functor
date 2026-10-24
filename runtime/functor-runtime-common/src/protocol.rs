@@ -395,6 +395,11 @@ pub trait GameProducer {
     /// GL), so its `render_us`/`swap_us` stay 0.
     fn record_gl_timing(&mut self, _render_ns: u64, _swap_ns: u64) {}
 
+    /// Fold one frame's stage timing into telemetry: `sim_ns` is the time the
+    /// producer spent running this frame's calls, `wait_ns` the time the
+    /// render side blocked waiting on it (zero when they share a thread).
+    fn record_stage_timing(&mut self, _sim_ns: u64, _wait_ns: u64) {}
+
     /// The game's declarative UI tree (`ui model`), lowered by the shell to a
     /// text overlay drawn on top of the frame.
     fn ui(&self) -> crate::ui::View;

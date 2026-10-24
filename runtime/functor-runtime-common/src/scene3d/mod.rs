@@ -437,6 +437,18 @@ impl SceneContext {
             .extend(crate::terrain::take_heightmap_requests());
     }
 
+    /// Queue terrain hydration requests a producer on ANOTHER thread emitted
+    /// (taken there with `terrain::take_heightmap_requests`), for the next
+    /// [`Self::drive_preloads`].
+    pub fn queue_terrain_requests(&self, requests: Vec<crate::terrain::TerrainSource>) {
+        self.terrain_requests.borrow_mut().extend(requests);
+    }
+
+    /// Whether any preload or terrain hydration is still in flight.
+    pub fn has_pending_loads(&self) -> bool {
+        !self.preloads.borrow().is_empty() || !self.terrain_requests.borrow().is_empty()
+    }
+
     /// Clone the logical terrain hydration queue for a whole-shell snapshot.
     ///
     /// Asset handles remain cache-owned and warm across a seek; restoring this

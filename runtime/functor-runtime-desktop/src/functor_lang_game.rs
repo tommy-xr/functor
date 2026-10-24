@@ -237,6 +237,10 @@ pub struct FunctorLangGame {
     // `record_gl_timing` — the render pass and the vsync-blocking buffer swap.
     render_ns: u64,
     swap_ns: u64,
+    // Shell-measured stage timing via `record_stage_timing`: the whole sim
+    // stage, and the render side's wait on it (pipelined runs).
+    sim_ns: u64,
+    sim_wait_ns: u64,
 }
 
 const STATS_EVERY: u64 = 300;
@@ -507,6 +511,8 @@ impl FunctorLangGame {
             draw_ns: 0,
             render_ns: 0,
             swap_ns: 0,
+            sim_ns: 0,
+            sim_wait_ns: 0,
         };
         // Cold start (docs/physics.md): declare the initial world before the
         // first frame, so frame 1's physics reads answer instead of raising.
@@ -730,6 +736,8 @@ impl FunctorLangGame {
         self.draw_ns = 0;
         self.render_ns = 0;
         self.swap_ns = 0;
+        self.sim_ns = 0;
+        self.sim_wait_ns = 0;
         // A reset is a cold start: the model is `init` again and the world was
         // removed, so re-prime it (a hot reload deliberately does NOT — there
         // the world, like the model, survives).
@@ -743,6 +751,8 @@ impl FunctorLangGame {
             let draw_us = self.draw_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let render_us = self.render_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let swap_us = self.swap_ns as f64 / STATS_EVERY as f64 / 1000.0;
+            let sim_us = self.sim_ns as f64 / STATS_EVERY as f64 / 1000.0;
+            let sim_wait_us = self.sim_wait_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let frame_us = tick_us + physics_us + draw_us;
             let counters = functor_runtime_common::gpu_counters::gpu_counters();
             let live = counters.live();
@@ -752,6 +762,8 @@ impl FunctorLangGame {
                 draw_us: round1(draw_us),
                 render_us: round1(render_us),
                 swap_us: round1(swap_us),
+                sim_us: round1(sim_us),
+                sim_wait_us: round1(sim_wait_us),
                 frame_us: round1(frame_us),
                 budget_pct: round1(frame_us / 16_666.0 * 100.0),
                 over_n_frames: STATS_EVERY as u32,
@@ -767,6 +779,8 @@ impl FunctorLangGame {
             self.draw_ns = 0;
             self.render_ns = 0;
             self.swap_ns = 0;
+            self.sim_ns = 0;
+            self.sim_wait_ns = 0;
         }
     }
 }
@@ -1393,6 +1407,11 @@ AudioScene.empty), got {}",
         // `tick` runs `report_stats`.
         self.render_ns += render_ns;
         self.swap_ns += swap_ns;
+    }
+
+    fn record_stage_timing(&mut self, sim_ns: u64, wait_ns: u64) {
+        self.sim_ns += sim_ns;
+        self.sim_wait_ns += wait_ns;
     }
 
     fn ui(&self) -> View {
