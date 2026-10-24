@@ -20,7 +20,7 @@ let skyColor = Color.rgb(0.040, 0.050, 0.088)
 
 let flashlightCone = Angle.degrees(20.0)
 let flashlightRange = 60.0
-let flashlightIntensity = 3.2
+let flashlightIntensity = 2.6
 let flashlightColor = Color.rgb(1.0, 0.92, 0.78)
 
 let moonIntensity = 0.55
@@ -35,14 +35,17 @@ let scatterSize = 480.0
 let groveCount = 7.0
 let groveRadius = 38.0
 // No prop within this radius of the spawn, so the first frame is unobstructed.
-let spawnClearance = 15.0
+let spawnClearance = 8.0
+// Scattered props also keep out of this wider clearing, leaving the opening
+// view to the hand-placed landmarks.
+let clearingRadius = 15.0
 
 // ── World ───────────────────────────────────────────────────────────────────
 
 let worldSize = 4000.0
 let minHeight = 0.0
 let maxHeight = 600.0
-let snowHeight = 470.0
+let snowHeight = 430.0
 // Above this fraction of the height range, trees give way to rock and snow.
 let treeline = 0.5
 let walkSpeed = 6.0
@@ -94,12 +97,12 @@ type PropKind =
   | Log
   | Boulder
 
-// Trees and logs gather in groves; boulders lie anywhere in the square.
-// Grove 0 is pinned around the spawn — the clearance turns it into a clearing.
+// Every prop gathers around one of the groves. Grove 0 is pinned around the
+// spawn — the clearance turns it into a clearing.
 let groveCentre = (g) =>
   if g == 0.0 then { x: spawnX, z: spawnZ + 12.0 }
   else
-    let limit = scatterSize / 2.0 - groveRadius in
+    let limit = scatterSize / 2.0 - 2.0 * groveRadius in
     let s0 = Random.seed(propSeed) |> Random.fork(0.0 - 1.0 - g) in
     let (x, s1) = Random.range(0.0 - limit, limit, s0) in
     let (z, _) = Random.range(0.0 - limit, limit, s1) in
@@ -112,10 +115,9 @@ let scatterProp = (i) =>
   let s0 = Random.seed(propSeed) |> Random.fork(i) in
   let (pick, s1) = Random.step(s0) in
   let kind = if pick < 0.66 then Tree else if pick < 0.76 then Log else Boulder in
-  let centre =
-    if kind == Boulder then { x: scatterX, z: scatterZ }
-    else groveCentre(Math.mod(i, groveCount)) in
-  let spread = if kind == Boulder then scatterSize / 2.0 else groveRadius in
+  let centre = groveCentre(Math.mod(i, groveCount)) in
+  // Boulders spill twice as far, so groves sit among scattered rock.
+  let spread = if kind == Boulder then 2.0 * groveRadius else groveRadius in
   // Uniform over a disc: radius ∝ √u.
   let (angle, s2) = Random.range(0.0, 2.0 * Math.pi, s1) in
   let (u, s3) = Random.step(s2) in
@@ -128,38 +130,58 @@ let scatterProp = (i) =>
     z: centre.z + Math.sin(angle) * spread * Math.sqrt(u),
     yaw: yaw, size: size, keep: keep, shade: shade }
 
-let clearOfSpawn = (p) =>
-  Math.sqrt((p.x - spawnX) * (p.x - spawnX) + (p.z - spawnZ) * (p.z - spawnZ)) > spawnClearance
+let near = (a, b, d) => (a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.z - b.z) < d * d
+let spawn = { x: spawnX, z: spawnZ }
+
+// Hand-placed alongside the scatter: a fallen log and a boulder in the
+// flashlight's opening view, the way a level designer dresses a spawn.
+// `keep: 0.0` survives any density; they still sit on the raycast ground.
+let landmarks = [
+  { kind: Log, x: spawnX - 1.5, z: spawnZ + 9.5, yaw: 0.35, size: 0.8, keep: 0.0, shade: 0.9 },
+  { kind: Boulder, x: spawnX + 4.0, z: spawnZ + 12.5, yaw: 0.6, size: 0.8, keep: 0.0, shade: 1.0 },
+]
 
 // Top-level, so it is computed once per load — and again on every hot reload,
 // which is what lets a seed or count edit re-scatter a running game.
-let scattered = List.range(candidateCount) |> List.map(scatterProp) |> List.filter(clearOfSpawn)
+let scattered =
+  List.range(candidateCount)
+  |> List.map(scatterProp)
+  |> List.filter((p) => not near(p, spawn, clearingRadius))
+  |> List.append(landmarks)
 
-expect scattered |> List.all(clearOfSpawn)
+expect scattered |> List.all((p) => not near(p, spawn, spawnClearance))
 expect List.length(scattered) > candidateCount * 0.9
 expect scattered |> List.all((p) =>
   Math.abs(p.x - scatterX) <= scatterSize / 2.0 && Math.abs(p.z - scatterZ) <= scatterSize / 2.0)
 
 // How likely a candidate survives at normalized height `h` on ground whose
 // normal has vertical component `up`: forest thins toward the treeline and
-// never grows on cliffs; boulders lie everywhere, most thickly up high.
+// never grows on cliffs; logs lie flat, so only on near-level ground (under
+// ~12°); boulders lie everywhere, most thickly up high.
 let density = (kind, h, up) =>
-  let gentle = Math.smoothstep(0.82, 0.92, up) in
   let belowTreeline = 1.0 - Math.smoothstep(treeline * 0.6, treeline, h) in
   match kind with
-  | Tree => 0.8 * belowTreeline * gentle
-  | Log => 0.5 * belowTreeline * gentle
+  | Tree => 0.8 * belowTreeline * Math.smoothstep(0.82, 0.92, up)
+  | Log => 0.7 * belowTreeline * Math.smoothstep(0.96, 0.98, up)
   | Boulder => 0.55 + 0.4 * Math.smoothstep(0.2, 0.5, h)
 
 expect density(Tree, 0.1, 1.0) > density(Tree, 0.4, 1.0)
 expect density(Tree, 0.1, 0.6) == 0.0
 expect density(Tree, treeline, 1.0) == 0.0
 
+// Everything placement reads, so a hot reload that edits any of these
+// re-settles the props. (An edit to `density`'s body needs a restart.)
+let placementKey = {
+  seed: propSeed, count: candidateCount, size: scatterSize, groves: groveCount,
+  radius: groveRadius, clearing: clearingRadius, treeline: treeline,
+  low: minHeight, high: maxHeight, landmarks: landmarks,
+}
+
 // Ground heights need the physics world, so props settle in `tick` once per
-// distinct scatter, as soon as the heightfield exists (the spawn probe hits).
+// placement key, as soon as the heightfield exists (the spawn probe hits).
 let settle = (model) =>
   let ready = groundAt(spawnX, spawnZ) in
-  if model.settledFrom == scattered || not ready.hit then model
+  if model.settledFor == Option.Some(placementKey) || not ready.hit then model
   else
     let placed =
       scattered
@@ -169,10 +191,13 @@ let settle = (model) =>
            { kind: p.kind, x: p.x, y: hit.y, z: p.z, yaw: p.yaw, size: p.size, shade: p.shade,
              keep: hit.hit && p.keep < density(p.kind, h, hit.ny) })
       |> List.filter((p) => p.keep) in
+    let trees = placed |> List.filter((p) => p.kind == Tree) in
     { model with
-        settledFrom: scattered,
-        trees: placed |> List.filter((p) => p.kind == Tree),
-        logs: placed |> List.filter((p) => p.kind == Log),
+        settledFor: Option.Some(placementKey),
+        trees: trees,
+        // A log within its half-length of a trunk would pass through it.
+        logs: placed |> List.filter((p) =>
+          p.kind == Log && not (trees |> List.any((t) => near(p, t, 3.0 * p.size)))),
         boulders: placed |> List.filter((p) => p.kind == Boulder) }
 
 // ── Input and movement ──────────────────────────────────────────────────────
@@ -188,7 +213,7 @@ let init = {
   lastMouse: NoMouse,
   eye: { x: spawnX, y: 150.0, z: spawnZ },
   head: Option.None,
-  settledFrom: [],
+  settledFor: Option.None,
   trees: [],
   logs: [],
   boulders: [],
@@ -264,25 +289,27 @@ let facet = (color) =>
 
 // Three templates, three instanced draws: wood (standing trunks and fallen
 // logs), needles (every canopy tier), and stone. Per-copy tints vary them.
-let wood = Scene.cylinder() |> Scene.lit(Color.rgb(0.13, 0.10, 0.08))
+// Wood is a box, not a cylinder: lit materials carry a fixed specular, and a
+// smooth cylinder catches it along its whole length as a polished-pipe streak.
+let wood = Scene.cube() |> Scene.lit(Color.rgb(0.11, 0.08, 0.06))
 let needles = facet(Color.rgb(0.09, 0.17, 0.11))
-let stone = facet(Color.rgb(0.38, 0.38, 0.38))
+let stone = facet(Color.rgb(0.34, 0.34, 0.35))
 
 let grey = (v) => Color.rgb(v, v, v)
 
-// Unit cylinder: 1 tall, centred, radius 0.5.
+// Unit cube: 1 on a side, centred.
 let trunkAt = (p) =>
   Instance.trs(Vec3.make(p.x, p.y + 2.5 * p.size, p.z), Angle.radians(p.yaw),
-               0.4 * p.size, 5.6 * p.size, 0.4 * p.size)
+               0.35 * p.size, 5.6 * p.size, 0.35 * p.size)
 
-// A spruce: three pointed tiers, each sunk halfway into the one below, so the
-// silhouette steps in to a tip.
-// Each tier is twisted against the last so the facets don't line up.
+// A spruce: four pointed tiers, each sunk well into the one below so the
+// silhouette steps in to a tip, the lowest hiding most of the trunk. Each
+// tier is twisted a little against the last so the facets don't line up.
 let firTiers = [
-  { radius: 2.6, height: 1.9, lift: 2.9, twist: 0.0 },
-  { radius: 2.0, height: 1.8, lift: 4.3, twist: 0.7 },
-  { radius: 1.4, height: 1.8, lift: 5.7, twist: 1.4 },
-  { radius: 0.8, height: 2.0, lift: 7.1, twist: 2.1 },
+  { radius: 2.7, height: 1.8, lift: 2.3, twist: 0.0 },
+  { radius: 2.1, height: 1.7, lift: 3.5, twist: 0.35 },
+  { radius: 1.5, height: 1.6, lift: 4.7, twist: 0.7 },
+  { radius: 0.85, height: 1.5, lift: 5.9, twist: 1.05 },
 ]
 
 let tiersAt = (p) =>
@@ -294,14 +321,19 @@ let tiersAt = (p) =>
 
 let logAt = (p) =>
   Instance.at(Vec3.make(p.x, p.y + 0.25 * p.size, p.z))
-  |> Instance.scaleXYZ(0.55 * p.size, 6.0 * p.size, 0.55 * p.size)
+  |> Instance.scaleXYZ(0.45 * p.size, 5.0 * p.size, 0.45 * p.size)
+  // An edge up along its length, then laid down and turned.
+  |> Instance.rotateY(Angle.degrees(45.0))
   |> Instance.rotateZ(Angle.degrees(90.0))
   |> Instance.rotateY(Angle.radians(p.yaw))
   |> Instance.tint(grey(p.shade * 0.8))
 
 let boulderAt = (p) =>
   Instance.at(Vec3.make(p.x, p.y + 0.2 * p.size, p.z))
-  |> Instance.scaleXYZ(2.8 * p.size, 1.4 * p.size * p.shade, 2.2 * p.size)
+  |> Instance.scaleXYZ(2.0 * p.size, 1.1 * p.size * p.shade, 1.6 * p.size)
+  // Squashed and tipped at its own angles, so no two sit alike.
+  |> Instance.rotateZ(Angle.radians((p.shade - 0.95) * 2.5))
+  |> Instance.rotateX(Angle.radians(0.5 - p.size * 0.4))
   |> Instance.rotateY(Angle.radians(p.yaw))
   |> Instance.tint(grey(p.shade))
 
@@ -341,6 +373,7 @@ let draw = (model, tts) =>
 
 let ui = (model) =>
   let trees = List.length(model.trees) in
-  let instances = trees * 5.0 + List.length(model.logs) + List.length(model.boulders) in
+  let instances =
+    trees * (1.0 + List.length(firTiers)) + List.length(model.logs) + List.length(model.boulders) in
   Ui.text($"Night terrain · WASD + mouse · {trees} trees · {List.length(model.logs)} logs · {List.length(model.boulders)} boulders · {instances} instances")
   |> Ui.panel(Ui.topLeft())

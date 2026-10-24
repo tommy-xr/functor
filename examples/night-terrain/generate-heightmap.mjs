@@ -128,13 +128,19 @@ for (let y = 0; y < size; y += 1) {
 
 // Rescale to the full 16-bit range so `Terrain.heightmap`'s min/max map onto
 // the actual extremes.
-const raw = Buffer.alloc((size * 2 + 1) * size);
+const stride = size * 2;
+const pixels = Buffer.alloc(stride * size);
+for (let i = 0; i < size * size; i += 1) {
+  pixels.writeUInt16BE(Math.round(((height[i] - lo) / (hi - lo)) * 65535), i * 2);
+}
+// PNG "Up" filter: each byte minus the one above. Smooth terrain makes those
+// differences small, which deflates ~25% tighter than unfiltered rows.
+const raw = Buffer.alloc((stride + 1) * size);
 for (let y = 0; y < size; y += 1) {
-  const row = y * (size * 2 + 1);
-  raw[row] = 0; // PNG "None" filter
-  for (let x = 0; x < size; x += 1) {
-    const normalized = (height[y * size + x] - lo) / (hi - lo);
-    raw.writeUInt16BE(Math.round(normalized * 65535), row + 1 + x * 2);
+  raw[y * (stride + 1)] = 2;
+  for (let i = 0; i < stride; i += 1) {
+    const above = y > 0 ? pixels[(y - 1) * stride + i] : 0;
+    raw[y * (stride + 1) + 1 + i] = (pixels[y * stride + i] - above) & 0xff;
   }
 }
 

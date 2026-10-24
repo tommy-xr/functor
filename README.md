@@ -182,7 +182,7 @@ functor -d examples/primitives run native
 # A 4×4 km, 16-bit heightmap terrain with LOD, collision, and instanced grass
 functor -d examples/terrain run native
 
-# The same scale at night: fog, a camera-mounted flashlight, ~200 instanced props
+# The same scale at night: biome terrain, a camera-mounted flashlight, ~370 instanced props
 functor -d examples/night-terrain run native
 
 # Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
