@@ -1126,15 +1126,14 @@ fn service_debug_request(
         }
         debug_server::DebugRequest::LoadProject(files, role, resp) => {
             // Waits: a successful load restarts the shell's clock.
-            let (result, terrain_requests) = sim.call(move |g| {
-                let result = functor_runtime_common::protocol::load_with_role(g, role, |g| {
+            let result = sim.call(move |g| {
+                functor_runtime_common::protocol::load_with_role(g, role, |g| {
                     g.load_project(&files)
-                });
-                // A fresh load primes physics, which requests its heightmaps
-                // on the producer's thread before any frame snapshot.
-                (result, functor_runtime_common::terrain::take_heightmap_requests())
+                })
             });
-            scene_context.queue_terrain_requests(terrain_requests);
+            // A fresh load primes physics, which requests its heightmaps
+            // outside any frame.
+            sim.queue_terrain_requests(scene_context);
             if result.is_ok() {
                 clock.restart();
                 *frame_count = 0;
@@ -1403,9 +1402,7 @@ fn run_headless(
     let asset_cache = Arc::new(AssetCache::new());
     let scene_context = SceneContext::new();
     // Physics primed at load; its heightmap requests drive the first frame.
-    scene_context.queue_terrain_requests(
-        sim.call(|_| functor_runtime_common::terrain::take_heightmap_requests()),
-    );
+    sim.queue_terrain_requests(&scene_context);
 
     // Same networking machinery as the windowed loop — driving networked/stateful
     // games is the whole point of a headless runner. Audio is omitted (no device
@@ -1415,8 +1412,7 @@ fn run_headless(
     let (net_tx, net_rx) = std::sync::mpsc::channel::<net_dispatch::NetResult>();
     let (ws_tx, ws_rx) = std::sync::mpsc::channel::<ws_host::HostNetEvent>();
     let mut ws_manager = ws_host::WsManager::new(ws_tx);
-    let mut caps = sim.caps();
-    let mut preloads = Vec::new();
+    let mut caps;
 
     loop {
         let elapsed = start_time.elapsed().as_secs_f32();
@@ -1437,9 +1433,11 @@ fn run_headless(
         // Same per-frame ordering as the windowed loop (the source of truth),
         // minus everything that needs GL.
         sim.post(move |g| g.check_hot_reload(time));
+        // Inline the capability bits are free to read after the reload check.
+        caps = sim.caps();
         let progress = asset_cache.progress();
         sim.post(move |g| g.push_asset_progress(progress));
-        for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
+        for token in scene_context.drive_preloads(&asset_cache, sim.drain_preloads()) {
             sim.post(move |g| g.preload_push_settled(token));
         }
         deliver_net_ws(&mut sim, &net_rx, &ws_rx);
@@ -1495,10 +1493,10 @@ fn run_headless(
                 false,
             )
             .expect("an inline frame always yields a snapshot");
-        caps = snapshot.caps;
-        preloads = std::mem::take(&mut snapshot.preload_commands);
         scene_context.queue_terrain_requests(std::mem::take(&mut snapshot.terrain_requests));
         dispatch_net_ws(&mut snapshot, &net_tx, &http_client, &mut ws_manager);
+        let sim_ns = snapshot.sim_ns;
+        sim.post(move |g| g.record_stage_timing(sim_ns, 0));
         let frame = snapshot.frame;
 
         if let Some(rx) = &debug_requests {
@@ -1968,9 +1966,7 @@ Escape releases while captured"
 
         let scene_context = SceneContext::new();
         // Physics primed at load; its heightmap requests drive the first frame.
-        scene_context.queue_terrain_requests(
-            sim.call(|_| functor_runtime_common::terrain::take_heightmap_requests()),
-        );
+        sim.queue_terrain_requests(&scene_context);
 
         // The directional shadow map: a depth texture rendered from the casting
         // light each frame, sampled by the lit material.
@@ -2035,10 +2031,11 @@ Escape releases while captured"
         // time-travel chrome), so that feedback lands on the same fixed step
         // as inline. Startup always loads, so it starts on.
         let mut lockstep = true;
-        // The heightmaps mirrored onto the sim thread's hydration bridge.
+        // The heightmaps mirrored onto the sim thread's hydration bridge, held
+        // weakly like the bridge itself so they don't outlive their assets.
         let mut mirrored_heightmaps: Vec<(
             functor_runtime_common::terrain::TerrainSource,
-            Arc<functor_runtime_common::asset::pipelines::HeightmapData>,
+            std::sync::Weak<functor_runtime_common::asset::pipelines::HeightmapData>,
         )> = Vec::new();
 
         while !window.should_close() {
@@ -2082,6 +2079,11 @@ Escape releases while captured"
             }
 
             sim.post(move |g| g.check_hot_reload(time));
+            // Inline the capability bits are free to read after the reload
+            // check; pipelined they come with each snapshot.
+            if !sim.is_threaded() {
+                caps = sim.caps();
+            }
 
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
@@ -2094,6 +2096,7 @@ Escape releases while captured"
             // Effect.preload (B.5): warm the cache with the preloads last
             // frame queued and drive in-flight ones to settlement; a settled
             // preloadThen delivers its message through update.
+            preloads.extend(sim.drain_preloads());
             for token in scene_context.drive_preloads(&asset_cache, std::mem::take(&mut preloads)) {
                 sim.post(move |g| g.preload_push_settled(token));
             }
@@ -2108,15 +2111,17 @@ Escape releases while captured"
                     && hydrated
                         .iter()
                         .zip(&mirrored_heightmaps)
-                        .all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1));
+                        .all(|(a, b)| a.0 == b.0 && Arc::as_ptr(&a.1) == b.1.as_ptr());
                 if !unchanged {
-                    let mirror = hydrated.clone();
+                    mirrored_heightmaps = hydrated
+                        .iter()
+                        .map(|(source, data)| (source.clone(), Arc::downgrade(data)))
+                        .collect();
                     sim.post(move |_| {
-                        for (source, data) in mirror {
+                        for (source, data) in hydrated {
                             functor_runtime_common::terrain::publish_heightmap(&source, data);
                         }
                     });
-                    mirrored_heightmaps = hydrated;
                     feedback = true;
                 }
             }
@@ -2882,7 +2887,8 @@ Escape again to quit"
                         ),
                     conn_commands: args.net_transport != NetTransportArg::Embedder,
                 },
-                lockstep,
+                // A capture renders the exact frame it names.
+                lockstep || capture_due,
             );
             if capture_due {
                 capture_seq = Some(sim.posted());
@@ -3410,7 +3416,12 @@ Escape again to quit"
             );
             ui_wants_pointer = ui_out.wants_pointer;
             ui_wants_keyboard = ui_out.wants_keyboard;
-            if !ignore_user_input {
+            // Widget slots resolve against the producer's newest view, so
+            // events from an older one (pipelined) are dropped; the shell
+            // runs lockstep while widgets are shown, so that is at most one
+            // frame as they appear.
+            let view_is_newest = snapshot.seq == sim.posted();
+            if !ignore_user_input && view_is_newest {
                 for event in ui_out.events {
                     sim.ui_event(event);
                 }
@@ -3438,7 +3449,7 @@ Escape again to quit"
             );
             webview_wants_pointer = webview_out.wants_pointer;
             webview_wants_keyboard = webview_out.wants_keyboard;
-            if !ignore_user_input {
+            if !ignore_user_input && view_is_newest {
                 for event in webview_out.events {
                     sim.webview_event(event);
                 }
@@ -3653,8 +3664,10 @@ Escape again to quit"
             // Service any pending debug-server requests now that the frame is
             // fully rendered into the back buffer (same point --capture-frame
             // reads from). GL stays on this thread; we only reply over channels.
+            let mut debug_active = false;
             if let Some(rx) = &debug_requests {
                 while let Ok(req) = rx.try_recv() {
+                    debug_active = true;
                     let fixed_sample = clock.is_fixed_time() && input_script.is_none();
                     let state_input = if fixed_sample {
                         fixed_input_snapshot.clone()
@@ -3748,6 +3761,12 @@ Escape again to quit"
                 lockstep = feedback
                     || loading
                     || loads_pending
+                    // Widget events must resolve against the view shown.
+                    || snapshot.webview_html.is_some()
+                    || crate::sim_driver::has_widgets(&snapshot.ui)
+                    // A debug driver reading /state then /scene or /capture
+                    // must see the same frame.
+                    || debug_active
                     // The time-travel chrome reads and seeks the live sim.
                     || scrubber_visible
                     || args.trajectory
