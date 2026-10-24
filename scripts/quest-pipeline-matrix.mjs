@@ -13,6 +13,9 @@
  *
  *   node scripts/quest-pipeline-matrix.mjs --functor target/release/functor \
  *     -d examples/terrain --rates 90,120 --warmup 10 --seconds 30
+ *
+ * `--rates default` skips the rate request; `--modes inline` (or `pipelined`)
+ * runs only those configurations.
  */
 
 import { execFileSync, spawn } from "node:child_process";
@@ -27,13 +30,21 @@ const CONFIGS = [
 const STATE = "http://127.0.0.1:8123/state";
 
 function parseArgs(argv) {
-  const options = { functor: "target/release/functor", dir: "examples/terrain", rates: [90, 120], warmup: 10, seconds: 30 };
+  const options = {
+    functor: "target/release/functor",
+    dir: "examples/terrain",
+    rates: [90, 120],
+    modes: ["inline", "pipelined"],
+    warmup: 10,
+    seconds: 30,
+  };
   for (let i = 0; i < argv.length; i += 2) {
     const [flag, value] = [argv[i], argv[i + 1]];
     if (value === undefined) throw new Error(`${flag} requires a value`);
     if (flag === "--functor") options.functor = value;
     else if (flag === "-d") options.dir = value;
-    else if (flag === "--rates") options.rates = value.split(",").map(Number);
+    else if (flag === "--rates") options.rates = value.split(",").map((r) => (r === "default" ? null : Number(r)));
+    else if (flag === "--modes") options.modes = value.split(",");
     else if (flag === "--warmup") options.warmup = Number(value);
     else if (flag === "--seconds") options.seconds = Number(value);
     else throw new Error(`unknown argument: ${flag}`);
@@ -89,8 +100,8 @@ async function measure(options, config, hz) {
   try {
     const ready = await waitRendering();
     if (trackingLost()) throw new Error("the headset reports no 6dof tracking; fix tracking and re-run");
-    await requestRate(hz);
-    const label = `${path.basename(options.dir)} ${config.name} ${hz} Hz`;
+    if (hz !== null) await requestRate(hz);
+    const label = `${path.basename(options.dir)} ${config.name} ${hz ?? "default"} Hz`;
     const report = execFileSync(
       "node",
       ["scripts/quest-benchmark.mjs", "--label", label, "--warmup", String(options.warmup), "--seconds", String(options.seconds)],
@@ -113,7 +124,7 @@ if (trackingLost()) {
   throw new Error("the headset reports no 6dof tracking; fix tracking (lights, cameras) before measuring");
 }
 for (const hz of options.rates) {
-  for (const config of CONFIGS) {
+  for (const config of CONFIGS.filter((c) => options.modes.some((m) => c.name.startsWith(m)))) {
     console.log(await measure(options, config, hz));
   }
 }
