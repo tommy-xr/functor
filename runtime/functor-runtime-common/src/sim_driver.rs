@@ -17,23 +17,25 @@
 //! reaches the sim does not depend on thread timing. The shell runs lockstep
 //! while that feedback is active, so it lands on the same step as inline.
 
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex, Weak};
 use std::time::Instant;
 
-use functor_runtime_common::asset::preload::PreloadCommand;
-use functor_runtime_common::audio::{AudioCommand, AudioScene};
-use functor_runtime_common::net::{ConnCommand, NetCommand};
-use functor_runtime_common::physics::DebugLine;
-use functor_runtime_common::terrain::TerrainSource;
-use functor_runtime_common::ui::{UiEvent, View};
-use functor_runtime_common::{Frame, FrameTime, InputSnapshot};
+use crate::asset::pipelines::HeightmapData;
+use crate::asset::preload::PreloadCommand;
+use crate::asset::AssetProgress;
+use crate::audio::{AudioCommand, AudioScene};
+use crate::net::{ConnCommand, NetCommand};
+use crate::physics::DebugLine;
+use crate::terrain::TerrainSource;
+use crate::ui::{UiEvent, View};
+use crate::{Frame, FrameTime, InputSnapshot};
 
-use crate::game::Game;
+use crate::protocol::GameProducer as Game;
 
 /// What the shell wants back from one [`SimDriver::frame`] beyond the frame
 /// itself. Optional parts cost producer work, so the shell asks only for what
 /// it will show.
-pub(crate) struct FrameRequest {
+pub struct FrameRequest {
     pub time: FrameTime,
     pub ui: bool,
     pub webview: bool,
@@ -48,7 +50,7 @@ pub(crate) struct FrameRequest {
 /// snapshot, so a hot reload that adds or removes a hook takes effect one
 /// frame later.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct SimCaps {
+pub struct SimCaps {
     pub samples_input: bool,
     pub uses_captured_mouse_input: bool,
 }
@@ -56,7 +58,7 @@ pub(crate) struct SimCaps {
 /// Everything the render half needs from one sim frame: the drawn frame, the
 /// effects it queued, and the timeline/capability reads the shell's chrome
 /// shows. Plain data; nothing here points back into the producer.
-pub(crate) struct SimSnapshot {
+pub struct SimSnapshot {
     /// The [`SimDriver::frame`] request this answers.
     pub seq: u64,
     /// Producer time spent since the previous snapshot, this frame included.
@@ -84,7 +86,7 @@ pub(crate) struct SimSnapshot {
 }
 
 /// The producer, run either on the calling thread or on its own sim thread.
-pub(crate) struct SimDriver {
+pub struct SimDriver {
     mode: Mode,
     /// Frames requested so far; each snapshot carries its request's number.
     posted: u64,
@@ -255,9 +257,9 @@ impl SimDriver {
 
     /// Take the heightmap requests the producer made outside a frame (the
     /// physics prime at load) and queue them for the shell's asset driver.
-    pub fn queue_terrain_requests(&mut self, scene_context: &functor_runtime_common::SceneContext) {
+    pub fn queue_terrain_requests(&mut self, scene_context: &crate::SceneContext) {
         scene_context.queue_terrain_requests(
-            self.call(|_| functor_runtime_common::terrain::take_heightmap_requests()),
+            self.call(|_| crate::terrain::take_heightmap_requests()),
         );
     }
 
@@ -432,13 +434,56 @@ impl SimSnapshot {
 }
 
 /// Whether `view` has interactive widgets, whose events resolve by slot.
-pub(crate) fn has_widgets(view: &View) -> bool {
+pub fn has_widgets(view: &View) -> bool {
     match view {
         View::Button { .. } | View::Slider { .. } | View::TextInput { .. } => true,
         View::Column(children) | View::Row(children) => children.iter().any(has_widgets),
         View::Panel { child, .. } => has_widgets(child),
         View::Empty | View::Text { .. } => false,
     }
+}
+
+/// Mirrors the heightmaps hydrated on the shell's thread (by its asset driver
+/// and terrain draw) onto the sim thread's bridge, where physics reads them.
+/// Held weakly, like the bridge itself, so maps don't outlive their assets.
+#[derive(Default)]
+pub struct HeightmapMirror {
+    mirrored: Vec<(TerrainSource, Weak<HeightmapData>)>,
+}
+
+impl HeightmapMirror {
+    /// Post any change to the sim thread; true if something changed. Inline
+    /// there is one bridge, so this does nothing.
+    pub fn sync(&mut self, sim: &mut SimDriver) -> bool {
+        if !sim.is_threaded() {
+            return false;
+        }
+        let hydrated = crate::terrain::hydrated_heightmaps();
+        let unchanged = hydrated.len() == self.mirrored.len()
+            && hydrated
+                .iter()
+                .zip(&self.mirrored)
+                .all(|(a, b)| a.0 == b.0 && Arc::as_ptr(&a.1) == b.1.as_ptr());
+        if unchanged {
+            return false;
+        }
+        self.mirrored = hydrated
+            .iter()
+            .map(|(source, data)| (source.clone(), Arc::downgrade(data)))
+            .collect();
+        sim.post(move |_| {
+            for (source, data) in hydrated {
+                crate::terrain::publish_heightmap(&source, data);
+            }
+        });
+        true
+    }
+}
+
+/// Whether assets are still settling: the cache moved since `pushed` was sent
+/// to the sim, or loads are in flight. Pipelined shells step in lockstep then.
+pub fn assets_busy(pushed: &AssetProgress, current: &AssetProgress) -> bool {
+    current != pushed || current.loaded + current.failed.len() < current.total
 }
 
 fn elapsed_ns(started: Instant) -> u64 {
@@ -473,10 +518,10 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
             .map_err(|e| eprintln!("[audio] bad scene json: {e}"))
             .ok()
     });
-    let terrain_requests = functor_runtime_common::terrain::take_heightmap_requests();
+    let terrain_requests = crate::terrain::take_heightmap_requests();
     let terrain_pending = terrain_requests
         .iter()
-        .any(|source| functor_runtime_common::terrain::hydrated_heightmap(source).is_none());
+        .any(|source| crate::terrain::hydrated_heightmap(source).is_none());
     SimSnapshot {
         seq: 0,
         sim_ns: 0,
@@ -503,8 +548,8 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
         terrain_requests,
         terrain_pending,
         physics_lines: if req.physics_lines {
-            functor_runtime_common::physics::with_world(
-                functor_runtime_common::physics::DEFAULT_WORLD,
+            crate::physics::with_world(
+                crate::physics::DEFAULT_WORLD,
                 |w| w.debug_lines(),
             )
             .unwrap_or_default()

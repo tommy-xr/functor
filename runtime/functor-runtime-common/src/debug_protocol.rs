@@ -86,7 +86,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// transitions folded through the shared reducer (evented, like `key`, not
 /// whole-sample like `xr`) — and the optional `touch` field on `GET /state`'s
 /// input snapshot.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 14;
+///
+/// 15 adds the optional `sim_thread` field on `GET /state`: where the game
+/// logic runs and with what scheduling class (e.g. `"pipelined:
+/// user-interactive"`), omitted by runtimes that don't report it.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 15;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -311,6 +315,11 @@ pub struct RuntimeState {
     #[serde(default)]
     pub model_debug: String,
     pub input: InputSnapshot,
+    /// Where the game logic runs (`inline` on the render thread, or
+    /// `pipelined` on its own sim thread) and that thread's scheduling class
+    /// (v15). Omitted by runtimes that don't report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_thread: Option<String>,
 }
 
 impl RuntimeState {
@@ -727,6 +736,7 @@ mod tests {
             views: vec![RuntimeView::new("main", 1920, 1080)],
             model: json!({ "label": "hello" }),
             model_debug: "Model {\n  label: \"hello\"\n}".into(),
+            sim_thread: None,
             input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
                 mouse: crate::MouseSnapshot {

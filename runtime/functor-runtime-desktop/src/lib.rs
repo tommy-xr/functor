@@ -33,8 +33,6 @@ mod net_dispatch;
 mod replay_game;
 #[cfg(not(target_arch = "wasm32"))]
 mod run;
-#[cfg(not(target_arch = "wasm32"))]
-mod sim_driver;
 // The blitz-backed HTML/CSS webview overlay (native-only: the wasm runtime
 // renders the same tree as a real DOM overlay instead). `pub` for the
 // headless render test in tests/.
@@ -44,6 +42,8 @@ pub mod webview_overlay;
 // input): the plain-data key type crossing the worker channel + its mapping.
 #[cfg(not(target_arch = "wasm32"))]
 mod webview_keys;
+#[cfg(not(target_arch = "wasm32"))]
+mod thread_qos;
 #[cfg(not(target_arch = "wasm32"))]
 mod ws_host;
 #[cfg(not(target_arch = "wasm32"))]
