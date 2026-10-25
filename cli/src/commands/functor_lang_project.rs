@@ -645,6 +645,13 @@ impl FunctorLangProject {
                         .render(failure.error.span.start, &failure.error.message),
                 )
             })?;
+        if let Some(dup) = bindings
+            .iter()
+            .enumerate()
+            .find_map(|(i, b)| bindings[..i].contains(b).then_some(b))
+        {
+            return Err(Error::other(format!("`--part {dup}` is given twice")));
+        }
         let mut parts = Vec::new();
         for binding in bindings {
             let mesh = solid_global(&session, binding)
@@ -652,6 +659,17 @@ impl FunctorLangProject {
                 .mesh();
             check_printable(binding, &mesh)?;
             parts.push((binding.as_str(), mesh));
+        }
+        // STL stores positions, not parts: merged parts must be one valid
+        // solid too (touching parts would be welded by the slicer).
+        let mut merged = functor_solid::Mesh::default();
+        for (_, mesh) in &parts {
+            merged.extend(mesh);
+        }
+        if !three_mf && parts.len() > 1 {
+            check_printable(&bindings.join(" + "), &merged).map_err(|e| {
+                Error::other(format!("{e} — export separate parts as .3mf instead"))
+            })?;
         }
         let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);
         if three_mf {
@@ -662,11 +680,7 @@ impl FunctorLangProject {
                 .unwrap_or("part");
             functor_solid::threemf::write(name, &refs, &mut file)?;
         } else {
-            let mut all = functor_solid::Mesh::default();
-            for (_, mesh) in &parts {
-                all.extend(mesh);
-            }
-            functor_solid::stl::write_binary(&all, &mut file)?;
+            functor_solid::stl::write_binary(&merged, &mut file)?;
         }
         file.flush()?;
         for (binding, mesh) in &parts {
@@ -1763,6 +1777,9 @@ fn entry_escapes_project(entry: &str) -> bool {
 
 /// Refuse a part slicers would not read as one closed solid.
 fn check_printable(binding: &str, mesh: &functor_solid::Mesh) -> Result<(), Error> {
+    if mesh.triangles.is_empty() {
+        return Err(Error::other(format!("`{binding}` is empty")));
+    }
     let overflows = |x: &f64| !(*x as f32).is_finite();
     if mesh.vertices.iter().flatten().any(overflows) {
         return Err(Error::other(format!(
@@ -2509,16 +2526,37 @@ examples move?",
         assert!(entry_escapes_project("/tmp/game.fun"));
     }
 
-    /// `export` evaluates the entry headlessly and writes `part` as binary
-    /// STL — here the shipped parts example, sized from its own header.
-    #[test]
-    fn export_writes_the_parts_example_as_binary_stl() {
+    /// The shipped `examples/parts` project, built.
+    fn parts_example() -> (super::FunctorLangProject, functor_lang::project::Project) {
         let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", "parts"]
             .iter()
             .collect();
         let dir = dir.to_string_lossy().into_owned();
         let project = super::detect(&dir).unwrap().select(None).unwrap();
         let loaded = project.build(&dir, false).unwrap();
+        (project, loaded)
+    }
+
+    /// Duplicate parts are refused; so are parts that only an STL would weld.
+    #[test]
+    fn export_rejects_duplicate_parts() {
+        let (project, loaded) = parts_example();
+        let out =
+            std::env::temp_dir().join(format!("functor-export-dup-{}.3mf", std::process::id()));
+        let parts = ["plate".to_string(), "plate".to_string()];
+        let err = project
+            .export(&loaded, &parts, &out)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("given twice"), "{err}");
+        assert!(!out.exists());
+    }
+
+    /// `export` evaluates the entry headlessly and writes `part` as binary
+    /// STL — here the shipped parts example, sized from its own header.
+    #[test]
+    fn export_writes_the_parts_example_as_binary_stl() {
+        let (project, loaded) = parts_example();
         let out = std::env::temp_dir().join(format!("functor-export-{}.stl", std::process::id()));
         project
             .export(&loaded, &["part".to_string()], &out)
@@ -2534,12 +2572,7 @@ examples move?",
     /// lists the package's six entries.
     #[test]
     fn export_writes_named_parts_as_3mf() {
-        let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", "parts"]
-            .iter()
-            .collect();
-        let dir = dir.to_string_lossy().into_owned();
-        let project = super::detect(&dir).unwrap().select(None).unwrap();
-        let loaded = project.build(&dir, false).unwrap();
+        let (project, loaded) = parts_example();
         let out = std::env::temp_dir().join(format!("functor-export-{}.3mf", std::process::id()));
         let parts = ["plate".to_string(), "relief".to_string()];
         project.export(&loaded, &parts, &out).unwrap();

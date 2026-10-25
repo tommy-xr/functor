@@ -290,8 +290,8 @@ mod tests {
         assert!(text_width(Font::Sans, 6.0, "♥").is_err());
     }
 
-    /// Offsetting a word leaves sub-grid point pairs the triangulator snaps
-    /// together; extrusion must still come out closed.
+    /// Offsetting a word leaves point pairs nanometres apart; extrusion must
+    /// still come out closed.
     #[test]
     fn fattened_words_extrude_closed() {
         let s = text(Font::Script, 6.0, "Husband").unwrap().offset(0.12);

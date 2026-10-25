@@ -25,16 +25,24 @@ const BED_CENTER: [f64; 2] = [128.0, 128.0];
 /// Write `parts` (name, mesh in mm) as one 3MF object named `name`.
 pub fn write(name: &str, parts: &[(&str, &Mesh)], out: &mut impl Write) -> io::Result<()> {
     let assembly = parts.len() + 1;
+    let meshes: Vec<String> = parts.iter().map(|(_, mesh)| mesh_xml(mesh)).collect();
+    // UUIDs derive from the content: deterministic, yet distinct per model.
+    let seed = meshes
+        .iter()
+        .fold(fnv1a(FNV_OFFSET, name.as_bytes()), |h, m| {
+            fnv1a(h, m.as_bytes())
+        });
+    let uuid = |role: u32, index: usize| uuid(seed, role, index);
     let mut objects = String::new();
     let mut components = String::new();
     let mut settings = String::new();
-    for (i, (part, mesh)) in parts.iter().enumerate() {
+    for (i, (part, _)) in parts.iter().enumerate() {
         let id = i + 1;
         let _ = write!(
             objects,
             "<object id=\"{id}\" p:UUID=\"{}\" type=\"model\">{}</object>",
             uuid(1, id),
-            mesh_xml(mesh)
+            meshes[i]
         );
         let _ = write!(
             components,
@@ -84,7 +92,7 @@ pub fn write(name: &str, parts: &[(&str, &Mesh)], out: &mut impl Write) -> io::R
     )?;
     zip.add(OBJECTS, object_file.as_bytes())?;
     zip.add("Metadata/model_settings.config", config.as_bytes())?;
-    out.write_all(&zip.finish())
+    out.write_all(&zip.finish()?)
 }
 
 const CONTENT_TYPES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -101,9 +109,29 @@ fn rels(target: &str) -> String {
     )
 }
 
-/// A fixed, well-formed UUID per (role, index) — deterministic output.
-fn uuid(role: u32, index: usize) -> String {
-    format!("{role:08x}-0000-4000-8000-{index:012x}")
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash = (hash ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
+/// A version-8 (custom) UUID from the content hash plus (role, index).
+fn uuid(seed: u64, role: u32, index: usize) -> String {
+    let h = fnv1a(
+        seed,
+        &[role.to_le_bytes(), (index as u32).to_le_bytes()].concat(),
+    );
+    format!(
+        "{:08x}-{:04x}-8{:03x}-8{:03x}-{:012x}",
+        h >> 32,
+        (h >> 16) & 0xffff,
+        h & 0xfff,
+        (seed >> 52) & 0xfff,
+        seed & 0xffff_ffff_ffff
+    )
 }
 
 fn escape(s: &str) -> String {
@@ -159,15 +187,21 @@ impl Zip {
         encoder.write_all(contents)?;
         let compressed = encoder.finish()?;
         let crc = crc32fast::hash(contents);
-        let offset = self.data.len() as u32;
+        // Classic zip (no ZIP64): refuse rather than wrap past 4 GiB.
+        let size = |n: usize| u32::try_from(n).map_err(|_| io::Error::other("3MF part over 4 GiB"));
+        let (packed, unpacked, offset) = (
+            size(compressed.len())?,
+            size(contents.len())?,
+            size(self.data.len())?,
+        );
         // Shared header fields: version 2.0, no flags, deflate, 1980-01-01 00:00.
         let fields = |buf: &mut Vec<u8>| {
             for v in [20u16, 0, 8, 0, 0x21] {
                 buf.extend(v.to_le_bytes());
             }
             buf.extend(crc.to_le_bytes());
-            buf.extend((compressed.len() as u32).to_le_bytes());
-            buf.extend((contents.len() as u32).to_le_bytes());
+            buf.extend(packed.to_le_bytes());
+            buf.extend(unpacked.to_le_bytes());
             buf.extend((name.len() as u16).to_le_bytes());
             buf.extend(0u16.to_le_bytes());
         };
@@ -187,8 +221,9 @@ impl Zip {
         Ok(())
     }
 
-    fn finish(mut self) -> Vec<u8> {
-        let (dir_offset, dir_len) = (self.data.len() as u32, self.directory.len() as u32);
+    fn finish(mut self) -> io::Result<Vec<u8>> {
+        let size = |n: usize| u32::try_from(n).map_err(|_| io::Error::other("3MF over 4 GiB"));
+        let (dir_offset, dir_len) = (size(self.data.len())?, size(self.directory.len())?);
         self.data.append(&mut self.directory);
         self.data.extend(0x06054b50u32.to_le_bytes());
         self.data.extend([0u8; 4]); // disk numbers
@@ -197,7 +232,7 @@ impl Zip {
         self.data.extend(dir_len.to_le_bytes());
         self.data.extend(dir_offset.to_le_bytes());
         self.data.extend(0u16.to_le_bytes()); // comment length
-        self.data
+        Ok(self.data)
     }
 }
 
@@ -215,6 +250,9 @@ mod tests {
         let mut b = Vec::new();
         write("thing", &[("base", &base), ("top", &top)], &mut b).unwrap();
         assert_eq!(a, b);
+        let mut c = Vec::new();
+        write("other", &[("base", &base), ("top", &top)], &mut c).unwrap();
+        assert_ne!(a, c, "UUIDs follow the content");
         assert_eq!(&a[..4], b"PK\x03\x04");
         // End record: six entries, and the central directory it points at.
         let end = a.len() - 22;
