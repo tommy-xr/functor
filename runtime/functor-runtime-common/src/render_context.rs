@@ -203,4 +203,8 @@ pub struct RenderContext<'a> {
     /// world-space vertex spacing into projected pixels.
     pub lod_projection_scale: f32,
     pub viewport_height: f32,
+    /// The fog terrain LOD may coarsen under: `fog`, unless an unfogged
+    /// skybox is drawn behind the terrain, whose silhouette then stays at
+    /// full contrast however fogged the terrain is.
+    pub lod_fog: Option<&'a Fog>,
 }

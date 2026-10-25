@@ -850,6 +850,7 @@ fn forward_pass(
         lod_projection_scale: lod_projection_scale
             .unwrap_or_else(|| default_lod_projection.y.y.abs()),
         viewport_height: lod_viewport_height.unwrap_or(viewport_height),
+        lod_fog: fog.filter(|_| skybox.is_none()),
     };
 
     // The transparent debug material deliberately reuses authored shading.

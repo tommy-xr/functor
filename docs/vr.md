@@ -272,6 +272,30 @@ measured, but moving it off the render thread does not change FPS. Tagging
 trades the untagged 85–120 FPS swing for a steady 97 FPS; neither holds the
 rate.
 
+### Terrain vertex budget (#731)
+
+Quest 3, release APKs: `main` at `b9d7a3cf` (protocol 17) vs #731 (protocol
+19). Each build pushes its own `game.fun`, so `main` runs `maxPixelError` 2 and
+#731 runs 4. All runs are inline with thread tags forced on, at 120 Hz. Each
+sample is 30 seconds after a 10-second warmup, in 2 interleaved runs. The room
+was dark, so tracking was **3DoF** with Guardian paused, and the head pose was
+identical in every run. Vertices per frame are `ovrgpuprofiler`'s
+`Vertices Shaded / Second` divided by FPS (2026-10-24):
+
+| Scene | Build | FPS mean / p5 | Stale / torn | App | GPU load | GPU clock | Verts/frame | Vertex / fragment ms | `/state.terrain` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| terrain | main | 118.5–118.8 / 109 | 63–87 / 2–3 | 7.00–7.03 ms | 0.96 | 640 MHz | 3.78 M | 3.09 / 3.91 | — |
+| terrain | #731 | 120.2–120.3 / 120 | 0–2 / 0–2 | 5.85–6.05 ms | 0.84–0.85 | ~605 MHz | 1.82 M | 1.56 / 4.49 | 582,530 (130 patches) |
+| night-terrain | main | 99.3–99.4 / 90 | 699–707 / 0 | 8.43–8.48 ms | 0.96 | 640 MHz | 4.28 M | 3.60 / 4.88 | — |
+| night-terrain | #731 | 120.3–120.4 / 120 | 1 / 0 | 6.00–6.03 ms | 0.85–0.86 | ~604 MHz | 2.36 M | 1.96 / 4.05 | 331,594 (74 patches) |
+
+The vertex/fragment split is App time weighted by the profiler's `% Time
+Shading` counters, from run 1. #731 brings both scenes to a steady 120 Hz. The
+profiler counts all geometry, including grass and trees, plus Adreno's binning
+pass. It therefore reads well above `/state.terrain` and stays above the 1.5 M
+target. With the vertex stage halved, fragment shading is now 67–74% of the
+frame. On terrain, texture fetch stalls are 34%.
+
 ## Desktop XR emulation
 
 Run a Functor Lang game with `--emulate-xr` to synthesize the same

@@ -1079,8 +1079,9 @@ fn service_debug_request(
             let frame = *frame_count;
             let pending_steps = clock.pending_steps();
             let sim_thread = sim_thread.to_string();
-            let instance_uploads =
-                functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
+            let counters = functor_runtime_common::gpu_counters::gpu_counters();
+            let instance_uploads = counters.frame_instance_uploads();
+            let terrain = counters.frame_terrain();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     frame,
@@ -1098,6 +1099,7 @@ fn service_debug_request(
                     instance_uploads,
                     config: g.config(),
                     settings: g.settings(),
+                    terrain,
                 });
             });
         }

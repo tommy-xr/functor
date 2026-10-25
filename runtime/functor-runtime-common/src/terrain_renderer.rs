@@ -13,7 +13,7 @@ use glow::HasContext;
 
 use crate::{
     asset::pipelines::HeightmapData,
-    fog::{FogUniforms, FOG_GLSL},
+    fog::{Fog, FogUniforms, FOG_GLSL},
     light::{lighting_glsl, LightingUniforms},
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
@@ -24,6 +24,8 @@ const PATCH_QUADS: u32 = 64;
 const MAX_LEVEL: u32 = 10;
 const MAX_INSTANCES: usize = 8192;
 const MAX_GRASS_INSTANCES: usize = 20_000;
+/// Fog grows the LOD error allowance by at most 1 / this.
+const MIN_FOG_VISIBILITY: f32 = 0.25;
 /// First texture unit for the detail maps. Unit 0 stays the height texture.
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
 /// The baked macro map sits above the four detail units.
@@ -44,6 +46,11 @@ const DETAIL_FADE_END_FRACTION: f32 = 0.28;
 const DETAIL_FADE_START_FRACTION: f32 = 0.15;
 
 const VERTEX_SHADER_SOURCE: &str = r#"
+        // The shared preamble defaults GLES floats to mediump; world
+        // positions need full precision (see `worldPos` in the fragment shader).
+        #ifdef GL_ES
+        precision highp float;
+        #endif
         // uv.xy plus 1 for a duplicated skirt vertex.
         layout (location = 0) in vec3 inGrid;
         // normalized heightmap offset.xy and scale.xy.
@@ -121,7 +128,11 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec3 worldNormal;
         in vec3 worldTangent;
-        in vec3 worldPos;
+        // highp: GLES fragment shaders default to mediump, which Adreno runs
+        // as fp16. At 1 km from the origin that quantizes positions to 1 m,
+        // so the tiled detail sampled blocky 1 m squares, and the stepped UVs
+        // broke mip selection, so most fetches hit level 0.
+        in highp vec3 worldPos;
         in float localHeight;
         in vec2 terrainUv;
 
@@ -172,7 +183,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         // it directly would repaint a green hillside as dirt. It also makes
         // the distance fade exact: as `fade` reaches 0 the result is 1.0, i.e.
         // no change, so there is nothing to seam against.
-        vec3 detail(sampler2D tex, vec2 uv, float fade, vec3 average) {
+        vec3 detail(sampler2D tex, highp vec2 uv, float fade, vec3 average) {
             vec3 near = mix(texture(tex, uv).rgb, texture(tex, uv * 0.137).rgb, 0.5);
             return mix(vec3(1.0), clamp(near / max(average, vec3(1e-3)), 0.0, 2.5), fade);
         }
@@ -229,15 +240,31 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     if (fade > 0.0) {
                         // The SAME weights as the colors above: texturing
                         // dresses the bands, it does not move them.
-                        vec2 uv = worldPos.xz / detailTile;
-                        vec3 structure = mix(
-                            detail(lowTex, uv, fade, detailAverage[0]),
-                            detail(highTex, uv, fade, detailAverage[1]),
-                            bandWeight);
-                        structure = mix(
-                            structure, detail(rockTex, uv, fade, detailAverage[2]), rockWeight);
-                        structure = mix(
-                            structure, detail(snowTex, uv, fade, detailAverage[3]), snowWeight);
+                        highp vec2 uv = worldPos.xz / detailTile;
+                        // A layer at weight exactly 0 contributes nothing
+                        // (`mix(a, b, 0.0) == a`), so skip its two fetches.
+                        // The smoothstep weights are exactly 0 or 1 over most
+                        // of the surface, which leaves one or two layers per
+                        // fragment instead of four. The result is unchanged up
+                        // to rounding. Same derivative argument as the fade
+                        // branch: smoothstep is flat at its edges, so a quad
+                        // straddling a skip edge has weight ~0 on that layer.
+                        vec3 structure = vec3(1.0);
+                        if (bandWeight < 1.0) {
+                            structure = detail(lowTex, uv, fade, detailAverage[0]);
+                        }
+                        if (bandWeight > 0.0) {
+                            structure = mix(
+                                structure, detail(highTex, uv, fade, detailAverage[1]), bandWeight);
+                        }
+                        if (rockWeight > 0.0) {
+                            structure = mix(
+                                structure, detail(rockTex, uv, fade, detailAverage[2]), rockWeight);
+                        }
+                        if (snowWeight > 0.0) {
+                            structure = mix(
+                                structure, detail(snowTex, uv, fade, detailAverage[3]), snowWeight);
+                        }
                         albedo *= structure;
                     }
                 }
@@ -424,6 +451,7 @@ struct TerrainGeometry {
     _index_ebo: glow::Buffer,
     instance_vbo: glow::Buffer,
     index_count: i32,
+    vertex_count: u32,
     last_used_frame: u64,
     cache_key: Option<PatchCacheKey>,
     scratch_instances: Vec<[f32; 4]>,
@@ -480,6 +508,7 @@ struct PatchCacheKey {
     min_height: f32,
     max_height: f32,
     max_pixel_error: f32,
+    fog: Option<Fog>,
     world: Matrix4<f32>,
     camera_pos: Vector3<f32>,
     view_projections: [Matrix4<f32>; 2],
@@ -548,6 +577,7 @@ impl TerrainRenderer {
             return;
         }
         self.current_frame = frame;
+        crate::gpu_counters::gpu_counters().begin_terrain_frame();
         self.height_textures.retain(|_, entry| {
             let recent = frame.wrapping_sub(entry.last_used_frame) <= 1;
             if !recent {
@@ -585,6 +615,7 @@ impl TerrainRenderer {
             min_height: description.min_height,
             max_height: description.max_height,
             max_pixel_error: description.max_pixel_error,
+            fog: ctx.lod_fog.map(Fog::without_color),
             world: *world,
             camera_pos: ctx.lod_camera_pos,
             view_projections: ctx.lod_view_projections,
@@ -614,6 +645,7 @@ impl TerrainRenderer {
                 &ctx.lod_view_projections[..ctx.lod_frustum_count],
                 ctx.lod_projection_scale,
                 ctx.viewport_height,
+                ctx.lod_fog,
                 &mut geometry.scratch_instances,
             );
             if geometry.uploaded_instances != geometry.scratch_instances {
@@ -688,11 +720,7 @@ impl TerrainRenderer {
             p.set_uniform_1f(gl, &u.max_terrain_height, description.max_height);
             p.set_uniform_1f(gl, &u.snow_height, snow_height);
             p.set_uniform_1f(gl, &u.min_height, description.min_height);
-            p.set_uniform_1f(
-                gl,
-                &u.skirt_depth,
-                ((description.max_height - description.min_height) * 0.03).max(2.0),
-            );
+            p.set_uniform_1f(gl, &u.skirt_depth, skirt_depth(description));
             let terrain_color = crate::color_space::srgb_to_linear3(description.color);
             p.set_uniform_vec3(
                 gl,
@@ -741,6 +769,9 @@ impl TerrainRenderer {
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(height_texture));
             gl.bind_vertex_array(Some(geometry.vao));
+            let patches = geometry.uploaded_instances.len() as u64;
+            crate::gpu_counters::gpu_counters()
+                .terrain_drawn(patches, patches * geometry.vertex_count as u64);
             gl.draw_elements_instanced(
                 glow::TRIANGLES,
                 geometry.index_count,
@@ -1039,6 +1070,7 @@ impl TerrainRenderer {
                 _index_ebo: index_ebo,
                 instance_vbo,
                 index_count: indices.len() as i32,
+                vertex_count: vertices.len() as u32,
                 last_used_frame: self.current_frame,
                 cache_key: None,
                 scratch_instances: Vec::new(),
@@ -1654,9 +1686,18 @@ impl Plane {
         }
     }
 
-    fn excludes_sphere(self, center: Vector3<f32>, radius: f32) -> bool {
-        self.normal.dot(center) + self.d < -radius
+    /// True when the whole box `center ± axes` lies outside this plane. The
+    /// axes are the box's world-space half-extent vectors, so the test is
+    /// exact for any affine transform, shear included.
+    fn excludes_box(self, center: Vector3<f32>, axes: &[Vector3<f32>; 3]) -> bool {
+        let reach: f32 = axes.iter().map(|axis| self.normal.dot(*axis).abs()).sum();
+        self.normal.dot(center) + self.d < -reach
     }
+}
+
+/// How far the shader drops skirt vertices below the surface.
+fn skirt_depth(description: &TerrainDescription) -> f32 {
+    ((description.max_height - description.min_height) * 0.03).max(2.0)
 }
 
 fn frustum_planes(m: &Matrix4<f32>) -> [Plane; 6] {
@@ -1686,6 +1727,7 @@ fn select_patches_into(
     view_projections: &[Matrix4<f32>],
     projection_scale: f32,
     viewport_height: f32,
+    fog: Option<&Fog>,
     patches: &mut Vec<[f32; 4]>,
 ) {
     patches.clear();
@@ -1727,6 +1769,7 @@ fn select_patches_into(
         max_scale: f32,
         projection_scale: f32,
         viewport_height: f32,
+        fog: Option<&Fog>,
         max_level: u32,
         level: u32,
         u: f32,
@@ -1742,15 +1785,23 @@ fn select_patches_into(
             (description.min_height + description.max_height) * 0.5,
             (v + scale * 0.5 - 0.5) * description.depth,
         );
-        let center4 = world * Vector4::new(center_local.x, center_local.y, center_local.z, 1.0);
+        // The patch's drawn box in world space — down to its skirt — tested
+        // plane by plane: a wide, flat patch's bounding sphere would reach far
+        // past each frustum edge.
+        let cull_low = description.min_height - skirt_depth(description);
+        let half_height = (description.max_height - cull_low) * 0.5;
+        let center4 = world
+            * Vector4::new(center_local.x, cull_low + half_height, center_local.z, 1.0);
         let center_world = center4.truncate() / center4.w.max(1e-6);
-        let half_height = (description.max_height - description.min_height) * 0.5;
-        let radius =
-            transformed_aabb_radius(world, Vector3::new(half_width, half_height, half_depth));
+        let axes = [
+            world.x.truncate() * half_width,
+            world.y.truncate() * half_height,
+            world.z.truncate() * half_depth,
+        ];
         if frusta.iter().all(|planes| {
             planes
                 .iter()
-                .any(|plane| plane.excludes_sphere(center_world, radius))
+                .any(|plane| plane.excludes_box(center_world, &axes))
         }) {
             return;
         }
@@ -1773,7 +1824,12 @@ fn select_patches_into(
             description.width.max(description.depth) * scale * max_scale / PATCH_QUADS as f32;
         let projected_spacing =
             vertex_spacing * projection_scale * viewport_height * 0.5 / distance.max(0.5);
-        let should_split = projected_spacing > description.max_pixel_error
+        // Fog fades a patch's error with its color: at visibility 0.5 a
+        // 4 px error reads like 2 px. `distance` is the patch's nearest
+        // point. The floor caps the growth at 4×, so a fully fogged patch
+        // still refines and its pops stay bounded.
+        let visibility = fog.map_or(1.0, |fog| fog.visibility(distance).max(MIN_FOG_VISIBILITY));
+        let should_split = projected_spacing * visibility > description.max_pixel_error
             && level < max_level
             && *remaining_splits > 0;
         if should_split {
@@ -1788,6 +1844,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u,
@@ -1805,6 +1862,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u + child,
@@ -1822,6 +1880,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u,
@@ -1839,6 +1898,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u + child,
@@ -1861,6 +1921,7 @@ fn select_patches_into(
         max_scale,
         projection_scale,
         viewport_height,
+        fog,
         max_level,
         0,
         0.0,
@@ -1894,6 +1955,7 @@ fn select_patches(
         std::slice::from_ref(view_projection),
         projection_scale,
         viewport_height,
+        None,
         &mut patches,
     );
     patches
@@ -1923,18 +1985,6 @@ fn fit_heightmap(source: &HeightmapData, max_size: u32) -> (Vec<u16>, u32, u32) 
         }
     }
     (samples, width, height)
-}
-
-fn transformed_aabb_radius(world: &Matrix4<f32>, half_extents: Vector3<f32>) -> f32 {
-    let x = world.x.truncate();
-    let y = world.y.truncate();
-    let z = world.z.truncate();
-    let extents = Vector3::new(
-        x.x.abs() * half_extents.x + y.x.abs() * half_extents.y + z.x.abs() * half_extents.z,
-        x.y.abs() * half_extents.x + y.y.abs() * half_extents.y + z.y.abs() * half_extents.z,
-        x.z.abs() * half_extents.x + y.z.abs() * half_extents.y + z.z.abs() * half_extents.z,
-    );
-    extents.magnitude()
 }
 
 /// Reinterpret a slice as raw bytes for GPU upload — shared by the terrain
@@ -2315,6 +2365,31 @@ mod tests {
     }
 
     #[test]
+    fn culling_keeps_a_patch_whose_skirt_alone_is_visible() {
+        let mut description = terrain();
+        description.width = 200.0;
+        description.depth = 200.0;
+        description.min_height = 0.0;
+        description.max_height = 2.0;
+        // A narrow view along y = -1 sees only the skirt, which hangs 2 m
+        // below the lowest surface.
+        let eye = Point3::new(-200.0, -1.0, 0.0);
+        let view = Matrix4::look_at_rh(eye, Point3::new(0.0, -1.0, 0.0), Vector3::unit_y());
+        let projection = perspective(Deg(0.2), 1.0, 0.1, 500.0);
+        let patches = select_patches(
+            &description,
+            257,
+            257,
+            &Matrix4::identity(),
+            eye.to_vec(),
+            &(projection * view),
+            projection.y.y,
+            1600.0,
+        );
+        assert!(!patches.is_empty(), "the visible skirt was culled");
+    }
+
+    #[test]
     fn stereo_culling_keeps_the_exact_union_of_displaced_eye_frusta() {
         let mut description = terrain();
         description.width = 200.0;
@@ -2342,6 +2417,7 @@ mod tests {
                 frusta,
                 projection.y.y,
                 1600.0,
+                None,
                 &mut patches,
             );
             patches
@@ -2393,10 +2469,54 @@ mod tests {
             1.0, 0.0, 0.0, 0.0, //
             0.0, 0.0, 0.0, 1.0,
         );
-        assert_eq!(
-            transformed_aabb_radius(&world, Vector3::new(1.0, 1.0, 1.0)),
-            3.0
+        // Every local axis maps onto world +X, so the unit box's corner
+        // reaches x = 3: a plane at x = -2.9 must not exclude it.
+        let axes = [world.x.truncate(), world.y.truncate(), world.z.truncate()];
+        let plane = |d: f32| Plane {
+            normal: -Vector3::unit_x(),
+            d,
+        };
+        assert!(!plane(-2.9).excludes_box(Vector3::new(0.0, 0.0, 0.0), &axes));
+        assert!(plane(-3.1).excludes_box(Vector3::new(0.0, 0.0, 0.0), &axes));
+    }
+
+    /// A 4 km terrain from a 4097² map, seen from 20 m up looking along the
+    /// diagonal — far enough to reach the coarse levels.
+    fn select_with_fog(fog: Option<&Fog>) -> Vec<[f32; 4]> {
+        let description = terrain();
+        let eye = Point3::new(-1500.0, 20.0, -1500.0);
+        let view = Matrix4::look_at_rh(eye, Point3::new(0.0, 0.0, 0.0), Vector3::unit_y());
+        let projection = perspective(Deg(68.0), 1.0, 0.5, 6000.0);
+        let mut patches = Vec::new();
+        select_patches_into(
+            &description,
+            4097,
+            4097,
+            &Matrix4::identity(),
+            eye.to_vec(),
+            &[projection * view],
+            projection.y.y,
+            1600.0,
+            fog,
+            &mut patches,
         );
+        patches
+    }
+
+    #[test]
+    fn fog_coarsens_only_what_it_hides() {
+        let clear = select_with_fog(None);
+        // Fog that starts past the whole terrain changes nothing.
+        let distant = Fog::linear(10_000.0, 20_000.0, 0.0, 0.0, 0.0);
+        assert_eq!(select_with_fog(Some(&distant)), clear);
+        // Denser fog keeps the patches nearest the eye and coarsens the rest.
+        let dense = Fog::exp(0.002, 0.0, 0.0, 0.0);
+        let fogged = select_with_fog(Some(&dense));
+        assert!(fogged.len() < clear.len(), "fogged {} vs clear {}", fogged.len(), clear.len());
+        // The finest patch under the eye at (-1500, -1500) survives.
+        let at_eye = [0.125, 0.125, 1.0 / 64.0, 1.0 / 64.0];
+        assert!(clear.contains(&at_eye) && fogged.contains(&at_eye));
+        assert_eq!(fogged, select_with_fog(Some(&dense)), "deterministic");
     }
 
     #[test]

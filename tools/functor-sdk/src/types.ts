@@ -213,6 +213,10 @@ export interface RuntimeState {
   /** The game's latest `settings(model)`, which a headset runtime applies on
    * change. Protocol v18+; omitted when the game defines no `settings`. */
   settings?: { xr: { foveation?: "off" | "low" | "medium" | "high" } };
+  /** The last rendered frame's terrain draws, summed over its eye draws (a
+   * stereo frame counts the shared patch set twice); `vertices` is patches ×
+   * the patch mesh's vertex count. Protocol v19+; a pre-v19 runtime omits it. */
+  terrain?: { patches: number; vertices: number };
 }
 
 /** Camera block from `GET /scene`. */

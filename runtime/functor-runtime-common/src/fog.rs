@@ -45,6 +45,29 @@ impl Fog {
             Fog::Linear { color, .. } | Fog::Exp { color, .. } => *color,
         }
     }
+
+    /// The same fog with its color zeroed: what terrain LOD depends on.
+    pub fn without_color(&self) -> Fog {
+        match *self {
+            Fog::Linear { near, far, .. } => Fog::linear(near, far, 0.0, 0.0, 0.0),
+            Fog::Exp { density, .. } => Fog::exp(density, 0.0, 0.0, 0.0),
+        }
+    }
+
+    /// How much of a surface's own color survives at `distance`: the
+    /// shader's `applyFog` factor, clamped to 0..1 (NaN reads as no fog).
+    /// Terrain LOD scales its screen-space error by it.
+    pub fn visibility(&self, distance: f32) -> f32 {
+        let factor = match self {
+            Fog::Linear { near, far, .. } => (far - distance) / (far - near).max(1e-4),
+            Fog::Exp { density, .. } => (-density * distance).exp(),
+        };
+        if factor.is_nan() {
+            1.0
+        } else {
+            factor.clamp(0.0, 1.0)
+        }
+    }
 }
 
 /// The clear color for a forward pass: the fog color when fog is set (so the
@@ -153,6 +176,18 @@ impl FogUniforms {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visibility_matches_the_shader_factor() {
+        let linear = Fog::linear(100.0, 300.0, 0.0, 0.0, 0.0);
+        assert_eq!(linear.visibility(50.0), 1.0);
+        assert_eq!(linear.visibility(200.0), 0.5);
+        assert_eq!(linear.visibility(400.0), 0.0);
+        let exp = Fog::exp(0.01, 0.0, 0.0, 0.0);
+        assert!((exp.visibility(100.0) - (-1.0f32).exp()).abs() < 1e-6);
+        assert_eq!(Fog::exp(-1.0, 0.0, 0.0, 0.0).visibility(10.0), 1.0);
+        assert_eq!(Fog::exp(f32::NAN, 0.0, 0.0, 0.0).visibility(10.0), 1.0);
+    }
 
     #[test]
     fn clear_color_defaults_without_fog() {

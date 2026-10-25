@@ -44,7 +44,8 @@ let maxBalls = 24.0
 
 let world =
   Terrain.heightmap(Asset.texture("heightmap.png"), worldSize, worldSize, -80.0, 520.0)
-  |> Terrain.maxPixelError(2.0)
+  // 4 px fits the Quest vertex budget; 8 swims in stereo.
+  |> Terrain.maxPixelError(4.0)
   |> Terrain.layered(
        Color.rgb(0.12, 0.30, 0.12),
        Color.rgb(0.34, 0.49, 0.20),
