@@ -1520,6 +1520,8 @@ pub fn android_main(app: AndroidApp) {
                 log::info!("camera rig centered: Frame.camera is the reference center-eye pose");
             }
         }
+        tracking_reference =
+            passthrough::room_locked(tracking_reference, debug.config, debug.last_frame.as_deref());
         debug.input.xr = session_focused
             .then(|| {
                 tracking_reference

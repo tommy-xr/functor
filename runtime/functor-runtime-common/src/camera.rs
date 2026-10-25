@@ -55,6 +55,29 @@ impl TrackingPose {
         Some(Self::from_parts(position, orientation))
     }
 
+    /// This pose stood upright (yaw only) at `height` above the tracking
+    /// floor — the rig reference for room-locked mixed reality. Centering on
+    /// it, in a floor-origin (STAGE) space, maps the real floor to world
+    /// `y = 0` under a level authored camera whose eye is `height` high, and
+    /// keeps the room level however the head was tilted when it was taken.
+    /// Idempotent for a fixed `height`.
+    pub fn floor_locked(self, height: f32) -> Option<Self> {
+        let position = self.position_vector()?;
+        let forward = self.unit_orientation()?.rotate_vector(-Vector3::unit_z());
+        // Yaw about +Y that turns -Z onto the horizontal forward; looking
+        // straight up/down has no heading, so keep the tracking frame's.
+        let yaw = if forward.x.hypot(forward.z) > 1e-4 {
+            (-forward.x).atan2(-forward.z)
+        } else {
+            0.0
+        };
+        let half = yaw * 0.5;
+        Some(Self::from_parts(
+            Vector3::new(position.x, height, position.z),
+            Quaternion::new(half.cos(), 0.0, half.sin(), 0.0),
+        ))
+    }
+
     /// Express `self` relative to a tracking-space reference pose.
     ///
     /// The result is target-neutral rig-local data: its origin/orientation are
@@ -442,6 +465,7 @@ impl Default for Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cgmath::Rotation3;
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
@@ -842,6 +866,27 @@ mod tests {
         assert!(approx(relative.orientation[1], 0.0));
         assert!(approx(relative.orientation[2], 0.0));
         assert!(approx(relative.orientation[3].abs(), 1.0));
+    }
+
+    #[test]
+    fn floor_locked_keeps_heading_and_drops_tilt() {
+        // Head 1.7 m up, turned 90° left (forward = -X) and pitched down 30°.
+        let yaw = Quaternion::from_angle_y(Rad(std::f32::consts::FRAC_PI_2));
+        let pitch = Quaternion::from_angle_x(Rad(-std::f32::consts::FRAC_PI_6));
+        let q = yaw * pitch;
+        let head = TrackingPose::new([0.3, 1.7, -0.2], [q.v.x, q.v.y, q.v.z, q.s]);
+        let locked = head.floor_locked(1.6).unwrap();
+        assert_eq!(locked.position, [0.3, 1.6, -0.2]);
+        let forward = locked
+            .unit_orientation()
+            .unwrap()
+            .rotate_vector(-Vector3::unit_z());
+        assert!((forward - Vector3::new(-1.0, 0.0, 0.0)).magnitude() < 1e-5);
+        // Idempotent, and the stage floor maps to rig-local y = -height.
+        assert_eq!(locked.floor_locked(1.6), Some(locked));
+        let floor = TrackingPose::new([0.3, 0.0, -0.2], locked.orientation);
+        let local = floor.relative_to(locked).unwrap();
+        assert!((local.position[1] + 1.6).abs() < 1e-6);
     }
 
     #[test]
