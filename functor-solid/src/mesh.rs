@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::{PI, TAU};
 
-use cgmath::{InnerSpace, Matrix4, Point3, Transform, Vector3};
+use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Transform, Vector3};
 
 /// Counter-clockwise triangles (seen from outside) over shared vertices, in mm.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -20,15 +20,24 @@ pub struct Bounds {
 }
 
 impl Mesh {
-    /// Append `other` transformed by `xform` (no mirroring: winding is kept).
+    /// Append `other` transformed by `xform`. A mirroring transform flips
+    /// winding, so triangles are reversed to keep them facing outward.
     pub fn append(&mut self, other: &Mesh, xform: Matrix4<f64>) {
         let base = self.vertices.len() as u32;
         self.vertices.extend(other.vertices.iter().map(|&v| {
             let p = xform.transform_point(Point3::from(v));
             [p.x, p.y, p.z]
         }));
+        let mirrored = xform.determinant() < 0.0;
         self.triangles
-            .extend(other.triangles.iter().map(|t| t.map(|i| i + base)));
+            .extend(other.triangles.iter().map(|&[a, b, c]| {
+                let [a, b, c] = [a, b, c].map(|i| i + base);
+                if mirrored {
+                    [a, c, b]
+                } else {
+                    [a, b, c]
+                }
+            }));
     }
 
     /// Signed volume (divergence theorem); positive when facing outward.

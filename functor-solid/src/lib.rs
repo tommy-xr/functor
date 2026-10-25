@@ -74,9 +74,9 @@ impl Solid {
     }
 
     fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) {
-        // Transforms are rigid plus uniform scale, so det = scale³. Facets are
-        // counted on the radius as it will print, not as written.
-        let scale = xform.determinant().cbrt();
+        // Transforms are rigid plus uniform scale, so |det| = scale³. Facets
+        // are counted on the radius as it will print, not as written.
+        let scale = xform.determinant().cbrt().abs();
         match self {
             Solid::Box { size } => out.append(&mesh::boxed(*size), xform),
             Solid::Cylinder { radius, height } => out.append(
@@ -190,6 +190,13 @@ mod tests {
         assert_eq!(corner.shared_positions(), 1);
         let apart = Solid::Group(vec![cube(), arc(cube().translate([2.5, 0.0, 0.0]))]).mesh();
         assert_eq!(apart.shared_positions(), 0);
+    }
+
+    #[test]
+    fn mirroring_scale_keeps_triangles_facing_outward() {
+        let mesh = arc(Solid::Box { size: [2.0; 3] }).scale(-1.0).mesh();
+        assert!((mesh.volume() - 8.0).abs() < 1e-9, "{}", mesh.volume());
+        assert_eq!(mesh.non_manifold_edges(), 0);
     }
 
     #[test]
