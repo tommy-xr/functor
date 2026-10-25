@@ -1,8 +1,10 @@
 //! 2D profiles for printable parts: draw in the XY plane (millimetres), then
 //! `Solid.extrude` a sketch into a solid.
 //!
-//! Sketches are always clean regions — overlaps merge, holes stay holes — so
-//! any sketch extrudes into a closed solid.
+//! Sketches are always clean regions — overlaps merge, holes stay holes. Draw
+//! at final size: curves are faceted when drawn, so scaling doesn't refine
+//! them. Regions that meet at a single point (a bowtie, squares corner to
+//! corner) can't extrude — overlap them or move them apart.
 //!
 //! ```
 //! let plate =
@@ -21,7 +23,8 @@ let roundedRect : (float, float, float) => t
 /// A circle of `radius`, centered on the origin.
 let circle : (float) => t
 /// A filled outline through `{ x, y }` points, in either winding. A
-/// self-crossing outline fills where it winds (nonzero rule).
+/// self-crossing outline fills where it winds (nonzero rule); one crossing
+/// at a point (a bowtie) can't extrude.
 let polygon : (List<Input.point2>) => t
 
 /// Merge sketches into one region.

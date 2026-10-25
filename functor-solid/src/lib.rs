@@ -19,7 +19,7 @@ use std::sync::Arc;
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
 pub use mesh::{face_normal, Bounds, Mesh};
-pub use sketch::{Shapes, Sketch};
+pub use sketch::Sketch;
 
 /// Maximum distance (mm) a curved surface's facets may sag from the true
 /// surface. 0.01 mm is well under a 0.4 mm nozzle's resolution.
@@ -79,7 +79,8 @@ impl Solid {
 
     fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) {
         // Transforms are rigid plus uniform scale, so |det| = scale³. Facets
-        // are counted on the radius as it will print, not as written.
+        // are counted on the radius as it will print, not as written (sketch
+        // curves are faceted when drawn, so draw those at final size).
         let scale = xform.determinant().cbrt().abs();
         match self {
             Solid::Box { size } => out.append(&mesh::boxed(*size), xform),

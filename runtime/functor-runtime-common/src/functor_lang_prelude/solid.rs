@@ -176,11 +176,13 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         |h: f64, s: FunctorLangSketch| {
             let height = positive(h, "Solid.extrude height")?;
             if s.0.is_empty() {
-                return Err(
-                    "Solid.extrude: the sketch is empty — an offset or subtract \
-removed all of it"
-                        .to_string(),
-                );
+                return Err("Solid.extrude: the sketch has no area".to_string());
+            }
+            if let Some([x, y]) = s.0.touching_point() {
+                return Err(format!(
+                    "Solid.extrude: the sketch's regions meet at a single point ({x:.3}, {y:.3}), \
+which won't print as one solid — overlap them or move them apart"
+                ));
             }
             Ok(solid(Solid::Extrude {
                 sketch: s.0,

@@ -647,11 +647,18 @@ impl FunctorLangProject {
             )));
         }
         let shared = mesh.shared_positions();
-        if shared > 0 || mesh.non_manifold_edges() > 0 {
+        if shared > 0 {
             return Err(Error::other(format!(
                 "`{binding}` would not slice as a solid: {shared} vertices of separate pieces \
 land on the same point, joining them at a corner or edge. Overlap the pieces in the \
 `Solid.group` slightly (or move them apart) instead of letting them touch exactly."
+            )));
+        }
+        let open = mesh.non_manifold_edges();
+        if open > 0 {
+            return Err(Error::other(format!(
+                "`{binding}` would not slice as a solid: {open} edges are open or shared by \
+more than two faces"
             )));
         }
         let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);

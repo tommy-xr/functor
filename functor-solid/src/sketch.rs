@@ -5,6 +5,7 @@
 //! holes clockwise. Extruding one ([`crate::Solid::Extrude`]) yields a closed
 //! solid.
 
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 
 use i_overlay::core::fill_rule::FillRule;
@@ -15,7 +16,7 @@ use i_overlay::mesh::float::outline::offset::OutlineOffset;
 use i_overlay::mesh::float::style::{LineJoin, OutlineStyle};
 use i_triangle::float::triangulatable::Triangulatable;
 
-use crate::{segments_for, Mesh, CHORD_TOLERANCE};
+use crate::{segments_for, Mesh};
 
 /// Shapes → contours → points: each shape is an outer contour plus holes.
 pub type Shapes = Vec<Vec<Vec<[f64; 2]>>>;
@@ -35,12 +36,8 @@ impl Sketch {
     }
 
     pub fn circle(radius: f64) -> Sketch {
-        let n = segments_for(radius);
-        let ring = (0..n)
-            .map(|i| {
-                let a = TAU * i as f64 / n as f64;
-                [radius * a.cos(), radius * a.sin()]
-            })
+        let ring = crate::mesh::ring(radius, 0.0, segments_for(radius))
+            .map(|[x, y, _]| [x, y])
             .collect();
         Sketch {
             shapes: vec![vec![ring]],
@@ -82,10 +79,10 @@ impl Sketch {
         if distance == 0.0 || self.shapes.is_empty() {
             return self.clone();
         }
-        // Round joins split arcs into segments of at most L = angle × R; pick
-        // the angle that keeps their sag within the chord tolerance.
-        let r = distance.abs();
-        let angle = 2.0 * (1.0 - CHORD_TOLERANCE / r).clamp(-1.0, 1.0).acos();
+        // Round joins step by `angle` (L / R): match `circle`'s faceting. i_overlay
+        // floors the step at 0.01π, so offsets past ~80 mm sag more than the
+        // chord tolerance.
+        let angle = TAU / segments_for(distance.abs()) as f64;
         let style = OutlineStyle::new(distance).line_join(LineJoin::Round(angle));
         Sketch {
             shapes: self.shapes.outline(&style),
@@ -113,11 +110,14 @@ impl Sketch {
             .iter()
             .flatten()
             .map(|contour| {
+                // Shoelace about the contour's first point, so far-from-origin
+                // contours don't lose their area to cancellation.
                 let n = contour.len();
+                let [ox, oy] = contour[0];
                 (0..n)
                     .map(|i| {
                         let ([x0, y0], [x1, y1]) = (contour[i], contour[(i + 1) % n]);
-                        x0 * y1 - x1 * y0
+                        (x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy)
                     })
                     .sum::<f64>()
                     / 2.0
@@ -129,9 +129,22 @@ impl Sketch {
         self.shapes.is_empty()
     }
 
-    /// The closed prism from z = 0 to z = `height`. Walls are built from the
-    /// cap triangulation's own boundary edges, so caps and walls share every
-    /// vertex and the mesh is closed by construction.
+    /// A point where regions meet only at a vertex (a bowtie, squares corner
+    /// to corner): two contour vertices at one position. Extruded, such a
+    /// point becomes an edge shared by four faces, which won't slice as a solid.
+    pub fn touching_point(&self) -> Option<[f64; 2]> {
+        let mut seen = HashSet::new();
+        self.shapes
+            .iter()
+            .flatten()
+            .flatten()
+            .find(|p| !seen.insert(p.map(|x| (x + 0.0).to_bits())))
+            .copied()
+    }
+
+    /// The prism from z = 0 to z = `height`. Walls are built from the cap
+    /// triangulation's own boundary edges, so caps and walls share every
+    /// vertex; it is closed whenever [`Sketch::touching_point`] is `None`.
     pub fn extrude(&self, height: f64) -> Mesh {
         let tri = self.shapes.triangulate().to_triangulation::<u32>();
         let n = tri.points.len() as u32;
@@ -140,27 +153,29 @@ impl Sketch {
             .extend(tri.points.iter().map(|p| [p[0], p[1], 0.0]));
         mesh.vertices
             .extend(tri.points.iter().map(|p| [p[0], p[1], height]));
-        // Undirected edge → its directed occurrence, if seen once (boundary).
-        let mut edges = std::collections::HashMap::new();
-        for t in tri.indices.chunks_exact(3) {
-            let [a, b, c] = [t[0], t[1], t[2]];
-            // Wind every cap triangle counter-clockwise seen from +Z.
-            let [pa, pb, pc] = [a, b, c].map(|i| tri.points[i as usize]);
-            let ccw = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0]) > 0.0;
-            let [a, b, c] = if ccw { [a, b, c] } else { [a, c, b] };
+        // i_triangle emits counter-clockwise triangles (seen from +Z).
+        let triangles: Vec<[u32; 3]> = tri
+            .indices
+            .chunks_exact(3)
+            .map(|t| [t[0], t[1], t[2]])
+            .collect();
+        let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
+        for &[a, b, c] in &triangles {
             mesh.triangles.push([n + a, n + b, n + c]);
             mesh.triangles.push([a, c, b]);
             for (u, v) in [(a, b), (b, c), (c, a)] {
-                let key = (u.min(v), u.max(v));
-                if edges.remove(&key).is_none() {
-                    edges.insert(key, (u, v));
-                }
+                *uses.entry((u.min(v), u.max(v))).or_default() += 1;
             }
         }
-        // Material lies left of each boundary edge u→v, so this wall faces out.
-        for (u, v) in edges.into_values() {
-            mesh.triangles.push([u, v, n + v]);
-            mesh.triangles.push([u, n + v, n + u]);
+        // Boundary edges (used once), visited in triangle order so the mesh is
+        // deterministic. Material lies left of u→v, so each wall faces out.
+        for &[a, b, c] in &triangles {
+            for (u, v) in [(a, b), (b, c), (c, a)] {
+                if uses[&(u.min(v), u.max(v))] == 1 {
+                    mesh.triangles.push([u, v, n + v]);
+                    mesh.triangles.push([u, n + v, n + u]);
+                }
+            }
         }
         mesh
     }
@@ -210,6 +225,37 @@ mod tests {
         let shrunk = Sketch::rect(10.0, 6.0).offset(-1.0);
         assert!(close(shrunk.area(), 8.0 * 4.0, 0.002), "{}", shrunk.area());
         assert!(Sketch::rect(2.0, 2.0).offset(-1.5).is_empty());
+    }
+
+    #[test]
+    fn regions_meeting_at_a_point_are_detected() {
+        let bowtie = Sketch::polygon(vec![[0.0, 0.0], [2.0, 2.0], [2.0, 0.0], [0.0, 2.0]]);
+        assert!(bowtie.touching_point().is_some());
+        let corner = Sketch::union(&[
+            Sketch::rect(2.0, 2.0),
+            Sketch::rect(2.0, 2.0).map_points(|[x, y]| [x + 2.0, y + 2.0]),
+        ]);
+        assert_eq!(corner.touching_point(), Some([1.0, 1.0]));
+        let notched = Sketch::rect(10.0, 10.0).subtract(&Sketch::circle(5.0));
+        assert!(notched.touching_point().is_some());
+        assert_eq!(
+            Sketch::rect(10.0, 10.0)
+                .subtract(&Sketch::circle(3.0))
+                .touching_point(),
+            None
+        );
+    }
+
+    #[test]
+    fn extrusion_is_deterministic() {
+        let s = Sketch::rect(10.0, 10.0).subtract(&Sketch::circle(3.0));
+        assert_eq!(s.extrude(1.0), s.extrude(1.0));
+    }
+
+    #[test]
+    fn area_survives_far_from_origin() {
+        let far = Sketch::rect(10.0, 6.0).map_points(|[x, y]| [x + 1e9, y + 1e9]);
+        assert!(close(far.area(), 60.0, 1e-9), "{}", far.area());
     }
 
     #[test]
