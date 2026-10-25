@@ -4418,11 +4418,12 @@ macro_rules! handle_arg {
     )+};
 }
 
-use solid::{FunctorLangSketch, FunctorLangSolid};
+use solid::{FunctorLangFont, FunctorLangSketch, FunctorLangSolid};
 
 handle_arg!(
     FunctorLangSolid => "a Solid",
     FunctorLangSketch => "a Sketch",
+    FunctorLangFont => "a Typeface",
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
     FunctorLangInstance => "an Instance",

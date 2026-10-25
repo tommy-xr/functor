@@ -1,0 +1,11 @@
+//! Built-in typefaces for `Sketch.text`: subsets of SIL Open Font License
+//! fonts covering one line of Latin-1 text, so text is pure and identical on
+//! every target.
+
+/// An opaque built-in typeface.
+type t = host
+
+/// A readable semi-cursive script (derived from Courgette, OFL).
+let script : () => t
+/// A clean sans-serif (derived from Lato, OFL).
+let sans : () => t

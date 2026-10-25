@@ -27,6 +27,15 @@ let circle : (float) => t
 /// at a point (a bowtie) can't extrude.
 let polygon : (List<Input.point2>) => t
 
+/// One line of text in a typeface, starting at the origin on the baseline.
+/// `size` follows OpenSCAD's `text()` (a capital is roughly `size` tall), so
+/// ported models match. Overlapping script letters merge; counters stay holes.
+/// A character outside the typeface (or a line break) is an error, not a gap.
+let text : (Typeface.t, float, string) => t
+/// The width of one line of text in mm — for right or centered alignment,
+/// e.g. `Sketch.translate(0.0 - Sketch.textWidth(f, s, line), 0.0, …)`.
+let textWidth : (Typeface.t, float, string) => float
+
 /// Merge sketches into one region.
 let union : (List<t>) => t
 /// Cut `cut` out of a sketch; the sketch is last for piping.
