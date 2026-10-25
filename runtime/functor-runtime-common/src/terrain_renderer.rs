@@ -46,6 +46,11 @@ const DETAIL_FADE_END_FRACTION: f32 = 0.28;
 const DETAIL_FADE_START_FRACTION: f32 = 0.15;
 
 const VERTEX_SHADER_SOURCE: &str = r#"
+        // The shared preamble defaults GLES floats to mediump; world
+        // positions need full precision (see `worldPos` in the fragment shader).
+        #ifdef GL_ES
+        precision highp float;
+        #endif
         // uv.xy plus 1 for a duplicated skirt vertex.
         layout (location = 0) in vec3 inGrid;
         // normalized heightmap offset.xy and scale.xy.
@@ -240,9 +245,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                         // (`mix(a, b, 0.0) == a`), so skip its two fetches.
                         // The smoothstep weights are exactly 0 or 1 over most
                         // of the surface, which leaves one or two layers per
-                        // fragment instead of four (Quest 3 terrain: texture
-                        // fetch stall 34% -> 8%). The result is unchanged.
-                        // Same derivative argument as the fade branch: a quad
+                        // fragment instead of four. The result is unchanged up
+                        // to rounding. Same derivative argument as the fade
+                        // branch: smoothstep is flat at its edges, so a quad
                         // straddling a skip edge has weight ~0 on that layer.
                         vec3 structure = vec3(1.0);
                         if (bandWeight < 1.0) {
