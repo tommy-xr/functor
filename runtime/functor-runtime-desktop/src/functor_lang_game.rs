@@ -2041,7 +2041,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let entry = dir.join("game.fun");
         let disk_game = format!("{BASE}let probe = 1.0\n");
         std::fs::write(&entry, &disk_game).expect("write entry");
-        std::fs::write(dir.join("config.fun"), "let k = 1.0\n").expect("write sibling");
+        std::fs::write(dir.join("tuning.fun"), "let k = 1.0\n").expect("write sibling");
         let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
 
         // Push an entry variant distinguishable from the disk one.
@@ -2054,7 +2054,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
 
         // Edit the SIBLING: the reload must keep the pushed entry.
         std::thread::sleep(std::time::Duration::from_millis(20)); // distinct mtime
-        std::fs::write(dir.join("config.fun"), "let k = 5.0\n").expect("edit sibling");
+        std::fs::write(dir.join("tuning.fun"), "let k = 5.0\n").expect("edit sibling");
         game.check_hot_reload(FrameTime { tts: 0.0, dts: 0.0 });
         assert_eq!(
             game.session.global("probe").expect("probe").to_string(),
@@ -2062,7 +2062,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             "a sibling edit must not revert the pushed entry"
         );
         assert_eq!(
-            game.session.global("Config.k").expect("k").to_string(),
+            game.session.global("Tuning.k").expect("k").to_string(),
             "5",
             "the sibling edit itself must have landed"
         );
@@ -2094,10 +2094,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         std::fs::write(&entry, format!("{BASE}let probe = 1.0\n")).expect("write entry");
         let mut game = FunctorLangGame::create(entry.to_str().expect("utf-8 path"));
 
-        let pushed_entry = format!("{BASE}let probe = Config.k\n");
+        let pushed_entry = format!("{BASE}let probe = Tuning.k\n");
         let files = vec![
             ("game.fun".to_string(), pushed_entry.clone()),
-            ("config.fun".to_string(), "let k = 7.0\n".to_string()),
+            ("tuning.fun".to_string(), "let k = 7.0\n".to_string()),
         ];
         let status = game
             .reload_project(&files)
@@ -2110,7 +2110,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
 
         // Entry-only pushes after a project push keep the pushed siblings,
         // matching the embedded producer rather than consulting disk.
-        game.reload_source(&format!("{BASE}let probe = Config.k + 2.0\n"))
+        game.reload_source(&format!("{BASE}let probe = Tuning.k + 2.0\n"))
             .expect("entry push should retain project siblings");
         assert_eq!(
             game.session.global("probe").expect("probe").to_string(),
@@ -2126,10 +2126,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
                 .iter()
                 .map(|(path, _)| path.as_str())
                 .collect::<Vec<_>>(),
-            vec!["game.fun", "config.fun"],
+            vec!["game.fun", "tuning.fun"],
             "the entry comes first, then siblings"
         );
-        assert!(reported[0].1.contains("Config.k + 2.0"), "{reported:?}");
+        assert!(reported[0].1.contains("Tuning.k + 2.0"), "{reported:?}");
         assert_eq!(reported[1].1, "let k = 7.0\n");
 
         let broken = vec![("game.fun".to_string(), "let init =".to_string())];
