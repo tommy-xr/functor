@@ -64,13 +64,28 @@ instrumentation in our code, no rebuild.
 ```sh
 D=<serial>
 adb -s $D shell ovrgpuprofiler -m                      # list all 81 counters
-adb -s $D shell 'ovrgpuprofiler --realtime="24,31"'    # stream, one sample/sec
+adb -s $D shell 'ovrgpuprofiler --realtime="25,32"'    # stream, one sample/sec
 ```
 
 `--realtime` takes a comma-separated list of counter IDs and prints a block per
 second until interrupted; wrap it in `timeout` so it can't wedge. Counters are
 stable across samples on a steady workload — if they aren't, the scene isn't
 settled.
+
+**Select counters by name, not by remembered ID.** IDs can shift between
+headset OS builds. Resolve them from this device's `-m` list first:
+
+```sh
+ids=$(adb -s $D shell ovrgpuprofiler -m | awk -F'\t' '
+  $2=="% Time Shading Vertices" || $2=="% Time Shading Fragments" ||
+  $2=="% Texture Fetch Stall" {print $1}' | paste -sd, -)
+adb -s $D shell "ovrgpuprofiler --realtime=\"$ids\""
+```
+
+The output labels each value by name, so parse it by name too. The IDs below
+are from a Quest 3 (2026-10). The shader-processor counters (stage split,
+busy, ALU, texture stall) sometimes read `0` or `-1` for a whole sample while
+the vertex counts stay valid. Rerun the capture when that happens.
 
 ### The counters that answer real questions
 
@@ -80,8 +95,8 @@ whether fill-rate work (foveation, fewer fetches per fragment) or geometry work
 
 | ID | Counter |
 | --- | --- |
-| 24 | % Time Shading Vertices |
-| 31 | % Time Shading Fragments |
+| 25 | % Time Shading Vertices |
+| 32 | % Time Shading Fragments |
 
 **Whether the GPU is computing or waiting.** `% Shaders Busy` high with
 `% Shader ALU Capacity Utilized` low means the cores are stalled, not working —
@@ -89,9 +104,9 @@ and then ALU optimizations are pointless:
 
 | ID | Counter |
 | --- | --- |
-| 16 | % Shaders Busy |
-| 18 | % Shader ALU Capacity Utilized |
-| 22 | % Wave Context Occupancy |
+| 17 | % Shaders Busy |
+| 19 | % Shader ALU Capacity Utilized |
+| 23 | % Wave Context Occupancy |
 
 **Where the stalls come from.** Split L1 from L2: a high L1 miss with a
 negligible L2 miss is cache *thrash* from a scattered access pattern, not
@@ -100,30 +115,30 @@ textures:
 
 | ID | Counter |
 | --- | --- |
-| 7 | % Texture Fetch Stall |
-| 8 | % Texture L1 Miss |
-| 9 | % Texture L2 Miss |
-| 6 | % Vertex Fetch Stall |
-| 21 | % Texture Pipes Busy |
+| 8 | % Texture Fetch Stall |
+| 9 | % Texture L1 Miss |
+| 10 | % Texture L2 Miss |
+| 7 | % Vertex Fetch Stall |
+| 22 | % Texture Pipes Busy |
 
 **Work volume**, for comparing against Meta's budgets and deriving overdraw:
 
 | ID | Counter |
 | --- | --- |
-| 25 | Vertices Shaded / Second |
-| 32 | Fragments Shaded / Second |
-| 27 | Textures / Vertex |
-| 38 | Textures / Fragment |
+| 26 | Vertices Shaded / Second |
+| 33 | Fragments Shaded / Second |
+| 28 | Textures / Vertex |
+| 39 | Textures / Fragment |
 
 ### Deriving the numbers that matter
 
 The counters are per-second; divide by measured FPS for per-frame figures:
 
 ```
-vertices/frame  = (25) / fps
-fragments/frame = (32) / fps
+vertices/frame  = Vertices Shaded / Second ÷ fps
+fragments/frame = Fragments Shaded / Second ÷ fps
 overdraw        = fragments/frame / (2 × eye_width × eye_height)
-stage ms        = App_ms × (24 or 31) / 100
+stage ms        = App_ms × % Time Shading (Vertices or Fragments) / 100
 ```
 
 Meta's guidance is roughly **1–2 M vertices/frame for the whole app** and a
