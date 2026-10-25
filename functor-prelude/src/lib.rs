@@ -43,6 +43,7 @@ pub fn modules() -> Vec<(String, String)> {
         module("Instance", include_str!("../prelude/instance.funi")),
         module("Terrain", include_str!("../prelude/terrain.funi")),
         module("Solid", include_str!("../prelude/solid.funi")),
+        module("Sketch", include_str!("../prelude/sketch.funi")),
         module("Anim", include_str!("../prelude/anim.funi")),
         module("Asset", include_str!("../prelude/asset.funi")),
         module("Angle", include_str!("../prelude/angle.funi")),

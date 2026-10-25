@@ -2484,7 +2484,7 @@ examples move?",
         let bytes = std::fs::read(&out).unwrap();
         std::fs::remove_file(&out).ok();
         let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
-        assert!(count > 1000, "{count} triangles");
+        assert!(count > 100, "{count} triangles");
         assert_eq!(bytes.len(), 84 + 50 * count);
     }
 

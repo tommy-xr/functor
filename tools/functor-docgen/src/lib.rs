@@ -91,7 +91,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
         "Shell options",
         &["Config", "Settings", "Xr"],
     ),
-    (ApiGroup::Engine, "Parts", &["Solid"]),
+    (ApiGroup::Engine, "Parts", &["Solid", "Sketch"]),
     (ApiGroup::Stdlib, "Collections", &["List", "Map"]),
     (ApiGroup::Stdlib, "Text", &["Text"]),
     (
@@ -680,7 +680,7 @@ mod tests {
             let items: usize = modules.iter().map(|module| module.items.len()).sum();
             (modules.len(), items)
         };
-        assert_eq!(count(ApiGroup::Engine), (33, 351));
+        assert_eq!(count(ApiGroup::Engine), (34, 365));
         assert_eq!(count(ApiGroup::Stdlib), (10, 97));
         assert!(reference
             .modules
