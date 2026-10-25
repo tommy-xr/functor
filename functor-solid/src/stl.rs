@@ -2,6 +2,8 @@
 
 use std::io::{self, Write};
 
+use cgmath::{InnerSpace, Vector3};
+
 use crate::Mesh;
 
 /// Write `mesh` as binary STL: an 80-byte header, the triangle count, then per
@@ -12,32 +14,22 @@ pub fn write_binary(mesh: &Mesh, out: &mut impl Write) -> io::Result<()> {
     header[..tag.len()].copy_from_slice(tag);
     out.write_all(&header)?;
     out.write_all(&(mesh.triangles.len() as u32).to_le_bytes())?;
-    for &[a, b, c] in &mesh.triangles {
-        let [a, b, c] = [a, b, c].map(|i| mesh.vertices[i as usize]);
-        for value in normal(a, b, c).into_iter().chain(a).chain(b).chain(c) {
-            out.write_all(&(value as f32).to_le_bytes())?;
+    for tri in &mesh.triangles {
+        let [a, b, c] = tri.map(|i| Vector3::from(mesh.vertices[i as usize]));
+        let n = (b - a).cross(c - a);
+        let n = if n.magnitude2() > 0.0 {
+            n.normalize()
+        } else {
+            n
+        };
+        for v in [n, a, b, c] {
+            for value in [v.x, v.y, v.z] {
+                out.write_all(&(value as f32).to_le_bytes())?;
+            }
         }
         out.write_all(&[0, 0])?;
     }
     Ok(())
-}
-
-fn normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
-    let (u, v) = (sub(b, a), sub(c, a));
-    let n = [
-        u[1] * v[2] - u[2] * v[1],
-        u[2] * v[0] - u[0] * v[2],
-        u[0] * v[1] - u[1] * v[0],
-    ];
-    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    if len == 0.0 {
-        return [0.0; 3];
-    }
-    n.map(|x| x / len)
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 #[cfg(test)]

@@ -612,7 +612,7 @@ impl FunctorLangProject {
     }
 
     /// Evaluate the project headlessly and write its `part` binding as STL.
-    /// Refuses a mesh that is not closed once welded by position, as slicers read it.
+    /// Refuses a mesh slicers would not read as a closed solid.
     pub fn export(
         &self,
         project: &functor_lang::project::Project,
@@ -620,8 +620,10 @@ impl FunctorLangProject {
         output: &Path,
     ) -> Result<(), Error> {
         use functor_runtime_common::functor_lang_prelude::{solid::solid_global, FunctorHost};
+        use std::io::Write;
 
-        if output.extension().and_then(|e| e.to_str()) != Some("stl") {
+        let extension = output.extension().and_then(|e| e.to_str());
+        if !extension.is_some_and(|e| e.eq_ignore_ascii_case("stl")) {
             return Err(Error::other(format!(
                 "cannot export {}: only .stl is supported",
                 output.display()
@@ -638,16 +640,23 @@ impl FunctorLangProject {
         let mesh = solid_global(&session, binding)
             .map_err(Error::other)?
             .mesh();
-        let bad = mesh.welded().non_manifold_edges();
-        if bad > 0 {
+        let overflows = |x: &f64| !(*x as f32).is_finite();
+        if mesh.vertices.iter().flatten().any(overflows) {
             return Err(Error::other(format!(
-                "`{binding}` would not slice as a solid: {bad} edges are open or shared by more \
-than two faces. Pieces in a `Solid.group` that touch exactly (a ring sitting on a ring, two \
-faces flush) cause this — overlap them slightly instead."
+                "`{binding}` is too large for STL: coordinates must fit in 32-bit floats"
+            )));
+        }
+        let shared = mesh.shared_positions();
+        if shared > 0 || mesh.non_manifold_edges() > 0 {
+            return Err(Error::other(format!(
+                "`{binding}` would not slice as a solid: {shared} vertices of separate pieces \
+land on the same point, joining them at a corner or edge. Overlap the pieces in the \
+`Solid.group` slightly (or move them apart) instead of letting them touch exactly."
             )));
         }
         let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);
         functor_solid::stl::write_binary(&mesh, &mut file)?;
+        file.flush()?;
         let size = mesh
             .bounds()
             .map(|b| {
@@ -661,10 +670,9 @@ faces flush) cause this — overlap them slightly instead."
             .unwrap_or_else(|| "empty".to_string());
         emit(Event::Info {
             message: format!(
-                "exported `{binding}` to {}: {} triangles, {:.1} mm³, {size}",
+                "exported `{binding}` to {}: {} triangles, {size}",
                 output.display(),
-                mesh.triangles.len(),
-                mesh.volume()
+                mesh.triangles.len()
             ),
         });
         Ok(())

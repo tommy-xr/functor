@@ -1,9 +1,8 @@
 //! Printable solids: build a part in code, then `functor export` it as STL.
 //!
 //! Units are millimetres and Z is up — the 3D-printing convention, not the
-//! scene's metres and Y-up. Every solid is closed and outward-facing, so any
-//! value you build exports as a valid print. Bind the result as `let part = …`
-//! and run `functor export -o part.stl`.
+//! scene's metres and Y-up. Every primitive is closed and outward-facing. Bind
+//! the result as `let part = …` and run `functor export -o part.stl`.
 //!
 //! ```
 //! let part = Solid.group([
@@ -36,11 +35,14 @@ let rotateZ : (Angle.t, t) => t
 /// Scale a solid uniformly about the origin by a positive factor.
 let scale : (float, t) => t
 
-/// Place solids side by side as one part. Overlapping pieces are NOT merged —
-/// each stays its own closed shell, which slicers print as a union.
+/// Place solids together as one part (at least one). Pieces are NOT merged —
+/// each stays its own closed shell, which slicers print as a union — so they
+/// must overlap or stay apart: pieces whose corners or edges land on the same
+/// point (stacked equal-radius rings, boxes meeting edge to edge) won't export.
 let group : (List<t>) => t
 
-/// The enclosed volume in cubic millimetres, measured on the exported mesh.
+/// The enclosed volume in cubic millimetres: the sum of a group's pieces, so
+/// overlaps count twice.
 let volume : (t) => float
 /// The bounding box of the exported mesh.
 let bounds : (t) => bounds

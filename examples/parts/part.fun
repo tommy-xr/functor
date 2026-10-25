@@ -3,8 +3,9 @@
 //   functor -d examples/parts export -o part.stl
 //
 // Units are millimetres, Z up. `Solid.group` keeps each piece its own closed
-// shell, and slicers print overlapping shells as one solid — so pieces overlap
-// by `embed` rather than touching exactly (touching faces won't export).
+// shell, and slicers print overlapping shells as one solid. Pieces overlap by
+// `embed`: the peg's rim sitting exactly on the ball's equator would join the
+// two at an edge, which won't export.
 
 let plateSize = 40.0
 let plateThickness = 4.0

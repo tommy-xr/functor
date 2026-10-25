@@ -5,8 +5,10 @@
 //! into a closed triangle [`Mesh`] only when something needs triangles
 //! (export, measurement), so building and editing a solid stays cheap.
 //!
-//! Every primitive meshes watertight and outward-facing, and transforms and
-//! groups preserve that, so any `Solid` exports as a valid print.
+//! Every primitive meshes closed and outward-facing, and transforms preserve
+//! that. A group keeps each piece its own shell, so pieces must overlap or stay
+//! apart: STL readers join pieces that share a vertex position (see
+//! [`Mesh::shared_positions`]).
 
 mod mesh;
 pub mod stl;
@@ -72,14 +74,17 @@ impl Solid {
     }
 
     fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) {
+        // Transforms are rigid plus uniform scale, so det = scale³. Facets are
+        // counted on the radius as it will print, not as written.
+        let scale = xform.determinant().cbrt();
         match self {
             Solid::Box { size } => out.append(&mesh::boxed(*size), xform),
             Solid::Cylinder { radius, height } => out.append(
-                &mesh::cylinder(*radius, *height, segments_for(*radius)),
+                &mesh::cylinder(*radius, *height, segments_for(radius * scale)),
                 xform,
             ),
             Solid::Sphere { radius } => {
-                out.append(&mesh::sphere(*radius, segments_for(*radius)), xform)
+                out.append(&mesh::sphere(*radius, segments_for(radius * scale)), xform)
             }
             Solid::Transform { matrix, child } => child.append_to(out, xform * matrix),
             Solid::Group(children) => {
@@ -176,13 +181,27 @@ mod tests {
     }
 
     #[test]
-    fn touching_pieces_are_non_manifold_once_welded() {
-        let a = arc(Solid::Box { size: [2.0; 3] });
-        let b = arc(arc(Solid::Box { size: [2.0; 3] }).translate([2.0, 0.0, 0.0]));
-        let mesh = Solid::Group(vec![a, b]).mesh();
-        assert_eq!(mesh.non_manifold_edges(), 0);
-        // The shared face's 4 edges and its diagonal each join 4 triangles.
-        assert_eq!(mesh.welded().non_manifold_edges(), 5);
+    fn pieces_touching_at_a_face_or_corner_share_positions() {
+        let cube = || arc(Solid::Box { size: [2.0; 3] });
+        let face = Solid::Group(vec![cube(), arc(cube().translate([2.0, 0.0, 0.0]))]).mesh();
+        assert_eq!(face.non_manifold_edges(), 0);
+        assert_eq!(face.shared_positions(), 4);
+        let corner = Solid::Group(vec![cube(), arc(cube().translate([2.0, 2.0, 2.0]))]).mesh();
+        assert_eq!(corner.shared_positions(), 1);
+        let apart = Solid::Group(vec![cube(), arc(cube().translate([2.5, 0.0, 0.0]))]).mesh();
+        assert_eq!(apart.shared_positions(), 0);
+    }
+
+    #[test]
+    fn scaled_curves_keep_their_facet_tolerance() {
+        use std::f64::consts::PI;
+        let mesh = arc(Solid::Sphere { radius: 1.0 }).scale(100.0).mesh();
+        let exact = 4.0 / 3.0 * PI * 1e6;
+        assert!(
+            (mesh.volume() - exact).abs() / exact < 0.01,
+            "{}",
+            mesh.volume()
+        );
     }
 
     #[test]

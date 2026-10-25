@@ -1,10 +1,10 @@
 //! Indexed triangle meshes: primitive generators plus the measurements that
 //! verify a mesh is printable (closed, positive volume).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::{PI, TAU};
 
-use cgmath::{Matrix4, Point3, SquareMatrix, Transform};
+use cgmath::{InnerSpace, Matrix4, Point3, Transform, Vector3};
 
 /// Counter-clockwise triangles (seen from outside) over shared vertices, in mm.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -20,23 +20,15 @@ pub struct Bounds {
 }
 
 impl Mesh {
-    /// Append `other` transformed by `xform`. A mirroring transform flips
-    /// winding, so triangles are reversed to keep them facing outward.
+    /// Append `other` transformed by `xform` (no mirroring: winding is kept).
     pub fn append(&mut self, other: &Mesh, xform: Matrix4<f64>) {
         let base = self.vertices.len() as u32;
         self.vertices.extend(other.vertices.iter().map(|&v| {
             let p = xform.transform_point(Point3::from(v));
             [p.x, p.y, p.z]
         }));
-        let mirrored = xform.determinant() < 0.0;
         self.triangles
-            .extend(other.triangles.iter().map(|&[a, b, c]| {
-                if mirrored {
-                    [a + base, c + base, b + base]
-                } else {
-                    [a + base, b + base, c + base]
-                }
-            }));
+            .extend(other.triangles.iter().map(|t| t.map(|i| i + base)));
     }
 
     /// Signed volume (divergence theorem); positive when facing outward.
@@ -44,9 +36,8 @@ impl Mesh {
         self.triangles
             .iter()
             .map(|&[a, b, c]| {
-                let (a, b, c) = (self.vertex(a), self.vertex(b), self.vertex(c));
-                a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
-                    + a[2] * (b[0] * c[1] - b[1] * c[0])
+                let [a, b, c] = [a, b, c].map(|i| Vector3::from(self.vertices[i as usize]));
+                a.dot(b.cross(c))
             })
             .sum::<f64>()
             / 6.0
@@ -86,37 +77,15 @@ impl Mesh {
             .count()
     }
 
-    /// Merge vertices whose f32 coordinates are identical — what STL readers
-    /// do, since STL stores positions, not indices. Pieces that touch exactly
-    /// (a ring sitting on a ring) become connected here.
-    pub fn welded(&self) -> Mesh {
-        let mut index: HashMap<[u32; 3], u32> = HashMap::new();
-        let mut vertices = Vec::new();
-        let remap: Vec<u32> = self
-            .vertices
+    /// Vertices at the same f32 position as an earlier vertex. STL stores
+    /// positions, not indices, so readers join such vertices: a nonzero count
+    /// means separate pieces touch at a point, edge, or face — not a solid.
+    pub fn shared_positions(&self) -> usize {
+        let mut seen = HashSet::new();
+        self.vertices
             .iter()
-            .map(|v| {
-                *index
-                    .entry(v.map(|x| (x as f32).to_bits()))
-                    .or_insert_with(|| {
-                        vertices.push(*v);
-                        vertices.len() as u32 - 1
-                    })
-            })
-            .collect();
-        let triangles = self
-            .triangles
-            .iter()
-            .map(|t| t.map(|i| remap[i as usize]))
-            .collect();
-        Mesh {
-            vertices,
-            triangles,
-        }
-    }
-
-    fn vertex(&self, i: u32) -> [f64; 3] {
-        self.vertices[i as usize]
+            .filter(|v| !seen.insert(v.map(|x| (x as f32).to_bits())))
+            .count()
     }
 }
 

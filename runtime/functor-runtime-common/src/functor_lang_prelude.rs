@@ -4418,7 +4418,10 @@ macro_rules! handle_arg {
     )+};
 }
 
+use solid::FunctorLangSolid;
+
 handle_arg!(
+    FunctorLangSolid => "a Solid",
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
     FunctorLangInstance => "an Instance",
