@@ -230,6 +230,9 @@ pub struct FunctorLangGame {
     // it gets its own counter — a heavy scene must not read as an interpreter
     // regression.
     frames: u64,
+    // Frames drawn this window. A frame runs 0..N fixed steps, so per-frame
+    // stages (draw, GL, sim) average over this, not over `frames`.
+    drawn: u64,
     tick_ns: u64,
     physics_ns: u64,
     draw_ns: u64,
@@ -506,6 +509,7 @@ impl FunctorLangGame {
             cached_trace: None,
             source_hashes,
             frames: 0,
+            drawn: 0,
             tick_ns: 0,
             physics_ns: 0,
             draw_ns: 0,
@@ -731,6 +735,7 @@ impl FunctorLangGame {
         self.last_frame = empty_frame();
         self.reporter.reset();
         self.frames = 0;
+        self.drawn = 0;
         self.tick_ns = 0;
         self.physics_ns = 0;
         self.draw_ns = 0;
@@ -748,11 +753,12 @@ impl FunctorLangGame {
         if self.frames > 0 && self.frames % STATS_EVERY == 0 {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let physics_us = self.physics_ns as f64 / STATS_EVERY as f64 / 1000.0;
-            let draw_us = self.draw_ns as f64 / STATS_EVERY as f64 / 1000.0;
-            let render_us = self.render_ns as f64 / STATS_EVERY as f64 / 1000.0;
-            let swap_us = self.swap_ns as f64 / STATS_EVERY as f64 / 1000.0;
-            let sim_us = self.sim_ns as f64 / STATS_EVERY as f64 / 1000.0;
-            let sim_wait_us = self.sim_wait_ns as f64 / STATS_EVERY as f64 / 1000.0;
+            let drawn = self.drawn.max(1) as f64;
+            let draw_us = self.draw_ns as f64 / drawn / 1000.0;
+            let render_us = self.render_ns as f64 / drawn / 1000.0;
+            let swap_us = self.swap_ns as f64 / drawn / 1000.0;
+            let sim_us = self.sim_ns as f64 / drawn / 1000.0;
+            let sim_wait_us = self.sim_wait_ns as f64 / drawn / 1000.0;
             let frame_us = tick_us + physics_us + draw_us;
             let counters = functor_runtime_common::gpu_counters::gpu_counters();
             let live = counters.live();
@@ -780,6 +786,7 @@ impl FunctorLangGame {
                     window.instance_upload_bytes as f64 / STATS_EVERY as f64,
                 ),
             });
+            self.drawn = 0;
             self.tick_ns = 0;
             self.physics_ns = 0;
             self.draw_ns = 0;
@@ -1401,6 +1408,7 @@ AudioScene.empty), got {}",
             }
         }
         self.draw_ns += started.elapsed().as_nanos() as u64;
+        self.drawn += 1;
         // On failure this is the last good frame — a bad draw must not blank
         // the screen.
         self.last_frame.clone()
@@ -2339,6 +2347,55 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         // Both rings branched from the seek point (range truncated to 0..3;
         // recording resumes at 4).
         assert_eq!(game.recorder.scene_frame_range(), Some((0, 3)));
+
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Per-frame stages average over drawn frames, not fixed steps: an
+    /// uncapped window draws several frames per step, and averaging over
+    /// steps inflated `sim_us`/`draw_us` by the frames-per-step ratio.
+    #[test]
+    fn frame_stats_average_frame_stages_over_drawn_frames() {
+        static SIM_US: std::sync::Mutex<Vec<f64>> = std::sync::Mutex::new(Vec::new());
+        functor_runtime_common::events::set_sink(Box::new(|event| {
+            if let functor_runtime_common::events::RuntimeEvent::FrameStats { sim_us, .. } = event {
+                SIM_US.lock().unwrap().push(sim_us);
+            }
+        }));
+        physics::remove_world(physics::DEFAULT_WORLD);
+        let dir = std::env::temp_dir().join(format!(
+            "functor-lang-game-test-{}-stats",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp project dir");
+        std::fs::write(
+            dir.join("game.fun"),
+            "let init = 0.0\n\
+             let tick = (m, dt, tts) => m + 1.0\n\
+             let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n",
+        )
+        .expect("write game");
+        let mut game = FunctorLangGame::create(dir.join("game.fun").to_str().expect("utf-8 path"));
+
+        // Three drawn frames per fixed step, each a 1.234 ms sim stage.
+        let time = FrameTime {
+            tts: 0.0,
+            dts: 1.0 / 60.0,
+        };
+        for _ in 0..STATS_EVERY {
+            for _ in 0..3 {
+                let _ = game.render(time.clone());
+                game.record_stage_timing(1_234_000, 0);
+            }
+            game.tick(time.clone());
+        }
+        assert!(
+            SIM_US.lock().unwrap().contains(&1234.0),
+            "sim_us is per drawn frame: {:?}",
+            SIM_US.lock().unwrap()
+        );
 
         physics::remove_world(physics::DEFAULT_WORLD);
         let _ = std::fs::remove_dir_all(&dir);

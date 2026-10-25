@@ -228,7 +228,9 @@ All are rounded to one decimal. `render_us`/`swap_us` come from the native GL sh
 (every producer call of the frame, timed where the producer runs) and `sim_wait_us` is how long the
 render side blocked on it — `0.0` unless the producer runs on its own thread (`--pipelined`), so
 under `--pipelined` `sim_us` and `render_us` are the two pipeline stages. `over_n_frames` is the averaging
-window (300). This is a per-window,
+window (300 fixed steps). `tick_us` and the physics share of `frame_us` average per fixed step; `draw_us`,
+`render_us`, `swap_us`, `sim_us` and `sim_wait_us` average per drawn frame, since a frame runs 0..N fixed
+steps (an uncapped window draws several frames per step). This is a per-window,
 **not** per-frame, emission — see the cadence note below.
 
 The `gpu_*` fields (native only) are the GPU-resource counters (`functor_runtime_common::gpu_counters`),
