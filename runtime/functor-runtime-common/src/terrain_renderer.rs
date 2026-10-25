@@ -13,7 +13,7 @@ use glow::HasContext;
 
 use crate::{
     asset::pipelines::HeightmapData,
-    fog::{FogUniforms, FOG_GLSL},
+    fog::{Fog, FogUniforms, FOG_GLSL},
     light::{lighting_glsl, LightingUniforms},
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
@@ -481,6 +481,7 @@ struct PatchCacheKey {
     min_height: f32,
     max_height: f32,
     max_pixel_error: f32,
+    fog: Option<Fog>,
     world: Matrix4<f32>,
     camera_pos: Vector3<f32>,
     view_projections: [Matrix4<f32>; 2],
@@ -587,6 +588,7 @@ impl TerrainRenderer {
             min_height: description.min_height,
             max_height: description.max_height,
             max_pixel_error: description.max_pixel_error,
+            fog: ctx.fog.cloned(),
             world: *world,
             camera_pos: ctx.lod_camera_pos,
             view_projections: ctx.lod_view_projections,
@@ -616,6 +618,7 @@ impl TerrainRenderer {
                 &ctx.lod_view_projections[..ctx.lod_frustum_count],
                 ctx.lod_projection_scale,
                 ctx.viewport_height,
+                ctx.fog,
                 &mut geometry.scratch_instances,
             );
             if geometry.uploaded_instances != geometry.scratch_instances {
@@ -1660,8 +1663,12 @@ impl Plane {
         }
     }
 
-    fn excludes_sphere(self, center: Vector3<f32>, radius: f32) -> bool {
-        self.normal.dot(center) + self.d < -radius
+    /// True when the whole box `center ± axes` lies outside this plane. The
+    /// axes are the box's world-space half-extent vectors, so the test is
+    /// exact for any affine transform, shear included.
+    fn excludes_box(self, center: Vector3<f32>, axes: &[Vector3<f32>; 3]) -> bool {
+        let reach: f32 = axes.iter().map(|axis| self.normal.dot(*axis).abs()).sum();
+        self.normal.dot(center) + self.d < -reach
     }
 }
 
@@ -1692,6 +1699,7 @@ fn select_patches_into(
     view_projections: &[Matrix4<f32>],
     projection_scale: f32,
     viewport_height: f32,
+    fog: Option<&Fog>,
     patches: &mut Vec<[f32; 4]>,
 ) {
     patches.clear();
@@ -1733,6 +1741,7 @@ fn select_patches_into(
         max_scale: f32,
         projection_scale: f32,
         viewport_height: f32,
+        fog: Option<&Fog>,
         max_level: u32,
         level: u32,
         u: f32,
@@ -1751,12 +1760,17 @@ fn select_patches_into(
         let center4 = world * Vector4::new(center_local.x, center_local.y, center_local.z, 1.0);
         let center_world = center4.truncate() / center4.w.max(1e-6);
         let half_height = (description.max_height - description.min_height) * 0.5;
-        let radius =
-            transformed_aabb_radius(world, Vector3::new(half_width, half_height, half_depth));
+        // The patch's box in world space, tested plane by plane: a wide, flat
+        // patch's bounding sphere would reach far past each frustum edge.
+        let axes = [
+            world.x.truncate() * half_width,
+            world.y.truncate() * half_height,
+            world.z.truncate() * half_depth,
+        ];
         if frusta.iter().all(|planes| {
             planes
                 .iter()
-                .any(|plane| plane.excludes_sphere(center_world, radius))
+                .any(|plane| plane.excludes_box(center_world, &axes))
         }) {
             return;
         }
@@ -1779,7 +1793,11 @@ fn select_patches_into(
             description.width.max(description.depth) * scale * max_scale / PATCH_QUADS as f32;
         let projected_spacing =
             vertex_spacing * projection_scale * viewport_height * 0.5 / distance.max(0.5);
-        let should_split = projected_spacing > description.max_pixel_error
+        // Fog fades a patch's error with its color: at visibility 0.25 a
+        // 4 px error reads like 1 px. `distance` is the patch's nearest
+        // point, so fog never coarsens more than it hides.
+        let visibility = fog.map_or(1.0, |fog| fog.visibility(distance));
+        let should_split = projected_spacing * visibility > description.max_pixel_error
             && level < max_level
             && *remaining_splits > 0;
         if should_split {
@@ -1794,6 +1812,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u,
@@ -1811,6 +1830,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u + child,
@@ -1828,6 +1848,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u,
@@ -1845,6 +1866,7 @@ fn select_patches_into(
                 max_scale,
                 projection_scale,
                 viewport_height,
+                fog,
                 max_level,
                 level + 1,
                 u + child,
@@ -1867,6 +1889,7 @@ fn select_patches_into(
         max_scale,
         projection_scale,
         viewport_height,
+        fog,
         max_level,
         0,
         0.0,
@@ -1900,6 +1923,7 @@ fn select_patches(
         std::slice::from_ref(view_projection),
         projection_scale,
         viewport_height,
+        None,
         &mut patches,
     );
     patches
@@ -1929,18 +1953,6 @@ fn fit_heightmap(source: &HeightmapData, max_size: u32) -> (Vec<u16>, u32, u32) 
         }
     }
     (samples, width, height)
-}
-
-fn transformed_aabb_radius(world: &Matrix4<f32>, half_extents: Vector3<f32>) -> f32 {
-    let x = world.x.truncate();
-    let y = world.y.truncate();
-    let z = world.z.truncate();
-    let extents = Vector3::new(
-        x.x.abs() * half_extents.x + y.x.abs() * half_extents.y + z.x.abs() * half_extents.z,
-        x.y.abs() * half_extents.x + y.y.abs() * half_extents.y + z.y.abs() * half_extents.z,
-        x.z.abs() * half_extents.x + y.z.abs() * half_extents.y + z.z.abs() * half_extents.z,
-    );
-    extents.magnitude()
 }
 
 /// Reinterpret a slice as raw bytes for GPU upload — shared by the terrain
@@ -2348,6 +2360,7 @@ mod tests {
                 frusta,
                 projection.y.y,
                 1600.0,
+                None,
                 &mut patches,
             );
             patches
@@ -2399,10 +2412,53 @@ mod tests {
             1.0, 0.0, 0.0, 0.0, //
             0.0, 0.0, 0.0, 1.0,
         );
-        assert_eq!(
-            transformed_aabb_radius(&world, Vector3::new(1.0, 1.0, 1.0)),
-            3.0
+        // Every local axis maps onto world +X, so the unit box's corner
+        // reaches x = 3: a plane at x = -2.9 must not exclude it.
+        let axes = [world.x.truncate(), world.y.truncate(), world.z.truncate()];
+        let plane = |d: f32| Plane {
+            normal: -Vector3::unit_x(),
+            d,
+        };
+        assert!(!plane(-2.9).excludes_box(Vector3::new(0.0, 0.0, 0.0), &axes));
+        assert!(plane(-3.1).excludes_box(Vector3::new(0.0, 0.0, 0.0), &axes));
+    }
+
+    /// A 4 km terrain from a 4097² map, seen from 100 m up looking along the
+    /// diagonal — far enough to reach the coarse levels.
+    fn select_with_fog(fog: Option<&Fog>) -> Vec<[f32; 4]> {
+        let description = terrain();
+        let eye = Point3::new(-1500.0, 20.0, -1500.0);
+        let view = Matrix4::look_at_rh(eye, Point3::new(0.0, 0.0, 0.0), Vector3::unit_y());
+        let projection = perspective(Deg(68.0), 1.0, 0.5, 6000.0);
+        let mut patches = Vec::new();
+        select_patches_into(
+            &description,
+            4097,
+            4097,
+            &Matrix4::identity(),
+            eye.to_vec(),
+            &[projection * view],
+            projection.y.y,
+            1600.0,
+            fog,
+            &mut patches,
         );
+        patches
+    }
+
+    #[test]
+    fn fog_coarsens_only_what_it_hides() {
+        let clear = select_with_fog(None);
+        // Fog that starts past the whole terrain changes nothing.
+        let distant = Fog::linear(10_000.0, 20_000.0, 0.0, 0.0, 0.0);
+        assert_eq!(select_with_fog(Some(&distant)), clear);
+        // Denser fog keeps the patches nearest the eye and coarsens the rest.
+        let dense = Fog::exp(0.002, 0.0, 0.0, 0.0);
+        let fogged = select_with_fog(Some(&dense));
+        assert!(fogged.len() < clear.len(), "fogged {} vs clear {}", fogged.len(), clear.len());
+        let finest = |patches: &[[f32; 4]]| patches.iter().filter(|p| p[2] == 1.0 / 64.0).count();
+        assert!(finest(&fogged) > 0, "fog must not coarsen the patches at the eye");
+        assert_eq!(fogged, select_with_fog(Some(&dense)), "deterministic");
     }
 
     #[test]
