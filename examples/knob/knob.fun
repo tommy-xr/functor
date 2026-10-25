@@ -14,8 +14,9 @@ let knurlRadius = 1.5
 // Printed holes come out small: bore the shaft this much oversize.
 let clearance = 0.15
 let shaftRadius = 3.0 + clearance
-// A D-shaft's flat sits 4.5 mm across from the round side.
-let flatAcross = 4.5 + clearance
+// A D-shaft's flat sits 4.5 mm across from the round side; both faces get
+// clearance.
+let flatAcross = 4.5 + 2.0 * clearance
 let boreDepth = 11.0
 
 let lift = (z: float, s) => Solid.translate(Vec3.make(0.0, 0.0, z), s)
@@ -52,6 +53,8 @@ expect Solid.volume(part) > 0.0
 expect Solid.volume(part) < Solid.volume(body)
 expect Vec3.z(Solid.bounds(part).min) == 0.0
 expect Vec3.z(Solid.bounds(part).max) < height + 0.001
+// The bore's flat sits clearance beyond the shaft's 1.5 mm flat.
+expect Math.abs(Vec3.y(Solid.bounds(bore).max) - (1.5 + clearance)) < 0.0001
 
 // The viewer: the knob on a plane, turning slowly. Scene units are metres.
 let init = {}

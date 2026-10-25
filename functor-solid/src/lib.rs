@@ -18,7 +18,7 @@ pub mod stl;
 mod text;
 pub mod threemf;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
@@ -49,10 +49,30 @@ pub enum Solid {
     Group(Vec<Arc<Solid>>),
     /// A boolean of the children: union of all, the first minus the rest, or
     /// the intersection of all. A group child counts as the union of its pieces.
+    /// Build with [`Solid::boolean`].
     Boolean {
         op: BoolOp,
         children: Vec<Arc<Solid>>,
+        result: BooleanResult,
     },
+}
+
+/// A boolean's mesh, evaluated once in the boolean's own frame and reused by
+/// every transform above it (e.g. a part rotated in `draw` each frame). Curves
+/// inside are faceted at that frame's scale. Ignored by equality.
+#[derive(Clone, Default)]
+pub struct BooleanResult(Arc<OnceLock<Result<Arc<Mesh>, String>>>);
+
+impl PartialEq for BooleanResult {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for BooleanResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BooleanResult")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +83,14 @@ pub enum BoolOp {
 }
 
 impl Solid {
+    pub fn boolean(op: BoolOp, children: Vec<Arc<Solid>>) -> Solid {
+        Solid::Boolean {
+            op,
+            children,
+            result: BooleanResult::default(),
+        }
+    }
+
     pub fn translate(self: Arc<Self>, offset: [f64; 3]) -> Solid {
         self.transform(Matrix4::from_translation(Vector3::from(offset)))
     }
@@ -95,7 +123,7 @@ impl Solid {
         Ok(out)
     }
 
-    fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) -> Result<(), String> {
+    pub(crate) fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) -> Result<(), String> {
         // Transforms are rigid plus uniform scale, so |det| = scale³. Facets
         // are counted on the radius as it will print, not as written (sketch
         // curves are faceted when drawn, so draw those at final size).
@@ -116,55 +144,15 @@ impl Solid {
                     child.append_to(out, xform)?;
                 }
             }
-            Solid::Boolean { op, children } => {
-                // Union takes every piece as its own operand; subtract and
-                // intersect take each child whole (its pieces unioned first).
-                let operands = match op {
-                    BoolOp::Union => {
-                        let mut pieces = Vec::new();
-                        for child in children {
-                            child.pieces(xform, &mut pieces)?;
-                        }
-                        pieces
-                    }
-                    _ => children
-                        .iter()
-                        .map(|child| child.whole(xform))
-                        .collect::<Result<_, _>>()?,
-                };
-                out.extend(&csg::boolean(*op, &operands)?);
+            Solid::Boolean { result, .. } => {
+                let mesh = result
+                    .0
+                    .get_or_init(|| csg::evaluate(self).map(Arc::new))
+                    .clone()?;
+                out.append(&mesh, xform);
             }
         }
         Ok(())
-    }
-
-    /// The closed pieces of this solid under `xform`: a group's children each
-    /// separately, anything else as one mesh.
-    fn pieces(&self, xform: Matrix4<f64>, out: &mut Vec<Mesh>) -> Result<(), String> {
-        match self {
-            Solid::Group(children) => {
-                for child in children {
-                    child.pieces(xform, out)?;
-                }
-            }
-            Solid::Transform { matrix, child } => child.pieces(xform * matrix, out)?,
-            _ => {
-                let mut mesh = Mesh::default();
-                self.append_to(&mut mesh, xform)?;
-                out.push(mesh);
-            }
-        }
-        Ok(())
-    }
-
-    /// This solid under `xform` as one closed shell (a group's pieces unioned).
-    fn whole(&self, xform: Matrix4<f64>) -> Result<Mesh, String> {
-        let mut pieces = Vec::new();
-        self.pieces(xform, &mut pieces)?;
-        if pieces.len() == 1 {
-            return Ok(pieces.pop().expect("one piece"));
-        }
-        csg::boolean(BoolOp::Union, &pieces)
     }
 }
 
@@ -301,7 +289,7 @@ mod tests {
     }
 
     fn boolean(op: BoolOp, children: Vec<Arc<Solid>>) -> Mesh {
-        Solid::Boolean { op, children }.mesh().unwrap()
+        Solid::boolean(op, children).mesh().unwrap()
     }
 
     fn closed(mesh: &Mesh) {
@@ -390,16 +378,10 @@ mod tests {
                 size: [30.0, 2.0, 30.0],
             })
             .translate([0.0, 0.0, 5.0]));
-            let hollow = arc(Solid::Boolean {
-                op: BoolOp::Subtract,
-                children: vec![outer, inner],
-            });
-            Solid::Boolean {
-                op: BoolOp::Subtract,
-                children: vec![hollow, slot],
-            }
-            .mesh()
-            .unwrap()
+            let hollow = arc(Solid::boolean(BoolOp::Subtract, vec![outer, inner]));
+            Solid::boolean(BoolOp::Subtract, vec![hollow, slot])
+                .mesh()
+                .unwrap()
         };
         let a = shell();
         closed(&a);
@@ -407,14 +389,78 @@ mod tests {
         assert_eq!(a, shell());
     }
 
+    #[test]
+    fn subtract_takes_many_cutters_and_groups_union_inside_booleans() {
+        let cube = || arc(Solid::Box { size: [10.0; 3] });
+        let slab = || {
+            arc(Solid::Box {
+                size: [2.0, 20.0, 20.0],
+            })
+        };
+        let two_slots = boolean(
+            BoolOp::Subtract,
+            vec![
+                cube(),
+                arc(slab().translate([-3.0, 0.0, 0.0])),
+                arc(slab().translate([3.0, 0.0, 0.0])),
+            ],
+        );
+        closed(&two_slots);
+        assert!((two_slots.volume() - 600.0).abs() < 1e-6);
+        // A transformed group of two slabs cuts the same as two separate cutters.
+        let pair = arc(Solid::Group(vec![
+            arc(slab().translate([-3.0, 0.0, 0.0])),
+            arc(slab().translate([3.0, 0.0, 0.0])),
+        ]));
+        let as_group = boolean(
+            BoolOp::Subtract,
+            vec![cube(), arc(pair.translate([0.0, 0.0, 0.0]))],
+        );
+        assert!((as_group.volume() - 600.0).abs() < 1e-6);
+        // Intersect with a group child keeps what overlaps either piece.
+        let pair = arc(Solid::Group(vec![
+            arc(slab().translate([-3.0, 0.0, 0.0])),
+            arc(slab().translate([3.0, 0.0, 0.0])),
+        ]));
+        assert!((boolean(BoolOp::Intersect, vec![cube(), pair]).volume() - 400.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_is_evaluated_once_and_reused_under_transforms() {
+        let part = arc(Solid::boolean(
+            BoolOp::Subtract,
+            vec![
+                arc(Solid::Box { size: [10.0; 3] }),
+                arc(Solid::Sphere { radius: 6.0 }),
+            ],
+        ));
+        let a = arc(part.clone().rotate(2, 0.3)).mesh().unwrap();
+        let Solid::Boolean { result, .. } = &*part else {
+            unreachable!()
+        };
+        assert!(result.0.get().is_some(), "evaluated by the first mesh");
+        let b = arc(part.clone().rotate(2, 0.3)).mesh().unwrap();
+        assert_eq!(a, b);
+        // A boolean inside a plain group is just another shell.
+        let shelf = Solid::Group(vec![
+            part.clone(),
+            arc(Solid::Box { size: [1.0; 3] })
+                .translate([20.0, 0.0, 0.0])
+                .into(),
+        ])
+        .mesh()
+        .unwrap();
+        assert!((shelf.volume() - (part.mesh().unwrap().volume() + 1.0)).abs() < 1e-6);
+    }
+
     /// Knurls placed with f32 angles (as Functor Lang's `Angle` stores them)
     /// land ~1e-7 mm off the dome's rim vertices; snapping inputs keeps the
     /// result free of slivers that f32 export would collapse.
     #[test]
     fn near_coincident_cuts_leave_no_slivers() {
-        let body = arc(Solid::Boolean {
-            op: BoolOp::Intersect,
-            children: vec![
+        let body = arc(Solid::boolean(
+            BoolOp::Intersect,
+            vec![
                 arc(arc(Solid::Cylinder {
                     radius: 15.0,
                     height: 28.0,
@@ -422,7 +468,7 @@ mod tests {
                 .translate([0.0, 0.0, 14.0])),
                 arc(arc(Solid::Sphere { radius: 40.0 }).translate([0.0, 0.0, -26.0])),
             ],
-        });
+        ));
         let knurls = (0..24)
             .map(|i| {
                 let knurl = arc(arc(Solid::Cylinder {
@@ -434,10 +480,7 @@ mod tests {
                 arc(knurl.rotate(2, angle))
             })
             .collect();
-        let grip = arc(Solid::Boolean {
-            op: BoolOp::Union,
-            children: knurls,
-        });
+        let grip = arc(Solid::boolean(BoolOp::Union, knurls));
         closed(&boolean(BoolOp::Subtract, vec![body, grip]));
     }
 

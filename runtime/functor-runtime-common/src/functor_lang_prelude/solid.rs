@@ -258,10 +258,10 @@ which won't print as one solid — overlap them or move them apart"
         },
     );
     let boolean = |op: functor_solid::BoolOp, children: Vec<FunctorLangSolid>| {
-        solid(Solid::Boolean {
+        solid(Solid::boolean(
             op,
-            children: children.into_iter().map(|s| s.0).collect(),
-        })
+            children.into_iter().map(|s| s.0).collect(),
+        ))
     };
     reg.fn1(
         "Solid.union",
