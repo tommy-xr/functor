@@ -1640,6 +1640,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_html(&mut reg);
         register_style(&mut reg);
         register_audio(&mut reg);
+        settings::register(&mut reg);
         reg
     })
 }
@@ -4432,6 +4433,10 @@ handle_arg!(
     FunctorLangStyle => "a Style",
     FunctorLangAudioSource => "an AudioSource",
 );
+
+// After `handle_arg!`, which it uses.
+mod settings;
+pub use settings::{config_of, settings_of};
 
 /// `Scene.instanced`'s instance list, converted once per Functor Lang list:
 /// the same list `Rc` (e.g. one kept in the model) yields the same
@@ -11013,6 +11018,8 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             sim_thread: None,
             display_refresh_rate: None,
             instance_uploads: Default::default(),
+            config: None,
+            settings: None,
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
             .expect("a deep model must stay parseable by stock serde_json");

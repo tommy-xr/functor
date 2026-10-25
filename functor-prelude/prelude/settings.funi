@@ -1,0 +1,30 @@
+//! What the optional `settings` entry point returns: live shell options.
+//!
+//! `settings = (model) => …` is a pure function of the model, like `physics`
+//! and `soundScape`. The shell evaluates it every frame and applies a value
+//! only when it changes, so it hot-reloads and replays with the model. A
+//! failing evaluation keeps the last good settings and reports once.
+//!
+//! Because every sibling `.fun` loads with the game, a sibling module may
+//! define `config` or `settings` for a game that does not — e.g. an
+//! `adapter.fun` next to an unmodified `game.fun`. Each is resolved on its
+//! own: the entry's definition wins, a sibling that is itself a program root
+//! (defines `init`) is skipped, and two siblings defining the same one is a
+//! load error.
+//!
+//! ```functor
+//! let settings = (model) =>
+//!   Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.High))
+//! ```
+
+/// An opaque set of live shell options.
+type t = host
+
+/// No options set: the shell's defaults.
+let create : () => t
+/// Set the headset options; the settings are last for piping, and a later
+/// call replaces an earlier one.
+///
+/// Only live knobs are accepted: `Xr.refreshRate` here is a teaching error
+/// pointing at `config`.
+let xr : (Xr.t, t) => t

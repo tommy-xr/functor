@@ -1,0 +1,41 @@
+//! Headset options, built once and handed to `Config.xr` or `Settings.xr`.
+//!
+//! Each knob belongs to one bucket, by when the shell can honour it:
+//! `refreshRate` is read once at load, so it goes in `config`; `foveation`
+//! applies live, so it goes in `settings`. A knob in the wrong bucket is a
+//! teaching error naming the right one. Shells without a headset ignore
+//! these options; desktop still reports them in `GET /state`.
+//!
+//! ```functor
+//! let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))
+//! let settings = (model) =>
+//!   Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.High))
+//! ```
+
+/// An opaque set of headset options.
+type t = host
+
+/// A fixed foveated rendering level: how coarsely the periphery of each eye
+/// image is shaded, from `Off` (full resolution everywhere) to `High`
+/// (coarsest periphery, most GPU saved).
+type level =
+  | Off
+  | Low
+  | Medium
+  | High
+
+/// No options set: every knob keeps the shell's default.
+let create : () => t
+/// Request a display refresh rate in Hz; the options are last for piping.
+///
+/// A `config` knob. The rate must be positive. The headset honours it only if
+/// its display offers that rate (Quest 3: 72, 80, 90, and 120 once enabled in
+/// the headset's settings); otherwise it logs a warning and keeps its default.
+/// `functor run vr --refresh-rate` overrides it.
+let refreshRate : (float, t) => t
+/// Pin the foveation level; the options are last for piping.
+///
+/// A `settings` knob, applied whenever its value changes. Without it the
+/// headset uses its default: `High`, lowered dynamically while the GPU has
+/// headroom. An explicit level is fixed — the runtime does not scale it.
+let foveation : (level, t) => t
