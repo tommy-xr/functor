@@ -67,7 +67,8 @@ let scatterZ = spawnZ + 190.0
 // `snowHeight`; the heightmap is shaped so those bands ARE the biomes.
 let world =
   Terrain.heightmap(Assets.night_heightmap, worldSize, worldSize, minHeight, maxHeight)
-  |> Terrain.maxPixelError(2.0)
+  // 4 px fits the Quest vertex budget; 8 swims in stereo.
+  |> Terrain.maxPixelError(4.0)
   |> Terrain.layered(
        Color.rgb(0.20, 0.27, 0.14),
        Color.rgb(0.36, 0.33, 0.22),
