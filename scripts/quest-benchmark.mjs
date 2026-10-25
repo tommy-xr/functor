@@ -69,7 +69,8 @@ async function waitForRuntime(timeoutMs = 20_000) {
 async function collectVrApi(seconds) {
   const child = spawn(
     "adb",
-    ["logcat", "-v", "brief", "-T", "1", "VrApi:I", "*:S"],
+    // vrshell logs its own VrApi FPS lines; only read the app's process.
+    ["logcat", `--pid=${adb(["shell", "pidof", PACKAGE])}`, "-v", "brief", "-T", "1", "VrApi:I", "*:S"],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let output = "";
