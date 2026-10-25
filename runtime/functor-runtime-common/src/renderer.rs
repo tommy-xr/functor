@@ -280,7 +280,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             debug_render_mode,
             shadow,
             pass.frame.fog.as_ref(),
-            pass.frame.skybox.as_ref(),
+            pass.frame.drawn_skybox(),
             width as f32 / height as f32,
             height as f32,
             &pass.frame.camera,
@@ -349,7 +349,14 @@ are ignored — declare Frame.withUiTarget on the main frame",
         } else {
             crate::color_space::srgb_to_linear3(frame.resolved_clear_color())
         };
-        gl.clear_color(r, g, b, 1.0);
+        // A passthrough frame over a composited camera feed clears to
+        // transparent black: geometry then writes premultiplied color + alpha
+        // (opaque = 1), and the compositor shows the feed wherever alpha < 1.
+        if frame.passthrough && scene_context.passthrough_composited() {
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+        } else {
+            gl.clear_color(r, g, b, 1.0);
+        }
         gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
     }
 
@@ -365,7 +372,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         debug_render_mode,
         shadow,
         frame.fog.as_ref(),
-        frame.skybox.as_ref(),
+        frame.drawn_skybox(),
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
@@ -619,7 +626,7 @@ pub fn render_composited_frames_with_view(
             debug_render_mode,
             shadow,
             frame.fog.as_ref(),
-            frame.skybox.as_ref(),
+            frame.drawn_skybox(),
             width as f32 / height as f32,
             height as f32,
             &frame.camera,
@@ -747,16 +754,25 @@ pub(crate) fn ambient_framebuffer(gl: &glow::Context) -> Option<glow::Framebuffe
 /// which each caller programs, and the destination alpha uses straight
 /// source-over so captures and render targets stay opaque.
 ///
+/// Over a composited passthrough feed (`transparent_destination`) the alpha
+/// channel composes with the same constant instead, so a translucent subtree
+/// over the transparent clear stays translucent rather than going opaque.
+///
 /// # Safety
 /// The caller must hold a current GL context.
-unsafe fn begin_constant_alpha_blend(gl: &glow::Context) {
+unsafe fn begin_constant_alpha_blend(gl: &glow::Context, transparent_destination: bool) {
     gl.enable(glow::BLEND);
     gl.blend_equation(glow::FUNC_ADD);
+    let (alpha_src, alpha_dst) = if transparent_destination {
+        (glow::CONSTANT_ALPHA, glow::ONE_MINUS_CONSTANT_ALPHA)
+    } else {
+        (glow::ONE, glow::ONE_MINUS_SRC_ALPHA)
+    };
     gl.blend_func_separate(
         glow::CONSTANT_ALPHA,
         glow::ONE_MINUS_CONSTANT_ALPHA,
-        glow::ONE,
-        glow::ONE_MINUS_SRC_ALPHA,
+        alpha_src,
+        alpha_dst,
     );
     gl.depth_mask(false);
 }
@@ -914,7 +930,7 @@ fn forward_pass(
         unsafe {
             gl.color_mask(true, true, true, true);
             gl.depth_func(glow::EQUAL);
-            begin_constant_alpha_blend(gl);
+            begin_constant_alpha_blend(gl, scene_context.passthrough_composited());
             gl.blend_color(0.0, 0.0, 0.0, TRANSPARENT_DEBUG_ALPHA);
         }
         render_scene();
@@ -981,7 +997,7 @@ fn transparent_pass<'a>(
     root_material.initialize(&context);
 
     unsafe {
-        begin_constant_alpha_blend(gl);
+        begin_constant_alpha_blend(gl, scene_context.passthrough_composited());
     }
 
     for draw in &draws {

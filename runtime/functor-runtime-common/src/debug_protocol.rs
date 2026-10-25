@@ -110,7 +110,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// rendered frame's terrain draws, summed over its eye draws, so a driver can
 /// measure the terrain vertex budget without a GPU profiler. Additive — a
 /// pre-v19 runtime omits it, which deserializes as zero.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 19;
+///
+/// 20 adds the optional `passthrough` field on `GET /state` (`{mode,
+/// warning?}`): how the shell shows the real world behind
+/// `Frame.withPassthrough` frames — `composited` (headset camera feed),
+/// `emulated` (desktop/web placeholder), `paused` (by `settings`), or
+/// `unavailable`. Omitted unless the game's `config` requests passthrough.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 20;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -366,6 +372,10 @@ pub struct RuntimeState {
     /// `default` because a pre-v19 runtime omits it.
     #[serde(default)]
     pub terrain: crate::gpu_counters::TerrainDraws,
+    /// How the shell shows the real world behind passthrough frames (v20).
+    /// Omitted unless the game's `config` requests passthrough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passthrough: Option<crate::runtime_settings::PassthroughState>,
 }
 
 /// A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
@@ -824,12 +834,17 @@ mod tests {
             settings: Some(crate::runtime_settings::GameSettings {
                 xr: crate::runtime_settings::XrSettings {
                     foveation: Some(crate::runtime_settings::FoveationLevel::Medium),
+                    passthrough: None,
                 },
             }),
             terrain: crate::gpu_counters::TerrainDraws {
                 patches: 2,
                 vertices: 8962,
             },
+            passthrough: Some(crate::runtime_settings::PassthroughState {
+                mode: crate::runtime_settings::PassthroughMode::Composited,
+                warning: None,
+            }),
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -864,7 +879,8 @@ mod tests {
                 },
                 "instance_uploads": { "count": 1, "bytes": 52 },
                 "settings": { "xr": { "foveation": "medium" } },
-                "terrain": { "patches": 2, "vertices": 8962 }
+                "terrain": { "patches": 2, "vertices": 8962 },
+                "passthrough": { "mode": "composited" }
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
@@ -1155,7 +1171,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 19);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 20);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

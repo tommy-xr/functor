@@ -86,6 +86,9 @@
 //! Frame.withClearColor(color, frame)                         -> Frame
 //!   (explicit background clear color, overriding the fog-color default; it
 //!    only paints the background, not fog blending)
+//! Frame.withPassthrough(frame)                              -> Frame
+//!   (the background is the real world: no skybox; a headset compositing
+//!    its camera feed clears transparent, elsewhere a mid-grey placeholder)
 //! Ui.text(s) / Ui.textColor(color, s)                       -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
@@ -2738,6 +2741,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 clear_color: None,
                 sprite_layers: vec![],
                 pure_2d: false,
+                passthrough: false,
             })
         },
     );
@@ -2784,6 +2788,11 @@ interactive widgets render but their handlers are inert",
             let (r, g, b) = color.0;
             FunctorLangFrame(Frame::with_clear_color(frame.0, r, g, b))
         },
+    );
+    reg.fn1(
+        "Frame.withPassthrough",
+        "Frame.withPassthrough(frame)",
+        |frame: FunctorLangFrame| FunctorLangFrame(Frame::with_passthrough(frame.0)),
     );
     // See `Scene.equals` — the same explicit structural walk, one level up.
     reg.fn2(
@@ -11028,6 +11037,7 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
             config: None,
             settings: None,
             terrain: Default::default(),
+            passthrough: None,
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
             .expect("a deep model must stay parseable by stock serde_json");

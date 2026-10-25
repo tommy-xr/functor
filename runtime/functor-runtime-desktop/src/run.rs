@@ -1100,6 +1100,10 @@ fn service_debug_request(
                     config: g.config(),
                     settings: g.settings(),
                     terrain,
+                    passthrough: functor_runtime_common::runtime_settings::PassthroughState::emulated(
+                        g.config(),
+                        g.settings(),
+                    ),
                 });
             });
         }

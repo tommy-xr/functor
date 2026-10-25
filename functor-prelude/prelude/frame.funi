@@ -36,6 +36,16 @@ let withSkybox : (Skybox.t, t) => t
 /// This overrides the default of clearing to the fog color, and paints the
 /// background only — it does not change how fog blends over geometry.
 let withClearColor : (Color.t, t) => t
+/// Show the real world behind a frame — mixed reality.
+///
+/// The background becomes the headset's camera feed: the skybox and clear
+/// color are dropped, and geometry composites over the room by its alpha
+/// (opaque surfaces hide it; `Scene.opacity` subtrees let it through). The
+/// feed itself is requested by `config`'s `Xr.passthrough(true)`. Wherever
+/// no feed is composited — desktop, web, or a headset with the feed paused
+/// or unavailable — the background is a flat mid-grey placeholder. The frame
+/// is last for piping.
+let withPassthrough : (t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///
 /// Layers render in call order, so a second `with2D` draws above the first.
@@ -46,7 +56,7 @@ let with2D : (Camera2D.t, Sprite.t, t) => t
 /// opaque and therefore supports no `==`.
 ///
 /// Compares every part of the frame: camera, scene, lights, render-target
-/// passes, fog, skybox, clear color, and 2D layers (all ordered). It also
+/// passes, fog, skybox, clear color, passthrough, and 2D layers (all ordered). It also
 /// distinguishes HOW the frame was built — a `Frame.create2D` frame is never
 /// equal to a 3D frame carrying the same layer through `with2D`. Intended for
 /// inline `expect` tests over `draw` output, NOT for per-frame logic — the

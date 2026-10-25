@@ -2892,6 +2892,7 @@ Xr.refreshRate(90))\n"
         let edited = GameConfig {
             xr: XrConfig {
                 refresh_rate: Some(72.0),
+                passthrough: false,
             },
         };
         options.reload(Some(edited), contract.settings, &mut reporter);

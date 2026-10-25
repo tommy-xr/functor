@@ -120,6 +120,9 @@ pub struct SceneContext {
     // epilogue's encode bit (see `crate::color_space`). Defaults to `NonSrgb`
     // (shader-encoded), the desktop/web surface.
     output_colorspace: Cell<crate::color_space::OutputColorspace>,
+    // Whether the shell composites a real camera feed under the main pass
+    // this frame (`set_passthrough_composited`); see `Frame.passthrough`.
+    passthrough_composited: Cell<bool>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -376,6 +379,7 @@ impl SceneContext {
             composite_program: RefCell::new(None),
             preloads: RefCell::new(Vec::new()),
             output_colorspace: Cell::new(crate::color_space::OutputColorspace::NonSrgb),
+            passthrough_composited: Cell::new(false),
         }
     }
 
@@ -386,6 +390,18 @@ impl SceneContext {
     /// this — nothing else may (see `crate::color_space`).
     pub fn set_output_colorspace(&self, colorspace: crate::color_space::OutputColorspace) {
         self.output_colorspace.set(colorspace);
+    }
+
+    /// Declare (per frame, by a headset shell) whether a real camera feed is
+    /// composited under the main pass. When it is, a passthrough frame's main
+    /// pass clears to transparent black instead of the placeholder, so the
+    /// eye buffer's alpha reveals the feed. Defaults to false (desktop/web).
+    pub fn set_passthrough_composited(&self, composited: bool) {
+        self.passthrough_composited.set(composited);
+    }
+
+    pub fn passthrough_composited(&self) -> bool {
+        self.passthrough_composited.get()
     }
 
     /// Whether caller-framebuffer passes need the shader epilogue's

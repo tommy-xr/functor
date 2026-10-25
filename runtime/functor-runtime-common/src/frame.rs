@@ -74,7 +74,17 @@ pub struct Frame {
     /// distinguish a 2D frame from an empty 3D world with a HUD/skybox.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pure_2d: bool,
+    /// The background is the real world (`Frame.withPassthrough`): no skybox,
+    /// and a headset compositing its camera feed under the eye buffer clears
+    /// it to transparent. Elsewhere it clears to [`PASSTHROUGH_PLACEHOLDER`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub passthrough: bool,
 }
+
+/// The stand-in "camera feed" a passthrough frame clears to wherever no real
+/// one is composited (desktop, web, or a headset with passthrough off): a
+/// flat mid-grey, so captures stay deterministic.
+pub const PASSTHROUGH_PLACEHOLDER: [f32; 3] = [0.5, 0.5, 0.5];
 
 impl Frame {
     /// Unlit frame (no lights): lit surfaces get only their ambient term until
@@ -91,6 +101,7 @@ impl Frame {
             clear_color: None,
             sprite_layers: vec![],
             pure_2d: false,
+            passthrough: false,
         }
     }
 
@@ -106,12 +117,22 @@ impl Frame {
         frame
     }
 
-    /// The background clear color for this frame's pass: the explicit
+    /// The background clear color for this frame's pass: the passthrough
+    /// placeholder for a `Frame.withPassthrough` frame, else the explicit
     /// `Frame.withClearColor` override when set, otherwise the fog color, else
     /// the engine default (`fog::clear_color`).
     pub fn resolved_clear_color(&self) -> [f32; 3] {
+        if self.passthrough {
+            return PASSTHROUGH_PLACEHOLDER;
+        }
         self.clear_color
             .unwrap_or_else(|| crate::fog::clear_color(self.fog.as_ref()))
+    }
+
+    /// The skybox to draw: none behind a passthrough frame, whose background
+    /// is the real world.
+    pub fn drawn_skybox(&self) -> Option<&SkyboxDescription> {
+        self.skybox.as_ref().filter(|_| !self.passthrough)
     }
 
     /// Whether the main view is the pure sprite frame produced by
@@ -169,6 +190,12 @@ impl Frame {
         frame
     }
 
+    /// Show the real world behind this frame (`Frame.withPassthrough`).
+    pub fn with_passthrough(mut frame: Frame) -> Frame {
+        frame.passthrough = true;
+        frame
+    }
+
     /// Add a 2D layer above the 3D pass and any earlier sprite layers.
     pub fn with_2d(mut frame: Frame, layer: SpriteLayer) -> Frame {
         frame.sprite_layers.push(layer);
@@ -218,5 +245,17 @@ mod tests {
         assert_eq!(frame.resolved_clear_color(), [0.0, 0.0, 0.0]);
         // The fog itself is untouched — only the background clear changed.
         assert!(frame.fog.is_some());
+    }
+
+    #[test]
+    fn passthrough_clears_to_the_placeholder_and_hides_the_skybox() {
+        let sky = SkyboxDescription::new("px", "nx", "py", "ny", "pz", "nz");
+        let frame = Frame::with_clear_color(Frame::with_skybox(bare(), sky), 1.0, 0.0, 0.0);
+        assert!(frame.drawn_skybox().is_some());
+        let frame = Frame::with_passthrough(frame);
+        assert_eq!(frame.resolved_clear_color(), PASSTHROUGH_PLACEHOLDER);
+        assert!(frame.drawn_skybox().is_none());
+        // Additive on the wire: an opaque frame serializes without the field.
+        assert!(!serde_json::to_string(&bare()).unwrap().contains("passthrough"));
     }
 }

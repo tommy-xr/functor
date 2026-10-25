@@ -15,7 +15,9 @@ use crate::runtime_settings::{FoveationLevel, GameConfig, GameSettings, XrConfig
 #[derive(Clone, Copy, Default)]
 struct XrKnobs {
     refresh_rate: Option<f32>,
+    passthrough: Option<bool>,
     foveation: Option<FoveationLevel>,
+    passthrough_enabled: Option<bool>,
 }
 
 struct FunctorLangXr(XrKnobs);
@@ -89,6 +91,26 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn2(
+        "Xr.passthrough",
+        "Xr.passthrough(on, xr)",
+        |on: bool, xr: FunctorLangXr| {
+            FunctorLangXr(XrKnobs {
+                passthrough: Some(on),
+                ..xr.0
+            })
+        },
+    );
+    reg.fn2(
+        "Xr.passthroughEnabled",
+        "Xr.passthroughEnabled(on, xr)",
+        |on: bool, xr: FunctorLangXr| {
+            FunctorLangXr(XrKnobs {
+                passthrough_enabled: Some(on),
+                ..xr.0
+            })
+        },
+    );
+    reg.fn2(
         "Xr.foveation",
         "Xr.foveation(level, xr)",
         |level: FoveationLevel, xr: FunctorLangXr| {
@@ -106,17 +128,24 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Config.xr",
         "Config.xr(xr, config)",
         |xr: FunctorLangXr, config: FunctorLangConfig| {
-            if xr.0.foveation.is_some() {
-                return Err(
-                    "Config.xr: `Xr.foveation` is a live setting the headset applies \
+            let live = if xr.0.foveation.is_some() {
+                Some("Xr.foveation")
+            } else if xr.0.passthrough_enabled.is_some() {
+                Some("Xr.passthroughEnabled")
+            } else {
+                None
+            };
+            if let Some(knob) = live {
+                return Err(format!(
+                    "Config.xr: `{knob}` is a live setting the headset applies \
 on change — return it from `settings = (model) => Settings.create() |> Settings.xr(…)`, not \
 `config`"
-                        .to_string(),
-                );
+                ));
             }
             let mut config = config.0;
             config.xr = XrConfig {
                 refresh_rate: xr.0.refresh_rate,
+                passthrough: xr.0.passthrough.unwrap_or(false),
             };
             Ok(FunctorLangConfig(config))
         },
@@ -136,9 +165,18 @@ in `let config = Config.create() |> Config.xr(…)`, not `settings`"
                         .to_string(),
                 );
             }
+            if xr.0.passthrough.is_some() {
+                return Err(
+                    "Settings.xr: `Xr.passthrough` is read once at launch — declare it \
+in `let config = Config.create() |> Config.xr(…)`, then pause or resume the feed here with \
+`Xr.passthroughEnabled(on)`"
+                        .to_string(),
+                );
+            }
             let mut settings = settings.0;
             settings.xr = XrSettings {
                 foveation: xr.0.foveation,
+                passthrough: xr.0.passthrough_enabled,
             };
             Ok(FunctorLangSettings(settings))
         },
