@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use cgmath::Deg;
-use functor_solid::{Sketch, Solid};
+use functor_solid::{Font, Sketch, Solid};
 
 use super::*;
 use crate::scene3d::MeshData;
@@ -47,7 +47,22 @@ impl HostData for FunctorLangSketch {
     }
 }
 
-crate::host_returnable!(FunctorLangSolid, FunctorLangSketch);
+/// A built-in [`Font`] as an opaque Functor Lang value.
+pub struct FunctorLangFont(pub Font);
+
+impl HostData for FunctorLangFont {
+    fn type_name(&self) -> &'static str {
+        "Typeface"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
+crate::host_returnable!(FunctorLangSolid, FunctorLangSketch, FunctorLangFont);
 
 /// The solid bound to `name` in an evaluated session, or a teaching error.
 pub fn solid_global(session: &functor_lang::Session, name: &str) -> Result<Arc<Solid>, String> {
@@ -299,6 +314,32 @@ fn register_sketch(reg: &mut crate::host_registry::Registry) {
                 ));
             }
             Ok(sketch(Sketch::rect(w - 2.0 * r, h - 2.0 * r).offset(r)))
+        },
+    );
+    reg.fn0("Typeface.script", "Typeface.script()", || {
+        FunctorLangFont(Font::Script)
+    });
+    reg.fn0("Typeface.sans", "Typeface.sans()", || {
+        FunctorLangFont(Font::Sans)
+    });
+    reg.fn3(
+        "Sketch.text",
+        "Sketch.text(typeface, size, text)",
+        |font: FunctorLangFont, size: f64, s: String| {
+            let size = positive(size, "Sketch.text size")?;
+            functor_solid::text(font.0, size, &s)
+                .map(sketch)
+                .map_err(|e| format!("Sketch.text: {e}"))
+        },
+    );
+    reg.fn3(
+        "Sketch.textWidth",
+        "Sketch.textWidth(typeface, size, text)",
+        |font: FunctorLangFont, size: f64, s: String| {
+            let size = positive(size, "Sketch.textWidth size")?;
+            functor_solid::text_width(font.0, size, &s)
+                .map(Value::Number)
+                .map_err(|e| format!("Sketch.textWidth: {e}"))
         },
     );
     reg.fn1("Sketch.circle", "Sketch.circle(radius)", |r: f64| {

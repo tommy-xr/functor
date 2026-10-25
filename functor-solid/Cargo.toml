@@ -12,3 +12,7 @@ cgmath = "0.18.0"
 i_overlay = "9.1"
 # Constrained triangulation of polygons with holes (extrusion caps).
 i_triangle = "0.50"
+# Text: HarfBuzz-compatible shaping + glyph outlines (one read-fonts stack).
+harfrust = "0.8.4"
+# Unhinted outlines only: no autohinter.
+skrifa = { version = "0.42.1", default-features = false, features = ["std"] }
