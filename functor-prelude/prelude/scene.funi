@@ -147,9 +147,11 @@ let instanced : (List<Instance.t>, t) => t
 ///   tuples, records, or variants of those) — a function or an engine value
 ///   (`Vec3`, `Color`, `Scene`, …) inside it is an error. Comparing an
 ///   unchanged model field is free; a rebuilt-but-equal value is walked.
-/// - The builder receives `deps` and must read only them (and top-level
-///   definitions). A value it captures from `draw` instead, such as `tts`, is
-///   NOT compared, so the scene would not follow it.
+/// - The builder is a lambda or def that receives `deps` and must read only
+///   them (and top-level definitions). A value it captures from `draw`
+///   instead, such as `tts`, is NOT compared, so the scene would not follow it.
+///   A builder that reads the live physics world (`Physics.position`,
+///   `Physics.transformed`, `Physics.cast`, …) is an error for the same reason.
 ///
 /// The cache belongs to the runtime, not the model: it never changes what a
 /// frame contains, only how much work producing it costs. A key unused for

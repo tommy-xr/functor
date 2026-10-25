@@ -4540,7 +4540,7 @@ struct SceneMemo {
     /// The builder's lambda body, held so its address cannot be reused. A hot
     /// reload lowers fresh bodies, so every site rebuilds once after it — which
     /// is what makes an edit to a builder (or anything it calls) take effect.
-    code: Option<Rc<functor_lang::ir::Expr>>,
+    code: Rc<functor_lang::ir::Expr>,
     scene: Value,
     last_used: u64,
 }
@@ -4564,37 +4564,27 @@ thread_local! {
 /// the SAME value, so the renderer's identity caches skip the upload too.
 /// Otherwise the interpreter runs the builder and the result is cached.
 fn scene_memo(key: Rc<str>, deps: Value, builder: Value) -> Result<HostReturn, String> {
-    match &builder {
-        Value::Closure(closure) if closure.params.len() != 1 => {
-            return Err(format!(
-                "Scene.memo: the builder takes the deps as its one argument — \
+    // A lambda (or a def), so its body identifies the code: a hot reload lowers
+    // new bodies. Builtins and partials of them hold no such identity.
+    let Some((lambda, applied)) = builder_lambda(&builder) else {
+        return Err(format!(
+            "Scene.memo: the builder must be a lambda or def `(deps) => scene`, got {}",
+            value_kind(&builder)
+        ));
+    };
+    if lambda.params.len() != applied + 1 {
+        return Err(format!(
+            "Scene.memo: the builder takes the deps as its one argument — \
 `(deps) => scene` — got a function of {} argument(s)",
-                closure.params.len()
-            ))
-        }
-        Value::Closure(_)
-        | Value::Partial(_)
-        | Value::Builtin(_)
-        | Value::HostFn(_)
-        | Value::Ctor { .. } => {}
-        other => {
-            return Err(format!(
-                "Scene.memo: the builder must be a function `(deps) => scene`, got {}",
-                value_kind(other)
-            ))
-        }
+            lambda.params.len() - applied
+        ));
     }
-    let code = builder_code(&builder);
+    let code = lambda.body.clone();
     let hit = SCENE_MEMOS.with(|memos| {
         let mut memos = memos.borrow_mut();
         let frame = memos.frame;
         let site = memos.sites.get_mut(&key)?;
-        let same_code = match (&site.code, &code) {
-            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        (same_code && same_plain_data(&site.deps, &deps)).then(|| {
+        (Rc::ptr_eq(&site.code, &code) && same_plain_data(&site.deps, &deps)).then(|| {
             site.last_used = frame;
             site.scene.clone()
         })
@@ -4612,11 +4602,19 @@ functions or engine values"
         ));
     }
     let args = vec![deps.clone()];
+    let reads_before = WORLD_READS.with(|reads| reads.get());
     Ok(HostReturn::Apply(Box::new(HostApply {
         callee: builder,
         args,
         via: "Scene.memo",
         then: Box::new(move |scene| {
+            if WORLD_READS.with(|reads| reads.get()) != reads_before {
+                return Err("Scene.memo: the builder read the live physics world \
+(Physics.position / linearVelocity / cast / transformed), which deps cannot capture, so \
+the cached scene would freeze — make that read outside the memo and pass the values the \
+builder needs in deps"
+                    .to_string());
+            }
             let is_scene = matches!(&scene, Value::HostData(data)
                 if data.as_any().is::<FunctorLangScene>());
             if !is_scene {
@@ -4653,64 +4651,121 @@ functions or engine values"
     })))
 }
 
-/// The code a builder runs: a lambda's body (through any partial application).
-/// Builtins and host functions never change, so they have none.
-fn builder_code(builder: &Value) -> Option<Rc<functor_lang::ir::Expr>> {
+/// The lambda a builder runs, and how many of its arguments a partial
+/// application already supplied.
+fn builder_lambda(builder: &Value) -> Option<(&functor_lang::value::Closure, usize)> {
     match builder {
-        Value::Closure(closure) => Some(closure.body.clone()),
-        Value::Partial(partial) => builder_code(&partial.callee),
+        Value::Closure(closure) => Some((closure, 0)),
+        Value::Partial(partial) => match &partial.callee {
+            Value::Closure(closure) => Some((closure, partial.applied.len())),
+            _ => None,
+        },
         _ => None,
     }
 }
 
 /// `Ok` for plain data; otherwise what was found (`a function`, `a Vec3`).
+/// Iterative, and each shared container is walked once: model data can be a
+/// DAG whose tree expansion is exponential, or nested deeper than the stack.
 fn plain_data(value: &Value) -> Result<(), String> {
-    match value {
-        Value::Number(_) | Value::String(_) | Value::Bool(_) => Ok(()),
-        Value::List(items) | Value::Tuple(items) => items.iter().try_for_each(plain_data),
-        Value::Map(entries) => entries.iter().try_for_each(|(_, v)| plain_data(v)),
-        Value::Record(fields) => fields.iter().try_for_each(|(_, v)| plain_data(v)),
-        Value::Variant { args, .. } => args.iter().try_for_each(plain_data),
-        Value::HostData(data) => Err(format!("a {} (an engine value)", data.type_name())),
-        other => Err(value_kind(other).to_string()),
+    let mut seen = std::collections::HashSet::new();
+    let mut work = vec![value];
+    while let Some(value) = work.pop() {
+        match value {
+            Value::Number(_) | Value::String(_) | Value::Bool(_) => {}
+            Value::List(items) | Value::Tuple(items) => {
+                if seen.insert(Rc::as_ptr(items) as *const ()) {
+                    work.extend(items.iter());
+                }
+            }
+            Value::Map(entries) => {
+                if seen.insert(Rc::as_ptr(entries) as *const ()) {
+                    work.extend(entries.iter().map(|(_, v)| v));
+                }
+            }
+            Value::Record(fields) => {
+                if seen.insert(Rc::as_ptr(fields) as *const ()) {
+                    work.extend(fields.iter().map(|(_, v)| v));
+                }
+            }
+            Value::Variant { args, .. } => {
+                if seen.insert(Rc::as_ptr(args) as *const ()) {
+                    work.extend(args.iter());
+                }
+            }
+            Value::HostData(data) => {
+                return Err(format!("a {} (an engine value)", data.type_name()))
+            }
+            other => return Err(value_kind(other).to_string()),
+        }
     }
+    Ok(())
 }
 
-/// Structural equality over plain data, short-circuiting on shared `Rc`s (a
-/// model field that did not change is the same list). Numbers compare by bits,
-/// so NaN deps still hit. Anything not plain data is unequal.
+/// Structural equality over plain data. A shared container (a model field that
+/// did not change is the same list) is equal without a walk, and each pair of
+/// containers is compared once, so it is linear in distinct nodes like
+/// [`plain_data`]. Numbers compare by bits, so NaN deps still hit. Anything not
+/// plain data is unequal.
 fn same_plain_data(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x.to_bits() == y.to_bits(),
-        (Value::String(x), Value::String(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
-            Rc::ptr_eq(x, y)
-                || (x.len() == y.len()
-                    && x.iter().zip(y.iter()).all(|(a, b)| same_plain_data(a, b)))
+    let mut seen = std::collections::HashSet::new();
+    // Whether a pair of containers still needs comparing.
+    let mut fresh = |x: *const (), y: *const ()| x != y && seen.insert((x, y));
+    let mut work = vec![(a, b)];
+    while let Some(pair) = work.pop() {
+        match pair {
+            (Value::Number(x), Value::Number(y)) if x.to_bits() == y.to_bits() => {}
+            (Value::String(x), Value::String(y)) if x == y => {}
+            (Value::Bool(x), Value::Bool(y)) if x == y => {}
+            (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
+                if fresh(Rc::as_ptr(x) as *const (), Rc::as_ptr(y) as *const ()) {
+                    if x.len() != y.len() {
+                        return false;
+                    }
+                    work.extend(x.iter().zip(y.iter()));
+                }
+            }
+            (Value::Map(x), Value::Map(y)) => {
+                if fresh(Rc::as_ptr(x) as *const (), Rc::as_ptr(y) as *const ()) {
+                    if x.len() != y.len() {
+                        return false;
+                    }
+                    for ((ka, va), (kb, vb)) in x.iter().zip(y.iter()) {
+                        if ka.compare(kb) != std::cmp::Ordering::Equal {
+                            return false;
+                        }
+                        work.push((va, vb));
+                    }
+                }
+            }
+            (Value::Record(x), Value::Record(y)) => {
+                if fresh(Rc::as_ptr(x) as *const (), Rc::as_ptr(y) as *const ()) {
+                    if x.len() != y.len() {
+                        return false;
+                    }
+                    for ((na, va), (nb, vb)) in x.iter().zip(y.iter()) {
+                        if na != nb {
+                            return false;
+                        }
+                        work.push((va, vb));
+                    }
+                }
+            }
+            (Value::Variant { ctor: ca, args: aa }, Value::Variant { ctor: cb, args: ab }) => {
+                if ca != cb {
+                    return false;
+                }
+                if fresh(Rc::as_ptr(aa) as *const (), Rc::as_ptr(ab) as *const ()) {
+                    if aa.len() != ab.len() {
+                        return false;
+                    }
+                    work.extend(aa.iter().zip(ab.iter()));
+                }
+            }
+            _ => return false,
         }
-        (Value::Map(x), Value::Map(y)) => {
-            Rc::ptr_eq(x, y)
-                || (x.len() == y.len()
-                    && x.iter().zip(y.iter()).all(|((ka, va), (kb, vb))| {
-                        ka.compare(kb) == std::cmp::Ordering::Equal && same_plain_data(va, vb)
-                    }))
-        }
-        (Value::Record(x), Value::Record(y)) => {
-            Rc::ptr_eq(x, y)
-                || (x.len() == y.len()
-                    && x.iter()
-                        .zip(y.iter())
-                        .all(|((na, va), (nb, vb))| na == nb && same_plain_data(va, vb)))
-        }
-        (Value::Variant { ctor: ca, args: aa }, Value::Variant { ctor: cb, args: ab }) => {
-            ca == cb
-                && (Rc::ptr_eq(aa, ab)
-                    || (aa.len() == ab.len()
-                        && aa.iter().zip(ab.iter()).all(|(a, b)| same_plain_data(a, b))))
-        }
-        _ => false,
     }
+    true
 }
 
 /// Advance the `Scene.memo` frame clock and evict sites unused for more than
@@ -6249,11 +6304,22 @@ impl Drop for PrimingScope {
     }
 }
 
+thread_local! {
+    /// Synchronous physics-world reads so far — `Scene.memo` refuses a builder
+    /// that made any, since its deps cannot capture live world state.
+    static WORLD_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn note_world_read() {
+    WORLD_READS.with(|reads| reads.set(reads.get() + 1));
+}
+
 /// Live pose of a body in the ACTIVE world (normally the singleton world the
 /// shell steps — same process, same crate statics as this prelude; under a
 /// dry-run forward-step scope, the throwaway projected world, so ghost draws
 /// read the stepped poses — docs/time-travel.md T6b).
 fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
+    note_world_read();
     physics::with_world(physics::active_world(), |w| w.body_transform(tag))
         .flatten()
         .or_else(|| {
@@ -6267,6 +6333,7 @@ fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
 /// of `Physics.setVelocity`, on the same world-scope rules as
 /// [`live_transform`].
 fn live_velocity(tag: &str) -> Option<[f32; 3]> {
+    note_world_read();
     physics::with_world(physics::active_world(), |w| w.body_velocity(tag))
         .flatten()
         .or_else(|| PRIMING.with(|p| p.get()).then_some([0.0; 3]))
@@ -6309,6 +6376,7 @@ fn sync_cast(
         return Err(format!("{what} maxDist must be positive, got {max_dist}"));
     }
     let max_dist = max_dist as f32;
+    note_world_read();
     let hit = physics::with_world(physics::active_world(), |w| {
         w.raycast_excluding([ox, oy, oz], [dx, dy, dz], max_dist, exclude)
     })
@@ -8712,6 +8780,23 @@ let frame = (n) => Scene.memo(\"memo-test\", { size: n, tags: [\"a\"] }, (d) => 
         assert_ne!(scene_ptr(&kept), scene_ptr(&memo_frame(&session, 1.0).unwrap()));
     }
 
+    /// Deps that share structure (a 2^60-leaf tree in 60 nodes) validate and
+    /// compare in linear time; a partially applied def is a valid builder.
+    #[test]
+    fn scene_memo_walks_shared_deps_once() {
+        let source = "
+type Tree =
+  | Leaf
+  | Fork(left: Tree, right: Tree)
+let deep = (n) => List.range(n) |> List.fold((acc, i) => Fork(acc, acc), Leaf)
+let build = (size, d) => Scene.cube() |> Scene.scale(size)
+let frame = (n) => Scene.memo(\"memo-dag\", deep(60.0), build(n))
+";
+        let session = memo_session(source);
+        let a = memo_frame(&session, 1.0).unwrap();
+        assert_eq!(scene_ptr(&a), scene_ptr(&memo_frame(&session, 1.0).unwrap()));
+    }
+
     #[test]
     fn scene_memo_teaches_bad_deps_builders_and_results() {
         let err = |src: &str| match memo_frame(&memo_session(src), 1.0) {
@@ -8725,6 +8810,13 @@ let frame = (n) => Scene.memo(\"memo-test\", { size: n, tags: [\"a\"] }, (d) => 
         assert!(engine.contains("found a Vec3"), "{engine}");
         let nullary = err("let frame = (n) => Scene.memo(\"k3\", n, () => Scene.cube())");
         assert!(nullary.contains("one argument"), "{nullary}");
+        // A builtin holds no code identity a reload could invalidate.
+        let builtin = err("let frame = (n) => Scene.memo(\"k5\", [], List.fold((s, x) => s, Scene.cube()))");
+        assert!(builtin.contains("must be a lambda or def"), "{builtin}");
+        let world = err("let frame = (n) => Scene.memo(\"k6\", n, (d) =>
+  let hit = Physics.cast(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 1.0) in
+  Scene.cube())");
+        assert!(world.contains("read the live physics world"), "{world}");
         let result = err("let frame = (n) => Scene.memo(\"k4\", n, (d) => d)");
         assert!(result.contains("must return a Scene, got a number"), "{result}");
     }
