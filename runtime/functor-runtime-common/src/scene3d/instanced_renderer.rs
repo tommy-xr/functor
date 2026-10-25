@@ -1100,7 +1100,7 @@ fn set_forward_uniforms(
     }
     u.lighting.set(p, ctx, view);
     u.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
-    u.output.set(p, ctx.gl, ctx.output_srgb_encode);
+    u.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
 }
 
 /// Upload the instance records into the currently bound `ARRAY_BUFFER`.

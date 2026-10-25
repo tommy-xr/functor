@@ -181,7 +181,7 @@ impl Material for SkinnedMaterial {
                 p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);
                 uniforms.lighting.set(p, ctx, view_matrix);
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
-                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }
 

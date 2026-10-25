@@ -764,7 +764,7 @@ impl TerrainRenderer {
             }
             u.lighting.set(p, ctx, view);
             u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
-            u.output.set(p, gl, ctx.output_srgb_encode);
+            u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(height_texture));
@@ -948,7 +948,7 @@ impl TerrainRenderer {
                 &Vector3::new(grass_color[0], grass_color[1], grass_color[2]),
             );
             u.fog.set(p, gl, ctx.fog, &ctx.camera_pos);
-            u.output.set(p, gl, ctx.output_srgb_encode);
+            u.output.set(p, gl, ctx.output_srgb_encode, ctx.output_alpha());
 
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(height_texture));

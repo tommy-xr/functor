@@ -39,9 +39,10 @@ let withClearColor : (Color.t, t) => t
 /// Show the real world behind a frame — mixed reality.
 ///
 /// The background becomes the headset's camera feed: the skybox and clear
-/// color are dropped, and geometry composites over the room by its alpha
-/// (untextured opaque surfaces hide it; `Scene.opacity` subtrees let it
-/// through; a texture's own alpha below 1 lets it through too). The
+/// color are dropped, and geometry composites over the room by its alpha:
+/// opaque surfaces hide it, textured or not (a texture's own alpha is
+/// ignored), while `Scene.opacity` subtrees and translucent 2D sprites let it
+/// through. The
 /// feed itself is requested by `config`'s `Xr.passthrough(true)`. Wherever
 /// no feed is composited — desktop, web, or a headset with the feed paused
 /// or unavailable — the background is a stand-in room: a darker floor at

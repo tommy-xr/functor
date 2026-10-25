@@ -135,7 +135,7 @@ impl Material for SkinnedNormalDebugMaterial {
                 );
                 p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                 p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
 
                 let joint_matrices = crate::model::flatten_joint_matrices(skinning_data);
 

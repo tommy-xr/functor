@@ -20,7 +20,7 @@
 //!     exactly those writes);
 //!   - non-sRGB output surfaces (the desktop GLFW backbuffer, the WebGL2
 //!     canvas) get a shader epilogue instead: [`OUTPUT_ENCODE_GLSL`]'s
-//!     `functorOutput`, gated by the `uOutputSrgbEncode` uniform.
+//!     `functorOutput`, gated by the `uOutputFlags` uniform.
 //!
 //! **Desktop keeps `GL_FRAMEBUFFER_SRGB` OFF everywhere else.** Some drivers
 //! (macOS) report the GLFW backbuffer as sRGB-capable, and with the toggle on
@@ -124,27 +124,50 @@ pub const SRGB_DECODE_GLSL: &str = r#"
 
 /// Injected into every fragment shader's preamble (`shader::convert`).
 ///
-/// `functorOutput` is the output epilogue: linear→sRGB encode when
-/// `uOutputSrgbEncode` is 1 (non-sRGB output surface), passthrough when 0
-/// (sRGB attachment — the hardware encodes). Every color-writing fragment
-/// shader routes its final `fragColor` through it; the uniform is set from
-/// `RenderContext::output_srgb_encode` (see the module doc's invariant). The
-/// clamp is not a tonemap — it mirrors the clamp a UNORM write always did; a
-/// tonemap would slot in right before the encode.
+/// `functorOutput` is the output epilogue. `uOutputFlags` bit 0 encodes
+/// linear→sRGB (non-sRGB output surface); clear passes through (sRGB
+/// attachment — the hardware encodes). Bit 1 keeps the fragment's alpha
+/// ([`OutputAlpha::Blend`]); clear writes alpha 1 ([`OutputAlpha::Opaque`]), so
+/// an opaque surface never stores its texture's alpha — over a passthrough
+/// feed that alpha would show the room through it. Every color-writing
+/// fragment shader routes its final `fragColor` through it; the flags come
+/// from `RenderContext::output_srgb_encode` / `output_alpha` (see the module
+/// doc's invariant). The clamp is not a tonemap — it mirrors the clamp a UNORM
+/// write always did; a tonemap would slot in right before the encode.
 pub const OUTPUT_ENCODE_GLSL: &str = r#"
-        uniform int uOutputSrgbEncode;
+        uniform int uOutputFlags;
 
         vec4 functorOutput(vec4 color) {
-            if (uOutputSrgbEncode == 1) {
+            float alpha = (uOutputFlags & 2) != 0 ? color.a : 1.0;
+            if ((uOutputFlags & 1) != 0) {
                 vec3 c = clamp(color.rgb, 0.0, 1.0);
                 vec3 lo = c * 12.92;
                 vec3 hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
                 vec3 encoded = mix(hi, lo, vec3(lessThanEqual(c, vec3(0.0031308))));
-                return vec4(encoded, color.a);
+                return vec4(encoded, alpha);
             }
-            return color;
+            return vec4(color.rgb, alpha);
         }
 "#;
+
+/// How a draw's fragment alpha reaches the color attachment — glTF's alpha
+/// modes, as far as the engine has them (no MASK/alpha-test yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputAlpha {
+    /// Write alpha 1 whatever the shader computed: nothing blends by it, and a
+    /// passthrough eye buffer must stay opaque under an opaque surface. Also
+    /// right under `Scene.opacity`, whose blend takes coverage from the
+    /// constant, not the fragment.
+    Opaque,
+    /// Write the fragment's alpha — the factor of a source-alpha blend (2D
+    /// sprites, a translucent material's subtree).
+    Blend,
+}
+
+/// The `uOutputFlags` value for one draw.
+pub fn output_flags(encode: bool, alpha: OutputAlpha) -> i32 {
+    encode as i32 | ((alpha == OutputAlpha::Blend) as i32) << 1
+}
 
 /// Turn desktop GL's encode-on-write for sRGB attachments on/off. Bracket
 /// every draw or clear into an sRGB render-target attachment with
@@ -165,11 +188,11 @@ pub fn set_srgb_write(gl: &glow::Context, on: bool) {
     let _ = (gl, on);
 }
 
-/// The `uOutputSrgbEncode` uniform location of one color-writing shader
-/// program (the `FogUniforms` pattern). Programs whose fragment shader routes
-/// its output through `functorOutput` look this up in `initialize` and upload
-/// via [`OutputEncodeUniform::set`] each draw; depth programs never
-/// reference the uniform (it is optimized out), so they must not look it up.
+/// The `uOutputFlags` uniform location of one color-writing shader program
+/// (the `FogUniforms` pattern). Programs whose fragment shader routes its
+/// output through `functorOutput` look this up in `initialize` and upload via
+/// [`OutputEncodeUniform::set`] each draw; depth programs never reference the
+/// uniform (it is optimized out), so they must not look it up.
 pub struct OutputEncodeUniform {
     loc: UniformLocation,
 }
@@ -177,12 +200,12 @@ pub struct OutputEncodeUniform {
 impl OutputEncodeUniform {
     pub fn get(shader: &ShaderProgram, gl: &glow::Context) -> OutputEncodeUniform {
         OutputEncodeUniform {
-            loc: shader.get_uniform_location(gl, "uOutputSrgbEncode"),
+            loc: shader.get_uniform_location(gl, "uOutputFlags"),
         }
     }
 
-    pub fn set(&self, p: &ShaderProgram, gl: &glow::Context, encode: bool) {
-        p.set_uniform_1i(gl, &self.loc, encode as i32);
+    pub fn set(&self, p: &ShaderProgram, gl: &glow::Context, encode: bool, alpha: OutputAlpha) {
+        p.set_uniform_1i(gl, &self.loc, output_flags(encode, alpha));
     }
 }
 
@@ -218,6 +241,14 @@ mod tests {
         let below = linear_to_srgb(0.0031308 - 1e-7);
         let above = linear_to_srgb(0.0031308 + 1e-7);
         assert!((below - above).abs() < 1e-5);
+    }
+
+    #[test]
+    fn output_flags_pack_encode_and_alpha() {
+        assert_eq!(output_flags(false, OutputAlpha::Opaque), 0);
+        assert_eq!(output_flags(true, OutputAlpha::Opaque), 1);
+        assert_eq!(output_flags(false, OutputAlpha::Blend), 2);
+        assert_eq!(output_flags(true, OutputAlpha::Blend), 3);
     }
 
     #[test]
