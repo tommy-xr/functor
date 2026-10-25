@@ -752,14 +752,15 @@ impl FunctorLangGame {
     fn report_stats(&mut self) {
         if self.frames > 0 && self.frames % STATS_EVERY == 0 {
             let tick_us = self.tick_ns as f64 / STATS_EVERY as f64 / 1000.0;
-            let physics_us = self.physics_ns as f64 / STATS_EVERY as f64 / 1000.0;
             let drawn = self.drawn.max(1) as f64;
             let draw_us = self.draw_ns as f64 / drawn / 1000.0;
             let render_us = self.render_ns as f64 / drawn / 1000.0;
             let swap_us = self.swap_ns as f64 / drawn / 1000.0;
             let sim_us = self.sim_ns as f64 / drawn / 1000.0;
             let sim_wait_us = self.sim_wait_ns as f64 / drawn / 1000.0;
-            let frame_us = tick_us + physics_us + draw_us;
+            // The producer's whole cost per drawn frame: every step it ran
+            // plus its draw, so `budget_pct` reads against a frame's budget.
+            let frame_us = (self.tick_ns + self.physics_ns + self.draw_ns) as f64 / drawn / 1000.0;
             let counters = functor_runtime_common::gpu_counters::gpu_counters();
             let live = counters.live();
             let window = counters.take_window();
@@ -776,15 +777,11 @@ impl FunctorLangGame {
                 gpu_live_vaos: live.vaos,
                 gpu_live_buffers: live.buffers,
                 gpu_live_textures: live.textures,
-                gpu_bytes_per_frame: round1(window.bytes_uploaded as f64 / STATS_EVERY as f64),
+                gpu_bytes_per_frame: round1(window.bytes_uploaded as f64 / drawn),
                 gpu_cache_hits: window.cache_hits,
                 gpu_cache_misses: window.cache_misses,
-                gpu_instance_uploads_per_frame: round1(
-                    window.instance_uploads as f64 / STATS_EVERY as f64,
-                ),
-                gpu_instance_bytes_per_frame: round1(
-                    window.instance_upload_bytes as f64 / STATS_EVERY as f64,
-                ),
+                gpu_instance_uploads_per_frame: round1(window.instance_uploads as f64 / drawn),
+                gpu_instance_bytes_per_frame: round1(window.instance_upload_bytes as f64 / drawn),
             });
             self.drawn = 0;
             self.tick_ns = 0;
@@ -2357,6 +2354,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     /// steps inflated `sim_us`/`draw_us` by the frames-per-step ratio.
     #[test]
     fn frame_stats_average_frame_stages_over_drawn_frames() {
+        // The sink is process-wide and first-wins: this is the only test in
+        // the crate that installs one.
         static SIM_US: std::sync::Mutex<Vec<f64>> = std::sync::Mutex::new(Vec::new());
         functor_runtime_common::events::set_sink(Box::new(|event| {
             if let functor_runtime_common::events::RuntimeEvent::FrameStats { sim_us, .. } = event {
