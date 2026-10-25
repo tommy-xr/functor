@@ -17,10 +17,10 @@ import { findRepoRoot, FunctorRunner, waitFor } from "../src/index.js";
 const e2eEnabled = process.env.FUNCTOR_E2E === "1";
 const headless = process.env.FUNCTOR_E2E_HEADLESS === "1";
 
-// The entry never changes: it reads `Config.speed` from the sibling module
+// The entry never changes: it reads `Tuning.speed` from the sibling module
 // (qualified access, no `open` needed).
 const game = `let init = { spin: 0.0 }
-let tick = (m, dt, tts) => { m with spin: m.spin + dt * Config.speed }
+let tick = (m, dt, tts) => { m with spin: m.spin + dt * Tuning.speed }
 let draw = (m, tts) =>
   Frame.create(Camera3D.lookAt(Vec3.make(0.0, 2.0, -6.0), Vec3.make(0.0, 0.0, 0.0)), Scene.cube())
 `;
@@ -44,9 +44,9 @@ test(
 
     const dir = mkdtempSync(join(tmpdir(), "functor-lang-modules-"));
     const entryPath = join(dir, "game.fun");
-    const configPath = join(dir, "config.fun");
+    const tuningPath = join(dir, "tuning.fun");
     writeFileSync(entryPath, game);
-    writeFileSync(configPath, config("1.0"));
+    writeFileSync(tuningPath, config("1.0"));
 
     await using runner = await FunctorRunner.launch({
       gameDir: dir,
@@ -63,11 +63,11 @@ test(
     const before = spinOf((await runner.state()).model_debug);
     assert.ok(
       Math.abs(before - base - 3 * DT) < 1e-4,
-      `three steps at Config.speed 1.0 should add ~0.3 to ${base}, got ${before}`,
+      `three steps at Tuning.speed 1.0 should add ~0.3 to ${base}, got ${before}`,
     );
 
     // Edit the SIBLING module only — the entry file is untouched.
-    writeFileSync(configPath, config("-5.0"));
+    writeFileSync(tuningPath, config("-5.0"));
     await waitFor(
       async () => runner.logs(),
       (lines) => lines.some((l) => l.includes("hot-reloaded")),
@@ -85,7 +85,7 @@ test(
     );
 
     // A BROKEN sibling edit fails loud but keeps the old program running.
-    writeFileSync(configPath, "let speed = ((");
+    writeFileSync(tuningPath, "let speed = ((");
     await waitFor(
       async () => runner.logs(),
       (lines) => lines.some((l) => l.includes("reload failed")),
@@ -100,7 +100,7 @@ test(
 
     // Fixing the sibling reloads again, and the model STILL survives —
     // three generations of state across two sibling edits and one break.
-    writeFileSync(configPath, config("2.0"));
+    writeFileSync(tuningPath, config("2.0"));
     await waitFor(
       async () => runner.logs(),
       (lines) =>
