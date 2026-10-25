@@ -156,6 +156,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "bookmark-t1",
+      "sample": "bookmark",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

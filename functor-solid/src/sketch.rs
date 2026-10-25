@@ -147,17 +147,19 @@ impl Sketch {
     /// vertex; it is closed whenever [`Sketch::touching_point`] is `None`.
     pub fn extrude(&self, height: f64) -> Mesh {
         let tri = self.shapes.triangulate().to_triangulation::<u32>();
-        let n = tri.points.len() as u32;
+        let (points, remap) = weld(&tri.points);
+        let n = points.len() as u32;
         let mut mesh = Mesh::default();
         mesh.vertices
-            .extend(tri.points.iter().map(|p| [p[0], p[1], 0.0]));
+            .extend(points.iter().map(|p| [p[0], p[1], 0.0]));
         mesh.vertices
-            .extend(tri.points.iter().map(|p| [p[0], p[1], height]));
+            .extend(points.iter().map(|p| [p[0], p[1], height]));
         // i_triangle emits counter-clockwise triangles (seen from +Z).
         let triangles: Vec<[u32; 3]> = tri
             .indices
             .chunks_exact(3)
-            .map(|t| [t[0], t[1], t[2]])
+            .map(|t| [t[0], t[1], t[2]].map(|i| remap[i as usize]))
+            .filter(|&[a, b, c]| a != b && b != c && c != a)
             .collect();
         let mut uses: HashMap<(u32, u32), u32> = HashMap::new();
         for &[a, b, c] in &triangles {
@@ -179,6 +181,41 @@ impl Sketch {
         }
         mesh
     }
+}
+
+/// Points closer than this (mm) are one point: far below any printable
+/// feature, yet above f32 resolution for parts under ~1 m, so exported files
+/// never carry two copies of one position.
+const WELD_TOLERANCE: f64 = 1e-4;
+
+/// Merge points within [`WELD_TOLERANCE`] — an offset can leave neighbours a
+/// few nanometres apart. Returns the kept points and each input's new index.
+fn weld(input: &[[f64; 2]]) -> (Vec<[f64; 2]>, Vec<u32>) {
+    let cell = |p: [f64; 2]| p.map(|x| (x / WELD_TOLERANCE).floor() as i64);
+    let mut grid: HashMap<[i64; 2], Vec<u32>> = HashMap::new();
+    let mut points: Vec<[f64; 2]> = Vec::new();
+    let remap = input
+        .iter()
+        .map(|&p| {
+            let [cx, cy] = cell(p);
+            let near = (-1..=1)
+                .flat_map(|dx| (-1..=1).map(move |dy| [cx + dx, cy + dy]))
+                .filter_map(|c| grid.get(&c))
+                .flatten()
+                .find(|&&i| {
+                    let q = points[i as usize];
+                    (q[0] - p[0]).hypot(q[1] - p[1]) <= WELD_TOLERANCE
+                })
+                .copied();
+            near.unwrap_or_else(|| {
+                points.push(p);
+                let i = points.len() as u32 - 1;
+                grid.entry([cx, cy]).or_default().push(i);
+                i
+            })
+        })
+        .collect();
+    (points, remap)
 }
 
 #[cfg(test)]
@@ -250,6 +287,16 @@ mod tests {
     fn extrusion_is_deterministic() {
         let s = Sketch::rect(10.0, 10.0).subtract(&Sketch::circle(3.0));
         assert_eq!(s.extrude(1.0), s.extrude(1.0));
+    }
+
+    #[test]
+    fn weld_merges_only_points_within_tolerance() {
+        let (points, remap) = weld(&[[0.0, 0.0], [5e-5, 0.0], [2e-4, 0.0], [10.0, 0.0]]);
+        assert_eq!(points.len(), 3);
+        assert_eq!(remap, vec![0, 0, 1, 2]);
+        // Far from the origin, real geometry is untouched.
+        let far = Sketch::rect(2.0, 2.0).map_points(|[x, y]| [x + 1e8, y]);
+        assert!((far.extrude(1.0).volume() - 4.0).abs() < 1e-6);
     }
 
     #[test]

@@ -290,6 +290,16 @@ mod tests {
         assert!(text_width(Font::Sans, 6.0, "♥").is_err());
     }
 
+    /// Offsetting a word leaves point pairs nanometres apart; extrusion must
+    /// still come out closed.
+    #[test]
+    fn fattened_words_extrude_closed() {
+        let s = text(Font::Script, 6.0, "Husband").unwrap().offset(0.12);
+        let mesh = s.extrude(0.6);
+        assert_eq!(mesh.shared_positions(), 0);
+        assert_eq!(mesh.non_manifold_edges(), 0);
+    }
+
     #[test]
     fn width_tracks_shaped_advance() {
         let w = text_width(Font::Sans, 10.0, "Hello").unwrap();

@@ -16,3 +16,6 @@ i_triangle = "0.50"
 harfrust = "0.8.4"
 # Unhinted outlines only: no autohinter.
 skrifa = { version = "0.42.1", default-features = false, features = ["std"] }
+# 3MF is a zip of XML parts.
+flate2 = "1.1"
+crc32fast = "1.5"

@@ -14,6 +14,7 @@ mod mesh;
 mod sketch;
 pub mod stl;
 mod text;
+pub mod threemf;
 
 use std::sync::Arc;
 
