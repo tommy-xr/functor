@@ -123,7 +123,11 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec3 worldNormal;
         in vec3 worldTangent;
-        in vec3 worldPos;
+        // highp: GLES fragment shaders default to mediump, which Adreno runs
+        // as fp16. At 1 km from the origin that quantizes positions to 1 m,
+        // so the tiled detail sampled blocky 1 m squares, and the stepped UVs
+        // broke mip selection, so most fetches hit level 0.
+        in highp vec3 worldPos;
         in float localHeight;
         in vec2 terrainUv;
 
@@ -174,7 +178,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         // it directly would repaint a green hillside as dirt. It also makes
         // the distance fade exact: as `fade` reaches 0 the result is 1.0, i.e.
         // no change, so there is nothing to seam against.
-        vec3 detail(sampler2D tex, vec2 uv, float fade, vec3 average) {
+        vec3 detail(sampler2D tex, highp vec2 uv, float fade, vec3 average) {
             vec3 near = mix(texture(tex, uv).rgb, texture(tex, uv * 0.137).rgb, 0.5);
             return mix(vec3(1.0), clamp(near / max(average, vec3(1e-3)), 0.0, 2.5), fade);
         }
@@ -231,15 +235,31 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     if (fade > 0.0) {
                         // The SAME weights as the colors above: texturing
                         // dresses the bands, it does not move them.
-                        vec2 uv = worldPos.xz / detailTile;
-                        vec3 structure = mix(
-                            detail(lowTex, uv, fade, detailAverage[0]),
-                            detail(highTex, uv, fade, detailAverage[1]),
-                            bandWeight);
-                        structure = mix(
-                            structure, detail(rockTex, uv, fade, detailAverage[2]), rockWeight);
-                        structure = mix(
-                            structure, detail(snowTex, uv, fade, detailAverage[3]), snowWeight);
+                        highp vec2 uv = worldPos.xz / detailTile;
+                        // A layer at weight exactly 0 contributes nothing
+                        // (`mix(a, b, 0.0) == a`), so skip its two fetches.
+                        // The smoothstep weights are exactly 0 or 1 over most
+                        // of the surface, which leaves one or two layers per
+                        // fragment instead of four (Quest 3 terrain: texture
+                        // fetch stall 34% -> 8%). The result is unchanged.
+                        // Same derivative argument as the fade branch: a quad
+                        // straddling a skip edge has weight ~0 on that layer.
+                        vec3 structure = vec3(1.0);
+                        if (bandWeight < 1.0) {
+                            structure = detail(lowTex, uv, fade, detailAverage[0]);
+                        }
+                        if (bandWeight > 0.0) {
+                            structure = mix(
+                                structure, detail(highTex, uv, fade, detailAverage[1]), bandWeight);
+                        }
+                        if (rockWeight > 0.0) {
+                            structure = mix(
+                                structure, detail(rockTex, uv, fade, detailAverage[2]), rockWeight);
+                        }
+                        if (snowWeight > 0.0) {
+                            structure = mix(
+                                structure, detail(snowTex, uv, fade, detailAverage[3]), snowWeight);
+                        }
                         albedo *= structure;
                     }
                 }
