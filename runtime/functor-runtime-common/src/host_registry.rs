@@ -329,7 +329,12 @@ impl Registry {
 
     /// Dispatch a call if `path` is registered; `None` means an unregistered
     /// path (the caller reports it).
-    pub fn call(&self, path: &str, args: &[Value], span: Span) -> Option<Result<HostReturn, RunError>> {
+    pub fn call(
+        &self,
+        path: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Option<Result<HostReturn, RunError>> {
         self.fns.get(path).map(|ext| (ext.call)(path, args, span))
     }
 

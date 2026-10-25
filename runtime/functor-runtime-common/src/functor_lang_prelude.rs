@@ -4686,7 +4686,8 @@ fn same_plain_data(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
             Rc::ptr_eq(x, y)
-                || (x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| same_plain_data(a, b)))
+                || (x.len() == y.len()
+                    && x.iter().zip(y.iter()).all(|(a, b)| same_plain_data(a, b)))
         }
         (Value::Map(x), Value::Map(y)) => {
             Rc::ptr_eq(x, y)
@@ -4702,10 +4703,7 @@ fn same_plain_data(a: &Value, b: &Value) -> bool {
                         .zip(y.iter())
                         .all(|((na, va), (nb, vb))| na == nb && same_plain_data(va, vb)))
         }
-        (
-            Value::Variant { ctor: ca, args: aa },
-            Value::Variant { ctor: cb, args: ab },
-        ) => {
+        (Value::Variant { ctor: ca, args: aa }, Value::Variant { ctor: cb, args: ab }) => {
             ca == cb
                 && (Rc::ptr_eq(aa, ab)
                     || (aa.len() == ab.len()
