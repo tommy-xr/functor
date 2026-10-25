@@ -243,8 +243,8 @@ mod tests {
 
     #[test]
     fn writes_a_deterministic_two_part_package() {
-        let base = Solid::Box { size: [10.0; 3] }.mesh();
-        let top = Solid::Sphere { radius: 2.0 }.mesh();
+        let base = Solid::Box { size: [10.0; 3] }.mesh().unwrap();
+        let top = Solid::Sphere { radius: 2.0 }.mesh().unwrap();
         let mut a = Vec::new();
         write("thing", &[("base", &base), ("top", &top)], &mut a).unwrap();
         let mut b = Vec::new();

@@ -656,7 +656,8 @@ impl FunctorLangProject {
         for binding in bindings {
             let mesh = solid_global(&session, binding)
                 .map_err(Error::other)?
-                .mesh();
+                .mesh()
+                .map_err(|e| Error::other(format!("`{binding}`: {e}")))?;
             check_printable(binding, &mesh)?;
             parts.push((binding.as_str(), mesh));
         }

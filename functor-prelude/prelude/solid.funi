@@ -38,10 +38,20 @@ let rotateZ : (Angle.t, t) => t
 /// Scale a solid uniformly about the origin by a positive factor.
 let scale : (float, t) => t
 
+/// Merge solids into one closed solid (at least one): overlapping and
+/// touching pieces fuse.
+let union : (List<t>) => t
+/// Cut `cut` out of a solid; the solid is last for piping, e.g.
+/// `plate |> Solid.subtract(hole)`.
+let subtract : (t, t) => t
+/// Keep only where a solid overlaps `other`; the solid is last for piping.
+let intersect : (t, t) => t
+
 /// Place solids together as one part (at least one). Pieces are NOT merged —
 /// each stays its own closed shell, which slicers print as a union — so they
 /// must overlap or stay apart: pieces whose corners or edges land on the same
 /// point (stacked equal-radius rings, boxes meeting edge to edge) won't export.
+/// Use a group for multi-colour parts; use `union` to fuse pieces.
 let group : (List<t>) => t
 
 /// Show a solid in a scene at true size: millimetres become metres and Z-up

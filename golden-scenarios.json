@@ -183,6 +183,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "knob-t1",
+      "sample": "knob",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }
