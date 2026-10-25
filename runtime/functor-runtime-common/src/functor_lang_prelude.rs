@@ -11248,13 +11248,10 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let meshes: Vec<_> = children
             .iter()
             .map(|child| {
-                let SceneObject::Group(leaves) = &child.obj else {
-                    panic!("expected the toScene wrapper, got {:?}", child.obj);
+                let SceneObject::Geometry(Shape::Mesh { mesh }) = &child.obj else {
+                    panic!("expected a Mesh leaf, got {:?}", child.obj);
                 };
-                let SceneObject::Geometry(Shape::Mesh { mesh }) = &leaves[0].obj else {
-                    panic!("expected a Mesh leaf, got {:?}", leaves[0].obj);
-                };
-                (child.xform * leaves[0].xform, mesh)
+                (child.xform, mesh)
             })
             .collect();
         assert!(std::sync::Arc::ptr_eq(meshes[0].1, meshes[1].1));

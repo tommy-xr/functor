@@ -1,4 +1,4 @@
-use cgmath::{vec2, InnerSpace, Vector3};
+use cgmath::{vec2, Vector3};
 use glow::{Buffer, HasContext, VertexArray};
 
 use crate::render::vertex::{Vertex, VertexAttributeType};
@@ -9,7 +9,7 @@ use crate::scene3d::MeshData;
 /// gets its own three vertices carrying its face normal, so faceted solids
 /// read as crisp CAD surfaces instead of smoothed blobs.
 ///
-/// Unlike the per-size meshes, these are evicted when their source mesh dies
+/// Unlike the per-size meshes, these are evicted once undrawn for a frame
 /// (e.g. a hot reload rebuilt the part), so [`TriangleMesh::delete`] frees the
 /// GL objects explicitly — there is no `Drop`, which would have no context.
 pub struct TriangleMesh {
@@ -25,20 +25,12 @@ impl TriangleMesh {
             .iter()
             .flat_map(|tri| {
                 let [a, b, c] = tri.map(|i| Vector3::from(mesh.positions[i as usize]));
-                let n = (b - a).cross(c - a);
-                let normal = if n.magnitude2() > 0.0 {
-                    n.normalize()
-                } else {
-                    n
-                };
+                let normal = functor_solid::face_normal(a, b, c);
                 [a, b, c].map(|p| VertexPositionTexture::new(p, vec2(0.0, 0.0), normal))
             })
             .collect();
         unsafe {
-            let bytes: &[u8] = core::slice::from_raw_parts(
-                vertices.as_ptr() as *const u8,
-                vertices.len() * VertexPositionTexture::get_total_size(),
-            );
+            let bytes = crate::terrain_renderer::slice_bytes(&vertices);
             let counters = crate::gpu_counters::gpu_counters();
             let vbo = gl.create_buffer().unwrap();
             counters.buffer_created();

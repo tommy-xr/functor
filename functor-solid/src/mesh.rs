@@ -4,7 +4,18 @@
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::{PI, TAU};
 
-use cgmath::{InnerSpace, Matrix4, Point3, SquareMatrix, Transform, Vector3};
+use cgmath::{BaseFloat, InnerSpace, Matrix4, Point3, SquareMatrix, Transform, Vector3};
+
+/// The unit outward normal of counter-clockwise triangle `a b c` (zero when
+/// degenerate) — shared by STL export and the renderer so they cannot drift.
+pub fn face_normal<S: BaseFloat>(a: Vector3<S>, b: Vector3<S>, c: Vector3<S>) -> Vector3<S> {
+    let n = (b - a).cross(c - a);
+    if n.magnitude2() > S::zero() {
+        n.normalize()
+    } else {
+        n
+    }
+}
 
 /// Counter-clockwise triangles (seen from outside) over shared vertices, in mm.
 #[derive(Debug, Clone, Default, PartialEq)]

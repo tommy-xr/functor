@@ -1,5 +1,5 @@
 // examples/parts — a printable part defined in code. Export it, or view it
-// at true size (a turntable on desktop, 1:1 in VR):
+// at true size on a turntable:
 //
 //   functor -d examples/parts export -o part.stl
 //   functor -d examples/parts run native
@@ -32,8 +32,9 @@ let ball =
 
 let part = Solid.group([plate, peg, ball])
 
-// The viewer: the part sits on a table-top plane, turning slowly. Scene units
-// are metres, so the 40 mm plate is 0.04 wide — the camera sits close.
+// The viewer: the part sits on a plane, turning slowly. Scene units are
+// metres, so the 40 mm plate is 0.04 wide — the camera sits close. (No
+// shadows: the shadow map spans tens of metres, too coarse for a 4 cm part.)
 let init = {}
 
 let tick = (m, dt, tts) => m
@@ -50,8 +51,7 @@ let draw = (m, tts: float) =>
     ]),
     [
       Light.ambient(Color.rgb(0.18, 0.18, 0.22)),
-      Light.directional(Vec3.make(0.4, -1.0, 0.3), Color.rgb(1.0, 0.97, 0.92), 0.9)
-        |> Light.castShadows,
+      Light.directional(Vec3.make(0.4, -1.0, 0.3), Color.rgb(1.0, 0.97, 0.92), 0.9),
     ])
 
 expect Solid.volume(plate) == plateSize * plateSize * plateThickness
