@@ -79,6 +79,10 @@ pub struct SceneContext {
     // author-supplied polygons of the same vertex count share a mesh and each
     // re-uploads before its own draw.
     polygons: RefCell<HashMap<usize, geometry::PolygonMesh>>,
+    // One GPU mesh per live `Shape::Mesh` `Arc`, keyed by its address. The
+    // `Weak` keeps the allocation (so the address) from being reused while the
+    // entry lives; entries whose mesh died are freed on the next miss.
+    meshes: RefCell<HashMap<usize, (std::sync::Weak<MeshData>, geometry::TriangleMesh)>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
     terrain_decode_residency: RefCell<TerrainDecodeResidency>,
     terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
@@ -347,6 +351,7 @@ impl SceneContext {
             instanced: RefCell::new(None),
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
+            meshes: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
             terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
             terrain_requests: RefCell::new(BTreeSet::new()),
@@ -1178,6 +1183,19 @@ pub enum Shape {
     ConvexPolygon {
         points: Vec<[f32; 2]>,
     },
+    /// An arbitrary closed triangle mesh — the scene side of a printable
+    /// `Solid` (`Solid.toScene`). Shared behind an `Arc` so a scene rebuilt
+    /// every frame neither copies the triangles nor re-uploads them: the
+    /// renderer keeps one GPU mesh per live `Arc`.
+    Mesh { mesh: Arc<MeshData> },
+}
+
+/// Triangle-mesh geometry: positions plus counter-clockwise (outward-facing)
+/// index triples.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeshData {
+    pub positions: Vec<[f32; 3]>,
+    pub triangles: Vec<[u32; 3]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2240,6 +2258,38 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
                 };
                 mesh.update(&render_context.gl, heights);
                 mesh.draw(&render_context.gl);
+            }
+            SceneObject::Geometry(Shape::Mesh { mesh }) => {
+                let xform = world_matrix * self.xform;
+                geometry_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                let gl = &render_context.gl;
+                let mut meshes = scene_context.meshes.borrow_mut();
+                let counters = crate::gpu_counters::gpu_counters();
+                let key = Arc::as_ptr(mesh) as usize;
+                if meshes.contains_key(&key) {
+                    counters.cache_hit();
+                } else {
+                    counters.cache_miss();
+                    let dead: Vec<usize> = meshes
+                        .iter()
+                        .filter(|(_, (source, _))| source.strong_count() == 0)
+                        .map(|(key, _)| *key)
+                        .collect();
+                    for key in dead {
+                        if let Some((_, gpu)) = meshes.remove(&key) {
+                            gpu.delete(gl);
+                        }
+                    }
+                    let gpu = geometry::TriangleMesh::create(gl, mesh);
+                    meshes.insert(key, (Arc::downgrade(mesh), gpu));
+                }
+                meshes[&key].1.draw(gl);
             }
             SceneObject::Geometry(Shape::ConvexPolygon { points }) => {
                 // A polygon needs at least a triangle; anything less is rejected

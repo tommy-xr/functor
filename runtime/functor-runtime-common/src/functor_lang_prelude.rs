@@ -11230,6 +11230,52 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
+    // `Solid.toScene`: a mm/Z-up solid lands in the scene as one shared mesh
+    // under a metres/Y-up transform. Converting the same solid twice yields the
+    // same mesh `Arc` — what lets the renderer skip re-uploading it per frame.
+    #[test]
+    fn solid_to_scene_shares_one_mesh_in_metres_y_up() {
+        let frame = frame_of(
+            "let part = Solid.box(10.0, 20.0, 30.0)\n\
+             let main = () =>\n\
+             Frame.create(\n\
+               Camera3D.lookAt(Vec3.make(0.0, 0.0, -1.0), Vec3.make(0.0, 0.0, 0.0)),\n\
+               Scene.group([Solid.toScene(part), Solid.toScene(part)]))",
+        );
+        let SceneObject::Group(children) = &frame.scene.obj else {
+            panic!("expected a group, got {:?}", frame.scene.obj);
+        };
+        let meshes: Vec<_> = children
+            .iter()
+            .map(|child| {
+                let SceneObject::Group(leaves) = &child.obj else {
+                    panic!("expected the toScene wrapper, got {:?}", child.obj);
+                };
+                let SceneObject::Geometry(Shape::Mesh { mesh }) = &leaves[0].obj else {
+                    panic!("expected a Mesh leaf, got {:?}", leaves[0].obj);
+                };
+                (child.xform * leaves[0].xform, mesh)
+            })
+            .collect();
+        assert!(std::sync::Arc::ptr_eq(meshes[0].1, meshes[1].1));
+        // Bounds in world space: 10 x 20 x 30 mm (Z up) → 0.01 x 0.03 x 0.02 m (Y up).
+        let (xform, mesh) = &meshes[0];
+        let world: Vec<_> = mesh
+            .positions
+            .iter()
+            .map(|&p| cgmath::Transform::transform_point(xform, cgmath::Point3::from(p)))
+            .collect();
+        let extent = |f: fn(&cgmath::Point3<f32>) -> f32| {
+            let (lo, hi) = world.iter().map(f).fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            });
+            hi - lo
+        };
+        assert!((extent(|p| p.x) - 0.01).abs() < 1e-6);
+        assert!((extent(|p| p.y) - 0.03).abs() < 1e-6);
+        assert!((extent(|p| p.z) - 0.02).abs() < 1e-6);
+    }
+
     // The hello ripple shape: rows sampled with nested List builtins — F#'s
     // `heightmapFn`, in user space.
     #[test]
