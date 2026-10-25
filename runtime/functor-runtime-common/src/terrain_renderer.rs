@@ -424,6 +424,7 @@ struct TerrainGeometry {
     _index_ebo: glow::Buffer,
     instance_vbo: glow::Buffer,
     index_count: i32,
+    vertex_count: u32,
     last_used_frame: u64,
     cache_key: Option<PatchCacheKey>,
     scratch_instances: Vec<[f32; 4]>,
@@ -548,6 +549,7 @@ impl TerrainRenderer {
             return;
         }
         self.current_frame = frame;
+        crate::gpu_counters::gpu_counters().begin_terrain_frame();
         self.height_textures.retain(|_, entry| {
             let recent = frame.wrapping_sub(entry.last_used_frame) <= 1;
             if !recent {
@@ -741,6 +743,9 @@ impl TerrainRenderer {
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(height_texture));
             gl.bind_vertex_array(Some(geometry.vao));
+            let patches = geometry.uploaded_instances.len() as u64;
+            crate::gpu_counters::gpu_counters()
+                .terrain_drawn(patches, patches * geometry.vertex_count as u64);
             gl.draw_elements_instanced(
                 glow::TRIANGLES,
                 geometry.index_count,
@@ -1039,6 +1044,7 @@ impl TerrainRenderer {
                 _index_ebo: index_ebo,
                 instance_vbo,
                 index_count: indices.len() as i32,
+                vertex_count: vertices.len() as u32,
                 last_used_frame: self.current_frame,
                 cache_key: None,
                 scratch_instances: Vec::new(),

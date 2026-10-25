@@ -781,6 +781,7 @@ fn service_debug_request(
                     instance_uploads,
                     config: g.config(),
                     settings: g.settings(),
+                    terrain: functor_runtime_common::gpu_counters::gpu_counters().frame_terrain(),
                 });
             });
         }

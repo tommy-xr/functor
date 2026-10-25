@@ -105,7 +105,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// game's launch-time `config` value and its latest `settings(model)`, each
 /// omitted when the game defines none. Desktop reports them too, though it
 /// ignores their headset knobs.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 18;
+///
+/// 19 adds `terrain` (`{patches, vertices}`) to `GET /state`: the last
+/// rendered frame's terrain draws, summed over its eye draws, so a driver can
+/// measure the terrain vertex budget without a GPU profiler. Additive — a
+/// pre-v19 runtime omits it, which deserializes as zero.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 19;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -357,6 +362,10 @@ pub struct RuntimeState {
     /// applies on change. Omitted when the game defines no `settings` hook.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<crate::runtime_settings::GameSettings>,
+    /// The last rendered frame's terrain draws (0 on a headless runtime).
+    /// `default` because a pre-v19 runtime omits it.
+    #[serde(default)]
+    pub terrain: crate::gpu_counters::TerrainDraws,
 }
 
 /// A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
@@ -817,6 +826,10 @@ mod tests {
                     foveation: Some(crate::runtime_settings::FoveationLevel::Medium),
                 },
             }),
+            terrain: crate::gpu_counters::TerrainDraws {
+                patches: 2,
+                vertices: 8962,
+            },
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -850,7 +863,8 @@ mod tests {
                     }
                 },
                 "instance_uploads": { "count": 1, "bytes": 52 },
-                "settings": { "xr": { "foveation": "medium" } }
+                "settings": { "xr": { "foveation": "medium" } },
+                "terrain": { "patches": 2, "vertices": 8962 }
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
@@ -1141,7 +1155,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 18);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 19);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
