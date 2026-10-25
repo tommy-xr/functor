@@ -139,16 +139,18 @@ enum Command {
     /// expect fails. E.g. `functor -d examples/platformer test`.
     Test,
     /// Export the project's printable part headlessly (no GPU): the entry's
-    /// `let part = …` Solid, as binary STL in millimetres. E.g.
-    /// `functor -d examples/parts export -o part.stl`.
+    /// `let part = …` Solid, in millimetres. `.stl` writes one mesh; `.3mf`
+    /// writes each `--part` as a named part on its own filament, in order, so
+    /// a multi-colour print opens ready to slice. E.g.
+    /// `functor -d examples/bookmark export -o bookmark.3mf --part base --part relief`.
     Export {
-        /// The file to write (`.stl`).
+        /// The file to write (`.stl` or `.3mf`).
         #[arg(short, long)]
         output: PathBuf,
 
-        /// The top-level binding to export.
-        #[arg(long, default_value = "part")]
-        part: String,
+        /// A top-level Solid binding to export; repeat for several parts.
+        #[arg(long = "part", default_value = "part")]
+        parts: Vec<String>,
     },
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
     /// server; `vr` runs it on an adb-attached headset, re-pushing on save).
@@ -427,9 +429,9 @@ async fn run(args: &Args) -> io::Result<()> {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.test(&loaded)
             }
-            Command::Export { output, part } => {
+            Command::Export { output, parts } => {
                 let loaded = project.build(&working_directory_str, false)?;
-                project.export(&loaded, part, output)
+                project.export(&loaded, parts, output)
             }
             // `build` is the strict typecheck gate — nothing compiles for
             // either target (native interprets the file; wasm ships it as

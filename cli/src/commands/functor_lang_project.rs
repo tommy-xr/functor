@@ -611,24 +611,32 @@ impl FunctorLangProject {
         Ok(())
     }
 
-    /// Evaluate the project headlessly and write its `part` binding as STL.
+    /// Evaluate the project headlessly and write its Solid bindings as STL (one
+    /// mesh) or 3MF (one named part per binding, each on its own filament).
     /// Refuses a mesh slicers would not read as a closed solid.
     pub fn export(
         &self,
         project: &functor_lang::project::Project,
-        binding: &str,
+        bindings: &[String],
         output: &Path,
     ) -> Result<(), Error> {
         use functor_runtime_common::functor_lang_prelude::{solid::solid_global, FunctorHost};
         use std::io::Write;
 
-        let extension = output.extension().and_then(|e| e.to_str());
-        if !extension.is_some_and(|e| e.eq_ignore_ascii_case("stl")) {
-            return Err(Error::other(format!(
-                "cannot export {}: only .stl is supported",
-                output.display()
-            )));
-        }
+        let extension = output
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        let three_mf = match extension.as_deref() {
+            Some("stl") => false,
+            Some("3mf") => true,
+            _ => {
+                return Err(Error::other(format!(
+                    "cannot export {}: use a .stl or .3mf file",
+                    output.display()
+                )))
+            }
+        };
         let session =
             functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
                 Error::other(
@@ -637,51 +645,50 @@ impl FunctorLangProject {
                         .render(failure.error.span.start, &failure.error.message),
                 )
             })?;
-        let mesh = solid_global(&session, binding)
-            .map_err(Error::other)?
-            .mesh();
-        let overflows = |x: &f64| !(*x as f32).is_finite();
-        if mesh.vertices.iter().flatten().any(overflows) {
-            return Err(Error::other(format!(
-                "`{binding}` is too large for STL: coordinates must fit in 32-bit floats"
-            )));
-        }
-        let shared = mesh.shared_positions();
-        if shared > 0 {
-            return Err(Error::other(format!(
-                "`{binding}` would not slice as a solid: {shared} vertices of separate pieces \
-land on the same point, joining them at a corner or edge. Overlap the pieces in the \
-`Solid.group` slightly (or move them apart) instead of letting them touch exactly."
-            )));
-        }
-        let open = mesh.non_manifold_edges();
-        if open > 0 {
-            return Err(Error::other(format!(
-                "`{binding}` would not slice as a solid: {open} edges are open or shared by \
-more than two faces"
-            )));
+        let mut parts = Vec::new();
+        for binding in bindings {
+            let mesh = solid_global(&session, binding)
+                .map_err(Error::other)?
+                .mesh();
+            check_printable(binding, &mesh)?;
+            parts.push((binding.as_str(), mesh));
         }
         let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);
-        functor_solid::stl::write_binary(&mesh, &mut file)?;
+        if three_mf {
+            let refs: Vec<_> = parts.iter().map(|(name, mesh)| (*name, mesh)).collect();
+            let name = Path::new(&self.entry)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("part");
+            functor_solid::threemf::write(name, &refs, &mut file)?;
+        } else {
+            let mut all = functor_solid::Mesh::default();
+            for (_, mesh) in &parts {
+                all.extend(mesh);
+            }
+            functor_solid::stl::write_binary(&all, &mut file)?;
+        }
         file.flush()?;
-        let size = mesh
-            .bounds()
-            .map(|b| {
-                format!(
-                    "{:.2} x {:.2} x {:.2} mm",
-                    b.max[0] - b.min[0],
-                    b.max[1] - b.min[1],
-                    b.max[2] - b.min[2]
-                )
-            })
-            .unwrap_or_else(|| "empty".to_string());
-        emit(Event::Info {
-            message: format!(
-                "exported `{binding}` to {}: {} triangles, {size}",
-                output.display(),
-                mesh.triangles.len()
-            ),
-        });
+        for (binding, mesh) in &parts {
+            let size = mesh
+                .bounds()
+                .map(|b| {
+                    format!(
+                        "{:.2} x {:.2} x {:.2} mm",
+                        b.max[0] - b.min[0],
+                        b.max[1] - b.min[1],
+                        b.max[2] - b.min[2]
+                    )
+                })
+                .unwrap_or_else(|| "empty".to_string());
+            emit(Event::Info {
+                message: format!(
+                    "exported `{binding}` to {}: {} triangles, {size}",
+                    output.display(),
+                    mesh.triangles.len()
+                ),
+            });
+        }
         Ok(())
     }
 
@@ -1754,6 +1761,32 @@ fn entry_escapes_project(entry: &str) -> bool {
     Path::new(entry).is_absolute() || entry.split(['/', '\\']).any(|seg| seg == "..")
 }
 
+/// Refuse a part slicers would not read as one closed solid.
+fn check_printable(binding: &str, mesh: &functor_solid::Mesh) -> Result<(), Error> {
+    let overflows = |x: &f64| !(*x as f32).is_finite();
+    if mesh.vertices.iter().flatten().any(overflows) {
+        return Err(Error::other(format!(
+            "`{binding}` is too large to export: coordinates must fit in 32-bit floats"
+        )));
+    }
+    let shared = mesh.shared_positions();
+    if shared > 0 {
+        return Err(Error::other(format!(
+            "`{binding}` would not slice as a solid: {shared} vertices of separate pieces \
+land on the same point, joining them at a corner or edge. Overlap the pieces in the \
+`Solid.group` slightly (or move them apart) instead of letting them touch exactly."
+        )));
+    }
+    let open = mesh.non_manifold_edges();
+    if open > 0 {
+        return Err(Error::other(format!(
+            "`{binding}` would not slice as a solid: {open} edges are open or shared by \
+more than two faces"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -2487,12 +2520,34 @@ examples move?",
         let project = super::detect(&dir).unwrap().select(None).unwrap();
         let loaded = project.build(&dir, false).unwrap();
         let out = std::env::temp_dir().join(format!("functor-export-{}.stl", std::process::id()));
-        project.export(&loaded, "part", &out).unwrap();
+        project
+            .export(&loaded, &["part".to_string()], &out)
+            .unwrap();
         let bytes = std::fs::read(&out).unwrap();
         std::fs::remove_file(&out).ok();
         let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
         assert!(count > 100, "{count} triangles");
         assert_eq!(bytes.len(), 84 + 50 * count);
+    }
+
+    /// `.3mf` writes each `--part` as a named part: a zip whose end record
+    /// lists the package's six entries.
+    #[test]
+    fn export_writes_named_parts_as_3mf() {
+        let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", "parts"]
+            .iter()
+            .collect();
+        let dir = dir.to_string_lossy().into_owned();
+        let project = super::detect(&dir).unwrap().select(None).unwrap();
+        let loaded = project.build(&dir, false).unwrap();
+        let out = std::env::temp_dir().join(format!("functor-export-{}.3mf", std::process::id()));
+        let parts = ["plate".to_string(), "relief".to_string()];
+        project.export(&loaded, &parts, &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+        let end = bytes.len() - 22;
+        assert_eq!(u16::from_le_bytes([bytes[end + 10], bytes[end + 11]]), 6);
     }
 
     /// A `part` that is not a Solid gets a teaching error, and nothing is written.
@@ -2511,7 +2566,7 @@ examples move?",
         let loaded = project.build(&dir_str, false).unwrap();
         let out = dir.join("part.stl");
         let err = project
-            .export(&loaded, "part", &out)
+            .export(&loaded, &["part".to_string()], &out)
             .unwrap_err()
             .to_string();
         assert!(err.contains("must be a Solid"), "{err}");

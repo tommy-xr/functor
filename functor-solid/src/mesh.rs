@@ -51,6 +51,11 @@ impl Mesh {
             }));
     }
 
+    /// Append `other` as is.
+    pub fn extend(&mut self, other: &Mesh) {
+        self.append(other, Matrix4::identity());
+    }
+
     /// Signed volume (divergence theorem); positive when facing outward.
     pub fn volume(&self) -> f64 {
         self.triangles
