@@ -2785,6 +2785,34 @@ Xr.refreshRate(90))\n"
         );
         let err = contract_of(&[("game.fun", &settings_rate)]).err().unwrap();
         assert!(err.contains("`Xr.refreshRate`") && err.contains("config"), "{err}");
+        let config_toggle = format!(
+            "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> \
+Xr.passthroughEnabled(true))\n"
+        );
+        let err = contract_of(&[("game.fun", &config_toggle)]).err().unwrap();
+        assert!(err.contains("`Xr.passthroughEnabled`") && err.contains("settings"), "{err}");
+        let settings_request = format!(
+            "{GAME}let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.passthrough(true))\n"
+        );
+        let err = contract_of(&[("game.fun", &settings_request)]).err().unwrap();
+        assert!(err.contains("`Xr.passthrough`") && err.contains("config"), "{err}");
+    }
+
+    #[test]
+    fn passthrough_is_requested_in_config_and_toggled_in_settings() {
+        let game = format!(
+            "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> Xr.passthrough(true))\n\
+            let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.passthroughEnabled(m.level > 0.0))\n"
+        );
+        let (_, contract) = contract_of(&[("game.fun", &game)]).expect("loads");
+        assert!(contract.config.unwrap().xr.passthrough);
+        assert_eq!(contract.settings.unwrap().xr.passthrough, Some(false));
+        assert!(!crate::runtime_settings::passthrough_wanted(
+            contract.config,
+            contract.settings
+        ));
     }
 
     #[test]

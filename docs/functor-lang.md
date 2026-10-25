@@ -1026,6 +1026,16 @@ Starts once A2 + B3 exist.
       *Verify:* producer contract + embedded-producer tests; on Quest 3,
       editing `examples/terrain/adapter.fun`'s level re-applies the profile
       live and `config`'s rate lands in `display_refresh_rate`.
+- [x] **C8. Passthrough mixed reality.** `config`'s `Xr.passthrough(true)`
+      starts the headset camera feed (`XR_FB_passthrough`, layered under the
+      eye buffer); `settings`' `Xr.passthroughEnabled(on)` pauses it live;
+      `Frame.withPassthrough` drops the skybox and clears the frame
+      transparent over the feed (a flat grey placeholder on desktop/web and
+      whenever no feed is composited). Passthrough rigs are room-locked
+      (upright, stage floor at `y = 0`, 1 unit = 1 metre). `/state.passthrough`
+      (debug protocol v20). *Verify:* `examples/passthrough` golden
+      (`passthrough-t2`); on Quest 3, logcat `XrPassthroughFB started` and the
+      room visible around the primitives.
 
 ## Track D — IDE tooling
 
