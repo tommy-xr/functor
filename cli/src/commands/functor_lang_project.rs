@@ -611,6 +611,73 @@ impl FunctorLangProject {
         Ok(())
     }
 
+    /// Evaluate the project headlessly and write its `part` binding as STL.
+    /// Refuses a mesh slicers would not read as a closed solid.
+    pub fn export(
+        &self,
+        project: &functor_lang::project::Project,
+        binding: &str,
+        output: &Path,
+    ) -> Result<(), Error> {
+        use functor_runtime_common::functor_lang_prelude::{solid::solid_global, FunctorHost};
+        use std::io::Write;
+
+        let extension = output.extension().and_then(|e| e.to_str());
+        if !extension.is_some_and(|e| e.eq_ignore_ascii_case("stl")) {
+            return Err(Error::other(format!(
+                "cannot export {}: only .stl is supported",
+                output.display()
+            )));
+        }
+        let session =
+            functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
+                Error::other(
+                    project
+                        .sources
+                        .render(failure.error.span.start, &failure.error.message),
+                )
+            })?;
+        let mesh = solid_global(&session, binding)
+            .map_err(Error::other)?
+            .mesh();
+        let overflows = |x: &f64| !(*x as f32).is_finite();
+        if mesh.vertices.iter().flatten().any(overflows) {
+            return Err(Error::other(format!(
+                "`{binding}` is too large for STL: coordinates must fit in 32-bit floats"
+            )));
+        }
+        let shared = mesh.shared_positions();
+        if shared > 0 || mesh.non_manifold_edges() > 0 {
+            return Err(Error::other(format!(
+                "`{binding}` would not slice as a solid: {shared} vertices of separate pieces \
+land on the same point, joining them at a corner or edge. Overlap the pieces in the \
+`Solid.group` slightly (or move them apart) instead of letting them touch exactly."
+            )));
+        }
+        let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);
+        functor_solid::stl::write_binary(&mesh, &mut file)?;
+        file.flush()?;
+        let size = mesh
+            .bounds()
+            .map(|b| {
+                format!(
+                    "{:.2} x {:.2} x {:.2} mm",
+                    b.max[0] - b.min[0],
+                    b.max[1] - b.min[1],
+                    b.max[2] - b.min[2]
+                )
+            })
+            .unwrap_or_else(|| "empty".to_string());
+        emit(Event::Info {
+            message: format!(
+                "exported `{binding}` to {}: {} triangles, {size}",
+                output.display(),
+                mesh.triangles.len()
+            ),
+        });
+        Ok(())
+    }
+
     /// Spawn the runner on the entry (`run` and `develop` — hot reload is
     /// built into the producer, so there is no separate watch loop).
     pub async fn run(
@@ -2400,5 +2467,48 @@ examples move?",
         assert!(entry_escapes_project("../shared/game.fun"));
         assert!(entry_escapes_project("src/../../game.fun"));
         assert!(entry_escapes_project("/tmp/game.fun"));
+    }
+
+    /// `export` evaluates the entry headlessly and writes `part` as binary
+    /// STL — here the shipped parts example, sized from its own header.
+    #[test]
+    fn export_writes_the_parts_example_as_binary_stl() {
+        let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", "parts"]
+            .iter()
+            .collect();
+        let dir = dir.to_string_lossy().into_owned();
+        let project = super::detect(&dir).unwrap().select(None).unwrap();
+        let loaded = project.build(&dir, false).unwrap();
+        let out = std::env::temp_dir().join(format!("functor-export-{}.stl", std::process::id()));
+        project.export(&loaded, "part", &out).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        std::fs::remove_file(&out).ok();
+        let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
+        assert!(count > 1000, "{count} triangles");
+        assert_eq!(bytes.len(), 84 + 50 * count);
+    }
+
+    /// A `part` that is not a Solid gets a teaching error, and nothing is written.
+    #[test]
+    fn export_rejects_a_part_that_is_not_a_solid() {
+        let dir = std::env::temp_dir().join(format!("functor-export-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("functor.json"),
+            r#"{"language":"functor-lang","entry":"part.fun"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("part.fun"), "let part = 3.0\n").unwrap();
+        let dir_str = dir.to_string_lossy().into_owned();
+        let project = super::detect(&dir_str).unwrap().select(None).unwrap();
+        let loaded = project.build(&dir_str, false).unwrap();
+        let out = dir.join("part.stl");
+        let err = project
+            .export(&loaded, "part", &out)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be a Solid"), "{err}");
+        assert!(!out.exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

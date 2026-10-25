@@ -138,6 +138,18 @@ enum Command {
     /// reporting each failure at its source location. Exits non-zero if any
     /// expect fails. E.g. `functor -d examples/platformer test`.
     Test,
+    /// Export the project's printable part headlessly (no GPU): the entry's
+    /// `let part = …` Solid, as binary STL in millimetres. E.g.
+    /// `functor -d examples/parts export -o part.stl`.
+    Export {
+        /// The file to write (`.stl`).
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// The top-level binding to export.
+        #[arg(long, default_value = "part")]
+        part: String,
+    },
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
     /// server; `vr` runs it on an adb-attached headset, re-pushing on save).
     /// E.g. `functor -d examples/primitives run native`.
@@ -373,6 +385,7 @@ async fn run(args: &Args) -> io::Result<()> {
         &args.command,
         Command::Build { .. }
             | Command::Test
+            | Command::Export { .. }
             | Command::Run { .. }
             | Command::Develop { .. }
             | Command::Push { .. }
@@ -413,6 +426,10 @@ async fn run(args: &Args) -> io::Result<()> {
             Command::Test => {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.test(&loaded)
+            }
+            Command::Export { output, part } => {
+                let loaded = project.build(&working_directory_str, false)?;
+                project.export(&loaded, part, output)
             }
             // `build` is the strict typecheck gate — nothing compiles for
             // either target (native interprets the file; wasm ships it as
@@ -478,6 +495,7 @@ async fn run(args: &Args) -> io::Result<()> {
         // isn't Functor Lang has no build/run/develop/push path.
         Command::Build { .. }
         | Command::Test
+        | Command::Export { .. }
         | Command::Run { .. }
         | Command::Develop { .. } => {
             Err(io::Error::other(
@@ -533,6 +551,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Docs { .. } => "docs",
         Command::Build { .. } => "build",
         Command::Test => "test",
+        Command::Export { .. } => "export",
         Command::Run { .. } => "run",
         Command::Develop { .. } => "develop",
         Command::Mcp => "mcp",
