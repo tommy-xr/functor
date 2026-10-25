@@ -4,6 +4,7 @@ resolver = "1"
 members = [
     "cli",
     "functor-prelude",
+    "functor-solid",
     "functor-lang",
     "runtime/functor-runtime-common",
     "runtime/functor-runtime-desktop",

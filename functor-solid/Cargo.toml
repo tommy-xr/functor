@@ -1,0 +1,10 @@
+[package]
+name = "functor-solid"
+version = "0.1.0"
+edition = "2021"
+
+# Printable solid geometry for Functor parts: a pure description tree, its
+# triangle mesh, and file export. Engine-free (no GL, no interpreter) so it
+# stays unit-testable and can be split out or feature-gated later.
+[dependencies]
+cgmath = "0.18.0"
