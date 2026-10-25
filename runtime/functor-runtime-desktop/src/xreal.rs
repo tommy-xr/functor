@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cgmath::{InnerSpace, Quaternion, Rotation, Rotation3, Vector3, Zero};
-use functor_runtime_common::{Camera, TrackingPose};
+use cgmath::{InnerSpace, Quaternion, Rotation, Vector3, Zero};
+use functor_runtime_common::{yaw_only, Camera, TrackingPose};
 
 pub const DEFAULT_ADDR: &str = "169.254.2.1:52998";
 
@@ -220,23 +220,6 @@ impl Fusion {
     }
 }
 
-/// Reduce an absolute head orientation to its yaw-only component, for use as
-/// the recenter reference. Recentering must zero *where you're facing* but
-/// keep pitch/roll gravity-anchored — a full-pose reference taken with a
-/// tilted head would bake that tilt in as a permanently crooked horizon.
-/// Returns `None` when the gaze is within ~11° of vertical (yaw is
-/// ill-defined staring at the ceiling); callers keep the previous reference.
-fn yaw_reference(q: Quaternion<f32>) -> Option<Quaternion<f32>> {
-    let f = q.rotate_vector(-Vector3::unit_z()); // gaze in world
-    let horizontal = (f.x * f.x + f.z * f.z).sqrt();
-    if horizontal < 0.2 {
-        return None;
-    }
-    // At identity the gaze is -z; from_angle_y(θ) carries -z to
-    // (-sin θ, 0, -cos θ), so θ recovers as atan2(-x, -z).
-    Some(Quaternion::from_angle_y(cgmath::Rad(f32::atan2(-f.x, -f.z))))
-}
-
 /// Average the gyro over the calibration window to estimate its at-rest bias
 /// (the Xreal One shows ~0.9°/s on one axis). The glasses are assumed still —
 /// they're usually on the desk when the runner starts.
@@ -331,7 +314,7 @@ fn read_stream(
     let mut calibration: Vec<ImuSample> = Vec::with_capacity(CALIBRATION_SAMPLES);
     let mut fusion: Option<Fusion> = None;
     // Yaw-only reference pose: orientation published to the game is
-    // q_ref⁻¹ · q (see `yaw_reference` for why yaw-only).
+    // q_ref⁻¹ · q (see `yaw_only` for why yaw-only).
     let mut q_ref = Quaternion::new(1.0, 0.0, 0.0, 0.0);
     // One automatic recenter shortly after tracking starts, once the gravity
     // correction has had time to settle — without it the view starts rotated
@@ -365,7 +348,7 @@ fn read_stream(
                     let manual = recenter_flag.swap(false, Ordering::Relaxed);
                     let auto = auto_recenter_at.is_some_and(|at| sample.timestamp_ns >= at);
                     if manual || auto {
-                        match yaw_reference(fusion.orientation()) {
+                        match yaw_only(fusion.orientation()) {
                             Some(reference) => {
                                 q_ref = reference;
                                 // Any successful recenter disarms the pending
@@ -595,7 +578,7 @@ mod tests {
     #[test]
     fn yaw_reference_cancels_pure_yaw() {
         let q = Quaternion::from_angle_y(Deg(40.0));
-        let q_ref = yaw_reference(q).unwrap();
+        let q_ref = yaw_only(q).unwrap();
         let rel = q_ref.invert() * q;
         assert!(rel.s.abs() > 0.9999, "rel = {rel:?}");
     }
@@ -606,7 +589,7 @@ mod tests {
     #[test]
     fn yaw_reference_keeps_pitch() {
         let q = Quaternion::from_angle_y(Deg(40.0)) * Quaternion::from_angle_x(Deg(20.0));
-        let q_ref = yaw_reference(q).unwrap();
+        let q_ref = yaw_only(q).unwrap();
         let rel_gaze = (q_ref.invert() * q).rotate_vector(-Vector3::unit_z());
         // No sideways component (yaw gone)…
         assert!(rel_gaze.x.abs() < 1e-4, "gaze = {rel_gaze:?}");
@@ -622,7 +605,7 @@ mod tests {
     #[test]
     fn yaw_reference_rejects_vertical_gaze() {
         let up = Quaternion::from_angle_x(Deg(89.0));
-        assert!(yaw_reference(up).is_none());
+        assert!(yaw_only(up).is_none());
     }
 
     #[test]

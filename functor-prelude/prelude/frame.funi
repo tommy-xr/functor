@@ -40,7 +40,8 @@ let withClearColor : (Color.t, t) => t
 ///
 /// The background becomes the headset's camera feed: the skybox and clear
 /// color are dropped, and geometry composites over the room by its alpha
-/// (opaque surfaces hide it; `Scene.opacity` subtrees let it through). The
+/// (untextured opaque surfaces hide it; `Scene.opacity` subtrees let it
+/// through; a texture's own alpha below 1 lets it through too). The
 /// feed itself is requested by `config`'s `Xr.passthrough(true)`. Wherever
 /// no feed is composited — desktop, web, or a headset with the feed paused
 /// or unavailable — the background is a flat mid-grey placeholder. The frame

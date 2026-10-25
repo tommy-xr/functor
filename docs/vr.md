@@ -181,7 +181,9 @@ let draw = (model, tts) => Frame.createLit(camera, scene, lights) |> Frame.withP
   only created once a game asks. A headset without it logs a warning, appends
   it to the `/load-project` response, and runs opaque.
 - `Xr.passthroughEnabled(on)` (`settings`) pauses or resumes the feed on
-  change. Without it the feed runs while `config` asks. Logcat prints
+  change. Without it the feed runs while `config` asks, even under frames that
+  are not passthrough frames, so drive it from the same model state that picks
+  `Frame.withPassthrough` (as the kata does) to keep the cameras off otherwise. Logcat prints
   `XrPassthroughFB started` / `stopped`. A pause destroys the feed and a
   resume recreates it running.
 - `Frame.withPassthrough` drops the skybox and clears the eye buffer to
@@ -191,8 +193,11 @@ let draw = (model, tts) => Frame.createLit(camera, scene, lights) |> Frame.withP
 - Composition: the passthrough layer goes UNDER the projection layer, which is
   flagged `BLEND_TEXTURE_SOURCE_ALPHA`. The eye buffer is premultiplied (the
   transparent clear plus the renderer's source-over blending store
-  `color * alpha`), so `UNPREMULTIPLIED_ALPHA` stays off. Opaque geometry
-  writes alpha 1 and hides the room; `Scene.opacity` subtrees let it through.
+  `color * alpha`), so `UNPREMULTIPLIED_ALPHA` stays off. Untextured opaque
+  geometry writes alpha 1 and hides the room; `Scene.opacity` subtrees let it
+  through. Known limitation: an opaque draw writes its texture's alpha, so a
+  texture with alpha below 1 (an RGBA atlas, a glTF MASK material) shows the
+  room through the surface — use opaque textures in passthrough frames.
   The environment blend mode stays `OPAQUE` — the layer brings in the room. A
   runtime without `XR_FB_passthrough` that enumerates `ALPHA_BLEND` uses that
   blend mode instead, with no layer.

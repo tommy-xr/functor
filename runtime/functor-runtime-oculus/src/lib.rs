@@ -1396,6 +1396,9 @@ pub fn android_main(app: AndroidApp) {
                 SessionStateChanged(e) => {
                     log::info!("session state: {:?}", e.state());
                     session_focused = e.state() == xr::SessionState::FOCUSED;
+                    if session_focused {
+                        passthrough.retry();
+                    }
                     match e.state() {
                         xr::SessionState::READY => {
                             session
@@ -1520,8 +1523,12 @@ pub fn android_main(app: AndroidApp) {
                 log::info!("camera rig centered: Frame.camera is the reference center-eye pose");
             }
         }
-        tracking_reference =
-            passthrough::room_locked(tracking_reference, debug.config, debug.last_frame.as_deref());
+        tracking_reference = passthrough::room_locked(
+            tracking_reference,
+            debug.config,
+            debug.last_frame.as_deref(),
+            stage_type == xr::ReferenceSpaceType::STAGE,
+        );
         debug.input.xr = session_focused
             .then(|| {
                 tracking_reference
@@ -1636,6 +1643,13 @@ pub fn android_main(app: AndroidApp) {
         );
         scene_context.set_passthrough_composited(passthrough.composited());
         let frame = snapshot.frame.clone();
+        // Re-lock to the camera this frame renders, not the previous one.
+        tracking_reference = passthrough::room_locked(
+            tracking_reference,
+            debug.config,
+            Some(&*frame),
+            stage_type == xr::ReferenceSpaceType::STAGE,
+        );
         // The time `frame` was drawn at: render-time animation samples it.
         let frame_time = snapshot.time;
         let render_started = Instant::now();

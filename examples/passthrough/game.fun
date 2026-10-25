@@ -153,7 +153,7 @@ let draw = (model, tts) =>
         floating(tts),
         part
           |> Scene.lit(
-            if model.grabbing then Color.rgb(1.0, 0.25, 0.7) else Color.rgb(1.0, 0.55, 0.15))
+            if model.grabbing then Color.rgb(0.3, 1.0, 0.45) else Color.rgb(1.0, 0.55, 0.15))
           |> at(model.part),
         aimDot(model),
       ]),

@@ -17,22 +17,26 @@
 //! source-over blending stores `color * alpha`), so `UNPREMULTIPLIED_ALPHA`
 //! stays off.
 
-use functor_runtime_common::runtime_settings::{GameConfig, PassthroughMode, PassthroughState};
+use functor_runtime_common::runtime_settings::{
+    passthrough_requested, GameConfig, PassthroughMode, PassthroughState,
+};
 use functor_runtime_common::{Frame, TrackingPose};
 use openxr as xr;
 
 /// The camera-rig reference for a frame. A passthrough game's rig (`config`'s
 /// `Xr.passthrough`) is room-locked: upright whatever the head's tilt when it
 /// centered, with its height re-derived from the authored camera's eye so the
-/// stage floor is world `y = 0` (a level camera keeps the room level). Other
-/// games keep the head-centered reference unchanged.
+/// stage floor is world `y = 0` (a level camera keeps the room level). Only a
+/// floor-origin (STAGE) space has a floor to lock to; elsewhere, and for other
+/// games, the head-centered reference is unchanged.
 pub fn room_locked(
     reference: Option<TrackingPose>,
     config: Option<GameConfig>,
     last_frame: Option<&Frame>,
+    floor_origin: bool,
 ) -> Option<TrackingPose> {
     match (reference, last_frame) {
-        (Some(pose), Some(frame)) if config.is_some_and(|c| c.xr.passthrough) => {
+        (Some(pose), Some(frame)) if floor_origin && passthrough_requested(config) => {
             pose.floor_locked(frame.camera.eye[1]).or(reference)
         }
         _ => reference,
@@ -76,12 +80,9 @@ impl Passthrough {
             .enumerate_environment_blend_modes(system, view_type)
             .map(|modes| modes.contains(&xr::EnvironmentBlendMode::ALPHA_BLEND))
             .unwrap_or(false);
-        let fb = fb_enabled
-            && system_supports_fb_passthrough(instance, system).unwrap_or_else(|e| {
-                log::warn!("passthrough: cannot read the system's passthrough properties: {e}");
-                false
-            });
-        let (backend, unavailable) = if fb {
+        // A headset that enables the extension but cannot start a feed is
+        // caught by the creation error in `update`.
+        let (backend, unavailable) = if fb_enabled {
             (Backend::FbLayer, None)
         } else if alpha_blend {
             (Backend::AlphaBlend, None)
@@ -149,6 +150,12 @@ environment blend mode; passthrough frames show the placeholder"
         }
     }
 
+    /// Forget a failed creation so the next wanted frame retries it — called
+    /// when the session regains focus, the usual cause of a refusal.
+    pub fn retry(&mut self) {
+        self.failed = None;
+    }
+
     /// Whether the real world is composited under this frame's eye buffer.
     pub fn composited(&self) -> bool {
         match self.backend {
@@ -160,8 +167,7 @@ environment blend mode; passthrough frames show the placeholder"
 
     /// The load-response warning for a `config` this headset cannot honour.
     pub fn load_warning(&self, config: Option<GameConfig>) -> Option<String> {
-        let requested = config.is_some_and(|c| c.xr.passthrough);
-        requested
+        passthrough_requested(config)
             .then(|| self.unavailable.clone())
             .flatten()
             .map(|reason| format!("config Xr.passthrough: {reason}"))
@@ -169,7 +175,7 @@ environment blend mode; passthrough frames show the placeholder"
 
     /// `GET /state.passthrough`: present while `config` requests it.
     pub fn state(&self, config: Option<GameConfig>) -> Option<PassthroughState> {
-        if !config.is_some_and(|c| c.xr.passthrough) {
+        if !passthrough_requested(config) {
             return None;
         }
         let warning = self.unavailable.clone().or_else(|| self.failed.clone());
@@ -226,33 +232,4 @@ environment blend mode; passthrough frames show the placeholder"
         layers.push(&projection);
         frame_stream.end(display_time, blend_mode, &layers)
     }
-}
-
-/// Whether the system has a passthrough camera (`XR_FB_passthrough` may be
-/// enabled on a headset that has none).
-fn system_supports_fb_passthrough(
-    instance: &xr::Instance,
-    system: xr::SystemId,
-) -> xr::Result<bool> {
-    let mut passthrough = xr::sys::SystemPassthroughProperties2FB {
-        ty: xr::sys::SystemPassthroughProperties2FB::TYPE,
-        next: std::ptr::null(),
-        capabilities: xr::sys::PassthroughCapabilityFlagsFB::EMPTY,
-    };
-    // SAFETY: both out-structs live through the synchronous call, and the
-    // extension that defines the chained struct is enabled on the instance.
-    unsafe {
-        let mut properties = xr::sys::SystemProperties::out(&mut passthrough as *mut _ as _);
-        let result = (instance.fp().get_system_properties)(
-            instance.as_raw(),
-            system,
-            properties.as_mut_ptr(),
-        );
-        if result.into_raw() < 0 {
-            return Err(result);
-        }
-    }
-    Ok(passthrough
-        .capabilities
-        .contains(xr::sys::PassthroughCapabilityFlagsFB::PASSTHROUGH_CAPABILITY))
 }

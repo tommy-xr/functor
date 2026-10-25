@@ -34,12 +34,8 @@ pub struct XrConfig {
     pub refresh_rate: Option<f32>,
     /// `Xr.passthrough(true)`: the game may show the real world — the headset
     /// prepares its camera feed (`XR_FB_passthrough`) for this run.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub passthrough: bool,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// The per-frame `settings(model)` value.
@@ -61,11 +57,15 @@ pub struct XrSettings {
     pub passthrough: Option<bool>,
 }
 
+/// Whether the game's `config` requests passthrough (`Xr.passthrough(true)`).
+pub fn passthrough_requested(config: Option<GameConfig>) -> bool {
+    config.is_some_and(|c| c.xr.passthrough)
+}
+
 /// Whether the camera feed should run: `config` asked for it and the latest
 /// `settings` (if any) has not paused it.
 pub fn passthrough_wanted(config: Option<GameConfig>, settings: Option<GameSettings>) -> bool {
-    config.is_some_and(|c| c.xr.passthrough)
-        && settings.and_then(|s| s.xr.passthrough).unwrap_or(true)
+    passthrough_requested(config) && settings.and_then(|s| s.xr.passthrough).unwrap_or(true)
 }
 
 /// How a shell is showing the real world behind `Frame.withPassthrough`
@@ -97,7 +97,7 @@ pub struct PassthroughState {
 impl PassthroughState {
     /// A shell with no camera feed (desktop, web): emulated while wanted.
     pub fn emulated(config: Option<GameConfig>, settings: Option<GameSettings>) -> Option<Self> {
-        config.is_some_and(|c| c.xr.passthrough).then(|| PassthroughState {
+        passthrough_requested(config).then(|| PassthroughState {
             mode: if passthrough_wanted(config, settings) {
                 PassthroughMode::Emulated
             } else {
