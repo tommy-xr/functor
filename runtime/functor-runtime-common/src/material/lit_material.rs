@@ -40,7 +40,10 @@ const VERTEX_SHADER_SOURCE: &str = r#"
 
         void main() {
             texCoord = inTex;
-            vec3 n = normalMatrix * inNormal;
+            // Unit length here, at the vertex stage's highp: a small world scale
+            // (Solid.toScene's 0.001) grows the normal ~1000x, and its squared
+            // length overflows a mediump fragment `normalize` on GLES.
+            vec3 n = normalize(normalMatrix * inNormal);
             vec3 t = mat3(world) * inTangent.xyz;
             worldNormal = n;
             worldTangent = t;
