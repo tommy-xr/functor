@@ -1006,6 +1006,8 @@ impl GameProducer for FunctorLangEmbeddedGame {
                 self.reporter.report_once(rendered);
             }
         }
+        // One frame of the `Scene.memo` clock: evicts sites `draw` stopped using.
+        crate::functor_lang_prelude::sweep_scene_memos();
         // Draw-eval handlers are display-only: drop them so they neither
         // accumulate across frames nor pollute the ui/webview tables below.
         if crate::functor_lang_prelude::drop_draw_eval_ui_handlers() {

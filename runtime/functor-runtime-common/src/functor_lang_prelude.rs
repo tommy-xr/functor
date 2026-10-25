@@ -162,7 +162,7 @@
 
 use cgmath::Matrix4;
 use functor_lang::value::HostData;
-use functor_lang::{Host, RunError, Span, Value};
+use functor_lang::{Host, HostApply, HostReturn, RunError, Span, Value};
 use std::rc::Rc;
 
 use crate::anim::AnimExpr;
@@ -2463,6 +2463,12 @@ instanced node instead: scene |> Scene.instanced(instances) |> Scene.opacity(alp
             Ok(FunctorLangScene(Scene3D::instanced(scene.0, instances.0)))
         },
     );
+    // A memoized pure builder (see `scene_memo`).
+    reg.fn3(
+        "Scene.memo",
+        "Scene.memo(key, deps, builder) — e.g. Scene.memo(\"trees\", model.trees, drawTrees)",
+        scene_memo,
+    );
     // Attach an animation expression to the Model node(s) in a scene
     // (scene-last, so it pipes right after `Scene.model`). Without it a
     // skinned model keeps the zero-config default: its first clip auto-plays
@@ -4520,6 +4526,261 @@ fn instances_into_list(instances: Vec<FunctorLangInstance>) -> InstanceList {
         .into()
 }
 
+/// `Scene.memo` sites unused for more than this many frames are evicted
+/// (see [`sweep_scene_memos`]).
+const SCENE_MEMO_IDLE_FRAMES: u64 = 120;
+
+/// Live memo sites kept at most — the bound for hosts that never sweep
+/// (tests, tooling); the least recently used is evicted beyond it.
+const SCENE_MEMO_CAP: usize = 1024;
+
+/// One `Scene.memo` site's last build.
+struct SceneMemo {
+    deps: Value,
+    /// The builder's lambda body, held so its address cannot be reused. A hot
+    /// reload lowers fresh bodies, so every site rebuilds once after it — which
+    /// is what makes an edit to a builder (or anything it calls) take effect.
+    code: Rc<functor_lang::ir::Expr>,
+    scene: Value,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct SceneMemos {
+    sites: std::collections::HashMap<Rc<str>, SceneMemo>,
+    frame: u64,
+}
+
+thread_local! {
+    /// Derived shell state, like the instance-list memo: it never reaches the
+    /// model, and a hit returns what the pure builder would have rebuilt, so
+    /// it cannot affect determinism, replay, or time travel.
+    static SCENE_MEMOS: std::cell::RefCell<SceneMemos> =
+        std::cell::RefCell::new(SceneMemos::default());
+}
+
+/// `Scene.memo(key, deps, builder)`: the scene `builder(deps)` built the last
+/// time this `key` saw structurally equal `deps` and the same builder code —
+/// the SAME value, so the renderer's identity caches skip the upload too.
+/// Otherwise the interpreter runs the builder and the result is cached.
+fn scene_memo(key: Rc<str>, deps: Value, builder: Value) -> Result<HostReturn, String> {
+    // A lambda (or a def), so its body identifies the code: a hot reload lowers
+    // new bodies. Builtins and partials of them hold no such identity.
+    let Some((lambda, applied)) = builder_lambda(&builder) else {
+        return Err(format!(
+            "Scene.memo: the builder must be a lambda or def `(deps) => scene`, got {}",
+            value_kind(&builder)
+        ));
+    };
+    if lambda.params.len() != applied + 1 {
+        return Err(format!(
+            "Scene.memo: the builder takes the deps as its one argument — \
+`(deps) => scene` — got a function of {} argument(s)",
+            lambda.params.len() - applied
+        ));
+    }
+    let code = lambda.body.clone();
+    let hit = SCENE_MEMOS.with(|memos| {
+        let mut memos = memos.borrow_mut();
+        let frame = memos.frame;
+        let site = memos.sites.get_mut(&key)?;
+        (Rc::ptr_eq(&site.code, &code) && same_plain_data(&site.deps, &deps)).then(|| {
+            site.last_used = frame;
+            site.scene.clone()
+        })
+    });
+    if let Some(scene) = hit {
+        return Ok(HostReturn::Value(scene));
+    }
+    // Only a miss walks the deps: a hit compared equal to deps that passed.
+    if let Err(found) = plain_data(&deps) {
+        return Err(format!(
+            "Scene.memo: deps must be plain data — numbers, strings, bools, and lists, \
+maps, tuples, records, or variants of those — so they can be compared; found {found}. \
+Pass the plain values the builder reads (e.g. `model.seed` or `model.trees`), not \
+functions or engine values"
+        ));
+    }
+    let args = vec![deps.clone()];
+    let reads_before = WORLD_READS.with(|reads| reads.get());
+    Ok(HostReturn::Apply(Box::new(HostApply {
+        callee: builder,
+        args,
+        via: "Scene.memo",
+        then: Box::new(move |scene| {
+            if WORLD_READS.with(|reads| reads.get()) != reads_before {
+                return Err("Scene.memo: the builder read the live physics world \
+(Physics.position / linearVelocity / cast / transformed), which deps cannot capture, so \
+the cached scene would freeze — make that read outside the memo and pass the values the \
+builder needs in deps"
+                    .to_string());
+            }
+            let is_scene = matches!(&scene, Value::HostData(data)
+                if data.as_any().is::<FunctorLangScene>());
+            if !is_scene {
+                return Err(format!(
+                    "Scene.memo: the builder must return a Scene, got {}",
+                    value_kind(&scene)
+                ));
+            }
+            SCENE_MEMOS.with(|memos| {
+                let mut memos = memos.borrow_mut();
+                if memos.sites.len() >= SCENE_MEMO_CAP && !memos.sites.contains_key(&key) {
+                    if let Some(oldest) = memos
+                        .sites
+                        .iter()
+                        .min_by_key(|(_, site)| site.last_used)
+                        .map(|(key, _)| key.clone())
+                    {
+                        memos.sites.remove(&oldest);
+                    }
+                }
+                let last_used = memos.frame;
+                memos.sites.insert(
+                    key,
+                    SceneMemo {
+                        deps,
+                        code,
+                        scene: scene.clone(),
+                        last_used,
+                    },
+                );
+            });
+            Ok(scene)
+        }),
+    })))
+}
+
+/// The lambda a builder runs, and how many of its arguments a partial
+/// application already supplied.
+fn builder_lambda(builder: &Value) -> Option<(&functor_lang::value::Closure, usize)> {
+    match builder {
+        Value::Closure(closure) => Some((closure, 0)),
+        Value::Partial(partial) => match &partial.callee {
+            Value::Closure(closure) => Some((closure, partial.applied.len())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `Ok` for plain data; otherwise what was found (`a function`, `a Vec3`).
+/// Iterative, and each shared container is walked once: model data can be a
+/// DAG whose tree expansion is exponential, or nested deeper than the stack.
+fn plain_data(value: &Value) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut work = vec![value];
+    while let Some(value) = work.pop() {
+        match value {
+            Value::Number(_) | Value::String(_) | Value::Bool(_) => {}
+            Value::List(items) | Value::Tuple(items) => {
+                if seen.insert(Rc::as_ptr(items) as *const ()) {
+                    work.extend(items.iter());
+                }
+            }
+            Value::Map(entries) => {
+                if seen.insert(Rc::as_ptr(entries) as *const ()) {
+                    work.extend(entries.iter().map(|(_, v)| v));
+                }
+            }
+            Value::Record(fields) => {
+                if seen.insert(Rc::as_ptr(fields) as *const ()) {
+                    work.extend(fields.iter().map(|(_, v)| v));
+                }
+            }
+            Value::Variant { args, .. } => {
+                if seen.insert(Rc::as_ptr(args) as *const ()) {
+                    work.extend(args.iter());
+                }
+            }
+            Value::HostData(data) => {
+                return Err(format!("a {} (an engine value)", data.type_name()))
+            }
+            other => return Err(value_kind(other).to_string()),
+        }
+    }
+    Ok(())
+}
+
+/// Structural equality over plain data. A shared container (a model field that
+/// did not change is the same list) is equal without a walk, and each pair of
+/// containers is compared once, so it is linear in distinct nodes like
+/// [`plain_data`]. Numbers compare by bits, so NaN deps still hit. Anything not
+/// plain data is unequal.
+fn same_plain_data(a: &Value, b: &Value) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    // Whether a pair of containers still needs comparing.
+    let mut fresh = |x: *const (), y: *const ()| x != y && seen.insert((x, y));
+    let mut work = vec![(a, b)];
+    while let Some(pair) = work.pop() {
+        match pair {
+            (Value::Number(x), Value::Number(y)) if x.to_bits() == y.to_bits() => {}
+            (Value::String(x), Value::String(y)) if x == y => {}
+            (Value::Bool(x), Value::Bool(y)) if x == y => {}
+            (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
+                if fresh(Rc::as_ptr(x) as *const (), Rc::as_ptr(y) as *const ()) {
+                    if x.len() != y.len() {
+                        return false;
+                    }
+                    work.extend(x.iter().zip(y.iter()));
+                }
+            }
+            (Value::Map(x), Value::Map(y)) => {
+                if fresh(Rc::as_ptr(x) as *const (), Rc::as_ptr(y) as *const ()) {
+                    if x.len() != y.len() {
+                        return false;
+                    }
+                    for ((ka, va), (kb, vb)) in x.iter().zip(y.iter()) {
+                        if ka.compare(kb) != std::cmp::Ordering::Equal {
+                            return false;
+                        }
+                        work.push((va, vb));
+                    }
+                }
+            }
+            (Value::Record(x), Value::Record(y)) => {
+                if fresh(Rc::as_ptr(x) as *const (), Rc::as_ptr(y) as *const ()) {
+                    if x.len() != y.len() {
+                        return false;
+                    }
+                    for ((na, va), (nb, vb)) in x.iter().zip(y.iter()) {
+                        if na != nb {
+                            return false;
+                        }
+                        work.push((va, vb));
+                    }
+                }
+            }
+            (Value::Variant { ctor: ca, args: aa }, Value::Variant { ctor: cb, args: ab }) => {
+                if ca != cb {
+                    return false;
+                }
+                if fresh(Rc::as_ptr(aa) as *const (), Rc::as_ptr(ab) as *const ()) {
+                    if aa.len() != ab.len() {
+                        return false;
+                    }
+                    work.extend(aa.iter().zip(ab.iter()));
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Advance the `Scene.memo` frame clock and evict sites unused for more than
+/// [`SCENE_MEMO_IDLE_FRAMES`] frames. Producers call it once per `draw`.
+pub fn sweep_scene_memos() {
+    SCENE_MEMOS.with(|memos| {
+        let mut memos = memos.borrow_mut();
+        memos.frame += 1;
+        let frame = memos.frame;
+        memos
+            .sites
+            .retain(|_, site| frame - site.last_used <= SCENE_MEMO_IDLE_FRAMES);
+    });
+}
+
 impl crate::host_registry::FromArg for FunctorLangAngle {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
         angle_of(value, path, span).map(FunctorLangAngle)
@@ -4581,7 +4842,7 @@ impl Host for FunctorHost {
         registry().provides(path)
     }
 
-    fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<Value, RunError> {
+    fn call(&mut self, path: &str, args: Vec<Value>, span: Span) -> Result<HostReturn, RunError> {
         match registry().call(path, &args, span) {
             Some(result) => result,
             // Defensive: unreachable in practice — eval checks `provides()`
@@ -6043,11 +6304,22 @@ impl Drop for PrimingScope {
     }
 }
 
+thread_local! {
+    /// Synchronous physics-world reads so far — `Scene.memo` refuses a builder
+    /// that made any, since its deps cannot capture live world state.
+    static WORLD_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn note_world_read() {
+    WORLD_READS.with(|reads| reads.set(reads.get() + 1));
+}
+
 /// Live pose of a body in the ACTIVE world (normally the singleton world the
 /// shell steps — same process, same crate statics as this prelude; under a
 /// dry-run forward-step scope, the throwaway projected world, so ghost draws
 /// read the stepped poses — docs/time-travel.md T6b).
 fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
+    note_world_read();
     physics::with_world(physics::active_world(), |w| w.body_transform(tag))
         .flatten()
         .or_else(|| {
@@ -6061,6 +6333,7 @@ fn live_transform(tag: &str) -> Option<([f32; 3], [f32; 4])> {
 /// of `Physics.setVelocity`, on the same world-scope rules as
 /// [`live_transform`].
 fn live_velocity(tag: &str) -> Option<[f32; 3]> {
+    note_world_read();
     physics::with_world(physics::active_world(), |w| w.body_velocity(tag))
         .flatten()
         .or_else(|| PRIMING.with(|p| p.get()).then_some([0.0; 3]))
@@ -6103,6 +6376,7 @@ fn sync_cast(
         return Err(format!("{what} maxDist must be positive, got {max_dist}"));
     }
     let max_dist = max_dist as f32;
+    note_world_read();
     let hit = physics::with_world(physics::active_world(), |w| {
         w.raycast_excluding([ox, oy, oz], [dx, dy, dz], max_dist, exclude)
     })
@@ -8435,6 +8709,116 @@ let main = () => (Scene.instanced(xs, t), Scene.instanced(xs, t), Scene.instance
         assert!(lists[0].ptr_eq(lists[1]));
         assert!(!lists[0].ptr_eq(lists[2]));
         assert_eq!(lists[0], lists[2]);
+    }
+
+    fn memo_session(src: &str) -> functor_lang::Session {
+        let module = functor_lang::lower(functor_lang::parse(src).expect("parse")).expect("lower");
+        functor_lang::Session::load(&module, &mut FunctorHost)
+            .unwrap_or_else(|f| panic!("load failed: {}", f.error.message))
+    }
+
+    /// Call `frame(n)` — one draw's `Scene.memo` call.
+    fn memo_frame(session: &functor_lang::Session, n: f64) -> Result<Value, String> {
+        session
+            .call("frame", vec![Value::Number(n)], &mut FunctorHost)
+            .map_err(|e| e.message)
+    }
+
+    /// Identity of a returned scene value: equal means the builder did not run.
+    fn scene_ptr(value: &Value) -> *const () {
+        match value {
+            Value::HostData(data) => Rc::as_ptr(data) as *const (),
+            other => panic!("expected a scene, got {other}"),
+        }
+    }
+
+    const MEMO_SOURCE: &str = "
+let build = (n) => Scene.cube() |> Scene.scale(n)
+let frame = (n) => Scene.memo(\"memo-test\", { size: n, tags: [\"a\"] }, (d) => build(d.size))
+";
+
+    /// Equal deps — even a freshly built record — return the SAME scene;
+    /// changed deps rebuild.
+    #[test]
+    fn scene_memo_rebuilds_only_when_deps_change() {
+        let session = memo_session(MEMO_SOURCE);
+        let a = memo_frame(&session, 1.0).unwrap();
+        let again = memo_frame(&session, 1.0).unwrap();
+        assert_eq!(scene_ptr(&a), scene_ptr(&again));
+        let b = memo_frame(&session, 2.0).unwrap();
+        assert_ne!(scene_ptr(&a), scene_ptr(&b));
+        assert!(scene_of(&a).unwrap() != scene_of(&b).unwrap());
+        assert_eq!(scene_ptr(&b), scene_ptr(&memo_frame(&session, 2.0).unwrap()));
+    }
+
+    /// A reloaded program rebuilds even with equal deps, so an edit to what
+    /// the builder calls takes effect.
+    #[test]
+    fn scene_memo_rebuilds_after_a_reload() {
+        let before = memo_frame(&memo_session(MEMO_SOURCE), 1.0).unwrap();
+        let edited = MEMO_SOURCE.replace("Scene.scale(n)", "Scene.scale(n * 3.0)");
+        let after = memo_frame(&memo_session(&edited), 1.0).unwrap();
+        assert_ne!(scene_ptr(&before), scene_ptr(&after));
+        let expected = eval("let main = () => Scene.cube() |> Scene.scale(3.0)");
+        assert!(scene_of(&after).unwrap() == scene_of(&expected).unwrap());
+    }
+
+    /// A site unused for more than the idle window is forgotten; one used
+    /// within it is kept.
+    #[test]
+    fn scene_memo_evicts_idle_sites() {
+        let session = memo_session(MEMO_SOURCE);
+        let first = memo_frame(&session, 1.0).unwrap();
+        for _ in 0..SCENE_MEMO_IDLE_FRAMES {
+            sweep_scene_memos();
+        }
+        let kept = memo_frame(&session, 1.0).unwrap();
+        assert_eq!(scene_ptr(&first), scene_ptr(&kept));
+        for _ in 0..=SCENE_MEMO_IDLE_FRAMES {
+            sweep_scene_memos();
+        }
+        assert_ne!(scene_ptr(&kept), scene_ptr(&memo_frame(&session, 1.0).unwrap()));
+    }
+
+    /// Deps that share structure (a 2^60-leaf tree in 60 nodes) validate and
+    /// compare in linear time; a partially applied def is a valid builder.
+    #[test]
+    fn scene_memo_walks_shared_deps_once() {
+        let source = "
+type Tree =
+  | Leaf
+  | Fork(left: Tree, right: Tree)
+let deep = (n) => List.range(n) |> List.fold((acc, i) => Fork(acc, acc), Leaf)
+let build = (size, d) => Scene.cube() |> Scene.scale(size)
+let frame = (n) => Scene.memo(\"memo-dag\", deep(60.0), build(n))
+";
+        let session = memo_session(source);
+        let a = memo_frame(&session, 1.0).unwrap();
+        assert_eq!(scene_ptr(&a), scene_ptr(&memo_frame(&session, 1.0).unwrap()));
+    }
+
+    #[test]
+    fn scene_memo_teaches_bad_deps_builders_and_results() {
+        let err = |src: &str| match memo_frame(&memo_session(src), 1.0) {
+            Err(message) => message,
+            Ok(value) => panic!("expected an error, got {value}"),
+        };
+        let closure = err("let frame = (n) => Scene.memo(\"k1\", { f: (x) => x }, (d) => Scene.cube())");
+        assert!(closure.contains("deps must be plain data") && closure.contains("a function"), "{closure}");
+        let engine =
+            err("let frame = (n) => Scene.memo(\"k2\", [Vec3.make(n, 0.0, 0.0)], (d) => Scene.cube())");
+        assert!(engine.contains("found a Vec3"), "{engine}");
+        let nullary = err("let frame = (n) => Scene.memo(\"k3\", n, () => Scene.cube())");
+        assert!(nullary.contains("one argument"), "{nullary}");
+        // A builtin holds no code identity a reload could invalidate.
+        let builtin = err("let frame = (n) => Scene.memo(\"k5\", [], List.fold((s, x) => s, Scene.cube()))");
+        assert!(builtin.contains("must be a lambda or def"), "{builtin}");
+        let world = err("let frame = (n) => Scene.memo(\"k6\", n, (d) =>
+  let hit = Physics.cast(Vec3.make(0.0, 0.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 1.0) in
+  Scene.cube())");
+        assert!(world.contains("read the live physics world"), "{world}");
+        let result = err("let frame = (n) => Scene.memo(\"k4\", n, (d) => d)");
+        assert!(result.contains("must return a Scene, got a number"), "{result}");
     }
 
     /// `Scene.equals` sees the instanced node structurally — template AND

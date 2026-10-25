@@ -1307,6 +1307,8 @@ impl Game for FunctorLangGame {
             },
             Err(err) => self.reporter.frame_error(self.names.draw, &err),
         }
+        // One frame of the `Scene.memo` clock: evicts sites `draw` stopped using.
+        functor_runtime_common::functor_lang_prelude::sweep_scene_memos();
         // Draw-eval handlers are display-only: drop them so they neither
         // accumulate across frames nor pollute the ui/webview tables below.
         if functor_runtime_common::functor_lang_prelude::drop_draw_eval_ui_handlers() {

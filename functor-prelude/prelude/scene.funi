@@ -127,6 +127,37 @@ let opacity : (float, t) => t
 /// (`… |> Scene.instanced(xs) |> Scene.opacity(a)`).
 let instanced : (List<Instance.t>, t) => t
 
+/// Build a scene once and reuse it while its inputs stay the same.
+///
+/// `Scene.memo(key, deps, builder)` returns `builder(deps)`, but calls the
+/// builder only when it has to: the first time `key` is seen, when `deps`
+/// differ structurally from the last call's, and once after every hot reload
+/// (so an edit to the builder, or to anything it calls, shows next frame).
+/// Otherwise it hands back the SAME scene value as last frame, so the
+/// interpreter skips the rebuild and the renderer skips re-uploading its
+/// `Scene.instanced` lists.
+///
+/// ```functor
+/// let drawTrees = (trees) => Scene.model(Assets.fir) |> Scene.instanced(trees |> List.map(treeAt))
+/// let draw = (model, tts) => … Scene.memo("trees", model.trees, drawTrees) …
+/// ```
+///
+/// - `key` names the call site; give each site its own.
+/// - `deps` must be plain data (numbers, strings, bools, and lists, maps,
+///   tuples, records, or variants of those) — a function or an engine value
+///   (`Vec3`, `Color`, `Scene`, …) inside it is an error. Comparing an
+///   unchanged model field is free; a rebuilt-but-equal value is walked.
+/// - The builder is a lambda or def that receives `deps` and must read only
+///   them (and top-level definitions). A value it captures from `draw`
+///   instead, such as `tts`, is NOT compared, so the scene would not follow it.
+///   A builder that reads the live physics world (`Physics.position`,
+///   `Physics.transformed`, `Physics.cast`, …) is an error for the same reason.
+///
+/// The cache belongs to the runtime, not the model: it never changes what a
+/// frame contains, only how much work producing it costs. A key unused for
+/// a couple of seconds of frames is forgotten.
+let memo : (string, 'd, ('d) => t) => t
+
 /// Attach an animation pose to model nodes; the scene is last for piping.
 ///
 /// Without an attached pose, a skinned model plays its FIRST clip on the game

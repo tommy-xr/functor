@@ -455,6 +455,18 @@ snapshots — no GPU, fully agent-verifiable.
       mistakes still teach usage. Golden-verified behavior-neutral
       otherwise. This is the seam future third-party/native extension
       modules plug into (a `.funi` + a set of registered host functions).
+- [x] **Host externals that apply Functor Lang functions** (2026-10-24).
+      A host call returns `HostReturn`: a value, or `Apply` — a function
+      and its arguments the interpreter calls IN the caller's context
+      (trace, depth cap, step budget), handing the result to the host's
+      `then`. The host never re-enters the interpreter. First user:
+      `Scene.memo(key, deps, builder)`, which runs `builder(deps)` only on a
+      miss — `deps` changed structurally (plain data only, a teaching error
+      otherwise) or the builder's lambda body changed (every hot reload
+      lowers new bodies) — and otherwise returns the same scene value, so
+      the renderer's instance-buffer identity cache skips the upload too.
+      The cache is thread-local shell state; producers sweep sites idle for
+      120 frames.
 - [x] **B7. Hindley–Milner inference** (done 2026-07-04; decided 2026-07-02; **after effects
       land** — B6 + the `effect[...]` header checking, so type inference and
       effect rows are designed against each other, not retrofitted). Upgrade
