@@ -2027,7 +2027,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     }
 
     /// A pushed entry buffer survives a SIBLING-file reload: editing
-    /// `config.fun` must reload around the pushed `game.fun`, and only an
+    /// `tuning.fun` must reload around the pushed `game.fun`, and only an
     /// on-disk edit of the entry itself reverts to disk (last-write-wins,
     /// per file). [Codex Medium — B8 review]
     #[test]
