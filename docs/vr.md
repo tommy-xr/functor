@@ -172,9 +172,68 @@ node scripts/quest-pipeline-matrix.mjs --functor target/release/functor \
 
 Desktop per-stage numbers come from `node scripts/pipeline-stages.mjs`.
 
-`neon-city` (#724) is the next Quest baseline, inline at the default rate, 90 and
-120 Hz, and expected to be fill-rate or upload bound. It is still pending; run it
-with `--rates default,90,120 --modes inline -d <neon-city dir>`.
+#### `terrain` matrix, 2026-10-24
+
+Quest 3 release APK built from `b9d7a3cf` (debug protocol v17), 30-second
+samples after a 10-second warmup, Guardian paused. The headset was stationary
+in low light, so tracking ran in 3DoF for every row; the matrix script refuses
+that state, so these rows used the same sequence with the tracking gate
+relaxed. App is VrApi's per-frame GPU time; sim/render are the shell's CPU
+stage means.
+
+| Mode | Rate | FPS mean / p5 / min | Stale / torn | App | CPU+GPU | CPU / GPU load | sim / render / wait |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| inline, untagged | 90 | 90.5 / 90 / 90 | 0 / 9 | 8.14 ms | 9.56 ms | 0.08 / 0.87 | 0.27 / 0.58 / 0.00 ms |
+| inline, `RENDERER_MAIN` | 90 | 90.4 / 90 / 90 | 0 / 0 | 8.67 ms | 11.01 ms | 0.07 / 0.88 | 0.27 / 0.60 / 0.00 ms |
+| pipelined, untagged | 90 | 90.5 / 90 / 90 | 0 / 8 | 8.08 ms | 9.15 ms | 0.10 / 0.87 | 0.26 / 0.58 / 0.01 ms |
+| pipelined, tagged | 90 | 90.6 / 90 / 90 | 0 / 4 | 8.66 ms | 10.78 ms | 0.08 / 0.88 | 0.27 / 0.59 / 0.01 ms |
+| inline, untagged | 120 | 113.5 / 103 / 102 | 405 / 11 | 7.08 ms | 14.57 ms | 0.10 / 0.97 | 0.29 / 0.69 / 0.00 ms |
+| inline, `RENDERER_MAIN` | 120 | 120.1 / 119 / 118 | 10 / 1 | 7.06 ms | 9.34 ms | 0.09 / 0.96 | 0.31 / 0.70 / 0.00 ms |
+| pipelined, untagged | 120 | 113.5 / 103 / 102 | 399 / 17 | 7.11 ms | 13.82 ms | 0.11 / 0.97 | 0.29 / 0.72 / 0.01 ms |
+| pipelined, tagged | 120 | 120.2 / 119 / 119 | 15 / 6 | 7.05 ms | 9.17 ms | 0.09 / 0.96 | 0.26 / 0.69 / 0.00 ms |
+
+- **Pipelining is a wash** at both rates: terrain's CPU stages total under
+  1 ms against 7–9 ms of GPU time.
+- **Tagging decides 120 Hz.** Untagged runs fell to ~113 FPS with ~400 stale
+  frames; tagged runs held 120. A repeat inline pair reproduced it (113.8 vs
+  120.3 FPS, 392 vs 10 stale). Tagged runs also show lower compositor time in
+  every scene (0.66–0.71 ms vs 1.02–1.05 ms untagged). At 90 Hz tagging
+  changes nothing measurable.
+- Unverified: the 2026-10-23 untagged 120 Hz terrain run held 120.3 FPS in
+  what was likely 6DoF tracking. The untagged shortfall may depend on today's
+  3DoF/low-light state or device temperature (41–46 °C, charging).
+
+`neon-city` (#724), inline, untagged unless noted, same build and session:
+
+| Rate | FPS mean / p5 / min | Stale / torn | App | Compositor | CPU+GPU | CPU / GPU load | CPU / GPU level | sim / render |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| default (80) | 80.6 / 79 / 79 | 0 / 0 | 6.82 ms | 1.41 ms | 8.77 ms | 0.10 / 0.72 | 2 / 2 | 0.82 / 0.95 ms |
+| 90 | 90.9 / 90 / 90 | 0 / 0 | 6.52 ms | 0.90 ms | 9.93 ms | 0.09 / 0.72 | 2 / 2 | 0.67 / 0.80 ms |
+| 120 | 120.5 / 120 / 120 | 0 / 0 | 5.35 ms | 1.09 ms | 7.80 ms | 0.13 / 0.83 | 2 / 4 | 0.61 / 0.77 ms |
+| 120, `RENDERER_MAIN` | 120.2 / 120 / 120 | 0 / 0 | 5.45 ms | 0.71 ms | 8.42 ms | 0.11 / 0.80 | 2 / 4 | 0.61 / 0.75 ms |
+
+neon-city holds 120 Hz with about 3 ms of GPU headroom (5.35 ms of 8.33 ms,
+after the governor raised the GPU to level 4) and about 1.4 ms of CPU.
+`/state.instance_uploads` reads 0 or 1 per frame: the only upload is the
+2,080-byte hover-car list, rebuilt from `tts` every frame. The static city
+lists stay retained (#726).
+
+`night-terrain`, same session:
+
+| Mode | Rate | FPS mean / p5 / min | Stale / torn | App | CPU+GPU | CPU / GPU load | sim / render / wait |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| inline, untagged | 90 | 90.5 / 90 / 88 | 6 / 0 | 8.93 ms | 14.15 ms | 0.24 / 0.94 | 5.11 / 0.77 / 0.00 ms |
+| inline, `RENDERER_MAIN` | 90 | 90.7 / 90 / 90 | 0 / 5 | 8.57 ms | 15.35 ms | 0.20 / 0.86 | 4.71 / 0.77 / 0.00 ms |
+| inline, untagged | 120 | 103.3 / 85 / 85 | 976 / 8 | 7.91 ms | 17.47 ms | 0.18 / 0.98 | 3.60 / 0.72 / 0.00 ms |
+| inline, `RENDERER_MAIN` | 120 | 97.1 / 97 / 97 | 684 / 0 | 8.70 ms | 14.55 ms | 0.18 / 0.96 | 3.60 / 0.70 / 0.00 ms |
+| pipelined, untagged | 120 | 103.3 / 85 / 85 | 944 / 11 | 8.00 ms | 15.06 ms | 0.20 / 0.98 | 3.65 / 0.75 / 0.06 ms |
+| pipelined, tagged | 120 | 97.9 / 97 / 97 | 665 / 0 | 8.58 ms | 11.03 ms | 0.19 / 0.96 | 3.64 / 0.74 / 0.07 ms |
+
+night-terrain holds 90 Hz but not 120 Hz: it is GPU-bound (load 0.96–0.98,
+App about 8 ms of an 8.33 ms budget). Its 3.6–5 ms sim is the largest CPU stage
+measured, but moving it off the render thread does not change FPS. Tagging
+trades the untagged 85–120 FPS swing for a steady 97 FPS; neither holds the
+rate.
 
 ## Desktop XR emulation
 
