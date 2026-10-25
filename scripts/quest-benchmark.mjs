@@ -161,6 +161,36 @@ function parseMemory(text) {
   };
 }
 
+// Battery state before/after a sample: the level delta says whether the run
+// was net-charging; current_now (µA, sign varies by kernel) is reported raw.
+function readBattery() {
+  const text = adb(["shell", "dumpsys", "battery"]);
+  const number = (pattern) => {
+    const match = text.match(pattern);
+    return match ? Number(match[1]) : undefined;
+  };
+  const sysfs = (name) => {
+    try {
+      return Number(adb(["shell", "cat", `/sys/class/power_supply/battery/${name}`]));
+    } catch {
+      return undefined;
+    }
+  };
+  const STATUS = { 2: "charging", 3: "discharging", 4: "not charging", 5: "full" };
+  const current_ua = sysfs("current_now");
+  const voltage_uv = sysfs("voltage_now");
+  return {
+    level: number(/level:\s+(\d+)/),
+    status: STATUS[number(/status:\s+(\d+)/)] ?? "unknown",
+    plugged: /(?:AC|USB|Wireless) powered:\s+true/.test(text),
+    current_ma: current_ua === undefined ? undefined : current_ua / 1000,
+    watts:
+      current_ua === undefined || voltage_uv === undefined
+        ? undefined
+        : (current_ua / 1e6) * (voltage_uv / 1e6),
+  };
+}
+
 function printMetric(label, metric, suffix = "") {
   if (!metric) return;
   console.log(
@@ -213,9 +243,11 @@ async function main() {
     );
   }
   await delay(options.warmup * 1_000);
+  const batteryBefore = readBattery();
   const before = await waitForRuntime();
   const telemetryText = await collectVrApi(options.seconds);
   const after = await waitForRuntime();
+  const batteryAfter = readBattery();
   if (after.frame <= before.frame) {
     throw new Error(`runtime did not render during sample (frame stayed ${after.frame})`);
   }
@@ -262,6 +294,10 @@ async function main() {
   console.log("");
   console.log(`- Stale frames: ${telemetry.stale_frames}`);
   console.log(`- Torn frames: ${telemetry.torn_frames}`);
+  const amps = batteryAfter.current_ma === undefined ? "current n/a" : `${batteryAfter.current_ma.toFixed(0)} mA${batteryAfter.watts === undefined ? "" : ` / ${batteryAfter.watts.toFixed(1)} W`}`;
+  console.log(
+    `- Battery: ${batteryBefore.level}% → ${batteryAfter.level}% (${batteryAfter.status}${batteryAfter.plugged ? ", plugged" : ", unplugged"}; ${amps})`,
+  );
   console.log(`- Memory: ${memory.total_pss_mib?.toFixed(1)} MiB PSS, ${memory.total_rss_mib?.toFixed(1)} MiB RSS, ${memory.graphics_pss_mib?.toFixed(1)} MiB graphics PSS`);
   console.log("- Restore proximity automation: `adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable`");
 
