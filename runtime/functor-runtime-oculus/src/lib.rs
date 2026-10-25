@@ -46,6 +46,8 @@ use functor_runtime_common::{
 use khronos_egl as egl;
 use openxr as xr;
 
+mod passthrough;
+
 /// GLES version to request. Quest 3 supports 3.2.
 /// Display refresh rate to aim for at startup, in Hz.
 ///
@@ -636,6 +638,8 @@ struct DebugLoopState {
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
     /// `None` when the runtime lacks XR_FB_display_refresh_rate.
     display_refresh_rate: Option<DisplayRefreshRate>,
+    /// The loaded game's launch `config` (`None` for the boot scene).
+    config: Option<functor_runtime_common::runtime_settings::GameConfig>,
 }
 
 /// Ask the runtime for `hz`, which must be one of the display's offered rates.
@@ -715,6 +719,7 @@ fn service_debug_request(
     session_running: bool,
     asset_cache: &Arc<AssetCache>,
     scene_context: &SceneContext,
+    passthrough: &passthrough::Passthrough,
 ) {
     match request {
         DebugRequest::Capture(response) => {
@@ -758,6 +763,7 @@ fn service_debug_request(
                 (debug.frame_count, clock.current_tts(), clock.pending_steps());
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
+            let passthrough = passthrough.state(debug.config);
             let instance_uploads =
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();
@@ -783,6 +789,7 @@ fn service_debug_request(
                     config: g.config(),
                     settings: g.settings(),
                     terrain,
+                    passthrough,
                 });
             });
         }
@@ -942,13 +949,18 @@ desktop runtime's --headless/--debug-port path"
                 clock.restart();
                 debug.frame_count = 0;
                 // A load is the game's launch: honour its `config`.
-                let config_hz = sim.call(|g| g.config()).and_then(|c| c.xr.refresh_rate);
+                let config = sim.call(|g| g.config());
+                debug.config = config;
+                let config_hz = config.and_then(|c| c.xr.refresh_rate);
                 let refused = debug
                     .display_refresh_rate
                     .as_mut()
                     .and_then(|display| request_launch_refresh_rate(session, display, config_hz));
-                if let (Ok(status), Some(warning)) = (&mut result, refused) {
-                    status.push_str(&format!(" — warning: {warning}"));
+                let warnings = refused.into_iter().chain(passthrough.load_warning(config));
+                if let Ok(status) = &mut result {
+                    for warning in warnings {
+                        status.push_str(&format!(" — warning: {warning}"));
+                    }
                 }
             }
             let _ = response.send(result);
@@ -1133,6 +1145,10 @@ pub fn android_main(app: AndroidApp) {
     // Lets the runtime schedule the sim and render threads for XR (Meta pins
     // them to the right cores and priorities); see `tag_xr_threads`.
     extensions.khr_android_thread_settings = available.khr_android_thread_settings;
+    // Mixed reality (`config`'s `Xr.passthrough`). Enabling it only makes the
+    // camera feed creatable; nothing starts until a game asks (see
+    // `passthrough.rs`), so every run requests it when offered.
+    extensions.fb_passthrough = available.fb_passthrough;
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -1245,6 +1261,13 @@ pub fn android_main(app: AndroidApp) {
     } else {
         log::info!("fixed foveated rendering unavailable on this runtime");
     }
+
+    let mut passthrough = passthrough::Passthrough::new(
+        &instance,
+        system,
+        xr::ViewConfigurationType::PRIMARY_STEREO,
+        available.fb_passthrough,
+    );
 
     log::info!(
         "swapchains ready: {}x{} per eye",
@@ -1429,6 +1452,7 @@ pub fn android_main(app: AndroidApp) {
                     session_running,
                     &asset_cache,
                     &scene_context,
+                    &passthrough,
                 );
             }
         }
@@ -1599,6 +1623,16 @@ pub fn android_main(app: AndroidApp) {
         }
         stages.wait_ns += sim.take_wait_ns();
         let snapshot = shown.as_ref().expect("the first frame always yields a snapshot");
+        // Run the camera feed while `config` asks and `settings` allows; a
+        // passthrough frame clears transparent only while it is composited.
+        passthrough.update(
+            &session,
+            functor_runtime_common::runtime_settings::passthrough_wanted(
+                debug.config,
+                snapshot.settings,
+            ),
+        );
+        scene_context.set_passthrough_composited(passthrough.composited());
         let frame = snapshot.frame.clone();
         // The time `frame` was drawn at: render-time animation samples it.
         let frame_time = snapshot.time;
@@ -1749,13 +1783,13 @@ pub fn android_main(app: AndroidApp) {
                     )
             })
             .collect();
-        frame_stream
-            .end(
+        passthrough
+            .end_frame(
+                &mut frame_stream,
                 xr_frame_state.predicted_display_time,
-                xr::EnvironmentBlendMode::OPAQUE,
-                &[&xr::CompositionLayerProjection::new()
+                xr::CompositionLayerProjection::new()
                     .space(&stage)
-                    .views(&projection_views)],
+                    .views(&projection_views),
             )
             .expect("frame end");
 
