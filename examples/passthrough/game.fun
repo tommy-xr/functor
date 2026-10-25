@@ -82,9 +82,12 @@ let approach = (from, target, amount): Input.point3 => {
   z: from.z + (target.z - from.z) * amount
 }
 
+// How far ahead of the controller the part is held, in metres.
+let reach = 0.12
+
 let tick = (model, dt, tts) =>
   if model.grabbing then
-    { model with part: approach(model.part, ahead(model.aim, 0.25), Math.min(1.0, dt * 10.0)) }
+    { model with part: approach(model.part, ahead(model.aim, reach), Math.min(1.0, dt * 10.0)) }
   else model
 
 let at = (p, scene) => scene |> Scene.translate(Vec3.make(p.x, p.y, p.z))
@@ -120,17 +123,17 @@ let floating = (tts) =>
     Scene.sphere()
       |> Scene.scale(0.12)
       |> Scene.lit(Color.rgb(1.0, 0.3, 0.55))
-      |> at(point(-0.25, 1.48 + 0.02 * Math.sin(tts * 1.3), 0.6)),
+      |> at(point(-0.36, 1.48 + 0.02 * Math.sin(tts * 1.3), 0.7)),
     Scene.cube()
       |> Scene.scale(0.1)
       |> Scene.rotateY(Angle.radians(tts * 0.8))
       |> Scene.rotateX(Angle.degrees(25.0))
       |> Scene.lit(Color.rgb(0.95, 0.85, 0.3))
-      |> at(point(0.0, 1.56, 0.65)),
+      |> at(point(0.0, 1.56, 0.75)),
     Scene.cylinder()
       |> Scene.scaleXYZ(0.1, 0.12, 0.1)
       |> Scene.lit(Color.rgb(0.3, 0.65, 1.0))
-      |> at(point(0.25, 1.48 + 0.02 * Math.cos(tts * 1.1), 0.6)),
+      |> at(point(0.36, 1.48 + 0.02 * Math.cos(tts * 1.1), 0.7)),
   ])
 
 let aimDot = (model) =>
@@ -138,7 +141,7 @@ let aimDot = (model) =>
     Scene.sphere()
       |> Scene.scale(0.015)
       |> Scene.emissive(Color.rgb(0.95, 0.98, 1.0))
-      |> at(ahead(model.aim, 0.25))
+      |> at(ahead(model.aim, reach))
   else Scene.group([])
 
 let draw = (model, tts) =>
