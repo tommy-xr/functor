@@ -37,6 +37,7 @@ use functor_runtime_common::debug_protocol::{
 };
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
+use functor_runtime_common::runtime_settings::FoveationLevel;
 use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use functor_runtime_common::{
     Frame, FrameTime, GameClock, InputSnapshot, Key, SceneContext, TrackingPose, Viewport,
@@ -53,7 +54,8 @@ use openxr as xr;
 /// highest offered rate that does not exceed the target, so a headset
 /// advertising fewer options still gets a sane choice. A session can ask for
 /// another offered rate later via `POST /display-refresh-rate`
-/// (`functor run vr --refresh-rate <hz>`).
+/// (`functor run vr --refresh-rate <hz>`), and a game's `config` replaces this
+/// default with `Xr.refreshRate` each time it loads.
 ///
 /// Raising this raises the frame budget's difficulty in exact proportion —
 /// 13.8 ms at 72 Hz, 12.5 at 80, 11.1 at 90, 8.3 at 120 — so it is a measured
@@ -179,10 +181,48 @@ fn init_egl() -> EglContext {
 }
 
 
-/// Foveation level to request. `HIGH` shades the far periphery at the lowest
-/// rate and is the usual choice for content whose edges are ground texture
-/// rather than text or thin geometry — which is exactly a terrain vista.
+/// Default foveation level, used dynamically until a game's `settings` pins
+/// one. `HIGH` shades the far periphery at the lowest rate and is the usual
+/// choice for content whose edges are ground texture rather than text or thin
+/// geometry — which is exactly a terrain vista.
 const FOVEATION_LEVEL: xr::sys::FoveationLevelFB = xr::sys::FoveationLevelFB::HIGH;
+
+/// Build and attach a foveation profile to every eye: `level` pins the game's
+/// `Xr.foveation`, `None` restores the default (HIGH, dynamic, so the runtime
+/// lowers it while the GPU has headroom). Profiles can change at any time.
+fn apply_foveation(
+    instance: &xr::Instance,
+    session: &xr::Session<xr::OpenGlEs>,
+    eyes: &[EyeTarget],
+    level: Option<FoveationLevel>,
+) {
+    use xr::sys::{FoveationDynamicFB as Dynamic, FoveationLevelFB as Level};
+    let (fb_level, dynamic) = match level {
+        None => (FOVEATION_LEVEL, Dynamic::LEVEL_ENABLED),
+        Some(FoveationLevel::Off) => (Level::NONE, Dynamic::DISABLED),
+        Some(FoveationLevel::Low) => (Level::LOW, Dynamic::DISABLED),
+        Some(FoveationLevel::Medium) => (Level::MEDIUM, Dynamic::DISABLED),
+        Some(FoveationLevel::High) => (Level::HIGH, Dynamic::DISABLED),
+    };
+    match session.create_foveation_profile(Some(xr::FoveationLevelProfile {
+        level: fb_level,
+        vertical_offset: 0.0,
+        dynamic,
+    })) {
+        Ok(profile) => {
+            for (eye, target) in ["left", "right"].iter().zip(eyes.iter()) {
+                attach_foveation(instance, &target.swapchain, &profile, eye);
+            }
+            let source = if level.is_some() {
+                "fixed, from settings"
+            } else {
+                "dynamic, default"
+            };
+            log::info!("fixed foveated rendering: {fb_level:?} ({source})");
+        }
+        Err(e) => log::warn!("cannot create a foveation profile: {e}"),
+    }
+}
 
 /// Attach a fixed-foveation profile to one swapchain.
 ///
@@ -627,6 +667,41 @@ in the headset's display settings",
     Ok(message)
 }
 
+/// Request a loading game's rate: its `config`'s `Xr.refreshRate` when the
+/// display offers it, else the highest offered rate no faster than
+/// [`TARGET_REFRESH_RATE`]. Asking for more than the frame can sustain just
+/// converts headroom into stale frames. Returns the warning when the
+/// `config` rate was refused, for the load response.
+fn request_launch_refresh_rate(
+    session: &xr::Session<xr::OpenGlEs>,
+    display: &mut DisplayRefreshRate,
+    config_hz: Option<f32>,
+) -> Option<String> {
+    let mut refused = None;
+    if let Some(hz) = config_hz {
+        match request_display_refresh_rate(session, display, hz) {
+            Ok(_) => return None,
+            Err(e) => {
+                let warning = format!("config Xr.refreshRate: {e}; using the default");
+                log::warn!("{warning}");
+                refused = Some(warning);
+            }
+        }
+    }
+    let choice = display
+        .available
+        .iter()
+        .copied()
+        .filter(|rate| *rate <= TARGET_REFRESH_RATE + 0.5)
+        .fold(f32::NAN, f32::max);
+    if choice.is_finite() {
+        if let Err(e) = request_display_refresh_rate(session, display, choice) {
+            log::warn!("{e}");
+        }
+    }
+    refused
+}
+
 #[allow(clippy::too_many_arguments)]
 fn service_debug_request(
     request: DebugRequest,
@@ -704,6 +779,8 @@ fn service_debug_request(
                     sim_thread: Some(sim_thread),
                     display_refresh_rate,
                     instance_uploads,
+                    config: g.config(),
+                    settings: g.settings(),
                 });
             });
         }
@@ -851,7 +928,7 @@ desktop runtime's --headless/--debug-port path"
         }
         DebugRequest::LoadProject(files, role, response) => {
             // Waits: a successful load restarts the shell's clock.
-            let result = sim.call(move |g| {
+            let mut result = sim.call(move |g| {
                 functor_runtime_common::protocol::load_with_role(g, role, |g| {
                     g.load_project(&files)
                 })
@@ -862,6 +939,15 @@ desktop runtime's --headless/--debug-port path"
             if result.is_ok() {
                 clock.restart();
                 debug.frame_count = 0;
+                // A load is the game's launch: honour its `config`.
+                let config_hz = sim.call(|g| g.config()).and_then(|c| c.xr.refresh_rate);
+                let refused = debug
+                    .display_refresh_rate
+                    .as_mut()
+                    .and_then(|display| request_launch_refresh_rate(session, display, config_hz));
+                if let (Ok(status), Some(warning)) = (&mut result, refused) {
+                    status.push_str(&format!(" — warning: {warning}"));
+                }
             }
             let _ = response.send(result);
         }
@@ -1107,20 +1193,9 @@ pub fn android_main(app: AndroidApp) {
                     requested: None,
                     available: rates,
                 };
-                // The highest the display offers that is no faster than the
-                // target. Asking for more than the frame can sustain just
-                // converts headroom into stale frames.
-                let choice = display
-                    .available
-                    .iter()
-                    .copied()
-                    .filter(|rate| *rate <= TARGET_REFRESH_RATE + 0.5)
-                    .fold(f32::NAN, f32::max);
-                if choice.is_finite() {
-                    if let Err(e) = request_display_refresh_rate(&session, &mut display, choice) {
-                        log::warn!("{e}");
-                    }
-                }
+                // The boot scene has no `config`; a pushed game's load
+                // requests its own.
+                let _ = request_launch_refresh_rate(&session, &mut display, None);
                 display_refresh_rate = Some(display);
             }
             Err(e) => log::warn!("cannot read display refresh rates: {e}"),
@@ -1161,21 +1236,10 @@ pub fn android_main(app: AndroidApp) {
         .collect();
     // Foveation attaches per swapchain, so it has to happen after the eye
     // targets exist. A dynamic profile lets the runtime scale the level with
-    // GPU load rather than pinning the worst case all the time.
+    // GPU load rather than pinning the worst case all the time; a game's
+    // `settings` may pin a level instead (applied on change, below).
     if foveation_available {
-        match session.create_foveation_profile(Some(xr::FoveationLevelProfile {
-            level: FOVEATION_LEVEL,
-            vertical_offset: 0.0,
-            dynamic: xr::sys::FoveationDynamicFB::LEVEL_ENABLED,
-        })) {
-            Ok(profile) => {
-                for (eye, target) in ["left", "right"].iter().zip(eyes.iter()) {
-                    attach_foveation(&instance, &target.swapchain, &profile, eye);
-                }
-                log::info!("fixed foveated rendering enabled ({FOVEATION_LEVEL:?}, dynamic)");
-            }
-            Err(e) => log::warn!("cannot create a foveation profile: {e}"),
-        }
+        apply_foveation(&instance, &session, &eyes, None);
     } else {
         log::info!("fixed foveated rendering unavailable on this runtime");
     }
@@ -1258,6 +1322,8 @@ pub fn android_main(app: AndroidApp) {
     let mut preloads = Vec::new();
     let mut heightmap_mirror = functor_runtime_common::sim_driver::HeightmapMirror::default();
     let mut shown: Option<SimSnapshot> = None;
+    // The `settings` foveation level last applied (`None` = the default).
+    let mut applied_foveation: Option<FoveationLevel> = None;
     let mut stages = StageStats::default();
     let mut quit = false;
     let mut event_storage = xr::EventDataBuffer::new();
@@ -1521,6 +1587,11 @@ pub fn android_main(app: AndroidApp) {
             feedback |= !fresh.preload_commands.is_empty() || fresh.terrain_pending;
             preloads.append(&mut fresh.preload_commands);
             scene_context.queue_terrain_requests(std::mem::take(&mut fresh.terrain_requests));
+            let foveation = fresh.settings.and_then(|settings| settings.xr.foveation);
+            if foveation_available && foveation != applied_foveation {
+                apply_foveation(&instance, &session, &eyes, foveation);
+                applied_foveation = foveation;
+            }
             stages.sim_ns += fresh.sim_ns;
             shown = Some(fresh);
         }

@@ -1,0 +1,22 @@
+//! What the optional `config` entry point is: launch options, read once.
+//!
+//! `config` is a plain VALUE (like `init`), evaluated when the game loads,
+//! before the shell starts running it. A hot reload that changes it keeps the
+//! running session's config and prints a one-line "restart to apply" warning.
+//! A sibling module may define it instead of the entry file (see `Settings`).
+//!
+//! ```functor
+//! let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))
+//! ```
+
+/// An opaque launch configuration.
+type t = host
+
+/// No options set: the shell's defaults.
+let create : () => t
+/// Set the headset options; the config is last for piping, and a later call
+/// replaces an earlier one.
+///
+/// Only launch-time knobs are accepted: `Xr.foveation` here is a teaching
+/// error pointing at `settings`.
+let xr : (Xr.t, t) => t

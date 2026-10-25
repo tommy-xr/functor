@@ -207,6 +207,12 @@ export interface RuntimeState {
    * after the first frame when instance lists are retained. Protocol v17+; a
    * pre-v17 runtime omits it. */
   instance_uploads?: { count: number; bytes: number };
+  /** The game's launch-time `config` value, fixed at load. Protocol v18+;
+   * omitted when the game defines none. */
+  config?: { xr: { refresh_rate?: number } };
+  /** The game's latest `settings(model)`, which a headset runtime applies on
+   * change. Protocol v18+; omitted when the game defines no `settings`. */
+  settings?: { xr: { foveation?: "off" | "low" | "medium" | "high" } };
 }
 
 /** Camera block from `GET /scene`. */

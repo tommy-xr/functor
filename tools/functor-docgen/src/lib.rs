@@ -86,6 +86,11 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
     (ApiGroup::Engine, "Audio", &["AudioScene", "AudioSource"]),
     (ApiGroup::Engine, "UI", &["Ui", "Html", "Attr", "Style"]),
     (ApiGroup::Engine, "Assets", &["Asset"]),
+    (
+        ApiGroup::Engine,
+        "Shell options",
+        &["Config", "Settings", "Xr"],
+    ),
     (ApiGroup::Stdlib, "Collections", &["List", "Map"]),
     (ApiGroup::Stdlib, "Text", &["Text"]),
     (

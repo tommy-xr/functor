@@ -42,10 +42,11 @@ use functor_runtime_common::functor_lang_prelude::{
 use functor_runtime_common::functor_lang_producer::{
     journal_arm, journal_push, journal_swap, rebase_connect_retry_deadlines, validate_contract,
     ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Provenance, Reporter,
-    SpanSource,
+    ShellOptions, SpanSource,
 };
 use functor_runtime_common::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use functor_runtime_common::physics;
+use functor_runtime_common::runtime_settings::{GameConfig, GameSettings};
 use functor_runtime_common::timetravel::SceneRecorder;
 use functor_runtime_common::ui::View;
 use functor_runtime_common::webview::HtmlNode;
@@ -151,6 +152,9 @@ pub struct FunctorLangGame {
     /// separate from `ui_handlers` (each hook's evaluation drains the shared
     /// per-eval table into its own copy). Same lockstep/reload rules.
     webview_handlers: Vec<UiHandler>,
+    /// The `config` value and the latest `settings(model)`. Desktop has no
+    /// headset, so it only reports them (`GET /state`).
+    options: ShellOptions,
     /// The last serialized soundscape (`soundScape model` → JSON), cached
     /// because `audio_scene_json` is a `&self` accessor — evaluated beside
     /// `draw` each frame so errors can `&mut`-dedupe. A bad frame keeps the
@@ -274,6 +278,8 @@ struct Loaded {
     has_soundscape: bool,
     has_ui: bool,
     has_webview: bool,
+    config: Option<GameConfig>,
+    settings: Option<GameSettings>,
 }
 
 /// Load, check, and contract-validate a game project (B8: the entry plus
@@ -396,6 +402,8 @@ fn finish_load(
         has_soundscape: contract.has_soundscape,
         has_ui: contract.has_ui,
         has_webview: contract.has_webview,
+        config: contract.config,
+        settings: contract.settings,
     })
 }
 
@@ -488,6 +496,7 @@ impl FunctorLangGame {
             has_webview: loaded.has_webview,
             last_webview: None,
             webview_handlers: Vec::new(),
+            options: ShellOptions::new(loaded.config, loaded.settings),
             last_soundscape_json: empty_soundscape_json(),
             effect_runner: RealEffects::new(),
             effect_log: EffectLog::new(),
@@ -639,6 +648,8 @@ impl FunctorLangGame {
             // Deleting the `webview` hook drops the overlay (the `ui` rule).
             self.last_webview = None;
         }
+        self.options
+            .reload(loaded.config, loaded.settings, &mut self.reporter);
         self.reporter.reset();
         // A deferred query or in-flight HTTP request holds a tagger — a closure
         // into the OLD session; drop them rather than let them dangle. A late
@@ -724,6 +735,7 @@ impl FunctorLangGame {
         self.has_webview = loaded.has_webview;
         self.last_webview = None;
         self.webview_handlers.clear();
+        self.options = ShellOptions::new(loaded.config, loaded.settings);
         self.effect_runner = RealEffects::new();
         self.effect_log = EffectLog::new();
         self.deferred_queries.clear();
@@ -1406,6 +1418,8 @@ AudioScene.empty), got {}",
                 Err(err) => self.reporter.frame_error(self.names.sound_scape, &err),
             }
         }
+        self.options
+            .evaluate(&self.session, &self.names, &self.model, &mut self.reporter);
         self.draw_ns += started.elapsed().as_nanos() as u64;
         self.drawn += 1;
         // On failure this is the last good frame — a bad draw must not blank
@@ -1433,6 +1447,14 @@ AudioScene.empty), got {}",
 
     fn webview(&self) -> Option<HtmlNode> {
         self.last_webview.clone()
+    }
+
+    fn config(&self) -> Option<GameConfig> {
+        self.options.config()
+    }
+
+    fn settings(&self) -> Option<GameSettings> {
+        self.options.settings()
     }
 
     fn state_debug(&self) -> String {

@@ -1096,6 +1096,8 @@ fn service_debug_request(
                     sim_thread: Some(sim_thread),
                     display_refresh_rate: None,
                     instance_uploads,
+                    config: g.config(),
+                    settings: g.settings(),
                 });
             });
         }

@@ -304,7 +304,7 @@ let grab = (s) =>
   List, Map, Text, Math, Debug, Scene,
   Sprite, Anim, Asset, Camera3D, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Persistence, Physics, RenderTarget, Ui, Html,
-  Attr, Style, AudioSource, AudioScene) is a
+  Attr, Style, AudioSource, AudioScene, Xr, Config, Settings) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
   manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -1015,6 +1015,7 @@ The generated modules:
 | `Ui` | the lightweight HUD `ui` hook: text, rows/columns, anchored panels, button/slider/textInput |
 | `Html` / `Attr` / `Style` | the `webview` hook: an Elm-style HTML tree, attributes/handlers, typed inline CSS |
 | `Input` | the types `sampledInput` receives: snapshot, mouse, XR poses, `point2`/`point3` |
+| `Config` / `Settings` / `Xr` | what the `config` value and `settings` hook are: launch-time and live shell options (XR refresh rate, foveation) |
 
 Two more namespaces resolve under the host but have no `.funi` and are NOT in
 the generated reference:
@@ -1501,7 +1502,30 @@ let ui = (model) => Ui.column([…]) |> Ui.panel(Ui.topLeft())  // OPTIONAL; the
 let soundScape = (model) => AudioScene.create([source, …])  // OPTIONAL; continuous
                                             // looping voices, reconciled by key each
                                             // frame (needs no `update`)
+let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))
+                                            // OPTIONAL; a VALUE read once at load
+let settings = (model) =>                   // OPTIONAL; evaluated every frame,
+  Settings.create()                         // applied by the shell on change
+    |> Settings.xr(Xr.create() |> Xr.foveation(Xr.High))
 ```
+
+**Shell options are split by lifetime**, like `init`/`tick`. `config` is a
+plain value read at load: a hot reload that changes it prints `` `config`
+changed — restart to apply `` and keeps the running value (on Quest, a new
+`functor run vr` push is the restart). `settings` is a pure function of the
+model, so it hot-reloads, replays, and never stores state of its own; a failing
+evaluation keeps the last good value and reports once. Each `Xr` knob belongs to
+one bucket — `refreshRate` in `config`, `foveation` in `settings` — and the
+other is a teaching error naming the right one, raised at load (`settings` is
+evaluated on `init` there). Unlike every other entry point, each of these two may come
+from a SIBLING file module when the entry (or role) does not define it, so an
+`adapter.fun` beside an unmodified `game.fun` configures it
+(`examples/terrain/adapter.fun`). A sibling that is itself a program root
+(defines `init` — another role's entry file) is skipped; two siblings defining
+the same one is a load error; in a same-file multi-role project an adapter
+applies to every role. `config.fun`, `settings.fun`, and `xr.fun` are reserved file names (their
+modules would collide with the prelude). Desktop and web ignore the `xr` knobs;
+desktop and Quest report both values in `GET /state` (`config` / `settings`).
 
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with

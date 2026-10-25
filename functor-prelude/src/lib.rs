@@ -71,6 +71,9 @@ pub fn modules() -> Vec<(String, String)> {
         module("Style", include_str!("../prelude/style.funi")),
         module("AudioSource", include_str!("../prelude/audio_source.funi")),
         module("AudioScene", include_str!("../prelude/audio_scene.funi")),
+        module("Xr", include_str!("../prelude/xr.funi")),
+        module("Config", include_str!("../prelude/config.funi")),
+        module("Settings", include_str!("../prelude/settings.funi")),
     ]
 }
 

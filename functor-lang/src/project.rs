@@ -82,6 +82,9 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Style",
     "AudioSource",
     "AudioScene",
+    "Xr",
+    "Config",
+    "Settings",
     "Debug",
 ];
 

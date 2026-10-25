@@ -188,9 +188,9 @@ fn entry_initializer_may_demand_sibling_globals() {
         &[
             (
                 "game.fun",
-                "let start = Config.speed * 2.0\nlet main = () => start\n",
+                "let start = Tuning.speed * 2.0\nlet main = () => start\n",
             ),
-            ("config.fun", "let speed = 21.0\n"),
+            ("tuning.fun", "let speed = 21.0\n"),
         ],
     );
     assert_eq!(number(&value), 42.0);

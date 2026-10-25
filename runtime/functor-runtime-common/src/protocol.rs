@@ -418,6 +418,19 @@ pub trait GameProducer {
     /// games define no `webview`.
     fn webview_event(&mut self, _event: crate::ui::UiEvent) {}
 
+    /// The game's launch-time `config` value (fixed at load; the debug
+    /// server's `GET /state` `config`). `None` when the game defines none.
+    fn config(&self) -> Option<crate::runtime_settings::GameConfig> {
+        None
+    }
+
+    /// The game's latest `settings(model)` value, which the shell applies when
+    /// it changes (`GET /state` `settings`). `None` when the game defines no
+    /// `settings` hook.
+    fn settings(&self) -> Option<crate::runtime_settings::GameSettings> {
+        None
+    }
+
     /// A pretty-printed (Rust `Debug`) view of the live game model, for
     /// introspection (the debug server's `GET /state` `model` field). Opaque
     /// debug text — see the module doc; consumers must not parse it.

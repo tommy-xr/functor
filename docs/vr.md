@@ -83,8 +83,11 @@ full, proven sequence. The short path is:
 
 ### Display refresh rate
 
-The APK starts at the highest rate the display offers up to 80 Hz. To ask for a
-different one, use `functor -d yourgame run vr --refresh-rate 90` (or `120`).
+The APK starts at the highest rate the display offers up to 80 Hz. A game's
+`config` can name its own (`Xr.refreshRate`, see below), requested each time
+the game loads. To ask for a different one from the command line, use
+`functor -d yourgame run vr --refresh-rate 90` (or `120`), which overrides
+`config`.
 This requests the rate once, after the initial push, through
 `POST /display-refresh-rate`. The rate must be one the display offers; Quest 3
 offers 120 Hz only when it is enabled in the headset's display settings. The
@@ -125,6 +128,40 @@ deadlines.
 
 With Touch action sampling enabled, a matched synthwave release rerun held 72
 FPS p5/min with 0.78 ms mean application time and zero stale/torn frames.
+
+### Game options: `config` and `settings`
+
+A game declares headset options through two optional entry points, split by
+when the shell can honour them:
+
+```functor
+// Read once at load. Changing it on a hot reload prints a one-line
+// "restart to apply" warning and keeps the running value.
+let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))
+
+// A pure function of the model, evaluated every frame. The shell applies
+// it when the value changes.
+let settings = (model) =>
+  Settings.create() |> Settings.xr(Xr.create() |> Xr.foveation(Xr.Medium))
+```
+
+- `Xr.refreshRate(hz)` belongs in `config`. The APK requests it each time a
+  project loads (`functor run vr`'s initial push). An unoffered rate logs a
+  warning and falls back to the default.
+- `Xr.foveation(level)` belongs in `settings`. `Xr.Off`/`Low`/`Medium`/`High`
+  pin the `XR_FB_foveation` level with dynamic scaling off. Without it the APK
+  uses `High` with dynamic scaling on. Logcat prints
+  `fixed foveated rendering: …` on each change.
+- A knob in the wrong bucket is a load error that names the right one.
+- Every sibling `.fun` loads with the game, so `config` and `settings` can live
+  in a sibling such as `examples/terrain/adapter.fun`, leaving `game.fun`
+  unchanged. Each is resolved on its own. The entry's own definition wins. A
+  sibling that defines `init` (another role's entry) is skipped. Two siblings
+  defining the same one is a load error.
+- `/state` reports both as `config` and `settings` (debug protocol v18).
+  Desktop reports them too but has no headset to apply them to.
+- An unoffered `config` rate also appears as a warning in the `/load-project`
+  response.
 
 ### Pipelined sim thread and XR thread hints
 

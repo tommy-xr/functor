@@ -85,6 +85,7 @@ pub mod net;
 pub mod physics;
 pub mod protocol;
 pub mod render;
+pub mod runtime_settings;
 mod render_context;
 pub mod render_target;
 mod renderer;

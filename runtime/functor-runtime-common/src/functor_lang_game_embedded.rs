@@ -32,11 +32,13 @@ use crate::functor_lang_prelude::{
 };
 use crate::functor_lang_producer::{
     journal_arm, journal_swap, rebase_connect_retry_deadlines, validate_contract,
-    ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Reporter, SpanSource,
+    ConnectRetryState, EntryNames, EntryRole, FrameCtx, JournalEntry, Reporter, ShellOptions,
+    SpanSource,
 };
 use crate::inspector::{build_trace_doc, inspector_sources, InspectorSource};
 use crate::physics;
 use crate::protocol::GameProducer;
+use crate::runtime_settings::{GameConfig, GameSettings};
 use crate::timetravel::SceneRecorder;
 use crate::ui::View;
 use crate::webview::HtmlNode;
@@ -153,6 +155,8 @@ pub struct FunctorLangEmbeddedGame {
     /// The handler table for `last_webview` — the webview's own slot space,
     /// separate from `ui_handlers`. Same lockstep/reload rules.
     webview_handlers: Vec<UiHandler>,
+    /// The `config` value and the latest `settings(model)`.
+    options: ShellOptions,
     /// Performs `Effect.*` commands (B6). `RealEffects` is portable: its
     /// clock has a per-target implementation.
     effect_runner: RealEffects,
@@ -234,6 +238,8 @@ struct Loaded {
     has_soundscape: bool,
     has_ui: bool,
     has_webview: bool,
+    config: Option<GameConfig>,
+    settings: Option<GameSettings>,
 }
 
 /// Load, check, and contract-validate a game PROJECT — the in-memory
@@ -299,6 +305,8 @@ fn load_source(sources: &[(String, String)], role: &EntryRole) -> Result<Loaded,
         has_soundscape: contract.has_soundscape,
         has_ui: contract.has_ui,
         has_webview: contract.has_webview,
+        config: contract.config,
+        settings: contract.settings,
     })
 }
 
@@ -381,6 +389,7 @@ impl FunctorLangEmbeddedGame {
             has_webview: loaded.has_webview,
             last_webview: None,
             webview_handlers: Vec::new(),
+            options: ShellOptions::new(loaded.config, loaded.settings),
             last_frame: empty_frame(),
             platform,
         };
@@ -507,6 +516,8 @@ impl FunctorLangEmbeddedGame {
             // Deleting the `webview` hook drops the overlay (the `ui` rule).
             self.last_webview = None;
         }
+        self.options
+            .reload(loaded.config, loaded.settings, &mut self.reporter);
         self.reporter.reset();
         // The shell may have hidden the draw-error overlay out-of-band during
         // the reload; reset the platform's dedupe shadow so the reloaded
@@ -557,6 +568,7 @@ impl FunctorLangEmbeddedGame {
         self.has_webview = loaded.has_webview;
         self.last_webview = None;
         self.webview_handlers.clear();
+        self.options = ShellOptions::new(loaded.config, loaded.settings);
         self.effect_runner = RealEffects::new();
         self.effect_log = EffectLog::new();
         self.deferred_queries.clear();
@@ -1095,6 +1107,8 @@ AudioScene.empty), got {}",
                 Err(err) => self.reporter.frame_error(self.names.sound_scape, &err),
             }
         }
+        self.options
+            .evaluate(&self.session, &self.names, &self.model, &mut self.reporter);
         // On failure this is the last good frame — a bad draw must not blank
         // the screen.
         self.last_frame.clone()
@@ -1106,6 +1120,14 @@ AudioScene.empty), got {}",
 
     fn webview(&self) -> Option<HtmlNode> {
         self.last_webview.clone()
+    }
+
+    fn config(&self) -> Option<GameConfig> {
+        self.options.config()
+    }
+
+    fn settings(&self) -> Option<GameSettings> {
+        self.options.settings()
     }
 
     fn state_debug(&self) -> String {
@@ -1291,6 +1313,45 @@ let ui = (model) => Ui.button("hud", FromHud)
         // slot numbering starts at 0 — the draw eval's handler was dropped.
         assert_eq!(game.ui_handlers.len(), 1);
         assert!(matches!(game.ui(), View::Button { slot: 0, .. }));
+    }
+
+    /// A sibling `adapter.fun` supplies both options for an unmodified game;
+    /// `settings` follows the model frame by frame, and a reload keeps the
+    /// launch `config` while a fresh load adopts the new one.
+    #[test]
+    fn sibling_config_and_settings_reach_the_shell() {
+        use crate::runtime_settings::FoveationLevel;
+        const ADAPTER: &str = r#"
+let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))
+let settings = (model) =>
+  Settings.create()
+    |> Settings.xr(Xr.create() |> Xr.foveation(if model.spin > 0.02 then Xr.Low else Xr.High))
+"#;
+        let files = vec![
+            ("game.fun".to_string(), BOOT.to_string()),
+            ("adapter.fun".to_string(), ADAPTER.to_string()),
+        ];
+        let mut game =
+            FunctorLangEmbeddedGame::create(files.clone(), Box::new(NativePlatform)).expect("loads");
+        let foveation = |game: &FunctorLangEmbeddedGame| game.settings().unwrap().xr.foveation;
+        assert_eq!(game.config().unwrap().xr.refresh_rate, Some(90.0));
+        assert_eq!(foveation(&game), Some(FoveationLevel::High));
+        for i in 1..=2 {
+            let ft = frame_time(i as f32 * 0.016, 0.016);
+            game.tick(ft.clone());
+            game.render(ft);
+        }
+        assert_eq!(foveation(&game), Some(FoveationLevel::Low), "spin passed 0.02");
+
+        let edited = vec![
+            files[0].clone(),
+            ("adapter.fun".to_string(), ADAPTER.replace("90", "72")),
+        ];
+        game.reload_project(&edited).expect("reloads");
+        assert_eq!(game.config().unwrap().xr.refresh_rate, Some(90.0), "restart to apply");
+        game.load_project(&edited).expect("loads");
+        assert_eq!(game.config().unwrap().xr.refresh_rate, Some(72.0));
+        assert_eq!(foveation(&game), Some(FoveationLevel::High), "settings(init)");
     }
 
     #[test]

@@ -1011,6 +1011,21 @@ Starts once A2 + B3 exist.
       GitHub's macOS runners — contention, not a regression), and a flaky
       required check is worse than a reliable on-demand one. Run it
       deliberately or from a dedicated non-blocking perf job.
+- [x] **C7. Shell options: `config` + `settings`.** Two optional entry points,
+      split by lifetime like `init`/`tick`. `config` is a plain `Config.t`
+      VALUE read once at load (a hot reload that changes it warns "restart to
+      apply"); `settings = (model) => Settings.t` is evaluated every frame and
+      applied by the shell on change, like `physics`. Both take one `Xr.t`
+      builder (`Xr.create() |> Xr.refreshRate(90)` /
+      `|> Xr.foveation(Xr.High)`); a knob in the wrong bucket is a teaching
+      error at load. A sibling file module may supply either when the entry
+      does not define it (file = module; program-root siblings skipped), so `adapter.fun` configures an
+      unmodified game. Quest applies refresh rate per project load and
+      foveation per change; desktop only reports them (`/state`
+      `config`/`settings`, debug protocol v18).
+      *Verify:* producer contract + embedded-producer tests; on Quest 3,
+      editing `examples/terrain/adapter.fun`'s level re-applies the profile
+      live and `config`'s rate lands in `display_refresh_rate`.
 
 ## Track D — IDE tooling
 

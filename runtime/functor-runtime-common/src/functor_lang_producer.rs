@@ -35,12 +35,13 @@ use crate::functor_lang_prelude::{
     frame_value, http_response_value, needs_update, net_conn_subs, net_event_value,
     perform_deferred_queries, physics_event_taggers, physics_scene_value, split_model_effect,
     sub_messages_for_frame, take_audio_completion, take_http_tagger, take_preload_completion,
-    take_ui_handlers, DryRunEffects, EffectLog, EffectRunner, EffectTree, FunctorHost,
-    NetEventKind, PrimingScope, UiHandler,
+    take_ui_handlers, config_of, settings_of, DryRunEffects, EffectLog, EffectRunner, EffectTree,
+    FunctorHost, NetEventKind, PrimingScope, UiHandler,
 };
 use crate::input::RecordedInput;
 use crate::net::{push_conn_command, ConnCommand, HttpResult};
 use crate::physics::{self, PhysicsEvent, SteppedPhysics};
+use crate::runtime_settings::{GameConfig, GameSettings};
 use crate::timetravel::SceneRecorder;
 use crate::{Frame, FrameTime};
 
@@ -90,6 +91,10 @@ pub struct EntryNames {
     pub sound_scape: &'static str,
     pub ui: &'static str,
     pub webview: &'static str,
+    /// The launch-time `config` value. Unlike the hooks above, a SIBLING
+    /// module may supply it (and `settings`) — see [`EntryRole::resolve`].
+    pub config: &'static str,
+    pub settings: &'static str,
 }
 
 impl EntryNames {
@@ -109,6 +114,8 @@ impl EntryNames {
         sound_scape: "soundScape",
         ui: "ui",
         webview: "webview",
+        config: "config",
+        settings: "settings",
     };
 
     /// The name-mapping rule: `prefix` + the Capitalized canonical base, as
@@ -143,7 +150,7 @@ impl EntryNames {
     }
 
     /// Build one role's names by mapping each canonical base — the single
-    /// place the 14-entry contract is enumerated.
+    /// place the 16-entry contract is enumerated.
     fn map(n: impl Fn(&'static str) -> &'static str) -> EntryNames {
         let u = EntryNames::UNPREFIXED;
         EntryNames {
@@ -161,6 +168,8 @@ impl EntryNames {
             sound_scape: n(u.sound_scape),
             ui: n(u.ui),
             webview: n(u.webview),
+            config: n(u.config),
+            settings: n(u.settings),
         }
     }
 }
@@ -228,7 +237,24 @@ impl EntryRole {
     /// Resolve this role's binding names against the linked `project` whose
     /// entry is the role's file. An inline-module role names a block of THAT
     /// file; an unknown name is an error listing the blocks it does declare.
+    ///
+    /// `config` and `settings` then fall back to a SIBLING file module when
+    /// the role defines neither, so an `adapter.fun` can supply them for an
+    /// unmodified game.
     pub fn resolve(
+        &self,
+        path: &str,
+        project: &functor_lang::project::Project,
+    ) -> Result<EntryNames, String> {
+        let mut names = self.resolve_role(path, project)?;
+        names.config =
+            sibling_supplied(path, project, names.config, EntryNames::UNPREFIXED.config)?;
+        names.settings =
+            sibling_supplied(path, project, names.settings, EntryNames::UNPREFIXED.settings)?;
+        Ok(names)
+    }
+
+    fn resolve_role(
         &self,
         path: &str,
         project: &functor_lang::project::Project,
@@ -265,6 +291,48 @@ impl EntryRole {
     }
 }
 
+/// `own` if the program defines it, else the one sibling FILE module's
+/// top-level `base` (`Adapter.settings`), skipping other program roots. Two
+/// siblings defining it is ambiguous, so it is an error naming both; none
+/// leaves `own` (absent).
+fn sibling_supplied(
+    path: &str,
+    project: &functor_lang::project::Project,
+    own: &'static str,
+    base: &str,
+) -> Result<&'static str, String> {
+    let defined = |name: &str| project.module.defs.iter().any(|def| def.name == name);
+    if defined(own) {
+        return Ok(own);
+    }
+    let mut found: Vec<(String, String)> = project
+        .sources
+        .files()
+        .iter()
+        .filter(|file| !file.path.to_string_lossy().starts_with('<'))
+        // Another program root (a multi-entry project's other role, which
+        // defines its own `init`) is not an adapter for this one.
+        .filter(|file| file.module != project.entry && !defined(&format!("{}.init", file.module)))
+        .filter_map(|file| {
+            let name = format!("{}.{base}", file.module);
+            let file_name = file.path.file_name()?.to_string_lossy().into_owned();
+            defined(&name).then_some((name, file_name))
+        })
+        .collect();
+    match found.len() {
+        0 => Ok(own),
+        1 => Ok(intern(found.remove(0).0)),
+        _ => {
+            let files: Vec<&str> = found.iter().map(|(_, file)| file.as_str()).collect();
+            Err(format!(
+                "{path}: `{base}` is defined by several sibling modules ({}) — keep one, or \
+define `{own}` in the entry to choose",
+                files.join(", ")
+            ))
+        }
+    }
+}
+
 /// A load-time-validated game contract: the role's `init` value plus which
 /// optional entry points the program defines. One shared implementation for
 /// the desktop and embedded producers' load paths AND the CLI's `build`
@@ -282,6 +350,11 @@ pub struct GameContract {
     pub has_soundscape: bool,
     pub has_ui: bool,
     pub has_webview: bool,
+    /// The `config` value, if the program defines one.
+    pub config: Option<GameConfig>,
+    /// `settings(init)`, if the program defines the hook — evaluated at load
+    /// so a misplaced knob fails here, not on the first frame.
+    pub settings: Option<GameSettings>,
 }
 
 /// Contract-validate a loaded session against a role's entry names. The
@@ -382,6 +455,41 @@ return them beside the model as `(model, effect)`",
     if has_webview {
         require_function(path, session, names.webview, 1)?;
     }
+    // Optional launch config: a plain `Config.t` value, like `init`.
+    let config = match session.global(names.config) {
+        None => None,
+        Some(value) => Some(config_of(&value).ok_or_else(|| {
+            format!(
+                "{path}: `{0}` must be a Config value (Config.create() |> Config.xr(…)), got {1} \
+— if `{0}` is not meant as the game's launch config, rename it",
+                names.config,
+                value.kind_name()
+            )
+        })?),
+    };
+    // Optional live settings: `settings(model) => Settings.t`, reconciled by
+    // the shell on change. Its `init` projection is checked here.
+    let settings = match session.global(names.settings) {
+        None => None,
+        Some(_) => {
+            require_function(path, session, names.settings, 1).map_err(|e| {
+                format!(
+                    "{e} — if `{}` is not meant as the game's settings hook, rename it",
+                    names.settings
+                )
+            })?;
+            let value = session
+                .call(names.settings, vec![init.clone()], &mut FunctorHost)
+                .map_err(|e| format!("{path}: `{}` on init: {}", names.settings, e.message))?;
+            Some(settings_of(&value).ok_or_else(|| {
+                format!(
+                    "{path}: `{}` must return a Settings value (Settings.create() |> …), got {}",
+                    names.settings,
+                    value.kind_name()
+                )
+            })?)
+        }
+    };
     Ok(GameContract {
         init,
         has_input,
@@ -394,7 +502,91 @@ return them beside the model as `(model, effect)`",
         has_soundscape,
         has_ui,
         has_webview,
+        config,
+        settings,
     })
+}
+
+/// The producer side of the `config` value and `settings(model)` hook, one
+/// implementation for every producer. `config` is fixed at load; `settings`
+/// is re-evaluated each frame and keeps its last good value on error.
+#[derive(Default)]
+pub struct ShellOptions {
+    config: Option<GameConfig>,
+    /// `Some` exactly while the program defines the `settings` hook.
+    settings: Option<GameSettings>,
+}
+
+impl ShellOptions {
+    /// A fresh load: the contract's `config` and `settings(init)`.
+    pub fn new(contract_config: Option<GameConfig>, contract_settings: Option<GameSettings>) -> Self {
+        ShellOptions {
+            config: contract_config,
+            settings: contract_settings,
+        }
+    }
+
+    /// A hot reload. The running session keeps its launch `config` (the shell
+    /// already applied it), so an edit that changes it only warns; the
+    /// `settings` hook may appear or disappear.
+    pub fn reload(
+        &mut self,
+        config: Option<GameConfig>,
+        settings: Option<GameSettings>,
+        reporter: &mut Reporter,
+    ) {
+        if config != self.config {
+            reporter.report_keyed(
+                "config",
+                "[functor-lang] `config` changed — restart to apply (the running session keeps \
+its launch config)"
+                    .to_string(),
+            );
+        }
+        // Keep the live value until the next evaluation; drop it with the hook.
+        self.settings = settings.and(self.settings).or(settings);
+    }
+
+    /// Re-evaluate `settings(model)` (the shell applies it on change). A
+    /// failure keeps the last good value and reports once.
+    pub fn evaluate(
+        &mut self,
+        session: &Session,
+        names: &EntryNames,
+        model: &Value,
+        reporter: &mut Reporter,
+    ) {
+        if self.settings.is_none() {
+            return;
+        }
+        match session.call(names.settings, vec![model.clone()], &mut FunctorHost) {
+            // Its own dedupe channel, so a persistent error here and one in
+            // `draw` don't alternate and re-print every frame.
+            Ok(value) => match settings_of(&value) {
+                Some(settings) => self.settings = Some(settings),
+                None => reporter.report_keyed(
+                    "settings",
+                    format!(
+                        "[functor-lang] {} must return a Settings value (Settings.create() |> …), got {}",
+                        names.settings,
+                        value.kind_name()
+                    ),
+                ),
+            },
+            Err(err) => {
+                let message = reporter.render_frame_error(names.settings, &err);
+                reporter.report_keyed("settings", message);
+            }
+        }
+    }
+
+    pub fn config(&self) -> Option<GameConfig> {
+        self.config
+    }
+
+    pub fn settings(&self) -> Option<GameSettings> {
+        self.settings
+    }
 }
 
 /// `name` must be a function of `arity` params — a contract violation is
@@ -2534,6 +2726,180 @@ mod tests {
                 .expect("a prefix always resolves"),
             EntryNames::with_prefix("server")
         );
+    }
+
+    /// Link `files` (entry first) under the engine prelude and validate the
+    /// plain role's contract.
+    fn contract_of(files: &[(&str, &str)]) -> Result<(EntryNames, GameContract), String> {
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            files
+                .iter()
+                .map(|(path, src)| (std::path::PathBuf::from(path), src.to_string()))
+                .collect(),
+            &functor_prelude::bundled_modules(),
+        )
+        .map_err(|e| e.render())?;
+        let names = EntryRole::Prefix(String::new()).resolve("game.fun", &project)?;
+        let session = Session::load(&project.module, &mut FunctorHost)
+            .map_err(|f| f.error.message)?;
+        let contract = validate_contract("game.fun", &session, &names)?;
+        Ok((names, contract))
+    }
+
+    const GAME: &str = "let init = { level: 0.0 }\n\
+        let tick = (m, dt, tts) => m\n\
+        let draw = (m, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0), \
+Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+
+    const OPTIONS: &str = "let config = Config.create() |> Config.xr(Xr.create() |> \
+Xr.refreshRate(90))\n\
+        let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.foveation(if m.level > 0.0 then Xr.Low else Xr.High))\n";
+
+    #[test]
+    fn config_and_settings_are_read_at_load() {
+        use crate::runtime_settings::FoveationLevel;
+        let game = format!("{GAME}{OPTIONS}");
+        let (names, contract) = contract_of(&[("game.fun", &game)]).expect("loads");
+        assert_eq!((names.config, names.settings), ("config", "settings"));
+        assert_eq!(contract.config.unwrap().xr.refresh_rate, Some(90.0));
+        assert_eq!(
+            contract.settings.unwrap().xr.foveation,
+            Some(FoveationLevel::High)
+        );
+        // Both optional.
+        let (_, bare) = contract_of(&[("game.fun", GAME)]).expect("loads");
+        assert!(bare.config.is_none() && bare.settings.is_none());
+    }
+
+    #[test]
+    fn a_misplaced_knob_is_a_teaching_error_at_load() {
+        let config_foveation = format!(
+            "{GAME}let config = Config.create() |> Config.xr(Xr.create() |> Xr.foveation(Xr.Low))\n"
+        );
+        let err = contract_of(&[("game.fun", &config_foveation)]).err().unwrap();
+        assert!(err.contains("`Xr.foveation`") && err.contains("settings"), "{err}");
+        let settings_rate = format!(
+            "{GAME}let settings = (m) => Settings.create() |> Settings.xr(Xr.create() |> \
+Xr.refreshRate(90))\n"
+        );
+        let err = contract_of(&[("game.fun", &settings_rate)]).err().unwrap();
+        assert!(err.contains("`Xr.refreshRate`") && err.contains("config"), "{err}");
+    }
+
+    #[test]
+    fn config_is_a_value_and_settings_a_function_of_the_model() {
+        let err = contract_of(&[("game.fun", &format!("{GAME}let config = 3.0\n"))])
+            .err()
+            .unwrap();
+        assert!(err.contains("`config` must be a Config value"), "{err}");
+        let err = contract_of(&[(
+            "game.fun",
+            &format!("{GAME}let settings = Settings.create()\n"),
+        )])
+        .err()
+        .unwrap();
+        assert!(err.contains("`settings` must be a function"), "{err}");
+        let err = contract_of(&[("game.fun", &format!("{GAME}let settings = (m) => 1.0\n"))])
+            .err()
+            .unwrap();
+        assert!(err.contains("must return a Settings value"), "{err}");
+    }
+
+    /// file = module: a sibling supplies both for a game that defines
+    /// neither; the entry's own definition wins; two siblings are ambiguous.
+    #[test]
+    fn a_sibling_module_supplies_config_and_settings() {
+        let (names, contract) =
+            contract_of(&[("game.fun", GAME), ("adapter.fun", OPTIONS)]).expect("loads");
+        assert_eq!(
+            (names.config, names.settings),
+            ("Adapter.config", "Adapter.settings")
+        );
+        assert_eq!(contract.config.unwrap().xr.refresh_rate, Some(90.0));
+        assert!(contract.settings.is_some());
+
+        let own = format!("{GAME}let config = Config.create()\n");
+        let (names, contract) =
+            contract_of(&[("game.fun", &own), ("adapter.fun", OPTIONS)]).expect("loads");
+        assert_eq!((names.config, names.settings), ("config", "Adapter.settings"));
+        assert_eq!(contract.config.unwrap().xr.refresh_rate, None);
+
+        let err = contract_of(&[
+            ("game.fun", GAME),
+            ("adapter.fun", OPTIONS),
+            ("quest.fun", OPTIONS),
+        ])
+        .err()
+        .unwrap();
+        assert!(
+            err.contains("several sibling modules") && err.contains("adapter.fun, quest.fun"),
+            "{err}"
+        );
+
+        // Another role's entry file (it defines `init`) is not an adapter.
+        let other_role = format!("{GAME}{OPTIONS}");
+        let (names, _) =
+            contract_of(&[("game.fun", GAME), ("server.fun", &other_role)]).expect("loads");
+        assert_eq!((names.config, names.settings), ("config", "settings"));
+    }
+
+    thread_local! {
+        static EMITTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn capture(message: &str) {
+        EMITTED.with(|e| e.borrow_mut().push(message.to_string()));
+    }
+
+    /// `settings` follows the model each frame and keeps its last good value
+    /// on error; a reload keeps the launch `config` and warns if it changed.
+    #[test]
+    fn shell_options_track_the_model_and_warn_on_a_config_edit() {
+        use crate::runtime_settings::{FoveationLevel, GameConfig, XrConfig};
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            vec![(
+                std::path::PathBuf::from("game.fun"),
+                format!("{GAME}{OPTIONS}"),
+            )],
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.render()));
+        let session = Session::load(&project.module, &mut FunctorHost).unwrap_or_else(|f| panic!("{}", f.error.message));
+        let names = EntryNames::UNPREFIXED;
+        let contract = validate_contract("game.fun", &session, &names).expect("valid");
+        let mut options = ShellOptions::new(contract.config, contract.settings);
+        let mut reporter = Reporter::new(
+            SpanSource::Single {
+                src: String::new(),
+                path: "game.fun".into(),
+            },
+            capture,
+        );
+        let level = |n: f64| Value::Record(std::rc::Rc::new(vec![("level".into(), Value::Number(n))]));
+        let foveation = |o: &ShellOptions| o.settings().unwrap().xr.foveation;
+
+        options.evaluate(&session, &names, &level(1.0), &mut reporter);
+        assert_eq!(foveation(&options), Some(FoveationLevel::Low));
+        // A model the hook cannot read keeps the last good value.
+        options.evaluate(&session, &names, &Value::Number(0.0), &mut reporter);
+        assert_eq!(foveation(&options), Some(FoveationLevel::Low));
+        assert_eq!(EMITTED.with(|e| e.borrow().len()), 1);
+
+        // An unchanged reload is silent; a changed config warns and is kept.
+        options.reload(contract.config, contract.settings, &mut reporter);
+        assert_eq!(EMITTED.with(|e| e.borrow().len()), 1);
+        let edited = GameConfig {
+            xr: XrConfig {
+                refresh_rate: Some(72.0),
+            },
+        };
+        options.reload(Some(edited), contract.settings, &mut reporter);
+        assert!(EMITTED.with(|e| e.borrow()[1].contains("restart to apply")));
+        assert_eq!(options.config(), contract.config);
+        // Removing the hook drops the settings.
+        options.reload(contract.config, None, &mut reporter);
+        assert_eq!(options.settings(), None);
     }
 
     #[test]
