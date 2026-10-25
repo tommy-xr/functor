@@ -68,11 +68,8 @@ async function waitPortFree(timeoutMs) {
 // must not depend on third-party network. Its wasm remote-loading path is
 // covered hermetically by e2e/remote-assets.mjs, and its Sub.assets
 // lifecycle by the producer tests + native debug-server verification.
-// `parts` is a printable part (`let part`, exported with `functor export`), not
-// a game: it has no init/tick/draw to load.
 const EXCLUDE = new Set([
   "loading",
-  "parts",
   "lobby",
   "wsdemo",
   "wsserverdemo",

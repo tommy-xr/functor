@@ -147,6 +147,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "parts-t1",
+      "sample": "parts",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

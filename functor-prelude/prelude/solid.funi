@@ -41,6 +41,12 @@ let scale : (float, t) => t
 /// point (stacked equal-radius rings, boxes meeting edge to edge) won't export.
 let group : (List<t>) => t
 
+/// Show a solid in a scene at true size: millimetres become metres and Z-up
+/// becomes Y-up, so a 40 mm part is 0.04 world units tall. Style it like any
+/// scene (`|> Scene.lit(color)`). Build the solid once (a top-level `let`), not
+/// inside `draw`: its mesh is cached per solid value.
+let toScene : (t) => Scene.t
+
 /// The enclosed volume in cubic millimetres: the sum of a group's pieces, so
 /// overlaps count twice.
 let volume : (t) => float

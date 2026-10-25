@@ -71,6 +71,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v17: triangle meshes — the `SceneObject::Geometry(Shape::Mesh)` variant,
+/// carrying positions and index triples inline. Emitted only by
+/// `Solid.toScene`, so frames without one keep their v16 shape.
+///
 /// v16: camera-facing billboards — the `SceneObject::Geometry(Shape::Billboard)`
 /// variant (a unit quad whose local XY maps to the active pass's camera
 /// right/up at draw time). Emitted only by `Scene.billboard`, so frames
@@ -129,7 +133,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -661,7 +665,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -688,7 +692,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
@@ -704,6 +708,29 @@ mod tests {
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
+    /// The triangle-mesh geometry carries its data inline (the `Arc` is
+    /// transparent on the wire), pinned like the polygon above.
+    #[test]
+    fn mesh_geometry_wire_is_pinned() {
+        use crate::scene3d::MeshData;
+        use crate::{SceneObject, Shape};
+
+        assert_eq!(PROTOCOL_VERSION, 17);
+        let obj = SceneObject::Geometry(Shape::Mesh {
+            mesh: std::sync::Arc::new(MeshData {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+            }),
+        });
+        let json = serde_json::to_string(&obj).expect("serialize mesh geometry");
+        assert_eq!(
+            json,
+            r#"{"Geometry":{"Mesh":{"mesh":{"positions":[[0.0,0.0,0.0],[1.0,0.0,0.0],[0.0,1.0,0.0]],"triangles":[[0,1,2]]}}}}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize mesh geometry");
+        assert_eq!(back, obj);
+    }
+
     /// The billboard geometry is a bare unit variant on the wire — pinned so
     /// `GET /scene` consumers and `Scene.equals` see a stable tag (the
     /// view-dependence is draw-time only and never serializes).
@@ -711,7 +738,7 @@ mod tests {
     fn billboard_geometry_wire_is_pinned() {
         use crate::{SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
         let obj = SceneObject::Geometry(Shape::Billboard);
         let json = serde_json::to_string(&obj).expect("serialize billboard geometry");
         assert_eq!(json, r#"{"Geometry":"Billboard"}"#);
@@ -726,7 +753,7 @@ mod tests {
     fn opacity_subtree_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
         let scene = SceneObject::Opacity(
             0.35,
             vec![Scene3D {
@@ -750,7 +777,7 @@ mod tests {
     fn instanced_wire_is_pinned() {
         use crate::{InstanceData, MaterialDescription, Scene3D, SceneObject};
 
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
         let template = Scene3D {
             obj: SceneObject::Material(
                 MaterialDescription::lit(1.0, 0.5, 0.25, 1.0),
@@ -780,7 +807,7 @@ mod tests {
     fn two_bone_reach_animation_wire_is_pinned() {
         use crate::anim::AnimExpr;
 
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
         let reach = AnimExpr::Reach {
             root: "upper".to_string(),
             middle: "lower".to_string(),

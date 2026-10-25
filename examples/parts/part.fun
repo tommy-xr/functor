@@ -1,6 +1,8 @@
-// examples/parts — a printable part defined in code. Export it with:
+// examples/parts — a printable part defined in code. Export it, or view it
+// at true size on a turntable:
 //
 //   functor -d examples/parts export -o part.stl
+//   functor -d examples/parts run native
 //
 // Units are millimetres, Z up. `Solid.group` keeps each piece its own closed
 // shell, and slicers print overlapping shells as one solid. Pieces overlap by
@@ -29,6 +31,28 @@ let ball =
     |> Solid.translate(Vec3.make(0.0, 0.0, pegTop - embed))
 
 let part = Solid.group([plate, peg, ball])
+
+// The viewer: the part sits on a plane, turning slowly. Scene units are
+// metres, so the 40 mm plate is 0.04 wide — the camera sits close. (No
+// shadows: the shadow map spans tens of metres, too coarse for a 4 cm part.)
+let init = {}
+
+let tick = (m, dt, tts) => m
+
+let draw = (m, tts: float) =>
+  Frame.createLit(
+    Camera3D.lookAt(Vec3.make(0.0, 0.07, -0.12), Vec3.make(0.0, 0.008, 0.0))
+      |> Camera3D.clip(0.005, 10.0),
+    Scene.group([
+      Scene.plane() |> Scene.scale(0.5) |> Scene.lit(Color.rgb(0.55, 0.56, 0.6)),
+      Solid.toScene(part)
+        |> Scene.rotateY(Angle.radians(tts * 0.4))
+        |> Scene.lit(Color.rgb(0.88, 0.36, 0.6)),
+    ]),
+    [
+      Light.ambient(Color.rgb(0.18, 0.18, 0.22)),
+      Light.directional(Vec3.make(0.4, -1.0, 0.3), Color.rgb(1.0, 0.97, 0.92), 0.9),
+    ])
 
 expect Solid.volume(plate) == plateSize * plateSize * plateThickness
 expect Vec3.z(Solid.bounds(part).min) == 0.0

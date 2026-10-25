@@ -12,6 +12,7 @@ mod polygon;
 mod quad;
 mod sphere;
 mod tangents;
+mod triangle_mesh;
 pub use cube::*;
 pub use cylinder::*;
 pub use empty_mesh::*;
@@ -22,6 +23,7 @@ pub use polygon::*;
 pub use quad::*;
 pub use sphere::*;
 pub use tangents::*;
+pub use triangle_mesh::*;
 
 // pub mod plane {
 //     use glow::{HasContext, Buffer, VertexArray};

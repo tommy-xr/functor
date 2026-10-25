@@ -79,6 +79,10 @@ pub struct SceneContext {
     // author-supplied polygons of the same vertex count share a mesh and each
     // re-uploads before its own draw.
     polygons: RefCell<HashMap<usize, geometry::PolygonMesh>>,
+    // One GPU mesh per `Shape::Mesh` `Arc`, keyed by its address and freed at
+    // the next frame's start once a frame passes undrawn (the instancing
+    // cache's rule), so a hot-reloaded or removed part releases its buffers.
+    meshes: RefCell<HashMap<usize, RetainedMesh>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
     terrain_decode_residency: RefCell<TerrainDecodeResidency>,
     terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
@@ -347,6 +351,7 @@ impl SceneContext {
             instanced: RefCell::new(None),
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
+            meshes: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
             terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
             terrain_requests: RefCell::new(BTreeSet::new()),
@@ -401,6 +406,17 @@ impl SceneContext {
         self.terrain_renderer.borrow_mut().begin_frame(gl, frame);
         if let Some(instanced) = self.instanced.borrow_mut().as_mut() {
             instanced.begin_frame(gl, frame);
+        }
+        let mut meshes = self.meshes.borrow_mut();
+        let stale: Vec<usize> = meshes
+            .iter()
+            .filter(|(_, entry)| frame.wrapping_sub(entry.last_used) > 1)
+            .map(|(key, _)| *key)
+            .collect();
+        for key in stale {
+            if let Some(entry) = meshes.remove(&key) {
+                entry.gpu.delete(gl);
+            }
         }
     }
 
@@ -1178,6 +1194,27 @@ pub enum Shape {
     ConvexPolygon {
         points: Vec<[f32; 2]>,
     },
+    /// An arbitrary closed triangle mesh — the scene side of a printable
+    /// `Solid` (`Solid.toScene`). Shared behind an `Arc` so a scene rebuilt
+    /// every frame neither copies the triangles nor re-uploads them: the
+    /// renderer keeps one GPU mesh per live `Arc`.
+    Mesh { mesh: Arc<MeshData> },
+}
+
+/// A `Shape::Mesh`'s GPU buffers. `source` pins the `Arc`, so its address
+/// (the cache key) cannot be reused while the entry lives.
+struct RetainedMesh {
+    _source: Arc<MeshData>,
+    gpu: geometry::TriangleMesh,
+    last_used: u64,
+}
+
+/// Triangle-mesh geometry: positions plus counter-clockwise (outward-facing)
+/// index triples.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeshData {
+    pub positions: Vec<[f32; 3]>,
+    pub triangles: Vec<[u32; 3]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2240,6 +2277,36 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
                 };
                 mesh.update(&render_context.gl, heights);
                 mesh.draw(&render_context.gl);
+            }
+            SceneObject::Geometry(Shape::Mesh { mesh }) => {
+                let xform = world_matrix * self.xform;
+                geometry_material.draw_opaque(
+                    &render_context,
+                    &projection_matrix,
+                    &view_matrix,
+                    &xform,
+                    &skinning_data,
+                );
+                let gl = &render_context.gl;
+                let counters = crate::gpu_counters::gpu_counters();
+                let frame = scene_context.current_frame.get();
+                let mut meshes = scene_context.meshes.borrow_mut();
+                let entry = match meshes.entry(Arc::as_ptr(mesh) as usize) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        counters.cache_hit();
+                        e.into_mut()
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        counters.cache_miss();
+                        e.insert(RetainedMesh {
+                            _source: mesh.clone(),
+                            gpu: geometry::TriangleMesh::create(gl, mesh),
+                            last_used: frame,
+                        })
+                    }
+                };
+                entry.last_used = frame;
+                entry.gpu.draw(gl);
             }
             SceneObject::Geometry(Shape::ConvexPolygon { points }) => {
                 // A polygon needs at least a triangle; anything less is rejected

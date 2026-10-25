@@ -2,9 +2,9 @@
 
 use std::io::{self, Write};
 
-use cgmath::{InnerSpace, Vector3};
+use cgmath::Vector3;
 
-use crate::Mesh;
+use crate::{face_normal, Mesh};
 
 /// Write `mesh` as binary STL: an 80-byte header, the triangle count, then per
 /// triangle a unit normal, three vertices (f32 LE), and a zero attribute word.
@@ -16,12 +16,7 @@ pub fn write_binary(mesh: &Mesh, out: &mut impl Write) -> io::Result<()> {
     out.write_all(&(mesh.triangles.len() as u32).to_le_bytes())?;
     for tri in &mesh.triangles {
         let [a, b, c] = tri.map(|i| Vector3::from(mesh.vertices[i as usize]));
-        let n = (b - a).cross(c - a);
-        let n = if n.magnitude2() > 0.0 {
-            n.normalize()
-        } else {
-            n
-        };
+        let n = face_normal(a, b, c);
         for v in [n, a, b, c] {
             for value in [v.x, v.y, v.z] {
                 out.write_all(&(value as f32).to_le_bytes())?;

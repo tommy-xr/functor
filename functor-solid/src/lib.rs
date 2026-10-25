@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
-pub use mesh::{Bounds, Mesh};
+pub use mesh::{face_normal, Bounds, Mesh};
 
 /// Maximum distance (mm) a curved surface's facets may sag from the true
 /// surface. 0.01 mm is well under a 0.4 mm nozzle's resolution.
