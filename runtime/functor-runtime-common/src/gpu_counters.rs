@@ -40,8 +40,9 @@ pub struct GpuCounters {
     frame_instance_upload_bytes: AtomicU64,
     // The current rendered frame's terrain draws, zeroed by the terrain
     // renderer when a new frame begins (same read-between-frames contract).
-    frame_terrain_patches: AtomicU64,
-    frame_terrain_vertices: AtomicU64,
+    // One word (patches << 32 | vertices) so a reader on another thread
+    // never pairs one draw's patches with another's vertices.
+    frame_terrain: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -100,8 +101,7 @@ impl GpuCounters {
             instance_upload_bytes: AtomicU64::new(0),
             frame_instance_uploads: AtomicU64::new(0),
             frame_instance_upload_bytes: AtomicU64::new(0),
-            frame_terrain_patches: AtomicU64::new(0),
-            frame_terrain_vertices: AtomicU64::new(0),
+            frame_terrain: AtomicU64::new(0),
         }
     }
 
@@ -157,23 +157,24 @@ impl GpuCounters {
     }
 
     /// Record one terrain draw of `patches` instances, `vertices` in total.
+    /// Both stay far below 2^32 per frame (8192 instances × a few thousand
+    /// vertices × a few draws).
     pub fn terrain_drawn(&self, patches: u64, vertices: u64) {
-        self.frame_terrain_patches.fetch_add(patches, Ordering::Relaxed);
-        self.frame_terrain_vertices
-            .fetch_add(vertices, Ordering::Relaxed);
+        self.frame_terrain
+            .fetch_add(patches << 32 | vertices, Ordering::Relaxed);
     }
 
     /// Zero the per-frame terrain draws (a new rendered frame began).
     pub fn begin_terrain_frame(&self) {
-        self.frame_terrain_patches.store(0, Ordering::Relaxed);
-        self.frame_terrain_vertices.store(0, Ordering::Relaxed);
+        self.frame_terrain.store(0, Ordering::Relaxed);
     }
 
     /// The terrain draws of the most recently rendered frame.
     pub fn frame_terrain(&self) -> TerrainDraws {
+        let packed = self.frame_terrain.load(Ordering::Relaxed);
         TerrainDraws {
-            patches: self.frame_terrain_patches.load(Ordering::Relaxed),
-            vertices: self.frame_terrain_vertices.load(Ordering::Relaxed),
+            patches: packed >> 32,
+            vertices: packed & u64::from(u32::MAX),
         }
     }
 
@@ -203,5 +204,24 @@ impl GpuCounters {
             instance_uploads: self.instance_uploads.swap(0, Ordering::Relaxed),
             instance_upload_bytes: self.instance_upload_bytes.swap(0, Ordering::Relaxed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terrain_draws_sum_per_frame_and_reset() {
+        let counters = GpuCounters::new();
+        counters.terrain_drawn(66, 66 * 4481);
+        counters.terrain_drawn(66, 66 * 4481);
+        let both_eyes = TerrainDraws {
+            patches: 132,
+            vertices: 132 * 4481,
+        };
+        assert_eq!(counters.frame_terrain(), both_eyes);
+        counters.begin_terrain_frame();
+        assert_eq!(counters.frame_terrain(), TerrainDraws::default());
     }
 }

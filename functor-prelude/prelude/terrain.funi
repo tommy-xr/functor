@@ -11,9 +11,9 @@ let heightmap : (Asset.Texture, float, float, float, float) => t
 
 /// Set the maximum projected vertex spacing in pixels; lower is more detailed.
 ///
-/// The default is 2 pixels. Under `Frame.withFog`, the allowance grows as fog
-/// hides the terrain (divided by the fog's visibility at each patch). The
-/// terrain is last for piping.
+/// The default is 2 pixels. Under `Frame.withFog` without a skybox, the
+/// allowance grows as fog hides the terrain (divided by the fog's visibility
+/// at each patch, at most 4×). The terrain is last for piping.
 let maxPixelError : (float, t) => t
 
 /// Set the basic lit terrain color; the terrain is last for piping.
