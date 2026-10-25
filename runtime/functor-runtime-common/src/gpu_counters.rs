@@ -38,6 +38,10 @@ pub struct GpuCounters {
     // shells serve `GET /state`) they are the last rendered frame's.
     frame_instance_uploads: AtomicU64,
     frame_instance_upload_bytes: AtomicU64,
+    // The current rendered frame's terrain draws, zeroed by the terrain
+    // renderer when a new frame begins (same read-between-frames contract).
+    frame_terrain_patches: AtomicU64,
+    frame_terrain_vertices: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -67,6 +71,15 @@ pub struct GpuWindow {
     pub instance_upload_bytes: u64,
 }
 
+/// One frame's terrain draws, summed over every draw of the frame (a stereo
+/// frame draws the shared patch set once per eye, so it counts twice).
+/// `vertices` is patches × the patch mesh's vertex count (grid + skirt).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TerrainDraws {
+    pub patches: u64,
+    pub vertices: u64,
+}
+
 /// One frame's `Scene.instanced` instance-buffer uploads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstanceUploads {
@@ -87,6 +100,8 @@ impl GpuCounters {
             instance_upload_bytes: AtomicU64::new(0),
             frame_instance_uploads: AtomicU64::new(0),
             frame_instance_upload_bytes: AtomicU64::new(0),
+            frame_terrain_patches: AtomicU64::new(0),
+            frame_terrain_vertices: AtomicU64::new(0),
         }
     }
 
@@ -138,6 +153,27 @@ impl GpuCounters {
         InstanceUploads {
             count: self.frame_instance_uploads.load(Ordering::Relaxed),
             bytes: self.frame_instance_upload_bytes.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Record one terrain draw of `patches` instances, `vertices` in total.
+    pub fn terrain_drawn(&self, patches: u64, vertices: u64) {
+        self.frame_terrain_patches.fetch_add(patches, Ordering::Relaxed);
+        self.frame_terrain_vertices
+            .fetch_add(vertices, Ordering::Relaxed);
+    }
+
+    /// Zero the per-frame terrain draws (a new rendered frame began).
+    pub fn begin_terrain_frame(&self) {
+        self.frame_terrain_patches.store(0, Ordering::Relaxed);
+        self.frame_terrain_vertices.store(0, Ordering::Relaxed);
+    }
+
+    /// The terrain draws of the most recently rendered frame.
+    pub fn frame_terrain(&self) -> TerrainDraws {
+        TerrainDraws {
+            patches: self.frame_terrain_patches.load(Ordering::Relaxed),
+            vertices: self.frame_terrain_vertices.load(Ordering::Relaxed),
         }
     }
 

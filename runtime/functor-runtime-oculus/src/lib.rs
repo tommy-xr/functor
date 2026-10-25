@@ -704,6 +704,7 @@ fn service_debug_request(
                     sim_thread: Some(sim_thread),
                     display_refresh_rate,
                     instance_uploads,
+                    terrain: functor_runtime_common::gpu_counters::gpu_counters().frame_terrain(),
                 });
             });
         }

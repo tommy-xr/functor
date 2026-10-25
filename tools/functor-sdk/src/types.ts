@@ -207,6 +207,10 @@ export interface RuntimeState {
    * after the first frame when instance lists are retained. Protocol v17+; a
    * pre-v17 runtime omits it. */
   instance_uploads?: { count: number; bytes: number };
+  /** The last rendered frame's terrain draws, summed over its eye draws (a
+   * stereo frame counts the shared patch set twice); `vertices` is patches ×
+   * the patch mesh's vertex count. Protocol v19+; a pre-v19 runtime omits it. */
+  terrain?: { patches: number; vertices: number };
 }
 
 /** Camera block from `GET /scene`. */

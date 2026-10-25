@@ -42,6 +42,8 @@ pub enum RuntimeEvent {
     /// heightmap-mesh cache's window totals. `gpu_instance_uploads_per_frame` /
     /// `gpu_instance_bytes_per_frame` average the `Scene.instanced` instance
     /// buffer uploads — 0 in the steady state when instance lists are retained.
+    /// `gpu_terrain_patches` / `gpu_terrain_vertices` are the latest rendered
+    /// frame's terrain draws, summed over its eye draws (instantaneous).
     ///
     /// `sim_us` is the whole sim stage (every producer call of the frame, on
     /// the producer's thread); `sim_wait_us` is how long the render side
@@ -64,6 +66,8 @@ pub enum RuntimeEvent {
         gpu_cache_misses: u64,
         gpu_instance_uploads_per_frame: f64,
         gpu_instance_bytes_per_frame: f64,
+        gpu_terrain_patches: u64,
+        gpu_terrain_vertices: u64,
     },
     /// A `--capture-frame` PNG was written to `path`.
     CaptureWritten { path: String },

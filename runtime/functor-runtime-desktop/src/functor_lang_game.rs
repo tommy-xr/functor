@@ -757,6 +757,7 @@ impl FunctorLangGame {
             let counters = functor_runtime_common::gpu_counters::gpu_counters();
             let live = counters.live();
             let window = counters.take_window();
+            let terrain = counters.frame_terrain();
             events::emit(RuntimeEvent::FrameStats {
                 tick_us: round1(tick_us),
                 draw_us: round1(draw_us),
@@ -779,6 +780,8 @@ impl FunctorLangGame {
                 gpu_instance_bytes_per_frame: round1(
                     window.instance_upload_bytes as f64 / STATS_EVERY as f64,
                 ),
+                gpu_terrain_patches: terrain.patches,
+                gpu_terrain_vertices: terrain.vertices,
             });
             self.tick_ns = 0;
             self.physics_ns = 0;

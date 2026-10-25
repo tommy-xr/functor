@@ -154,6 +154,12 @@ pub enum Event {
         gpu_instance_uploads_per_frame: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         gpu_instance_bytes_per_frame: Option<f64>,
+        /// The latest frame's terrain draws (patches, vertices), summed over
+        /// its eye draws.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_terrain_patches: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        gpu_terrain_vertices: Option<u64>,
     },
     /// A `--capture-frame` PNG was written.
     CaptureWritten { path: String },
@@ -200,6 +206,8 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 gpu_cache_misses,
                 gpu_instance_uploads_per_frame,
                 gpu_instance_bytes_per_frame,
+                gpu_terrain_patches,
+                gpu_terrain_vertices,
             } => Event::FrameStats {
                 tick_us,
                 draw_us,
@@ -218,6 +226,8 @@ impl From<functor_runtime_common::events::RuntimeEvent> for Event {
                 gpu_cache_misses: Some(gpu_cache_misses),
                 gpu_instance_uploads_per_frame: Some(gpu_instance_uploads_per_frame),
                 gpu_instance_bytes_per_frame: Some(gpu_instance_bytes_per_frame),
+                gpu_terrain_patches: Some(gpu_terrain_patches),
+                gpu_terrain_vertices: Some(gpu_terrain_vertices),
             },
             R::CaptureWritten { path } => Event::CaptureWritten { path },
             R::HotReload { ok, message } => Event::HotReload { ok, message },
@@ -399,6 +409,8 @@ impl PlainRenderer {
                 gpu_cache_misses,
                 gpu_instance_uploads_per_frame,
                 gpu_instance_bytes_per_frame,
+                gpu_terrain_patches,
+                gpu_terrain_vertices,
             } => {
                 let mut s = format!("tick {tick_us:.1}µs, draw {draw_us:.1}µs");
                 if let Some(render_us) = render_us {
@@ -434,6 +446,11 @@ impl PlainRenderer {
                     (gpu_instance_uploads_per_frame, gpu_instance_bytes_per_frame)
                 {
                     s.push_str(&format!(", inst {uploads:.1}up/{bytes:.0}B/frame"));
+                }
+                if let (Some(patches), Some(vertices)) = (gpu_terrain_patches, gpu_terrain_vertices) {
+                    if *patches > 0 {
+                        s.push_str(&format!(", terrain {patches}patch/{vertices}vtx"));
+                    }
                 }
                 vec![format!(
                     "{} {}",

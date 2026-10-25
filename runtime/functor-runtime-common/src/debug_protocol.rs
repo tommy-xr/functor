@@ -100,7 +100,14 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// can assert a retained instance list uploads once (0 after the first
 /// frame). Additive — a pre-v17 runtime omits it, which deserializes as
 /// zero, so gate on the version before reading zero as "retained".
-pub const DEBUG_PROTOCOL_VERSION: u32 = 17;
+///
+/// 18 is reserved for `config`/`settings`, landing separately.
+///
+/// 19 adds `terrain` (`{patches, vertices}`) to `GET /state`: the last
+/// rendered frame's terrain draws, summed over its eye draws, so a driver can
+/// measure the terrain vertex budget without a GPU profiler. Additive — a
+/// pre-v19 runtime omits it, which deserializes as zero.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 19;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -344,6 +351,10 @@ pub struct RuntimeState {
     /// pre-v17 runtime omits it.
     #[serde(default)]
     pub instance_uploads: crate::gpu_counters::InstanceUploads,
+    /// The last rendered frame's terrain draws (0 on a headless runtime).
+    /// `default` because a pre-v19 runtime omits it.
+    #[serde(default)]
+    pub terrain: crate::gpu_counters::TerrainDraws,
 }
 
 /// A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
@@ -798,6 +809,10 @@ mod tests {
                 count: 1,
                 bytes: 52,
             },
+            terrain: crate::gpu_counters::TerrainDraws {
+                patches: 2,
+                vertices: 8962,
+            },
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -830,7 +845,8 @@ mod tests {
                         "released": { "left": false, "right": false, "middle": false }
                     }
                 },
-                "instance_uploads": { "count": 1, "bytes": 52 }
+                "instance_uploads": { "count": 1, "bytes": 52 },
+                "terrain": { "patches": 2, "vertices": 8962 }
             })
         );
         assert_eq!(actual["input"]["mouse"]["surface_width"], 960);
@@ -1121,7 +1137,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 17);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 19);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)
