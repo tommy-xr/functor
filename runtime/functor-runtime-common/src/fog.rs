@@ -46,6 +46,14 @@ impl Fog {
         }
     }
 
+    /// The same fog with its color zeroed: what terrain LOD depends on.
+    pub fn without_color(&self) -> Fog {
+        match *self {
+            Fog::Linear { near, far, .. } => Fog::linear(near, far, 0.0, 0.0, 0.0),
+            Fog::Exp { density, .. } => Fog::exp(density, 0.0, 0.0, 0.0),
+        }
+    }
+
     /// How much of a surface's own color survives at `distance`: the
     /// shader's `applyFog` factor, clamped to 0..1 (NaN reads as no fog).
     /// Terrain LOD scales its screen-space error by it.

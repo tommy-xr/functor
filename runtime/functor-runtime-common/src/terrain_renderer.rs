@@ -24,6 +24,8 @@ const PATCH_QUADS: u32 = 64;
 const MAX_LEVEL: u32 = 10;
 const MAX_INSTANCES: usize = 8192;
 const MAX_GRASS_INSTANCES: usize = 20_000;
+/// Fog grows the LOD error allowance by at most 1 / this.
+const MIN_FOG_VISIBILITY: f32 = 0.25;
 /// First texture unit for the detail maps. Unit 0 stays the height texture.
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
 /// The baked macro map sits above the four detail units.
@@ -588,7 +590,7 @@ impl TerrainRenderer {
             min_height: description.min_height,
             max_height: description.max_height,
             max_pixel_error: description.max_pixel_error,
-            fog: ctx.fog.cloned(),
+            fog: ctx.lod_fog.map(Fog::without_color),
             world: *world,
             camera_pos: ctx.lod_camera_pos,
             view_projections: ctx.lod_view_projections,
@@ -618,7 +620,7 @@ impl TerrainRenderer {
                 &ctx.lod_view_projections[..ctx.lod_frustum_count],
                 ctx.lod_projection_scale,
                 ctx.viewport_height,
-                ctx.fog,
+                ctx.lod_fog,
                 &mut geometry.scratch_instances,
             );
             if geometry.uploaded_instances != geometry.scratch_instances {
@@ -693,11 +695,7 @@ impl TerrainRenderer {
             p.set_uniform_1f(gl, &u.max_terrain_height, description.max_height);
             p.set_uniform_1f(gl, &u.snow_height, snow_height);
             p.set_uniform_1f(gl, &u.min_height, description.min_height);
-            p.set_uniform_1f(
-                gl,
-                &u.skirt_depth,
-                ((description.max_height - description.min_height) * 0.03).max(2.0),
-            );
+            p.set_uniform_1f(gl, &u.skirt_depth, skirt_depth(description));
             let terrain_color = crate::color_space::srgb_to_linear3(description.color);
             p.set_uniform_vec3(
                 gl,
@@ -1672,6 +1670,11 @@ impl Plane {
     }
 }
 
+/// How far the shader drops skirt vertices below the surface.
+fn skirt_depth(description: &TerrainDescription) -> f32 {
+    ((description.max_height - description.min_height) * 0.03).max(2.0)
+}
+
 fn frustum_planes(m: &Matrix4<f32>) -> [Plane; 6] {
     // cgmath stores columns; assemble rows for the standard row4 ± rowN
     // extraction from a world→clip matrix.
@@ -1757,11 +1760,14 @@ fn select_patches_into(
             (description.min_height + description.max_height) * 0.5,
             (v + scale * 0.5 - 0.5) * description.depth,
         );
-        let center4 = world * Vector4::new(center_local.x, center_local.y, center_local.z, 1.0);
+        // The patch's drawn box in world space — down to its skirt — tested
+        // plane by plane: a wide, flat patch's bounding sphere would reach far
+        // past each frustum edge.
+        let cull_low = description.min_height - skirt_depth(description);
+        let half_height = (description.max_height - cull_low) * 0.5;
+        let center4 = world
+            * Vector4::new(center_local.x, cull_low + half_height, center_local.z, 1.0);
         let center_world = center4.truncate() / center4.w.max(1e-6);
-        let half_height = (description.max_height - description.min_height) * 0.5;
-        // The patch's box in world space, tested plane by plane: a wide, flat
-        // patch's bounding sphere would reach far past each frustum edge.
         let axes = [
             world.x.truncate() * half_width,
             world.y.truncate() * half_height,
@@ -1793,10 +1799,11 @@ fn select_patches_into(
             description.width.max(description.depth) * scale * max_scale / PATCH_QUADS as f32;
         let projected_spacing =
             vertex_spacing * projection_scale * viewport_height * 0.5 / distance.max(0.5);
-        // Fog fades a patch's error with its color: at visibility 0.25 a
-        // 4 px error reads like 1 px. `distance` is the patch's nearest
-        // point, so fog never coarsens more than it hides.
-        let visibility = fog.map_or(1.0, |fog| fog.visibility(distance));
+        // Fog fades a patch's error with its color: at visibility 0.5 a
+        // 4 px error reads like 2 px. `distance` is the patch's nearest
+        // point. The floor caps the growth at 4×, so a fully fogged patch
+        // still refines and its pops stay bounded.
+        let visibility = fog.map_or(1.0, |fog| fog.visibility(distance).max(MIN_FOG_VISIBILITY));
         let should_split = projected_spacing * visibility > description.max_pixel_error
             && level < max_level
             && *remaining_splits > 0;
@@ -2333,6 +2340,31 @@ mod tests {
     }
 
     #[test]
+    fn culling_keeps_a_patch_whose_skirt_alone_is_visible() {
+        let mut description = terrain();
+        description.width = 200.0;
+        description.depth = 200.0;
+        description.min_height = 0.0;
+        description.max_height = 2.0;
+        // A narrow view along y = -1 sees only the skirt, which hangs 2 m
+        // below the lowest surface.
+        let eye = Point3::new(-200.0, -1.0, 0.0);
+        let view = Matrix4::look_at_rh(eye, Point3::new(0.0, -1.0, 0.0), Vector3::unit_y());
+        let projection = perspective(Deg(0.2), 1.0, 0.1, 500.0);
+        let patches = select_patches(
+            &description,
+            257,
+            257,
+            &Matrix4::identity(),
+            eye.to_vec(),
+            &(projection * view),
+            projection.y.y,
+            1600.0,
+        );
+        assert!(!patches.is_empty(), "the visible skirt was culled");
+    }
+
+    #[test]
     fn stereo_culling_keeps_the_exact_union_of_displaced_eye_frusta() {
         let mut description = terrain();
         description.width = 200.0;
@@ -2423,7 +2455,7 @@ mod tests {
         assert!(plane(-3.1).excludes_box(Vector3::new(0.0, 0.0, 0.0), &axes));
     }
 
-    /// A 4 km terrain from a 4097² map, seen from 100 m up looking along the
+    /// A 4 km terrain from a 4097² map, seen from 20 m up looking along the
     /// diagonal — far enough to reach the coarse levels.
     fn select_with_fog(fog: Option<&Fog>) -> Vec<[f32; 4]> {
         let description = terrain();
@@ -2456,8 +2488,9 @@ mod tests {
         let dense = Fog::exp(0.002, 0.0, 0.0, 0.0);
         let fogged = select_with_fog(Some(&dense));
         assert!(fogged.len() < clear.len(), "fogged {} vs clear {}", fogged.len(), clear.len());
-        let finest = |patches: &[[f32; 4]]| patches.iter().filter(|p| p[2] == 1.0 / 64.0).count();
-        assert!(finest(&fogged) > 0, "fog must not coarsen the patches at the eye");
+        // The finest patch under the eye at (-1500, -1500) survives.
+        let at_eye = [0.125, 0.125, 1.0 / 64.0, 1.0 / 64.0];
+        assert!(clear.contains(&at_eye) && fogged.contains(&at_eye));
         assert_eq!(fogged, select_with_fog(Some(&dense)), "deterministic");
     }
 

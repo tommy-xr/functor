@@ -1027,9 +1027,9 @@ the generated reference:
 
 Terrain rendering is a camera-relative quadtree over a shared GPU grid (16-bit
 height sampling, skirts, bounded instanced grass) — one `Scene.terrain` node,
-not thousands of scene nodes. Fog coarsens it: `Terrain.maxPixelError` is
-divided by the frame fog's visibility at each patch, so fogged distance costs
-fewer vertices. `/state.terrain` reports the drawn patches/vertices.
+not thousands of scene nodes. Fog coarsens it: without a skybox,
+`Terrain.maxPixelError` is divided by the frame fog's visibility at each patch
+(at most 4×), so fogged distance costs fewer vertices. `/state.terrain` reports the drawn patches/vertices.
 
 ### The cross-cutting rules (what a signature won't tell you)
 

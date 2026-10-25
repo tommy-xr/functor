@@ -760,6 +760,7 @@ fn service_debug_request(
             let display_refresh_rate = debug.display_refresh_rate.clone();
             let instance_uploads =
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
+            let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
@@ -781,7 +782,7 @@ fn service_debug_request(
                     instance_uploads,
                     config: g.config(),
                     settings: g.settings(),
-                    terrain: functor_runtime_common::gpu_counters::gpu_counters().frame_terrain(),
+                    terrain,
                 });
             });
         }
