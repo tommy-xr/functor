@@ -221,7 +221,7 @@ export interface RuntimeState {
   terrain?: { patches: number; vertices: number };
   /** How the shell shows the real world behind `Frame.withPassthrough`
    * frames: the headset's camera feed (`composited`), the desktop/web
-   * placeholder (`emulated`), paused by `settings`, or `unavailable` (with
+   * stand-in room (`emulated`), paused by `settings`, or `unavailable` (with
    * the reason in `warning`). Protocol v20+; omitted unless `config` requests
    * passthrough. */
   passthrough?: {

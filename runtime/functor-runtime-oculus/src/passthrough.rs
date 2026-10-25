@@ -91,7 +91,7 @@ impl Passthrough {
                 Backend::None,
                 Some(
                     "this headset offers neither XR_FB_passthrough nor the ALPHA_BLEND \
-environment blend mode; passthrough frames show the placeholder"
+environment blend mode; passthrough frames show the stand-in room"
                         .to_string(),
                 ),
             )
@@ -144,7 +144,7 @@ environment blend mode; passthrough frames show the placeholder"
             }
             Err(e) => {
                 let warning = format!("XrPassthroughFB could not start: {e}");
-                log::warn!("{warning}; passthrough frames show the placeholder");
+                log::warn!("{warning}; passthrough frames show the stand-in room");
                 self.failed = Some(warning);
             }
         }

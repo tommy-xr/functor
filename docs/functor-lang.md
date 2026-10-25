@@ -1030,8 +1030,9 @@ Starts once A2 + B3 exist.
       starts the headset camera feed (`XR_FB_passthrough`, layered under the
       eye buffer); `settings`' `Xr.passthroughEnabled(on)` pauses it live;
       `Frame.withPassthrough` drops the skybox and clears the frame
-      transparent over the feed (a flat grey placeholder on desktop/web and
-      whenever no feed is composited). Passthrough rigs are room-locked
+      transparent over the feed (a procedural stand-in room — floor at
+      `y = 0` with a 1 m grid — on desktop/web and whenever no feed is
+      composited). Passthrough rigs are room-locked
       (upright, stage floor at `y = 0`, 1 unit = 1 metre). `/state.passthrough`
       (debug protocol v20). *Verify:* `examples/passthrough` golden
       (`passthrough-t2`); on Quest 3, logcat `XrPassthroughFB started` and the

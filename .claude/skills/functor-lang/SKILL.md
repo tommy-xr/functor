@@ -1534,8 +1534,9 @@ camera feed; `settings`' `Xr.passthroughEnabled(on)` pauses/resumes it; and
 `frame |> Frame.withPassthrough` makes that frame's background the room (no
 skybox; the clear goes transparent over the feed, so opaque geometry hides the
 room and `Scene.opacity` subtrees let it through). Wherever no feed is
-composited — desktop, web, a paused or missing feed — the background is a flat
-mid-grey placeholder, so captures stay deterministic. A passthrough game's XR
+composited — desktop, web, a paused or missing feed — the background is a
+procedural stand-in room (darker floor at `y = 0` with a faint 1 m grid, grey
+walls), so scale reads and captures stay deterministic. A passthrough game's XR
 rig is room-locked: keep `Frame.camera` LEVEL (pitch 0) and the stage floor is
 world `y = 0`, 1 unit = 1 metre (`examples/passthrough`; `GET /state.passthrough`).
 

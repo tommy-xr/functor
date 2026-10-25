@@ -281,6 +281,8 @@ are ignored — declare Frame.withUiTarget on the main frame",
             shadow,
             pass.frame.fog.as_ref(),
             pass.frame.drawn_skybox(),
+            // A target has no camera feed under it: always the stand-in room.
+            pass.frame.passthrough,
             width as f32 / height as f32,
             height as f32,
             &pass.frame.camera,
@@ -373,6 +375,8 @@ are ignored — declare Frame.withUiTarget on the main frame",
         shadow,
         frame.fog.as_ref(),
         frame.drawn_skybox(),
+        // The stand-in room, unless the shell composites the real feed.
+        frame.passthrough && !scene_context.passthrough_composited(),
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
@@ -467,6 +471,7 @@ fn render_sprite_layers(
             None,
             None,
             None,
+            false,
             fitted.aspect(),
             fitted.height as f32,
             &camera,
@@ -627,6 +632,7 @@ pub fn render_composited_frames_with_view(
             shadow,
             frame.fog.as_ref(),
             frame.drawn_skybox(),
+            frame.passthrough,
             width as f32 / height as f32,
             height as f32,
             &frame.camera,
@@ -814,6 +820,8 @@ fn forward_pass(
     shadow: Option<ShadowUniforms>,
     fog: Option<&crate::fog::Fog>,
     skybox: Option<&crate::skybox::SkyboxDescription>,
+    // Draw the stand-in room (`crate::passthrough_room`) instead of a skybox.
+    passthrough_room: bool,
     aspect: f32,
     viewport_height: f32,
     lod_camera: &Camera,
@@ -899,7 +907,14 @@ fn forward_pass(
 
     // The skybox draws first, behind everything (it writes no depth); fog
     // does not apply to it — the sky IS the horizon.
-    if let Some(desc) = skybox {
+    if passthrough_room {
+        scene_context.draw_passthrough_room(
+            &render_context,
+            &projection_matrix,
+            &view_matrix,
+            camera.eye,
+        );
+    } else if let Some(desc) = skybox {
         scene_context.draw_skybox(&render_context, desc, &projection_matrix, &view_matrix);
     }
 

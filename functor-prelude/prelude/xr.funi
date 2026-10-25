@@ -39,8 +39,9 @@ let refreshRate : (float, t) => t
 ///
 /// A `config` knob. On Quest it prepares `XR_FB_passthrough` for the run and
 /// starts the feed; a headset without it logs a warning (also appended to the
-/// `functor run vr` load response) and frames show the flat placeholder
-/// instead. Desktop and web always show the placeholder. In passthrough,
+/// `functor run vr` load response) and frames show a stand-in room instead
+/// (see `Frame.withPassthrough`). Desktop and web always show the stand-in.
+/// In passthrough,
 /// 1 unit = 1 metre in the headset's floor-level stage space, so a model
 /// authored in metres appears at true scale.
 let passthrough : (bool, t) => t
@@ -49,7 +50,7 @@ let passthrough : (bool, t) => t
 ///
 /// A `settings` knob, applied whenever its value changes. Without it the feed
 /// runs for as long as `config` requests passthrough. While paused,
-/// `Frame.withPassthrough` frames show the flat placeholder.
+/// `Frame.withPassthrough` frames show the stand-in room.
 let passthroughEnabled : (bool, t) => t
 /// Pin the foveation level; the options are last for piping.
 ///

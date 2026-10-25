@@ -4,7 +4,7 @@
 // Quest:   functor -d examples/passthrough run vr
 //          right trigger grabs the part; X (left primary) toggles passthrough
 // Desktop: functor -d examples/passthrough run native --emulate-xr
-//          the room is a flat grey placeholder; mouse + left-click grab, P toggles
+//          a stand-in room (floor at y = 0, 1 m grid); mouse + left-click grab, P toggles
 //
 // In passthrough 1 unit = 1 metre in the headset's floor-level stage space:
 // y = 0 is the real floor and the rig stays level, so `part` below can be any

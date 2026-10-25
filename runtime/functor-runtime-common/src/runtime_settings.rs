@@ -75,12 +75,12 @@ pub fn passthrough_wanted(config: Option<GameConfig>, settings: Option<GameSetti
 pub enum PassthroughMode {
     /// The headset's camera feed is composited under the eye buffer.
     Composited,
-    /// No headset: frames clear to the flat placeholder (desktop, web).
+    /// No headset: frames show the stand-in room (desktop, web).
     Emulated,
-    /// `settings` paused the feed; frames clear to the placeholder.
+    /// `settings` paused the feed; frames show the stand-in room.
     Paused,
-    /// The headset cannot show its camera feed; frames clear to the
-    /// placeholder (see `PassthroughState::warning`).
+    /// The headset cannot show its camera feed; frames show the stand-in
+    /// room (see `PassthroughState::warning`).
     Unavailable,
 }
 

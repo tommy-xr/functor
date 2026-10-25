@@ -188,8 +188,10 @@ let draw = (model, tts) => Frame.createLit(camera, scene, lights) |> Frame.withP
   resume recreates it running.
 - `Frame.withPassthrough` drops the skybox and clears the eye buffer to
   transparent black while the feed is composited; elsewhere (desktop, web,
-  feed paused or unavailable) it clears to a flat mid-grey placeholder, so
-  captures and goldens stay deterministic.
+  feed paused or unavailable) it draws a stand-in room (a darker floor at `y = 0` with a faint 1 m grid, grey walls above the horizon) behind the scene — a
+  procedural skybox-like pass, no assets — so scale and floor height read
+  without a headset and captures and goldens stay deterministic. It never runs
+  under a composited feed.
 - Composition: the passthrough layer goes UNDER the projection layer, which is
   flagged `BLEND_TEXTURE_SOURCE_ALPHA`. The eye buffer is premultiplied (the
   transparent clear plus the renderer's source-over blending store

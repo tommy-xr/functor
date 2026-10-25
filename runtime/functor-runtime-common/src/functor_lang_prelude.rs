@@ -88,7 +88,7 @@
 //!    only paints the background, not fog blending)
 //! Frame.withPassthrough(frame)                              -> Frame
 //!   (the background is the real world: no skybox; a headset compositing
-//!    its camera feed clears transparent, elsewhere a mid-grey placeholder)
+//!    its camera feed clears transparent, elsewhere a stand-in room)
 //! Ui.text(s) / Ui.textColor(color, s)                       -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View

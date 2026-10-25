@@ -44,8 +44,9 @@ let withClearColor : (Color.t, t) => t
 /// through; a texture's own alpha below 1 lets it through too). The
 /// feed itself is requested by `config`'s `Xr.passthrough(true)`. Wherever
 /// no feed is composited — desktop, web, or a headset with the feed paused
-/// or unavailable — the background is a flat mid-grey placeholder. The frame
-/// is last for piping.
+/// or unavailable — the background is a stand-in room: a darker floor at
+/// `y = 0` with a faint 1 m grid, grey walls above the horizon. The frame is
+/// last for piping.
 let withPassthrough : (t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///

@@ -76,14 +76,14 @@ pub struct Frame {
     pub pure_2d: bool,
     /// The background is the real world (`Frame.withPassthrough`): no skybox,
     /// and a headset compositing its camera feed under the eye buffer clears
-    /// it to transparent. Elsewhere it clears to [`PASSTHROUGH_PLACEHOLDER`].
+    /// it to transparent. Elsewhere the renderer draws the stand-in room
+    /// (`crate::passthrough_room`) over a [`PASSTHROUGH_PLACEHOLDER`] clear.
     #[serde(default, skip_serializing_if = "is_false")]
     pub passthrough: bool,
 }
 
-/// The stand-in "camera feed" a passthrough frame clears to wherever no real
-/// one is composited (desktop, web, or a headset with passthrough off): a
-/// flat mid-grey, so captures stay deterministic.
+/// The clear under a passthrough frame's stand-in room wherever no real feed
+/// is composited (desktop, web, or a headset with passthrough off).
 pub const PASSTHROUGH_PLACEHOLDER: [f32; 3] = [0.5, 0.5, 0.5];
 
 impl Frame {

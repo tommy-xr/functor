@@ -114,7 +114,7 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 20 adds the optional `passthrough` field on `GET /state` (`{mode,
 /// warning?}`): how the shell shows the real world behind
 /// `Frame.withPassthrough` frames — `composited` (headset camera feed),
-/// `emulated` (desktop/web placeholder), `paused` (by `settings`), or
+/// `emulated` (desktop/web stand-in room), `paused` (by `settings`), or
 /// `unavailable`. Omitted unless the game's `config` requests passthrough.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 20;
 
