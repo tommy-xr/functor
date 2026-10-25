@@ -27,7 +27,9 @@ use std::sync::OnceLock;
 pub enum RuntimeEvent {
     /// The runtime is loaded and about to render its first frame.
     Ready,
-    /// A periodic frame-cost sample, averaged over `over_n_frames` frames.
+    /// A periodic frame-cost sample, emitted every `over_n_frames` fixed steps.
+    /// `tick_us` averages per step; the other per-frame figures average per
+    /// frame drawn in the window.
     /// `frame_us` is the total (`tick + physics + draw`); `budget_pct` is that
     /// total against a 60 fps (16.666 ms) budget. `render_us` / `swap_us` are the
     /// shell-measured GL cost — the scene render pass and the buffer swap (vsync

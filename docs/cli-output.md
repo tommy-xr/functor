@@ -211,7 +211,7 @@ used to `println!` directly. PR-2a routes them through the runtime event sink (b
 | `type`            | Fields                                                                           | Emitted when |
 | ----------------- | -------------------------------------------------------------------------------- | ------------ |
 | `runtime_ready`   | —                                                                                | the runtime loaded and is about to render |
-| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `sim_us`?, `sim_wait_us`?, `frame_us`?, `budget_pct`?, `over_n_frames`, `gpu_live_vaos`?, `gpu_live_buffers`?, `gpu_live_textures`?, `gpu_bytes_per_frame`?, `gpu_cache_hits`?, `gpu_cache_misses`?, `gpu_instance_uploads_per_frame`?, `gpu_instance_bytes_per_frame`? | every `over_n_frames` frames (300) |
+| `frame_stats`     | `tick_us`, `draw_us`, `render_us`?, `swap_us`?, `sim_us`?, `sim_wait_us`?, `frame_us`?, `budget_pct`?, `over_n_frames`, `gpu_live_vaos`?, `gpu_live_buffers`?, `gpu_live_textures`?, `gpu_bytes_per_frame`?, `gpu_cache_hits`?, `gpu_cache_misses`?, `gpu_instance_uploads_per_frame`?, `gpu_instance_bytes_per_frame`? | every `over_n_frames` fixed steps (300) |
 | `capture_written` | `path` (string)                                                                  | a `--capture-frame` PNG was written |
 | `hot_reload`      | `ok` (bool), `message` (string)                                                  | a hot-reload settled (`ok:false` = rejected edit; old program kept) |
 | `asset_error`     | `path` (string?), `message` (string)                                             | an asset failed to load (fallback served) |
@@ -228,7 +228,9 @@ All are rounded to one decimal. `render_us`/`swap_us` come from the native GL sh
 (every producer call of the frame, timed where the producer runs) and `sim_wait_us` is how long the
 render side blocked on it — `0.0` unless the producer runs on its own thread (`--pipelined`), so
 under `--pipelined` `sim_us` and `render_us` are the two pipeline stages. `over_n_frames` is the averaging
-window (300). This is a per-window,
+window (300 fixed steps). `tick_us` averages per fixed step; `draw_us`, `render_us`, `swap_us`, `sim_us`,
+`sim_wait_us`, `frame_us` and the `gpu_*_per_frame` fields average per drawn frame, since a frame runs 0..N
+fixed steps (an uncapped window draws several frames per step). This is a per-window,
 **not** per-frame, emission — see the cadence note below.
 
 The `gpu_*` fields (native only) are the GPU-resource counters (`functor_runtime_common::gpu_counters`),
