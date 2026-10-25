@@ -1,6 +1,6 @@
 # Deterministic desktop tour under --emulate-xr (60 Hz frames): turn the tag,
 # cycle to the bookmark and tilt it toward you, cycle to the cube and turn it,
-# then grab it (Space = trigger), carry it left and let it settle on the desk.
+# then grab it (Space = trigger), carry it left, lift it and let it drop onto the desk.
 30 Right down
 60 Right up
 100 1 down
@@ -15,4 +15,5 @@
 300 Space down
 330 Mouse.Move 250 330
 360 Mouse.Move 120 300
-380 Space up
+370 Mouse.Move 120 200
+385 Space up

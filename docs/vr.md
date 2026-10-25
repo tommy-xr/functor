@@ -228,12 +228,16 @@ functor -d examples/parts-mr run native --emulate-xr   # desktop stand-in room
   part is 1 mm in the room.
 - The part rests on a see-through virtual desk whose top is `deskHeight`
   (0.75 m) above the floor. Edit it to match your desk and save: the part
-  settles onto the new height on hot reload.
+  settles onto the new height on hot reload. The desk is placed ahead of where
+  you faced at launch, so start the app seated, facing your desk.
 - Right trigger grabs, the right thumbstick turns (left/right) and tilts
-  (forward/back), A cycles the parts and X toggles passthrough. On desktop,
-  `--emulate-xr` maps those to the mouse, Space, the arrows and 1; N and P
-  also cycle and toggle without it.
-- A label in front of the part gives its bounding size in mm. It is
+  (forward/back), A cycles the parts and X toggles passthrough. A released
+  part settles back onto the desk, inside its edges.
+- On desktop, `--emulate-xr` maps grab, turn/tilt and A to the mouse (or
+  Space), the arrows and 1. P toggles passthrough, and N also cycles parts
+  without `--emulate-xr`.
+- A label in front of the part gives its bounding size in mm (raised
+  lettering included, so the 20 mm cube reads 20.6). It is
   `Sketch.text` extruded and shown with `Solid.toScene`, like the part.
 - `parts.fun` holds the parts (the keychain tag from `examples/parts`, the
   bookmark from `examples/bookmark` and a 20 mm calibration cube). Any

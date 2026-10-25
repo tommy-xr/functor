@@ -8,12 +8,19 @@
 //          a stand-in room; mouse + left-click (or Space) grabs, arrows are
 //          the thumbstick, 1 (or N) cycles parts, P toggles passthrough
 //
+// Start it seated, facing your desk: the desk is placed ahead of where you
+// faced at launch.
+//
 // In passthrough 1 unit = 1 metre in the headset's floor-level stage space,
 // with y = 0 on the real floor.
 
 // Your desk's height above the floor, in metres. Edit and save: the part
 // settles onto the new height without restarting.
 let deskHeight = 0.75
+// The virtual desktop's size and distance ahead, in metres.
+let deskWidth = 1.0
+let deskDepth = 0.6
+let deskZ = 0.5
 
 let config = Config.create() |> Config.xr(Xr.create() |> Xr.passthrough(true))
 
@@ -41,11 +48,7 @@ let mm = (v: float) => Text.fromFloat(Math.round(v * 10.0) / 10.0)
 let prepare = (part: Parts.part) =>
   let all = Solid.group(part.pieces |> List.map((p) => p.solid)) in
   let b = Solid.bounds(all) in
-  let center =
-    Vec3.make(
-      0.0 - (Vec3.x(b.min) + Vec3.x(b.max)) / 2.0,
-      0.0 - (Vec3.y(b.min) + Vec3.y(b.max)) / 2.0,
-      0.0 - (Vec3.z(b.min) + Vec3.z(b.max)) / 2.0) in
+  let center = Vec3.add(b.min, b.max) |> Vec3.scale(-0.5) in
   let size = Vec3.sub(b.min, b.max) in
   let font = Typeface.sans() in
   let text = $"{mm(Vec3.x(size))} × {mm(Vec3.y(size))} × {mm(Vec3.z(size))} mm" in
@@ -114,7 +117,12 @@ let toggled = (model) => { model with mixedReality: not model.mixedReality }
 // The next part starts level and facing you, where the last one was.
 let cycled = (model) => { model with index: Math.mod(model.index + 1.0, count), yaw: 0.0, pitch: 0.0 }
 
-let sampledInput = (model, snapshot: Input.snapshot) =>
+// Keyboard edges, so a held key's auto-repeat doesn't toggle again.
+let pressed = (snapshot: Input.snapshot, key) => snapshot.pressedKeys |> List.any((k) => k == key)
+
+let sampledInput = (current, snapshot: Input.snapshot) =>
+  let toggledByKey = if pressed(snapshot, Key.P) then toggled(current) else current in
+  let model = if pressed(snapshot, Key.N) then cycled(toggledByKey) else toggledByKey in
   match snapshot.xr with
   | Option.None => { model with aimTracked: false, grabbing: false, stick: { x: 0.0, y: 0.0 } }
   | Option.Some(xr) =>
@@ -132,12 +140,6 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
     } in
     let next = if toggle && not model.togglePressed then toggled(next) else next in
     if cycle && not model.cyclePressed then cycled(next) else next
-
-let input = (model, key, isDown) =>
-  match key with
-  | Key.P => if isDown then toggled(model) else model
-  | Key.N => if isDown then cycled(model) else model
-  | _ => model
 
 let ahead = (pose, distance): Input.point3 => {
   x: pose.position.x + pose.forward.x * distance,
@@ -163,20 +165,28 @@ let tick = (model, dt, tts) =>
   let yaw = model.yaw + axis(model.stick.x) * turnRate * dt in
   let pitch = Math.clamp(0.0 - Math.pi / 2.0, Math.pi / 2.0, model.pitch + axis(model.stick.y) * turnRate * dt) in
   let p = model.position in
-  // Held: follow the controller. Released: settle onto the desk where it is.
-  let target = if model.grabbing then ahead(model.aim, reach) else point(p.x, restY(viewAt(model.index), pitch), p.z) in
-  { model with yaw: yaw, pitch: pitch, position: approach(p, target, Math.min(1.0, dt * 10.0)) }
+  let ease = Math.min(1.0, dt * 10.0) in
+  if model.grabbing then
+    { model with yaw: yaw, pitch: pitch, position: approach(p, ahead(model.aim, reach), ease) }
+  else
+    // Released: settle onto the desk within its edges, never sinking into it.
+    let rest = restY(viewAt(model.index), pitch) in
+    let x = Math.clamp(0.0 - deskWidth / 2.0, deskWidth / 2.0, p.x) in
+    let z = Math.clamp(deskZ - deskDepth / 2.0, deskZ + deskDepth / 2.0, p.z) in
+    let q = approach(p, point(x, rest, z), ease) in
+    { model with yaw: yaw, pitch: pitch, position: { q with y: Math.max(q.y, rest) } }
 
 let at = (p, scene) => scene |> Scene.translate(Vec3.make(p.x, p.y, p.z))
 
-// A see-through desktop: 1 m × 0.6 m, its top at `deskHeight`. In passthrough
-// it should sit on your real desk; if it floats or sinks, edit `deskHeight`.
+// A see-through desktop, its top at `deskHeight`, centered `deskZ` ahead of
+// where you faced at launch. In passthrough it should sit on your real desk;
+// if it floats or sinks, edit `deskHeight`.
 let desk =
   Scene.cube()
-    |> Scene.scaleXYZ(1.0, 0.01, 0.6)
+    |> Scene.scaleXYZ(deskWidth, 0.01, deskDepth)
     |> Scene.lit(Color.rgb(0.6, 0.62, 0.68))
     |> Scene.opacity(0.35)
-    |> at(point(0.0, deskHeight - 0.005, 0.5))
+    |> at(point(0.0, deskHeight - 0.005, deskZ))
 
 let aimDot = (model) =>
   if model.aimTracked then
@@ -218,3 +228,5 @@ expect Math.abs(restY(tagView, 0.0) - (deskHeight + 0.002)) < 0.000001
 // Stood on its long edge, the tag rests on half its 30 mm depth.
 expect Math.abs(restY(tagView, Math.pi / 2.0) - (deskHeight + 0.015)) < 0.000001
 expect cycled({ init with index: count - 1.0 }).index == 0.0
+// Released off the desk, a part settles back inside its edges.
+expect tick({ init with position: point(2.0, 1.0, 0.0) }, 10.0, 0.0).position.x == deskWidth / 2.0
