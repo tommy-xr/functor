@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use cgmath::Deg;
-use functor_solid::Solid;
+use functor_solid::{Sketch, Solid};
 
 use super::*;
 use crate::scene3d::MeshData;
@@ -31,7 +31,23 @@ impl HostData for FunctorLangSolid {
     }
 }
 
-crate::host_returnable!(FunctorLangSolid);
+/// A [`Sketch`] (2D profile, mm) as an opaque Functor Lang value.
+pub struct FunctorLangSketch(pub Arc<Sketch>);
+
+impl HostData for FunctorLangSketch {
+    fn type_name(&self) -> &'static str {
+        "Sketch"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    // Plain immutable geometry: safe to keep in a model across reloads.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
+crate::host_returnable!(FunctorLangSolid, FunctorLangSketch);
 
 /// The solid bound to `name` in an evaluated session, or a teaching error.
 pub fn solid_global(session: &functor_lang::Session, name: &str) -> Result<Arc<Solid>, String> {
@@ -118,11 +134,16 @@ fn render_mesh(solid: &Arc<Solid>) -> Arc<MeshData> {
     })
 }
 
+fn sketch(sketch: Sketch) -> FunctorLangSketch {
+    FunctorLangSketch(Arc::new(sketch))
+}
+
 fn solid(solid: Solid) -> FunctorLangSolid {
     FunctorLangSolid(Arc::new(solid))
 }
 
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
+    register_sketch(reg);
     reg.fn3(
         "Solid.box",
         "Solid.box(width, depth, height)",
@@ -148,6 +169,27 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         let radius = positive(r, "Solid.sphere radius")?;
         Ok(solid(Solid::Sphere { radius }))
     });
+
+    reg.fn2(
+        "Solid.extrude",
+        "Solid.extrude(height, sketch) — a non-empty sketch",
+        |h: f64, s: FunctorLangSketch| {
+            let height = positive(h, "Solid.extrude height")?;
+            if s.0.is_empty() {
+                return Err("Solid.extrude: the sketch has no area".to_string());
+            }
+            if let Some([x, y]) = s.0.touching_point() {
+                return Err(format!(
+                    "Solid.extrude: the sketch's regions meet at a single point ({x:.3}, {y:.3}), \
+which won't print as one solid — overlap them or move them apart"
+                ));
+            }
+            Ok(solid(Solid::Extrude {
+                sketch: s.0,
+                height,
+            }))
+        },
+    );
 
     reg.fn2(
         "Solid.translate",
@@ -230,6 +272,97 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 ("max".to_string(), vec3(b.max)),
             ]))
         },
+    );
+}
+
+fn register_sketch(reg: &mut crate::host_registry::Registry) {
+    reg.fn2(
+        "Sketch.rect",
+        "Sketch.rect(width, height)",
+        |w: f64, h: f64| {
+            let w = positive(w, "Sketch.rect width")?;
+            let h = positive(h, "Sketch.rect height")?;
+            Ok(sketch(Sketch::rect(w, h)))
+        },
+    );
+    reg.fn3(
+        "Sketch.roundedRect",
+        "Sketch.roundedRect(width, height, radius) — radius under half the shorter side",
+        |w: f64, h: f64, r: f64| {
+            let w = positive(w, "Sketch.roundedRect width")?;
+            let h = positive(h, "Sketch.roundedRect height")?;
+            let r = positive(r, "Sketch.roundedRect radius")?;
+            if 2.0 * r >= w.min(h) {
+                return Err(format!(
+                    "Sketch.roundedRect radius {r} must be under half the shorter side ({})",
+                    w.min(h) / 2.0
+                ));
+            }
+            Ok(sketch(Sketch::rect(w - 2.0 * r, h - 2.0 * r).offset(r)))
+        },
+    );
+    reg.fn1("Sketch.circle", "Sketch.circle(radius)", |r: f64| {
+        Ok(sketch(Sketch::circle(positive(r, "Sketch.circle radius")?)))
+    });
+    reg.fn1(
+        "Sketch.polygon",
+        "Sketch.polygon([{ x, y }, …]) — at least 3 points",
+        |points: Vec<super::sprite::FunctorLangPoint2>| {
+            if points.len() < 3 {
+                return Err("Sketch.polygon needs at least 3 points".to_string());
+            }
+            let points = points.iter().map(|p| p.0.map(f64::from)).collect();
+            Ok(sketch(Sketch::polygon(points)))
+        },
+    );
+    reg.fn1(
+        "Sketch.union",
+        "Sketch.union([sketch, …])",
+        |items: Vec<FunctorLangSketch>| {
+            let items: Vec<Sketch> = items.iter().map(|s| (*s.0).clone()).collect();
+            sketch(Sketch::union(&items))
+        },
+    );
+    reg.fn2(
+        "Sketch.subtract",
+        "Sketch.subtract(cut, sketch)",
+        |cut: FunctorLangSketch, s: FunctorLangSketch| sketch(s.0.subtract(&cut.0)),
+    );
+    reg.fn2(
+        "Sketch.intersect",
+        "Sketch.intersect(other, sketch)",
+        |other: FunctorLangSketch, s: FunctorLangSketch| sketch(s.0.intersect(&other.0)),
+    );
+    reg.fn2(
+        "Sketch.offset",
+        "Sketch.offset(distance, sketch)",
+        |d: f64, s: FunctorLangSketch| sketch(s.0.offset(d)),
+    );
+    reg.fn3(
+        "Sketch.translate",
+        "Sketch.translate(x, y, sketch)",
+        |x: f64, y: f64, s: FunctorLangSketch| sketch(s.0.map_points(|[px, py]| [px + x, py + y])),
+    );
+    reg.fn2(
+        "Sketch.rotate",
+        "Sketch.rotate(angle, sketch)",
+        |a: FunctorLangAngle, s: FunctorLangSketch| {
+            let (sin, cos) = (a.0.radians() as f64).sin_cos();
+            sketch(s.0.map_points(|[x, y]| [x * cos - y * sin, x * sin + y * cos]))
+        },
+    );
+    reg.fn2(
+        "Sketch.scale",
+        "Sketch.scale(factor, sketch)",
+        |k: f64, s: FunctorLangSketch| {
+            let k = positive(k, "Sketch.scale factor")?;
+            Ok(sketch(s.0.map_points(|[x, y]| [x * k, y * k])))
+        },
+    );
+    reg.fn1(
+        "Sketch.area",
+        "Sketch.area(sketch)",
+        |s: FunctorLangSketch| Value::Number(s.0.area()),
     );
 }
 

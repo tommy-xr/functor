@@ -1,60 +1,74 @@
-// examples/parts — a printable part defined in code. Export it, or view it
-// at true size on a turntable:
+// examples/parts — a printable keychain tag defined in code: a rounded plate
+// with a ring hole and a raised heart, drawn as 2D sketches and extruded.
+// Export it, or view it at true size on a turntable:
 //
 //   functor -d examples/parts export -o part.stl
 //   functor -d examples/parts run native
 //
-// Units are millimetres, Z up. `Solid.group` keeps each piece its own closed
-// shell, and slicers print overlapping shells as one solid. Pieces overlap by
-// `embed`: the peg's rim sitting exactly on the ball's equator would join the
-// two at an edge, which won't export.
+// Units are millimetres, Z up.
 
-let plateSize = 40.0
-let plateThickness = 4.0
-let pegRadius = 6.0
-let pegHeight = 12.0
-let embed = 1.0
+let tagWidth = 50.0
+let tagHeight = 30.0
+let thickness = 3.0
+let reliefHeight = 1.0
+// The heart sinks this far into the plate, so the two pieces overlap rather
+// than meet face to face.
+let embed = 0.2
 
-// The plate rests on the bed: shift it up by half its thickness.
+let hole = Sketch.circle(3.0) |> Sketch.translate(-18.0, 0.0)
+
 let plate =
-  Solid.box(plateSize, plateSize, plateThickness)
-    |> Solid.translate(Vec3.make(0.0, 0.0, plateThickness / 2.0))
+  Sketch.roundedRect(tagWidth, tagHeight, 5.0)
+    |> Sketch.subtract(hole)
+    |> Solid.extrude(thickness)
 
-let pegTop = plateThickness - embed + pegHeight
+// A heart pointing down, centered on the origin: a square with a circle on
+// two adjacent edges, turned 45°.
+let heart = (size: float) =>
+  let r = size / 2.0 in
+  Sketch.union([
+    Sketch.rect(size, size) |> Sketch.translate(r, r),
+    Sketch.circle(r) |> Sketch.translate(size, r),
+    Sketch.circle(r) |> Sketch.translate(r, size),
+  ])
+    |> Sketch.rotate(Angle.degrees(45.0))
+    |> Sketch.translate(0.0, 0.0 - 0.78 * size)
 
-let peg =
-  Solid.cylinder(pegRadius, pegHeight)
-    |> Solid.translate(Vec3.make(0.0, 0.0, pegTop - pegHeight / 2.0))
+let relief =
+  heart(10.0)
+    |> Sketch.translate(8.0, 0.0)
+    |> Solid.extrude(reliefHeight + embed)
+    |> Solid.translate(Vec3.make(0.0, 0.0, thickness - embed))
 
-let ball =
-  Solid.sphere(pegRadius)
-    |> Solid.translate(Vec3.make(0.0, 0.0, pegTop - embed))
+let part = Solid.group([plate, relief])
 
-let part = Solid.group([plate, peg, ball])
+expect Sketch.area(Sketch.rect(tagWidth, tagHeight)) == tagWidth * tagHeight
+expect Sketch.area(Sketch.roundedRect(tagWidth, tagHeight, 5.0)) < tagWidth * tagHeight
+expect Vec3.z(Solid.bounds(part).max) == thickness + reliefHeight
+expect Vec3.x(Solid.bounds(part).max) == tagWidth / 2.0
+expect Vec3.y(Solid.bounds(part).max) == tagHeight / 2.0
 
 // The viewer: the part sits on a plane, turning slowly. Scene units are
-// metres, so the 40 mm plate is 0.04 wide — the camera sits close. (No
-// shadows: the shadow map spans tens of metres, too coarse for a 4 cm part.)
+// metres, so the 50 mm tag is 0.05 wide — the camera sits close. (No
+// shadows: the shadow map spans tens of metres, too coarse for a 5 cm part.)
 let init = {}
 
 let tick = (m, dt, tts) => m
 
 let draw = (m, tts: float) =>
   Frame.createLit(
-    Camera3D.lookAt(Vec3.make(0.0, 0.07, -0.12), Vec3.make(0.0, 0.008, 0.0))
+    Camera3D.lookAt(Vec3.make(0.0, 0.1, -0.07), Vec3.make(0.0, 0.002, 0.0))
       |> Camera3D.clip(0.005, 10.0),
     Scene.group([
       Scene.plane() |> Scene.scale(0.5) |> Scene.lit(Color.rgb(0.55, 0.56, 0.6)),
-      Solid.toScene(part)
-        |> Scene.rotateY(Angle.radians(tts * 0.4))
-        |> Scene.lit(Color.rgb(0.88, 0.36, 0.6)),
+      // Drawn per piece to preview the two-colour print: pink plate, white heart.
+      Scene.group([
+        Solid.toScene(plate) |> Scene.lit(Color.rgb(0.88, 0.36, 0.6)),
+        Solid.toScene(relief) |> Scene.lit(Color.rgb(0.95, 0.95, 0.95)),
+      ])
+        |> Scene.rotateY(Angle.radians(tts * 0.4)),
     ]),
     [
       Light.ambient(Color.rgb(0.18, 0.18, 0.22)),
       Light.directional(Vec3.make(0.4, -1.0, 0.3), Color.rgb(1.0, 0.97, 0.92), 0.9),
     ])
-
-expect Solid.volume(plate) == plateSize * plateSize * plateThickness
-expect Vec3.z(Solid.bounds(part).min) == 0.0
-expect Vec3.z(Solid.bounds(part).max) == pegTop - embed + pegRadius
-expect Vec3.x(Solid.bounds(part).max) == plateSize / 2.0

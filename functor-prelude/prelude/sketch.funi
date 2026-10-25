@@ -1,0 +1,48 @@
+//! 2D profiles for printable parts: draw in the XY plane (millimetres), then
+//! `Solid.extrude` a sketch into a solid.
+//!
+//! Sketches are always clean regions — overlaps merge, holes stay holes. Draw
+//! at final size: curves are faceted when drawn, so scaling doesn't refine
+//! them. Regions that meet at a single point (a bowtie, squares corner to
+//! corner) can't extrude — overlap them or move them apart.
+//!
+//! ```
+//! let plate =
+//!   Sketch.roundedRect(60.0, 30.0, 4.0)
+//!     |> Sketch.subtract(Sketch.circle(3.0) |> Sketch.translate(22.0, 0.0))
+//!     |> Solid.extrude(2.0)
+//! ```
+
+/// An opaque 2D region.
+type t = host
+
+/// A `width` (X) by `height` (Y) rectangle, centered on the origin.
+let rect : (float, float) => t
+/// A rectangle with corners rounded to `radius` (under half the shorter side).
+let roundedRect : (float, float, float) => t
+/// A circle of `radius`, centered on the origin.
+let circle : (float) => t
+/// A filled outline through `{ x, y }` points, in either winding. A
+/// self-crossing outline fills where it winds (nonzero rule); one crossing
+/// at a point (a bowtie) can't extrude.
+let polygon : (List<Input.point2>) => t
+
+/// Merge sketches into one region.
+let union : (List<t>) => t
+/// Cut `cut` out of a sketch; the sketch is last for piping.
+let subtract : (t, t) => t
+/// Keep only where a sketch overlaps `other`; the sketch is last for piping.
+let intersect : (t, t) => t
+/// Grow a sketch outward by `distance` mm, rounding its corners — or shrink it
+/// with a negative distance, which removes features thinner than twice that.
+let offset : (float, t) => t
+
+/// Move a sketch by `x`, `y` millimetres.
+let translate : (float, float, t) => t
+/// Rotate a sketch about the origin.
+let rotate : (Angle.t, t) => t
+/// Scale a sketch uniformly about the origin by a positive factor.
+let scale : (float, t) => t
+
+/// The filled area in square millimetres (holes subtract).
+let area : (t) => float

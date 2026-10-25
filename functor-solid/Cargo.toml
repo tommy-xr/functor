@@ -8,3 +8,7 @@ edition = "2021"
 # stays unit-testable and can be split out or feature-gated later.
 [dependencies]
 cgmath = "0.18.0"
+# 2D polygon booleans + offset (integer-snapped: robust, deterministic, wasm-clean).
+i_overlay = "9.1"
+# Constrained triangulation of polygons with holes (extrusion caps).
+i_triangle = "0.50"

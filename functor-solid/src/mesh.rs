@@ -140,7 +140,7 @@ pub(crate) fn boxed([x, y, z]: [f64; 3]) -> Mesh {
 }
 
 /// Ring vertices around Z at height `z`, starting on +X, counter-clockwise.
-fn ring(radius: f64, z: f64, segments: usize) -> impl Iterator<Item = [f64; 3]> {
+pub(crate) fn ring(radius: f64, z: f64, segments: usize) -> impl Iterator<Item = [f64; 3]> {
     (0..segments).map(move |i| {
         let a = TAU * i as f64 / segments as f64;
         [radius * a.cos(), radius * a.sin(), z]

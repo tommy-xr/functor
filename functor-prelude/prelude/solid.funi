@@ -24,6 +24,9 @@ let cylinder : (float, float) => t
 /// A sphere of `radius`, centered on the origin.
 let sphere : (float) => t
 
+/// Sweep a 2D sketch up from z = 0 to `height` mm into a solid.
+let extrude : (float, Sketch.t) => t
+
 /// Move a solid by an offset in millimetres; the solid is last for piping.
 let translate : (Vec3.t, t) => t
 /// Rotate a solid about the X axis through the origin.

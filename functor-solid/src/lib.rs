@@ -11,6 +11,7 @@
 //! [`Mesh::shared_positions`]).
 
 mod mesh;
+mod sketch;
 pub mod stl;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
 pub use mesh::{face_normal, Bounds, Mesh};
+pub use sketch::Sketch;
 
 /// Maximum distance (mm) a curved surface's facets may sag from the true
 /// surface. 0.01 mm is well under a 0.4 mm nozzle's resolution.
@@ -31,6 +33,8 @@ pub enum Solid {
     Cylinder { radius: f64, height: f64 },
     /// A sphere centered on the origin.
     Sphere { radius: f64 },
+    /// A 2D profile swept from z = 0 to z = `height`.
+    Extrude { sketch: Arc<Sketch>, height: f64 },
     Transform {
         matrix: Matrix4<f64>,
         child: Arc<Solid>,
@@ -75,7 +79,8 @@ impl Solid {
 
     fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) {
         // Transforms are rigid plus uniform scale, so |det| = scale³. Facets
-        // are counted on the radius as it will print, not as written.
+        // are counted on the radius as it will print, not as written (sketch
+        // curves are faceted when drawn, so draw those at final size).
         let scale = xform.determinant().cbrt().abs();
         match self {
             Solid::Box { size } => out.append(&mesh::boxed(*size), xform),
@@ -86,6 +91,7 @@ impl Solid {
             Solid::Sphere { radius } => {
                 out.append(&mesh::sphere(*radius, segments_for(radius * scale)), xform)
             }
+            Solid::Extrude { sketch, height } => out.append(&sketch.extrude(*height), xform),
             Solid::Transform { matrix, child } => child.append_to(out, xform * matrix),
             Solid::Group(children) => {
                 for child in children {
@@ -99,7 +105,7 @@ impl Solid {
 /// Facets around a circle of `radius` so no chord sags more than
 /// [`CHORD_TOLERANCE`]; a multiple of 4 so circles stay symmetric on both axes.
 /// E.g. r = 5 mm → 52, r = 50 mm → 160.
-fn segments_for(radius: f64) -> usize {
+pub(crate) fn segments_for(radius: f64) -> usize {
     let ratio = (1.0 - CHORD_TOLERANCE / radius).clamp(-1.0, 1.0);
     let n = (std::f64::consts::PI / ratio.acos()).ceil() as usize;
     (n.clamp(12, 512) + 3) / 4 * 4

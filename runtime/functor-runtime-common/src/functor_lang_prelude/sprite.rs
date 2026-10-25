@@ -24,7 +24,7 @@ struct FunctorLangSpriteRegion([f32; 4]);
 /// would make every bare `{ x: …, y: … }` literal in every game an AMBIGUOUS
 /// record literal (a check error), since literals resolve nominally by field
 /// set. One shared point type is the only workable choice.
-struct FunctorLangPoint2([f32; 2]);
+pub(super) struct FunctorLangPoint2(pub(super) [f32; 2]);
 
 impl crate::host_registry::FromArg for FunctorLangPoint2 {
     fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
