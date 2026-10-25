@@ -29,13 +29,14 @@ impl Mesh {
             [p.x, p.y, p.z]
         }));
         let mirrored = xform.determinant() < 0.0;
-        self.triangles.extend(other.triangles.iter().map(|&[a, b, c]| {
-            if mirrored {
-                [a + base, c + base, b + base]
-            } else {
-                [a + base, b + base, c + base]
-            }
-        }));
+        self.triangles
+            .extend(other.triangles.iter().map(|&[a, b, c]| {
+                if mirrored {
+                    [a + base, c + base, b + base]
+                } else {
+                    [a + base, b + base, c + base]
+                }
+            }));
     }
 
     /// Signed volume (divergence theorem); positive when facing outward.
@@ -54,23 +55,64 @@ impl Mesh {
     /// `None` for an empty mesh.
     pub fn bounds(&self) -> Option<Bounds> {
         let first = *self.vertices.first()?;
-        Some(self.vertices.iter().fold(Bounds { min: first, max: first }, |b, v| Bounds {
-            min: std::array::from_fn(|i| b.min[i].min(v[i])),
-            max: std::array::from_fn(|i| b.max[i].max(v[i])),
-        }))
+        Some(self.vertices.iter().fold(
+            Bounds {
+                min: first,
+                max: first,
+            },
+            |b, v| Bounds {
+                min: std::array::from_fn(|i| b.min[i].min(v[i])),
+                max: std::array::from_fn(|i| b.max[i].max(v[i])),
+            },
+        ))
     }
 
-    /// Directed edges with no opposite partner. Zero means every edge is shared
-    /// by exactly two consistently wound triangles: closed and orientable.
-    pub fn open_edges(&self) -> usize {
-        let mut balance: HashMap<(u32, u32), i32> = HashMap::new();
+    /// Edges not shared by exactly two oppositely wound triangles. Zero means
+    /// the mesh is closed and consistently oriented.
+    pub fn non_manifold_edges(&self) -> usize {
+        // Undirected edge -> (faces using it, +1/-1 per winding direction).
+        let mut edges: HashMap<(u32, u32), (u32, i32)> = HashMap::new();
         for &[a, b, c] in &self.triangles {
             for (u, v) in [(a, b), (b, c), (c, a)] {
-                let (key, delta) = if u < v { ((u, v), 1) } else { ((v, u), -1) };
-                *balance.entry(key).or_default() += delta;
+                let (key, dir) = if u < v { ((u, v), 1) } else { ((v, u), -1) };
+                let edge = edges.entry(key).or_default();
+                edge.0 += 1;
+                edge.1 += dir;
             }
         }
-        balance.values().map(|n| n.unsigned_abs() as usize).sum()
+        edges
+            .values()
+            .filter(|&&(faces, dir)| faces != 2 || dir != 0)
+            .count()
+    }
+
+    /// Merge vertices whose f32 coordinates are identical — what STL readers
+    /// do, since STL stores positions, not indices. Pieces that touch exactly
+    /// (a ring sitting on a ring) become connected here.
+    pub fn welded(&self) -> Mesh {
+        let mut index: HashMap<[u32; 3], u32> = HashMap::new();
+        let mut vertices = Vec::new();
+        let remap: Vec<u32> = self
+            .vertices
+            .iter()
+            .map(|v| {
+                *index
+                    .entry(v.map(|x| (x as f32).to_bits()))
+                    .or_insert_with(|| {
+                        vertices.push(*v);
+                        vertices.len() as u32 - 1
+                    })
+            })
+            .collect();
+        let triangles = self
+            .triangles
+            .iter()
+            .map(|t| t.map(|i| remap[i as usize]))
+            .collect();
+        Mesh {
+            vertices,
+            triangles,
+        }
     }
 
     fn vertex(&self, i: u32) -> [f64; 3] {
@@ -87,15 +129,25 @@ pub(crate) fn boxed([x, y, z]: [f64; 3]) -> Mesh {
         })
         .collect();
     // Vertex i has x from bit 0, y from bit 1, z from bit 2.
+    // Two triangles per face, in face order -z, +z, -y, +y, -x, +x.
     let triangles = vec![
-        [0, 2, 1], [1, 2, 3], // -z
-        [4, 5, 6], [5, 7, 6], // +z
-        [0, 1, 4], [1, 5, 4], // -y
-        [2, 6, 3], [3, 6, 7], // +y
-        [0, 4, 2], [2, 4, 6], // -x
-        [1, 3, 5], [3, 7, 5], // +x
+        [0, 2, 1],
+        [1, 2, 3],
+        [4, 5, 6],
+        [5, 7, 6],
+        [0, 1, 4],
+        [1, 5, 4],
+        [2, 6, 3],
+        [3, 6, 7],
+        [0, 4, 2],
+        [2, 4, 6],
+        [1, 3, 5],
+        [3, 7, 5],
     ];
-    Mesh { vertices, triangles }
+    Mesh {
+        vertices,
+        triangles,
+    }
 }
 
 /// Ring vertices around Z at height `z`, starting on +X, counter-clockwise.
@@ -110,7 +162,9 @@ pub(crate) fn cylinder(radius: f64, height: f64, segments: usize) -> Mesh {
     let n = segments as u32;
     let h = height / 2.0;
     // Bottom ring 0..n, top ring n..2n, then bottom and top cap centers.
-    let mut vertices: Vec<_> = ring(radius, -h, segments).chain(ring(radius, h, segments)).collect();
+    let mut vertices: Vec<_> = ring(radius, -h, segments)
+        .chain(ring(radius, h, segments))
+        .collect();
     vertices.extend([[0.0, 0.0, -h], [0.0, 0.0, h]]);
     let (bottom, top) = (2 * n, 2 * n + 1);
     let mut triangles = Vec::with_capacity(4 * segments);
@@ -121,7 +175,10 @@ pub(crate) fn cylinder(radius: f64, height: f64, segments: usize) -> Mesh {
         triangles.push([bottom, j, i]);
         triangles.push([top, n + i, n + j]);
     }
-    Mesh { vertices, triangles }
+    Mesh {
+        vertices,
+        triangles,
+    }
 }
 
 /// A UV sphere: `segments` around, `segments / 2` bands pole to pole.
@@ -150,5 +207,8 @@ pub(crate) fn sphere(radius: f64, segments: usize) -> Mesh {
         let last = (rings - 1) * n;
         triangles.push([north, last + i, last + j]);
     }
-    Mesh { vertices, triangles }
+    Mesh {
+        vertices,
+        triangles,
+    }
 }

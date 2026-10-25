@@ -58,7 +58,7 @@ jobs:
       # that is deliberate: it guards the MAX_EVAL_DEPTH-fits-2-MiB budget (#221).
       - name: Run tests
         run: |
-          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen
+          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen -p functor-solid
 
       - name: Validate API documentation generation
         run: npm run check:docs

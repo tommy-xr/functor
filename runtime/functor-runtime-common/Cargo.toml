@@ -16,6 +16,8 @@ glow = "0.17"
 # prelude — the functor-lang::Host giving Functor Lang programs Scene3D/Camera/Frame builtins
 # (docs/functor-lang.md Track C1) — shared by both shells.
 functor-lang = { path = "../../functor-lang" }
+# Printable part geometry behind `Solid.*` (millimetres, STL export).
+functor-solid = { path = "../../functor-solid" }
 # In-game text/UI overlay. egui is the immediate-mode backend living entirely in
 # this shell; `egui_glow` paints through the same glow::Context the runtime owns.
 # `default-features = false` drops egui_glow's winit/clipboard glue we don't use;

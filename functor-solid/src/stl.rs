@@ -24,7 +24,11 @@ pub fn write_binary(mesh: &Mesh, out: &mut impl Write) -> io::Result<()> {
 
 fn normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
     let (u, v) = (sub(b, a), sub(c, a));
-    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
     let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
     if len == 0.0 {
         return [0.0; 3];

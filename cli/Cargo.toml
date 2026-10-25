@@ -22,6 +22,8 @@ functor-lang = { path = "../functor-lang" }
 # Engine-bundled `.fun` modules and host `.funi` interfaces, shared with the
 # runtimes and editor tooling.
 functor-prelude = { path = "../functor-prelude" }
+# Mesh + STL writing for `functor export`.
+functor-solid = { path = "../functor-solid" }
 functor-docgen = { path = "../tools/functor-docgen" }
 clap = { version = "4.5.6", features = ["derive"] }
 colored = "2.1.0"

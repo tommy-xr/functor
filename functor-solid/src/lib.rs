@@ -29,7 +29,10 @@ pub enum Solid {
     Cylinder { radius: f64, height: f64 },
     /// A sphere centered on the origin.
     Sphere { radius: f64 },
-    Transform { matrix: Matrix4<f64>, child: Arc<Solid> },
+    Transform {
+        matrix: Matrix4<f64>,
+        child: Arc<Solid>,
+    },
     /// Pieces placed side by side. Overlaps are NOT merged — each piece stays
     /// its own closed shell (booleans are a separate operation).
     Group(Vec<Arc<Solid>>),
@@ -55,7 +58,10 @@ impl Solid {
     }
 
     fn transform(self: Arc<Self>, matrix: Matrix4<f64>) -> Solid {
-        Solid::Transform { matrix, child: self }
+        Solid::Transform {
+            matrix,
+            child: self,
+        }
     }
 
     /// Triangulate the whole tree.
@@ -68,9 +74,10 @@ impl Solid {
     fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) {
         match self {
             Solid::Box { size } => out.append(&mesh::boxed(*size), xform),
-            Solid::Cylinder { radius, height } => {
-                out.append(&mesh::cylinder(*radius, *height, segments_for(*radius)), xform)
-            }
+            Solid::Cylinder { radius, height } => out.append(
+                &mesh::cylinder(*radius, *height, segments_for(*radius)),
+                xform,
+            ),
             Solid::Sphere { radius } => {
                 out.append(&mesh::sphere(*radius, segments_for(*radius)), xform)
             }
@@ -105,7 +112,7 @@ mod tests {
     fn cube_is_twelve_closed_triangles_of_exact_volume() {
         let mesh = Solid::Box { size: [10.0; 3] }.mesh();
         assert_eq!(mesh.triangles.len(), 12);
-        assert_eq!(mesh.open_edges(), 0);
+        assert_eq!(mesh.non_manifold_edges(), 0);
         assert!((mesh.volume() - 1000.0).abs() < 1e-9);
         let b = mesh.bounds().unwrap();
         assert_eq!((b.min, b.max), ([-5.0; 3], [5.0; 3]));
@@ -114,21 +121,35 @@ mod tests {
     #[test]
     fn cylinder_and_sphere_are_closed_and_near_analytic_volume() {
         use std::f64::consts::PI;
-        let cyl = Solid::Cylinder { radius: 5.0, height: 10.0 }.mesh();
-        assert_eq!(cyl.open_edges(), 0);
+        let cyl = Solid::Cylinder {
+            radius: 5.0,
+            height: 10.0,
+        }
+        .mesh();
+        assert_eq!(cyl.non_manifold_edges(), 0);
         let exact = PI * 25.0 * 10.0;
-        assert!((cyl.volume() - exact).abs() / exact < 0.005, "{}", cyl.volume());
+        assert!(
+            (cyl.volume() - exact).abs() / exact < 0.005,
+            "{}",
+            cyl.volume()
+        );
 
         let sphere = Solid::Sphere { radius: 5.0 }.mesh();
-        assert_eq!(sphere.open_edges(), 0);
+        assert_eq!(sphere.non_manifold_edges(), 0);
         // Inscribed facets sag along both axes at quad centers: ~0.6% under.
         let exact = 4.0 / 3.0 * PI * 125.0;
-        assert!((sphere.volume() - exact).abs() / exact < 0.01, "{}", sphere.volume());
+        assert!(
+            (sphere.volume() - exact).abs() / exact < 0.01,
+            "{}",
+            sphere.volume()
+        );
     }
 
     #[test]
     fn transforms_move_bounds_and_keep_volume() {
-        let cube = arc(Solid::Box { size: [2.0, 4.0, 6.0] });
+        let cube = arc(Solid::Box {
+            size: [2.0, 4.0, 6.0],
+        });
         let turned = arc(cube.rotate(2, std::f64::consts::FRAC_PI_2));
         let mesh = turned.translate([10.0, 0.0, 3.0]).mesh();
         let b = mesh.bounds().unwrap();
@@ -136,7 +157,7 @@ mod tests {
         assert!(close(b.min, [8.0, -1.0, 0.0]), "{:?}", b.min);
         assert!(close(b.max, [12.0, 1.0, 6.0]), "{:?}", b.max);
         assert!((mesh.volume() - 48.0).abs() < 1e-9);
-        assert_eq!(mesh.open_edges(), 0);
+        assert_eq!(mesh.non_manifold_edges(), 0);
     }
 
     #[test]
@@ -150,8 +171,18 @@ mod tests {
         let a = arc(Solid::Box { size: [1.0; 3] });
         let b = arc(arc(Solid::Sphere { radius: 1.0 }).translate([5.0, 0.0, 0.0]));
         let mesh = Solid::Group(vec![a, b]).mesh();
-        assert_eq!(mesh.open_edges(), 0);
+        assert_eq!(mesh.non_manifold_edges(), 0);
         assert!(mesh.volume() > 1.0);
+    }
+
+    #[test]
+    fn touching_pieces_are_non_manifold_once_welded() {
+        let a = arc(Solid::Box { size: [2.0; 3] });
+        let b = arc(arc(Solid::Box { size: [2.0; 3] }).translate([2.0, 0.0, 0.0]));
+        let mesh = Solid::Group(vec![a, b]).mesh();
+        assert_eq!(mesh.non_manifold_edges(), 0);
+        // The shared face's 4 edges and its diagonal each join 4 triangles.
+        assert_eq!(mesh.welded().non_manifold_edges(), 5);
     }
 
     #[test]

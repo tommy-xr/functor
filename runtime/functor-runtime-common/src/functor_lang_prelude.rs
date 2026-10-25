@@ -180,6 +180,7 @@ use crate::ui::{self, View};
 use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
 
+pub mod solid;
 mod sprite;
 
 /// A [`Scene3D`] as an opaque Functor Lang value.
@@ -1623,6 +1624,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_vec3(&mut reg);
         register_ui_anchors(&mut reg);
         register_terrain(&mut reg);
+        solid::register(&mut reg);
         register_scene(&mut reg);
         register_instance(&mut reg);
         sprite::register(&mut reg);

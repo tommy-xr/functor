@@ -1,0 +1,46 @@
+//! Printable solids: build a part in code, then `functor export` it as STL.
+//!
+//! Units are millimetres and Z is up — the 3D-printing convention, not the
+//! scene's metres and Y-up. Every solid is closed and outward-facing, so any
+//! value you build exports as a valid print. Bind the result as `let part = …`
+//! and run `functor export -o part.stl`.
+//!
+//! ```
+//! let part = Solid.group([
+//!   Solid.box(40.0, 40.0, 4.0),
+//!   Solid.cylinder(6.0, 12.0) |> Solid.translate(Vec3.make(0.0, 0.0, 8.0)),
+//! ])
+//! ```
+
+/// An opaque printable solid.
+type t = host
+
+/// The axis-aligned box enclosing a solid, in millimetres.
+type bounds = { min: Vec3.t, max: Vec3.t }
+
+/// A box `width` (X) by `depth` (Y) by `height` (Z), centered on the origin.
+let box : (float, float, float) => t
+/// A Z-axis cylinder of `radius` and `height`, centered on the origin.
+let cylinder : (float, float) => t
+/// A sphere of `radius`, centered on the origin.
+let sphere : (float) => t
+
+/// Move a solid by an offset in millimetres; the solid is last for piping.
+let translate : (Vec3.t, t) => t
+/// Rotate a solid about the X axis through the origin.
+let rotateX : (Angle.t, t) => t
+/// Rotate a solid about the Y axis through the origin.
+let rotateY : (Angle.t, t) => t
+/// Rotate a solid about the Z axis through the origin.
+let rotateZ : (Angle.t, t) => t
+/// Scale a solid uniformly about the origin by a positive factor.
+let scale : (float, t) => t
+
+/// Place solids side by side as one part. Overlapping pieces are NOT merged —
+/// each stays its own closed shell, which slicers print as a union.
+let group : (List<t>) => t
+
+/// The enclosed volume in cubic millimetres, measured on the exported mesh.
+let volume : (t) => float
+/// The bounding box of the exported mesh.
+let bounds : (t) => bounds
