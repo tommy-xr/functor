@@ -176,7 +176,8 @@ function readBattery() {
     status: STATUS[number(/status:\s+(\d+)/)] ?? "unknown",
     plugged: /(?:AC|USB|Wireless|Dock) powered:\s+true/.test(text),
     charge_uah: number(/Charge counter:\s+(\d+)/),
-    voltage_mv: number(/voltage:\s+(\d+)/),
+    // Anchored: `Max charging voltage:` precedes the battery `voltage:` line.
+    voltage_mv: number(/^\s*voltage:\s+(\d+)/m),
     max_charge_w:
       ((number(/Max charging current:\s+(\d+)/) ?? 0) / 1e6) *
       ((number(/Max charging voltage:\s+(\d+)/) ?? 0) / 1e6),
@@ -297,7 +298,9 @@ async function main() {
   const netText =
     net === undefined
       ? "net current n/a"
-      : `net ${net >= 0 ? "+" : ""}${net.toFixed(0)} mA ≈ ${((net / 1000) * ((batteryAfter.voltage_mv ?? 0) / 1000)).toFixed(1)} W`;
+      : // The counter steps coarsely (~14 mAh on Quest 3), so print the raw
+        // delta: one step over a 30 s sample is ~1.7 A.
+        `charge ${((batteryAfter.charge_uah - batteryBefore.charge_uah) / 1000).toFixed(1)} mAh over ${((batteryAfter.at - batteryBefore.at) / 1000).toFixed(0)} s ≈ net ${net >= 0 ? "+" : ""}${net.toFixed(0)} mA ≈ ${((net / 1000) * ((batteryAfter.voltage_mv ?? 0) / 1000)).toFixed(1)} W`;
   console.log(
     `- Battery: ${batteryBefore.level}% → ${batteryAfter.level}% (${batteryAfter.status}, ${batteryAfter.plugged ? "plugged" : "unplugged"}, negotiated ${batteryAfter.max_charge_w.toFixed(0)} W max; ${netText})`,
   );
