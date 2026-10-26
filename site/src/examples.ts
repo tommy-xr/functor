@@ -443,6 +443,14 @@ export const EXAMPLES: Example[] = [
   // local-asset examples this one runs in the single-buffer sandbox.
   { id: "loading", label: "CDN assets", source: "examples/loading/game.fun" },
   { id: "monitor", label: "Render targets", source: "examples/monitor/game.fun" },
+  // Mixed-reality parts viewer. Off a headset it draws the stand-in room;
+  // N cycles the parts and P toggles passthrough.
+  {
+    id: "parts-mr",
+    label: "Parts (mixed reality)",
+    source: "examples/parts-mr/game.fun",
+    siblings: [{ source: "examples/parts-mr/parts.fun", output: "examples/parts-mr/parts.fun" }],
+  },
 ];
 
 /**
