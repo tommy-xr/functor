@@ -32,7 +32,7 @@ if (a[0] === "pr" && a[1] === "view" && a[2] === "7") {
   fs.mkdirSync(out, { recursive: true });
   if (name === "functor-apk-" + sha) fs.writeFileSync(path.join(out, "functor_runtime_oculus.apk"), "CI key");
   else if (name.startsWith("functor-cli-") && name.endsWith(sha)) {
-    fs.writeFileSync(path.join(out, process.platform === "win32" ? "functor.exe" : "functor"),
+    fs.writeFileSync(path.join(out, "functor"),
       "#!/bin/sh\\necho '[\\"functor\\"]' >> \\"$FAKE_ROOT/calls\\"\\necho \\"$ANDROID_SERIAL $*\\" > \\"$FAKE_ROOT/functor-args\\"\\n");
   } else process.exit(3);
 } else process.exit(4);
@@ -134,7 +134,7 @@ test("uninstalls a differently signed runner only with --allow-uninstall, reusin
   assert.equal(await readFile(join(h.root, "installed-key"), "utf8"), "CI key");
 });
 
-test("--run downloads the host CLI and runs it on the example", { skip: process.platform === "win32" }, async (t) => {
+test("--run downloads the host CLI and runs it on the example", async (t) => {
   const h = await harness(t);
   const result = await h.pr(["7", "--run", "hello"]);
   assert.equal(result.code, 0, result.stderr);
@@ -157,7 +157,7 @@ test("refuses a fork PR and an ambiguous device list", async (t) => {
   assert.ok(!(await two.calls()).some((call) => call.includes("install")));
 });
 
-test("--apk --run installs, then runs vr on the chosen headset", { skip: process.platform === "win32" }, async (t) => {
+test("--apk --run installs, then runs vr on the chosen headset", async (t) => {
   const h = await harness(t);
   const result = await h.pr(["7", "--apk", "--run", "hello"]);
   assert.equal(result.code, 0, result.stderr);

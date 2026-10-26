@@ -61,8 +61,8 @@ npm run test:pr-preview
 ## Trying a PR without building it
 
 CI uploads, for every main push and PR head, a dev-signed Quest APK
-(`Build Android`) and a release `functor` CLI for macOS arm64, Linux x64 and
-Windows x64 (`Build CLI`), kept 30 days. `npm run pr` fetches the ones for a
+(`Build Android`) and a release `functor` CLI for macOS arm64 and Linux x64
+(`Build CLI`), kept 30 days. `npm run pr` fetches the ones for a
 PR's head commit (needs `gh`; cached under `~/.functor/pr-artifacts/<sha>/`):
 
 ```sh

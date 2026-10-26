@@ -32,7 +32,6 @@ const APK_FILE = "functor_runtime_oculus.apk";
 const CLI_PLATFORMS = {
   "darwin-arm64": "macos-arm64",
   "linux-x64": "linux-x64",
-  "win32-x64": "windows-x64",
 };
 
 function parseArgs(argv) {
@@ -186,8 +185,7 @@ function main() {
     if (!options.defaulted) throw new Error(message);
     console.log(`${message}; skipping it`);
   } else if (options.cli) {
-    const name = process.platform === "win32" ? "functor.exe" : "functor";
-    cli = join(artifact("build-cli.yml", `functor-cli-${platform}-${head.sha}`, head), name);
+    cli = join(artifact("build-cli.yml", `functor-cli-${platform}-${head.sha}`, head), "functor");
     chmodSync(cli, 0o755); // artifact zips drop the executable bit
     console.log(`functor CLI: ${cli}`);
   }
