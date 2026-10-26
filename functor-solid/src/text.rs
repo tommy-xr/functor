@@ -46,6 +46,13 @@ impl Font {
         if face.outline_glyphs().format().is_none() {
             return Err(format!("{name} has no glyph outlines"));
         }
+        // Text is scaled by the em: a broken one would make NaN geometry.
+        let upem = face
+            .metrics(Size::unscaled(), LocationRef::default())
+            .units_per_em;
+        if !(16..=16384).contains(&upem) {
+            return Err(format!("{name} has an invalid em size ({upem} units)"));
+        }
         Ok(Font::Custom(Arc::new(CustomFont {
             name: name.to_string(),
             bytes,
@@ -97,7 +104,11 @@ fn shape(
 ) -> Result<(Vec<(GlyphId, f64, f64)>, f64), String> {
     let charmap = face.charmap();
     if let Some(c) = text.chars().find(|&c| charmap.map(c).is_none()) {
-        return Err(format!("{c:?} isn't in {} (one line of text)", font.name()));
+        let covers = match font {
+            Font::Custom(_) => "one line of text",
+            _ => "one line of Latin-1 text",
+        };
+        return Err(format!("{c:?} isn't in {} ({covers})", font.name()));
     }
     let shaper = font.shaper_data().shaper(face).build();
     let mut buffer = UnicodeBuffer::new();
@@ -141,9 +152,9 @@ pub fn text(font: &Font, size: f64, text: &str) -> Result<Sketch, String> {
         contours: Vec::new(),
     };
     for (gid, x, y) in glyphs {
-        let Some(glyph) = outlines.get(gid) else {
-            continue;
-        };
+        let glyph = outlines
+            .get(gid)
+            .ok_or_else(|| format!("{} is missing a glyph it maps", font.name()))?;
         pen.origin = [x, y];
         glyph
             .draw(

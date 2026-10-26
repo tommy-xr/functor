@@ -503,47 +503,30 @@ mod tests {
     }
 }
 
-/// A font file in the project, cached by path and modification time: a
-/// `Typeface.file` in `draw` reads once, and an edited file reloads.
-#[cfg(not(target_arch = "wasm32"))]
+/// A font file in the project (the entry file's folder), read on each call.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn typeface_file(path: &str) -> Result<Font, String> {
-    use std::path::{Component, Path, PathBuf};
-    use std::sync::Mutex;
-    use std::time::SystemTime;
-    static CACHE: once_cell::sync::Lazy<Mutex<HashMap<PathBuf, (SystemTime, Font)>>> =
-        once_cell::sync::Lazy::new(Default::default);
-
-    let relative = Path::new(path);
-    let inside = relative
-        .components()
-        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
-    if path.is_empty() || !inside {
-        return Err(format!(
-            "Typeface.file({path:?}): use a path inside the project, like \"fonts/MyFont.ttf\""
-        ));
-    }
-    let full = crate::storage::project_dir().join(relative);
+    let outside = || {
+        format!("Typeface.file({path:?}): use a path inside the project, like \"fonts/MyFont.ttf\"")
+    };
+    // The same portable rule as project assets, then resolved so a symlink
+    // can't reach outside either.
+    crate::debug_protocol::validate_project_asset_path(path).map_err(|_| outside())?;
     let unreadable =
         |e: std::io::Error| format!("Typeface.file: can't read {path} in the project ({e})");
-    let modified = std::fs::metadata(&full)
-        .and_then(|m| m.modified())
-        .map_err(unreadable)?;
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((when, font)) = cache.get(&full) {
-        if *when == modified {
-            return Ok(font.clone());
-        }
+    let root = std::fs::canonicalize(crate::storage::project_dir()).map_err(unreadable)?;
+    let full = std::fs::canonicalize(root.join(path)).map_err(unreadable)?;
+    if !full.starts_with(&root) {
+        return Err(outside());
     }
     let bytes = std::fs::read(&full).map_err(unreadable)?;
-    let font = Font::from_bytes(path, bytes).map_err(|e| format!("Typeface.file: {e}"))?;
-    cache.insert(full, (modified, font.clone()));
-    Ok(font)
+    Font::from_bytes(path, bytes).map_err(|e| format!("Typeface.file: {e}"))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn typeface_file(path: &str) -> Result<Font, String> {
     Err(format!(
-        "Typeface.file({path:?}): font files load in native runs and `functor export` for \
-now — on the web, use Typeface.sans() or Typeface.script()"
+        "Typeface.file({path:?}): font files load in desktop runs and `functor export` for \
+now — on the web and Quest, use Typeface.sans() or Typeface.script()"
     ))
 }

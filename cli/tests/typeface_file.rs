@@ -66,7 +66,19 @@ fn missing_and_escaping_font_paths_are_errors() {
     let escaping = project("escaping", "Typeface.file(\"../Sans.ttf\")");
     let err = export(&escaping).unwrap_err();
     assert!(err.contains("inside the project"), "{err}");
-    for dir in [missing, escaping] {
+    // A symlink inside the project can't reach a font outside it.
+    let linked = project("linked", "Typeface.file(\"fonts/Linked.ttf\")");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            escaping.join("fonts/Sans.ttf"),
+            linked.join("fonts/Linked.ttf"),
+        )
+        .unwrap();
+        let err = export(&linked).unwrap_err();
+        assert!(err.contains("inside the project"), "{err}");
+    }
+    for dir in [missing, escaping, linked] {
         std::fs::remove_dir_all(dir).ok();
     }
 }
