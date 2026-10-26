@@ -355,8 +355,8 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
                     if (t == 3) {
                         highp float cosAngle = dot(-l, normalize(lightDirection[i]));
                         // Soft edge over a small band inside the cone.
-                        float outer = lightConeCos[i];
-                        float inner = mix(1.0, outer, 0.85);
+                        highp float outer = lightConeCos[i];
+                        highp float inner = mix(1.0, outer, 0.85);
                         atten *= clamp((cosAngle - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
                     }
                 }
