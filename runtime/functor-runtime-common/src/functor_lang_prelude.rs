@@ -12170,6 +12170,16 @@ the game dir"
              && Result.isError(Decode.run(Decode.fail(\"no\"), data)) \
              && Decode.run(Decode.succeed(1.0), data) == Result.Ok(1.0)",
             "Decode.run(Decode.bytes(4.0) |> Decode.map(Bytes.length), data) == Result.Ok(4.0)",
+            "Decode.run(List.range(40.0) |> List.fold((d, i) => Decode.map2((a, b) => a + b, d, \
+             Decode.u8), Decode.succeed(0.0)), File.bytes(\"big.bin\")) == Result.Ok(280.0)",
+            "(Decode.run(Decode.sequence(List.range(5000.0) |> List.map((i) => Decode.u8)), \
+             File.bytes(\"big.bin\")) |> Result.map(List.sum)) == Result.Ok(35000.0)",
+            "Result.isError(Decode.run(Decode.skipThen(100.0, Decode.succeed(1.0)), data)) \
+             && Result.isError(Decode.run(Decode.skipThen(-1.0, Decode.u8), data)) \
+             && Result.isError(Decode.run(Decode.at(41.0, Decode.succeed(1.0)), data)) \
+             && Decode.run(Decode.at(40.0, Decode.succeed(1.0)), data) == Result.Ok(1.0)",
+            "Decode.run(Decode.map2((a, b) => a * 1000.0 + b, Decode.at(4.0, Decode.u8), Decode.u8), data) \
+             == Result.Ok(2080.0)",
         ];
         for check in checks {
             let src = format!("{prelude}let main = {check}\n");
