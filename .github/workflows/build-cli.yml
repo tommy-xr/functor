@@ -3,8 +3,9 @@ name: Build CLI
 # Builds the release `functor` binary for every main push and PR head and
 # uploads it as `functor-cli-<platform>-<sha>`, so a PR can be tried without
 # building it locally (`npm run pr`). Same build steps as
-# release-binaries.yml, minus packaging, the language server, and the
-# cross-compiled x86_64 macOS slice.
+# release-binaries.yml, minus packaging, the language server, the
+# cross-compiled x86_64 macOS slice, and Windows: its cold release build took
+# ~21 min, three times the rest of PR CI.
 
 on:
   push:
@@ -34,13 +35,8 @@ jobs:
         include:
           - os: macos-14
             platform: macos-arm64
-            bin: functor
           - os: ubuntu-latest
             platform: linux-x64
-            bin: functor
-          - os: windows-latest
-            platform: windows-x64
-            bin: functor.exe
 
     steps:
       - uses: actions/checkout@v6
@@ -88,14 +84,13 @@ jobs:
 
       # It runs and typechecks a real project (headless).
       - name: Sanity check
-        shell: bash
         run: |
-          target/release/${{ matrix.bin }} --version
-          target/release/${{ matrix.bin }} -d examples/primitives build
+          target/release/functor --version
+          target/release/functor -d examples/primitives build
 
       - uses: actions/upload-artifact@v4
         with:
           name: functor-cli-${{ matrix.platform }}-${{ env.SHA }}
-          path: target/release/${{ matrix.bin }}
+          path: target/release/functor
           if-no-files-found: error
           retention-days: 30
