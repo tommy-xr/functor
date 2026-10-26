@@ -286,6 +286,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             pass.frame.passthrough,
             pass.frame.fog_cull_distance(),
             pass.frame.drawn_stand_in_room(false),
+            None,
             width as f32 / height as f32,
             height as f32,
             &pass.frame.camera,
@@ -344,7 +345,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         .unwrap_or_else(|| camera.projection_matrix(viewport.aspect()));
     // `Xr.scene`'s environment depth for this pass: the device's, or the
     // stand-in room rendered depth-only from this pass's camera.
-    crate::environment_depth::prepare(
+    let environment_depth = crate::environment_depth::prepare(
         gl,
         shader_version,
         asset_cache.clone(),
@@ -411,6 +412,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame.passthrough && !scene_context.passthrough_composited(),
         frame.fog_cull_distance(),
         frame.drawn_stand_in_room(scene_context.passthrough_composited()),
+        frame.surface_grid.as_ref().zip(environment_depth),
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
@@ -506,6 +508,7 @@ fn render_sprite_layers(
             None,
             None,
             false,
+            None,
             None,
             None,
             fitted.aspect(),
@@ -671,6 +674,7 @@ pub fn render_composited_frames_with_view(
             frame.passthrough,
             frame.fog_cull_distance(),
             frame.drawn_stand_in_room(false),
+            None,
             width as f32 / height as f32,
             height as f32,
             &frame.camera,
@@ -866,6 +870,12 @@ fn forward_pass(
     fog_cull_distance: Option<f32>,
     // The frame's stand-in room geometry, drawn before the scene.
     stand_in_room: Option<&Scene3D>,
+    // `Frame.withSurfaceGrid` over this pass's environment depth, drawn
+    // between the room and the scene.
+    surface_grid: Option<(
+        &crate::surface_grid::SurfaceGrid,
+        crate::environment_depth::EnvironmentDepthView,
+    )>,
     aspect: f32,
     viewport_height: f32,
     lod_camera: &Camera,
@@ -995,6 +1005,15 @@ fn forward_pass(
                 &projection_matrix,
                 &view_matrix,
                 &root_material,
+            );
+        }
+        if let Some((grid, depth)) = surface_grid {
+            scene_context.draw_surface_grid(
+                &render_context,
+                grid,
+                depth,
+                &(projection_matrix * view_matrix),
+                camera.eye,
             );
         }
         Scene3D::render(

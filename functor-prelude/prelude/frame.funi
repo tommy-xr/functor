@@ -62,6 +62,18 @@ let withPassthrough : (t) => t
 /// so declare a floor here if one should count. A frame without
 /// `withPassthrough` ignores it.
 let withStandInRoom : (Scene.t, t) => t
+/// Shade a world-aligned grid onto the room's surfaces; the frame is last for
+/// piping.
+///
+/// A fullscreen pass reads the environment depth that `config`'s
+/// `Xr.scene(true)` provides — the headset's depth sensing under a
+/// composited camera feed, the frame's `withStandInRoom` geometry elsewhere —
+/// recovers the world point behind each pixel, and draws thin lines every
+/// `cell` world units (metres in passthrough) on whichever axis planes the
+/// surface faces, fading out 4–8 m away. The lines blend over the room and
+/// under the frame's scene. `cell` must be positive. Without `Xr.scene(true)`
+/// nothing is drawn.
+let withSurfaceGrid : (float, Color.t, t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///
 /// Layers render in call order, so a second `with2D` draws above the first.

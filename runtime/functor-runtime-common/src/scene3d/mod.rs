@@ -127,6 +127,8 @@ pub struct SceneContext {
     skybox_program: RefCell<Option<(ShaderProgram, SkyboxUniforms)>>,
     // The emulated passthrough room's program, built lazily like the skybox's.
     passthrough_room_program: RefCell<Option<(ShaderProgram, RoomUniforms)>>,
+    // `Frame.withSurfaceGrid`'s fullscreen program, built lazily likewise.
+    surface_grid_program: RefCell<Option<(ShaderProgram, GridUniforms)>>,
     // The screen-space compositor's fullscreen-average program, built lazily on
     // first use and cached like the skybox program (docs/time-travel.md T5).
     composite_program: RefCell<Option<(ShaderProgram, CompositeUniforms)>>,
@@ -257,6 +259,18 @@ struct RoomUniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     eye_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
+}
+
+struct GridUniforms {
+    depth_texture_loc: UniformLocation,
+    depth_layer_loc: UniformLocation,
+    depth_view_projection_loc: UniformLocation,
+    depth_inverse_loc: UniformLocation,
+    eye_inverse_loc: UniformLocation,
+    eye_loc: UniformLocation,
+    cell_loc: UniformLocation,
+    color_loc: UniformLocation,
     output: crate::color_space::OutputEncodeUniform,
 }
 
@@ -598,6 +612,7 @@ impl SceneContext {
             skyboxes: RefCell::new(HashMap::new()),
             skybox_program: RefCell::new(None),
             passthrough_room_program: RefCell::new(None),
+            surface_grid_program: RefCell::new(None),
             composite_program: RefCell::new(None),
             preloads: RefCell::new(Vec::new()),
             output_colorspace: Cell::new(crate::color_space::OutputColorspace::NonSrgb),
@@ -1517,6 +1532,99 @@ skybox disabled for this set",
         unsafe {
             gl.depth_mask(true);
             gl.depth_func(glow::LESS);
+        }
+    }
+
+    /// Draw `grid` onto the surfaces in `depth` (`crate::surface_grid`): a
+    /// fullscreen pass blended over what is already drawn, with no depth test
+    /// or write. `eye_view_projection` and `eye` are this pass's camera.
+    pub fn draw_surface_grid(
+        &self,
+        render_context: &RenderContext,
+        grid: &crate::surface_grid::SurfaceGrid,
+        depth: crate::environment_depth::EnvironmentDepthView,
+        eye_view_projection: &Matrix4<f32>,
+        eye: [f32; 3],
+    ) {
+        use crate::surface_grid::{GRID_FRAGMENT_SHADER_SOURCE, GRID_VERTEX_SHADER_SOURCE};
+        // A degenerate camera or depth view has no inverse: draw nothing.
+        let (Some(eye_inverse), Some(depth_inverse)) = (
+            eye_view_projection.invert(),
+            depth.view_projection.invert(),
+        ) else {
+            return;
+        };
+        let gl = render_context.gl;
+        let mut program = self.surface_grid_program.borrow_mut();
+        let (shader, uniforms) = program.get_or_insert_with(|| {
+            let vertex = Shader::build(
+                gl,
+                ShaderType::Vertex,
+                GRID_VERTEX_SHADER_SOURCE,
+                render_context.shader_version,
+            );
+            let fragment = Shader::build(
+                gl,
+                ShaderType::Fragment,
+                GRID_FRAGMENT_SHADER_SOURCE,
+                render_context.shader_version,
+            );
+            let shader = ShaderProgram::link(gl, &vertex, &fragment);
+            let uniforms = GridUniforms {
+                depth_texture_loc: shader.get_uniform_location(gl, "depthTexture"),
+                depth_layer_loc: shader.get_uniform_location(gl, "depthLayer"),
+                depth_view_projection_loc: shader
+                    .get_uniform_location(gl, "depthViewProjection"),
+                depth_inverse_loc: shader.get_uniform_location(gl, "depthInverse"),
+                eye_inverse_loc: shader.get_uniform_location(gl, "eyeInverse"),
+                eye_loc: shader.get_uniform_location(gl, "eye"),
+                cell_loc: shader.get_uniform_location(gl, "cell"),
+                color_loc: shader.get_uniform_location(gl, "color"),
+                output: crate::color_space::OutputEncodeUniform::get(&shader, gl),
+            };
+            (shader, uniforms)
+        });
+        unsafe {
+            shader.use_program(gl);
+            shader.set_uniform_1i(gl, &uniforms.depth_texture_loc, 0);
+            shader.set_uniform_1f(gl, &uniforms.depth_layer_loc, depth.layer as f32);
+            shader.set_uniform_matrix4(
+                gl,
+                &uniforms.depth_view_projection_loc,
+                &depth.view_projection,
+            );
+            shader.set_uniform_matrix4(gl, &uniforms.depth_inverse_loc, &depth_inverse);
+            shader.set_uniform_matrix4(gl, &uniforms.eye_inverse_loc, &eye_inverse);
+            shader.set_uniform_vec3(gl, &uniforms.eye_loc, &cgmath::Vector3::from(eye));
+            shader.set_uniform_1f(gl, &uniforms.cell_loc, grid.cell);
+            let [r, g, b] = grid.color;
+            shader.set_uniform_vec3(gl, &uniforms.color_loc, &cgmath::vec3(r, g, b));
+            // Straight alpha, source-over: over a composited feed's
+            // transparent clear the eye buffer keeps the line's alpha.
+            uniforms.output.set(
+                shader,
+                gl,
+                render_context.output_srgb_encode,
+                crate::color_space::OutputAlpha::Blend,
+            );
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(depth.texture));
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::SRC_ALPHA,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
+            gl.disable(glow::DEPTH_TEST);
+            gl.depth_mask(false);
+        }
+        self.quad.borrow_mut().draw(gl);
+        unsafe {
+            gl.depth_mask(true);
+            gl.enable(glow::DEPTH_TEST);
+            gl.disable(glow::BLEND);
+            gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
         }
     }
 

@@ -92,6 +92,9 @@
 //! Frame.withStandInRoom(room, frame)                        -> Frame
 //!   (scene geometry for that stand-in room, drawn only where it is; under
 //!    `Xr.scene(true)` it is also the emulated environment depth)
+//! Frame.withSurfaceGrid(cell, color, frame)                 -> Frame
+//!   (a world-aligned grid shaded onto the room's surfaces, read per pixel
+//!    from the environment depth; nothing without `Xr.scene(true)`)
 //! Ui.text(s) / Ui.textColor(color, s)                       -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
@@ -2761,6 +2764,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 pure_2d: false,
                 passthrough: false,
                 stand_in_room: None,
+                surface_grid: None,
             })
         },
     );
@@ -2819,6 +2823,26 @@ interactive widgets render but their handlers are inert",
 passthrough frame wherever no camera feed is composited",
         |room: FunctorLangScene, frame: FunctorLangFrame| {
             FunctorLangFrame(Frame::with_stand_in_room(frame.0, room.0))
+        },
+    );
+    reg.fn3(
+        "Frame.withSurfaceGrid",
+        "Frame.withSurfaceGrid(cell, color, frame) — cell is the grid spacing in \
+world units (metres in passthrough), > 0",
+        |cell: f64, color: FunctorLangColor, frame: FunctorLangFrame| {
+            if !(cell > 0.0) {
+                return Err(format!(
+                    "Frame.withSurfaceGrid: the cell size must be positive, got {cell}"
+                ));
+            }
+            let (r, g, b) = color.0;
+            Ok(FunctorLangFrame(Frame::with_surface_grid(
+                frame.0,
+                crate::surface_grid::SurfaceGrid {
+                    cell: cell as f32,
+                    color: [r, g, b],
+                },
+            )))
         },
     );
     // See `Scene.equals` — the same explicit structural walk, one level up.
@@ -9818,6 +9842,37 @@ piped through RenderTarget.sized"
              |> Frame.withClearColor(Color.rgb(0.0, 0.0, 0.0))",
         );
         assert_eq!(both.resolved_clear_color(), [0.0, 0.0, 0.0]);
+    }
+
+    // Frame.withStandInRoom / withSurfaceGrid record their room and grid; a
+    // non-positive cell is a teaching error.
+    #[test]
+    fn functor_lang_snippet_declares_stand_in_room_and_surface_grid() {
+        let frame = frame_of(
+            "let main = () =>\n\
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 1.6, 0.0), Vec3.make(0.0, 1.6, 1.0)), Scene.group([]))\n\
+             |> Frame.withPassthrough\n\
+             |> Frame.withStandInRoom(Scene.cube())\n\
+             |> Frame.withSurfaceGrid(0.25, Color.rgb(0.0, 1.0, 1.0))",
+        );
+        assert_eq!(frame.stand_in_room.as_deref(), Some(&Scene3D::cube()));
+        assert_eq!(
+            frame.surface_grid,
+            Some(crate::surface_grid::SurfaceGrid {
+                cell: 0.25,
+                color: [0.0, 1.0, 1.0],
+            })
+        );
+        let src = "let main = () =>\n\
+             Frame.create(Camera3D.lookAt(Vec3.make(0.0, 1.6, 0.0), Vec3.make(0.0, 1.6, 1.0)), Scene.group([]))\n\
+             |> Frame.withSurfaceGrid(0.0, Color.rgb(0.0, 1.0, 1.0))";
+        let module = functor_lang::lower(functor_lang::parse(src).unwrap()).unwrap();
+        let message = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+            .err()
+            .expect("a zero cell should fail")
+            .error
+            .message;
+        assert!(message.contains("cell size must be positive"), "{message}");
     }
 
     // [units, tier 1 — the Angle rule] Frame.withFog accepts ONLY the branded
