@@ -169,6 +169,18 @@ npm run build:oculus:apk   # → target-android/debug/apk/functor_runtime_oculus
 cargo apk run              # builds + adb installs + launches on the headset
 ```
 
+**CI builds.** Every main push and PR head gets a release-profile APK as the
+`functor-apk-<sha>` artifact of the `Build Android` workflow (30 days),
+reporting `pr | <sha7>` as `/state.build` (local builds report `dev`). CI signs
+it with a shared dev key (`CN=Functor Dev (CI)`). Local and CI builds are both
+versioned 0.0.0 (below any release), so a local build signed with the same key
+replaces a CI one in place and vice versa: point cargo-apk at that keystore with
+`CARGO_APK_DEV_KEYSTORE` / `CARGO_APK_DEV_KEYSTORE_PASSWORD` (debug builds) or
+`CARGO_APK_RELEASE_KEYSTORE` / `CARGO_APK_RELEASE_KEYSTORE_PASSWORD`
+(`--release`). An install signed with another key, or versioned above 0.0.0
+(builds from before the reset were 0.1.0), must be uninstalled first:
+`adb uninstall dev.functor.runner`.
+
 **One manual artifact:** the APK must bundle an OpenXR loader as
 `lib/arm64-v8a/libopenxr_loader.so` (gitignored; `runtime_libs = "lib"`
 bundles it). Without it the app aborts at startup with a clear message.

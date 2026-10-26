@@ -11332,6 +11332,7 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             battery: None,
             skinned: Default::default(),
             stages: None,
+            build: None,
         };
         let back: crate::debug_protocol::RuntimeState = serde_json::from_str(&state.to_json())
             .expect("a deep model must stay parseable by stock serde_json");

@@ -629,6 +629,13 @@ const BOOT_SCENE: &str = include_str!("boot.fun");
 /// The push endpoint's device-loopback port (`adb forward tcp:8123 tcp:8123`).
 const RELOAD_PORT: u16 = 8123;
 
+/// Which build is running (`/state.build`, startup log): CI stamps
+/// `pr | <sha7>` via `FUNCTOR_BUILD_LABEL`; local builds are `dev`.
+const BUILD_LABEL: &str = match option_env!("FUNCTOR_BUILD_LABEL") {
+    Some(label) => label,
+    None => "dev",
+};
+
 #[derive(Default)]
 struct DebugLoopState {
     frame_count: u64,
@@ -799,6 +806,7 @@ fn service_debug_request(
                     battery,
                     skinned,
                     stages,
+                    build: Some(BUILD_LABEL.to_string()),
                 });
             });
         }
@@ -1037,7 +1045,7 @@ pub fn android_main(app: AndroidApp) {
             .with_max_level(log::LevelFilter::Info)
             .with_tag("functor"),
     );
-    log::info!("functor oculus runtime starting");
+    log::info!("functor oculus runtime starting ({BUILD_LABEL})");
     // Android drops stderr: route panics (including the sim thread's) to logcat.
     std::panic::set_hook(Box::new(|info| log::error!("{info}")));
 

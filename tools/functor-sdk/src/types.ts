@@ -258,6 +258,10 @@ export interface RuntimeState {
     sim_wait_ms: number;
     frame_ms: number;
   };
+  /** Which runtime build is answering: `pr | <sha7>` for a CI-built Quest
+   * APK, `dev` for a local one. Protocol v23+; omitted by runtimes that don't
+   * report it. */
+  build?: string;
 }
 
 /** Camera block from `GET /scene`. */
