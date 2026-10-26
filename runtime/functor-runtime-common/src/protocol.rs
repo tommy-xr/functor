@@ -945,7 +945,7 @@ mod tests {
             sprite_layers: vec![],
             pure_2d: false,
             passthrough: true,
-            stand_in_room: Some(Scene3D::cube()),
+            stand_in_room: Some(Box::new(Scene3D::cube())),
         };
         assert_json_stable(&frame);
         assert!(serde_json::to_string(&frame)

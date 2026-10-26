@@ -259,7 +259,7 @@ mod tests {
         let plain = Frame::new(Camera::default(), Scene3D::cube());
         let mut roomed = Frame::with_passthrough(plain.clone());
         roomed = Frame::with_stand_in_room(roomed, Scene3D::cube());
-        let room = roomed.stand_in_room.as_ref().unwrap();
+        let room = roomed.stand_in_room.as_deref().unwrap();
 
         // Not requested: nothing, whatever the frame.
         assert_eq!(

@@ -83,8 +83,9 @@ pub struct Frame {
     /// Geometry standing in for the real room (`Frame.withStandInRoom`):
     /// drawn behind a passthrough frame's scene wherever the stand-in room
     /// is, and rendered as the environment depth there under `Xr.scene`.
+    /// Boxed so frames without one stay their old size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stand_in_room: Option<Scene3D>,
+    pub stand_in_room: Option<Box<Scene3D>>,
 }
 
 /// The clear under a passthrough frame's stand-in room wherever no real feed
@@ -216,7 +217,7 @@ impl Frame {
 
     /// The stand-in room's geometry (`Frame.withStandInRoom`).
     pub fn with_stand_in_room(mut frame: Frame, room: Scene3D) -> Frame {
-        frame.stand_in_room = Some(room);
+        frame.stand_in_room = Some(Box::new(room));
         frame
     }
 
@@ -224,7 +225,7 @@ impl Frame {
     /// camera feed is composited.
     pub fn drawn_stand_in_room(&self, feed_composited: bool) -> Option<&Scene3D> {
         self.stand_in_room
-            .as_ref()
+            .as_deref()
             .filter(|_| self.passthrough && !feed_composited)
     }
 
