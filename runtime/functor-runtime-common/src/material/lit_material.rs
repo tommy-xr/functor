@@ -216,7 +216,7 @@ impl Material for LitMaterial {
 
                 uniforms.lighting.set(p, ctx, view_matrix);
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
-                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }
 

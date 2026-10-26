@@ -120,7 +120,7 @@ impl Material for ColorMaterial {
                     &crate::color_space::srgb_to_linear_vec4(self.0),
                 );
                 uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
-                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode);
+                uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }
 

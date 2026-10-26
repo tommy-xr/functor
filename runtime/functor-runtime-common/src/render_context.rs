@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use cgmath::{Matrix4, Vector3};
 
-use crate::{asset::AssetCache, fog::Fog, FrameTime, Light};
+use crate::{asset::AssetCache, color_space::OutputAlpha, fog::Fog, FrameTime, Light};
 
 /// Which rendering pass is in flight. `DepthOnly` (e.g. filling a shadow map)
 /// draws geometry with a trivial depth material from the light's viewpoint;
@@ -170,6 +170,10 @@ pub struct RenderContext<'a> {
     /// A `Cell` because scene rendering walks an immutably-borrowed context on
     /// one thread; nothing here is shared across threads.
     pub blend_active: std::cell::Cell<bool>,
+    /// The pass's own alpha mode: [`OutputAlpha::Blend`] for the 2D sprite
+    /// pass (straight-alpha over), [`OutputAlpha::Opaque`] everywhere else.
+    /// Read through [`RenderContext::output_alpha`].
+    pub pass_alpha: OutputAlpha,
     /// How this pass treats `Scene.opacity` subtrees.
     pub opacity_stage: OpacityStage,
     /// The opacity accumulated by enclosing `Opacity` nodes during an
@@ -207,4 +211,17 @@ pub struct RenderContext<'a> {
     /// skybox is drawn behind the terrain, whose silhouette then stays at
     /// full contrast however fogged the terrain is.
     pub lod_fog: Option<&'a Fog>,
+}
+
+impl RenderContext<'_> {
+    /// The alpha mode a draw forwards to the `functorOutput` epilogue: BLEND
+    /// exactly where GL blends by source alpha — the sprite pass and a
+    /// translucent material's subtree (`blend_active`) — OPAQUE elsewhere.
+    pub fn output_alpha(&self) -> OutputAlpha {
+        if self.blend_active.get() {
+            OutputAlpha::Blend
+        } else {
+            self.pass_alpha
+        }
+    }
 }

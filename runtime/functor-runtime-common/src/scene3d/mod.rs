@@ -1080,7 +1080,12 @@ skybox disabled for this set",
             shader.set_uniform_1i(gl, &uniforms.skybox_loc, 0);
             uniforms
                 .output
-                .set(shader, gl, render_context.output_srgb_encode);
+                .set(
+                    shader,
+                    gl,
+                    render_context.output_srgb_encode,
+                    render_context.output_alpha(),
+                );
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_CUBE_MAP, Some(texture));
 
@@ -1141,7 +1146,12 @@ skybox disabled for this set",
             shader.set_uniform_vec3(gl, &uniforms.eye_loc, &cgmath::Vector3::from(eye));
             uniforms
                 .output
-                .set(shader, gl, render_context.output_srgb_encode);
+                .set(
+                    shader,
+                    gl,
+                    render_context.output_srgb_encode,
+                    render_context.output_alpha(),
+                );
             gl.depth_func(glow::LEQUAL);
             gl.depth_mask(false);
         }
@@ -1218,7 +1228,12 @@ skybox disabled for this set",
             shader.set_uniform_1fv(gl, &uniforms.weight_loc, &weight_array);
             // The composite draws into the caller framebuffer: its inputs are
             // sRGB textures (hardware-decoded to linear).
-            uniforms.output.set(shader, gl, output_srgb_encode);
+            uniforms.output.set(
+                shader,
+                gl,
+                output_srgb_encode,
+                crate::color_space::OutputAlpha::Opaque,
+            );
             for (i, unit) in units.iter().enumerate() {
                 gl.active_texture(glow::TEXTURE0 + *unit as u32);
                 let texture = if i < k { textures[i] } else { textures[0] };

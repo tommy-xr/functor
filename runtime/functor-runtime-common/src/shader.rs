@@ -50,7 +50,7 @@ impl Shader {
  * ([`crate::color_space::SRGB_DECODE_GLSL`]) for decoding sRGB-authored
  * inputs; fragment shaders also get `functorOutput`
  * ([`crate::color_space::OUTPUT_ENCODE_GLSL`]), the linear→sRGB output
- * epilogue gated by `uOutputSrgbEncode`. Shaders that never reference them
+ * epilogue gated by `uOutputFlags` (sRGB encode, alpha mode). Shaders that never reference them
  * (depth) have them optimized out.
  */
 fn convert(shader: &str, shader_version: &str, shader_type: &ShaderType) -> String {

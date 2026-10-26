@@ -859,6 +859,14 @@ fn forward_pass(
         render_pass: RenderPass::Forward,
         pass_blends,
         blend_active: std::cell::Cell::new(false),
+        // The pass-level mode: the sprite pass blends by source alpha; the
+        // transparent pass's constant-alpha blend wants opaque fragments.
+        // Translucent material subtrees switch to BLEND via `blend_active`.
+        pass_alpha: if caller_blends {
+            crate::color_space::OutputAlpha::Blend
+        } else {
+            crate::color_space::OutputAlpha::Opaque
+        },
         opacity_stage,
         opacity: std::cell::Cell::new(1.0),
         shadow,
@@ -1150,8 +1158,11 @@ pub fn render_debug_lines(
             mvp_raw,
         );
         gl.uniform_1_i32(
-            gl.get_uniform_location(program, "uOutputSrgbEncode").as_ref(),
-            output_srgb_encode as i32,
+            gl.get_uniform_location(program, "uOutputFlags").as_ref(),
+            crate::color_space::output_flags(
+                output_srgb_encode,
+                crate::color_space::OutputAlpha::Opaque,
+            ),
         );
 
         let counters = crate::gpu_counters::gpu_counters();

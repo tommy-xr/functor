@@ -195,11 +195,10 @@ let draw = (model, tts) => Frame.createLit(camera, scene, lights) |> Frame.withP
 - Composition: the passthrough layer goes UNDER the projection layer, which is
   flagged `BLEND_TEXTURE_SOURCE_ALPHA`. The eye buffer is premultiplied (the
   transparent clear plus the renderer's source-over blending store
-  `color * alpha`), so `UNPREMULTIPLIED_ALPHA` stays off. Untextured opaque
-  geometry writes alpha 1 and hides the room; `Scene.opacity` subtrees let it
-  through. Known limitation: an opaque draw writes its texture's alpha, so a
-  texture with alpha below 1 (an RGBA atlas, a glTF MASK material) shows the
-  room through the surface — use opaque textures in passthrough frames.
+  `color * alpha`), so `UNPREMULTIPLIED_ALPHA` stays off. Opaque geometry
+  writes alpha 1 and hides the room, whatever its texture's alpha; translucent
+  2D sprites and `Scene.opacity` subtrees let it through. glTF `alphaMode` is not read
+  yet, so MASK and BLEND materials render opaque, as they do on desktop.
   The environment blend mode stays `OPAQUE` — the layer brings in the room. A
   runtime without `XR_FB_passthrough` that enumerates `ALPHA_BLEND` uses that
   blend mode instead, with no layer.
