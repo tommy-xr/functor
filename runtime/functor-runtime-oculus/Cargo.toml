@@ -29,6 +29,8 @@ openxr = "0.21"
 android-activity = { version = "0.6", features = ["native-activity"] }
 # For the ndk_context activity swap in android_main (see the comment there).
 ndk-context = "0.1"
+# `/state.battery`: BatteryManager over JNI (android-activity already uses 0.21).
+jni = "0.21"
 khronos-egl = { version = "6.0", features = ["dynamic"] }
 libloading = "0.8"
 glow = "0.17"

@@ -1104,6 +1104,7 @@ fn service_debug_request(
                         g.config(),
                         g.settings(),
                     ),
+                    battery: None,
                 });
             });
         }

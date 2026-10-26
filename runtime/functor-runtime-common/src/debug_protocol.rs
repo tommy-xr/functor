@@ -116,7 +116,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// `Frame.withPassthrough` frames — `composited` (headset camera feed),
 /// `emulated` (desktop/web stand-in room), `paused` (by `settings`), or
 /// `unavailable`. Omitted unless the game's `config` requests passthrough.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 20;
+///
+/// 21 adds the optional `battery` field on `GET /state` ([`BatteryState`]):
+/// the headset battery as Android's `BatteryManager` reports it, sampled at
+/// most once per second. Omitted on runtimes without one, such as desktop.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 21;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -376,6 +380,10 @@ pub struct RuntimeState {
     /// Omitted unless the game's `config` requests passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passthrough: Option<crate::runtime_settings::PassthroughState>,
+    /// The device battery (v21), sampled at most once per second. Omitted on
+    /// runtimes without one, such as desktop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery: Option<BatteryState>,
 }
 
 /// A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
@@ -387,6 +395,77 @@ pub struct DisplayRefreshRate {
     pub requested: Option<f32>,
     /// The rates the display offers.
     pub available: Vec<f32>,
+}
+
+/// A device battery reading, as `GET /state` reports it. A field the device
+/// does not report is `null`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BatteryState {
+    pub level_pct: Option<i32>,
+    /// `charging`, `discharging`, `not charging`, `full`, or `unknown`.
+    pub status: String,
+    /// Connected to any charger (AC, USB, wireless, or dock).
+    pub plugged: bool,
+    /// Instantaneous battery current, signed as reported by the device;
+    /// negative on Quest 3 = discharging (verify).
+    // TODO(device): confirm the sign and µA units on Quest 3 — some devices
+    // invert the sign or report mA.
+    pub current_now_ma: Option<i32>,
+    /// The device's averaged current; same sign convention as `current_now_ma`.
+    pub current_avg_ma: Option<i32>,
+    /// Remaining charge, µAh.
+    pub charge_uah: Option<i32>,
+    pub voltage_mv: Option<i32>,
+    pub temp_c: Option<f64>,
+    /// Device wall clock (Unix epoch ms) when this reading was taken.
+    pub sampled_ms: u64,
+}
+
+/// Raw Android battery integers: `BatteryManager.getIntProperty` values and
+/// the sticky `ACTION_BATTERY_CHANGED` intent's extras. `i32::MIN` marks an
+/// unsupported property or a missing extra (Android's own sentinel for
+/// properties since API 28).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AndroidBatteryRaw {
+    pub capacity: i32,
+    pub current_now_ua: i32,
+    pub current_avg_ua: i32,
+    pub charge_counter_uah: i32,
+    pub level: i32,
+    pub scale: i32,
+    pub status: i32,
+    pub plugged: i32,
+    pub voltage_mv: i32,
+    /// Tenths of a degree Celsius.
+    pub temperature_dc: i32,
+}
+
+impl BatteryState {
+    pub fn from_android(raw: AndroidBatteryRaw, sampled_ms: u64) -> Self {
+        let known = |v: i32| (v != i32::MIN).then_some(v);
+        let level_pct = known(raw.capacity)
+            .filter(|pct| (0..=100).contains(pct))
+            .or_else(|| (raw.level >= 0 && raw.scale > 0).then(|| raw.level * 100 / raw.scale));
+        // BatteryManager.BATTERY_STATUS_* codes.
+        let status = match raw.status {
+            2 => "charging",
+            3 => "discharging",
+            4 => "not charging",
+            5 => "full",
+            _ => "unknown",
+        };
+        Self {
+            level_pct,
+            status: status.to_string(),
+            plugged: raw.plugged > 0,
+            current_now_ma: known(raw.current_now_ua).map(|ua| ua / 1000),
+            current_avg_ma: known(raw.current_avg_ua).map(|ua| ua / 1000),
+            charge_uah: known(raw.charge_counter_uah),
+            voltage_mv: known(raw.voltage_mv),
+            temp_c: known(raw.temperature_dc).map(|dc| f64::from(dc) / 10.0),
+            sampled_ms,
+        }
+    }
 }
 
 impl RuntimeState {
@@ -845,6 +924,7 @@ mod tests {
                 mode: crate::runtime_settings::PassthroughMode::Composited,
                 warning: None,
             }),
+            battery: None,
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -890,6 +970,53 @@ mod tests {
             actual["viewport"]["width"],
             "the logical pointer surface must remain distinct from the framebuffer viewport"
         );
+    }
+
+    #[test]
+    fn battery_from_android_converts_units_and_drops_unsupported() {
+        let raw = AndroidBatteryRaw {
+            capacity: 42,
+            current_now_ua: -1_234_567,
+            current_avg_ua: i32::MIN,
+            charge_counter_uah: 2_100_000,
+            level: 41,
+            scale: 100,
+            status: 2,
+            plugged: 2,
+            voltage_mv: 3_912,
+            temperature_dc: 287,
+        };
+        let state = BatteryState::from_android(raw, 1_000);
+        assert_eq!(
+            serde_json::to_value(&state).unwrap(),
+            json!({
+                "level_pct": 42,
+                "status": "charging",
+                "plugged": true,
+                "current_now_ma": -1234,
+                "current_avg_ma": null,
+                "charge_uah": 2_100_000,
+                "voltage_mv": 3_912,
+                "temp_c": 28.7,
+                "sampled_ms": 1_000
+            })
+        );
+
+        // No CAPACITY property: fall back to the intent's level/scale.
+        let fallback = BatteryState::from_android(
+            AndroidBatteryRaw {
+                capacity: i32::MIN,
+                level: 3,
+                scale: 4,
+                status: 9,
+                plugged: 0,
+                ..raw
+            },
+            0,
+        );
+        assert_eq!(fallback.level_pct, Some(75));
+        assert_eq!(fallback.status, "unknown");
+        assert!(!fallback.plugged);
     }
 
     #[test]
@@ -1171,7 +1298,7 @@ mod tests {
         let discovery: Value = serde_json::from_str(&discovery_json()).unwrap();
         assert_eq!(discovery["service"], DEBUG_PROTOCOL_SERVICE);
         assert_eq!(discovery["protocol_version"], DEBUG_PROTOCOL_VERSION);
-        assert_eq!(DEBUG_PROTOCOL_VERSION, 20);
+        assert_eq!(DEBUG_PROTOCOL_VERSION, 21);
     }
 
     /// The v10 fields are ADDITIVE: a pre-v10 payload (which carries neither)

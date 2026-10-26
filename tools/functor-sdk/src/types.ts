@@ -228,6 +228,22 @@ export interface RuntimeState {
     mode: "composited" | "emulated" | "paused" | "unavailable";
     warning?: string;
   };
+  /** The headset battery from Android's `BatteryManager`, sampled at most
+   * once per second; a field the device doesn't report is `null`. Currents
+   * are signed as the device reports them. Protocol v21+; omitted on
+   * desktop. */
+  battery?: {
+    level_pct: number | null;
+    status: "charging" | "discharging" | "not charging" | "full" | "unknown";
+    plugged: boolean;
+    current_now_ma: number | null;
+    current_avg_ma: number | null;
+    charge_uah: number | null;
+    voltage_mv: number | null;
+    temp_c: number | null;
+    /** Device wall clock, Unix epoch ms. */
+    sampled_ms: number;
+  };
 }
 
 /** Camera block from `GET /scene`. */
