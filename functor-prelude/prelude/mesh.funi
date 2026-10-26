@@ -20,6 +20,11 @@ let fromPolygons : (Bytes.t, List<List<float>>) => t
 let transformVertices : (float, float, List<float>, t) => t
 /// The meshes as one.
 let combine : (List<t>) => t
+/// The mesh in a scene, as it is (no remeshing): Z up becomes the scene's Y up,
+/// units unchanged — scale it to taste. Style it like any scene node
+/// (`|> Scene.lit(color)`). Cheap to call every frame, so a mesh posed per frame
+/// (an animated character) draws directly.
+let toScene : (t) => Scene.t
 /// The number of triangles.
 let triangleCount : (t) => float
 /// The box enclosing the mesh.
