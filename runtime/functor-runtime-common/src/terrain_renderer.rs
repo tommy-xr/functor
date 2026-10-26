@@ -13,7 +13,7 @@ use glow::HasContext;
 
 use crate::{
     asset::pipelines::HeightmapData,
-    fog::{Fog, FogUniforms, FOG_GLSL, FULLY_FOGGED_VISIBILITY},
+    fog::{Fog, FogUniforms, FOG_GLSL},
     light::{lighting_glsl, LightingUniforms},
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
@@ -26,6 +26,10 @@ const MAX_INSTANCES: usize = 8192;
 const MAX_GRASS_INSTANCES: usize = 20_000;
 /// Fog grows the LOD error allowance by at most 1 / this.
 const MIN_FOG_VISIBILITY: f32 = 0.25;
+/// Slack on the fog-end cull: stereo eyes sit up to half an IPD from the LOD
+/// camera the cull measures from, so a patch just past the end for it can be
+/// just short of the end for an eye.
+const FOG_CULL_MARGIN: f32 = 0.1;
 /// First texture unit for the detail maps. Unit 0 stays the height texture.
 const DETAIL_TEXTURE_UNIT0: i32 = 1;
 /// The baked macro map sits above the four detail units.
@@ -204,12 +208,14 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                 return;
             }
 
-            // Fully fogged: the result is the fog color whatever the surface,
-            // so skip the lights and every texture fetch. A branch, not a
-            // discard, so early depth testing stays on. Texture derivatives
-            // in quads straddling this edge are as safe as the detail fade's:
-            // those fragments' own colors are scaled by ~0 in the fog mix.
-            if (fogVisibility(worldPos) <= FULLY_FOGGED_VISIBILITY) {
+            // Fully fogged (past linear fog's far): the result is exactly the
+            // fog color whatever the surface, so skip the lights and every
+            // texture fetch. A branch, not a discard, so early depth testing
+            // stays on. In a quad straddling this edge the later fetches'
+            // implicit derivatives are undefined, but those fragments lie
+            // within a pixel's footprint of total fog, so the fog mix scales
+            // any wrong mip down with the rest of their color.
+            if (fogVisibility(worldPos) <= 0.0) {
                 fragColor = functorOutput(vec4(fogColor, 1.0));
                 return;
             }
@@ -829,9 +835,8 @@ impl TerrainRenderer {
             ctx.shader_version,
         );
         let fragment_source = format!(
-            "{}\nconst float FULLY_FOGGED_VISIBILITY = {:?};\n{}\n{}",
+            "{}\n{}\n{}",
             FOG_GLSL,
-            FULLY_FOGGED_VISIBILITY,
             lighting_glsl(),
             FRAGMENT_SHADER_SOURCE
         );
@@ -1749,7 +1754,6 @@ fn select_patches_into(
     fog_cull_distance: Option<f32>,
     patches: &mut Vec<[f32; 4]>,
 ) {
-    let cull_distance = fog_cull_distance.unwrap_or(f32::INFINITY);
     patches.clear();
     let inverse = world.invert().unwrap_or_else(Matrix4::identity);
     let local4 = inverse * Vector4::new(camera_world.x, camera_world.y, camera_world.z, 1.0);
@@ -1765,6 +1769,15 @@ fn select_patches_into(
         .fold(f32::INFINITY, f32::min)
         .max(1e-4);
     let max_scale = scales.iter().copied().fold(0.0, f32::max).max(1e-4);
+    // Local distance × `min_scale` bounds the world distance from below only
+    // when the axes stay orthogonal; under shear, skip fog culling.
+    let [ax, ay, az] = [world.x.truncate(), world.y.truncate(), world.z.truncate()];
+    let orthogonal = [(ax, ay), (ay, az), (az, ax)]
+        .iter()
+        .all(|(a, b)| a.dot(*b).abs() <= 1e-4 * a.magnitude() * b.magnitude());
+    let cull_distance = fog_cull_distance
+        .filter(|_| orthogonal)
+        .unwrap_or(f32::INFINITY);
     debug_assert!(!view_projections.is_empty());
     debug_assert!(view_projections.len() <= 2);
     let frusta = [
@@ -1845,7 +1858,9 @@ fn select_patches_into(
         // background color. The box reaches down to the skirt, so a skirt
         // seen from below the terrain is never cut.
         let skirt_dy = (cull_low - camera_local.y).max(0.0) + (camera_local.y - max.y).max(0.0);
-        if (dx * dx + skirt_dy * skirt_dy + dz * dz).sqrt() * min_scale > cull_distance {
+        if (dx * dx + skirt_dy * skirt_dy + dz * dz).sqrt() * min_scale
+            > cull_distance + FOG_CULL_MARGIN
+        {
             return;
         }
         let vertex_spacing =
@@ -2518,10 +2533,14 @@ mod tests {
     /// A 4 km terrain from a 4097² map, seen from 20 m up looking along the
     /// diagonal — far enough to reach the coarse levels.
     fn select_with_fog(fog: Option<&Fog>) -> Vec<[f32; 4]> {
-        select_with_fog_cull(fog, None)
+        select_with_fog_cull(fog, None, &Matrix4::identity())
     }
 
-    fn select_with_fog_cull(fog: Option<&Fog>, cull: Option<f32>) -> Vec<[f32; 4]> {
+    fn select_with_fog_cull(
+        fog: Option<&Fog>,
+        cull: Option<f32>,
+        world: &Matrix4<f32>,
+    ) -> Vec<[f32; 4]> {
         let description = terrain();
         let eye = Point3::new(-1500.0, 20.0, -1500.0);
         let view = Matrix4::look_at_rh(eye, Point3::new(0.0, 0.0, 0.0), Vector3::unit_y());
@@ -2531,7 +2550,7 @@ mod tests {
             &description,
             4097,
             4097,
-            &Matrix4::identity(),
+            world,
             eye.to_vec(),
             &[projection * view],
             projection.y.y,
@@ -2562,8 +2581,8 @@ mod tests {
     #[test]
     fn fog_end_culls_exactly_the_patches_wholly_past_it() {
         let fog = Fog::linear(20.0, 600.0, 0.0, 0.0, 0.0);
-        let all = select_with_fog_cull(Some(&fog), None);
-        let culled = select_with_fog_cull(Some(&fog), fog.end());
+        let all = select_with_fog_cull(Some(&fog), None, &Matrix4::identity());
+        let culled = select_with_fog_cull(Some(&fog), fog.end(), &Matrix4::identity());
         assert!(culled.len() < all.len(), "culled {} vs all {}", culled.len(), all.len());
         // Culling removes patches and never changes the LOD of the rest.
         assert!(culled.iter().all(|patch| all.contains(patch)));
@@ -2578,11 +2597,23 @@ mod tests {
             let dz = (z0 - eye.z).max(0.0) + (eye.z - (z0 + patch[3] * terrain.depth)).max(0.0);
             (dx * dx + dz * dz).sqrt()
         };
-        assert!(culled.iter().all(|patch| nearest(patch) <= 600.0));
+        assert!(culled.iter().all(|patch| nearest(patch) <= 600.0 + FOG_CULL_MARGIN));
         assert!(all
             .iter()
             .filter(|patch| !culled.contains(patch))
-            .all(|patch| nearest(patch) > 600.0 - 1.0));
+            .all(|patch| nearest(patch) > 600.0));
+    }
+
+    #[test]
+    fn sheared_terrain_is_never_fog_culled() {
+        // Rotation after a non-uniform scale shears: column lengths no longer
+        // bound how much the transform shrinks distances.
+        let world = Matrix4::from_nonuniform_scale(0.1, 1.0, 1.0) * Matrix4::from_angle_y(Deg(45.0));
+        let fog = Fog::linear(20.0, 600.0, 0.0, 0.0, 0.0);
+        assert_eq!(
+            select_with_fog_cull(Some(&fog), fog.end(), &world),
+            select_with_fog_cull(Some(&fog), None, &world)
+        );
     }
 
     #[test]

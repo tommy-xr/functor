@@ -360,11 +360,12 @@ let regroup = (model) =>
   if fresh then model
   else
     let shown = (props) => props |> List.filter((p) => isShown(model.eye, p)) in
+    let trees = shown(model.trees) in
     { model with
         forestAt: Option.Some({ x: model.eye.x, z: model.eye.z, distance: meshDistance, fogEnd: fogEnd }),
         // One { near, far } per entry of `firs`, in order.
         forest: List.range(List.length(firs)) |> List.map((i) =>
-          let mine = shown(model.trees) |> List.filter((t) => variantOf(List.length(firs), t) == i) in
+          let mine = trees |> List.filter((t) => variantOf(List.length(firs), t) == i) in
           { near: mine |> List.filter((t) => isNear(model.eye, t)),
             far: mine |> List.filter((t) => not isNear(model.eye, t)) }),
         shownLogs: shown(model.logs),
@@ -433,5 +434,5 @@ let ui = (model) =>
     + nonEmpty(perVariant(List.length(rocks), model.shownBoulders)) in
   let instances =
     2.0 * List.sum(close) + List.sum(distant) + List.length(model.shownLogs) + List.length(model.shownBoulders) in
-  Ui.text($"Night terrain · WASD + mouse · {List.length(model.trees)} trees ({List.sum(close)} mesh, {List.sum(distant)} card) · {List.length(model.shownLogs)} logs · {List.length(model.shownBoulders)} rocks · {instances} instances · {draws} draws")
+  Ui.text($"Night terrain · WASD + mouse · {List.sum(close) + List.sum(distant)}/{List.length(model.trees)} trees ({List.sum(close)} mesh, {List.sum(distant)} card) · {List.length(model.shownLogs)} logs · {List.length(model.shownBoulders)} rocks · {instances} instances · {draws} draws")
   |> Ui.panel(Ui.topLeft())

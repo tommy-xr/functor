@@ -869,6 +869,14 @@ fn forward_pass(
     // The forward pass may need TWO contexts (opaque, then transparent), which
     // differ only in how they treat blending and `Scene.opacity`. Everything
     // else is frame-constant, so build them from one recipe.
+    // The normals/tangents views draw terrain unfogged, so culling by fog
+    // would cut away visible surface there.
+    let fog_cull_distance = fog_cull_distance.filter(|_| {
+        !matches!(
+            debug_render_mode,
+            DebugRenderMode::Normals | DebugRenderMode::Tangents
+        )
+    });
     let make_context = |pass_blends: bool, opacity_stage: OpacityStage| RenderContext {
         gl,
         shader_version,

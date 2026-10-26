@@ -54,16 +54,14 @@ impl Fog {
         }
     }
 
-    /// Where the fog becomes total: past this distance a surface's color
-    /// survives at most [`FULLY_FOGGED_VISIBILITY`], so it renders as the fog
-    /// color. `None` for degenerate parameters, which never fully fog.
+    /// Where the fog becomes total: past this distance every surface renders
+    /// as exactly the fog color, however bright. Only linear fog has one;
+    /// exponential fog never reaches zero visibility.
     pub fn end(&self) -> Option<f32> {
-        let end = match *self {
-            Fog::Linear { near, far, .. } if far > near => far,
-            Fog::Exp { density, .. } if density > 0.0 => -FULLY_FOGGED_VISIBILITY.ln() / density,
-            _ => return None,
-        };
-        end.is_finite().then_some(end)
+        match *self {
+            Fog::Linear { near, far, .. } if far > near && far.is_finite() => Some(far),
+            _ => None,
+        }
     }
 
     /// How much of a surface's own color survives at `distance`: the
@@ -81,11 +79,6 @@ impl Fog {
         }
     }
 }
-
-/// Visibility at or below which a fogged surface counts as fully fogged.
-/// Under half an 8-bit sRGB step even at the steep near-black end of the
-/// curve, so drawing such a surface as exactly the fog color is invisible.
-pub const FULLY_FOGGED_VISIBILITY: f32 = 1.0 / 8192.0;
 
 /// The clear color for a forward pass: the fog color when fog is set (so the
 /// background IS the fog at infinity), else the engine default.
@@ -213,14 +206,12 @@ mod tests {
     }
 
     #[test]
-    fn end_is_where_visibility_reaches_fully_fogged() {
-        assert_eq!(Fog::linear(20.0, 200.0, 0.0, 0.0, 0.0).end(), Some(200.0));
-        let exp = Fog::exp(0.01, 0.0, 0.0, 0.0);
-        let end = exp.end().expect("positive density fully fogs");
-        assert!((exp.visibility(end) - FULLY_FOGGED_VISIBILITY).abs() < 1e-7);
+    fn only_linear_fog_has_an_end() {
+        let linear = Fog::linear(20.0, 200.0, 0.0, 0.0, 0.0);
+        assert_eq!(linear.end(), Some(200.0));
+        assert_eq!(linear.visibility(200.0), 0.0);
         assert_eq!(Fog::linear(200.0, 20.0, 0.0, 0.0, 0.0).end(), None);
-        assert_eq!(Fog::exp(0.0, 0.0, 0.0, 0.0).end(), None);
-        assert_eq!(Fog::exp(f32::NAN, 0.0, 0.0, 0.0).end(), None);
+        assert_eq!(Fog::exp(0.01, 0.0, 0.0, 0.0).end(), None);
     }
 
     #[test]

@@ -1032,9 +1032,9 @@ not thousands of scene nodes. Fog coarsens it: without a skybox,
 `Terrain.maxPixelError` is divided by the frame fog's visibility at each patch
 (at most 4×), so fogged distance costs fewer vertices. When the background IS the fog
 (no skybox, no passthrough, clear color left at — or set to — the fog color), patches
-wholly past the fog's end (`far` for linear fog; where visibility drops below 1/8192
-for exp) are not drawn at all, and fully fogged terrain pixels skip lighting and
-texturing. Props are the game's to cull: `examples/night-terrain` drops them past the
+wholly past linear fog's `far` are not drawn at all, and fully fogged terrain pixels
+skip lighting and texturing (exp fog never reaches zero visibility, so it culls
+nothing; neither do the normals/tangents debug views, which draw unfogged). Props are the game's to cull: `examples/night-terrain` drops them past the
 fog in `regroup` and sets the camera's far plane to the fog end. `/state.terrain`
 reports the drawn patches/vertices.
 
