@@ -53,6 +53,11 @@ pub struct XrConfig {
     /// prepares its camera feed (`XR_FB_passthrough`) for this run.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub passthrough: bool,
+    /// `Xr.scene(true)`: the game reads the room's surfaces — the headset
+    /// starts its environment depth (`XR_META_environment_depth`) for this
+    /// run; elsewhere the frame's stand-in room stands in for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scene: bool,
 }
 
 /// The per-frame `settings(model)` value.
@@ -77,6 +82,11 @@ pub struct XrSettings {
 /// Whether the game's `config` requests passthrough (`Xr.passthrough(true)`).
 pub fn passthrough_requested(config: Option<GameConfig>) -> bool {
     config.is_some_and(|c| c.xr.passthrough)
+}
+
+/// Whether the game's `config` requests scene understanding (`Xr.scene(true)`).
+pub fn scene_requested(config: Option<GameConfig>) -> bool {
+    config.is_some_and(|c| c.xr.scene)
 }
 
 /// Whether the camera feed should run: `config` asked for it and the latest
@@ -125,6 +135,61 @@ impl PassthroughState {
     }
 }
 
+/// Where a shell's environment depth comes from, as `GET /state.xr.depth`
+/// reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentDepthMode {
+    /// The headset delivered a depth image this frame.
+    Device,
+    /// The headset's depth provider runs but has no image yet.
+    Waiting,
+    /// No headset depth: the frame's stand-in room is rendered as the depth.
+    Emulated,
+    /// The headset cannot provide depth (see `EnvironmentDepthState::warning`).
+    Unavailable,
+}
+
+/// `GET /state.xr.depth` (debug protocol v25): present when the game's
+/// `config` requests `Xr.scene`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EnvironmentDepthState {
+    pub mode: EnvironmentDepthMode,
+    /// The depth image's size in texels; 0 until one exists.
+    pub width: u32,
+    pub height: u32,
+    /// Depth images acquired (device) or stand-in depth passes rendered
+    /// (emulated) since launch.
+    pub frames: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// `GET /state.xr`: headset scene state, omitted while it has nothing to say.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct XrState {
+    pub depth: EnvironmentDepthState,
+}
+
+impl XrState {
+    /// A shell without depth sensing (desktop, web), while `config` requests
+    /// `Xr.scene`: the stand-in room's depth so far, `(width, height, passes)`.
+    pub fn emulated(
+        config: Option<GameConfig>,
+        (width, height, frames): (u32, u32, u64),
+    ) -> Option<Self> {
+        scene_requested(config).then_some(XrState {
+            depth: EnvironmentDepthState {
+                mode: EnvironmentDepthMode::Emulated,
+                width,
+                height,
+                frames,
+                warning: None,
+            },
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +200,7 @@ mod tests {
             xr: XrConfig {
                 refresh_rate: Some(90.0),
                 passthrough: false,
+                scene: false,
             },
             external_key: 7,
         };
@@ -160,12 +226,28 @@ mod tests {
             xr: XrConfig {
                 refresh_rate: None,
                 passthrough: true,
+                scene: true,
             },
             ..GameConfig::default()
         };
         assert_eq!(
             serde_json::to_value(config).unwrap(),
-            serde_json::json!({ "xr": { "passthrough": true } })
+            serde_json::json!({ "xr": { "passthrough": true, "scene": true } })
+        );
+        let depth = XrState {
+            depth: EnvironmentDepthState {
+                mode: EnvironmentDepthMode::Device,
+                width: 320,
+                height: 320,
+                frames: 7,
+                warning: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(depth).unwrap(),
+            serde_json::json!({
+                "depth": { "mode": "device", "width": 320, "height": 320, "frames": 7 }
+            })
         );
         let state = PassthroughState {
             mode: PassthroughMode::Unavailable,
@@ -184,6 +266,7 @@ mod tests {
                 xr: XrConfig {
                     refresh_rate: None,
                     passthrough: on,
+                    scene: false,
                 },
                 ..GameConfig::default()
             })

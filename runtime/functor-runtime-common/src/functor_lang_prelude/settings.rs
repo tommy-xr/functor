@@ -18,6 +18,7 @@ use crate::runtime_settings::{
 struct XrKnobs {
     refresh_rate: Option<f32>,
     passthrough: Option<bool>,
+    scene: Option<bool>,
     foveation: Option<FoveationLevel>,
     passthrough_enabled: Option<bool>,
 }
@@ -129,6 +130,12 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             })
         },
     );
+    reg.fn2("Xr.scene", "Xr.scene(on, xr)", |on: bool, xr: FunctorLangXr| {
+        FunctorLangXr(XrKnobs {
+            scene: Some(on),
+            ..xr.0
+        })
+    });
     reg.fn2(
         "Xr.passthroughEnabled",
         "Xr.passthroughEnabled(on, xr)",
@@ -246,6 +253,7 @@ on change — return it from `settings = (model) => Settings.create() |> Setting
             config.game.xr = XrConfig {
                 refresh_rate: xr.0.refresh_rate,
                 passthrough: xr.0.passthrough.unwrap_or(false),
+                scene: xr.0.scene.unwrap_or(false),
             };
             Ok(FunctorLangConfig(config))
         },
@@ -270,6 +278,13 @@ in `let config = Config.create() |> Config.xr(…)`, not `settings`"
                     "Settings.xr: `Xr.passthrough` is read once at launch — declare it \
 in `let config = Config.create() |> Config.xr(…)`, then pause or resume the feed here with \
 `Xr.passthroughEnabled(on)`"
+                        .to_string(),
+                );
+            }
+            if xr.0.scene.is_some() {
+                return Err(
+                    "Settings.xr: `Xr.scene` is read once at launch — declare it in \
+`let config = Config.create() |> Config.xr(…)`, not `settings`"
                         .to_string(),
                 );
             }

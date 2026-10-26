@@ -209,7 +209,7 @@ export interface RuntimeState {
   instance_uploads?: { count: number; bytes: number };
   /** The game's launch-time `config` value, fixed at load. Protocol v18+;
    * omitted when the game defines none. */
-  config?: { xr: { refresh_rate?: number; passthrough?: boolean } };
+  config?: { xr: { refresh_rate?: number; passthrough?: boolean; scene?: boolean } };
   /** The game's latest `settings(model)`, which a headset runtime applies on
    * change. Protocol v18+; omitted when the game defines no `settings`. */
   settings?: {
@@ -257,6 +257,20 @@ export interface RuntimeState {
     render_ms: number;
     sim_wait_ms: number;
     frame_ms: number;
+  /** Scene understanding behind `Xr.scene`: `depth` is the environment depth
+   * — a headset depth image this frame (`device`), a running provider with no
+   * image yet (`waiting`), the desktop/web stand-in room rendered as depth
+   * (`emulated`), or `unavailable` (with the reason in `warning`); `frames`
+   * counts images acquired or stand-in passes rendered. Protocol v25+;
+   * omitted unless `config` requests `Xr.scene`. */
+  xr?: {
+    depth: {
+      mode: "device" | "waiting" | "emulated" | "unavailable";
+      width: number;
+      height: number;
+      frames: number;
+      warning?: string;
+    };
   };
   /** Which runtime build is answering: `pr | <sha7>` for a CI-built Quest
    * APK, `dev` for a local one. Protocol v23+; omitted by runtimes that don't

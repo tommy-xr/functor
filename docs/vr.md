@@ -221,6 +221,48 @@ let draw = (model, tts) => Frame.createLit(camera, scene, lights) |> Frame.withP
   buffers before composition, so it shows the game layer over transparent
   black, not the room.
 
+### Scene understanding (environment depth)
+
+`config`'s `Xr.scene(true)` gives the renderer the depth of the real room, for
+passes that shade onto its surfaces:
+
+```functor
+let config =
+  Config.create() |> Config.xr(Xr.create() |> Xr.passthrough(true) |> Xr.scene(true))
+let draw = (model, tts) =>
+  Frame.createLit(camera, scene, lights)
+    |> Frame.withPassthrough
+    |> Frame.withStandInRoom(deskAndWall)   // what desktop sees instead
+```
+
+- On Quest 3/3S it starts `XR_META_environment_depth` for the run. Each frame
+  the shell acquires the newest depth image: a 320x320 two-layer GLES depth
+  texture array (left, right) with each layer's pose, field of view and
+  near/far (far is infinite). Each eye's layer reaches the renderer with the
+  transform that wrote it, composed onto `Frame.camera` like that eye's view,
+  so a texel unprojects to the world point behind it.
+- No Space Setup is needed, but Horizon gates the depth on the **spatial data
+  permission**. The APK declares `com.oculus.permission.USE_SCENE` (without it
+  the runtime does not even offer the extension) but does not request it at
+  runtime yet, so grant it once per install:
+  `adb shell pm grant dev.functor.runner com.oculus.permission.USE_SCENE`.
+  Until then `/state.xr.depth` reads `unavailable` with that command in its
+  warning.
+- `/state.xr.depth` (debug protocol v25) reports `{mode, width, height,
+  frames, warning?}`: `device` (an image this frame), `waiting` (the provider
+  runs but has none yet), `emulated`, or `unavailable`. `frames` counts images
+  acquired since launch. It is omitted unless `config` requests `Xr.scene`.
+- Wherever the stand-in room is drawn — desktop, web, a paused or missing
+  feed — `Frame.withStandInRoom(scene)` is the environment depth instead.
+  That scene is ordinary geometry in metres (floor at `y = 0`), drawn behind
+  the frame's scene there and also rendered depth-only, from the pass's own
+  camera at its resolution, into the same kind of depth texture array.
+  Desktop reports it as `mode: emulated`. Under a composited feed it is never
+  drawn.
+- Quest 3, nobody wearing it (`prox_close`, 2026-10-26): with the permission
+  granted, `/state.xr.depth` reads `{"mode":"device","width":320,
+  "height":320}` and `frames` advances (about 66 images a second at 80 Hz).
+
 ### Mixed-reality parts viewer
 
 `examples/parts-mr` shows a printable part on your real desk at true scale

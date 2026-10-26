@@ -77,6 +77,11 @@ required = false
 [[package.metadata.android.uses_permission]]
 name = "com.oculus.permission.HAND_TRACKING"
 
+# Spatial data (`config`'s `Xr.scene`): Horizon exposes
+# XR_META_environment_depth only to apps that declare it.
+[[package.metadata.android.uses_permission]]
+name = "com.oculus.permission.USE_SCENE"
+
 # Sockets — even the device-loopback reload endpoint — need this; binding
 # without it is EPERM.
 [[package.metadata.android.uses_permission]]

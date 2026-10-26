@@ -36,6 +36,7 @@ use functor_runtime_common::debug_protocol::{
     RuntimeViewport,
 };
 use functor_runtime_common::device_files::DeviceFiles;
+use functor_runtime_common::environment_depth::EnvironmentDepthSource;
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::runtime_settings::FoveationLevel;
@@ -48,6 +49,7 @@ use khronos_egl as egl;
 use openxr as xr;
 
 mod battery;
+mod environment_depth;
 mod passthrough;
 
 /// GLES version to request. Quest 3 supports 3.2.
@@ -732,6 +734,7 @@ fn service_debug_request(
     device_files: &DeviceFiles,
     scene_context: &SceneContext,
     passthrough: &passthrough::Passthrough,
+    environment_depth: &environment_depth::EnvironmentDepth,
 ) {
     match request {
         DebugRequest::Capture(response) => {
@@ -777,6 +780,7 @@ fn service_debug_request(
             let display_refresh_rate = debug.display_refresh_rate.clone();
             let passthrough = passthrough.state(debug.config);
             let battery = battery::latest();
+            let xr = environment_depth.state(debug.config);
             let instance_uploads =
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();
@@ -809,6 +813,7 @@ fn service_debug_request(
                     skinned,
                     stages,
                     build: Some(BUILD_LABEL.to_string()),
+                    xr,
                 });
             });
         }
@@ -978,7 +983,10 @@ desktop runtime's --headless/--debug-port path"
                     .display_refresh_rate
                     .as_mut()
                     .and_then(|display| request_launch_refresh_rate(session, display, config_hz));
-                let warnings = refused.into_iter().chain(passthrough.load_warning(config));
+                let warnings = refused
+                    .into_iter()
+                    .chain(passthrough.load_warning(config))
+                    .chain(environment_depth.load_warning(config));
                 if let Ok(status) = &mut result {
                     for warning in warnings {
                         status.push_str(&format!(" — warning: {warning}"));
@@ -1186,6 +1194,9 @@ pub fn android_main(app: AndroidApp) {
     // camera feed creatable; nothing starts until a game asks (see
     // `passthrough.rs`), so every run requests it when offered.
     extensions.fb_passthrough = available.fb_passthrough;
+    // Scene understanding (`config`'s `Xr.scene`): likewise inert until a
+    // game asks (see `environment_depth.rs`).
+    extensions.meta_environment_depth = available.meta_environment_depth;
     let instance = entry
         .create_instance(
             &xr::ApplicationInfo {
@@ -1305,6 +1316,7 @@ pub fn android_main(app: AndroidApp) {
         xr::ViewConfigurationType::PRIMARY_STEREO,
         available.fb_passthrough,
     );
+    let mut environment_depth = environment_depth::EnvironmentDepth::new(&instance);
 
     log::info!(
         "swapchains ready: {}x{} per eye",
@@ -1450,6 +1462,7 @@ pub fn android_main(app: AndroidApp) {
                     session_focused = e.state() == xr::SessionState::FOCUSED;
                     if session_focused {
                         passthrough.retry();
+                        environment_depth.retry();
                     }
                     match e.state() {
                         xr::SessionState::READY => {
@@ -1509,6 +1522,7 @@ pub fn android_main(app: AndroidApp) {
                     &device_files,
                     &scene_context,
                     &passthrough,
+                    &environment_depth,
                 );
             }
         }
@@ -1699,6 +1713,14 @@ pub fn android_main(app: AndroidApp) {
             ),
         );
         scene_context.set_passthrough_composited(passthrough.composited());
+        // Likewise the depth provider while `config` asks for `Xr.scene`.
+        environment_depth.update(
+            &session,
+            &gl,
+            functor_runtime_common::runtime_settings::scene_requested(debug.config),
+        );
+        let depth_image =
+            environment_depth.acquire(&stage, xr_frame_state.predicted_display_time);
         let frame = snapshot.frame.clone();
         // Re-lock to the camera this frame renders, not the previous one.
         tracking_reference = passthrough::room_locked(
@@ -1773,7 +1795,7 @@ pub fn android_main(app: AndroidApp) {
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
 
-        for (eye, view) in eyes.iter_mut().zip(views.iter()) {
+        for (index, (eye, view)) in eyes.iter_mut().zip(views.iter()).enumerate() {
             use glow::HasContext;
             let image_index = eye.swapchain.acquire_image().expect("acquire") as usize;
             eye.swapchain
@@ -1797,6 +1819,13 @@ pub fn android_main(app: AndroidApp) {
                 view.fov.angle_down,
                 view.fov.angle_up,
             );
+            // This eye's layer of the device depth, else the stand-in room.
+            scene_context.set_environment_depth_source(match (&depth_image, tracking_reference) {
+                (Some(image), Some(reference)) if index < 2 => {
+                    EnvironmentDepthSource::Device(image.view(index, &frame.camera, reference))
+                }
+                _ => EnvironmentDepthSource::stand_in(debug.config),
+            });
             functor_runtime_common::render_frame_with_projection(
                 &gl,
                 "#version 300 es",

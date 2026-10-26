@@ -445,6 +445,15 @@ impl Camera {
         let width = right - left;
         let height = up - down;
         let depth = self.far - self.near;
+        // An infinite far plane (OpenXR depth images) takes the limit.
+        let (z_scale, z_offset) = if self.far.is_finite() {
+            (
+                -(self.far + self.near) / depth,
+                -(2.0 * self.far * self.near) / depth,
+            )
+        } else {
+            (-1.0, -2.0 * self.near)
+        };
 
         // Column-major OpenGL projection. Writing this directly (instead of
         // cgmath::frustum) also preserves OpenXR's valid reversed-angle form,
@@ -460,11 +469,11 @@ impl Camera {
             0.0,
             (right + left) / width,
             (up + down) / height,
-            -(self.far + self.near) / depth,
+            z_scale,
             -1.0,
             0.0,
             0.0,
-            -(2.0 * self.far * self.near) / depth,
+            z_offset,
             0.0,
         )
     }
@@ -677,6 +686,25 @@ mod tests {
         assert!(approx(project(near * angles.1.tan(), 0.0)[0], 1.0));
         assert!(approx(project(0.0, near * angles.2.tan())[1], -1.0));
         assert!(approx(project(0.0, near * angles.3.tan())[1], 1.0));
+    }
+
+    #[test]
+    fn an_infinite_far_plane_maps_near_to_minus_one_and_infinity_to_one() {
+        use cgmath::Vector4;
+
+        let cam = Camera {
+            near: 0.1,
+            far: f32::INFINITY,
+            ..Camera::default()
+        };
+        let projection = cam.projection_matrix_from_fov_angles(-0.8, 0.8, -0.8, 0.8);
+        let ndc_z = |distance: f32| {
+            let clip = projection * Vector4::new(0.0, 0.0, -distance, 1.0);
+            clip.z / clip.w
+        };
+        assert!(approx(ndc_z(0.1), -1.0));
+        assert!(approx(ndc_z(2.0), 1.0 - 2.0 * 0.1 / 2.0));
+        assert!(ndc_z(1.0e6) < 1.0 && ndc_z(1.0e6) > 0.999);
     }
 
     #[test]
