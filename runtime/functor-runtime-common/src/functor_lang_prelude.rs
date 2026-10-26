@@ -184,6 +184,7 @@ use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
 
 pub mod bytes;
+pub mod mesh;
 pub mod solid;
 mod sprite;
 
@@ -1630,6 +1631,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_terrain(&mut reg);
         solid::register(&mut reg);
         bytes::register(&mut reg);
+        mesh::register(&mut reg);
         register_scene(&mut reg);
         register_instance(&mut reg);
         sprite::register(&mut reg);
@@ -4430,6 +4432,7 @@ macro_rules! handle_arg {
 }
 
 use bytes::FunctorLangBytes;
+use mesh::FunctorLangMesh;
 use solid::{FunctorLangFont, FunctorLangSketch, FunctorLangSolid};
 
 handle_arg!(
@@ -4437,6 +4440,7 @@ handle_arg!(
     FunctorLangSketch => "a Sketch",
     FunctorLangFont => "a Typeface",
     FunctorLangBytes => "Bytes",
+    FunctorLangMesh => "a Mesh",
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
     FunctorLangInstance => "an Instance",
@@ -12189,6 +12193,55 @@ the game dir"
                 eval_with_prelude(&src).map(|v| v.to_string())
             );
         }
+    }
+
+    /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`
+    /// closes an open box and scales it to the asked height.
+    #[test]
+    fn meshes_from_decoded_data_print_closed() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::set_project_root(dir.path().to_path_buf());
+        // A unit cube's corners: index = x + 2y + 4z.
+        let corners: Vec<u8> = (0..8)
+            .flat_map(|i| [i & 1, (i >> 1) & 1, (i >> 2) & 1])
+            .flat_map(|c| (c as f32).to_le_bytes())
+            .collect();
+        std::fs::write(dir.path().join("cube.bin"), &corners).unwrap();
+        // Five faces as quads — no top, so the box is open.
+        let prelude = "let box = Mesh.fromPolygons(File.bytes(\"cube.bin\"), \
+             [[0.0, 2.0, 3.0, 1.0], [0.0, 1.0, 5.0, 4.0], [1.0, 3.0, 7.0, 5.0], \
+             [3.0, 2.0, 6.0, 7.0], [2.0, 0.0, 4.0, 6.0]])\n\
+             let moved = Mesh.transformVertices(0.0, 8.0, \
+             [1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0], box)\n";
+        let checks = [
+            "Mesh.triangleCount(box) == 10.0",
+            "Vec3.x(Mesh.bounds(moved).min) == 10.0 && Vec3.x(Mesh.bounds(moved).max) == 11.0",
+            "Mesh.triangleCount(Mesh.combine([box, moved])) == 20.0",
+            "Vec3.z(Solid.bounds(Solid.fromMesh({ height: 20.0, nozzle: 0.8 }, box)).max) == 20.0",
+            "Solid.volume(Solid.fromMesh({ height: 20.0, nozzle: 0.8 }, box)) > 1000.0",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        let failure = |main: &str| {
+            eval_with_prelude(&format!("{prelude}let main = {main}\n"))
+                .err()
+                .expect("should fail")
+        };
+        let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0, 9.0]])");
+        assert!(err.contains("polygon 0 uses vertex 9, but there are 8"), "{err}");
+        let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0]])");
+        assert!(err.contains("needs 3 or more"), "{err}");
+        let err = failure("Mesh.transformVertices(4.0, 8.0, [1.0], box)");
+        assert!(err.contains("aren't within"), "{err}");
     }
 
     /// The persistence spine on the REAL store: `Persistence.save` writes the
