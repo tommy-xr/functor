@@ -234,7 +234,11 @@ impl Project {
     /// user, and an editor showing only that file, will see them.
     fn attribute(&self, mut errors: Vec<CheckError>) -> Vec<CheckError> {
         for error in &mut errors {
-            if let Some(d) = self.defaults.iter().find(|d| d.spans.contains(&error.span.start)) {
+            if let Some(d) = self
+                .defaults
+                .iter()
+                .find(|d| d.spans.contains(&error.span.start))
+            {
                 error.message = format!(
                     "`{}` is used by the bundled default {}: {}",
                     d.trigger, d.module, error.message
