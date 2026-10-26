@@ -51,3 +51,38 @@ let f32be : (float, t) => Result.t<float, Binary.error>
 let f64le : (float, t) => Result.t<float, Binary.error>
 /// The 64-bit big-endian float at `offset`.
 let f64be : (float, t) => Result.t<float, Binary.error>
+
+/// The parts joined into one.
+let concat : (List<t>) => t
+/// Text as UTF-8 bytes.
+let fromUtf8 : (string) => t
+/// Text as Latin-1 bytes (one byte per character; others are an error).
+let fromLatin1 : (string) => t
+/// Unsigned bytes; each number must be a whole number from 0 to 255.
+let fromU8 : (List<float>) => t
+/// Signed bytes.
+let fromI8 : (List<float>) => t
+/// Unsigned 16-bit little-endian integers.
+let fromU16le : (List<float>) => t
+/// Unsigned 16-bit big-endian integers.
+let fromU16be : (List<float>) => t
+/// Signed 16-bit little-endian integers.
+let fromI16le : (List<float>) => t
+/// Signed 16-bit big-endian integers.
+let fromI16be : (List<float>) => t
+/// Unsigned 32-bit little-endian integers.
+let fromU32le : (List<float>) => t
+/// Unsigned 32-bit big-endian integers.
+let fromU32be : (List<float>) => t
+/// Signed 32-bit little-endian integers.
+let fromI32le : (List<float>) => t
+/// Signed 32-bit big-endian integers.
+let fromI32be : (List<float>) => t
+/// 32-bit little-endian floats (rounded from the numbers).
+let fromF32le : (List<float>) => t
+/// 32-bit big-endian floats.
+let fromF32be : (List<float>) => t
+/// 64-bit little-endian floats.
+let fromF64le : (List<float>) => t
+/// 64-bit big-endian floats.
+let fromF64be : (List<float>) => t

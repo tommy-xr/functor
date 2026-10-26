@@ -12252,6 +12252,52 @@ the game dir"
         assert!(err.contains("aren't within"), "{err}");
     }
 
+    /// `Encode` writes what `Decode` reads; a `Codec` round-trips records,
+    /// lists and mapped values; writers refuse numbers that don't fit.
+    #[test]
+    fn encode_and_codecs_round_trip() {
+        let prelude = "type pair = { first: float, second: float }\n\
+             let pairCodec = Codec.record2((a, b): pair => { first: a, second: b }, \
+               (p: pair) => p.first, Codec.f32le, (p: pair) => p.second, Codec.f32le)\n\
+             let flag = Codec.map((n) => n == 1.0, (b) => if b then 1.0 else 0.0, Codec.u8)\n\
+             let header = Encode.sequence([Encode.latin1(\"PTS!\"), Encode.u32le(2.0), \
+               Encode.f32les([1.0, 2.0])])\n";
+        let checks = [
+            "Bytes.length(Encode.run(header)) == 16.0",
+            "Decode.run(Decode.map2((m, n) => m, Decode.latin1(4.0), Decode.u32le), \
+             Encode.run(header)) == Result.Ok(\"PTS!\")",
+            "Decode.run(Decode.skipThen(8.0, Decode.list(2.0, Decode.f32le)), Encode.run(header)) \
+             == Result.Ok([1.0, 2.0])",
+            "Codec.decode(pairCodec, Codec.encode(pairCodec, { first: 1.5, second: -2.0 })) \
+             == Result.Ok({ first: 1.5, second: -2.0 })",
+            "(Codec.decode(Codec.list(3.0, pairCodec), Codec.encode(Codec.list(3.0, pairCodec), \
+             [{ first: 1.0, second: 2.0 }, { first: 3.0, second: 4.0 }, { first: 5.0, second: 6.0 }])) \
+             |> Result.map(List.length)) == Result.Ok(3.0)",
+            "Codec.decode(flag, Codec.encode(flag, true)) == Result.Ok(true)",
+            "Bytes.equals(Encode.run(Encode.zeros(3.0)), Bytes.fromU8([0.0, 0.0, 0.0]))",
+            "Bytes.equals(Bytes.fromI16be([-2.0]), Bytes.fromU8([255.0, 254.0]))",
+            "Bytes.equals(Encode.run(Encode.utf8(\"é\")), Bytes.fromU8([195.0, 169.0]))",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+        for (main, expected) in [
+            ("Bytes.fromU8([256.0])", "doesn't fit a u8"),
+            ("Encode.run(Encode.u16le(1.5))", "doesn't fit a u16"),
+            ("Bytes.fromLatin1(\"€\")", "isn't a Latin-1 character"),
+        ] {
+            let err = eval_with_prelude(&format!("let main = {main}\n"))
+                .err()
+                .expect("should fail");
+            assert!(err.contains(expected), "{main}: {err}");
+        }
+    }
+
     /// The persistence spine on the REAL store: `Persistence.save` writes the
     /// project's slot file (atomically, as canonical plain-data JSON) and a
     /// later `Persistence.load` restores exactly the saved value into a fresh

@@ -188,6 +188,38 @@ macro_rules! reader {
     };
 }
 
+/// Register a bulk number writer: `Bytes.fromU16le([1.0, 2.0])`. Integers
+/// must be whole and in range — encoding is the program's own data, so a bad
+/// value is an error at the call, not a recoverable `Result`.
+macro_rules! writer {
+    ($reg:ident, $name:literal, $ty:ty, $to:ident, $int:literal) => {
+        $reg.fn1(
+            concat!("Bytes.", $name),
+            concat!("Bytes.", $name, "(numbers)"),
+            |numbers: Vec<Count>| {
+                let mut out = Vec::with_capacity(numbers.len() * std::mem::size_of::<$ty>());
+                for (i, Count(n)) in numbers.iter().enumerate() {
+                    let fits = !$int
+                        || (n.fract() == 0.0 && *n >= <$ty>::MIN as f64 && *n <= <$ty>::MAX as f64);
+                    if !fits {
+                        return Err(format!(
+                            concat!(
+                                "Bytes.",
+                                $name,
+                                ": number {} ({}) doesn't fit a ",
+                                stringify!($ty)
+                            ),
+                            i, n
+                        ));
+                    }
+                    out.extend((*n as $ty).$to());
+                }
+                Ok(FunctorLangBytes(ByteView::new(out)))
+            },
+        );
+    };
+}
+
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("File.bytes", "File.bytes(path)", |path: String| {
         read_project_file("File.bytes", &path, "data/model.bin")
@@ -242,6 +274,46 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             Err(e) => e,
         },
     );
+    reg.fn1(
+        "Bytes.concat",
+        "Bytes.concat(parts)",
+        |parts: Vec<FunctorLangBytes>| {
+            FunctorLangBytes(ByteView::new(
+                parts
+                    .iter()
+                    .flat_map(|p| p.0.as_slice().iter().copied())
+                    .collect(),
+            ))
+        },
+    );
+    reg.fn1("Bytes.fromUtf8", "Bytes.fromUtf8(text)", |text: String| {
+        FunctorLangBytes(ByteView::new(text.into_bytes()))
+    });
+    reg.fn1(
+        "Bytes.fromLatin1",
+        "Bytes.fromLatin1(text)",
+        |text: String| {
+            text.chars()
+                .map(|c| u8::try_from(u32::from(c)).map_err(|_| c))
+                .collect::<Result<Vec<u8>, char>>()
+                .map(|raw| FunctorLangBytes(ByteView::new(raw)))
+                .map_err(|c| format!("Bytes.fromLatin1: {c:?} isn't a Latin-1 character"))
+        },
+    );
+    writer!(reg, "fromU8", u8, to_le_bytes, true);
+    writer!(reg, "fromI8", i8, to_le_bytes, true);
+    writer!(reg, "fromU16le", u16, to_le_bytes, true);
+    writer!(reg, "fromU16be", u16, to_be_bytes, true);
+    writer!(reg, "fromI16le", i16, to_le_bytes, true);
+    writer!(reg, "fromI16be", i16, to_be_bytes, true);
+    writer!(reg, "fromU32le", u32, to_le_bytes, true);
+    writer!(reg, "fromU32be", u32, to_be_bytes, true);
+    writer!(reg, "fromI32le", i32, to_le_bytes, true);
+    writer!(reg, "fromI32be", i32, to_be_bytes, true);
+    writer!(reg, "fromF32le", f32, to_le_bytes, false);
+    writer!(reg, "fromF32be", f32, to_be_bytes, false);
+    writer!(reg, "fromF64le", f64, to_le_bytes, false);
+    writer!(reg, "fromF64be", f64, to_be_bytes, false);
     reader!(reg, "u8", u8, from_le_bytes);
     reader!(reg, "i8", i8, from_le_bytes);
     reader!(reg, "u16le", u16, from_le_bytes);

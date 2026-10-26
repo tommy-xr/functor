@@ -33,6 +33,14 @@ pub fn bundled_modules() -> Vec<BundledModule> {
         include_str!("../stdlib/decode.fun"),
     ));
     bundled.push(BundledModule::implementation(
+        "Encode",
+        include_str!("../stdlib/encode.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "Codec",
+        include_str!("../stdlib/codec.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
         "OrbitCamera",
         include_str!("../stdlib/orbit_camera.fun"),
     ));
