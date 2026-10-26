@@ -47,6 +47,24 @@ keystore paths or passwords.
 After any runtime Rust change, rebuild and reinstall; `functor run vr` only
 pushes game source.
 
+### Install a PR's CI build
+
+`Build Android` uploads a release APK for every main push and PR head, signed
+with the shared dev key and reporting `pr | <sha7>` as `/state.build` (local
+builds report `dev`). Local and CI builds are both 0.0.0, so with the same key
+they replace each other in place. `npm run pr` installs one by PR number,
+picking the USB entry when a headset is listed twice:
+
+```sh
+npm run pr -- 1234 --apk                      # install (adb install -r -g) + launch
+npm run pr -- 1234 --apk --run primitives     # then the PR's CLI runs examples/primitives
+```
+
+It refuses a head commit whose build is missing, running or failed. An install
+signed with another key, or above 0.0.0 (older local builds were 0.1.0), needs
+`--allow-uninstall`, which uninstalls it first. CI APKs are not debuggable, so
+`bench:quest` accepts them and records their `/state.build`.
+
 ## Establish a rendering session
 
 ADB reconnects clear forwarding rules. Recreate the forward before every
