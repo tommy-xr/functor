@@ -41,6 +41,9 @@ jobs:
       - name: Test PR preview lifecycle
         run: npm run test:pr-preview
 
+      - name: Test Quest bench battery line
+        run: npm run test:quest-battery
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
