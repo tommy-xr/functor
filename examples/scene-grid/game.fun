@@ -6,7 +6,7 @@
 //          docs/vr.md)
 // Desktop: functor -d examples/scene-grid run native
 //          a stand-in room (floor, desk, wall) stands in for the real one; G
-//          toggles the grid
+//          toggles the grid (`--input-script toggle.script` does it headlessly)
 //
 // The grid is a fullscreen pass over the environment depth, so it lands on
 // whatever is there — floor, desk, walls, you — with nothing modelled.

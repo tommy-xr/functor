@@ -191,6 +191,9 @@ functor -d examples/neon-city run native
 # Printable parts at true scale on your desk, in mixed reality (also runs on desktop)
 functor -d examples/parts-mr run vr
 
+# A grid shaded onto your real room's surfaces from the headset's depth (Quest 3)
+functor -d examples/scene-grid run vr
+
 # Web — serves the .fun + wasm bundle at http://127.0.0.1:8080
 functor -d examples/primitives run wasm
 ```

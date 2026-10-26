@@ -1,0 +1,3 @@
+# Deterministic desktop proof: G toggles the grid off (plain passthrough).
+20 G down
+24 G up

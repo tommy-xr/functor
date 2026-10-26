@@ -1599,6 +1599,9 @@ Frame.withStandInRoom(scene)` supplies ordinary geometry (a floor, a desk, a
 wall) that is drawn with the scene AND stands in as that depth (the procedural
 floor does not count — declare one); it is dropped under a composited feed and
 ignored on a non-passthrough frame (`GET /state.xr.depth`).
+`frame |> Frame.withSurfaceGrid(cell, color)` shades a world-aligned grid onto
+whatever that depth finds (`examples/scene-grid`); without `Xr.scene(true)` it
+draws nothing.
 
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with
