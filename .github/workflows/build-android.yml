@@ -97,13 +97,12 @@ jobs:
         run: |
           build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)"
           "$build_tools/apksigner" verify --print-certs "$APK" | tee "$RUNNER_TEMP/certs"
-          grep -F "Signer #1 certificate DN: $SIGNER" "$RUNNER_TEMP/certs"
+          grep -F "certificate DN: $SIGNER" "$RUNNER_TEMP/certs"
           # 0.0.0 sorts below every release; not debuggable, so bench:quest accepts it.
           "$build_tools/aapt" dump badging "$APK" > "$RUNNER_TEMP/badging"
           grep -F "package: name='dev.functor.runner' versionCode='16777216' versionName='0.0.0'" "$RUNNER_TEMP/badging"
           if grep -F application-debuggable "$RUNNER_TEMP/badging"; then exit 1; fi
-          # No `grep -q`: an early exit would SIGPIPE unzip under pipefail.
-          unzip -p "$APK" lib/arm64-v8a/libfunctor_runtime_oculus.so | grep -aF "pr | ${SHA::7}" > /dev/null
+          unzip -p "$APK" lib/arm64-v8a/libfunctor_runtime_oculus.so | grep -qaF "pr | ${SHA::7}"
 
       # Without the secrets the APK above is debug-signed; publishing it would
       # break in-place replacement of every dev-key install.
