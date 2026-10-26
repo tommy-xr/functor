@@ -163,6 +163,57 @@ let settings = (model) =>
 - An unoffered `config` rate also appears as a warning in the `/load-project`
   response.
 
+### Passthrough (mixed reality)
+
+A game shows the room behind its scene with three pieces
+(`examples/passthrough` is the kata):
+
+```functor
+let config = Config.create() |> Config.xr(Xr.create() |> Xr.passthrough(true))
+let settings = (model) =>
+  Settings.create() |> Settings.xr(Xr.create() |> Xr.passthroughEnabled(model.mixedReality))
+let draw = (model, tts) => Frame.createLit(camera, scene, lights) |> Frame.withPassthrough
+```
+
+- `Xr.passthrough(true)` (`config`) starts the camera feed when the project
+  loads. The APK enables `XR_FB_passthrough` whenever the runtime offers it
+  (and declares `com.oculus.feature.PASSTHROUGH`, not required); the feed is
+  only created once a game asks. A headset without it logs a warning, appends
+  it to the `/load-project` response, and runs opaque.
+- `Xr.passthroughEnabled(on)` (`settings`) pauses or resumes the feed on
+  change. Without it the feed runs while `config` asks, even under frames that
+  are not passthrough frames, so drive it from the same model state that picks
+  `Frame.withPassthrough` (as the kata does) to keep the cameras off otherwise. Logcat prints
+  `XrPassthroughFB started` / `stopped`. A pause destroys the feed and a
+  resume recreates it running.
+- `Frame.withPassthrough` drops the skybox and clears the eye buffer to
+  transparent black while the feed is composited; elsewhere (desktop, web,
+  feed paused or unavailable) it draws a stand-in room (a darker floor at `y = 0` with a faint 1 m grid, grey walls above the horizon) behind the scene — a
+  procedural skybox-like pass, no assets — so scale and floor height read
+  without a headset and captures and goldens stay deterministic. It never runs
+  under a composited feed.
+- Composition: the passthrough layer goes UNDER the projection layer, which is
+  flagged `BLEND_TEXTURE_SOURCE_ALPHA`. The eye buffer is premultiplied (the
+  transparent clear plus the renderer's source-over blending store
+  `color * alpha`), so `UNPREMULTIPLIED_ALPHA` stays off. Untextured opaque
+  geometry writes alpha 1 and hides the room; `Scene.opacity` subtrees let it
+  through. Known limitation: an opaque draw writes its texture's alpha, so a
+  texture with alpha below 1 (an RGBA atlas, a glTF MASK material) shows the
+  room through the surface — use opaque textures in passthrough frames.
+  The environment blend mode stays `OPAQUE` — the layer brings in the room. A
+  runtime without `XR_FB_passthrough` that enumerates `ALPHA_BLEND` uses that
+  blend mode instead, with no layer.
+- The rig is room-locked: a passthrough game's camera rig stays upright however
+  the head was tilted when it centered, and its height is taken from
+  `Frame.camera`'s eye, so the stage floor is world `y = 0` under a level
+  camera. 1 unit = 1 metre, so a model authored in metres appears at true
+  scale.
+- `/state.passthrough` (debug protocol v20) reports `mode` —
+  `composited`, `paused`, or `unavailable` with a `warning` — while `config`
+  requests passthrough; desktop reports `emulated`. `/capture` reads the eye
+  buffers before composition, so it shows the game layer over transparent
+  black, not the room.
+
 ### Pipelined sim thread and XR thread hints
 
 The APK can run the game logic on its own sim thread, like desktop

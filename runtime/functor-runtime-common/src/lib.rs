@@ -92,6 +92,7 @@ mod renderer;
 mod scene3d;
 mod shader;
 pub mod shadow;
+pub mod passthrough_room;
 pub mod skybox;
 mod shader_program;
 mod sprite2d;

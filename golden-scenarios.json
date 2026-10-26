@@ -165,6 +165,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "passthrough-t2",
+      "sample": "passthrough",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

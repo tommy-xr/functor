@@ -32,6 +32,10 @@ pub struct XrConfig {
     /// Display refresh rate to request, in Hz. `None` = the shell's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_rate: Option<f32>,
+    /// `Xr.passthrough(true)`: the game may show the real world — the headset
+    /// prepares its camera feed (`XR_FB_passthrough`) for this run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub passthrough: bool,
 }
 
 /// The per-frame `settings(model)` value.
@@ -47,6 +51,61 @@ pub struct XrSettings {
     /// A pinned foveation level. `None` = the shell's default (dynamic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foveation: Option<FoveationLevel>,
+    /// `Xr.passthroughEnabled(on)`: run or pause the camera feed `config`
+    /// prepared. `None` = on whenever `config` requested passthrough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passthrough: Option<bool>,
+}
+
+/// Whether the game's `config` requests passthrough (`Xr.passthrough(true)`).
+pub fn passthrough_requested(config: Option<GameConfig>) -> bool {
+    config.is_some_and(|c| c.xr.passthrough)
+}
+
+/// Whether the camera feed should run: `config` asked for it and the latest
+/// `settings` (if any) has not paused it.
+pub fn passthrough_wanted(config: Option<GameConfig>, settings: Option<GameSettings>) -> bool {
+    passthrough_requested(config) && settings.and_then(|s| s.xr.passthrough).unwrap_or(true)
+}
+
+/// How a shell is showing the real world behind `Frame.withPassthrough`
+/// frames, as `GET /state.passthrough` reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassthroughMode {
+    /// The headset's camera feed is composited under the eye buffer.
+    Composited,
+    /// No headset: frames show the stand-in room (desktop, web).
+    Emulated,
+    /// `settings` paused the feed; frames show the stand-in room.
+    Paused,
+    /// The headset cannot show its camera feed; frames show the stand-in
+    /// room (see `PassthroughState::warning`).
+    Unavailable,
+}
+
+/// `GET /state.passthrough` (debug protocol v20): present when the game's
+/// `config` requests passthrough.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PassthroughState {
+    pub mode: PassthroughMode,
+    /// Why the feed is unavailable, when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+impl PassthroughState {
+    /// A shell with no camera feed (desktop, web): emulated while wanted.
+    pub fn emulated(config: Option<GameConfig>, settings: Option<GameSettings>) -> Option<Self> {
+        passthrough_requested(config).then(|| PassthroughState {
+            mode: if passthrough_wanted(config, settings) {
+                PassthroughMode::Emulated
+            } else {
+                PassthroughMode::Paused
+            },
+            warning: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -58,6 +117,7 @@ mod tests {
         let config = GameConfig {
             xr: XrConfig {
                 refresh_rate: Some(90.0),
+                passthrough: false,
             },
         };
         assert_eq!(
@@ -67,6 +127,7 @@ mod tests {
         let settings = GameSettings {
             xr: XrSettings {
                 foveation: Some(FoveationLevel::High),
+                passthrough: None,
             },
         };
         assert_eq!(
@@ -76,6 +137,58 @@ mod tests {
         assert_eq!(
             serde_json::to_value(GameSettings::default()).unwrap(),
             serde_json::json!({ "xr": {} })
+        );
+        let config = GameConfig {
+            xr: XrConfig {
+                refresh_rate: None,
+                passthrough: true,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            serde_json::json!({ "xr": { "passthrough": true } })
+        );
+        let state = PassthroughState {
+            mode: PassthroughMode::Unavailable,
+            warning: Some("no feed".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::json!({ "mode": "unavailable", "warning": "no feed" })
+        );
+    }
+
+    #[test]
+    fn passthrough_runs_when_configured_unless_settings_pause_it() {
+        let config = |on| {
+            Some(GameConfig {
+                xr: XrConfig {
+                    refresh_rate: None,
+                    passthrough: on,
+                },
+            })
+        };
+        let settings = |on| {
+            Some(GameSettings {
+                xr: XrSettings {
+                    foveation: None,
+                    passthrough: on,
+                },
+            })
+        };
+        assert!(!passthrough_wanted(None, None));
+        assert!(!passthrough_wanted(config(false), settings(Some(true))));
+        assert!(passthrough_wanted(config(true), None));
+        assert!(passthrough_wanted(config(true), settings(None)));
+        assert!(!passthrough_wanted(config(true), settings(Some(false))));
+        assert_eq!(PassthroughState::emulated(config(false), None), None);
+        assert_eq!(
+            PassthroughState::emulated(config(true), settings(Some(false))).unwrap().mode,
+            PassthroughMode::Paused
+        );
+        assert_eq!(
+            PassthroughState::emulated(config(true), None).unwrap().mode,
+            PassthroughMode::Emulated
         );
     }
 }

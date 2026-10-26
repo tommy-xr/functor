@@ -209,14 +209,25 @@ export interface RuntimeState {
   instance_uploads?: { count: number; bytes: number };
   /** The game's launch-time `config` value, fixed at load. Protocol v18+;
    * omitted when the game defines none. */
-  config?: { xr: { refresh_rate?: number } };
+  config?: { xr: { refresh_rate?: number; passthrough?: boolean } };
   /** The game's latest `settings(model)`, which a headset runtime applies on
    * change. Protocol v18+; omitted when the game defines no `settings`. */
-  settings?: { xr: { foveation?: "off" | "low" | "medium" | "high" } };
+  settings?: {
+    xr: { foveation?: "off" | "low" | "medium" | "high"; passthrough?: boolean };
+  };
   /** The last rendered frame's terrain draws, summed over its eye draws (a
    * stereo frame counts the shared patch set twice); `vertices` is patches ×
    * the patch mesh's vertex count. Protocol v19+; a pre-v19 runtime omits it. */
   terrain?: { patches: number; vertices: number };
+  /** How the shell shows the real world behind `Frame.withPassthrough`
+   * frames: the headset's camera feed (`composited`), the desktop/web
+   * stand-in room (`emulated`), paused by `settings`, or `unavailable` (with
+   * the reason in `warning`). Protocol v20+; omitted unless `config` requests
+   * passthrough. */
+  passthrough?: {
+    mode: "composited" | "emulated" | "paused" | "unavailable";
+    warning?: string;
+  };
 }
 
 /** Camera block from `GET /scene`. */

@@ -108,6 +108,8 @@ pub struct SceneContext {
     raw_image_pipeline: Arc<BuiltAssetPipeline<TextureData>>,
     skyboxes: RefCell<HashMap<String, SkyboxEntry>>,
     skybox_program: RefCell<Option<(ShaderProgram, SkyboxUniforms)>>,
+    // The emulated passthrough room's program, built lazily like the skybox's.
+    passthrough_room_program: RefCell<Option<(ShaderProgram, RoomUniforms)>>,
     // The screen-space compositor's fullscreen-average program, built lazily on
     // first use and cached like the skybox program (docs/time-travel.md T5).
     composite_program: RefCell<Option<(ShaderProgram, CompositeUniforms)>>,
@@ -120,6 +122,9 @@ pub struct SceneContext {
     // epilogue's encode bit (see `crate::color_space`). Defaults to `NonSrgb`
     // (shader-encoded), the desktop/web surface.
     output_colorspace: Cell<crate::color_space::OutputColorspace>,
+    // Whether the shell composites a real camera feed under the main pass
+    // this frame (`set_passthrough_composited`); see `Frame.passthrough`.
+    passthrough_composited: Cell<bool>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -224,6 +229,13 @@ struct SkyboxUniforms {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     skybox_loc: UniformLocation,
+    output: crate::color_space::OutputEncodeUniform,
+}
+
+struct RoomUniforms {
+    view_loc: UniformLocation,
+    projection_loc: UniformLocation,
+    eye_loc: UniformLocation,
     output: crate::color_space::OutputEncodeUniform,
 }
 
@@ -373,9 +385,11 @@ impl SceneContext {
             raw_image_pipeline: asset::build_pipeline(Box::new(RawImagePipeline)),
             skyboxes: RefCell::new(HashMap::new()),
             skybox_program: RefCell::new(None),
+            passthrough_room_program: RefCell::new(None),
             composite_program: RefCell::new(None),
             preloads: RefCell::new(Vec::new()),
             output_colorspace: Cell::new(crate::color_space::OutputColorspace::NonSrgb),
+            passthrough_composited: Cell::new(false),
         }
     }
 
@@ -386,6 +400,18 @@ impl SceneContext {
     /// this — nothing else may (see `crate::color_space`).
     pub fn set_output_colorspace(&self, colorspace: crate::color_space::OutputColorspace) {
         self.output_colorspace.set(colorspace);
+    }
+
+    /// Declare (per frame, by a headset shell) whether a real camera feed is
+    /// composited under the main pass. When it is, a passthrough frame's main
+    /// pass clears to transparent black instead of the placeholder, so the
+    /// eye buffer's alpha reveals the feed. Defaults to false (desktop/web).
+    pub fn set_passthrough_composited(&self, composited: bool) {
+        self.passthrough_composited.set(composited);
+    }
+
+    pub fn passthrough_composited(&self) -> bool {
+        self.passthrough_composited.get()
     }
 
     /// Whether caller-framebuffer passes need the shader epilogue's
@@ -1066,6 +1092,63 @@ skybox disabled for this set",
             gl.depth_mask(true);
             gl.depth_func(glow::LESS);
             gl.bind_texture(glow::TEXTURE_CUBE_MAP, None);
+        }
+    }
+
+    /// Draw the stand-in room behind a passthrough frame that has no real feed
+    /// (`crate::passthrough_room`): behind everything, like the skybox, from
+    /// `eye` (the floor grid is world-anchored).
+    pub fn draw_passthrough_room(
+        &self,
+        render_context: &RenderContext,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+        eye: [f32; 3],
+    ) {
+        use crate::passthrough_room::{ROOM_FRAGMENT_SHADER_SOURCE, ROOM_VERTEX_SHADER_SOURCE};
+        let gl = render_context.gl;
+        let mut program = self.passthrough_room_program.borrow_mut();
+        let (shader, uniforms) = program.get_or_insert_with(|| {
+            let vertex = Shader::build(
+                gl,
+                ShaderType::Vertex,
+                ROOM_VERTEX_SHADER_SOURCE,
+                render_context.shader_version,
+            );
+            let fragment = Shader::build(
+                gl,
+                ShaderType::Fragment,
+                ROOM_FRAGMENT_SHADER_SOURCE,
+                render_context.shader_version,
+            );
+            let shader = ShaderProgram::link(gl, &vertex, &fragment);
+            let uniforms = RoomUniforms {
+                view_loc: shader.get_uniform_location(gl, "view"),
+                projection_loc: shader.get_uniform_location(gl, "projection"),
+                eye_loc: shader.get_uniform_location(gl, "eye"),
+                output: crate::color_space::OutputEncodeUniform::get(&shader, gl),
+            };
+            (shader, uniforms)
+        });
+
+        // Strip the view translation so the cube is centered on the camera.
+        let mut view = *view_matrix;
+        view.w = cgmath::vec4(0.0, 0.0, 0.0, 1.0);
+        unsafe {
+            shader.use_program(gl);
+            shader.set_uniform_matrix4(gl, &uniforms.view_loc, &view);
+            shader.set_uniform_matrix4(gl, &uniforms.projection_loc, projection_matrix);
+            shader.set_uniform_vec3(gl, &uniforms.eye_loc, &cgmath::Vector3::from(eye));
+            uniforms
+                .output
+                .set(shader, gl, render_context.output_srgb_encode);
+            gl.depth_func(glow::LEQUAL);
+            gl.depth_mask(false);
+        }
+        self.cube.borrow_mut().draw(gl);
+        unsafe {
+            gl.depth_mask(true);
+            gl.depth_func(glow::LESS);
         }
     }
 

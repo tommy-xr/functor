@@ -56,6 +56,13 @@ name = "android.hardware.vr.headtracking"
 required = true
 version = 1
 
+# Optional passthrough camera access (`config`'s `Xr.passthrough`): without
+# this feature declared, Horizon refuses to create the passthrough feed. Not
+# required, so headsets without it still install and run opaque.
+[[package.metadata.android.uses_feature]]
+name = "com.oculus.feature.PASSTHROUGH"
+required = false
+
 # Optional hand tracking: bypasses Horizon's "controllers required" launch
 # interceptor, so the tool APK launches with controllers asleep (headless /
 # automated runs included). Real hand input is later roadmap work.

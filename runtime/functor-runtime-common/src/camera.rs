@@ -55,6 +55,26 @@ impl TrackingPose {
         Some(Self::from_parts(position, orientation))
     }
 
+    /// This pose stood upright (yaw only) at `height` above the tracking
+    /// floor — the rig reference for room-locked mixed reality. Centering on
+    /// it, in a floor-origin (STAGE) space, maps the real floor to world
+    /// `y = 0` under a level authored camera whose eye is `height` high, and
+    /// keeps the room level however the head was tilted when it was taken.
+    /// Idempotent for a fixed `height`.
+    /// Gazing near-vertically (a look down at a desk), the heading comes from
+    /// the top of the head instead. `None` only for an invalid pose.
+    pub fn floor_locked(self, height: f32) -> Option<Self> {
+        let position = self.position_vector()?;
+        let q = self.unit_orientation()?;
+        let forward = q.rotate_vector(-Vector3::unit_z());
+        let crown = q.rotate_vector(Vector3::unit_y()) * -forward.y.signum();
+        let orientation = heading(forward).or_else(|| heading(crown))?;
+        Some(Self::from_parts(
+            Vector3::new(position.x, height, position.z),
+            orientation,
+        ))
+    }
+
     /// Express `self` relative to a tracking-space reference pose.
     ///
     /// The result is target-neutral rig-local data: its origin/orientation are
@@ -107,6 +127,28 @@ impl TrackingPose {
             inverse_reference * tracked_orientation,
         ))
     }
+}
+
+/// Reduce an orientation to its yaw-only component, for a recenter
+/// reference. Recentering must zero *where you're facing* but keep pitch/roll
+/// gravity-anchored — a full-pose reference taken with a tilted head would
+/// bake that tilt in as a permanently crooked horizon. Returns `None` when the
+/// gaze is within ~11° of vertical (yaw is ill-defined staring at the
+/// ceiling); callers keep or retake their reference.
+pub fn yaw_only(q: Quaternion<f32>) -> Option<Quaternion<f32>> {
+    heading(q.rotate_vector(-Vector3::unit_z()))
+}
+
+/// The yaw about +Y that turns -Z toward `f`'s horizontal part; `None` when
+/// `f` is within ~11° of vertical.
+fn heading(f: Vector3<f32>) -> Option<Quaternion<f32>> {
+    use cgmath::Rotation3;
+    if (f.x * f.x + f.z * f.z).sqrt() < 0.2 {
+        return None;
+    }
+    // At identity the gaze is -z; from_angle_y(θ) carries -z to
+    // (-sin θ, 0, -cos θ), so θ recovers as atan2(-x, -z).
+    Some(Quaternion::from_angle_y(Rad(f32::atan2(-f.x, -f.z))))
 }
 
 /// A tracked pose mapped into the authored camera's world-space rig.
@@ -442,6 +484,7 @@ impl Default for Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cgmath::Rotation3;
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
@@ -842,6 +885,40 @@ mod tests {
         assert!(approx(relative.orientation[1], 0.0));
         assert!(approx(relative.orientation[2], 0.0));
         assert!(approx(relative.orientation[3].abs(), 1.0));
+    }
+
+    #[test]
+    fn floor_locked_keeps_heading_and_drops_tilt() {
+        // Head 1.7 m up, turned 90° left (forward = -X) and pitched down 30°.
+        let yaw = Quaternion::from_angle_y(Rad(std::f32::consts::FRAC_PI_2));
+        let pitch = Quaternion::from_angle_x(Rad(-std::f32::consts::FRAC_PI_6));
+        let q = yaw * pitch;
+        let head = TrackingPose::new([0.3, 1.7, -0.2], [q.v.x, q.v.y, q.v.z, q.s]);
+        let locked = head.floor_locked(1.6).unwrap();
+        assert_eq!(locked.position, [0.3, 1.6, -0.2]);
+        let forward = locked
+            .unit_orientation()
+            .unwrap()
+            .rotate_vector(-Vector3::unit_z());
+        assert!((forward - Vector3::new(-1.0, 0.0, 0.0)).magnitude() < 1e-5);
+        // Idempotent, and the stage floor maps to rig-local y = -height.
+        let again = locked.floor_locked(1.6).unwrap();
+        assert_eq!(again.position, locked.position);
+        let dot: f32 = (0..4).map(|i| again.orientation[i] * locked.orientation[i]).sum();
+        assert!((dot.abs() - 1.0).abs() < 1e-5);
+        // Looking straight down at a desk, the crown of the head gives the heading.
+        let down = yaw * Quaternion::from_angle_x(Rad(-std::f32::consts::FRAC_PI_2));
+        let desk = TrackingPose::new([0.0, 1.2, 0.0], [down.v.x, down.v.y, down.v.z, down.s]);
+        let forward = desk
+            .floor_locked(1.2)
+            .unwrap()
+            .unit_orientation()
+            .unwrap()
+            .rotate_vector(-Vector3::unit_z());
+        assert!((forward - Vector3::new(-1.0, 0.0, 0.0)).magnitude() < 1e-4);
+        let floor = TrackingPose::new([0.3, 0.0, -0.2], locked.orientation);
+        let local = floor.relative_to(locked).unwrap();
+        assert!((local.position[1] + 1.6).abs() < 1e-6);
     }
 
     #[test]
