@@ -26,7 +26,7 @@ use std::sync::{Arc, OnceLock};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
-pub use mesh::{face_normal, Bounds, Mesh};
+pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh};
 pub use sketch::Sketch;
 pub use text::{text, text_width, Font};
 
@@ -69,9 +69,9 @@ pub enum Solid {
     },
 }
 
-/// A boolean's mesh, evaluated once in the boolean's own frame and reused by
-/// every transform above it (e.g. a part rotated in `draw` each frame). Curves
-/// inside are faceted at that frame's scale. Ignored by equality.
+/// A boolean's or printed leaf's mesh, evaluated once in its own frame and
+/// reused by every transform above it (e.g. a part rotated in `draw` each
+/// frame). Curves inside are faceted at that frame's scale. Ignored by equality.
 #[derive(Clone, Default)]
 pub struct MeshCache(Arc<OnceLock<Result<Arc<Mesh>, String>>>);
 
@@ -128,19 +128,19 @@ impl Solid {
         }
     }
 
-    /// Triangulate the whole tree. Fails only if a boolean does.
     /// A closed, printable solid from any triangle soup (Z up): scaled so it
     /// is `height` mm tall and thickened to the `nozzle` width. Remeshed once,
     /// when first meshed.
-    pub fn printed(soup: Mesh, height: f64, nozzle: f64) -> Solid {
+    pub fn printed(soup: Arc<Mesh>, height: f64, nozzle: f64) -> Solid {
         Solid::Printed {
-            soup: Arc::new(soup),
+            soup,
             height,
             nozzle,
             result: MeshCache::default(),
         }
     }
 
+    /// Triangulate the whole tree. Fails only if a boolean or printed leaf does.
     pub fn mesh(&self) -> Result<Mesh, String> {
         let mut out = Mesh::default();
         self.append_to(&mut out, Matrix4::identity())?;
@@ -184,11 +184,14 @@ impl Solid {
                 let mesh = result
                     .0
                     .get_or_init(|| {
+                        // A part shown in a game remeshes on the game's thread:
+                        // keep its grid (memory, time) small.
                         let options = print::PrintOptions {
                             height: *height,
                             nozzle: *nozzle,
                             voxel: None,
                             simplify: None,
+                            max_cells: 20_000_000,
                         };
                         print::printable(soup, &options).map(|p| Arc::new(p.mesh))
                     })

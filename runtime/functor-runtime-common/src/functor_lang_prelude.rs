@@ -12222,6 +12222,8 @@ the game dir"
             "Mesh.triangleCount(Mesh.combine([box, moved])) == 20.0",
             "Vec3.z(Solid.bounds(Solid.fromMesh({ height: 20.0, nozzle: 0.8 }, box)).max) == 20.0",
             "Solid.volume(Solid.fromMesh({ height: 20.0, nozzle: 0.8 }, box)) > 1000.0",
+            "Solid.volume(Solid.fromMesh({ height: 20.0, nozzle: 0.8 }, box) \
+             |> Solid.subtract(Solid.box(40.0, 40.0, 20.0))) < 1000.0",
         ];
         for check in checks {
             let src = format!("{prelude}let main = {check}\n");
@@ -12240,6 +12242,12 @@ the game dir"
         assert!(err.contains("polygon 0 uses vertex 9, but there are 8"), "{err}");
         let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0]])");
         assert!(err.contains("needs 3 or more"), "{err}");
+        // A degenerate polygon (repeated corner) adds no triangles.
+        let src = format!("{prelude}let main = Mesh.triangleCount(Mesh.fromPolygons(\
+            File.bytes(\"cube.bin\"), [[0.0, 1.0, 0.0], [0.0, 1.0, 3.0]]))\n");
+        assert!(matches!(eval_with_prelude(&src), Ok(Value::Number(n)) if n == 1.0));
+        let err = failure("Solid.fromMesh({ height: 20.0 }, box)");
+        assert!(err.contains("missing field `nozzle`"), "{err}");
         let err = failure("Mesh.transformVertices(4.0, 8.0, [1.0], box)");
         assert!(err.contains("aren't within"), "{err}");
     }

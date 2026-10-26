@@ -44,6 +44,7 @@ pub fn execute(args: &ModelExport) -> Result<(), Error> {
             nozzle: args.nozzle,
             voxel: args.voxel,
             simplify: args.simplify,
+            max_cells: functor_solid::remesh::MAX_CELLS,
         },
     )
     .map_err(failed)?;

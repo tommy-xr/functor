@@ -114,6 +114,64 @@ impl Mesh {
     }
 }
 
+/// Triangles covering a planar polygon (3D corners in order, either winding),
+/// as indices into `corners`: ear clipping in the polygon's plane, so concave
+/// outlines work. Repeated corners and zero-area triangles are dropped — they
+/// would print as stray rods.
+pub fn triangulate_polygon(corners: &[[f64; 3]]) -> Vec<[usize; 3]> {
+    // Drop consecutive repeats (incl. last == first).
+    let mut ids: Vec<usize> = (0..corners.len()).collect();
+    ids.dedup_by(|b, a| corners[*a] == corners[*b]);
+    while ids.len() > 1 && corners[ids[0]] == corners[ids[ids.len() - 1]] {
+        ids.pop();
+    }
+    // Newell's normal; project out its largest axis.
+    let mut n = [0.0; 3];
+    for (k, &i) in ids.iter().enumerate() {
+        let (a, b) = (corners[i], corners[ids[(k + 1) % ids.len()]]);
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    let drop = (0..3)
+        .max_by(|&a, &b| n[a].abs().total_cmp(&n[b].abs()))
+        .unwrap();
+    let (u, v) = ((drop + 1) % 3, (drop + 2) % 3);
+    let sign = n[drop].signum();
+    let p = |i: usize| [corners[i][u], corners[i][v]];
+    // Twice the signed area of a, b, c, positive when it turns the polygon's way.
+    let turn = |a: usize, b: usize, c: usize| {
+        let (a, b, c) = (p(a), p(b), p(c));
+        sign * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+    };
+    let scale = n.iter().map(|x| x.abs()).fold(0.0, f64::max);
+    let eps = 1e-12 * scale.max(f64::MIN_POSITIVE);
+
+    let mut out = Vec::new();
+    while ids.len() > 3 {
+        let m = ids.len();
+        let ear = (0..m).find(|&k| {
+            let (a, b, c) = (ids[(k + m - 1) % m], ids[k], ids[(k + 1) % m]);
+            turn(a, b, c) > eps
+                && ids.iter().all(|&q| {
+                    q == a
+                        || q == b
+                        || q == c
+                        || turn(a, b, q) < 0.0
+                        || turn(b, c, q) < 0.0
+                        || turn(c, a, q) < 0.0
+                })
+        });
+        let Some(k) = ear else { break };
+        out.push([ids[(k + m - 1) % m], ids[k], ids[(k + 1) % m]]);
+        ids.remove(k);
+    }
+    // Whatever is left (a final triangle, or a self-crossing outline) fans.
+    out.extend(ids.windows(2).skip(1).map(|w| [ids[0], w[0], w[1]]));
+    out.retain(|&[a, b, c]| turn(a, b, c).abs() > eps);
+    out
+}
+
 pub(crate) fn boxed([x, y, z]: [f64; 3]) -> Mesh {
     let (x, y, z) = (x / 2.0, y / 2.0, z / 2.0);
     let vertices = (0..8)
@@ -204,5 +262,57 @@ pub(crate) fn sphere(radius: f64, segments: usize) -> Mesh {
     Mesh {
         vertices,
         triangles,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn polygon_area(corners: &[[f64; 3]]) -> f64 {
+        super::triangulate_polygon(corners)
+            .iter()
+            .map(|&[a, b, c]| {
+                let (a, b, c) = (corners[a], corners[b], corners[c]);
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.0
+            })
+            .sum()
+    }
+
+    #[test]
+    fn polygons_triangulate_concave_and_drop_degenerates() {
+        let flat = |pts: &[[f64; 2]]| pts.iter().map(|&[x, y]| [x, y, 0.0]).collect::<Vec<_>>();
+        // A U: area 7, where a fan would cover 11.
+        let u = flat(&[
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ]);
+        assert!((polygon_area(&u) - 7.0).abs() < 1e-9);
+        // Either winding.
+        let mut reversed = u.clone();
+        reversed.reverse();
+        assert!((polygon_area(&reversed) - 7.0).abs() < 1e-9);
+        // A square with a repeated corner and a collinear midpoint: 5 corners, 3 triangles.
+        let square = flat(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
+        ]);
+        assert_eq!(super::triangulate_polygon(&square).len(), 3);
+        assert!((polygon_area(&square) - 4.0).abs() < 1e-9);
+        // Degenerate: a "triangle" with a repeated corner, and a line.
+        assert!(
+            super::triangulate_polygon(&flat(&[[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]])).is_empty()
+        );
+        assert!(
+            super::triangulate_polygon(&flat(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])).is_empty()
+        );
     }
 }

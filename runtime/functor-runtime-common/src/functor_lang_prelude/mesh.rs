@@ -31,9 +31,38 @@ fn mesh(m: Mesh) -> FunctorLangMesh {
     FunctorLangMesh(Arc::new(m))
 }
 
+/// `Solid.fromMesh`'s `{ height, nozzle }` (mm).
+struct PrintOptions {
+    height: f64,
+    nozzle: f64,
+}
+
+impl crate::host_registry::FromArg for PrintOptions {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let Value::Record(fields) = value else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected {{ height, nozzle }}, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let number = |field| finite_record_number(fields, field, "print options", path, span);
+        Ok(PrintOptions {
+            height: f64::from(number("height")?),
+            nozzle: f64::from(number("nozzle")?),
+        })
+    }
+}
+
 /// A vertex index into `count` vertices, or why not.
 fn index(i: f64, count: usize, what: &str) -> Result<u32, String> {
-    if i >= 0.0 && i.fract() == 0.0 && i < count as f64 {
+    if !(i >= 0.0 && i.fract() == 0.0) {
+        Err(format!(
+            "{what} has vertex index {i}; indices are whole numbers ≥ 0"
+        ))
+    } else if i < count as f64 {
         Ok(i as u32)
     } else {
         Err(format!("{what} uses vertex {i}, but there are {count}"))
@@ -78,9 +107,13 @@ got {} bytes",
                     .iter()
                     .map(|&i| index(i, count, &what))
                     .collect::<Result<Vec<_>, _>>()?;
-                // Fan from the first vertex (convex polygons).
-                out.triangles
-                    .extend(ids.windows(2).skip(1).map(|w| [ids[0], w[0], w[1]]));
+                let corners: Vec<[f64; 3]> =
+                    ids.iter().map(|&i| out.vertices[i as usize]).collect();
+                out.triangles.extend(
+                    functor_solid::triangulate_polygon(&corners)
+                        .into_iter()
+                        .map(|t| t.map(|k| ids[k])),
+                );
             }
             Ok(mesh(out))
         },
@@ -146,27 +179,15 @@ translation), got {}",
     reg.fn2(
         "Solid.fromMesh",
         "Solid.fromMesh({ height, nozzle }, mesh)",
-        |options: Value, m: FunctorLangMesh| {
-            let field = |name: &str| match &options {
-                Value::Record(fields) => fields.iter().find_map(|(k, v)| match v {
-                    Value::Number(n) if k == name => Some(*n),
-                    _ => None,
-                }),
-                _ => None,
-            };
-            let (Some(height), Some(nozzle)) = (field("height"), field("nozzle")) else {
-                return Err("Solid.fromMesh: options are { height, nozzle } in mm".to_string());
-            };
-            if !(height > 0.0 && nozzle > 0.0 && height.is_finite() && nozzle.is_finite()) {
+        |PrintOptions { height, nozzle }: PrintOptions, m: FunctorLangMesh| {
+            if !(height > 0.0 && nozzle > 0.0) {
                 return Err("Solid.fromMesh: height and nozzle must be positive".to_string());
             }
             if m.0.triangles.is_empty() {
                 return Err("Solid.fromMesh: the mesh is empty".to_string());
             }
             Ok(FunctorLangSolid(Arc::new(Solid::printed(
-                (*m.0).clone(),
-                height,
-                nozzle,
+                m.0, height, nozzle,
             ))))
         },
     );

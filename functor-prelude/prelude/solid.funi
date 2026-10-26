@@ -72,6 +72,7 @@ let bounds : (t) => bounds
 type printOptions = { height: float, nozzle: float }
 /// A printable solid from any mesh — open, self-intersecting or paper-thin is
 /// fine: scaled so it is `height` mm tall, closed, and every surface thickened
-/// to the nozzle width. Remeshing takes a moment for big meshes; bind it once at
-/// the top level.
+/// to the nozzle width. Remeshing takes a moment for big meshes (and reruns on
+/// reload); bind it once at the top level, and use `functor export --model` for
+/// the finest detail on big ones.
 let fromMesh : (printOptions, Mesh.t) => t

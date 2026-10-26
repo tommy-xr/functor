@@ -16,6 +16,9 @@ pub struct PrintOptions {
     pub voxel: Option<f64>,
     /// Decimation tolerance (mm); default merges only coplanar triangles.
     pub simplify: Option<f64>,
+    /// Largest remesh grid (points) the default voxel may use; a smaller
+    /// grid means a coarser voxel (thicker minimum walls), less memory and time.
+    pub max_cells: usize,
 }
 
 #[derive(Debug)]
@@ -36,14 +39,14 @@ pub fn printable(soup: &Mesh, options: &PrintOptions) -> Result<Printed, String>
     {
         return Err("height, nozzle and voxel must be positive numbers".to_string());
     }
-    let mut soup = soup.clone();
+    let mut soup = referenced(soup);
     model::to_print_frame(&mut soup, options.height)?;
 
     // Sample at half the nozzle unless that grid would be too large.
     let offset = options.nozzle / 2.0;
     let voxel = match options.voxel {
         Some(v) => v,
-        None => remesh::fitting_voxel(&soup, options.nozzle / 2.0, offset),
+        None => remesh::fitting_voxel(&soup, options.nozzle / 2.0, offset, options.max_cells),
     };
     // The shell grows the model on every side, so shrink it by that first;
     // the final rescale below then only corrects voxel rounding and leaves
@@ -69,6 +72,22 @@ pub fn printable(soup: &Mesh, options: &PrintOptions) -> Result<Printed, String>
     })
 }
 
+/// `soup` without vertices no triangle uses — they would skew its size.
+fn referenced(soup: &Mesh) -> Mesh {
+    let mut map = vec![u32::MAX; soup.vertices.len()];
+    let mut out = Mesh::default();
+    for t in &soup.triangles {
+        out.triangles.push(t.map(|i| {
+            if map[i as usize] == u32::MAX {
+                map[i as usize] = out.vertices.len() as u32;
+                out.vertices.push(soup.vertices[i as usize]);
+            }
+            map[i as usize]
+        }));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +111,7 @@ mod tests {
                 nozzle: 0.8,
                 voxel: None,
                 simplify: None,
+                max_cells: remesh::MAX_CELLS,
             },
         )
         .unwrap();
@@ -108,10 +128,31 @@ mod tests {
                 height: 0.5,
                 nozzle: 0.8,
                 voxel: None,
-                simplify: None
+                simplify: None,
+                max_cells: remesh::MAX_CELLS,
             }
         )
         .unwrap_err()
         .contains("shell"));
+    }
+
+    /// A stray vertex no triangle uses doesn't change the part.
+    #[test]
+    fn unused_vertices_are_ignored() {
+        let options = |_| PrintOptions {
+            height: 20.0,
+            nozzle: 0.8,
+            voxel: None,
+            simplify: None,
+            max_cells: remesh::MAX_CELLS,
+        };
+        let soup = open_box();
+        let mut stray = soup.clone();
+        stray.vertices.push([0.0, 0.0, 100.0]);
+        let (a, b) = (
+            printable(&soup, &options(())).unwrap().mesh,
+            printable(&stray, &options(())).unwrap().mesh,
+        );
+        assert_eq!(a, b);
     }
 }
