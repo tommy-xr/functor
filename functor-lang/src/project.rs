@@ -469,6 +469,23 @@ fn is_interface(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("funi")
 }
 
+/// [`SourceMap::file_at`] over files ascending by `base`.
+fn file_at(files: &[SourceFile], offset: usize) -> &SourceFile {
+    files
+        .iter()
+        .rev()
+        .find(|file| file.base <= offset)
+        .unwrap_or(&files[0])
+}
+
+/// [`SourceMap::resolve`] over files ascending by `base`.
+fn resolve(files: &[SourceFile], offset: usize) -> (&SourceFile, usize, usize) {
+    let file = file_at(files, offset);
+    let local = (offset - file.base).min(file.src.len());
+    let (line, col) = line_col(&file.src, local);
+    (file, line, col)
+}
+
 /// Renders project-wide span offsets back to `file:line:col`.
 pub struct SourceMap {
     /// Ascending by `base`; the entry file first (base 0), so span-less
@@ -484,19 +501,12 @@ impl SourceMap {
     /// The file containing project-wide offset `offset` (the entry file for
     /// out-of-range offsets — fail soft, this is error rendering).
     pub fn file_at(&self, offset: usize) -> &SourceFile {
-        self.files
-            .iter()
-            .rev()
-            .find(|file| file.base <= offset)
-            .unwrap_or(&self.files[0])
+        file_at(&self.files, offset)
     }
 
     /// Render a project-wide offset as (path, line, col).
     pub fn resolve(&self, offset: usize) -> (&SourceFile, usize, usize) {
-        let file = self.file_at(offset);
-        let local = (offset - file.base).min(file.src.len());
-        let (line, col) = line_col(&file.src, local);
-        (file, line, col)
+        resolve(&self.files, offset)
     }
 
     /// Render an error at a project-wide span offset: `path:line:col: message`.
@@ -848,16 +858,10 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     let entry = files[0].module.clone();
 
     // Parse every file (spans land in the project-wide space).
-    let render_span = |files: &[SourceFile], index: usize, span: crate::Span, message: &str| {
-        // By span, not by `index`: an entry default's items are lowered with
-        // the entry but live in their own bundled file.
-        let file = files
-            .iter()
-            .rev()
-            .find(|f| f.base <= span.start)
-            .unwrap_or(&files[index]);
-        let local = (span.start - file.base).min(file.src.len());
-        let (line, col) = line_col(&file.src, local);
+    // By span, not by file: an entry default's items are lowered with the
+    // entry but live in their own bundled file.
+    let render_span = |files: &[SourceFile], span: crate::Span, message: &str| {
+        let (file, line, col) = resolve(files, span.start);
         ProjectError {
             path: file.path.clone(),
             line,
@@ -866,14 +870,14 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         }
     };
     let mut programs: Vec<ast::Program> = Vec::new();
-    for (index, file) in files.iter().enumerate() {
+    for file in files.iter() {
         let parse = if file.interface {
             parse_interface_with_base
         } else {
             parse_with_base
         };
-        let program = parse(&file.src, file.base)
-            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+        let program =
+            parse(&file.src, file.base).map_err(|e| render_span(&files, e.span, &e.message))?;
         programs.push(program);
     }
 
@@ -910,7 +914,7 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     let mut exports: HashMap<String, Exports> = HashMap::new();
     let mut inline_modules: Vec<InlineModule> = Vec::new();
     let file_modules: HashSet<&str> = files.iter().map(|f| f.module.as_str()).collect();
-    for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
+    for (file, program) in files.iter().zip(&programs) {
         exports.insert(file.module.clone(), exports_of(&program.items));
         for decl in program.items.iter().filter_map(|item| match item {
             ast::Item::Module(decl) => Some(decl),
@@ -927,7 +931,6 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
             if PROTECTED_NAMESPACES.contains(&name) {
                 return Err(render_span(
                     &files,
-                    index,
                     span,
                     &format!(
                         "`module {name}` collides with the built-in `{name}` namespace — \
@@ -942,7 +945,6 @@ rename it"
                     .expect("module name came from files");
                 return Err(render_span(
                     &files,
-                    index,
                     span,
                     &format!(
                         "`module {name}` collides with the module of {} — rename one",
@@ -980,7 +982,6 @@ rename it"
             if let Some(&previous) = declared_in.get(decl.suffix.as_str()) {
                 return Err(render_span(
                     &files,
-                    index,
                     decl.span,
                     &format!(
                         "duplicate unit `{}` — it is already declared in {} (units are \
@@ -994,7 +995,7 @@ project-wide, like constructors)",
         }
     }
     let mut units: HashMap<String, UnitTarget> = HashMap::new();
-    for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
+    for (file, program) in files.iter().zip(&programs) {
         let env = ProjectEnv {
             name: &file.module,
             entry: &entry,
@@ -1002,7 +1003,7 @@ project-wide, like constructors)",
             units: &HashMap::new(),
         };
         let resolved = resolve_units(&program.items, Some(&env))
-            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+            .map_err(|e| render_span(&files, e.span, &e.message))?;
         for (suffix, target, _) in resolved {
             units.insert(suffix, target);
         }
@@ -1014,7 +1015,7 @@ project-wide, like constructors)",
     let mut lowered: Vec<Module> = Vec::new();
     let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
     let mut scopes = RecordLiteralScopes::default();
-    for (index, (file, program)) in files.iter().zip(programs).enumerate() {
+    for (file, program) in files.iter().zip(programs) {
         // Record-literal visibility for this module: its own types plus its
         // `open`ed modules' (by canonical name — the entry's are bare).
         // Mirrors `lower::Lowerer::qualify`: the entry file's members stay
@@ -1088,7 +1089,7 @@ project-wide, like constructors)",
             units: &units,
         };
         let (module, next, module_deps) = lower_in_project(program, &env, bases)
-            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+            .map_err(|e| render_span(&files, e.span, &e.message))?;
         bases = next;
         lowered.push(module);
         // An interface module has no runtime initializers, so its out-edges

@@ -25,7 +25,7 @@ let draw = (part: Solid.t, m, tts: float) =>
   let lo = toScene(b.min) in
   let hi = toScene(b.max) in
   let center = Vec3.scale(0.5, Vec3.add(lo, hi)) in
-  let size = Vec3.length(Vec3.sub(hi, lo)) in
+  let size = Vec3.distance(lo, hi) in
   Frame.createLit(
     OrbitCamera.camera(m.orbit, center, size),
     Scene.group([
