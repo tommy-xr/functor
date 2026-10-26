@@ -22,8 +22,9 @@ let transformVertices : (float, float, List<float>, t) => t
 let combine : (List<t>) => t
 /// The mesh in a scene, as it is (no remeshing): Z up becomes the scene's Y up,
 /// units unchanged — scale it to taste. Style it like any scene node
-/// (`|> Scene.lit(color)`). Cheap to call every frame, so a mesh posed per frame
-/// (an animated character) draws directly.
+/// (`|> Scene.lit(color)`). Drawing the same mesh every frame reuses one GPU
+/// copy; a new mesh each frame (an animated character) is converted and
+/// uploaded each frame.
 let toScene : (t) => Scene.t
 /// The number of triangles.
 let triangleCount : (t) => float

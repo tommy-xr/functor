@@ -6,18 +6,19 @@ use std::sync::Arc;
 use functor_solid::{Mesh, Solid};
 
 use super::bytes::FunctorLangBytes;
-use super::solid::{bounds_value, FunctorLangSolid};
+use super::solid::{bounds_value, render_data, FunctorLangSolid, WeakMemo};
 use super::*;
 
-/// A [`Mesh`] (Z up, the source's own units) as an opaque value, with its
-/// renderable copy made once, on first `Mesh.toScene` — the renderer caches GPU
-/// meshes by that copy's address, so a mesh drawn every frame uploads once.
-pub struct FunctorLangMesh(pub Arc<MeshHandle>);
-
-pub struct MeshHandle {
-    pub mesh: Arc<Mesh>,
-    render: std::sync::OnceLock<Arc<crate::scene3d::MeshData>>,
+thread_local! {
+    /// Mesh → what the renderer draws, so a mesh drawn every frame keeps one
+    /// GPU copy (the renderer caches by this `Arc`'s address). Weak and
+    /// bounded, so meshes retained in history don't pin render copies.
+    static MESH_RENDERS: std::cell::RefCell<WeakMemo<Mesh, Arc<crate::scene3d::MeshData>>> =
+        std::cell::RefCell::new(WeakMemo::default());
 }
+
+/// A [`Mesh`] (Z up, the source's own units) as an opaque value.
+pub struct FunctorLangMesh(pub Arc<Mesh>);
 
 impl HostData for FunctorLangMesh {
     fn type_name(&self) -> &'static str {
@@ -35,10 +36,7 @@ impl HostData for FunctorLangMesh {
 crate::host_returnable!(FunctorLangMesh);
 
 fn mesh(m: Mesh) -> FunctorLangMesh {
-    FunctorLangMesh(Arc::new(MeshHandle {
-        mesh: Arc::new(m),
-        render: Default::default(),
-    }))
+    FunctorLangMesh(Arc::new(m))
 }
 
 /// `Solid.fromMesh`'s `{ height, nozzle }` (mm).
@@ -132,7 +130,7 @@ got {} bytes",
         "Mesh.transformVertices",
         "Mesh.transformVertices(start, count, matrix, mesh)",
         |start: f64, count: f64, matrix: Vec<f64>, m: FunctorLangMesh| {
-            let total = m.0.mesh.vertices.len();
+            let total = m.0.vertices.len();
             let range = (start >= 0.0
                 && count >= 0.0
                 && start.fract() == 0.0
@@ -153,7 +151,7 @@ translation), got {}",
                         m.len()
                     )
                 })?;
-            let mut out = (*m.0.mesh).clone();
+            let mut out = (*m.0).clone();
             for v in &mut out.vertices[range] {
                 let [x, y, z] = *v;
                 *v = [
@@ -171,7 +169,7 @@ translation), got {}",
         |meshes: Vec<FunctorLangMesh>| {
             let mut out = Mesh::default();
             for m in &meshes {
-                out.extend(&m.0.mesh);
+                out.extend(&m.0);
             }
             mesh(out)
         },
@@ -181,21 +179,8 @@ translation), got {}",
         "Mesh.toScene",
         "Mesh.toScene(mesh)",
         |m: FunctorLangMesh| {
-            let render =
-                m.0.render
-                    .get_or_init(|| {
-                        Arc::new(crate::scene3d::MeshData {
-                            positions: m
-                                .0
-                                .mesh
-                                .vertices
-                                .iter()
-                                .map(|v| v.map(|x| x as f32))
-                                .collect(),
-                            triangles: m.0.mesh.triangles.clone(),
-                        })
-                    })
-                    .clone();
+            let render = MESH_RENDERS
+                .with(|memo| memo.borrow_mut().get_or_insert(&m.0, || render_data(&m.0)));
             FunctorLangScene(crate::scene3d::Scene3D {
                 obj: crate::scene3d::SceneObject::Geometry(crate::scene3d::Shape::Mesh {
                     mesh: render,
@@ -207,11 +192,10 @@ translation), got {}",
     reg.fn1(
         "Mesh.triangleCount",
         "Mesh.triangleCount(mesh)",
-        |m: FunctorLangMesh| Value::Number(m.0.mesh.triangles.len() as f64),
+        |m: FunctorLangMesh| Value::Number(m.0.triangles.len() as f64),
     );
     reg.fn1("Mesh.bounds", "Mesh.bounds(mesh)", |m: FunctorLangMesh| {
-        m.0.mesh
-            .bounds()
+        m.0.bounds()
             .map(bounds_value)
             .ok_or_else(|| "Mesh.bounds: the mesh is empty".to_string())
     });
@@ -222,13 +206,11 @@ translation), got {}",
             if !(height > 0.0 && nozzle > 0.0) {
                 return Err("Solid.fromMesh: height and nozzle must be positive".to_string());
             }
-            if m.0.mesh.triangles.is_empty() {
+            if m.0.triangles.is_empty() {
                 return Err("Solid.fromMesh: the mesh is empty".to_string());
             }
             Ok(FunctorLangSolid(Arc::new(Solid::printed(
-                m.0.mesh.clone(),
-                height,
-                nozzle,
+                m.0, height, nozzle,
             ))))
         },
     );

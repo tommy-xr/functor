@@ -12777,6 +12777,22 @@ the game dir"
             panic!("expected a mesh node")
         };
         assert_eq!(mesh.triangles.len(), 10);
+        // The same mesh draws from one render copy (one GPU upload).
+        let src = format!("{prelude}let main = [Mesh.toScene(box), Mesh.toScene(box)]\n");
+        let Ok(Value::List(scenes)) = eval_with_prelude(&src) else {
+            panic!("expected a list")
+        };
+        let render = |v: &Value| {
+            let Value::HostData(data) = v else { panic!() };
+            let node = data.as_any().downcast_ref::<FunctorLangScene>().unwrap();
+            let crate::scene3d::SceneObject::Geometry(crate::scene3d::Shape::Mesh { mesh }) =
+                &node.0.obj
+            else {
+                panic!()
+            };
+            std::sync::Arc::as_ptr(mesh) as usize
+        };
+        assert_eq!(render(&scenes[0]), render(&scenes[1]));
         let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0, 9.0]])");
         assert!(err.contains("polygon 0 uses vertex 9, but there are 8"), "{err}");
         let err = failure("Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 1.0]])");
