@@ -47,7 +47,7 @@ impl HostData for FunctorLangSketch {
     }
 }
 
-/// A built-in [`Font`] as an opaque Functor Lang value.
+/// A [`Font`] (built in or from a file) as an opaque Functor Lang value.
 pub struct FunctorLangFont(pub Font);
 
 impl HostData for FunctorLangFont {
@@ -374,12 +374,17 @@ fn register_sketch(reg: &mut crate::host_registry::Registry) {
     reg.fn0("Typeface.sans", "Typeface.sans()", || {
         FunctorLangFont(Font::Sans)
     });
+    reg.fn1(
+        "Typeface.file",
+        "Typeface.file(path) — a .ttf or .otf file in the project",
+        |path: String| typeface_file(&path).map(FunctorLangFont),
+    );
     reg.fn3(
         "Sketch.text",
         "Sketch.text(typeface, size, text)",
         |font: FunctorLangFont, size: f64, s: String| {
             let size = positive(size, "Sketch.text size")?;
-            functor_solid::text(font.0, size, &s)
+            functor_solid::text(&font.0, size, &s)
                 .map(sketch)
                 .map_err(|e| format!("Sketch.text: {e}"))
         },
@@ -389,7 +394,7 @@ fn register_sketch(reg: &mut crate::host_registry::Registry) {
         "Sketch.textWidth(typeface, size, text)",
         |font: FunctorLangFont, size: f64, s: String| {
             let size = positive(size, "Sketch.textWidth size")?;
-            functor_solid::text_width(font.0, size, &s)
+            functor_solid::text_width(&font.0, size, &s)
                 .map(Value::Number)
                 .map_err(|e| format!("Sketch.textWidth: {e}"))
         },
@@ -496,4 +501,49 @@ mod tests {
         }
         assert_eq!(memo_len(), RENDER_MESH_CAP);
     }
+}
+
+/// A font file in the project, cached by path and modification time: a
+/// `Typeface.file` in `draw` reads once, and an edited file reloads.
+#[cfg(not(target_arch = "wasm32"))]
+fn typeface_file(path: &str) -> Result<Font, String> {
+    use std::path::{Component, Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::SystemTime;
+    static CACHE: once_cell::sync::Lazy<Mutex<HashMap<PathBuf, (SystemTime, Font)>>> =
+        once_cell::sync::Lazy::new(Default::default);
+
+    let relative = Path::new(path);
+    let inside = relative
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+    if path.is_empty() || !inside {
+        return Err(format!(
+            "Typeface.file({path:?}): use a path inside the project, like \"fonts/MyFont.ttf\""
+        ));
+    }
+    let full = crate::storage::project_dir().join(relative);
+    let unreadable =
+        |e: std::io::Error| format!("Typeface.file: can't read {path} in the project ({e})");
+    let modified = std::fs::metadata(&full)
+        .and_then(|m| m.modified())
+        .map_err(unreadable)?;
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((when, font)) = cache.get(&full) {
+        if *when == modified {
+            return Ok(font.clone());
+        }
+    }
+    let bytes = std::fs::read(&full).map_err(unreadable)?;
+    let font = Font::from_bytes(path, bytes).map_err(|e| format!("Typeface.file: {e}"))?;
+    cache.insert(full, (modified, font.clone()));
+    Ok(font)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn typeface_file(path: &str) -> Result<Font, String> {
+    Err(format!(
+        "Typeface.file({path:?}): font files load in native runs and `functor export` for \
+now — on the web, use Typeface.sans() or Typeface.script()"
+    ))
 }

@@ -1,10 +1,10 @@
 //! Text as a [`Sketch`]: one line laid out with HarfBuzz shaping (kerning,
 //! ligatures) and glyph outlines flattened to the chord tolerance.
 //!
-//! Fonts are built in (OFL subsets, see `fonts/README.md`) so text stays pure
-//! and works on every target; loading font files is future asset work.
+//! Two fonts are built in (OFL subsets, see `fonts/README.md`) so text works
+//! on every target; any TrueType/OpenType font loads from its bytes.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use harfrust::{FontRef, ShapeOptions, ShaperData, UnicodeBuffer};
 use i_overlay::core::fill_rule::FillRule;
@@ -15,37 +15,69 @@ use skrifa::{GlyphId, MetadataProvider};
 
 use crate::{Sketch, CHORD_TOLERANCE};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Font {
     /// A readable semi-cursive script (derived from Courgette).
     Script,
     /// A clean sans-serif (derived from Lato).
     Sans,
+    /// A font file's bytes (see [`Font::from_bytes`]).
+    Custom(Arc<CustomFont>),
+}
+
+/// A TrueType/OpenType font loaded from bytes, with its shaping caches.
+pub struct CustomFont {
+    name: String,
+    bytes: Vec<u8>,
+    shaper: OnceLock<ShaperData>,
+}
+
+impl std::fmt::Debug for CustomFont {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "CustomFont({})", self.name)
+    }
 }
 
 impl Font {
-    fn name(self) -> &'static str {
+    /// A font from a `.ttf`/`.otf` file's bytes; `name` labels its errors.
+    pub fn from_bytes(name: &str, bytes: Vec<u8>) -> Result<Font, String> {
+        let face = FontRef::new(&bytes)
+            .map_err(|e| format!("{name} is not a TrueType or OpenType font ({e})"))?;
+        if face.outline_glyphs().format().is_none() {
+            return Err(format!("{name} has no glyph outlines"));
+        }
+        Ok(Font::Custom(Arc::new(CustomFont {
+            name: name.to_string(),
+            bytes,
+            shaper: OnceLock::new(),
+        })))
+    }
+
+    fn name(&self) -> &str {
         match self {
-            Font::Script => "script",
-            Font::Sans => "sans",
+            Font::Script => "the script typeface",
+            Font::Sans => "the sans typeface",
+            Font::Custom(font) => &font.name,
         }
     }
 
-    fn face(self) -> FontRef<'static> {
-        let bytes: &'static [u8] = match self {
+    fn face(&self) -> FontRef<'_> {
+        let bytes: &[u8] = match self {
             Font::Script => include_bytes!("../fonts/FunctorScript-Regular.ttf"),
             Font::Sans => include_bytes!("../fonts/FunctorSans-Regular.ttf"),
+            Font::Custom(font) => &font.bytes,
         };
-        FontRef::new(bytes).expect("built-in fonts parse")
+        FontRef::new(bytes).expect("fonts are checked when created")
     }
 
     /// Shaping lookup caches, built once per font.
-    fn shaper_data(self) -> &'static ShaperData {
+    fn shaper_data(&self) -> &ShaperData {
         static SCRIPT: OnceLock<ShaperData> = OnceLock::new();
         static SANS: OnceLock<ShaperData> = OnceLock::new();
         let cell = match self {
             Font::Script => &SCRIPT,
             Font::Sans => &SANS,
+            Font::Custom(font) => &font.shaper,
         };
         cell.get_or_init(|| ShaperData::new(&self.face()))
     }
@@ -59,16 +91,13 @@ const EM_PER_SIZE: f64 = 100.0 / 72.0;
 /// total advance. Errors on a character the font can't draw (including line
 /// breaks), rather than leaving a silent gap in a printed part.
 fn shape(
-    font: Font,
+    font: &Font,
     face: &FontRef,
     text: &str,
 ) -> Result<(Vec<(GlyphId, f64, f64)>, f64), String> {
     let charmap = face.charmap();
     if let Some(c) = text.chars().find(|&c| charmap.map(c).is_none()) {
-        return Err(format!(
-            "{c:?} isn't in the {} typeface (one line of Latin-1 text)",
-            font.name()
-        ));
+        return Err(format!("{c:?} isn't in {} (one line of text)", font.name()));
     }
     let shaper = font.shaper_data().shaper(face).build();
     let mut buffer = UnicodeBuffer::new();
@@ -102,7 +131,7 @@ fn scale(face: &FontRef, size: f64) -> f64 {
 
 /// One line of `text`, `size` as in OpenSCAD, starting at the origin on the
 /// baseline. Overlapping glyphs merge; counters ("o", "e") stay holes.
-pub fn text(font: Font, size: f64, text: &str) -> Result<Sketch, String> {
+pub fn text(font: &Font, size: f64, text: &str) -> Result<Sketch, String> {
     let face = font.face();
     let (glyphs, _) = shape(font, &face, text)?;
     let outlines = face.outline_glyphs();
@@ -121,7 +150,7 @@ pub fn text(font: Font, size: f64, text: &str) -> Result<Sketch, String> {
                 DrawSettings::unhinted(Size::unscaled(), LocationRef::default()),
                 &mut pen,
             )
-            .expect("built-in glyphs draw (tested for every mapped character)");
+            .map_err(|e| format!("a glyph in {} can't be drawn ({e})", font.name()))?;
     }
     let contours: Vec<Vec<[f64; 2]>> = pen.contours.into_iter().filter(|c| c.len() >= 3).collect();
     Ok(Sketch {
@@ -131,7 +160,7 @@ pub fn text(font: Font, size: f64, text: &str) -> Result<Sketch, String> {
 
 /// The advance width of one line of `text`, in mm — for right or centered
 /// alignment.
-pub fn text_width(font: Font, size: f64, text: &str) -> Result<f64, String> {
+pub fn text_width(font: &Font, size: f64, text: &str) -> Result<f64, String> {
     let face = font.face();
     Ok(shape(font, &face, text)?.1 * scale(&face, size))
 }
@@ -247,13 +276,13 @@ mod tests {
     /// with OpenSCAD 2021.01); the size convention must reproduce it.
     #[test]
     fn size_matches_openscad() {
-        let (lo, hi) = bounds(&text(Font::Script, 10.0, "H").unwrap());
+        let (lo, hi) = bounds(&text(&Font::Script, 10.0, "H").unwrap());
         assert!((hi[1] - lo[1] - 10.606).abs() < 0.01, "{}", hi[1] - lo[1]);
     }
 
     #[test]
     fn counters_are_holes_and_words_extrude_closed() {
-        let o = text(Font::Sans, 10.0, "o").unwrap();
+        let o = text(&Font::Sans, 10.0, "o").unwrap();
         assert_eq!(o.shapes.len(), 1);
         assert_eq!(o.shapes[0].len(), 2, "outer ring + counter");
         for font in [Font::Script, Font::Sans] {
@@ -262,7 +291,7 @@ mod tests {
                 "The quick brown fox jumps over the lazy dog",
                 "SPHINX OF BLACK QUARTZ, JUDGE MY VOW 0123456789",
             ] {
-                let s = text(font, 6.0, line).unwrap();
+                let s = text(&font, 6.0, line).unwrap();
                 assert_eq!(s.touching_point(), None, "{font:?} {line}");
                 let mesh = s.extrude(0.6);
                 assert_eq!(mesh.non_manifold_edges(), 0);
@@ -277,24 +306,24 @@ mod tests {
             let face = font.face();
             for (c, _) in face.charmap().mappings() {
                 let c = char::from_u32(c).unwrap();
-                assert!(text(font, 5.0, &c.to_string()).is_ok(), "{font:?} {c:?}");
+                assert!(text(&font, 5.0, &c.to_string()).is_ok(), "{font:?} {c:?}");
             }
         }
     }
 
     #[test]
     fn unsupported_characters_and_line_breaks_are_errors() {
-        let err = text(Font::Script, 6.0, "5 €").unwrap_err();
+        let err = text(&Font::Script, 6.0, "5 €").unwrap_err();
         assert!(err.contains("'€'"), "{err}");
-        assert!(text(Font::Sans, 6.0, "a\nb").is_err());
-        assert!(text_width(Font::Sans, 6.0, "♥").is_err());
+        assert!(text(&Font::Sans, 6.0, "a\nb").is_err());
+        assert!(text_width(&Font::Sans, 6.0, "♥").is_err());
     }
 
     /// Offsetting a word leaves point pairs nanometres apart; extrusion must
     /// still come out closed.
     #[test]
     fn fattened_words_extrude_closed() {
-        let s = text(Font::Script, 6.0, "Husband").unwrap().offset(0.12);
+        let s = text(&Font::Script, 6.0, "Husband").unwrap().offset(0.12);
         let mesh = s.extrude(0.6);
         assert_eq!(mesh.shared_positions(), 0);
         assert_eq!(mesh.non_manifold_edges(), 0);
@@ -302,10 +331,25 @@ mod tests {
 
     #[test]
     fn width_tracks_shaped_advance() {
-        let w = text_width(Font::Sans, 10.0, "Hello").unwrap();
-        let (lo, hi) = bounds(&text(Font::Sans, 10.0, "Hello").unwrap());
+        let w = text_width(&Font::Sans, 10.0, "Hello").unwrap();
+        let (lo, hi) = bounds(&text(&Font::Sans, 10.0, "Hello").unwrap());
         assert!(w >= hi[0] - lo[0] && w < (hi[0] - lo[0]) * 1.3, "{w}");
-        assert_eq!(text_width(Font::Sans, 10.0, "").unwrap(), 0.0);
-        assert!(text(Font::Sans, 10.0, "").unwrap().is_empty());
+        assert_eq!(text_width(&Font::Sans, 10.0, "").unwrap(), 0.0);
+        assert!(text(&Font::Sans, 10.0, "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_font_file_draws_like_the_built_in_it_copies() {
+        let bytes = include_bytes!("../fonts/FunctorSans-Regular.ttf").to_vec();
+        let file = Font::from_bytes("Sans.ttf", bytes).unwrap();
+        let line = "Love, Kid 1 & Kid 2";
+        assert_eq!(
+            text(&file, 6.0, line).unwrap().shapes,
+            text(&Font::Sans, 6.0, line).unwrap().shapes
+        );
+        let err = text(&file, 6.0, "♥").unwrap_err();
+        assert!(err.contains("Sans.ttf"), "{err}");
+        let err = Font::from_bytes("notes.txt", b"not a font".to_vec()).unwrap_err();
+        assert!(err.contains("notes.txt is not a TrueType"), "{err}");
     }
 }
