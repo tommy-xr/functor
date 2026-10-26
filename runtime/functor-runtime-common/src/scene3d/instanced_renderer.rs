@@ -177,7 +177,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
         in vec2 texCoord;
-        in vec3 worldPos;
+        in highp vec3 worldPos; // full precision for the light loop (see lighting_glsl)
         in vec3 worldNormal;
         in vec3 worldTangent;
         in vec4 instanceColor;

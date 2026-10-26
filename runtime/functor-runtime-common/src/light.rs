@@ -273,13 +273,16 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
         uniform int numLights;
         uniform int lightType[MAX_LIGHTS];      // 0=ambient 1=directional 2=point 3=spot
         uniform vec3 lightColor[MAX_LIGHTS];     // already * intensity
-        uniform vec3 lightPosition[MAX_LIGHTS];  // point / spot
-        uniform vec3 lightDirection[MAX_LIGHTS]; // directional / spot (travel dir)
+        // Positions and the spot-cone math are highp: GLES fragment shaders
+        // default to mediump (fp16 on Adreno), which steps world positions
+        // ~1 m apart a kilometre out and stair-steps a spotlight's cone edge.
+        uniform highp vec3 lightPosition[MAX_LIGHTS];  // point / spot
+        uniform highp vec3 lightDirection[MAX_LIGHTS]; // directional / spot (travel dir)
         uniform float lightRange[MAX_LIGHTS];    // point / spot falloff distance
-        uniform float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
+        uniform highp float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
 
         // Camera world position, for the Blinn-Phong specular view direction.
-        uniform vec3 viewPos;
+        uniform highp vec3 viewPos;
         const float shininess = 32.0;
         const float specularStrength = 0.4;
 
@@ -287,7 +290,7 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
         // `shadowLightIndex` is which light it belongs to, so only that light's
         // contribution is shadowed.
         uniform sampler2D shadowMap;
-        uniform mat4 lightSpaceMatrix;
+        uniform highp mat4 lightSpaceMatrix;
         uniform int shadowEnabled;
         uniform int shadowLightIndex;
 
@@ -299,9 +302,9 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
         // 0 = fully lit, 1 = fully shadowed. 3x3 PCF; out-of-frustum reads as lit.
         // Works for ortho (directional) and perspective (spot) light matrices —
         // the divide by w handles the perspective case.
-        float sampleShadow(vec3 worldPos, float ndotl) {
-            vec4 lightSpacePos = lightSpaceMatrix * vec4(worldPos, 1.0);
-            vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
+        float sampleShadow(highp vec3 worldPos, float ndotl) {
+            highp vec4 lightSpacePos = lightSpaceMatrix * vec4(worldPos, 1.0);
+            highp vec3 proj = lightSpacePos.xyz / lightSpacePos.w;
             proj = proj * 0.5 + 0.5;
             if (proj.z > 1.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
                 return 0.0;
@@ -322,7 +325,7 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
         // Sum the frame's lights at a surface point. Diffuse and specular are
         // kept separate so specular highlights stay the light's color, not
         // tinted by albedo (the caller multiplies only diffuse by albedo).
-        void accumulateLights(vec3 n, vec3 worldPos, out vec3 diffuseLight, out vec3 specularLight) {
+        void accumulateLights(vec3 n, highp vec3 worldPos, out vec3 diffuseLight, out vec3 specularLight) {
             vec3 viewDir = normalize(viewPos - worldPos);
             diffuseLight = vec3(0.0);
             specularLight = vec3(0.0);
@@ -335,14 +338,14 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
                 }
 
                 // Unit vector toward the light, and an attenuation factor.
-                vec3 l;
+                highp vec3 l;
                 float atten = 1.0;
                 if (t == 1) {
                     l = -normalize(lightDirection[i]);
                 } else {
                     // Point (t == 2) or spot (t == 3): both attenuate by distance.
-                    vec3 toLight = lightPosition[i] - worldPos;
-                    float dist = length(toLight);
+                    highp vec3 toLight = lightPosition[i] - worldPos;
+                    highp float dist = length(toLight);
                     l = toLight / max(dist, 1e-4);
 
                     float range = max(lightRange[i], 1e-4);
@@ -350,7 +353,7 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
                     atten = a * a;
 
                     if (t == 3) {
-                        float cosAngle = dot(-l, normalize(lightDirection[i]));
+                        highp float cosAngle = dot(-l, normalize(lightDirection[i]));
                         // Soft edge over a small band inside the cone.
                         float outer = lightConeCos[i];
                         float inner = mix(1.0, outer, 0.85);
