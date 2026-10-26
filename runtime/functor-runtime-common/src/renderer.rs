@@ -338,6 +338,10 @@ are ignored — declare Frame.withUiTarget on the main frame",
         }
     };
 
+    // The main pass's projection: the shell's exact one (XR) or the camera's.
+    let main_projection = projection_matrix
+        .copied()
+        .unwrap_or_else(|| camera.projection_matrix(viewport.aspect()));
     // `Xr.scene`'s environment depth for this pass: the device's, or the
     // stand-in room rendered depth-only from this pass's camera.
     crate::environment_depth::prepare(
@@ -347,10 +351,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame_time.clone(),
         scene_context,
         frame,
-        projection_matrix
-            .copied()
-            .unwrap_or_else(|| camera.projection_matrix(viewport.aspect()))
-            * camera.view_matrix(),
+        main_projection * camera.view_matrix(),
         viewport,
     );
 
@@ -416,7 +417,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         lod_view.map(|(_, projections, _, _)| projections),
         lod_view.map(|(_, _, projection_scale, _)| projection_scale),
         lod_view.map(|(_, _, _, viewport_height)| viewport_height),
-        projection_matrix,
+        Some(&main_projection),
         false,
         shell_encode,
     );
@@ -1028,16 +1029,18 @@ fn forward_pass(
         }
     } else {
         render_scene();
-        transparent_pass(
-            gl,
-            scene_context,
-            scene,
-            &make_context,
-            &world_matrix,
-            &projection_matrix,
-            &view_matrix,
-            pass_blends,
-        );
+        for root in stand_in_room.into_iter().chain([scene]) {
+            transparent_pass(
+                gl,
+                scene_context,
+                root,
+                &make_context,
+                &world_matrix,
+                &projection_matrix,
+                &view_matrix,
+                pass_blends,
+            );
+        }
     }
 }
 

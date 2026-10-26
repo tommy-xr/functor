@@ -1821,7 +1821,7 @@ pub fn android_main(app: AndroidApp) {
             );
             // This eye's layer of the device depth, else the stand-in room.
             scene_context.set_environment_depth_source(match (&depth_image, tracking_reference) {
-                (Some(image), Some(reference)) if index < 2 => {
+                (Some(image), Some(reference)) => {
                     EnvironmentDepthSource::Device(image.view(index, &frame.camera, reference))
                 }
                 _ => EnvironmentDepthSource::stand_in(debug.config),

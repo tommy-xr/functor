@@ -254,11 +254,18 @@ let draw = (model, tts) =>
   acquired since launch. It is omitted unless `config` requests `Xr.scene`.
 - Wherever the stand-in room is drawn — desktop, web, a paused or missing
   feed — `Frame.withStandInRoom(scene)` is the environment depth instead.
-  That scene is ordinary geometry in metres (floor at `y = 0`), drawn behind
-  the frame's scene there and also rendered depth-only, from the pass's own
-  camera at its resolution, into the same kind of depth texture array.
-  Desktop reports it as `mode: emulated`. Under a composited feed it is never
-  drawn.
+  That scene is ordinary geometry in metres (floor at `y = 0`), drawn with
+  the frame's scene there (so, unlike a camera feed, it occludes virtual
+  objects behind it) and also rendered depth-only, from the pass's own
+  camera at its resolution, into the same kind of depth texture array. The
+  procedural stand-in floor is not part of that depth, so declare a floor in
+  the scene if it should count. Desktop reports it as `mode: emulated`, with
+  zeros until a stand-in pass has rendered. Under a composited feed it is never
+  drawn. Its depth comes from the shadow pass's depth-only walk, so terrain,
+  billboards and `Scene.opacity` subtrees in it are drawn but write no depth.
+- On Quest, `/state.xr.depth` reports the headset's provider. With the feed
+  paused and a stand-in room declared, frames shade the stand-in room even
+  while the provider reads `device`.
 - Quest 3, nobody wearing it (`prox_close`, 2026-10-26): with the permission
   granted, `/state.xr.depth` reads `{"mode":"device","width":320,
   "height":320}` and `frames` advances (about 66 images a second at 80 Hz).

@@ -2815,7 +2815,7 @@ interactive widgets render but their handlers are inert",
     );
     reg.fn2(
         "Frame.withStandInRoom",
-        "Frame.withStandInRoom(room, frame) — room is a Scene drawn behind a \
+        "Frame.withStandInRoom(room, frame) — room is a Scene drawn with a \
 passthrough frame wherever no camera feed is composited",
         |room: FunctorLangScene, frame: FunctorLangFrame| {
             FunctorLangFrame(Frame::with_stand_in_room(frame.0, room.0))

@@ -98,7 +98,6 @@ impl Running {
         session: &xr::Session<xr::OpenGlEs>,
         gl: &glow::Context,
     ) -> Result<Running, String> {
-        use glow::HasContext;
         let create_info = sys::EnvironmentDepthProviderCreateInfoMETA {
             ty: sys::EnvironmentDepthProviderCreateInfoMETA::TYPE,
             next: std::ptr::null(),
@@ -196,19 +195,7 @@ impl Running {
             let texture = std::num::NonZeroU32::new(image.image)
                 .map(glow::NativeTexture)
                 .ok_or("the depth swapchain enumerated texture 0")?;
-            // Depth textures are not filterable in GLES 3: sample them nearest.
-            unsafe {
-                gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(texture));
-                for (param, value) in [
-                    (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
-                    (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
-                    (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                    (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-                ] {
-                    gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, param, value as i32);
-                }
-                gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
-            }
+            functor_runtime_common::environment_depth::set_depth_sampling(gl, texture);
             running.textures.push(texture);
         }
         // SAFETY: a live provider.

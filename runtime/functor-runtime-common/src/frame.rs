@@ -81,8 +81,8 @@ pub struct Frame {
     #[serde(default, skip_serializing_if = "is_false")]
     pub passthrough: bool,
     /// Geometry standing in for the real room (`Frame.withStandInRoom`):
-    /// drawn behind a passthrough frame's scene wherever the stand-in room
-    /// is, and rendered as the environment depth there under `Xr.scene`.
+    /// drawn with a passthrough frame's scene wherever the stand-in room is,
+    /// and rendered as the environment depth there under `Xr.scene`.
     /// Boxed so frames without one stay their old size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stand_in_room: Option<Box<Scene3D>>,

@@ -76,6 +76,25 @@ pub(crate) fn plan(
     }
 }
 
+/// Sample `texture` (a depth `TEXTURE_2D_ARRAY`) the way the environment depth
+/// is read: raw depth values (no comparison), nearest — depth textures are
+/// not filterable in GLES 3 / WebGL 2 — and clamped at the edges.
+pub fn set_depth_sampling(gl: &glow::Context, texture: glow::Texture) {
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(texture));
+        for (param, value) in [
+            (glow::TEXTURE_COMPARE_MODE, glow::NONE),
+            (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
+            (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
+            (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+            (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, param, value as i32);
+        }
+        gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
+    }
+}
+
 /// The emulated depth image: a one-layer `DEPTH_COMPONENT24` texture array
 /// sized to the main pass, re-rendered each pass that plans it.
 pub(crate) struct StandInDepth {
@@ -105,16 +124,8 @@ impl StandInDepth {
                 glow::UNSIGNED_INT,
                 glow::PixelUnpackData::Slice(None),
             );
-            // Depth textures are not filterable in GLES 3 / WebGL 2.
-            for (param, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
-                (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
-                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, param, value as i32);
-            }
             gl.bind_texture(glow::TEXTURE_2D_ARRAY, None);
+            set_depth_sampling(gl, texture);
 
             let fbo = gl.create_framebuffer().expect("stand-in depth fbo");
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
@@ -144,6 +155,7 @@ impl StandInDepth {
             gl.delete_framebuffer(self.fbo);
             gl.delete_texture(self.texture);
         }
+        crate::gpu_counters::gpu_counters().texture_deleted();
     }
 }
 
@@ -195,13 +207,19 @@ fn render_stand_in_depth(
 ) -> EnvironmentDepthView {
     let previous_fbo = crate::renderer::ambient_framebuffer(gl);
     let mut slot = scene_context.stand_in_depth.borrow_mut();
+    let mut frames = 0;
     if slot
         .as_ref()
         .is_some_and(|depth| (depth.width, depth.height) != (width, height))
     {
-        slot.take().expect("checked above").delete(gl);
+        let old = slot.take().expect("checked above");
+        old.delete(gl);
+        frames = old.frames;
     }
-    let depth = slot.get_or_insert_with(|| StandInDepth::new(gl, width, height));
+    let depth = slot.get_or_insert_with(|| StandInDepth {
+        frames,
+        ..StandInDepth::new(gl, width, height)
+    });
     depth.frames += 1;
     let (fbo, texture) = (depth.fbo, depth.texture);
     drop(slot);

@@ -1595,9 +1595,10 @@ world `y = 0`, 1 unit = 1 metre (`examples/passthrough`; `GET /state.passthrough
 `config`'s `Xr.scene(true)` adds the real room's depth (Quest 3/3S
 `XR_META_environment_depth`; the APK needs the spatial data permission granted
 once). Where the stand-in room is drawn instead, `frame |>
-Frame.withStandInRoom(scene)` supplies ordinary geometry (a desk, a wall) that
-is drawn behind the scene AND stands in as that depth; it is dropped under a
-composited feed and ignored on a non-passthrough frame (`GET /state.xr.depth`).
+Frame.withStandInRoom(scene)` supplies ordinary geometry (a floor, a desk, a
+wall) that is drawn with the scene AND stands in as that depth (the procedural
+floor does not count — declare one); it is dropped under a composited feed and
+ignored on a non-passthrough frame (`GET /state.xr.depth`).
 
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with
