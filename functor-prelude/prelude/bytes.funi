@@ -1,0 +1,52 @@
+//! Binary data for decoders: an immutable `Bytes.t` (usually from
+//! `File.bytes`) and readers for its numbers and text. Offsets and lengths are
+//! byte counts — whole numbers ≥ 0. Readers return a `Result`, so a decoder can
+//! report or recover from short or malformed data; `Binary.require` turns an
+//! error into a located one.
+//!
+//! ```
+//! let data = File.bytes("data/model.bin")
+//! let count = Bytes.u32le(4.0, data) |> Binary.require
+//! ```
+
+/// An immutable sequence of bytes; slices share storage.
+type t = host
+
+/// The number of bytes.
+let length : (t) => float
+/// `length` bytes from `start`, sharing storage.
+let slice : (float, float, t) => Result.t<t, Binary.error>
+/// Whether two byte sequences hold the same bytes.
+let equals : (t, t) => bool
+/// `length` bytes from `offset` as Latin-1 text (one character per byte).
+let latin1 : (float, float, t) => Result.t<string, Binary.error>
+/// `length` bytes from `offset` as UTF-8 text.
+let utf8 : (float, float, t) => Result.t<string, Binary.error>
+/// The unsigned byte at `offset`.
+let u8 : (float, t) => Result.t<float, Binary.error>
+/// The signed byte at `offset`.
+let i8 : (float, t) => Result.t<float, Binary.error>
+/// The unsigned 16-bit little-endian integer at `offset`.
+let u16le : (float, t) => Result.t<float, Binary.error>
+/// The unsigned 16-bit big-endian integer at `offset`.
+let u16be : (float, t) => Result.t<float, Binary.error>
+/// The signed 16-bit little-endian integer at `offset`.
+let i16le : (float, t) => Result.t<float, Binary.error>
+/// The signed 16-bit big-endian integer at `offset`.
+let i16be : (float, t) => Result.t<float, Binary.error>
+/// The unsigned 32-bit little-endian integer at `offset`.
+let u32le : (float, t) => Result.t<float, Binary.error>
+/// The unsigned 32-bit big-endian integer at `offset`.
+let u32be : (float, t) => Result.t<float, Binary.error>
+/// The signed 32-bit little-endian integer at `offset`.
+let i32le : (float, t) => Result.t<float, Binary.error>
+/// The signed 32-bit big-endian integer at `offset`.
+let i32be : (float, t) => Result.t<float, Binary.error>
+/// The 32-bit little-endian float at `offset`.
+let f32le : (float, t) => Result.t<float, Binary.error>
+/// The 32-bit big-endian float at `offset`.
+let f32be : (float, t) => Result.t<float, Binary.error>
+/// The 64-bit little-endian float at `offset`.
+let f64le : (float, t) => Result.t<float, Binary.error>
+/// The 64-bit big-endian float at `offset`.
+let f64be : (float, t) => Result.t<float, Binary.error>

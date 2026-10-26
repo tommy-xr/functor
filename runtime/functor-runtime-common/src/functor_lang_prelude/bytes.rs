@@ -1,0 +1,257 @@
+//! `Bytes.*`, `File.bytes` and `Binary.*` — binary data for decoders written
+//! in Functor Lang (see `bytes.funi`). Readers return the language's `Result`
+//! (not an evaluation error) so a decoder can report or recover from short or
+//! malformed data; `Binary.require` turns an error into a located one.
+
+use std::rc::Rc;
+use std::sync::Arc;
+
+use super::*;
+
+/// An immutable byte range; slices share the underlying storage.
+#[derive(Clone)]
+pub struct ByteView {
+    data: Arc<[u8]>,
+    start: usize,
+    len: usize,
+}
+
+impl ByteView {
+    pub fn new(data: Vec<u8>) -> ByteView {
+        let len = data.len();
+        ByteView {
+            data: data.into(),
+            start: 0,
+            len,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.data[self.start..self.start + self.len]
+    }
+}
+
+/// [`ByteView`] as an opaque Functor Lang value.
+pub struct FunctorLangBytes(pub ByteView);
+
+impl HostData for FunctorLangBytes {
+    fn type_name(&self) -> &'static str {
+        "Bytes"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    // Immutable data: safe to keep in a model across reloads.
+    fn is_reload_safe_snapshot(&self) -> bool {
+        true
+    }
+}
+
+crate::host_returnable!(FunctorLangBytes);
+
+/// The bytes of a file in the project (the entry file's folder). `api` and
+/// `example` shape the errors: `Typeface.file("…"): use a path inside the
+/// project, like "fonts/MyFont.ttf"`.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<Vec<u8>, String> {
+    let outside = || format!("{api}({path:?}): use a path inside the project, like {example:?}");
+    // The same portable rule as project assets, then resolved so a symlink
+    // can't reach outside either.
+    crate::debug_protocol::validate_project_asset_path(path).map_err(|_| outside())?;
+    let unreadable = |e: std::io::Error| format!("{api}: can't read {path} in the project ({e})");
+    let root = std::fs::canonicalize(crate::storage::project_dir()).map_err(unreadable)?;
+    let full = std::fs::canonicalize(root.join(path)).map_err(unreadable)?;
+    if !full.starts_with(&root) {
+        return Err(outside());
+    }
+    std::fs::read(&full).map_err(unreadable)
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub(super) fn read_project_file(api: &str, path: &str, _example: &str) -> Result<Vec<u8>, String> {
+    Err(format!(
+        "{api}({path:?}): project files load in desktop runs and `functor export` for now, \
+not on the web or Quest"
+    ))
+}
+
+/// A `Binary.error` record at `offset` with an empty path.
+fn error(offset: f64, message: String) -> Value {
+    Value::Record(Rc::new(vec![
+        ("offset".to_string(), Value::Number(offset)),
+        ("path".to_string(), Value::List(Rc::new(Vec::new()))),
+        ("message".to_string(), Value::String(message.into())),
+    ]))
+}
+
+fn ok(value: Value) -> Value {
+    Value::Variant {
+        ctor: "Result.Ok".into(),
+        args: Rc::new(vec![value]),
+    }
+}
+
+fn err(offset: f64, message: String) -> Value {
+    Value::Variant {
+        ctor: "Result.Error".into(),
+        args: Rc::new(vec![error(offset, message)]),
+    }
+}
+
+/// `count` bytes at `offset`, or the `Result.Error` explaining why not.
+fn take(bytes: &ByteView, offset: f64, count: f64) -> Result<&[u8], Value> {
+    let whole = |x: f64| x >= 0.0 && x.fract() == 0.0 && x <= 9_007_199_254_740_992.0;
+    if !whole(offset) || !whole(count) {
+        return Err(err(
+            offset,
+            format!("offset {offset} and length {count} must be whole numbers ≥ 0"),
+        ));
+    }
+    let (at, n) = (offset as usize, count as usize);
+    let data = bytes.as_slice();
+    let left = data.len().saturating_sub(at);
+    if left < n {
+        return Err(err(offset, format!("needs {n} bytes, {left} left")));
+    }
+    Ok(&data[at..at + n])
+}
+
+/// The text of a `Binary.error`: `header.count[2] at byte 12: needs 4 bytes, 1 left`.
+fn describe(error: &Value) -> Option<String> {
+    let Value::Record(fields) = error else {
+        return None;
+    };
+    let field = |name: &str| fields.iter().find(|(k, _)| k == name).map(|(_, v)| v);
+    let (Some(Value::Number(offset)), Some(Value::List(path)), Some(Value::String(message))) =
+        (field("offset"), field("path"), field("message"))
+    else {
+        return None;
+    };
+    let mut at = String::new();
+    for segment in path.iter() {
+        match segment {
+            Value::Variant { ctor, args } if ctor.ends_with(".Field") => {
+                if let Some(Value::String(name)) = args.first() {
+                    if !at.is_empty() {
+                        at.push('.');
+                    }
+                    at.push_str(name);
+                }
+            }
+            Value::Variant { ctor, args } if ctor.ends_with(".Index") => {
+                if let Some(Value::Number(i)) = args.first() {
+                    at.push_str(&format!("[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+    let at = if at.is_empty() { at } else { at + " " };
+    Some(format!("{at}at byte {offset}: {message}"))
+}
+
+/// Register a fixed-width number reader: `Bytes.u32le(offset, bytes)`.
+macro_rules! reader {
+    ($reg:ident, $name:literal, $ty:ty, $from:ident) => {
+        $reg.fn2(
+            concat!("Bytes.", $name),
+            concat!("Bytes.", $name, "(offset, bytes)"),
+            |offset: f64, bytes: FunctorLangBytes| {
+                const N: usize = std::mem::size_of::<$ty>();
+                match take(&bytes.0, offset, N as f64) {
+                    Ok(raw) => ok(Value::Number(
+                        <$ty>::$from(raw.try_into().expect("N bytes")) as f64,
+                    )),
+                    Err(e) => e,
+                }
+            },
+        );
+    };
+}
+
+pub(super) fn register(reg: &mut crate::host_registry::Registry) {
+    reg.fn1("File.bytes", "File.bytes(path)", |path: String| {
+        read_project_file("File.bytes", &path, "data/model.bin")
+            .map(|data| FunctorLangBytes(ByteView::new(data)))
+    });
+    reg.fn1(
+        "Bytes.length",
+        "Bytes.length(bytes)",
+        |bytes: FunctorLangBytes| Value::Number(bytes.0.len as f64),
+    );
+    reg.fn3(
+        "Bytes.slice",
+        "Bytes.slice(start, length, bytes)",
+        |start: f64, length: f64, bytes: FunctorLangBytes| match take(&bytes.0, start, length) {
+            Ok(_) => ok(Value::HostData(Rc::new(FunctorLangBytes(ByteView {
+                data: bytes.0.data.clone(),
+                start: bytes.0.start + start as usize,
+                len: length as usize,
+            })))),
+            Err(e) => e,
+        },
+    );
+    reg.fn2(
+        "Bytes.equals",
+        "Bytes.equals(a, b)",
+        |a: FunctorLangBytes, b: FunctorLangBytes| Value::Bool(a.0.as_slice() == b.0.as_slice()),
+    );
+    reg.fn3(
+        "Bytes.latin1",
+        "Bytes.latin1(offset, length, bytes)",
+        |offset: f64, length: f64, bytes: FunctorLangBytes| match take(&bytes.0, offset, length) {
+            Ok(raw) => ok(Value::String(
+                raw.iter().map(|&b| b as char).collect::<String>().into(),
+            )),
+            Err(e) => e,
+        },
+    );
+    reg.fn3(
+        "Bytes.utf8",
+        "Bytes.utf8(offset, length, bytes)",
+        |offset: f64, length: f64, bytes: FunctorLangBytes| match take(&bytes.0, offset, length) {
+            Ok(raw) => match std::str::from_utf8(raw) {
+                Ok(s) => ok(Value::String(s.into())),
+                Err(e) => err(offset + e.valid_up_to() as f64, "invalid UTF-8".to_string()),
+            },
+            Err(e) => e,
+        },
+    );
+    reader!(reg, "u8", u8, from_le_bytes);
+    reader!(reg, "i8", i8, from_le_bytes);
+    reader!(reg, "u16le", u16, from_le_bytes);
+    reader!(reg, "u16be", u16, from_be_bytes);
+    reader!(reg, "i16le", i16, from_le_bytes);
+    reader!(reg, "i16be", i16, from_be_bytes);
+    reader!(reg, "u32le", u32, from_le_bytes);
+    reader!(reg, "u32be", u32, from_be_bytes);
+    reader!(reg, "i32le", i32, from_le_bytes);
+    reader!(reg, "i32be", i32, from_be_bytes);
+    reader!(reg, "f32le", f32, from_le_bytes);
+    reader!(reg, "f32be", f32, from_be_bytes);
+    reader!(reg, "f64le", f64, from_le_bytes);
+    reader!(reg, "f64be", f64, from_be_bytes);
+    reg.fn1(
+        "Binary.describe",
+        "Binary.describe(error)",
+        |error: Value| {
+            describe(&error)
+                .map(|s| Value::String(s.into()))
+                .ok_or_else(|| "Binary.describe: expected a Binary.error".to_string())
+        },
+    );
+    reg.fn1(
+        "Binary.require",
+        "Binary.require(result)",
+        |result: Value| match &result {
+            Value::Variant { ctor, args } if &**ctor == "Result.Ok" && args.len() == 1 => {
+                Ok(args[0].clone())
+            }
+            Value::Variant { ctor, args } if &**ctor == "Result.Error" && args.len() == 1 => {
+                Err(describe(&args[0])
+                    .unwrap_or_else(|| "Binary.require: the read failed".to_string()))
+            }
+            _ => Err("Binary.require: expected a Result".to_string()),
+        },
+    );
+}

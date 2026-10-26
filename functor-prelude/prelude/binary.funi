@@ -1,0 +1,16 @@
+//! Why reading binary data failed: where (a byte offset and a path of fields
+//! and list indices) and what went wrong.
+//!
+//! ```
+//! Bytes.u32le(8.0, data) |> Binary.require   // the number, or a located error
+//! ```
+
+/// One step of where a read failed: a named field or a list index.
+type segment = | Field(name: string) | Index(value: float)
+/// A failed read, e.g. `polygons[17].indices[2] at byte 1462: needs 2 bytes, 1 left`.
+type error = { offset: float, path: List<segment>, message: string }
+
+/// The text of an error, as above.
+let describe : (error) => string
+/// The value of `Result.Ok`; for `Result.Error`, stops with the described error.
+let require : (Result.t<'a, error>) => 'a

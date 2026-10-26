@@ -1,7 +1,7 @@
-//! `Typeface.file` end to end through the real binary (the project root is
-//! process-global, so this runs in its own process): a project's copy of a
-//! built-in font exports byte-identical to the built-in; bad paths are
-//! errors that name them.
+//! Project files end to end through the real binary (the project root is
+//! process-global, so this runs in its own process): `Typeface.file` exports
+//! byte-identical to the built-in it copies, `File.bytes` reads data in
+//! `functor test`, and bad paths are errors that name them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -81,4 +81,28 @@ fn missing_and_escaping_font_paths_are_errors() {
     for dir in [missing, escaping, linked] {
         std::fs::remove_dir_all(dir).ok();
     }
+}
+
+#[test]
+fn file_bytes_feed_expects() {
+    let dir = project("bytes", "Typeface.sans()");
+    std::fs::write(dir.join("data.bin"), [7u8, 0, 0, 0]).unwrap();
+    let src = std::fs::read_to_string(dir.join("part.fun")).unwrap()
+        + "expect Bytes.u32le(0.0, File.bytes(\"data.bin\")) == Result.Ok(7.0)\n";
+    std::fs::write(dir.join("part.fun"), &src).unwrap();
+    let test = |dir: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_functor"))
+            .arg("-d")
+            .arg(dir)
+            .arg("test")
+            .output()
+            .unwrap()
+    };
+    assert!(test(&dir).status.success());
+    std::fs::write(dir.join("data.bin"), [8u8, 0, 0, 0]).unwrap();
+    assert!(
+        !test(&dir).status.success(),
+        "a changed file fails the expect"
+    );
+    std::fs::remove_dir_all(dir).ok();
 }
