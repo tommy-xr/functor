@@ -9085,6 +9085,52 @@ Anim.clip(\"walk\", tts)"
         );
     }
 
+    /// A file that is only a `part` gets the PartViewer: a valid game whose
+    /// turntable turns when idle, orbits on drag, and zooms on the wheel.
+    #[test]
+    fn part_only_file_runs_in_the_part_viewer() {
+        let sources = vec![(
+            std::path::PathBuf::from("game.fun"),
+            "let part = Solid.box(10.0, 20.0, 30.0)\n\
+             let idle = () => tick(init, 1.0, 1.0)\n\
+             let turns = () => idle().orbit.yaw > init.orbit.yaw\n\
+             let grab = () => mouseMove(mouseButton(idle(), Mouse.Left, true), 100.0, 50.0)\n\
+             let dragged = () => mouseMove(grab(), 140.0, 50.0)\n\
+             let orbits = () => dragged().orbit.yaw < grab().orbit.yaw\n\
+             let holds = () => tick(dragged(), 5.0, 6.0).orbit.yaw == dragged().orbit.yaw\n\
+             let zooms = () => mouseWheel(init, 1.0).orbit.zoom > init.orbit.zoom\n"
+                .to_string(),
+        )];
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            sources,
+            &functor_prelude::bundled_modules(),
+        )
+        .unwrap_or_else(|error| panic!("bundle loads: {}", error.render()));
+        let diagnostics = project.check();
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let session = functor_lang::Session::load(&project.module, &mut FunctorHost)
+            .unwrap_or_else(|failure| panic!("session loads: {}", failure.error.message));
+        crate::functor_lang_producer::validate_contract(
+            "game.fun",
+            &session,
+            &crate::functor_lang_producer::EntryNames::UNPREFIXED,
+        )
+        .unwrap_or_else(|e| panic!("part viewer contract: {e}"));
+        for check in ["turns", "orbits", "holds", "zooms"] {
+            assert!(
+                matches!(
+                    session.call(check, vec![], &mut FunctorHost),
+                    Ok(Value::Bool(true))
+                ),
+                "{check}"
+            );
+        }
+        let init = session.global("init").unwrap();
+        session
+            .call("draw", vec![init, Value::Number(1.0)], &mut FunctorHost)
+            .unwrap_or_else(|e| panic!("draw: {}", e.message));
+    }
+
     #[test]
     fn bundled_animator_executes_against_anim_host() {
         let sources = vec![(

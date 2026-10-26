@@ -28,6 +28,20 @@ pub fn bundled_modules() -> Vec<BundledModule> {
         "Animator",
         include_str!("../stdlib/animator.fun"),
     ));
+    bundled.push(BundledModule::implementation(
+        "OrbitCamera",
+        include_str!("../stdlib/orbit_camera.fun"),
+    ));
+    bundled.push(BundledModule::implementation(
+        "PartViewer",
+        include_str!("../stdlib/part_viewer.fun"),
+    ));
+    // A file that is only a `part` runs in the PartViewer.
+    bundled.push(BundledModule::entry_default(
+        "PartViewerDefault",
+        "part",
+        include_str!("../stdlib/part_viewer_default.fun"),
+    ));
     bundled
 }
 

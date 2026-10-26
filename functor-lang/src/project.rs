@@ -121,6 +121,7 @@ pub struct BundledModule {
     src: String,
     kind: BundledModuleKind,
     directory: &'static str,
+    entry_default: Option<String>,
 }
 
 impl BundledModule {
@@ -128,6 +129,21 @@ impl BundledModule {
     /// go-to-definition identify it as `<stdlib>/{name}.fun`.
     pub fn implementation(name: impl Into<String>, src: impl Into<String>) -> BundledModule {
         BundledModule::new(name, src, BundledModuleKind::Implementation, "<stdlib>")
+    }
+
+    /// Bundle defaults for the ENTRY module: when the entry defines `when`
+    /// and none of these defs' names, they join the entry as if written
+    /// there (e.g. a viewer for a file that is only a `part`); otherwise they
+    /// are dropped. Diagnostics identify them as `<stdlib>/{name}.fun`.
+    pub fn entry_default(
+        name: impl Into<String>,
+        when: impl Into<String>,
+        src: impl Into<String>,
+    ) -> BundledModule {
+        BundledModule {
+            entry_default: Some(when.into()),
+            ..BundledModule::implementation(name, src)
+        }
     }
 
     /// Bundle a host `.funi` interface module. Diagnostics and
@@ -171,6 +187,7 @@ impl BundledModule {
             src: src.into(),
             kind,
             directory,
+            entry_default: None,
         }
     }
 
@@ -410,6 +427,9 @@ pub struct SourceFile {
     pub base: usize,
     /// A `.funi` interface file (bodyless signatures), vs a `.fun`.
     pub interface: bool,
+    /// For a bundled entry default, the def the entry must define for this
+    /// file's defs to join it (see [`BundledModule::entry_default`]).
+    pub entry_default: Option<String>,
 }
 
 /// Whether a path is an interface file (`.funi`).
@@ -744,6 +764,7 @@ come from file names, capitalized",
             module,
             src: src.clone(),
             base,
+            entry_default: None,
         });
         // +1 gap: a span at one file's very end never collides with the
         // next file's base.
@@ -782,6 +803,7 @@ fn push_bundled(
             module: item.name.clone(),
             src: item.src.clone(),
             base,
+            entry_default: item.entry_default.clone(),
         });
         base += item.src.len() + 1;
     }
@@ -815,6 +837,22 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         let program = parse(&file.src, file.base)
             .map_err(|e| render_span(&files, index, e.span, &e.message))?;
         programs.push(program);
+    }
+
+    // Entry defaults join the entry when it defines their trigger and none
+    // of their names (a file that is only a `part` gets a viewer), else they
+    // are dropped; their spans still point at their own bundled file.
+    for (index, file) in files.iter().enumerate() {
+        let Some(when) = &file.entry_default else {
+            continue;
+        };
+        let items = std::mem::take(&mut programs[index].items);
+        let entry = exports_of(&programs[0].items).defs;
+        let wanted =
+            entry.contains(when) && !exports_of(&items).defs.iter().any(|d| entry.contains(d));
+        if wanted {
+            programs[0].items.extend(items);
+        }
     }
 
     // Every module's exports, for cross-module resolution during lowering.
@@ -1082,6 +1120,7 @@ pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectErr
         module: module.to_string(),
         src: src.to_string(),
         base: 0,
+        entry_default: None,
     }];
     push_bundled(&mut files, &core_modules())?;
     link(files)
@@ -1118,6 +1157,7 @@ pub fn load_single_file_with_bundled_modules(
         module,
         src: src.to_string(),
         base: 0,
+        entry_default: None,
     }];
     push_bundled(&mut files, bundled)?;
     push_bundled(&mut files, &core)?;
