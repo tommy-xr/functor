@@ -1496,7 +1496,7 @@ fn bundled_implementation_module_runs_and_checks() {
 }
 
 /// An entry default joins the entry only when the entry defines its trigger
-/// and none of its names; its errors point at its own bundled file.
+/// and none of its names; its type errors point at the trigger.
 #[test]
 fn entry_default_joins_an_entry_that_needs_it() {
     let bundled = [functor_lang::project::BundledModule::entry_default(
@@ -1534,11 +1534,27 @@ fn entry_default_joins_an_entry_that_needs_it() {
         &bundled,
     )
     .unwrap_or_else(|e| panic!("should load: {}", e.render()));
+    // A type error inside the default is reported at the entry's `part`.
     let diags = project.check();
     let rendered = project
         .sources
         .render(diags[0].span.start, &diags[0].message);
-    assert!(rendered.contains("<stdlib>/View.fun"), "{rendered}");
+    assert!(rendered.contains("game.fun:1"), "{rendered}");
+    assert!(rendered.contains("`part` is used by the bundled default View"), "{rendered}");
+
+    // Load-time (lowering) errors in a default point at it too.
+    let broken = [functor_lang::project::BundledModule::entry_default(
+        "View",
+        "part",
+        "let main = () => missing\n",
+    )];
+    let error = functor_lang::project::load_sources_with_bundled_modules(
+        vec![(PathBuf::from("game.fun"), "let part = 1.0\n".to_string())],
+        &broken,
+    )
+    .err()
+    .expect("unresolved name in the default");
+    assert_eq!(error.path, PathBuf::from("<stdlib>/View.fun"));
 }
 
 /// Engine stdlib code can depend on an injected host interface: all bundled

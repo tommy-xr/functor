@@ -9095,6 +9095,7 @@ Anim.clip(\"walk\", tts)"
              let idle = () => tick(init, 1.0, 1.0)\n\
              let turns = () => idle().orbit.yaw > init.orbit.yaw\n\
              let grab = () => mouseMove(mouseButton(idle(), Mouse.Left, true), 100.0, 50.0)\n\
+             let anchors = () => grab().orbit.yaw == idle().orbit.yaw\n\
              let dragged = () => mouseMove(grab(), 140.0, 50.0)\n\
              let orbits = () => dragged().orbit.yaw < grab().orbit.yaw\n\
              let holds = () => tick(dragged(), 5.0, 6.0).orbit.yaw == dragged().orbit.yaw\n\
@@ -9116,7 +9117,7 @@ Anim.clip(\"walk\", tts)"
             &crate::functor_lang_producer::EntryNames::UNPREFIXED,
         )
         .unwrap_or_else(|e| panic!("part viewer contract: {e}"));
-        for check in ["turns", "orbits", "holds", "zooms"] {
+        for check in ["turns", "anchors", "orbits", "holds", "zooms"] {
             assert!(
                 matches!(
                     session.call(check, vec![], &mut FunctorHost),

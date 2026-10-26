@@ -12,11 +12,14 @@
 let settle = 2.0
 
 // Looking down a little from the front-right, turning from the start.
-let init = { yaw: 0.6, pitch: 0.45, zoom: 1.0, dragging: false, x: 0.0, y: 0.0, idle: settle }
+// `anchored`: `x`/`y` hold the pointer's last position during this drag.
+let init =
+  { yaw: 0.6, pitch: 0.45, zoom: 1.0, dragging: false, anchored: false, x: 0.0, y: 0.0, idle: settle }
 
-// Pointer motion (the mouse hook's coordinates): orbits while dragging.
+// Pointer motion (the mouse hook's coordinates): orbits while dragging. The
+// first motion of a drag only anchors it, so a stale position can't jump.
 let move = (o, x: float, y: float) =>
-  if o.dragging
+  if o.dragging && o.anchored
   then
     { o with
       yaw: o.yaw - (x - o.x) * 0.01,
@@ -24,10 +27,10 @@ let move = (o, x: float, y: float) =>
       x: x,
       y: y,
       idle: 0.0 }
-  else { o with x: x, y: y }
+  else { o with x: x, y: y, anchored: o.dragging }
 
 // The orbit button went down or up.
-let press = (o, isDown: bool) => { o with dragging: isDown, idle: 0.0 }
+let press = (o, isDown: bool) => { o with dragging: isDown, anchored: false, idle: 0.0 }
 
 // One wheel notch moves 10% closer (positive) or farther.
 let scroll = (o, delta: float) =>
@@ -40,7 +43,7 @@ let tick = (o, dt: float) =>
   { o with idle: idle, yaw: if spinning then o.yaw + dt * 0.4 else o.yaw }
 
 // A camera on the orbit around `target`, far enough back that something
-// `size` across fills the view at zoom 1.
+// `size` across fills a landscape view at zoom 1.
 let camera = (o, target: Vec3.t, size: float): Camera3D.t =>
   let distance = size * 1.5 / o.zoom in
   let flat = distance * Math.cos(o.pitch) in

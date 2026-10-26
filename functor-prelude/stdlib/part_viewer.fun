@@ -1,15 +1,7 @@
 // PartViewer — the default scene for a printable part: lit, on a bed, with an
-// OrbitCamera. A file that defines `part` and none of `init`/`tick`/`draw`
-// runs as if it ended with
-//
-//   let init = PartViewer.init
-//   let tick = PartViewer.tick
-//   let draw = (m, tts) => PartViewer.draw(part, m, tts)
-//   let mouseMove = PartViewer.mouseMove
-//   let mouseButton = PartViewer.mouseButton
-//   let mouseWheel = PartViewer.mouseWheel
-//
-// Paste those lines into the file to change any of them.
+// OrbitCamera. A file that defines `part` and none of the entry points in
+// `<stdlib>/PartViewerDefault.fun` runs with those six lines; paste them into
+// the file to change any of them.
 
 let init = { orbit: OrbitCamera.init }
 

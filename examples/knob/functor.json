@@ -1,4 +1,5 @@
 {
   "language": "functor-lang",
-  "entry": "knob.fun"
+  "entry": "knob.fun",
+  "cursor": "visible"
 }

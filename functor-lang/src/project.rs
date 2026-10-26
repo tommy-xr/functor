@@ -215,14 +215,41 @@ pub struct Project {
     /// [`Project::check`] hands it to the checker so a bare literal never
     /// resolves against an unrelated sibling's type.
     scopes: RecordLiteralScopes,
+    /// Entry defaults that joined the entry, for [`Project::check`].
+    defaults: Vec<JoinedDefault>,
+}
+
+/// An entry default merged into the entry: its file's span range, and the
+/// trigger def its type errors are reported at.
+struct JoinedDefault {
+    module: String,
+    spans: std::ops::Range<usize>,
+    trigger: String,
+    at: crate::Span,
 }
 
 impl Project {
+    /// Type errors inside a joined default are about the entry's trigger def
+    /// (`let part = 3.0` can't be viewed), so report them there — where the
+    /// user, and an editor showing only that file, will see them.
+    fn attribute(&self, mut errors: Vec<CheckError>) -> Vec<CheckError> {
+        for error in &mut errors {
+            if let Some(d) = self.defaults.iter().find(|d| d.spans.contains(&error.span.start)) {
+                error.message = format!(
+                    "`{}` is used by the bundled default {}: {}",
+                    d.trigger, d.module, error.message
+                );
+                error.span = d.at;
+            }
+        }
+        errors
+    }
+
     /// Typecheck the whole program (every module, referenced or not) —
     /// [`crate::check`] with the project's record-literal scopes. Spans
     /// render through [`Project::sources`].
     pub fn check(&self) -> Vec<CheckError> {
-        crate::types::check_with_scopes(&self.module, &self.scopes)
+        self.attribute(crate::types::check_with_scopes(&self.module, &self.scopes))
     }
 
     /// [`Project::check`], also returning the per-expression type table — the
@@ -230,7 +257,8 @@ impl Project {
     /// Spans (keys into the table's positions) are project-wide; render them
     /// through [`Project::sources`].
     pub fn check_with_types(&self) -> (Vec<CheckError>, crate::types::ExprTypes) {
-        crate::types::check_with_scopes_and_types(&self.module, &self.scopes)
+        let (errors, types) = crate::types::check_with_scopes_and_types(&self.module, &self.scopes);
+        (self.attribute(errors), types)
     }
 
     /// The inline `module` block containing project-wide `offset`, if any —
@@ -429,7 +457,7 @@ pub struct SourceFile {
     pub interface: bool,
     /// For a bundled entry default, the def the entry must define for this
     /// file's defs to join it (see [`BundledModule::entry_default`]).
-    pub entry_default: Option<String>,
+    pub(crate) entry_default: Option<String>,
 }
 
 /// Whether a path is an interface file (`.funi`).
@@ -817,7 +845,13 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
 
     // Parse every file (spans land in the project-wide space).
     let render_span = |files: &[SourceFile], index: usize, span: crate::Span, message: &str| {
-        let file = &files[index];
+        // By span, not by `index`: an entry default's items are lowered with
+        // the entry but live in their own bundled file.
+        let file = files
+            .iter()
+            .rev()
+            .find(|f| f.base <= span.start)
+            .unwrap_or(&files[index]);
         let local = (span.start - file.base).min(file.src.len());
         let (line, col) = line_col(&file.src, local);
         ProjectError {
@@ -842,16 +876,27 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     // Entry defaults join the entry when it defines their trigger and none
     // of their names (a file that is only a `part` gets a viewer), else they
     // are dropped; their spans still point at their own bundled file.
+    let mut defaults = Vec::new();
     for (index, file) in files.iter().enumerate() {
         let Some(when) = &file.entry_default else {
             continue;
         };
         let items = std::mem::take(&mut programs[index].items);
+        let trigger = programs[0].items.iter().find_map(|item| match item {
+            ast::Item::Let(decl) if &decl.name == when => Some(decl.span),
+            _ => None,
+        });
         let entry = exports_of(&programs[0].items).defs;
-        let wanted =
-            entry.contains(when) && !exports_of(&items).defs.iter().any(|d| entry.contains(d));
-        if wanted {
-            programs[0].items.extend(items);
+        if let Some(at) = trigger {
+            if !exports_of(&items).defs.iter().any(|d| entry.contains(d)) {
+                programs[0].items.extend(items);
+                defaults.push(JoinedDefault {
+                    module: file.module.clone(),
+                    spans: file.base..file.base + file.src.len() + 1,
+                    trigger: when.clone(),
+                    at,
+                });
+            }
         }
     }
 
@@ -1107,6 +1152,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         entry,
         inline_modules,
         scopes,
+        defaults,
     })
 }
 
