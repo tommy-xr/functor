@@ -67,6 +67,12 @@ pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<
     std::fs::read(&full).map_err(unreadable)
 }
 
+/// Whether `path` names a readable file in the project (false for paths
+/// outside it, and on hosts that can't read project files).
+fn project_file_exists(path: &str) -> bool {
+    read_project_file("File.exists", path, "").is_ok()
+}
+
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub(super) fn read_project_file(api: &str, path: &str, _example: &str) -> Result<Vec<u8>, String> {
     Err(format!(
@@ -228,6 +234,9 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("File.bytes", "File.bytes(path)", |path: String| {
         read_project_file("File.bytes", &path, "data/model.bin")
             .map(|data| FunctorLangBytes(ByteView::new(data)))
+    });
+    reg.fn1("File.exists", "File.exists(path)", |path: String| {
+        Value::Bool(project_file_exists(&path))
     });
     reg.fn1(
         "Bytes.length",

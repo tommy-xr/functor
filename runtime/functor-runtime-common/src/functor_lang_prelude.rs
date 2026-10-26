@@ -12126,6 +12126,13 @@ the game dir"
         };
         let err = failure("Binary.require(Bytes.u32le(32.0, File.bytes(\"data.bin\")))");
         assert!(err.contains("at byte 32: needs 4 bytes, 2 left"), "{err}");
+        let src = "let main = File.exists(\"data.bin\") && not File.exists(\"missing.bin\") \
+                   && not File.exists(\"../data.bin\")\n";
+        assert!(
+            matches!(eval_with_prelude(src), Ok(Value::Bool(true))),
+            "{:?}",
+            eval_with_prelude(src).map(|v| v.to_string())
+        );
         let err = failure("File.bytes(\"missing.bin\")");
         assert!(err.contains("can't read missing.bin"), "{err}");
         let err = failure("File.bytes(\"../data.bin\")");
