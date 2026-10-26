@@ -409,7 +409,7 @@ pub struct BatteryState {
     /// Instantaneous battery current, signed as reported by the device;
     /// negative on Quest 3 = discharging (verify).
     // TODO(device): confirm the sign and µA units on Quest 3 — some devices
-    // invert the sign or report mA.
+    // invert the sign, report mA, or return 0 rather than the sentinel.
     pub current_now_ma: Option<i32>,
     /// The device's averaged current; same sign convention as `current_now_ma`.
     pub current_avg_ma: Option<i32>,
