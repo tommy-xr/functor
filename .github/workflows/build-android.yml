@@ -43,7 +43,7 @@ jobs:
       # dev-key install, so upstream needs the key before spending a build.
       - name: Require the dev signing key
         if: >-
-          false && env.HAS_DEV_KEY != 'true' && !github.event.repository.fork &&
+          env.HAS_DEV_KEY != 'true' && !github.event.repository.fork &&
           (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork)
         run: |
           echo "::error::Missing repository secrets ANDROID_DEV_KEYSTORE_BASE64 and ANDROID_DEV_KEYSTORE_PASSWORD. Create them once with: keytool -genkeypair -keystore functor-dev.keystore -alias functor-dev -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Functor Dev (CI), O=tommy-xr' (choose a store password when prompted), then: base64 < functor-dev.keystore | gh secret set ANDROID_DEV_KEYSTORE_BASE64 && gh secret set ANDROID_DEV_KEYSTORE_PASSWORD (paste the same password). Keep functor-dev.keystore to sign local builds (see runtime/functor-runtime-oculus/README.md)."
