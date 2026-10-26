@@ -284,6 +284,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             pass.frame.drawn_skybox(),
             // A target has no camera feed under it: always the stand-in room.
             pass.frame.passthrough,
+            pass.frame.fog_cull_distance(),
             width as f32 / height as f32,
             height as f32,
             &pass.frame.camera,
@@ -390,6 +391,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame.drawn_skybox(),
         // The stand-in room, unless the shell composites the real feed.
         frame.passthrough && !scene_context.passthrough_composited(),
+        frame.fog_cull_distance(),
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
@@ -485,6 +487,7 @@ fn render_sprite_layers(
             None,
             None,
             false,
+            None,
             fitted.aspect(),
             fitted.height as f32,
             &camera,
@@ -646,6 +649,7 @@ pub fn render_composited_frames_with_view(
             frame.fog.as_ref(),
             frame.drawn_skybox(),
             frame.passthrough,
+            frame.fog_cull_distance(),
             width as f32 / height as f32,
             height as f32,
             &frame.camera,
@@ -837,6 +841,8 @@ fn forward_pass(
     skybox: Option<&crate::skybox::SkyboxDescription>,
     // Draw the stand-in room (`crate::passthrough_room`) instead of a skybox.
     passthrough_room: bool,
+    // `Frame::fog_cull_distance` of the frame this pass draws.
+    fog_cull_distance: Option<f32>,
     aspect: f32,
     viewport_height: f32,
     lod_camera: &Camera,
@@ -899,6 +905,7 @@ fn forward_pass(
         viewport_height: lod_viewport_height.unwrap_or(viewport_height),
         lod_fog: fog.filter(|_| skybox.is_none()),
         pass_serial: crate::next_pass_serial(),
+        fog_cull_distance,
     };
 
     // The transparent debug material deliberately reuses authored shading.

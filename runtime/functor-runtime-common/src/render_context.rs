@@ -211,6 +211,9 @@ pub struct RenderContext<'a> {
     /// skybox is drawn behind the terrain, whose silhouette then stays at
     /// full contrast however fogged the terrain is.
     pub lod_fog: Option<&'a Fog>,
+    /// [`Frame::fog_cull_distance`](crate::Frame::fog_cull_distance): terrain
+    /// skips patches wholly past it.
+    pub fog_cull_distance: Option<f32>,
     /// Unique per constructed context ([`next_pass_serial`]). Lights, shadow,
     /// fog, camera and the view/projection every draw receives are constant
     /// for a context, so [`PassUniforms`] uploads them once per program.

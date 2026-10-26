@@ -129,6 +129,18 @@ impl Frame {
             .unwrap_or_else(|| crate::fog::clear_color(self.fog.as_ref()))
     }
 
+    /// The distance past which nothing this frame draws can be told from its
+    /// background: the fog's [`end`](crate::fog::Fog::end), when the pass
+    /// clears to the fog color with no skybox or passthrough behind it.
+    /// Renderers may skip geometry entirely beyond it.
+    pub fn fog_cull_distance(&self) -> Option<f32> {
+        let fog = self.fog.as_ref()?;
+        let background_is_fog = !self.passthrough
+            && self.skybox.is_none()
+            && self.resolved_clear_color() == fog.color();
+        background_is_fog.then(|| fog.end()).flatten()
+    }
+
     /// The skybox to draw: none behind a passthrough frame, whose background
     /// is the real world.
     pub fn drawn_skybox(&self) -> Option<&SkyboxDescription> {
@@ -257,5 +269,20 @@ mod tests {
         assert!(frame.drawn_skybox().is_none());
         // Additive on the wire: an opaque frame serializes without the field.
         assert!(!serde_json::to_string(&bare()).unwrap().contains("passthrough"));
+    }
+
+    #[test]
+    fn fog_culls_only_when_the_background_is_the_fog() {
+        let fogged = Frame::with_fog(bare(), Fog::linear(4.0, 30.0, 0.5, 0.6, 0.7));
+        assert_eq!(fogged.fog_cull_distance(), Some(30.0));
+        assert_eq!(bare().fog_cull_distance(), None);
+        // A different background would show where fogged geometry was.
+        let other = Frame::with_clear_color(fogged.clone(), 0.0, 0.0, 0.0);
+        assert_eq!(other.fog_cull_distance(), None);
+        let same = Frame::with_clear_color(fogged.clone(), 0.5, 0.6, 0.7);
+        assert_eq!(same.fog_cull_distance(), Some(30.0));
+        let sky = SkyboxDescription::new("px", "nx", "py", "ny", "pz", "nz");
+        assert_eq!(Frame::with_skybox(fogged.clone(), sky).fog_cull_distance(), None);
+        assert_eq!(Frame::with_passthrough(fogged).fog_cull_distance(), None);
     }
 }

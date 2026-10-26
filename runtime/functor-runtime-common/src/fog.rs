@@ -54,6 +54,18 @@ impl Fog {
         }
     }
 
+    /// Where the fog becomes total: past this distance a surface's color
+    /// survives at most [`FULLY_FOGGED_VISIBILITY`], so it renders as the fog
+    /// color. `None` for degenerate parameters, which never fully fog.
+    pub fn end(&self) -> Option<f32> {
+        let end = match *self {
+            Fog::Linear { near, far, .. } if far > near => far,
+            Fog::Exp { density, .. } if density > 0.0 => -FULLY_FOGGED_VISIBILITY.ln() / density,
+            _ => return None,
+        };
+        end.is_finite().then_some(end)
+    }
+
     /// How much of a surface's own color survives at `distance`: the
     /// shader's `applyFog` factor, clamped to 0..1 (NaN reads as no fog).
     /// Terrain LOD scales its screen-space error by it.
@@ -69,6 +81,11 @@ impl Fog {
         }
     }
 }
+
+/// Visibility at or below which a fogged surface counts as fully fogged.
+/// Under half an 8-bit sRGB step even at the steep near-black end of the
+/// curve, so drawing such a surface as exactly the fog color is invisible.
+pub const FULLY_FOGGED_VISIBILITY: f32 = 1.0 / 8192.0;
 
 /// The clear color for a forward pass: the fog color when fog is set (so the
 /// background IS the fog at infinity), else the engine default.
@@ -90,18 +107,24 @@ pub const FOG_GLSL: &str = r#"
         uniform float fogDensity;
         uniform vec3 fogCameraPos;   // camera world position
 
+        // How much of a surface's own color survives at worldPosition; 1.0
+        // with fog off.
+        float fogVisibility(vec3 worldPosition) {
+            if (fogEnabled == 0) {
+                return 1.0;
+            }
+            float dist = distance(worldPosition, fogCameraPos);
+            if (fogMode == 0) {
+                return clamp((fogFar - dist) / max(fogFar - fogNear, 1e-4), 0.0, 1.0);
+            }
+            return exp(-fogDensity * dist);
+        }
+
         vec3 applyFog(vec3 color, vec3 worldPosition) {
             if (fogEnabled == 0) {
                 return color;
             }
-            float dist = distance(worldPosition, fogCameraPos);
-            float factor;
-            if (fogMode == 0) {
-                factor = clamp((fogFar - dist) / max(fogFar - fogNear, 1e-4), 0.0, 1.0);
-            } else {
-                factor = exp(-fogDensity * dist);
-            }
-            return mix(fogColor, color, factor);
+            return mix(fogColor, color, fogVisibility(worldPosition));
         }
 "#;
 
@@ -187,6 +210,17 @@ mod tests {
         assert!((exp.visibility(100.0) - (-1.0f32).exp()).abs() < 1e-6);
         assert_eq!(Fog::exp(-1.0, 0.0, 0.0, 0.0).visibility(10.0), 1.0);
         assert_eq!(Fog::exp(f32::NAN, 0.0, 0.0, 0.0).visibility(10.0), 1.0);
+    }
+
+    #[test]
+    fn end_is_where_visibility_reaches_fully_fogged() {
+        assert_eq!(Fog::linear(20.0, 200.0, 0.0, 0.0, 0.0).end(), Some(200.0));
+        let exp = Fog::exp(0.01, 0.0, 0.0, 0.0);
+        let end = exp.end().expect("positive density fully fogs");
+        assert!((exp.visibility(end) - FULLY_FOGGED_VISIBILITY).abs() < 1e-7);
+        assert_eq!(Fog::linear(200.0, 20.0, 0.0, 0.0, 0.0).end(), None);
+        assert_eq!(Fog::exp(0.0, 0.0, 0.0, 0.0).end(), None);
+        assert_eq!(Fog::exp(f32::NAN, 0.0, 0.0, 0.0).end(), None);
     }
 
     #[test]

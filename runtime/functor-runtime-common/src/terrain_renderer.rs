@@ -13,7 +13,7 @@ use glow::HasContext;
 
 use crate::{
     asset::pipelines::HeightmapData,
-    fog::{Fog, FogUniforms, FOG_GLSL},
+    fog::{Fog, FogUniforms, FOG_GLSL, FULLY_FOGGED_VISIBILITY},
     light::{lighting_glsl, LightingUniforms},
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
@@ -201,6 +201,16 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
             if (debugMode == 2) {
                 fragColor = functorOutput(
                     vec4(functorSrgbToLinear(normalize(worldTangent) * 0.5 + 0.5), 1.0));
+                return;
+            }
+
+            // Fully fogged: the result is the fog color whatever the surface,
+            // so skip the lights and every texture fetch. A branch, not a
+            // discard, so early depth testing stays on. Texture derivatives
+            // in quads straddling this edge are as safe as the detail fade's:
+            // those fragments' own colors are scaled by ~0 in the fog mix.
+            if (fogVisibility(worldPos) <= FULLY_FOGGED_VISIBILITY) {
+                fragColor = functorOutput(vec4(fogColor, 1.0));
                 return;
             }
 
@@ -511,6 +521,7 @@ struct PatchCacheKey {
     max_height: f32,
     max_pixel_error: f32,
     fog: Option<Fog>,
+    fog_cull_distance: Option<f32>,
     world: Matrix4<f32>,
     camera_pos: Vector3<f32>,
     view_projections: [Matrix4<f32>; 2],
@@ -618,6 +629,7 @@ impl TerrainRenderer {
             max_height: description.max_height,
             max_pixel_error: description.max_pixel_error,
             fog: ctx.lod_fog.map(Fog::without_color),
+            fog_cull_distance: ctx.fog_cull_distance,
             world: *world,
             camera_pos: ctx.lod_camera_pos,
             view_projections: ctx.lod_view_projections,
@@ -648,6 +660,7 @@ impl TerrainRenderer {
                 ctx.lod_projection_scale,
                 ctx.viewport_height,
                 ctx.lod_fog,
+                ctx.fog_cull_distance,
                 &mut geometry.scratch_instances,
             );
             if geometry.uploaded_instances != geometry.scratch_instances {
@@ -816,8 +829,9 @@ impl TerrainRenderer {
             ctx.shader_version,
         );
         let fragment_source = format!(
-            "{}\n{}\n{}",
+            "{}\nconst float FULLY_FOGGED_VISIBILITY = {:?};\n{}\n{}",
             FOG_GLSL,
+            FULLY_FOGGED_VISIBILITY,
             lighting_glsl(),
             FRAGMENT_SHADER_SOURCE
         );
@@ -1730,8 +1744,12 @@ fn select_patches_into(
     projection_scale: f32,
     viewport_height: f32,
     fog: Option<&Fog>,
+    // Patches wholly past this distance are skipped (see
+    // `RenderContext::fog_cull_distance`).
+    fog_cull_distance: Option<f32>,
     patches: &mut Vec<[f32; 4]>,
 ) {
+    let cull_distance = fog_cull_distance.unwrap_or(f32::INFINITY);
     patches.clear();
     let inverse = world.invert().unwrap_or_else(Matrix4::identity);
     let local4 = inverse * Vector4::new(camera_world.x, camera_world.y, camera_world.z, 1.0);
@@ -1772,6 +1790,7 @@ fn select_patches_into(
         projection_scale: f32,
         viewport_height: f32,
         fog: Option<&Fog>,
+        cull_distance: f32,
         max_level: u32,
         level: u32,
         u: f32,
@@ -1822,6 +1841,13 @@ fn select_patches_into(
         let dy = (min.y - camera_local.y).max(0.0) + (camera_local.y - max.y).max(0.0);
         let dz = (min.z - camera_local.z).max(0.0) + (camera_local.z - max.z).max(0.0);
         let distance = (dx * dx + dy * dy + dz * dz).sqrt() * min_scale;
+        // Wholly past the full-fog distance: every fragment would be the
+        // background color. The box reaches down to the skirt, so a skirt
+        // seen from below the terrain is never cut.
+        let skirt_dy = (cull_low - camera_local.y).max(0.0) + (camera_local.y - max.y).max(0.0);
+        if (dx * dx + skirt_dy * skirt_dy + dz * dz).sqrt() * min_scale > cull_distance {
+            return;
+        }
         let vertex_spacing =
             description.width.max(description.depth) * scale * max_scale / PATCH_QUADS as f32;
         let projected_spacing =
@@ -1847,6 +1873,7 @@ fn select_patches_into(
                 projection_scale,
                 viewport_height,
                 fog,
+                cull_distance,
                 max_level,
                 level + 1,
                 u,
@@ -1865,6 +1892,7 @@ fn select_patches_into(
                 projection_scale,
                 viewport_height,
                 fog,
+                cull_distance,
                 max_level,
                 level + 1,
                 u + child,
@@ -1883,6 +1911,7 @@ fn select_patches_into(
                 projection_scale,
                 viewport_height,
                 fog,
+                cull_distance,
                 max_level,
                 level + 1,
                 u,
@@ -1901,6 +1930,7 @@ fn select_patches_into(
                 projection_scale,
                 viewport_height,
                 fog,
+                cull_distance,
                 max_level,
                 level + 1,
                 u + child,
@@ -1924,6 +1954,7 @@ fn select_patches_into(
         projection_scale,
         viewport_height,
         fog,
+        cull_distance,
         max_level,
         0,
         0.0,
@@ -1957,6 +1988,7 @@ fn select_patches(
         std::slice::from_ref(view_projection),
         projection_scale,
         viewport_height,
+        None,
         None,
         &mut patches,
     );
@@ -2420,6 +2452,7 @@ mod tests {
                 projection.y.y,
                 1600.0,
                 None,
+                None,
                 &mut patches,
             );
             patches
@@ -2485,6 +2518,10 @@ mod tests {
     /// A 4 km terrain from a 4097² map, seen from 20 m up looking along the
     /// diagonal — far enough to reach the coarse levels.
     fn select_with_fog(fog: Option<&Fog>) -> Vec<[f32; 4]> {
+        select_with_fog_cull(fog, None)
+    }
+
+    fn select_with_fog_cull(fog: Option<&Fog>, cull: Option<f32>) -> Vec<[f32; 4]> {
         let description = terrain();
         let eye = Point3::new(-1500.0, 20.0, -1500.0);
         let view = Matrix4::look_at_rh(eye, Point3::new(0.0, 0.0, 0.0), Vector3::unit_y());
@@ -2500,6 +2537,7 @@ mod tests {
             projection.y.y,
             1600.0,
             fog,
+            cull,
             &mut patches,
         );
         patches
@@ -2519,6 +2557,32 @@ mod tests {
         let at_eye = [0.125, 0.125, 1.0 / 64.0, 1.0 / 64.0];
         assert!(clear.contains(&at_eye) && fogged.contains(&at_eye));
         assert_eq!(fogged, select_with_fog(Some(&dense)), "deterministic");
+    }
+
+    #[test]
+    fn fog_end_culls_exactly_the_patches_wholly_past_it() {
+        let fog = Fog::linear(20.0, 600.0, 0.0, 0.0, 0.0);
+        let all = select_with_fog_cull(Some(&fog), None);
+        let culled = select_with_fog_cull(Some(&fog), fog.end());
+        assert!(culled.len() < all.len(), "culled {} vs all {}", culled.len(), all.len());
+        // Culling removes patches and never changes the LOD of the rest.
+        assert!(culled.iter().all(|patch| all.contains(patch)));
+        // Every survivor reaches within the fog end; every dropped patch
+        // lies wholly past it (terrain-local == world here).
+        let eye = Vector3::new(-1500.0f32, 20.0, -1500.0);
+        let terrain = terrain();
+        let nearest = |patch: &[f32; 4]| {
+            let x0 = (patch[0] - 0.5) * terrain.width;
+            let z0 = (patch[1] - 0.5) * terrain.depth;
+            let dx = (x0 - eye.x).max(0.0) + (eye.x - (x0 + patch[2] * terrain.width)).max(0.0);
+            let dz = (z0 - eye.z).max(0.0) + (eye.z - (z0 + patch[3] * terrain.depth)).max(0.0);
+            (dx * dx + dz * dz).sqrt()
+        };
+        assert!(culled.iter().all(|patch| nearest(patch) <= 600.0));
+        assert!(all
+            .iter()
+            .filter(|patch| !culled.contains(patch))
+            .all(|patch| nearest(patch) > 600.0 - 1.0));
     }
 
     #[test]

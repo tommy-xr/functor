@@ -228,6 +228,7 @@ pub fn render_shadow_pass(
         viewport_height: shadow_map.size as f32,
         lod_fog: None,
         pass_serial: crate::next_pass_serial(),
+        fog_cull_distance: None,
     };
 
     let mut depth_material = DepthMaterial::create();
