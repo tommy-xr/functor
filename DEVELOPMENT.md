@@ -71,9 +71,10 @@ npm run pr -- 123 --cli              # just the CLI
 npm run pr -- 123 --apk --run hello  # install the APK, then run examples/hello on it
 ```
 
-It refuses a head commit whose build is missing, running or failed. Replacing an
-install signed with another key, or a newer one, needs `--allow-uninstall`. The
-example comes from this checkout, not the PR. Tests: `npm run test:pr`.
+It refuses fork PRs and a head commit whose build is missing, running or failed.
+Replacing an install signed with another key, or a newer one, needs
+`--allow-uninstall`. The example comes from this checkout, not the PR. Delete
+`~/.functor/pr-artifacts` to reclaim the cache. Tests: `npm run test:pr`.
 
 ## Building the CLI
 
