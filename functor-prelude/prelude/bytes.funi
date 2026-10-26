@@ -1,6 +1,7 @@
 //! Binary data for decoders: an immutable `Bytes.t` (usually from
 //! `File.bytes`) and readers for its numbers and text. Offsets and lengths are
-//! byte counts — whole numbers ≥ 0. Readers return a `Result`, so a decoder can
+//! byte counts — whole numbers ≥ 0, relative to the bytes given (a slice starts
+//! at 0, and so do its errors' offsets). Readers return a `Result`, so a decoder can
 //! report or recover from short or malformed data; `Binary.require` turns an
 //! error into a located one.
 //!

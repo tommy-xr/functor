@@ -77,11 +77,11 @@ not on the web or Quest"
 
 /// A `Binary.error` record at `offset` with an empty path.
 fn error(offset: f64, message: String) -> Value {
-    Value::Record(Rc::new(vec![
-        ("offset".to_string(), Value::Number(offset)),
-        ("path".to_string(), Value::List(Rc::new(Vec::new()))),
-        ("message".to_string(), Value::String(message.into())),
-    ]))
+    crate::input::record([
+        ("offset", Value::Number(offset)),
+        ("path", Value::List(Rc::new(Vec::new()))),
+        ("message", Value::String(message.into())),
+    ])
 }
 
 fn ok(value: Value) -> Value {
@@ -98,6 +98,22 @@ fn err(offset: f64, message: String) -> Value {
     }
 }
 
+/// An offset or length argument: any number, so a bad one (NaN, huge) becomes
+/// a recoverable `Result.Error` in [`take`] rather than an evaluation error.
+struct Count(f64);
+
+impl crate::host_registry::FromArg for Count {
+    fn from_arg(value: &Value, _path: &str, span: Span) -> Result<Self, RunError> {
+        match value {
+            Value::Number(n) => Ok(Count(*n)),
+            other => Err(RunError {
+                message: format!("expected a number, got {}", other.kind_name()),
+                span,
+            }),
+        }
+    }
+}
+
 /// `count` bytes at `offset`, or the `Result.Error` explaining why not.
 fn take(bytes: &ByteView, offset: f64, count: f64) -> Result<&[u8], Value> {
     let whole = |x: f64| x >= 0.0 && x.fract() == 0.0 && x <= 9_007_199_254_740_992.0;
@@ -109,7 +125,10 @@ fn take(bytes: &ByteView, offset: f64, count: f64) -> Result<&[u8], Value> {
     }
     let (at, n) = (offset as usize, count as usize);
     let data = bytes.as_slice();
-    let left = data.len().saturating_sub(at);
+    if at > data.len() {
+        return Err(err(offset, format!("past the end ({} bytes)", data.len())));
+    }
+    let left = data.len() - at;
     if left < n {
         return Err(err(offset, format!("needs {n} bytes, {left} left")));
     }
@@ -130,7 +149,7 @@ fn describe(error: &Value) -> Option<String> {
     let mut at = String::new();
     for segment in path.iter() {
         match segment {
-            Value::Variant { ctor, args } if ctor.ends_with(".Field") => {
+            Value::Variant { ctor, args } if &**ctor == "Binary.Field" => {
                 if let Some(Value::String(name)) = args.first() {
                     if !at.is_empty() {
                         at.push('.');
@@ -138,7 +157,7 @@ fn describe(error: &Value) -> Option<String> {
                     at.push_str(name);
                 }
             }
-            Value::Variant { ctor, args } if ctor.ends_with(".Index") => {
+            Value::Variant { ctor, args } if &**ctor == "Binary.Index" => {
                 if let Some(Value::Number(i)) = args.first() {
                     at.push_str(&format!("[{i}]"));
                 }
@@ -156,7 +175,7 @@ macro_rules! reader {
         $reg.fn2(
             concat!("Bytes.", $name),
             concat!("Bytes.", $name, "(offset, bytes)"),
-            |offset: f64, bytes: FunctorLangBytes| {
+            |Count(offset): Count, bytes: FunctorLangBytes| {
                 const N: usize = std::mem::size_of::<$ty>();
                 match take(&bytes.0, offset, N as f64) {
                     Ok(raw) => ok(Value::Number(
@@ -182,7 +201,9 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn3(
         "Bytes.slice",
         "Bytes.slice(start, length, bytes)",
-        |start: f64, length: f64, bytes: FunctorLangBytes| match take(&bytes.0, start, length) {
+        |Count(start): Count, Count(length): Count, bytes: FunctorLangBytes| match take(
+            &bytes.0, start, length,
+        ) {
             Ok(_) => ok(Value::HostData(Rc::new(FunctorLangBytes(ByteView {
                 data: bytes.0.data.clone(),
                 start: bytes.0.start + start as usize,
@@ -199,7 +220,9 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn3(
         "Bytes.latin1",
         "Bytes.latin1(offset, length, bytes)",
-        |offset: f64, length: f64, bytes: FunctorLangBytes| match take(&bytes.0, offset, length) {
+        |Count(offset): Count, Count(length): Count, bytes: FunctorLangBytes| match take(
+            &bytes.0, offset, length,
+        ) {
             Ok(raw) => ok(Value::String(
                 raw.iter().map(|&b| b as char).collect::<String>().into(),
             )),
@@ -209,7 +232,9 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn3(
         "Bytes.utf8",
         "Bytes.utf8(offset, length, bytes)",
-        |offset: f64, length: f64, bytes: FunctorLangBytes| match take(&bytes.0, offset, length) {
+        |Count(offset): Count, Count(length): Count, bytes: FunctorLangBytes| match take(
+            &bytes.0, offset, length,
+        ) {
             Ok(raw) => match std::str::from_utf8(raw) {
                 Ok(s) => ok(Value::String(s.into())),
                 Err(e) => err(offset + e.valid_up_to() as f64, "invalid UTF-8".to_string()),

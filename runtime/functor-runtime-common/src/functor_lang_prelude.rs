@@ -12063,13 +12063,25 @@ the game dir"
             .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         crate::storage::set_project_root(dir.path().to_path_buf());
-        // "LGMD", u32le 3, f32le 1.0, 0xFF, u16be 0x1234.
-        let data = [
+        // "LGMD", u32le 3, f32le 1.0, 0xFF, u16be 0x1234, i32le -2, f32le NaN,
+        // f64be 2.5, invalid UTF-8 after "ok".
+        let mut data = vec![
             b'L', b'G', b'M', b'D', 3, 0, 0, 0, 0, 0, 0x80, 0x3F, 0xFF, 0x12, 0x34,
         ];
+        data.extend((-2i32).to_le_bytes());
+        data.extend(f32::NAN.to_le_bytes());
+        data.extend(2.5f64.to_be_bytes());
+        data.extend([b'o', b'k', 0xFF]);
         std::fs::write(dir.path().join("data.bin"), data).unwrap();
         let checks = [
-            "Bytes.length(d) == 15.0",
+            "Bytes.length(d) == 34.0",
+            "Bytes.i32le(15.0, d) == Result.Ok(-2.0) && Bytes.i16le(15.0, d) == Result.Ok(-2.0)",
+            "Bytes.f64be(23.0, d) == Result.Ok(2.5) && Bytes.f32be(8.0, d) != Result.Ok(1.0)",
+            "match Bytes.f32le(19.0, d) with | Result.Ok(x) => x != x | Result.Error(_) => false",
+            "match Bytes.utf8(31.0, 3.0, d) with \
+             | Result.Error(e) => e.offset == 33.0 | Result.Ok(_) => false",
+            "(Bytes.slice(4.0, 30.0, d) |> Result.bind((s) => Bytes.slice(4.0, 4.0, s)) \
+             |> Result.bind((s) => Bytes.f32le(0.0, s))) == Result.Ok(1.0)",
             "Bytes.latin1(0.0, 4.0, d) == Result.Ok(\"LGMD\")",
             "Bytes.u32le(4.0, d) == Result.Ok(3.0)",
             "Bytes.u32be(4.0, d) == Result.Ok(50331648.0)",
@@ -12079,14 +12091,18 @@ the game dir"
             "Bytes.u16be(13.0, d) == Result.Ok(4660.0)",
             "Binary.require(Bytes.u32le(4.0, d)) == 3.0",
             "Bytes.equals(d, d)",
-            "match Bytes.u32le(13.0, d) with \
-             | Result.Error(e) => Binary.describe(e) == \"at byte 13: needs 4 bytes, 2 left\" \
+            "match Bytes.u32le(32.0, d) with \
+             | Result.Error(e) => Binary.describe(e) == \"at byte 32: needs 4 bytes, 2 left\" \
              | Result.Ok(_) => false",
             "Result.isError(Bytes.u8(1.5, d)) && Result.isError(Bytes.u8(-1.0, d))",
             "match Bytes.slice(4.0, 4.0, d) with \
              | Result.Ok(s) => Bytes.length(s) == 4.0 && Bytes.u32le(0.0, s) == Result.Ok(3.0) \
              | Result.Error(_) => false",
-            "Result.isError(Bytes.slice(12.0, 4.0, d))",
+            "Result.isError(Bytes.slice(31.0, 4.0, d))",
+            "(Bytes.slice(34.0, 0.0, d) |> Result.map(Bytes.length)) == Result.Ok(0.0)",
+            "Result.isError(Bytes.slice(35.0, 0.0, d)) && Result.isError(Bytes.latin1(35.0, 0.0, d))",
+            "Result.isError(Bytes.u8(0.0 / 0.0, d)) && Result.isError(Bytes.u8(1.0 / 0.0, d))",
+            "Result.isError(Bytes.utf8(0.0, Math.pow(10.0, 40.0), d))",
             "Binary.describe({ offset: 1462.0, message: \"needs 2 bytes, 1 left\", \
              path: [Binary.Field(\"polygons\"), Binary.Index(17.0), Binary.Field(\"indices\"), \
              Binary.Index(2.0)] }) == \"polygons[17].indices[2] at byte 1462: needs 2 bytes, 1 left\"",
@@ -12104,8 +12120,8 @@ the game dir"
                 .err()
                 .expect("should fail")
         };
-        let err = failure("Binary.require(Bytes.u32le(13.0, File.bytes(\"data.bin\")))");
-        assert!(err.contains("at byte 13: needs 4 bytes, 2 left"), "{err}");
+        let err = failure("Binary.require(Bytes.u32le(32.0, File.bytes(\"data.bin\")))");
+        assert!(err.contains("at byte 32: needs 4 bytes, 2 left"), "{err}");
         let err = failure("File.bytes(\"missing.bin\")");
         assert!(err.contains("can't read missing.bin"), "{err}");
         let err = failure("File.bytes(\"../data.bin\")");

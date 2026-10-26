@@ -100,9 +100,12 @@ fn file_bytes_feed_expects() {
     };
     assert!(test(&dir).status.success());
     std::fs::write(dir.join("data.bin"), [8u8, 0, 0, 0]).unwrap();
+    let failed = test(&dir);
+    let output = String::from_utf8_lossy(&failed.stdout).into_owned()
+        + &String::from_utf8_lossy(&failed.stderr);
     assert!(
-        !test(&dir).status.success(),
-        "a changed file fails the expect"
+        !failed.status.success() && output.contains("part.fun:2"),
+        "{output}"
     );
     std::fs::remove_dir_all(dir).ok();
 }
