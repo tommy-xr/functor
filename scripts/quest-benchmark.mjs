@@ -69,7 +69,8 @@ async function waitForRuntime(timeoutMs = 20_000) {
 async function collectVrApi(seconds) {
   const child = spawn(
     "adb",
-    ["logcat", "-v", "brief", "-T", "1", "VrApi:I", "*:S"],
+    // vrshell logs its own VrApi FPS lines; only read the app's process.
+    ["logcat", `--pid=${adb(["shell", "pidof", PACKAGE])}`, "-v", "brief", "-T", "1", "VrApi:I", "*:S"],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let output = "";
@@ -161,34 +162,34 @@ function parseMemory(text) {
   };
 }
 
-// Battery state before/after a sample: the level delta says whether the run
-// was net-charging; current_now (µA, sign varies by kernel) is reported raw.
+// Battery state before/after a sample. sysfs current_now is not readable
+// over adb on Quest, so net current comes from the charge-counter delta
+// (µAh) over the sample: positive = net charging, negative = net drain.
 function readBattery() {
   const text = adb(["shell", "dumpsys", "battery"]);
   const number = (pattern) => {
     const match = text.match(pattern);
     return match ? Number(match[1]) : undefined;
   };
-  const sysfs = (name) => {
-    try {
-      return Number(adb(["shell", "cat", `/sys/class/power_supply/battery/${name}`]));
-    } catch {
-      return undefined;
-    }
-  };
   const STATUS = { 2: "charging", 3: "discharging", 4: "not charging", 5: "full" };
-  const current_ua = sysfs("current_now");
-  const voltage_uv = sysfs("voltage_now");
   return {
     level: number(/level:\s+(\d+)/),
     status: STATUS[number(/status:\s+(\d+)/)] ?? "unknown",
-    plugged: /(?:AC|USB|Wireless) powered:\s+true/.test(text),
-    current_ma: current_ua === undefined ? undefined : current_ua / 1000,
-    watts:
-      current_ua === undefined || voltage_uv === undefined
-        ? undefined
-        : (current_ua / 1e6) * (voltage_uv / 1e6),
+    plugged: /(?:AC|USB|Wireless|Dock) powered:\s+true/.test(text),
+    charge_uah: number(/Charge counter:\s+(\d+)/),
+    // Anchored: `Max charging voltage:` precedes the battery `voltage:` line.
+    voltage_mv: number(/^\s*voltage:\s+(\d+)/m),
+    max_charge_w:
+      ((number(/Max charging current:\s+(\d+)/) ?? 0) / 1e6) *
+      ((number(/Max charging voltage:\s+(\d+)/) ?? 0) / 1e6),
+    at: Date.now(),
   };
+}
+
+function netCurrentMa(before, after) {
+  if (before.charge_uah === undefined || after.charge_uah === undefined) return undefined;
+  const hours = (after.at - before.at) / 3_600_000;
+  return hours > 0 ? (after.charge_uah - before.charge_uah) / 1000 / hours : undefined;
 }
 
 function printMetric(label, metric, suffix = "") {
@@ -294,9 +295,15 @@ async function main() {
   console.log("");
   console.log(`- Stale frames: ${telemetry.stale_frames}`);
   console.log(`- Torn frames: ${telemetry.torn_frames}`);
-  const amps = batteryAfter.current_ma === undefined ? "current n/a" : `${batteryAfter.current_ma.toFixed(0)} mA${batteryAfter.watts === undefined ? "" : ` / ${batteryAfter.watts.toFixed(1)} W`}`;
+  const net = netCurrentMa(batteryBefore, batteryAfter);
+  const netText =
+    net === undefined
+      ? "net current n/a"
+      : // The counter steps coarsely (~14 mAh on Quest 3), so print the raw
+        // delta: one step over a 30 s sample is ~1.7 A.
+        `charge ${((batteryAfter.charge_uah - batteryBefore.charge_uah) / 1000).toFixed(1)} mAh over ${((batteryAfter.at - batteryBefore.at) / 1000).toFixed(0)} s ≈ net ${net >= 0 ? "+" : ""}${net.toFixed(0)} mA ≈ ${((net / 1000) * ((batteryAfter.voltage_mv ?? 0) / 1000)).toFixed(1)} W`;
   console.log(
-    `- Battery: ${batteryBefore.level}% → ${batteryAfter.level}% (${batteryAfter.status}${batteryAfter.plugged ? ", plugged" : ", unplugged"}; ${amps})`,
+    `- Battery: ${batteryBefore.level}% → ${batteryAfter.level}% (${batteryAfter.status}, ${batteryAfter.plugged ? "plugged" : "unplugged"}, negotiated ${batteryAfter.max_charge_w.toFixed(0)} W max; ${netText})`,
   );
   console.log(`- Memory: ${memory.total_pss_mib?.toFixed(1)} MiB PSS, ${memory.total_rss_mib?.toFixed(1)} MiB RSS, ${memory.graphics_pss_mib?.toFixed(1)} MiB graphics PSS`);
   console.log("- Restore proximity automation: `adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable`");
