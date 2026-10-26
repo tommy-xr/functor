@@ -31,6 +31,12 @@ separate — nudge the nearly-touching pieces apart or into each other"
     Ok(mesh)
 }
 
+/// Reduce a closed mesh's triangle count, moving no surface more than
+/// `tolerance` mm and keeping it closed (Manifold's topology-safe collapse).
+pub fn simplify(mesh: &Mesh, tolerance: f64) -> Result<Mesh, String> {
+    from_manifold(&to_manifold(mesh)?.simplify(tolerance))
+}
+
 fn node(solid: &Solid, xform: Matrix4<f64>) -> Result<CsgNode, String> {
     let children = |children: &[std::sync::Arc<Solid>]| {
         children

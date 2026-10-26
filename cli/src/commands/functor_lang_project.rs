@@ -623,20 +623,7 @@ impl FunctorLangProject {
         use functor_runtime_common::functor_lang_prelude::{solid::solid_global, FunctorHost};
         use std::io::Write;
 
-        let extension = output
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase);
-        let three_mf = match extension.as_deref() {
-            Some("stl") => false,
-            Some("3mf") => true,
-            _ => {
-                return Err(Error::other(format!(
-                    "cannot export {}: use a .stl or .3mf file",
-                    output.display()
-                )))
-            }
-        };
+        let three_mf = export_format(output)?;
         let session =
             functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
                 Error::other(
@@ -1776,8 +1763,24 @@ fn entry_escapes_project(entry: &str) -> bool {
     Path::new(entry).is_absolute() || entry.split(['/', '\\']).any(|seg| seg == "..")
 }
 
+/// Whether `output` names a 3MF (else STL); any other extension is an error.
+pub(crate) fn export_format(output: &Path) -> Result<bool, Error> {
+    let extension = output
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("stl") => Ok(false),
+        Some("3mf") => Ok(true),
+        _ => Err(Error::other(format!(
+            "cannot export {}: use a .stl or .3mf file",
+            output.display()
+        ))),
+    }
+}
+
 /// Refuse a part slicers would not read as one closed solid.
-fn check_printable(binding: &str, mesh: &functor_solid::Mesh) -> Result<(), Error> {
+pub(crate) fn check_printable(binding: &str, mesh: &functor_solid::Mesh) -> Result<(), Error> {
     if mesh.triangles.is_empty() {
         return Err(Error::other(format!("`{binding}` is empty")));
     }
