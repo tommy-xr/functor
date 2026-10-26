@@ -291,6 +291,9 @@ functor -d examples/scene-grid run native   # the stand-in floor, desk and wall
   `scene-grid-t2` covers it.
 - X toggles the grid (G on desktop), so the overlay can be judged against
   plain passthrough.
+- On Quest the lines follow real walls and furniture but wave where the
+  320x320 depth is noisy, and round off into corners, which the depth
+  smooths.
 - Quest 3, release APK, 120 Hz, foveation Off, nobody wearing it
   (2026-10-26): grid on 120.4 fps, App 3.27–3.29 ms, 82–171 stale frames in
   30 s; grid off App 0.55 ms, 0 stale. The pass is about 2.7 ms of GPU at

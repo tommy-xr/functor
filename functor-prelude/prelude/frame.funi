@@ -72,7 +72,8 @@ let withStandInRoom : (Scene.t, t) => t
 /// `cell` world units (metres in passthrough) on whichever axis planes the
 /// surface faces, fading out 4–8 m away. The lines blend over the room and
 /// under the frame's scene. `cell` must be positive. Without `Xr.scene(true)`
-/// nothing is drawn.
+/// nothing is drawn, and render targets and the transparent debug view draw
+/// no grid.
 let withSurfaceGrid : (float, Color.t, t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///

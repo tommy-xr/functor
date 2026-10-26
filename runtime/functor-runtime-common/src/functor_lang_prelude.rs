@@ -2830,7 +2830,7 @@ passthrough frame wherever no camera feed is composited",
         "Frame.withSurfaceGrid(cell, color, frame) — cell is the grid spacing in \
 world units (metres in passthrough), > 0",
         |cell: f64, color: FunctorLangColor, frame: FunctorLangFrame| {
-            if !(cell > 0.0) {
+            if !(cell as f32 > 0.0) {
                 return Err(format!(
                     "Frame.withSurfaceGrid: the cell size must be positive, got {cell}"
                 ));

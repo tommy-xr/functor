@@ -74,8 +74,11 @@ pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
             highp float depth = filtered
                 ? sampleDepth(uv)
                 : textureLod(depthTexture, vec3(uv, depthLayer), 0.0).r;
+            // Keep `t` finite for the derivatives below: depth 1.0 under an
+            // infinite far plane unprojects to a point at infinity.
             if (clip.w <= 0.0 || uv != clamp(uv, 0.0, 1.0) || depth >= 1.0) {
                 hit = false;
+                return t;
             }
             highp vec3 surface = unproject(depthInverse, vec3(uv, depth) * 2.0 - 1.0);
             return dot(surface - eye, dir);
@@ -105,7 +108,8 @@ pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
             // edges (the point jumps between neighbours) and grazing angles.
             float alpha = dot(w, lines) * (1.0 - smoothstep(4.0, 8.0, t))
                 * (1.0 - smoothstep(0.2, 0.4, max(max(dq.x, dq.y), dq.z)));
-            if (!hit || t <= 0.0 || alpha <= 0.0) {
+            // `!(alpha > 0.0)` also drops a NaN from a degenerate normal.
+            if (!hit || t <= 0.0 || !(alpha > 0.0)) {
                 discard;
             }
             fragColor = functorOutput(vec4(functorSrgbToLinear(color), alpha));

@@ -995,7 +995,9 @@ fn forward_pass(
     let mut root_material = BasicMaterial::create();
     root_material.initialize(&render_context);
 
-    let render_scene = || {
+    // The surface grid blends with its own state, so the transparent-debug
+    // recipe (which owns blending for the whole scene) draws without it.
+    let render_scene = |with_grid: bool| {
         if let Some(room) = stand_in_room {
             Scene3D::render(
                 room,
@@ -1007,7 +1009,7 @@ fn forward_pass(
                 &root_material,
             );
         }
-        if let Some((grid, depth)) = surface_grid {
+        if let Some((grid, depth)) = surface_grid.filter(|_| with_grid) {
             scene_context.draw_surface_grid(
                 &render_context,
                 grid,
@@ -1033,21 +1035,21 @@ fn forward_pass(
             gl.color_mask(false, false, false, false);
             gl.depth_mask(true);
         }
-        render_scene();
+        render_scene(false);
         unsafe {
             gl.color_mask(true, true, true, true);
             gl.depth_func(glow::EQUAL);
             begin_constant_alpha_blend(gl, scene_context.passthrough_composited());
             gl.blend_color(0.0, 0.0, 0.0, TRANSPARENT_DEBUG_ALPHA);
         }
-        render_scene();
+        render_scene(false);
         unsafe {
             end_constant_alpha_blend(gl);
             gl.depth_func(glow::LESS);
             gl.clear(glow::DEPTH_BUFFER_BIT);
         }
     } else {
-        render_scene();
+        render_scene(true);
         for root in stand_in_room.into_iter().chain([scene]) {
             transparent_pass(
                 gl,
