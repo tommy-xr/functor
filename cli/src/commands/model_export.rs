@@ -48,14 +48,22 @@ pub fn execute(args: &ModelExport) -> Result<(), Error> {
         Some(v) => v,
         None => remesh::fitting_voxel(&soup, args.nozzle / 2.0, offset),
     };
+    // The shell grows the model on every side, so shrink it by that first;
+    // the final rescale below then only corrects voxel rounding and leaves
+    // walls at full width.
+    let shell = remesh::shell(voxel, offset);
+    if 2.0 * shell >= args.height {
+        return Err(Error::other(format!(
+            "--height must be more than twice the {shell:.2} mm shell"
+        )));
+    }
+    model::to_print_frame(&mut soup, args.height - 2.0 * shell).map_err(failed)?;
     let dense = remesh::printable(&soup, voxel, offset).map_err(Error::other)?;
     // Lossless by default: merge only coplanar triangles (flat faces drop a
     // lot; nothing moves). Any real tolerance can self-intersect thin regions,
     // which slicers tolerate but strict CAD checks reject — so it's opt-in.
     let mut mesh =
         functor_solid::simplify(&dense, args.simplify.unwrap_or(LOSSLESS)).map_err(Error::other)?;
-    // The shell grew the model on every side; bring it back to the asked
-    // height, on the bed.
     model::to_print_frame(&mut mesh, args.height).map_err(failed)?;
 
     let name = args
@@ -77,7 +85,7 @@ pub fn execute(args: &ModelExport) -> Result<(), Error> {
             mesh.triangles.len(),
             dense.triangles.len(),
             size_label(&mesh),
-            remesh::shell(voxel, offset),
+            shell,
             started.elapsed().as_secs_f64()
         ),
     });

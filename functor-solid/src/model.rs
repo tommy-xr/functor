@@ -2,7 +2,7 @@
 //! optionally posing skinned meshes at a moment of an animation, then move it
 //! into the print frame (mm, Z up, on the bed). Morph targets are not applied.
 
-use cgmath::{InnerSpace, Matrix4, Quaternion, SquareMatrix, Vector4};
+use cgmath::{Matrix4, Quaternion, SquareMatrix, Vector4};
 use gltf::animation::{util::ReadOutputs, Interpolation, Property};
 
 use crate::Mesh;
@@ -78,7 +78,7 @@ pub fn load_gltf(bytes: &[u8], pose: Option<Pose>) -> Result<Mesh, String> {
             if indices.iter().any(|&i| i >= n) {
                 return Err("a mesh indexes past its vertices".to_string());
             }
-            let triangles: Vec<[u32; 3]> = match prim.mode() {
+            let mut triangles: Vec<[u32; 3]> = match prim.mode() {
                 Mode::Triangles => indices
                     .chunks_exact(3)
                     .map(|t| [t[0], t[1], t[2]])
@@ -103,6 +103,9 @@ pub fn load_gltf(bytes: &[u8], pose: Option<Pose>) -> Result<Mesh, String> {
                 // Points and lines have no surface.
                 _ => continue,
             };
+            // Repeated indices (strip joins) have no area, but would thicken
+            // into rods between pieces.
+            triangles.retain(|t| t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
             let sets: Vec<(Vec<[u16; 4]>, Vec<[f32; 4]>)> = (0..)
                 .map_while(|s| {
                     Some((
@@ -191,8 +194,10 @@ fn local_transforms(
     buffers: &[gltf::buffer::Data],
     posed: Option<(gltf::Animation, f32)>,
 ) -> Vec<M4> {
-    let mut trs: Vec<([f32; 3], [f32; 4], [f32; 3])> =
-        doc.nodes().map(|n| n.transform().decomposed()).collect();
+    let mut local: Vec<M4> = doc
+        .nodes()
+        .map(|n| matrix(n.transform().matrix()))
+        .collect();
     if let Some((animation, seconds)) = posed {
         let channels: Vec<_> = animation
             .channels()
@@ -216,40 +221,56 @@ fn local_transforms(
                 ))
             })
             .collect();
-        let duration = channels
-            .iter()
-            .filter_map(|c| c.3.last().copied())
+        // The clip's length spans every channel, morph weights included.
+        let duration = animation
+            .channels()
+            .filter_map(|c| {
+                c.reader(|b| Some(&buffers[b.index()]))
+                    .read_inputs()?
+                    .last()
+            })
             .fold(0.0, f32::max);
         let t = if duration > 0.0 {
             seconds.rem_euclid(duration)
         } else {
             0.0
         };
+        // Only animated nodes are decomposed: a static matrix with a zero
+        // scale (a hidden prop) has no TRS form.
+        let mut trs = vec![None; local.len()];
         for (node, property, interpolation, times, values) in channels {
             let rotation = property == Property::Rotation;
             let Some(v) = sample(interpolation, &times, &values, t, rotation) else {
                 continue;
             };
+            let (t, q, s) = trs[node].get_or_insert_with(|| {
+                doc.nodes()
+                    .nth(node)
+                    .expect("channel targets a node")
+                    .transform()
+                    .decomposed()
+            });
             match property {
-                Property::Translation => trs[node].0 = [v[0], v[1], v[2]],
-                Property::Rotation => trs[node].1 = v,
-                Property::Scale => trs[node].2 = [v[0], v[1], v[2]],
+                Property::Translation => *t = [v[0], v[1], v[2]],
+                Property::Rotation => *q = v,
+                Property::Scale => *s = [v[0], v[1], v[2]],
                 Property::MorphTargetWeights => {}
             }
         }
+        for (m, trs) in local.iter_mut().zip(trs) {
+            if let Some((translation, rotation, scale)) = trs {
+                *m = matrix(
+                    gltf::scene::Transform::Decomposed {
+                        translation,
+                        rotation,
+                        scale,
+                    }
+                    .matrix(),
+                );
+            }
+        }
     }
-    trs.into_iter()
-        .map(|(t, q, s)| {
-            matrix(
-                gltf::scene::Transform::Decomposed {
-                    translation: t,
-                    rotation: q,
-                    scale: s,
-                }
-                .matrix(),
-            )
-        })
-        .collect()
+    local
 }
 
 /// A channel's value at `t` (vec3s padded to four components), or `None` if
@@ -301,13 +322,10 @@ fn sample(
     (len > 0.0).then(|| v.map(|x| x / len))
 }
 
-/// Shortest-arc slerp of glTF `[x, y, z, w]` quaternions.
+/// Slerp of glTF `[x, y, z, w]` quaternions (cgmath takes the short arc).
 fn slerp(a: [f32; 4], b: [f32; 4], s: f32) -> [f32; 4] {
     let q0 = Quaternion::new(a[3], a[0], a[1], a[2]);
-    let mut q1 = Quaternion::new(b[3], b[0], b[1], b[2]);
-    if q0.dot(q1) < 0.0 {
-        q1 = -q1;
-    }
+    let q1 = Quaternion::new(b[3], b[0], b[1], b[2]);
     let q = q0.slerp(q1, s);
     [q.v.x, q.v.y, q.v.z, q.s]
 }
@@ -449,6 +467,22 @@ mod tests {
         assert!(load_gltf(&bytes, Some(pose))
             .unwrap_err()
             .contains("no animations"));
+    }
+
+    #[test]
+    fn drops_triangles_with_repeated_indices() {
+        // The second triangle is a strip-style join with no area.
+        let bytes = glb(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [9.0, 9.0, 0.0],
+            ],
+            &[0, 1, 2, 2, 2, 3],
+            "",
+        );
+        assert_eq!(load_gltf(&bytes, None).unwrap().triangles.len(), 1);
     }
 
     #[test]
