@@ -18,8 +18,13 @@ const MAX_CELLS: usize = 250_000_000;
 /// The offset is raised to at least ¾ voxel, so a thickened sheet always
 /// contains a lattice point and can't vanish between samples.
 pub fn printable(soup: &Mesh, voxel: f64, offset: f64) -> Result<Mesh, String> {
-    let grid = voxelize(soup, voxel, offset.max(0.75 * voxel))?;
+    let grid = voxelize(soup, voxel, shell(voxel, offset))?;
     Ok(marching_tets(&grid))
+}
+
+/// The thickening `printable` actually applies: `offset`, but at least ¾ voxel.
+pub fn shell(voxel: f64, offset: f64) -> f64 {
+    offset.max(0.75 * voxel)
 }
 
 /// The finest voxel, starting from `voxel`, whose grid fits under the cap.
@@ -27,7 +32,7 @@ pub fn fitting_voxel(soup: &Mesh, voxel: f64, offset: f64) -> f64 {
     let Some(b) = soup.bounds() else { return voxel };
     let mut h = voxel;
     loop {
-        let pad = 2.0 * (offset.max(0.75 * h) + 4.0 * h);
+        let pad = 2.0 * (shell(h, offset) + 4.0 * h);
         let cells: f64 = (0..3)
             .map(|i| (b.max[i] - b.min[i] + pad) / h + 2.0)
             .product();

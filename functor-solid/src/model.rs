@@ -1,55 +1,48 @@
 //! glTF models as triangle soup for printing: flatten the default scene,
 //! optionally posing skinned meshes at a moment of an animation, then move it
-//! into the print frame (mm, Z up, on the bed).
+//! into the print frame (mm, Z up, on the bed). Morph targets are not applied.
+
+use cgmath::{InnerSpace, Matrix4, Quaternion, SquareMatrix, Vector4};
+use gltf::animation::{util::ReadOutputs, Interpolation, Property};
 
 use crate::Mesh;
 
-type M4 = [[f64; 4]; 4]; // column-major: m[col][row]
-
-const IDENTITY: M4 = [
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
+type M4 = Matrix4<f64>;
 
 /// A moment of an animation to pose skinned meshes at.
 pub struct Pose<'a> {
-    /// Animation name; `None` is the first animation.
+    /// Animation name or index; `None` is the first animation.
     pub animation: Option<&'a str>,
+    /// Wrapped by the animation's length, as a looping clip plays in a game.
     pub seconds: f32,
 }
 
-/// The model's triangles in its own units and axes (glTF: Y up). Only
-/// self-contained files load (`.glb`, or `.gltf` with embedded buffers).
+/// The model's triangles in its own units, turned Z up (glTF is Y up). Only
+/// self-contained files load (`.glb`, or `.gltf` with embedded buffers);
+/// textures are never decoded.
 pub fn load_gltf(bytes: &[u8], pose: Option<Pose>) -> Result<Mesh, String> {
-    let (doc, buffers, _) =
-        gltf::import_slice(bytes).map_err(|e| format!("not a loadable glTF: {e}"))?;
-    let animation = match &pose {
+    let gltf::Gltf {
+        document: doc,
+        blob,
+    } = gltf::Gltf::from_slice(bytes).map_err(|e| format!("not a loadable glTF: {e}"))?;
+    let buffers = gltf::import_buffers(&doc, None, blob)
+        .map_err(|e| format!("cannot load the model's buffers: {e}"))?;
+    let posed = match pose {
         None => None,
-        Some(p) => Some(match p.animation {
-            None => doc
-                .animations()
-                .next()
-                .ok_or("the model has no animations to pose")?,
-            Some(name) => doc
-                .animations()
-                .find(|a| a.name() == Some(name))
-                .ok_or_else(|| format!("the model has no animation named {name:?}"))?,
-        }),
+        Some(p) => Some((find_animation(&doc, p.animation)?, p.seconds)),
     };
-    let local = local_transforms(&doc, &buffers, animation.zip(pose.map(|p| p.seconds)));
+    let local = local_transforms(&doc, &buffers, posed);
     let scene = doc
         .default_scene()
         .or_else(|| doc.scenes().next())
         .ok_or("the model has no scene")?;
 
     // World transform per node, in scene order.
-    let mut world = vec![IDENTITY; doc.nodes().len()];
+    let mut world = vec![M4::identity(); doc.nodes().len()];
     let mut order = Vec::new();
-    let mut stack: Vec<(gltf::Node, M4)> = scene.nodes().map(|n| (n, IDENTITY)).collect();
+    let mut stack: Vec<(gltf::Node, M4)> = scene.nodes().map(|n| (n, M4::identity())).collect();
     while let Some((node, parent)) = stack.pop() {
-        let w = mul(&parent, &local[node.index()]);
+        let w = parent * local[node.index()];
         world[node.index()] = w;
         stack.extend(node.children().map(|c| (c, w)));
         order.push(node);
@@ -62,70 +55,95 @@ pub fn load_gltf(bytes: &[u8], pose: Option<Pose>) -> Result<Mesh, String> {
         let joints = node.skin().map(|skin| {
             let reader = skin.reader(|b| Some(&buffers[b.index()]));
             let inverse_bind: Vec<M4> = match reader.read_inverse_bind_matrices() {
-                Some(it) => it.map(|m| m.map(|c| c.map(f64::from))).collect(),
-                None => vec![IDENTITY; skin.joints().count()],
+                Some(it) => it.map(matrix).collect(),
+                None => vec![M4::identity(); skin.joints().count()],
             };
             skin.joints()
                 .zip(inverse_bind)
-                .map(|(j, ib)| mul(&world[j.index()], &ib))
+                .map(|(j, ib)| world[j.index()] * ib)
                 .collect::<Vec<M4>>()
         });
         for prim in mesh.primitives() {
-            if prim.mode() != gltf::mesh::Mode::Triangles {
-                continue;
-            }
+            use gltf::mesh::Mode;
             let reader = prim.reader(|b| Some(&buffers[b.index()]));
             let Some(positions) = reader.read_positions() else {
                 continue;
             };
             let positions: Vec<[f64; 3]> = positions.map(|p| p.map(f64::from)).collect();
-            let base = out.vertices.len() as u32;
-            match (&joints, reader.read_joints(0), reader.read_weights(0)) {
-                (Some(jm), Some(js), Some(ws)) => {
-                    for ((p, j), w) in positions.iter().zip(js.into_u16()).zip(ws.into_f32()) {
-                        let total: f32 = w.iter().sum();
-                        let mut acc = [0.0; 3];
-                        for k in 0..4 {
-                            if w[k] > 0.0 {
-                                let q = apply(&jm[j[k] as usize], *p);
-                                for (a, q) in acc.iter_mut().zip(q) {
-                                    *a += q * f64::from(w[k] / total);
-                                }
-                            }
+            let n = positions.len() as u32;
+            let indices: Vec<u32> = match reader.read_indices() {
+                Some(i) => i.into_u32().collect(),
+                None => (0..n).collect(),
+            };
+            if indices.iter().any(|&i| i >= n) {
+                return Err("a mesh indexes past its vertices".to_string());
+            }
+            let triangles: Vec<[u32; 3]> = match prim.mode() {
+                Mode::Triangles => indices
+                    .chunks_exact(3)
+                    .map(|t| [t[0], t[1], t[2]])
+                    .collect(),
+                // Every other strip triangle is flipped to keep the winding.
+                Mode::TriangleStrip => indices
+                    .windows(3)
+                    .enumerate()
+                    .map(|(i, t)| {
+                        if i % 2 == 0 {
+                            [t[0], t[1], t[2]]
+                        } else {
+                            [t[1], t[0], t[2]]
                         }
-                        out.vertices.push(acc);
-                    }
-                }
+                    })
+                    .collect(),
+                Mode::TriangleFan => indices
+                    .windows(2)
+                    .skip(1)
+                    .map(|t| [indices[0], t[0], t[1]])
+                    .collect(),
+                // Points and lines have no surface.
+                _ => continue,
+            };
+            let sets: Vec<(Vec<[u16; 4]>, Vec<[f32; 4]>)> = (0..)
+                .map_while(|s| {
+                    Some((
+                        reader.read_joints(s)?.into_u16().collect(),
+                        reader.read_weights(s)?.into_f32().collect(),
+                    ))
+                })
+                .collect();
+            let base = out.vertices.len() as u32;
+            match &joints {
+                Some(jm) if !sets.is_empty() => out.vertices.extend(skin(jm, &sets, &positions)?),
                 _ => {
                     let w = &world[node.index()];
                     out.vertices.extend(positions.iter().map(|&p| apply(w, p)));
                 }
             }
-            let indices: Vec<u32> = match reader.read_indices() {
-                Some(i) => i.into_u32().collect(),
-                None => (0..positions.len() as u32).collect(),
-            };
-            out.triangles.extend(
-                indices
-                    .chunks_exact(3)
-                    .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
-            );
+            out.triangles
+                .extend(triangles.into_iter().map(|t| t.map(|i| i + base)));
         }
     }
     if out.triangles.is_empty() {
         return Err("the model has no triangle meshes".to_string());
     }
+    for v in &mut out.vertices {
+        *v = [v[0], -v[2], v[1]];
+    }
     Ok(out)
 }
 
-/// Move a Y-up model into the print frame: Z up, scaled so it is `height` mm
-/// tall, centered over the origin, resting on z = 0.
-pub fn to_print_frame(mesh: &mut Mesh, height: f64) {
-    for v in &mut mesh.vertices {
-        *v = [v[0], -v[2], v[1]];
+/// Scale `mesh` so it is `height` mm tall, centered over the origin, resting
+/// on z = 0.
+pub fn to_print_frame(mesh: &mut Mesh, height: f64) -> Result<(), String> {
+    let b = mesh.bounds().ok_or("the model has no geometry")?;
+    let extent = b.max[2] - b.min[2];
+    if !(extent > 0.0 && mesh.vertices.iter().flatten().all(|x| x.is_finite())) {
+        return Err(
+            "the model is flat or has invalid coordinates, so it has no height to scale"
+                .to_string(),
+        );
     }
-    let Some(b) = mesh.bounds() else { return };
-    let scale = height / (b.max[2] - b.min[2]);
+    let scale = height / extent;
     let center = [
         (b.min[0] + b.max[0]) / 2.0,
         (b.min[1] + b.max[1]) / 2.0,
@@ -134,80 +152,215 @@ pub fn to_print_frame(mesh: &mut Mesh, height: f64) {
     for v in &mut mesh.vertices {
         *v = std::array::from_fn(|i| (v[i] - center[i]) * scale);
     }
+    Ok(())
 }
 
-/// Local transform per node; nodes driven by `animation` are sampled at the
-/// given time (linear interpolation; step and cubic keys treated as linear).
+/// An animation by name, else by index; `None` is the first.
+fn find_animation<'a>(
+    doc: &'a gltf::Document,
+    selector: Option<&str>,
+) -> Result<gltf::Animation<'a>, String> {
+    let found = match selector {
+        None => doc.animations().next(),
+        Some(s) => doc
+            .animations()
+            .find(|a| a.name() == Some(s))
+            .or_else(|| s.parse().ok().and_then(|i| doc.animations().nth(i))),
+    };
+    found.ok_or_else(|| {
+        let names: Vec<String> = doc
+            .animations()
+            .map(|a| a.name().map_or(a.index().to_string(), str::to_string))
+            .collect();
+        if names.is_empty() {
+            "the model has no animations to pose".to_string()
+        } else {
+            format!(
+                "no animation {:?} (available: {})",
+                selector.unwrap_or_default(),
+                names.join(", ")
+            )
+        }
+    })
+}
+
+/// Local transform per node; nodes driven by the animation are sampled at
+/// the given time, wrapped by the clip's length.
 fn local_transforms(
     doc: &gltf::Document,
     buffers: &[gltf::buffer::Data],
-    animation: Option<(gltf::Animation, f32)>,
+    posed: Option<(gltf::Animation, f32)>,
 ) -> Vec<M4> {
-    use gltf::animation::util::ReadOutputs;
     let mut trs: Vec<([f32; 3], [f32; 4], [f32; 3])> =
         doc.nodes().map(|n| n.transform().decomposed()).collect();
-    if let Some((animation, t)) = animation {
-        for channel in animation.channels() {
-            let reader = channel.reader(|b| Some(&buffers[b.index()]));
-            let Some(times) = reader.read_inputs() else {
+    if let Some((animation, seconds)) = posed {
+        let channels: Vec<_> = animation
+            .channels()
+            .filter_map(|c| {
+                let reader = c.reader(|b| Some(&buffers[b.index()]));
+                let times: Vec<f32> = reader.read_inputs()?.collect();
+                let values: Vec<[f32; 4]> = match reader.read_outputs()? {
+                    ReadOutputs::Translations(it) | ReadOutputs::Scales(it) => {
+                        it.map(|v| [v[0], v[1], v[2], 0.0]).collect()
+                    }
+                    ReadOutputs::Rotations(it) => it.into_f32().collect(),
+                    ReadOutputs::MorphTargetWeights(_) => return None,
+                };
+                let target = c.target();
+                Some((
+                    target.node().index(),
+                    target.property(),
+                    c.sampler().interpolation(),
+                    times,
+                    values,
+                ))
+            })
+            .collect();
+        let duration = channels
+            .iter()
+            .filter_map(|c| c.3.last().copied())
+            .fold(0.0, f32::max);
+        let t = if duration > 0.0 {
+            seconds.rem_euclid(duration)
+        } else {
+            0.0
+        };
+        for (node, property, interpolation, times, values) in channels {
+            let rotation = property == Property::Rotation;
+            let Some(v) = sample(interpolation, &times, &values, t, rotation) else {
                 continue;
             };
-            let times: Vec<f32> = times.collect();
-            if times.is_empty() {
-                continue;
-            }
-            let i = times
-                .partition_point(|&x| x <= t)
-                .clamp(1, times.len().max(2) - 1);
-            let (i0, i1) = (i - 1, i.min(times.len() - 1));
-            let a = if times[i1] > times[i0] {
-                ((t - times[i0]) / (times[i1] - times[i0])).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let lerp = |v: &[[f32; 3]]| -> [f32; 3] {
-                std::array::from_fn(|k| v[i0][k] * (1.0 - a) + v[i1][k] * a)
-            };
-            let node = channel.target().node().index();
-            match reader.read_outputs() {
-                Some(ReadOutputs::Translations(it)) => trs[node].0 = lerp(&it.collect::<Vec<_>>()),
-                Some(ReadOutputs::Scales(it)) => trs[node].2 = lerp(&it.collect::<Vec<_>>()),
-                Some(ReadOutputs::Rotations(it)) => {
-                    let q: Vec<[f32; 4]> = it.into_f32().collect();
-                    // Shortest-arc normalized lerp.
-                    let sign = if (0..4).map(|k| q[i0][k] * q[i1][k]).sum::<f32>() < 0.0 {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                    let r: [f32; 4] =
-                        std::array::from_fn(|k| q[i0][k] * (1.0 - a) + sign * q[i1][k] * a);
-                    let len = r.iter().map(|x| x * x).sum::<f32>().sqrt();
-                    trs[node].1 = r.map(|x| x / len);
-                }
-                _ => {}
+            match property {
+                Property::Translation => trs[node].0 = [v[0], v[1], v[2]],
+                Property::Rotation => trs[node].1 = v,
+                Property::Scale => trs[node].2 = [v[0], v[1], v[2]],
+                Property::MorphTargetWeights => {}
             }
         }
     }
     trs.into_iter()
         .map(|(t, q, s)| {
-            gltf::scene::Transform::Decomposed {
-                translation: t,
-                rotation: q,
-                scale: s,
-            }
-            .matrix()
-            .map(|c| c.map(f64::from))
+            matrix(
+                gltf::scene::Transform::Decomposed {
+                    translation: t,
+                    rotation: q,
+                    scale: s,
+                }
+                .matrix(),
+            )
         })
         .collect()
 }
 
-fn mul(a: &M4, b: &M4) -> M4 {
-    std::array::from_fn(|c| std::array::from_fn(|r| (0..4).map(|k| a[k][r] * b[c][k]).sum()))
+/// A channel's value at `t` (vec3s padded to four components), or `None` if
+/// its keys are malformed. Cubic keys are `[in-tangent, value, out-tangent]`.
+fn sample(
+    interpolation: Interpolation,
+    times: &[f32],
+    values: &[[f32; 4]],
+    t: f32,
+    rotation: bool,
+) -> Option<[f32; 4]> {
+    let cubic = interpolation == Interpolation::CubicSpline;
+    if times.is_empty() || values.len() != times.len() * if cubic { 3 } else { 1 } {
+        return None;
+    }
+    let key = |k: usize| values[if cubic { 3 * k + 1 } else { k }];
+    let i = times.partition_point(|&x| x <= t);
+    let v = if i == 0 {
+        key(0)
+    } else if i == times.len() {
+        key(i - 1)
+    } else {
+        // times[i0] <= t < times[i1], so dt > 0.
+        let (i0, i1) = (i - 1, i);
+        let dt = times[i1] - times[i0];
+        let s = (t - times[i0]) / dt;
+        match interpolation {
+            Interpolation::Step => key(i0),
+            Interpolation::Linear if rotation => slerp(key(i0), key(i1), s),
+            Interpolation::Linear => {
+                std::array::from_fn(|k| key(i0)[k] * (1.0 - s) + key(i1)[k] * s)
+            }
+            Interpolation::CubicSpline => {
+                let (s2, s3) = (s * s, s * s * s);
+                let (out0, in1) = (values[3 * i0 + 2], values[3 * i1]);
+                std::array::from_fn(|k| {
+                    (2.0 * s3 - 3.0 * s2 + 1.0) * key(i0)[k]
+                        + (s3 - 2.0 * s2 + s) * dt * out0[k]
+                        + (-2.0 * s3 + 3.0 * s2) * key(i1)[k]
+                        + (s3 - s2) * dt * in1[k]
+                })
+            }
+        }
+    };
+    if !rotation {
+        return Some(v);
+    }
+    let len = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    (len > 0.0).then(|| v.map(|x| x / len))
+}
+
+/// Shortest-arc slerp of glTF `[x, y, z, w]` quaternions.
+fn slerp(a: [f32; 4], b: [f32; 4], s: f32) -> [f32; 4] {
+    let q0 = Quaternion::new(a[3], a[0], a[1], a[2]);
+    let mut q1 = Quaternion::new(b[3], b[0], b[1], b[2]);
+    if q0.dot(q1) < 0.0 {
+        q1 = -q1;
+    }
+    let q = q0.slerp(q1, s);
+    [q.v.x, q.v.y, q.v.z, q.s]
+}
+
+/// Linear-blend skinning over every JOINTS_n/WEIGHTS_n set.
+fn skin(
+    joints: &[M4],
+    sets: &[(Vec<[u16; 4]>, Vec<[f32; 4]>)],
+    positions: &[[f64; 3]],
+) -> Result<Vec<[f64; 3]>, String> {
+    if sets
+        .iter()
+        .any(|(j, w)| j.len() != positions.len() || w.len() != positions.len())
+    {
+        return Err("a skinned mesh's joints and weights don't match its vertices".to_string());
+    }
+    positions
+        .iter()
+        .enumerate()
+        .map(|(v, &p)| {
+            let (mut acc, mut total) = ([0.0; 3], 0.0);
+            for (js, ws) in sets {
+                for k in 0..4 {
+                    let w = f64::from(ws[v][k]);
+                    if w <= 0.0 {
+                        continue;
+                    }
+                    let m = joints
+                        .get(js[v][k] as usize)
+                        .ok_or("a skinned vertex names a joint its skin doesn't have")?;
+                    for (a, q) in acc.iter_mut().zip(apply(m, p)) {
+                        *a += q * w;
+                    }
+                    total += w;
+                }
+            }
+            // Unweighted vertices stay where they were authored.
+            Ok(if total > 0.0 {
+                acc.map(|a| a / total)
+            } else {
+                p
+            })
+        })
+        .collect()
+}
+
+fn matrix(m: [[f32; 4]; 4]) -> M4 {
+    M4::from(m.map(|c| c.map(f64::from)))
 }
 
 fn apply(m: &M4, p: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r])
+    let q = *m * Vector4::new(p[0], p[1], p[2], 1.0);
+    [q.x, q.y, q.z]
 }
 
 #[cfg(test)]
@@ -272,9 +425,9 @@ mod tests {
         let mut mesh = load_gltf(&bytes, None).unwrap();
         assert_eq!(mesh.triangles.len(), 1);
         assert_eq!(mesh.vertices[1], [6.0, 0.0, 0.0]);
-        to_print_frame(&mut mesh, 80.0);
+        to_print_frame(&mut mesh, 80.0).unwrap();
         let b = mesh.bounds().unwrap();
-        // Y up became Z up, scaled to 80 mm tall, centered, on the bed.
+        // Y up turned Z up, scaled to 80 mm tall, centered, on the bed.
         assert!((b.max[2] - 80.0).abs() < 1e-9 && b.min[2] == 0.0);
         assert!((b.min[0] + b.max[0]).abs() < 1e-9);
     }
@@ -296,5 +449,64 @@ mod tests {
         assert!(load_gltf(&bytes, Some(pose))
             .unwrap_err()
             .contains("no animations"));
+    }
+
+    #[test]
+    fn a_flat_model_has_no_height_to_scale() {
+        // A card lying in the glTF ground plane (all Y = 0).
+        let bytes = glb(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            &[0, 1, 2],
+            "",
+        );
+        let mut mesh = load_gltf(&bytes, None).unwrap();
+        assert!(to_print_frame(&mut mesh, 80.0)
+            .unwrap_err()
+            .contains("flat"));
+    }
+
+    #[test]
+    fn samples_each_interpolation() {
+        let times = [0.0, 2.0];
+        let lin = [[0.0, 0.0, 0.0, 0.0], [4.0, 0.0, 0.0, 0.0]];
+        assert_eq!(
+            sample(Interpolation::Linear, &times, &lin, 1.0, false).unwrap()[0],
+            2.0
+        );
+        assert_eq!(
+            sample(Interpolation::Step, &times, &lin, 1.9, false).unwrap()[0],
+            0.0
+        );
+        // Past the last key holds it.
+        assert_eq!(
+            sample(Interpolation::Linear, &times, &lin, 5.0, false).unwrap()[0],
+            4.0
+        );
+        // Cubic keys [in, value, out]: zero tangents ease, so midway is the midpoint.
+        let zero = [0.0; 4];
+        let cubic = [
+            zero,
+            [0.0, 0.0, 0.0, 0.0],
+            zero,
+            zero,
+            [4.0, 0.0, 0.0, 0.0],
+            zero,
+        ];
+        assert_eq!(
+            sample(Interpolation::CubicSpline, &times, &cubic, 1.0, false).unwrap()[0],
+            2.0
+        );
+        // ...but a quarter of the way it lags linear (ease-in).
+        let quarter = sample(Interpolation::CubicSpline, &times, &cubic, 0.5, false).unwrap()[0];
+        assert!(quarter < 1.0, "{quarter}");
+        assert!(sample(Interpolation::CubicSpline, &times, &lin, 1.0, false).is_none());
+        // Rotations slerp along the short arc: identity to 180° about Z, halfway is 90°.
+        let rot = [[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]];
+        let q = sample(Interpolation::Linear, &times, &rot, 1.0, true).unwrap();
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (q[2] - half).abs() < 1e-6 && (q[3] - half).abs() < 1e-6,
+            "{q:?}"
+        );
     }
 }

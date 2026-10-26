@@ -621,7 +621,6 @@ impl FunctorLangProject {
         output: &Path,
     ) -> Result<(), Error> {
         use functor_runtime_common::functor_lang_prelude::{solid::solid_global, FunctorHost};
-        use std::io::Write;
 
         let three_mf = export_format(output)?;
         let session =
@@ -650,44 +649,28 @@ impl FunctorLangProject {
         }
         // STL stores positions, not parts: merged parts must be one valid
         // solid too (touching parts would be welded by the slicer).
-        let mut merged = functor_solid::Mesh::default();
-        for (_, mesh) in &parts {
-            merged.extend(mesh);
-        }
         if !three_mf && parts.len() > 1 {
+            let mut merged = functor_solid::Mesh::default();
+            for (_, mesh) in &parts {
+                merged.extend(mesh);
+            }
             check_printable(&bindings.join(" + "), &merged).map_err(|e| {
                 Error::other(format!("{e} — export separate parts as .3mf instead"))
             })?;
         }
-        let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);
-        if three_mf {
-            let refs: Vec<_> = parts.iter().map(|(name, mesh)| (*name, mesh)).collect();
-            let name = Path::new(&self.entry)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("part");
-            functor_solid::threemf::write(name, &refs, &mut file)?;
-        } else {
-            functor_solid::stl::write_binary(&merged, &mut file)?;
-        }
-        file.flush()?;
+        let name = Path::new(&self.entry)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("part");
+        let refs: Vec<_> = parts.iter().map(|(name, mesh)| (*name, mesh)).collect();
+        write_parts(output, three_mf, name, &refs)?;
         for (binding, mesh) in &parts {
-            let size = mesh
-                .bounds()
-                .map(|b| {
-                    format!(
-                        "{:.2} x {:.2} x {:.2} mm",
-                        b.max[0] - b.min[0],
-                        b.max[1] - b.min[1],
-                        b.max[2] - b.min[2]
-                    )
-                })
-                .unwrap_or_else(|| "empty".to_string());
             emit(Event::Info {
                 message: format!(
-                    "exported `{binding}` to {}: {} triangles, {size}",
+                    "exported `{binding}` to {}: {} triangles, {}",
                     output.display(),
-                    mesh.triangles.len()
+                    mesh.triangles.len(),
+                    size_label(mesh)
                 ),
             });
         }
@@ -1777,6 +1760,43 @@ pub(crate) fn export_format(output: &Path) -> Result<bool, Error> {
             output.display()
         ))),
     }
+}
+
+/// Write `parts` as one 3MF (a part each) or one STL (merged).
+pub(crate) fn write_parts(
+    output: &Path,
+    three_mf: bool,
+    name: &str,
+    parts: &[(&str, &functor_solid::Mesh)],
+) -> Result<(), Error> {
+    use std::io::Write;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(output)?);
+    if three_mf {
+        functor_solid::threemf::write(name, parts, &mut file)?;
+    } else if let [(_, mesh)] = parts {
+        functor_solid::stl::write_binary(mesh, &mut file)?;
+    } else {
+        let mut merged = functor_solid::Mesh::default();
+        for (_, mesh) in parts {
+            merged.extend(mesh);
+        }
+        functor_solid::stl::write_binary(&merged, &mut file)?;
+    }
+    file.flush()
+}
+
+/// `W x D x H mm`, or `empty`.
+pub(crate) fn size_label(mesh: &functor_solid::Mesh) -> String {
+    mesh.bounds()
+        .map(|b| {
+            format!(
+                "{:.2} x {:.2} x {:.2} mm",
+                b.max[0] - b.min[0],
+                b.max[1] - b.min[1],
+                b.max[2] - b.min[2]
+            )
+        })
+        .unwrap_or_else(|| "empty".to_string())
 }
 
 /// Refuse a part slicers would not read as one closed solid.

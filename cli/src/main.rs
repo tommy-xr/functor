@@ -154,32 +154,32 @@ enum Command {
 
         /// Export a glTF model (`.glb`) as a printable solid instead — no
         /// project needed. E.g. `functor export --model fox.glb --height 60 -o fox.stl`.
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", conflicts_with = "parts")]
         model: Option<PathBuf>,
 
         /// With `--model`: the printed height in mm.
-        #[arg(long, default_value_t = 80.0)]
+        #[arg(long, default_value_t = 80.0, requires = "model")]
         height: f64,
 
         /// With `--model`: nozzle width in mm; thinner features are thickened to it.
-        #[arg(long, default_value_t = 0.4)]
+        #[arg(long, default_value_t = 0.4, requires = "model")]
         nozzle: f64,
 
         /// With `--model`: remesh voxel size in mm (default: half the nozzle,
         /// coarser if the model is too large for that).
-        #[arg(long)]
+        #[arg(long, requires = "model")]
         voxel: Option<f64>,
 
         /// With `--model`: pose skinned meshes at `[ANIMATION@]SECONDS`
-        /// (the first animation when unnamed).
-        #[arg(long)]
+        /// (animation by name or index; the first when omitted).
+        #[arg(long, requires = "model")]
         pose: Option<String>,
 
         /// With `--model`: decimate, moving the surface at most this many mm
         /// (far fewer triangles). Off by default: only coplanar triangles are
         /// merged, which never changes the shape. Decimated meshes slice fine
         /// but may self-intersect in thin regions.
-        #[arg(long, value_name = "MM")]
+        #[arg(long, value_name = "MM", requires = "model")]
         simplify: Option<f64>,
     },
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
