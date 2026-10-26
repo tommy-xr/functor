@@ -38,5 +38,6 @@ export function batteryLine(before, after) {
       after.voltage_mv != null ? ` ≈ ${((to / 1000) * (after.voltage_mv / 1000)).toFixed(1)} W` : "";
     current = `${label} current ${signed(from)} → ${signed(to)} mA${watts}`;
   }
-  return `- Battery: ${before.level_pct}% → ${after.level_pct}% (${after.status}, ${after.plugged ? "plugged" : "unplugged"}; ${current})`;
+  const level = (b) => `${b.level_pct ?? "?"}%`;
+  return `- Battery: ${level(before)} → ${level(after)} (${after.status}, ${after.plugged ? "plugged" : "unplugged"}; ${current})`;
 }

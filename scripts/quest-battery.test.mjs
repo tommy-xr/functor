@@ -30,6 +30,10 @@ test("falls back to the instantaneous current without an average", () => {
   );
 });
 
+test("an unreported level prints as ?", () => {
+  assert.match(batteryLine(reading({ level_pct: null }), reading()), /^- Battery: \?% → 40% /);
+});
+
 test("dumpsys fallback parses state and reports no current", () => {
   const text = `Current Battery Service state:
   AC powered: false
