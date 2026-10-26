@@ -85,10 +85,14 @@ function prHead(pr) {
 
 // The finished run of `workflow` for the head commit: a successful one, else
 // the latest (a CLI matrix with one failed leg still holds the other
-// platforms' binaries). A missing or unfinished run is refused.
+// platforms' binaries). A missing or unfinished run is refused. `--branch`
+// skips a fork's run of the same commit, which carries a debug-signed APK.
 function finishedRun(workflow, { sha, branch }) {
   const runs = JSON.parse(
-    run("gh", ["run", "list", "--workflow", workflow, "--commit", sha, "--json", "databaseId,status,conclusion,url"]),
+    run("gh", [
+      "run", "list", "--workflow", workflow, "--commit", sha, "--branch", branch,
+      "--json", "databaseId,status,conclusion,url",
+    ]),
   );
   const latest = runs[0];
   if (!latest) {

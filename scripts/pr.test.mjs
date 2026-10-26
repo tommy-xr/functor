@@ -20,7 +20,7 @@ const sha = "${sha}";
 if (a[0] === "pr" && a[1] === "view" && a[2] === "7") {
   console.log(JSON.stringify({ headRefOid: sha, headRefName: "feat/x", isCrossRepository: !!process.env.FAKE_FORK }));
 } else if (a[0] === "run" && a[1] === "list") {
-  if (a[a.indexOf("--commit") + 1] !== sha) process.exit(2);
+  if (a[a.indexOf("--commit") + 1] !== sha || a[a.indexOf("--branch") + 1] !== "feat/x") process.exit(2);
   const status = process.env.FAKE_RUN_STATUS ?? "success";
   if (status === "none") { console.log("[]"); process.exit(0); }
   const done = status === "success" || status === "failure";
