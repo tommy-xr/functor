@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Builds a branch head on demand (e.g. one from before this workflow).
+  # Rebuilds a branch head on demand (e.g. after its artifacts expire).
   workflow_dispatch:
 
 permissions:
@@ -58,6 +58,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
+          # PRs restore main's cache without saving their own (shared 10 GB budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install GL/X11 system libraries (Linux)
         if: runner.os == 'Linux'
@@ -83,6 +85,13 @@ jobs:
 
       - name: Build functor binary
         run: cargo build --bin functor --release
+
+      # It runs and typechecks a real project (headless).
+      - name: Sanity check
+        shell: bash
+        run: |
+          target/release/${{ matrix.bin }} --version
+          target/release/${{ matrix.bin }} -d examples/primitives build
 
       - uses: actions/upload-artifact@v4
         with:
