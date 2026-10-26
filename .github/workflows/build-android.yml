@@ -15,7 +15,7 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Builds a branch head on demand (e.g. one from before this workflow).
+  # Rebuilds a branch head on demand (e.g. after its artifact expires).
   workflow_dispatch:
 
 permissions:
@@ -61,6 +61,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "runtime/functor-runtime-oculus -> ../../target-android"
+          # PRs restore main's cache without saving their own (shared 10 GB budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: taiki-e/install-action@v2
         with:
