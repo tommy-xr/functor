@@ -1,6 +1,7 @@
 // Codec — a decoder and an encoder for the same value, defined once: read a
 // format with `decode`, write it with `encode`, and test that they agree
-// (`expect Codec.decode(c, Codec.encode(c, x)) == Result.Ok(x)`). Suits
+// (`expect Codec.decode(c, Codec.encode(c, x)) == Result.Ok(x)` — exact for
+// values the format holds: f32 rounds, NaN never equals itself). Suits
 // fixed-layout records; formats with offset tables decode with `Decode`.
 //
 //   type point = { x: float, y: float }
@@ -26,7 +27,13 @@ let f64be = { decoder: Decode.f64be, encoder: Encode.f64be }
 
 // Latin-1 text of exactly `length` characters.
 let latin1 = (length: float): t<string> =>
-  { decoder: Decode.latin1(length), encoder: (s: string) => Encode.latin1(s) }
+  { decoder: Decode.latin1(length),
+    encoder: (s: string) =>
+      if Text.length(s) == length
+      then Encode.latin1(s)
+      else
+        Binary.invalid(
+          Text.join("", ["Codec.latin1: expected ", Text.fromFloat(length), " characters, got \"", s, "\""])) }
 
 // A value stored as another: `to` after decoding, `from` before encoding.
 let map = (to: ('a) => 'b, from: ('b) => 'a, c: t<'a>): t<'b> =>
@@ -34,7 +41,14 @@ let map = (to: ('a) => 'b, from: ('b) => 'a, c: t<'a>): t<'b> =>
 
 // `count` values in a row.
 let list = (count: float, c: t<'a>): t<List<'a>> =>
-  { decoder: Decode.list(count, c.decoder), encoder: (items: List<'a>) => Encode.list(c.encoder, items) }
+  { decoder: Decode.list(count, c.decoder),
+    encoder: (items: List<'a>) =>
+      if List.length(items) == count
+      then Encode.list(c.encoder, items)
+      else
+        Binary.invalid(
+          Text.join("", ["Codec.list: expected ", Text.fromFloat(count), " items, got ",
+            Text.fromFloat(List.length(items))])) }
 
 // A record of two fields, in order: how to build it, and each field's getter
 // and codec.

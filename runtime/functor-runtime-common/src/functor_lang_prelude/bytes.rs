@@ -199,8 +199,12 @@ macro_rules! writer {
             |numbers: Vec<Count>| {
                 let mut out = Vec::with_capacity(numbers.len() * std::mem::size_of::<$ty>());
                 for (i, Count(n)) in numbers.iter().enumerate() {
-                    let fits = !$int
-                        || (n.fract() == 0.0 && *n >= <$ty>::MIN as f64 && *n <= <$ty>::MAX as f64);
+                    let fits = if $int {
+                        n.fract() == 0.0 && *n >= <$ty>::MIN as f64 && *n <= <$ty>::MAX as f64
+                    } else {
+                        // Rounding may not overflow a finite number to infinity.
+                        !n.is_finite() || ((*n as $ty) as f64).is_finite()
+                    };
                     if !fits {
                         return Err(format!(
                             concat!(
@@ -278,13 +282,23 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Bytes.concat",
         "Bytes.concat(parts)",
         |parts: Vec<FunctorLangBytes>| {
-            FunctorLangBytes(ByteView::new(
-                parts
-                    .iter()
-                    .flat_map(|p| p.0.as_slice().iter().copied())
-                    .collect(),
-            ))
+            let slices: Vec<&[u8]> = parts.iter().map(|p| p.0.as_slice()).collect();
+            FunctorLangBytes(ByteView::new(slices.concat()))
         },
+    );
+    reg.fn1("Bytes.zeros", "Bytes.zeros(count)", |Count(n): Count| {
+        if n >= 0.0 && n.fract() == 0.0 && n <= 1_000_000_000.0 {
+            Ok(FunctorLangBytes(ByteView::new(vec![0; n as usize])))
+        } else {
+            Err(format!(
+                "Bytes.zeros: {n} isn't a whole number of bytes ≥ 0"
+            ))
+        }
+    });
+    reg.fn1(
+        "Binary.invalid",
+        "Binary.invalid(message)",
+        |message: String| Err::<Value, String>(message),
     );
     reg.fn1("Bytes.fromUtf8", "Bytes.fromUtf8(text)", |text: String| {
         FunctorLangBytes(ByteView::new(text.into_bytes()))

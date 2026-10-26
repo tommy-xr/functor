@@ -12261,7 +12261,7 @@ the game dir"
                (p: pair) => p.first, Codec.f32le, (p: pair) => p.second, Codec.f32le)\n\
              let flag = Codec.map((n) => n == 1.0, (b) => if b then 1.0 else 0.0, Codec.u8)\n\
              let header = Encode.sequence([Encode.latin1(\"PTS!\"), Encode.u32le(2.0), \
-               Encode.f32les([1.0, 2.0])])\n";
+               Encode.bytes(Bytes.fromF32le([1.0, 2.0]))])\n";
         let checks = [
             "Bytes.length(Encode.run(header)) == 16.0",
             "Decode.run(Decode.map2((m, n) => m, Decode.latin1(4.0), Decode.u32le), \
@@ -12277,6 +12277,18 @@ the game dir"
             "Bytes.equals(Encode.run(Encode.zeros(3.0)), Bytes.fromU8([0.0, 0.0, 0.0]))",
             "Bytes.equals(Bytes.fromI16be([-2.0]), Bytes.fromU8([255.0, 254.0]))",
             "Bytes.equals(Encode.run(Encode.utf8(\"é\")), Bytes.fromU8([195.0, 169.0]))",
+            "Bytes.equals(Bytes.fromLatin1(\"é\"), Bytes.fromU8([233.0])) \
+             && Bytes.latin1(0.0, 1.0, Bytes.fromLatin1(\"é\")) == Result.Ok(\"é\")",
+            "Bytes.equals(Bytes.fromU32be([4294967295.0]), Bytes.fromU8([255.0, 255.0, 255.0, 255.0])) \
+             && Bytes.equals(Bytes.fromI32le([-2147483648.0]), Bytes.fromU8([0.0, 0.0, 0.0, 128.0])) \
+             && Bytes.equals(Bytes.fromI8([-128.0]), Bytes.fromU8([128.0]))",
+            "Bytes.f64be(0.0, Bytes.fromF64be([2.5])) == Result.Ok(2.5) \
+             && Bytes.f32be(0.0, Bytes.fromF32be([0.5])) == Result.Ok(0.5) \
+             && Bytes.u16be(0.0, Bytes.fromU16be([258.0])) == Result.Ok(258.0)",
+            "Bytes.length(Bytes.fromF32le([0.0 / 0.0, 1.0 / 0.0])) == 8.0 \
+             && Bytes.length(Bytes.concat([])) == 0.0 && Bytes.length(Bytes.zeros(5.0)) == 5.0",
+            "Codec.decode(Codec.latin1(4.0), Codec.encode(Codec.latin1(4.0), \"LGMD\")) \
+             == Result.Ok(\"LGMD\")",
         ];
         for check in checks {
             let src = format!("{prelude}let main = {check}\n");
@@ -12290,6 +12302,12 @@ the game dir"
             ("Bytes.fromU8([256.0])", "doesn't fit a u8"),
             ("Encode.run(Encode.u16le(1.5))", "doesn't fit a u16"),
             ("Bytes.fromLatin1(\"€\")", "isn't a Latin-1 character"),
+            ("Bytes.fromI8([-129.0])", "doesn't fit a i8"),
+            ("Bytes.fromU32le([0.0 / 0.0])", "doesn't fit a u32"),
+            ("Bytes.fromF32le([Math.pow(10.0, 300.0)])", "doesn't fit a f32"),
+            ("Bytes.zeros(2.5)", "isn't a whole number"),
+            ("Codec.encode(Codec.latin1(4.0), \"AB\")", "expected 4 characters"),
+            ("Codec.encode(Codec.list(1.0, Codec.u8), [1.0, 2.0])", "expected 1 items, got 2"),
         ] {
             let err = eval_with_prelude(&format!("let main = {main}\n"))
                 .err()

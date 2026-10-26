@@ -54,6 +54,8 @@ let f64be : (float, t) => Result.t<float, Binary.error>
 
 /// The parts joined into one.
 let concat : (List<t>) => t
+/// `count` zero bytes (padding).
+let zeros : (float) => t
 /// Text as UTF-8 bytes.
 let fromUtf8 : (string) => t
 /// Text as Latin-1 bytes (one byte per character; others are an error).
@@ -78,7 +80,8 @@ let fromU32be : (List<float>) => t
 let fromI32le : (List<float>) => t
 /// Signed 32-bit big-endian integers.
 let fromI32be : (List<float>) => t
-/// 32-bit little-endian floats (rounded from the numbers).
+/// 32-bit little-endian floats (rounded from the numbers; a finite number too
+/// big for 32 bits is an error).
 let fromF32le : (List<float>) => t
 /// 32-bit big-endian floats.
 let fromF32be : (List<float>) => t

@@ -2,7 +2,7 @@
 // byte chunks; compose them in order and `run` joins them once.
 //
 //   let header = Encode.sequence([Encode.latin1("PTS!"), Encode.u32le(count)])
-//   let data = Encode.run(Encode.sequence([header, Encode.f32les(coordinates)]))
+//   let data = Encode.run(Encode.sequence([header, Encode.bytes(Bytes.fromF32le(coordinates))]))
 
 type t = { chunks: List<Bytes.t> }
 
@@ -25,19 +25,17 @@ let f32be = (n: float): t => { chunks: [Bytes.fromF32be([n])] }
 let f64le = (n: float): t => { chunks: [Bytes.fromF64le([n])] }
 let f64be = (n: float): t => { chunks: [Bytes.fromF64be([n])] }
 
-// Many numbers at once (fast for big arrays, e.g. vertex positions).
-let u16les = (ns: List<float>): t => { chunks: [Bytes.fromU16le(ns)] }
-let u32les = (ns: List<float>): t => { chunks: [Bytes.fromU32le(ns)] }
-let f32les = (ns: List<float>): t => { chunks: [Bytes.fromF32le(ns)] }
+// Many numbers at once (fast for big arrays): `Encode.bytes(Bytes.fromF32le(xs))`.
 
 // Text.
 let latin1 = (text: string): t => { chunks: [Bytes.fromLatin1(text)] }
 let utf8 = (text: string): t => { chunks: [Bytes.fromUtf8(text)] }
 
 // `count` zero bytes (padding).
-let zeros = (count: float): t => { chunks: [Bytes.fromU8(List.range(count) |> List.map((i) => 0.0))] }
+let zeros = (count: float): t => { chunks: [Bytes.zeros(count)] }
 
-// Encoders in order.
+// Encoders in order. Build the list and sequence it once — sequencing inside
+// a fold copies everything written so far on each step.
 let sequence = (parts: List<t>): t => { chunks: List.concatMap((p: t) => p.chunks, parts) }
 
 // Each item encoded in order.
