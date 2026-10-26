@@ -1,0 +1,92 @@
+name: Build CLI
+
+# Builds the release `functor` binary for every main push and PR head and
+# uploads it as `functor-cli-<platform>-<sha>`, so a PR can be tried without
+# building it locally (`npm run pr`). Same build steps as
+# release-binaries.yml, minus packaging, the language server, and the
+# cross-compiled x86_64 macOS slice.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Builds a branch head on demand (e.g. one from before this workflow).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-cli-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  cli:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      # The PR head, not the merge commit: the binary is that commit's build.
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+            bin: functor
+          - os: ubuntu-latest
+            platform: linux-x64
+            bin: functor
+          - os: windows-latest
+            platform: windows-x64
+            bin: functor.exe
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.SHA }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: npm install -g wasm-pack
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install GL/X11 system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libglfw3 \
+            libglfw3-dev \
+            libasound2-dev \
+            libfontconfig-dev
+
+      # The CLI embeds the web runtime bundle, so it must exist first.
+      - name: Build web runtime bundle
+        run: wasm-pack build --target=web
+        working-directory: runtime/functor-runtime-web
+
+      - name: Build functor binary
+        run: cargo build --bin functor --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: functor-cli-${{ matrix.platform }}-${{ env.SHA }}
+          path: target/release/${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: 30
