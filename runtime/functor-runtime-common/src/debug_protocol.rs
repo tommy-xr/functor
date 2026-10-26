@@ -406,12 +406,11 @@ pub struct BatteryState {
     pub status: String,
     /// Connected to any charger (AC, USB, wireless, or dock).
     pub plugged: bool,
-    /// Instantaneous battery current, signed as reported by the device;
-    /// negative on Quest 3 = discharging (verify).
-    // TODO(device): confirm the sign and µA units on Quest 3 — some devices
-    // invert the sign, report mA, or return 0 rather than the sentinel.
+    /// Instantaneous battery current: negative = discharging, positive =
+    /// charging. On Quest 3 (µA from the device): about -2.6 A under a 120 Hz
+    /// scene, 0 when full on AC and asleep.
     pub current_now_ma: Option<i32>,
-    /// The device's averaged current; same sign convention as `current_now_ma`.
+    /// The device's averaged current, same sign; Quest 3 doesn't report it.
     pub current_avg_ma: Option<i32>,
     /// Remaining charge, µAh.
     pub charge_uah: Option<i32>,

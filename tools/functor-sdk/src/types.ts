@@ -230,7 +230,7 @@ export interface RuntimeState {
   };
   /** The headset battery from Android's `BatteryManager`, sampled at most
    * once per second; a field the device doesn't report is `null`. Currents
-   * are signed as the device reports them. Protocol v21+; omitted on
+   * are negative when discharging. Protocol v21+; omitted on
    * desktop. */
   battery?: {
     level_pct: number | null;
