@@ -2054,7 +2054,7 @@ fn unknown_builtin_member_is_a_check_error() {
             "`List` has no builtin `tail` — `List` has: all, any, append, concatMap, \
              drop, filter, find, flatten, fold, grid, head, indexedMap, isEmpty, last, \
              length, map, maximum, minimum, nth, range, reverse, sortBy, sum, take, \
-             zip",
+             tryMapAccum, zip",
         ),
         (
             "let a = Text.padLeft(\"hi\")",

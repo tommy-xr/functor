@@ -12128,6 +12128,69 @@ the game dir"
         assert!(err.contains("inside the project"), "{err}");
     }
 
+    /// `Decode` (bundled Functor code) over a small made-up format: a header
+    /// naming where a point list starts, read with `at`, `list`, `map3`.
+    #[test]
+    fn decode_composes_a_format_and_locates_failures() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::set_project_root(dir.path().to_path_buf());
+        // "PTS!", count 2, offset 16, padding, then two f32le xyz points.
+        let mut data = b"PTS!".to_vec();
+        data.extend(2u32.to_le_bytes());
+        data.extend(16u32.to_le_bytes());
+        data.extend([0u8; 4]);
+        for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            data.extend(v.to_le_bytes());
+        }
+        std::fs::write(dir.path().join("points.bin"), &data).unwrap();
+        // 100,000 u8s: long lists loop without recursion.
+        std::fs::write(dir.path().join("big.bin"), vec![7u8; 100_000]).unwrap();
+        let prelude = "type header = { magic: string, count: float, start: float }\n\
+             let vec3 = Decode.map3((x, y, z) => x + y + z, Decode.f32le, Decode.f32le, Decode.f32le)\n\
+             let header = Decode.map3((magic, count, start): header => \
+               { magic: magic, count: count, start: start }, \
+               Decode.field(\"magic\", Decode.latin1(4.0)), \
+               Decode.field(\"count\", Decode.u32le), Decode.field(\"start\", Decode.u32le))\n\
+             let points = header |> Decode.andThen((h: header) => \
+               Decode.field(\"points\", Decode.at(h.start, Decode.list(h.count, vec3))))\n\
+             let data = File.bytes(\"points.bin\")\n";
+        let checks = [
+            "Decode.run(points, data) == Result.Ok([6.0, 15.0])",
+            "Decode.run(Decode.map2((a, b) => a + b, Decode.u8, Decode.skipThen(3.0, Decode.u8)), data) \
+             == Result.Ok(80.0 + 2.0)",
+            "(Decode.run(Decode.list(100000.0, Decode.u8), File.bytes(\"big.bin\")) \
+             |> Result.map(List.length)) == Result.Ok(100000.0)",
+            "match Decode.run(Decode.field(\"head\", Decode.list(3.0, Decode.list(2.0, Decode.f64le))), data) with \
+             | Result.Error(e) => Binary.describe(e) == \"head[2][1] at byte 40: needs 8 bytes, 0 left\" \
+             | Result.Ok(_) => false",
+            "Result.isError(Decode.run(Decode.list(1.5, Decode.u8), data)) \
+             && Result.isError(Decode.run(Decode.fail(\"no\"), data)) \
+             && Decode.run(Decode.succeed(1.0), data) == Result.Ok(1.0)",
+            "Decode.run(Decode.bytes(4.0) |> Decode.map(Bytes.length), data) == Result.Ok(4.0)",
+            "Decode.run(List.range(40.0) |> List.fold((d, i) => Decode.map2((a, b) => a + b, d, \
+             Decode.u8), Decode.succeed(0.0)), File.bytes(\"big.bin\")) == Result.Ok(280.0)",
+            "(Decode.run(Decode.sequence(List.range(5000.0) |> List.map((i) => Decode.u8)), \
+             File.bytes(\"big.bin\")) |> Result.map(List.sum)) == Result.Ok(35000.0)",
+            "Result.isError(Decode.run(Decode.skipThen(100.0, Decode.succeed(1.0)), data)) \
+             && Result.isError(Decode.run(Decode.skipThen(-1.0, Decode.u8), data)) \
+             && Result.isError(Decode.run(Decode.at(41.0, Decode.succeed(1.0)), data)) \
+             && Decode.run(Decode.at(40.0, Decode.succeed(1.0)), data) == Result.Ok(1.0)",
+            "Decode.run(Decode.map2((a, b) => a * 1000.0 + b, Decode.at(4.0, Decode.u8), Decode.u8), data) \
+             == Result.Ok(2080.0)",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+    }
+
     /// The persistence spine on the REAL store: `Persistence.save` writes the
     /// project's slot file (atomically, as canonical plain-data JSON) and a
     /// later `Persistence.load` restores exactly the saved value into a fresh

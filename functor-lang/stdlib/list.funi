@@ -27,6 +27,12 @@ let filter : (('a) => bool, List<'a>) => List<'a>
 /// elements, while `fold` has no such limit.
 let fold : (('b, 'a) => 'b, 'b, List<'a>) => 'b
 
+/// Map with a running state, stopping at the first error: `fn(state, element)`
+/// answers `Result.Ok((state, value))` or `Result.Error(e)`. The result is the
+/// final state and the values, or that error — the loop for decoders and
+/// parsers, which a recursive walk can't do past the recursion cap.
+let tryMapAccum : (('a, 'b) => Result.t<('a, 'c), 'd>, 'a, List<'b>) => Result.t<('a, List<'c>), 'd>
+
 /// Map each element to a list and concatenate the results (one level).
 let concatMap : (('a) => List<'b>, List<'a>) => List<'b>
 

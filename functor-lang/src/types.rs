@@ -527,6 +527,19 @@ pub fn builtin_signature(b: Builtin) -> Type {
             ],
             Var(1),
         ),
+        // Subject-LAST. List.tryMapAccum :
+        //   (('s, 'a) => Result.t<('s, 'b), 'e>, 's, List<'a>) => Result.t<('s, List<'b>), 'e>
+        Builtin::ListTryMapAccum => {
+            let result = |ok: Type| Variant("Result.t".to_string(), vec![ok, Var(3)]);
+            func(
+                vec![
+                    func(vec![Var(0), Var(1)], result(Tuple(vec![Var(0), Var(2)]))),
+                    Var(0),
+                    List(Box::new(Var(1))),
+                ],
+                result(Tuple(vec![Var(0), List(Box::new(Var(2)))])),
+            )
+        }
         // List.range : (Float) => List<Float>
         Builtin::ListRange => func(vec![Float], List(Box::new(Float))),
         // Subject-LAST. List.grid : ((Float, Float) => 'a, Float, Float) => List<List<'a>>

@@ -2162,6 +2162,50 @@ definition (a top-level initializer may only use globals defined above it)",
                         .to_string(),
                 ),
             },
+            // Subject-LAST like fold. Each `fn(state, element)` answers
+            // `Result.Ok((state, value))` or stops the loop with its
+            // `Result.Error`; the values collect into one list — the loop a
+            // decoder needs, without recursion depth or quadratic appends.
+            Builtin::ListTryMapAccum => match args.as_slice() {
+                [f, init, Value::List(items)] => {
+                    let usage = "List.tryMapAccum(fn, state, list): fn must return \
+Result.Ok((state, value)) or Result.Error(e)";
+                    let mut state = init.clone();
+                    let mut out = Vec::with_capacity(items.len());
+                    for (i, item) in items.iter().enumerate() {
+                        let step = self.call(
+                            f.clone(),
+                            vec![state, item.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )?;
+                        let Value::Variant { ctor, args } = &step else {
+                            return err(usage.to_string());
+                        };
+                        match (&**ctor, args.as_slice()) {
+                            ("Result.Ok", [Value::Tuple(pair)]) if pair.len() == 2 => {
+                                state = pair[0].clone();
+                                out.push(pair[1].clone());
+                            }
+                            ("Result.Error", [_]) => return Ok(step),
+                            _ => return err(usage.to_string()),
+                        }
+                    }
+                    Ok(Value::Variant {
+                        ctor: "Result.Ok".into(),
+                        args: Rc::new(vec![Value::Tuple(Rc::new(vec![
+                            state,
+                            Value::List(Rc::new(out)),
+                        ]))]),
+                    })
+                }
+                _ => err(
+                    "List.tryMapAccum(fn, state, list) expects a function, an initial state, \
+and a list"
+                        .to_string(),
+                ),
+            },
             // NaN handling follows Rust's `f64::max` (IEEE maximumNumber):
             // NaN elements are ignored unless every element is NaN.
             // `List.range(n)` -> [0, 1, …, n-1] as Floats; n truncates. The
@@ -3679,6 +3723,7 @@ pub(crate) fn ctor_arity_message(
 pub fn builtin_arity(b: Builtin) -> usize {
     match b {
         Builtin::ListFold
+        | Builtin::ListTryMapAccum
         | Builtin::ListGrid
         | Builtin::RandomRange
         | Builtin::TextReplace
@@ -3762,6 +3807,7 @@ pub enum Builtin {
     ListMap,
     ListFilter,
     ListFold,
+    ListTryMapAccum,
     ListRange,
     ListGrid,
     MathSin,
@@ -3941,10 +3987,11 @@ pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
-pub const ALL_BUILTINS: [Builtin; 76] = [
+pub const ALL_BUILTINS: [Builtin; 77] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
+    Builtin::ListTryMapAccum,
     Builtin::ListRange,
     Builtin::ListGrid,
     Builtin::ListMaximum,
@@ -4038,6 +4085,7 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "List.map" => Builtin::ListMap,
         "List.filter" => Builtin::ListFilter,
         "List.fold" => Builtin::ListFold,
+        "List.tryMapAccum" => Builtin::ListTryMapAccum,
         "List.range" => Builtin::ListRange,
         "List.grid" => Builtin::ListGrid,
         "List.maximum" => Builtin::ListMaximum,
@@ -4121,6 +4169,7 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::ListMap => "List.map",
         Builtin::ListFilter => "List.filter",
         Builtin::ListFold => "List.fold",
+        Builtin::ListTryMapAccum => "List.tryMapAccum",
         Builtin::ListRange => "List.range",
         Builtin::ListGrid => "List.grid",
         Builtin::ListMaximum => "List.maximum",
@@ -4338,6 +4387,7 @@ mod builtin_registry_tests {
                 Builtin::ListMap
                 | Builtin::ListFilter
                 | Builtin::ListFold
+                | Builtin::ListTryMapAccum
                 | Builtin::ListRange
                 | Builtin::ListGrid
                 | Builtin::ListMaximum
@@ -4413,7 +4463,7 @@ mod builtin_registry_tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(ALL_BUILTINS.len(), 76, "ALL_BUILTINS must list every Builtin");
+        assert_eq!(ALL_BUILTINS.len(), 77, "ALL_BUILTINS must list every Builtin");
 
         // The length check alone would accept a DUPLICATE entry standing in
         // for a missing one.
