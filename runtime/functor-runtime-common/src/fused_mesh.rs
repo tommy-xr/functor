@@ -105,17 +105,21 @@ fn voxel_index(x: i32, y: i32, z: i32) -> usize {
 
 /// The chunk holding the voxel nearest `p`.
 fn chunk_of(p: Vector3<f32>) -> ChunkKey {
-    let voxel = (p / VOXEL).map(|c| c.round() as i32);
+    let voxel = (p / VOXEL).map(|c| c.floor() as i32);
     [voxel.x, voxel.y, voxel.z].map(|c| c.div_euclid(CHUNK))
 }
 
-/// The world position of chunk `key`'s voxel `(x, y, z)` (voxels sit on the
-/// lattice points, so a chunk's cells reach its +1 neighbours' first voxels).
+/// The world position of chunk `key`'s voxel `(x, y, z)`. Voxels are the
+/// lattice points a chunk's cells span, so its cells reach its +1
+/// neighbours' first voxels. The lattice sits half a voxel off whole
+/// multiples, so a surface at a round height — the stage floor at y = 0 —
+/// falls between voxels instead of on them, where a near-zero distance
+/// would flip sign with every depth texel.
 fn voxel_position(key: ChunkKey, x: i32, y: i32, z: i32) -> Vector3<f32> {
     Vector3::new(
-        (key[0] * CHUNK + x) as f32,
-        (key[1] * CHUNK + y) as f32,
-        (key[2] * CHUNK + z) as f32,
+        (key[0] * CHUNK + x) as f32 + 0.5,
+        (key[1] * CHUNK + y) as f32 + 0.5,
+        (key[2] * CHUNK + z) as f32 + 0.5,
     ) * VOXEL
 }
 
@@ -150,6 +154,36 @@ fn chunk_in_view(view_projection: &Matrix4<f32>, eye: Vector3<f32>, key: ChunkKe
         }
     }
     !outside.contains(&true)
+}
+
+/// The surface depth at image point `(u, v)` (pixels): bilinear between the
+/// four nearest pixels where they agree, so a voxel's distance does not step
+/// with the pixel it lands in; the nearest pixel across a depth edge, where
+/// blending would invent a surface in between.
+fn sample(surface_w: &[f32], width: usize, height: usize, u: f32, v: f32) -> f32 {
+    let nearest = surface_w[v as usize * width + u as usize];
+    let (x, y) = ((u - 0.5).max(0.0), (v - 0.5).max(0.0));
+    let (x0, y0) = (x as usize, y as usize);
+    let (x1, y1) = ((x0 + 1).min(width - 1), (y0 + 1).min(height - 1));
+    let corners = [
+        surface_w[y0 * width + x0],
+        surface_w[y0 * width + x1],
+        surface_w[y1 * width + x0],
+        surface_w[y1 * width + x1],
+    ];
+    let (low, high) = corners
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &w| {
+            (lo.min(w), hi.max(w))
+        });
+    // NaN corners (no surface) leave `low`/`high` unmoved; count them out.
+    if corners.iter().any(|w| w.is_nan()) || high - low > TRUNCATION {
+        return nearest;
+    }
+    let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+    let top = corners[0] + (corners[1] - corners[0]) * fx;
+    let bottom = corners[2] + (corners[3] - corners[2]) * fx;
+    top + (bottom - top) * fy
 }
 
 impl Volume {
@@ -232,7 +266,7 @@ impl Volume {
                         if !(u >= 0.0 && v >= 0.0 && u < width as f32 && v < height as f32) {
                             continue;
                         }
-                        let sdf = surface_w[v as usize * width + u as usize] - clip.w;
+                        let sdf = sample(&surface_w, width, height, u, v) - clip.w;
                         // NaN (no surface) fails this too: unknown, untouched.
                         if !(sdf >= -TRUNCATION) {
                             continue;
@@ -501,7 +535,14 @@ mod tests {
     /// Ray-cast a depth frame of `boxes` (min, max corners) from
     /// `view_projection`, as the depth sensor would see them.
     fn depth_frame(view_projection: Matrix4<f32>, boxes: &[([f32; 3], [f32; 3])]) -> DepthFrame {
-        let size = 96;
+        depth_frame_sized(view_projection, boxes, 96)
+    }
+
+    fn depth_frame_sized(
+        view_projection: Matrix4<f32>,
+        boxes: &[([f32; 3], [f32; 3])],
+        size: usize,
+    ) -> DepthFrame {
         let inverse = view_projection.invert().unwrap();
         let mut depth = vec![1.0; size * size];
         for y in 0..size {
@@ -622,7 +663,7 @@ mod tests {
         };
         let values: Vec<f32> = (0..CHUNK_VOXELS).map(|_| noise()).collect();
         let volume = volume_of(|p| {
-            let v = (p / VOXEL).map(|c| c.round() as i32);
+            let v = (p / VOXEL).map(|c| c.floor() as i32);
             if [v.x, v.y, v.z].iter().any(|&c| c == 0 || c == CHUNK - 1) {
                 1.0
             } else {
@@ -646,6 +687,26 @@ mod tests {
             assert!((p[2] - 2.03).abs() < 0.01, "vertex off the wall: {p:?}");
         }
         assert_eq!(volume.fused_frames, 1);
+    }
+
+    /// Seen at a grazing angle the floor's depth changes fast from pixel to
+    /// pixel; sampling it between pixels keeps the fused floor flat.
+    #[test]
+    fn a_grazing_floor_fuses_flat() {
+        let vp = cgmath::perspective(Deg(90.0), 4.0 / 3.0, 0.1, 100.0)
+            * Matrix4::look_at_rh(
+                Point3::new(0.0, 1.6, -0.6),
+                Point3::new(0.0, 1.6, 0.4),
+                Vector3::unit_y(),
+            );
+        let floor = ([-3.0, -0.2, -1.5], [3.0, 0.0, 4.5]);
+        let mut volume = Volume::default();
+        volume.integrate(&depth_frame_sized(vp, &[floor], 320));
+        let vertices = all_vertices(&mut volume, &mut HashMap::new());
+        assert!(vertices.len() > 1000, "{}", vertices.len());
+        for p in vertices {
+            assert!(p[1].abs() < 0.006, "vertex off the floor: {p:?}");
+        }
     }
 
     #[test]
