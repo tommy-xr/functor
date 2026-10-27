@@ -14,3 +14,5 @@ type error = { offset: float, path: List<segment>, message: string }
 let describe : (error) => string
 /// The value of `Result.Ok`; for `Result.Error`, stops with the described error.
 let require : (Result.t<'a, error>) => 'a
+/// Stops with `message` — e.g. an encoder given a value its format can't hold.
+let invalid : (string) => 'a

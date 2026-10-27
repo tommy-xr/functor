@@ -67,6 +67,12 @@ pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<
     std::fs::read(&full).map_err(unreadable)
 }
 
+/// Whether `path` names a readable file in the project (false for paths
+/// outside it, and on hosts that can't read project files).
+fn project_file_exists(path: &str) -> bool {
+    read_project_file("File.exists", path, "").is_ok()
+}
+
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub(super) fn read_project_file(api: &str, path: &str, _example: &str) -> Result<Vec<u8>, String> {
     Err(format!(
@@ -188,10 +194,49 @@ macro_rules! reader {
     };
 }
 
+/// Register a bulk number writer: `Bytes.fromU16le([1.0, 2.0])`. Integers
+/// must be whole and in range — encoding is the program's own data, so a bad
+/// value is an error at the call, not a recoverable `Result`.
+macro_rules! writer {
+    ($reg:ident, $name:literal, $ty:ty, $to:ident, $int:literal) => {
+        $reg.fn1(
+            concat!("Bytes.", $name),
+            concat!("Bytes.", $name, "(numbers)"),
+            |numbers: Vec<Count>| {
+                let mut out = Vec::with_capacity(numbers.len() * std::mem::size_of::<$ty>());
+                for (i, Count(n)) in numbers.iter().enumerate() {
+                    let fits = if $int {
+                        n.fract() == 0.0 && *n >= <$ty>::MIN as f64 && *n <= <$ty>::MAX as f64
+                    } else {
+                        // Rounding may not overflow a finite number to infinity.
+                        !n.is_finite() || ((*n as $ty) as f64).is_finite()
+                    };
+                    if !fits {
+                        return Err(format!(
+                            concat!(
+                                "Bytes.",
+                                $name,
+                                ": number {} ({}) doesn't fit a ",
+                                stringify!($ty)
+                            ),
+                            i, n
+                        ));
+                    }
+                    out.extend((*n as $ty).$to());
+                }
+                Ok(FunctorLangBytes(ByteView::new(out)))
+            },
+        );
+    };
+}
+
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1("File.bytes", "File.bytes(path)", |path: String| {
         read_project_file("File.bytes", &path, "data/model.bin")
             .map(|data| FunctorLangBytes(ByteView::new(data)))
+    });
+    reg.fn1("File.exists", "File.exists(path)", |path: String| {
+        Value::Bool(project_file_exists(&path))
     });
     reg.fn1(
         "Bytes.length",
@@ -242,6 +287,56 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             Err(e) => e,
         },
     );
+    reg.fn1(
+        "Bytes.concat",
+        "Bytes.concat(parts)",
+        |parts: Vec<FunctorLangBytes>| {
+            let slices: Vec<&[u8]> = parts.iter().map(|p| p.0.as_slice()).collect();
+            FunctorLangBytes(ByteView::new(slices.concat()))
+        },
+    );
+    reg.fn1("Bytes.zeros", "Bytes.zeros(count)", |Count(n): Count| {
+        if n >= 0.0 && n.fract() == 0.0 && n <= 1_000_000_000.0 {
+            Ok(FunctorLangBytes(ByteView::new(vec![0; n as usize])))
+        } else {
+            Err(format!(
+                "Bytes.zeros: {n} isn't a whole number of bytes ≥ 0"
+            ))
+        }
+    });
+    reg.fn1(
+        "Binary.invalid",
+        "Binary.invalid(message)",
+        |message: String| Err::<Value, String>(message),
+    );
+    reg.fn1("Bytes.fromUtf8", "Bytes.fromUtf8(text)", |text: String| {
+        FunctorLangBytes(ByteView::new(text.into_bytes()))
+    });
+    reg.fn1(
+        "Bytes.fromLatin1",
+        "Bytes.fromLatin1(text)",
+        |text: String| {
+            text.chars()
+                .map(|c| u8::try_from(u32::from(c)).map_err(|_| c))
+                .collect::<Result<Vec<u8>, char>>()
+                .map(|raw| FunctorLangBytes(ByteView::new(raw)))
+                .map_err(|c| format!("Bytes.fromLatin1: {c:?} isn't a Latin-1 character"))
+        },
+    );
+    writer!(reg, "fromU8", u8, to_le_bytes, true);
+    writer!(reg, "fromI8", i8, to_le_bytes, true);
+    writer!(reg, "fromU16le", u16, to_le_bytes, true);
+    writer!(reg, "fromU16be", u16, to_be_bytes, true);
+    writer!(reg, "fromI16le", i16, to_le_bytes, true);
+    writer!(reg, "fromI16be", i16, to_be_bytes, true);
+    writer!(reg, "fromU32le", u32, to_le_bytes, true);
+    writer!(reg, "fromU32be", u32, to_be_bytes, true);
+    writer!(reg, "fromI32le", i32, to_le_bytes, true);
+    writer!(reg, "fromI32be", i32, to_be_bytes, true);
+    writer!(reg, "fromF32le", f32, to_le_bytes, false);
+    writer!(reg, "fromF32be", f32, to_be_bytes, false);
+    writer!(reg, "fromF64le", f64, to_le_bytes, false);
+    writer!(reg, "fromF64be", f64, to_be_bytes, false);
     reader!(reg, "u8", u8, from_le_bytes);
     reader!(reg, "i8", i8, from_le_bytes);
     reader!(reg, "u16le", u16, from_le_bytes);

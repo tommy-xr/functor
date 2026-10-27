@@ -681,7 +681,7 @@ mod tests {
             let items: usize = modules.iter().map(|module| module.items.len()).sum();
             (modules.len(), items)
         };
-        assert_eq!(count(ApiGroup::Engine), (39, 410));
+        assert_eq!(count(ApiGroup::Engine), (39, 430));
         assert_eq!(count(ApiGroup::Stdlib), (10, 98));
         assert!(reference
             .modules

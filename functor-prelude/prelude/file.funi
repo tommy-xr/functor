@@ -4,3 +4,6 @@
 
 /// The bytes of a file: `File.bytes("data/model.bin")`.
 let bytes : (string) => Bytes.t
+/// Whether the project has the file — e.g. to fall back when an optional,
+/// uncommitted input (a game asset) isn't there.
+let exists : (string) => bool
