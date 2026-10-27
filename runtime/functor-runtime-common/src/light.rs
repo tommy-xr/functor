@@ -389,7 +389,8 @@ pub fn lighting_glsl() -> String {
 /// The lighting + shadow uniform locations of one lit forward shader program
 /// (the `FogUniforms` pattern). Every material whose fragment shader includes
 /// [`lighting_glsl`] looks these up in `initialize` and uploads via
-/// [`LightingUniforms::set`] each draw.
+/// [`LightingUniforms::set`] each draw (or `set_pass` once per pass plus
+/// `bind_shadow_map` each draw).
 pub struct LightingUniforms {
     num_lights_loc: UniformLocation,
     light_type_loc: UniformLocation,
@@ -428,6 +429,12 @@ impl LightingUniforms {
     /// texture unit 1 (unit 0 is albedo, 2 the normal map), leaving unit 0
     /// active.
     pub fn set(&self, p: &ShaderProgram, ctx: &RenderContext, view_matrix: &Matrix4<f32>) {
+        self.set_pass(p, ctx, view_matrix);
+        Self::bind_shadow_map(ctx);
+    }
+
+    /// The pass-constant half of [`set`](Self::set): every uniform, no binding.
+    pub fn set_pass(&self, p: &ShaderProgram, ctx: &RenderContext, view_matrix: &Matrix4<f32>) {
         let gl = ctx.gl;
         let lights = pack_lights(ctx.lights);
 
@@ -453,14 +460,21 @@ impl LightingUniforms {
                 p.set_uniform_1i(gl, &self.shadow_enabled_loc, 1);
                 p.set_uniform_1i(gl, &self.shadow_light_index_loc, shadow.light_index);
                 p.set_uniform_matrix4(gl, &self.light_space_matrix_loc, &shadow.light_space_matrix);
-                unsafe {
-                    gl.active_texture(glow::TEXTURE0 + 1);
-                    gl.bind_texture(glow::TEXTURE_2D, Some(shadow.depth_texture));
-                    gl.active_texture(glow::TEXTURE0);
-                }
             }
             None => {
                 p.set_uniform_1i(gl, &self.shadow_enabled_loc, 0);
+            }
+        }
+    }
+
+    /// Bind the shadow map to unit 1 — per draw, since other draws (terrain
+    /// detail maps) rebind that unit.
+    pub fn bind_shadow_map(ctx: &RenderContext) {
+        if let Some(shadow) = ctx.shadow {
+            unsafe {
+                ctx.gl.active_texture(glow::TEXTURE0 + 1);
+                ctx.gl.bind_texture(glow::TEXTURE_2D, Some(shadow.depth_texture));
+                ctx.gl.active_texture(glow::TEXTURE0);
             }
         }
     }

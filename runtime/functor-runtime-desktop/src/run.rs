@@ -3235,9 +3235,9 @@ Escape again to quit"
 
             // Shadow + forward passes, shared with the web runtime. In stereo
             // mode, render the same frame twice — once per eye camera into each
-            // half of the window. (The shadow pass runs per eye; it must start
-            // unscissored, so scissor is reset before each call — the contract
-            // for any sub-rectangle view.)
+            // half of the window. (The first eye renders the shadow map, the
+            // second reuses it; a call must start unscissored, so scissor is
+            // reset before each call — the contract for any sub-rectangle view.)
             // Time the whole scene render (all arms) for FrameStats.render_us —
             // the GL-submission cost, distinct from the interpreter's draw cost.
             let render_started = Instant::now();

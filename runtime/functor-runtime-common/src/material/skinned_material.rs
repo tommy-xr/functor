@@ -94,6 +94,7 @@ struct Uniforms {
     lighting: LightingUniforms,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
+    pass: crate::PassUniforms,
 }
 
 // TODO: We'll have to re-think this pattern
@@ -144,6 +145,7 @@ impl Material for SkinnedMaterial {
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
+                    pass: Default::default(),
                 };
 
                 SHADER_PROGRAM = Some((shader, uniforms));
@@ -166,21 +168,26 @@ impl Material for SkinnedMaterial {
                 let p = shader;
                 p.use_program(ctx.gl);
 
+                if uniforms.pass.begin(ctx) {
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
+                    p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
+                    p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
+                    uniforms.lighting.set_pass(p, ctx, view_matrix);
+                    uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                }
+
                 p.set_uniform_matrix4(ctx.gl, &uniforms.world_loc, world_matrix);
                 p.set_uniform_matrix3(
                     ctx.gl,
                     &uniforms.normal_matrix_loc,
                     &normal_matrix(world_matrix),
                 );
-                p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
-                p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
-                p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
 
                 let joint_matrices = crate::model::flatten_joint_matrices(skinning_data);
 
                 p.set_uniform_matrix4fv(ctx.gl, &uniforms.joint_transforms_loc, &joint_matrices);
-                uniforms.lighting.set(p, ctx, view_matrix);
-                uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
+                LightingUniforms::bind_shadow_map(ctx);
+                // Per draw: a translucent subtree switches the alpha mode.
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }

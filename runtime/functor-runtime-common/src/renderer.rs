@@ -114,8 +114,9 @@ pub fn render_frame_with_view(
 /// per-eye frustum. `lod_camera`, `lod_view_projections`, and the shared LOD
 /// scale describe the tracked stereo pair used by both eye calls, so terrain
 /// draws the union of both eye frusta without regenerating per eye.
-/// Render-target passes retain their own cameras and ordinary symmetric
-/// projections.
+/// Calls sharing `terrain_frame_id` must render the same frame: the second
+/// reuses the first's main shadow map. Render-target passes retain their own
+/// cameras and ordinary symmetric projections.
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame_with_projection(
     gl: &glow::Context,
@@ -312,16 +313,28 @@ are ignored — declare Frame.withUiTarget on the main frame",
         scene_context.finish_render_target_write(&pass.target.id);
     }
 
-    let shadow = shadow_pass(
-        gl,
-        shader_version,
-        asset_cache.clone(),
-        frame_time.clone(),
-        &frame.lights,
-        &frame.scene,
-        scene_context,
-        shadow_map,
-    );
+    // The light matrix is view-independent, so a stereo pair (one external
+    // frame id) renders the main shadow map once and the second eye reuses
+    // it. Target passes above overwrite the map and clear the cache.
+    let shadow = match (terrain_frame_id, scene_context.main_shadow.get()) {
+        (Some(id), Some((cached_id, shadow))) if cached_id == id => shadow,
+        _ => {
+            let shadow = shadow_pass(
+                gl,
+                shader_version,
+                asset_cache.clone(),
+                frame_time.clone(),
+                &frame.lights,
+                &frame.scene,
+                scene_context,
+                shadow_map,
+            );
+            scene_context
+                .main_shadow
+                .set(terrain_frame_id.map(|id| (id, shadow)));
+            shadow
+        }
+    };
 
     // Main (forward) pass into the bound framebuffer, at the viewport's
     // sub-rectangle (x,y default to 0 = full window). The scissor clips the clear
@@ -710,6 +723,8 @@ fn shadow_pass(
     scene_context: &SceneContext,
     shadow_map: &ShadowMap,
 ) -> Option<ShadowUniforms> {
+    // Whatever this pass draws replaces the cached main-pass map.
+    scene_context.main_shadow.set(None);
     lights
         .iter()
         .enumerate()
@@ -883,6 +898,7 @@ fn forward_pass(
             .unwrap_or_else(|| default_lod_projection.y.y.abs()),
         viewport_height: lod_viewport_height.unwrap_or(viewport_height),
         lod_fog: fog.filter(|_| skybox.is_none()),
+        pass_serial: crate::next_pass_serial(),
     };
 
     // The transparent debug material deliberately reuses authored shading.

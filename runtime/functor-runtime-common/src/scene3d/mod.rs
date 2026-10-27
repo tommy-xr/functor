@@ -87,6 +87,10 @@ pub struct SceneContext {
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
     poses: RefCell<HashMap<usize, CachedPose>>,
+    // The external frame id whose main-pass shadow map is in the shadow FBO,
+    // with its uniforms, so a stereo pair's second eye skips the shadow pass.
+    // Any shadow pass clears it; see `renderer::render_frame_inner`.
+    pub(crate) main_shadow: Cell<Option<(u64, Option<crate::ShadowUniforms>)>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
     terrain_decode_residency: RefCell<TerrainDecodeResidency>,
     terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
@@ -432,6 +436,7 @@ impl SceneContext {
             polygons: RefCell::new(HashMap::new()),
             meshes: RefCell::new(HashMap::new()),
             poses: RefCell::new(HashMap::new()),
+            main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
             terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
             terrain_requests: RefCell::new(BTreeSet::new()),
@@ -499,6 +504,7 @@ impl SceneContext {
         // A stereo pair shares one id, so both eyes sum into one frame.
         if frame != self.current_frame.get() {
             crate::gpu_counters::gpu_counters().begin_skinned_frame();
+            crate::gpu_counters::gpu_counters().begin_uniform_frame();
             self.poses.borrow_mut().clear();
         }
         self.current_frame.set(frame);
