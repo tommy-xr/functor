@@ -1398,6 +1398,10 @@ pub fn android_main(app: AndroidApp) {
     // model-driven locomotion and physical room-scale motion remain additive.
     let mut tracking_reference: Option<TrackingPose> = None;
     let mut tracking_reference_reset_at: Option<xr::Time> = None;
+    // What placed the depth in the world when the fused room was built: a
+    // recentred rig or a moved authored camera puts new depth elsewhere.
+    let mut fused_room_anchor: Option<(Option<TrackingPose>, functor_runtime_common::Camera)> =
+        None;
     let mut terrain_frame_id = 0_u64;
     // Pipelined only (see the desktop loop): step in lockstep with the sim
     // while render-derived feedback or a debug driver is active.
@@ -1729,6 +1733,11 @@ pub fn android_main(app: AndroidApp) {
             Some(&*frame),
             stage_type == xr::ReferenceSpaceType::STAGE,
         );
+        let anchor = Some((tracking_reference, frame.camera.clone()));
+        if fused_room_anchor.is_some() && fused_room_anchor != anchor {
+            scene_context.reset_fused_room(&gl);
+        }
+        fused_room_anchor = anchor;
         // The time `frame` was drawn at: render-time animation samples it.
         let frame_time = snapshot.time;
         let render_started = Instant::now();

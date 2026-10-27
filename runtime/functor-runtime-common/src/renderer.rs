@@ -357,7 +357,12 @@ are ignored — declare Frame.withUiTarget on the main frame",
         viewport,
     );
     // Fold it into the fused room every few frames (`Frame.withFusedRoom`).
-    scene_context.fuse_environment_depth(gl, shader_version, environment_depth);
+    scene_context.fuse_environment_depth(
+        gl,
+        shader_version,
+        environment_depth,
+        frame.fused_room.is_some(),
+    );
 
     // Main (forward) pass into the bound framebuffer, at the viewport's
     // sub-rectangle (x,y default to 0 = full window). The scissor clips the clear
@@ -1028,7 +1033,13 @@ fn forward_pass(
             );
         }
         if let Some(grid) = fused_room.filter(|_| with_grid) {
-            scene_context.draw_fused_room(&render_context, grid, &projection_matrix, &view_matrix);
+            scene_context.draw_fused_room(
+                &render_context,
+                grid,
+                &projection_matrix,
+                &view_matrix,
+                stand_in_room.is_some(),
+            );
         }
         Scene3D::render(
             scene,

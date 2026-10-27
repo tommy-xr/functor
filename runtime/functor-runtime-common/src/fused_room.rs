@@ -59,16 +59,17 @@ const MESH_VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 view;
         uniform mat4 projection;
         uniform highp vec3 eye;
+        // Metres toward the eye: over a drawn stand-in room, so the mesh
+        // wins the depth test against the surface it was fused from.
+        uniform highp float nudge;
 
         out highp vec3 worldPos;
 
         void main() {
             highp vec3 p = (world * vec4(inPos, 1.0)).xyz;
             worldPos = p;
-            // 2 cm toward the eye, so the mesh wins the depth test against
-            // the stand-in room surface it was fused from.
             highp vec3 toEye = eye - p;
-            p += toEye * min(0.02 / max(length(toEye), 0.0001), 0.5);
+            p += toEye * min(nudge / max(length(toEye), 0.0001), 0.5);
             gl_Position = projection * view * vec4(p, 1.0);
         }
 "#;
@@ -106,6 +107,7 @@ struct GridProgram {
     view_loc: UniformLocation,
     projection_loc: UniformLocation,
     eye_loc: UniformLocation,
+    nudge_loc: UniformLocation,
     cell_loc: UniformLocation,
     color_loc: UniformLocation,
     output: crate::color_space::OutputEncodeUniform,
@@ -231,19 +233,22 @@ impl FusedRoom {
         if let Some((fence, view_projection)) = self.pending.take() {
             // Inline: read now — mapping waits for the copy. Threaded: only
             // once the GPU is done, so the render thread never waits.
-            let done = inline
-                || unsafe {
-                    matches!(
-                        gl.client_wait_sync(fence, 0, 0),
-                        glow::ALREADY_SIGNALED | glow::CONDITION_SATISFIED
-                    )
-                };
-            if done {
-                let rgba = self.readback.read(gl);
-                unsafe { gl.delete_sync(fence) };
-                self.fuse(rgba, view_projection);
+            let status = if inline {
+                glow::ALREADY_SIGNALED
             } else {
+                unsafe { gl.client_wait_sync(fence, 0, 0) }
+            };
+            if status == glow::TIMEOUT_EXPIRED {
                 self.pending = Some((fence, view_projection));
+            } else {
+                // Signalled — or failed, which drops this readback.
+                let rgba = (status != glow::WAIT_FAILED)
+                    .then(|| self.readback.read(gl))
+                    .flatten();
+                unsafe { gl.delete_sync(fence) };
+                if let Some(rgba) = rgba {
+                    self.fuse(rgba, view_projection);
+                }
             }
         }
         let updates = match &self.fuser {
@@ -303,6 +308,7 @@ impl FusedRoom {
         &mut self,
         render_context: &RenderContext,
         grid: SurfaceGrid,
+        nudge: f32,
     ) -> Option<(&Scene3D, Box<dyn Material>)> {
         if self.meshes.is_empty() {
             return None;
@@ -322,7 +328,14 @@ impl FusedRoom {
                 xform: Matrix4::from_scale(1.0),
             }
         });
-        Some((scene, Box::new(GridMaterial { program, grid })))
+        Some((
+            scene,
+            Box::new(GridMaterial {
+                program,
+                grid,
+                nudge,
+            }),
+        ))
     }
 }
 
@@ -426,22 +439,27 @@ impl Readback {
         }
     }
 
-    /// The pixel-pack buffer's bytes.
-    fn read(&self, gl: &glow::Context) -> Vec<u8> {
+    /// The pixel-pack buffer's bytes; `None` if it could not be mapped.
+    fn read(&self, gl: &glow::Context) -> Option<Vec<u8>> {
         let len = (READBACK_SIZE * READBACK_SIZE * 4) as usize;
-        let mut rgba = vec![0; len];
+        let mut rgba = Some(vec![0; len]);
         unsafe {
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(self.pbo));
             // WebGL 2 has no mapping; its read is a copy.
             #[cfg(target_arch = "wasm32")]
-            gl.get_buffer_sub_data(glow::PIXEL_PACK_BUFFER, 0, &mut rgba);
+            if let Some(rgba) = &mut rgba {
+                gl.get_buffer_sub_data(glow::PIXEL_PACK_BUFFER, 0, rgba);
+            }
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let mapped =
                     gl.map_buffer_range(glow::PIXEL_PACK_BUFFER, 0, len as i32, glow::MAP_READ_BIT);
-                if !mapped.is_null() {
-                    rgba.copy_from_slice(std::slice::from_raw_parts(mapped, len));
-                    gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+                match rgba.as_mut().filter(|_| !mapped.is_null()) {
+                    Some(rgba) => {
+                        rgba.copy_from_slice(std::slice::from_raw_parts(mapped, len));
+                        gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+                    }
+                    None => rgba = None,
                 }
             }
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
@@ -471,6 +489,7 @@ impl GridProgram {
             view_loc: program.get_uniform_location(gl, "view"),
             projection_loc: program.get_uniform_location(gl, "projection"),
             eye_loc: program.get_uniform_location(gl, "eye"),
+            nudge_loc: program.get_uniform_location(gl, "nudge"),
             cell_loc: program.get_uniform_location(gl, "cell"),
             color_loc: program.get_uniform_location(gl, "color"),
             output: crate::color_space::OutputEncodeUniform::get(&program, gl),
@@ -484,6 +503,7 @@ impl GridProgram {
 struct GridMaterial {
     program: Rc<GridProgram>,
     grid: SurfaceGrid,
+    nudge: f32,
 }
 
 impl Material for GridMaterial {
@@ -505,6 +525,7 @@ impl Material for GridMaterial {
         p.program
             .set_uniform_matrix4(gl, &p.projection_loc, projection_matrix);
         p.program.set_uniform_vec3(gl, &p.eye_loc, &ctx.camera_pos);
+        p.program.set_uniform_1f(gl, &p.nudge_loc, self.nudge);
         p.program.set_uniform_1f(gl, &p.cell_loc, self.grid.cell);
         let [r, g, b] = self.grid.color;
         p.program

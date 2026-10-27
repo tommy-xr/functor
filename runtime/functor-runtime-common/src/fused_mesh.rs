@@ -32,7 +32,8 @@ const TRUNCATION: f32 = 3.0 * VOXEL;
 /// The observations a voxel's average remembers. Lower forgets moved
 /// furniture faster; higher smooths more depth noise.
 const MAX_WEIGHT: f32 = 32.0;
-/// Depth beyond this is too noisy to fuse, metres.
+/// Surfaces beyond this are too noisy to fuse, metres. Farther depth still
+/// clears the free space in front of it.
 const MAX_RANGE: f32 = 4.0;
 /// How far (÷ [`TRUNCATION`]) a voxel may drift from the value its chunk was
 /// last meshed with before the chunk re-meshes: about 1 cm of surface.
@@ -204,7 +205,7 @@ impl Volume {
         let eye = unproject(&inverse, Vector4::new(0.0, 0.0, 1.0, 0.0));
 
         // Each pixel's surface depth along the view axis (clip `w`; NaN:
-        // none in range), and the chunks the surfaces' truncation bands reach.
+        // none), and the chunks the in-range surfaces' truncation bands reach.
         // Comparing view-axis depths rather than ray lengths keeps a voxel and
         // the pixel it lands in consistent across the pixel's footprint.
         let mut surface_w = vec![f32::NAN; width * height];
@@ -224,11 +225,11 @@ impl Volume {
                 let homogeneous = inverse * ndc;
                 // `ndc` has w = 1, so the point's clip w is the inverse's.
                 let w = 1.0 / homogeneous.w;
-                if !(w > 0.0 && w <= MAX_RANGE) {
+                if !(w > 0.0) {
                     continue;
                 }
                 surface_w[y * width + x] = w;
-                if x % ALLOCATE_STRIDE == 0 && y % ALLOCATE_STRIDE == 0 {
+                if w <= MAX_RANGE && x % ALLOCATE_STRIDE == 0 && y % ALLOCATE_STRIDE == 0 {
                     let surface = homogeneous.truncate() * w;
                     let dir = (surface - eye).normalize();
                     for t in [-TRUNCATION, 0.0, TRUNCATION] {
@@ -266,9 +267,11 @@ impl Volume {
                         if !(u >= 0.0 && v >= 0.0 && u < width as f32 && v < height as f32) {
                             continue;
                         }
-                        let sdf = sample(&surface_w, width, height, u, v) - clip.w;
+                        let surface = sample(&surface_w, width, height, u, v);
+                        let sdf = surface - clip.w;
                         // NaN (no surface) fails this too: unknown, untouched.
-                        if !(sdf >= -TRUNCATION) {
+                        // A surface out of range only clears space in front.
+                        if !(sdf >= -TRUNCATION) || (surface > MAX_RANGE && sdf < TRUNCATION) {
                             continue;
                         }
                         let i = voxel_index(x, y, z);
@@ -334,12 +337,15 @@ impl Volume {
                 for y in range(offset[1]) {
                     for x in range(offset[0]) {
                         let i = voxel_index(x, y, z);
+                        // The snapshot, not the live value: a chunk that
+                        // re-meshes reads its neighbours' boundary voxels as
+                        // their own meshes did, so shared faces still meet.
                         if chunk.weight[i] > 0.0 {
                             grid[at(
                                 x + offset[0] * CHUNK,
                                 y + offset[1] * CHUNK,
                                 z + offset[2] * CHUNK,
-                            )] = chunk.sdf[i];
+                            )] = chunk.meshed[i];
                         }
                     }
                 }
@@ -597,19 +603,13 @@ mod tests {
         meshes.values().flat_map(|m| m.positions.clone()).collect()
     }
 
-    /// Every directed edge appears once and its reverse once: a closed,
-    /// consistently wound surface.
+    /// A closed, consistently wound surface.
     fn assert_watertight(mesh: &MeshData) {
-        let mut edges = HashMap::new();
-        for t in &mesh.triangles {
-            for k in 0..3 {
-                *edges.entry((t[k], t[(k + 1) % 3])).or_insert(0) += 1;
-            }
-        }
-        for (&(a, b), &count) in &edges {
-            assert_eq!(count, 1, "edge {a}->{b} used {count} times");
-            assert_eq!(edges.get(&(b, a)), Some(&1), "edge {a}->{b} has no twin");
-        }
+        let solid = functor_solid::Mesh {
+            vertices: mesh.positions.iter().map(|p| p.map(f64::from)).collect(),
+            triangles: mesh.triangles.clone(),
+        };
+        assert_eq!(solid.non_manifold_edges(), 0);
     }
 
     /// A volume holding `sdf` (metres) at every voxel of chunk 0.
@@ -626,6 +626,7 @@ mod tests {
                 }
             }
         }
+        chunk.meshed = chunk.sdf;
         let mut volume = Volume::default();
         volume.chunks.insert([0; 3], chunk);
         volume
@@ -767,6 +768,30 @@ mod tests {
         assert!(all_vertices(&mut volume, &mut meshes)
             .iter()
             .any(|p| (p[2] - 3.03).abs() < 0.01 && p[0].abs() < 0.2));
+    }
+
+    /// Depth beyond fusing range still carves: a box removed from in front of
+    /// a far wall decays.
+    #[test]
+    fn a_far_wall_still_clears_a_removed_box() {
+        let vp = view_projection([0.0, 1.0, 0.0], [0.0, 0.9, 1.0]);
+        let far_wall = ([-9.0, -2.0, 6.03], [9.0, 6.0, 6.2]);
+        let box_ = ([-0.25, 0.75, 1.83], [0.25, 1.25, 2.33]);
+        let mut volume = Volume::default();
+        let mut meshes = HashMap::new();
+        for _ in 0..40 {
+            volume.integrate(&depth_frame(vp, &[far_wall, box_]));
+        }
+        assert!(!all_vertices(&mut volume, &mut meshes).is_empty());
+        let without = depth_frame(vp, &[far_wall]);
+        for _ in 0..2 * MAX_WEIGHT as usize {
+            volume.integrate(&without);
+        }
+        // Nothing fused at the box, nor at the out-of-range wall.
+        assert_eq!(
+            all_vertices(&mut volume, &mut meshes),
+            Vec::<[f32; 3]>::new()
+        );
     }
 
     #[test]

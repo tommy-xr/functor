@@ -325,10 +325,17 @@ frame |> Frame.withFusedRoom(0.25, Color.rgb(0.35, 0.9, 1.0))
   the chunks whose voxels changed sign or drifted about a centimetre, and
   the chunk meshes reach the renderer as ordinary `Shape::Mesh` geometry.
 - `Frame.withFusedRoom(cell, color)` draws those meshes with the surface
-  grid's lines (the same GLSL), depth-tested and writing depth, so the mesh
-  also hides virtual geometry behind real surfaces. Without `Xr.scene(true)`
-  nothing is fused or drawn.
-- `/state.xr.mesh` (debug protocol v21) reports `{chunks, triangles,
+  grid's lines (the same GLSL): a depth pass first, then the lines of the
+  nearest surface, so the mesh also hides virtual geometry behind real
+  surfaces. Fusion starts on the first frame that draws the room and keeps
+  running while `config` requests `Xr.scene`, so a game can switch back to it
+  without starting over; without `Xr.scene(true)` nothing is fused or drawn.
+- The mesh lives in world coordinates, which on Quest come from the rig
+  reference and `Frame.camera`. Recentring the rig or moving the authored
+  camera starts the mesh over.
+- Depth beyond 4 m builds no surface but still clears the free space in
+  front of it, so a chair moved away from a far wall still fades.
+- `/state.xr.mesh` (debug protocol v25) reports `{chunks, triangles,
   fused_frames, voxel_m}`.
 - Desktop and web fuse the stand-in room's depth through the same code.
   Runs pinned by `--fixed-time` or `--input-script` (and wasm, which has no

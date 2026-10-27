@@ -670,13 +670,15 @@ impl SceneContext {
         self.fusion_inline.set(inline);
     }
 
-    /// Feed this main pass's environment depth to the fused room (created
-    /// while `Xr.scene` is on, dropped when it goes off).
+    /// Feed this main pass's environment depth to the fused room: created on
+    /// the first frame that draws it (`requested`), fused every few frames
+    /// from then on while `Xr.scene` is on, dropped when it goes off.
     pub(crate) fn fuse_environment_depth(
         &self,
         gl: &glow::Context,
         shader_version: &str,
         view: Option<crate::environment_depth::EnvironmentDepthView>,
+        requested: bool,
     ) {
         let mut slot = self.fused_room.borrow_mut();
         if self.environment_depth_source() == crate::environment_depth::EnvironmentDepthSource::None
@@ -684,6 +686,9 @@ impl SceneContext {
             if let Some(room) = slot.take() {
                 room.delete(gl);
             }
+            return;
+        }
+        if slot.is_none() && !requested {
             return;
         }
         slot.get_or_insert_with(|| {
@@ -697,6 +702,14 @@ impl SceneContext {
         );
     }
 
+    /// Forget the fused room — for a shell whose depth-to-world mapping just
+    /// changed (a recentred rig), where the old mesh no longer lines up.
+    pub fn reset_fused_room(&self, gl: &glow::Context) {
+        if let Some(room) = self.fused_room.borrow_mut().take() {
+            room.delete(gl);
+        }
+    }
+
     /// `GET /state.xr.mesh`: the fused room so far (zeros before it exists).
     pub fn fused_room_state(&self) -> crate::runtime_settings::FusedMeshState {
         self.fused_room
@@ -708,22 +721,45 @@ impl SceneContext {
 
     /// Draw the fused room's meshes with `grid`'s lines, blended over what is
     /// drawn and depth-tested against it (`Frame.withFusedRoom`).
+    /// `over_stand_in` nudges it toward the eye, to win the depth test against
+    /// the stand-in room it was fused from.
     pub(crate) fn draw_fused_room(
         &self,
         render_context: &RenderContext,
         grid: crate::surface_grid::SurfaceGrid,
         projection_matrix: &Matrix4<f32>,
         view_matrix: &Matrix4<f32>,
+        over_stand_in: bool,
     ) {
         let mut slot = self.fused_room.borrow_mut();
         let Some((scene, material)) = slot
             .as_mut()
-            .and_then(|room| room.drawable(render_context, grid))
+            .and_then(|room| {
+                room.drawable(render_context, grid, if over_stand_in { 0.02 } else { 0.0 })
+            })
         else {
             return;
         };
         let gl = render_context.gl;
+        let render = || {
+            scene.render(
+                render_context,
+                self,
+                &Matrix4::identity(),
+                projection_matrix,
+                view_matrix,
+                &material,
+            )
+        };
+        // Depth first, then only the nearest surface's lines: blending in
+        // chunk order would let a farther line show through a nearer surface
+        // drawn after it.
+        unsafe { gl.color_mask(false, false, false, false) };
+        render();
         unsafe {
+            gl.color_mask(true, true, true, true);
+            gl.depth_func(glow::LEQUAL);
+            gl.depth_mask(false);
             gl.enable(glow::BLEND);
             gl.blend_func_separate(
                 glow::SRC_ALPHA,
@@ -732,15 +768,12 @@ impl SceneContext {
                 glow::ONE_MINUS_SRC_ALPHA,
             );
         }
-        scene.render(
-            render_context,
-            self,
-            &Matrix4::identity(),
-            projection_matrix,
-            view_matrix,
-            &material,
-        );
-        unsafe { gl.disable(glow::BLEND) };
+        render();
+        unsafe {
+            gl.disable(glow::BLEND);
+            gl.depth_mask(true);
+            gl.depth_func(glow::LESS);
+        }
     }
 
     /// The stand-in room's depth image so far, as `(width, height, passes)` —
