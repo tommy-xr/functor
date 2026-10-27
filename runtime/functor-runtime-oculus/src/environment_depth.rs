@@ -14,7 +14,8 @@
 
 use functor_runtime_common::environment_depth::EnvironmentDepthView;
 use functor_runtime_common::runtime_settings::{
-    scene_requested, EnvironmentDepthMode, EnvironmentDepthState, GameConfig, XrState,
+    scene_requested, EnvironmentDepthMode, EnvironmentDepthState, FusedMeshState, GameConfig,
+    XrState,
 };
 use functor_runtime_common::{Camera, TrackingPose};
 use openxr as xr;
@@ -351,8 +352,9 @@ stand-in room"
         })
     }
 
-    /// `GET /state.xr`: present while `config` requests `Xr.scene`.
-    pub fn state(&self, config: Option<GameConfig>) -> Option<XrState> {
+    /// `GET /state.xr`: present while `config` requests `Xr.scene`; `mesh` is
+    /// the room fused from this depth.
+    pub fn state(&self, config: Option<GameConfig>, mesh: FusedMeshState) -> Option<XrState> {
         if !scene_requested(config) {
             return None;
         }
@@ -380,6 +382,7 @@ stand-in room"
                 frames: self.frames,
                 warning,
             },
+            mesh,
         })
     }
 }

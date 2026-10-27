@@ -780,7 +780,7 @@ fn service_debug_request(
             let display_refresh_rate = debug.display_refresh_rate.clone();
             let passthrough = passthrough.state(debug.config);
             let battery = battery::latest();
-            let xr = environment_depth.state(debug.config);
+            let xr = environment_depth.state(debug.config, scene_context.fused_room_state());
             let instance_uploads =
                 functor_runtime_common::gpu_counters::gpu_counters().frame_instance_uploads();
             let terrain = functor_runtime_common::gpu_counters::gpu_counters().frame_terrain();

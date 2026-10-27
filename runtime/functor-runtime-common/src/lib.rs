@@ -72,6 +72,7 @@ pub mod functor_lang_producer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod functor_lang_test;
 pub mod fused_mesh;
+mod fused_room;
 pub mod game_clock;
 pub mod geometry;
 pub mod gpu_counters;

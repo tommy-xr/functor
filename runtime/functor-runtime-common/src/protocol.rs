@@ -72,6 +72,9 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v23: fused rooms — `Frame.fused_room` (`Frame.withFusedRoom`), defaulted
+/// and omitted when absent, so every other frame keeps its v22 shape.
+///
 /// v22: surface grids — `Frame.surface_grid` (`Frame.withSurfaceGrid`),
 /// defaulted and omitted when absent, so every other frame keeps its v21
 /// shape.
@@ -166,7 +169,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -954,6 +957,10 @@ mod tests {
                 cell: 0.25,
                 color: [0.35, 0.9, 1.0],
             }),
+            fused_room: Some(crate::surface_grid::SurfaceGrid {
+                cell: 0.5,
+                color: [1.0, 0.5, 0.0],
+            }),
         };
         assert_json_stable(&frame);
         assert!(serde_json::to_string(&frame)
@@ -962,6 +969,9 @@ mod tests {
         assert!(serde_json::to_string(&frame)
             .unwrap()
             .contains(r#""surface_grid":{"cell":0.25,"color":[0.35,0.9,1.0]}"#));
+        assert!(serde_json::to_string(&frame)
+            .unwrap()
+            .contains(r#""fused_room":{"cell":0.5,"color":[1.0,0.5,0.0]}"#));
 
         // `lights` was added to Frame later (`render_targets` and `fog` later
         // still); a frame serialized without them must still decode
@@ -979,6 +989,7 @@ mod tests {
         assert!(legacy.sprite_layers.is_empty());
         assert!(legacy.stand_in_room.is_none());
         assert!(legacy.surface_grid.is_none());
+        assert!(legacy.fused_room.is_none());
     }
 
     // The render-target wire vocabulary: the reader (a texture by target id)

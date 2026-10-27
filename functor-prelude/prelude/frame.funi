@@ -75,6 +75,19 @@ let withStandInRoom : (Scene.t, t) => t
 /// nothing is drawn, and render targets and the transparent debug view draw
 /// no grid.
 let withSurfaceGrid : (float, Color.t, t) => t
+/// Draw the room meshed from its environment depth, with the same grid as
+/// `withSurfaceGrid`; the frame is last for piping.
+///
+/// Under `config`'s `Xr.scene(true)` the runtime fuses the environment depth
+/// into a volume of 8 cm voxels every few frames and meshes its surface, so
+/// the room fills in as the headset looks around and keeps surfaces now out
+/// of view. Free space seen through a surface wears it away, so furniture
+/// that moves fades out within about two seconds of looking where it was.
+/// The mesh draws over the room and under the frame's scene, and hides the
+/// scene's geometry behind it. `cell` must be positive. Without
+/// `Xr.scene(true)` nothing is drawn; render targets and the transparent
+/// debug view draw no mesh. `GET /state` reports it as `xr.mesh`.
+let withFusedRoom : (float, Color.t, t) => t
 /// Add an ordered sprite pass above the frame's 3D scene.
 ///
 /// Layers render in call order, so a second `with2D` draws above the first.

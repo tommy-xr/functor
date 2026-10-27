@@ -148,6 +148,10 @@ pub struct SceneContext {
     // the stand-in room's rendered depth (`crate::environment_depth`).
     environment_depth_source: Cell<crate::environment_depth::EnvironmentDepthSource>,
     pub(crate) stand_in_depth: RefCell<Option<crate::environment_depth::StandInDepth>>,
+    // The room fused from that depth while `Xr.scene` is on, and whether it
+    // fuses on the render thread (`set_fusion_inline`).
+    fused_room: RefCell<Option<crate::fused_room::FusedRoom>>,
+    fusion_inline: Cell<bool>,
 }
 
 /// One in-flight `Effect.preload` target: the handle being driven plus every
@@ -619,6 +623,9 @@ impl SceneContext {
             passthrough_composited: Cell::new(false),
             environment_depth_source: Cell::new(Default::default()),
             stand_in_depth: RefCell::new(None),
+            fused_room: RefCell::new(None),
+            // wasm has no threads.
+            fusion_inline: Cell::new(cfg!(target_arch = "wasm32")),
         }
     }
 
@@ -655,6 +662,85 @@ impl SceneContext {
 
     pub fn environment_depth_source(&self) -> crate::environment_depth::EnvironmentDepthSource {
         self.environment_depth_source.get()
+    }
+
+    /// Fuse the room on the render thread, so frame N always shows the same
+    /// mesh — for deterministic captures. Set before the first depth frame.
+    pub fn set_fusion_inline(&self, inline: bool) {
+        self.fusion_inline.set(inline);
+    }
+
+    /// Feed this main pass's environment depth to the fused room (created
+    /// while `Xr.scene` is on, dropped when it goes off).
+    pub(crate) fn fuse_environment_depth(
+        &self,
+        gl: &glow::Context,
+        shader_version: &str,
+        view: Option<crate::environment_depth::EnvironmentDepthView>,
+    ) {
+        let mut slot = self.fused_room.borrow_mut();
+        if self.environment_depth_source() == crate::environment_depth::EnvironmentDepthSource::None
+        {
+            if let Some(room) = slot.take() {
+                room.delete(gl);
+            }
+            return;
+        }
+        slot.get_or_insert_with(|| {
+            crate::fused_room::FusedRoom::new(gl, shader_version, self.fusion_inline.get())
+        })
+        .update(
+            gl,
+            &mut **self.quad.borrow_mut(),
+            self.current_frame.get(),
+            view,
+        );
+    }
+
+    /// `GET /state.xr.mesh`: the fused room so far (zeros before it exists).
+    pub fn fused_room_state(&self) -> crate::runtime_settings::FusedMeshState {
+        self.fused_room
+            .borrow()
+            .as_ref()
+            .map(|room| room.state())
+            .unwrap_or_default()
+    }
+
+    /// Draw the fused room's meshes with `grid`'s lines, blended over what is
+    /// drawn and depth-tested against it (`Frame.withFusedRoom`).
+    pub(crate) fn draw_fused_room(
+        &self,
+        render_context: &RenderContext,
+        grid: crate::surface_grid::SurfaceGrid,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+    ) {
+        let mut slot = self.fused_room.borrow_mut();
+        let Some((scene, material)) = slot
+            .as_mut()
+            .and_then(|room| room.drawable(render_context, grid))
+        else {
+            return;
+        };
+        let gl = render_context.gl;
+        unsafe {
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::SRC_ALPHA,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
+        }
+        scene.render(
+            render_context,
+            self,
+            &Matrix4::identity(),
+            projection_matrix,
+            view_matrix,
+            &material,
+        );
+        unsafe { gl.disable(glow::BLEND) };
     }
 
     /// The stand-in room's depth image so far, as `(width, height, passes)` —
@@ -1546,7 +1632,9 @@ skybox disabled for this set",
         eye_view_projection: &Matrix4<f32>,
         eye: [f32; 3],
     ) {
-        use crate::surface_grid::{GRID_FRAGMENT_SHADER_SOURCE, GRID_VERTEX_SHADER_SOURCE};
+        use crate::surface_grid::{
+            GRID_FRAGMENT_SHADER_SOURCE, GRID_LINES_GLSL, GRID_VERTEX_SHADER_SOURCE,
+        };
         // A degenerate camera or depth view has no inverse: draw nothing.
         let (Some(eye_inverse), Some(depth_inverse)) = (
             eye_view_projection.invert(),
@@ -1566,7 +1654,7 @@ skybox disabled for this set",
             let fragment = Shader::build(
                 gl,
                 ShaderType::Fragment,
-                GRID_FRAGMENT_SHADER_SOURCE,
+                &format!("{GRID_LINES_GLSL}\n{GRID_FRAGMENT_SHADER_SOURCE}"),
                 render_context.shader_version,
             );
             let shader = ShaderProgram::link(gl, &vertex, &fragment);

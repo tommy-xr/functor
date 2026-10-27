@@ -165,18 +165,34 @@ pub struct EnvironmentDepthState {
     pub warning: Option<String>,
 }
 
+/// `GET /state.xr.mesh` (debug protocol v24): the room fused from the
+/// environment depth (`Frame.withFusedRoom`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FusedMeshState {
+    /// Chunks with surface (each 8 voxels on a side).
+    pub chunks: usize,
+    pub triangles: usize,
+    /// Depth frames fused since `Xr.scene` turned on.
+    pub fused_frames: u64,
+    /// Voxel edge, metres.
+    pub voxel_m: f32,
+}
+
 /// `GET /state.xr`: headset scene state, omitted while it has nothing to say.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct XrState {
     pub depth: EnvironmentDepthState,
+    pub mesh: FusedMeshState,
 }
 
 impl XrState {
     /// A shell without depth sensing (desktop, web), while `config` requests
-    /// `Xr.scene`: the stand-in room's depth so far, `(width, height, passes)`.
+    /// `Xr.scene`: the stand-in room's depth so far, `(width, height, passes)`,
+    /// and the room fused from it.
     pub fn emulated(
         config: Option<GameConfig>,
         (width, height, frames): (u32, u32, u64),
+        mesh: FusedMeshState,
     ) -> Option<Self> {
         scene_requested(config).then_some(XrState {
             depth: EnvironmentDepthState {
@@ -186,6 +202,7 @@ impl XrState {
                 frames,
                 warning: None,
             },
+            mesh,
         })
     }
 }
@@ -242,11 +259,18 @@ mod tests {
                 frames: 7,
                 warning: None,
             },
+            mesh: FusedMeshState {
+                chunks: 3,
+                triangles: 120,
+                fused_frames: 2,
+                voxel_m: 0.08,
+            },
         };
         assert_eq!(
             serde_json::to_value(depth).unwrap(),
             serde_json::json!({
-                "depth": { "mode": "device", "width": 320, "height": 320, "frames": 7 }
+                "depth": { "mode": "device", "width": 320, "height": 320, "frames": 7 },
+                "mesh": { "chunks": 3, "triangles": 120, "fused_frames": 2, "voxel_m": 0.08f32 }
             })
         );
         let state = PassthroughState {

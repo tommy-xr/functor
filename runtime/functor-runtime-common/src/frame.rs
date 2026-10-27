@@ -90,6 +90,10 @@ pub struct Frame {
     /// wherever the frame has environment depth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_grid: Option<crate::surface_grid::SurfaceGrid>,
+    /// The room fused from the environment depth (`Frame.withFusedRoom`),
+    /// drawn with this grid's lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fused_room: Option<crate::surface_grid::SurfaceGrid>,
 }
 
 /// The clear under a passthrough frame's stand-in room wherever no real feed
@@ -114,6 +118,7 @@ impl Frame {
             passthrough: false,
             stand_in_room: None,
             surface_grid: None,
+            fused_room: None,
         }
     }
 
@@ -229,6 +234,12 @@ impl Frame {
     /// Shade `grid` onto the room's surfaces (`Frame.withSurfaceGrid`).
     pub fn with_surface_grid(mut frame: Frame, grid: crate::surface_grid::SurfaceGrid) -> Frame {
         frame.surface_grid = Some(grid);
+        frame
+    }
+
+    /// Draw the fused room with `grid`'s lines (`Frame.withFusedRoom`).
+    pub fn with_fused_room(mut frame: Frame, grid: crate::surface_grid::SurfaceGrid) -> Frame {
+        frame.fused_room = Some(grid);
         frame
     }
 

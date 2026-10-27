@@ -140,8 +140,9 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// width, height, frames, warning?}`) reports the environment depth behind
 /// `Xr.scene` — `device` (a headset depth image this frame), `waiting` (the
 /// provider has no image yet), `emulated` (desktop/web: the stand-in room's
-/// depth), or `unavailable`. Omitted unless the game's `config` requests
-/// `Xr.scene`.
+/// depth), or `unavailable`. `xr.mesh` (`{chunks, triangles, fused_frames,
+/// voxel_m}`) reports the room fused from that depth. Omitted unless the
+/// game's `config` requests `Xr.scene`.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 25;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -1302,6 +1303,12 @@ mod tests {
                     frames: 5,
                     warning: None,
                 },
+                mesh: crate::runtime_settings::FusedMeshState {
+                    chunks: 2,
+                    triangles: 64,
+                    fused_frames: 3,
+                    voxel_m: 0.5,
+                },
             }),
         };
 
@@ -1343,7 +1350,8 @@ mod tests {
                 "stages": { "frames": 300, "sim_ms": 1.5, "render_ms": 2.25, "sim_wait_ms": 0.0, "frame_ms": 11.25 },
                 "build": "pr | 0123abc",
                 "xr": {
-                    "depth": { "mode": "emulated", "width": 1920, "height": 1080, "frames": 5 }
+                    "depth": { "mode": "emulated", "width": 1920, "height": 1080, "frames": 5 },
+                    "mesh": { "chunks": 2, "triangles": 64, "fused_frames": 3, "voxel_m": 0.5 }
                 }
             })
         );
