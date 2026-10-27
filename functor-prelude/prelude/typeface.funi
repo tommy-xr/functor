@@ -1,11 +1,16 @@
-//! Built-in typefaces for `Sketch.text`: subsets of SIL Open Font License
-//! fonts covering one line of Latin-1 text, so text is pure and identical on
-//! every target.
+//! Typefaces for `Sketch.text`: two built in (subsets of SIL Open Font
+//! License fonts covering one line of Latin-1 text, identical on every
+//! target), or any TrueType/OpenType file in the project.
 
-/// An opaque built-in typeface.
+/// An opaque typeface.
 type t = host
 
 /// A readable semi-cursive script (derived from Courgette, OFL).
 let script : () => t
 /// A clean sans-serif (derived from Lato, OFL).
 let sans : () => t
+/// A TrueType or OpenType font file, relative to the entry file's folder:
+/// `Typeface.file("fonts/MyScript.ttf")`. It is read on each call, so bind it
+/// once at the top level, not in `draw`. Desktop runs and `functor export`
+/// only, for now.
+let file : (string) => t

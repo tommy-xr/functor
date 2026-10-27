@@ -392,6 +392,9 @@ impl FunctorLangProject {
     ) -> Result<functor_lang::project::Project, Error> {
         refresh_manifest(working_directory);
         let path = self.entry_path(working_directory)?;
+        // Project files (`Typeface.file`) and saves resolve from the entry's
+        // folder, as in the native runner.
+        functor_runtime_common::storage::set_project_root(path.clone());
         let display = path.display().to_string();
         // A load failure (parse error, bad module name, cycle) is a positioned
         // diagnostic too — surface its file:line:col structurally, like a check

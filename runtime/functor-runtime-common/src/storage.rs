@@ -106,14 +106,18 @@ mod backend {
         *ROOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(root);
     }
 
-    /// `<project>/.functor/saves` — the directory holding every slot file.
-    pub fn saves_dir() -> PathBuf {
-        let root = ROOT
-            .lock()
+    /// The running project's directory (the working directory until a
+    /// producer declares one) — saves, and project files like fonts.
+    pub fn project_dir() -> PathBuf {
+        ROOT.lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        root.join(".functor").join("saves")
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    }
+
+    /// `<project>/.functor/saves` — the directory holding every slot file.
+    pub fn saves_dir() -> PathBuf {
+        project_dir().join(".functor").join("saves")
     }
 
     /// The on-disk file for a slot. Callers validate the key first (see
@@ -249,7 +253,7 @@ mod backend {
 pub use backend::{read_slot, write_slot};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use backend::set_project_root;
+pub use backend::{project_dir, set_project_root};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use backend::saves_dir;
