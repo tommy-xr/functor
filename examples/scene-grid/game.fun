@@ -53,8 +53,8 @@ let sampledInput = (model, snapshot: Input.snapshot) =>
   | Option.None => model
   | Option.Some(xr) =>
     let pressed = xr.left.primaryPressed in
-    let next = { model with togglePressed: pressed } in
-    if pressed && not model.togglePressed then toggled(next) else next
+    let held = { model with togglePressed: pressed } in
+    if pressed && not model.togglePressed then toggled(held) else held
 
 let input = (model, key, isDown) =>
   match key with

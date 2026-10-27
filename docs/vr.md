@@ -293,7 +293,9 @@ functor -d examples/scene-grid run native   # the stand-in floor, desk and wall
   fused room mesh (`withFusedRoom`, same cells and colour, see below), and
   off, so the two sources can be compared directly and both judged against
   plain passthrough. `toggle.script` cycles them headlessly; the goldens
-  `scene-grid-fused` (frame 30) and `scene-grid-off` (frame 50) capture it.
+  `scene-grid-fused` (frame 90) and `scene-grid-off` (frame 120) capture it.
+  Once the fused mode has been shown, fusion keeps running in the background
+  in every mode, so the mesh is still there on the next cycle.
 - On Quest the lines follow real walls and furniture but wave where the
   320x320 depth is noisy, and round off into corners, which the depth
   smooths.

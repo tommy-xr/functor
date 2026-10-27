@@ -232,24 +232,22 @@
     {
       "name": "scene-grid-fused",
       "sample": "scene-grid",
-      "fixedTime": 0.0,
       "debugRender": null,
       "targets": [
         "native"
       ],
       "inputScript": "toggle.script",
-      "captureAtFrame": 30
+      "captureAtFrame": 90
     },
     {
       "name": "scene-grid-off",
       "sample": "scene-grid",
-      "fixedTime": 0.0,
       "debugRender": null,
       "targets": [
         "native"
       ],
       "inputScript": "toggle.script",
-      "captureAtFrame": 50
+      "captureAtFrame": 120
     }
   ]
 }
