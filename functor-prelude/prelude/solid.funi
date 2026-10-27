@@ -2,7 +2,9 @@
 //!
 //! Units are millimetres and Z is up — the 3D-printing convention, not the
 //! scene's metres and Y-up. Every primitive is closed and outward-facing. Bind
-//! the result as `let part = …` and run `functor export -o part.stl`.
+//! the result as `let part = …` and run `functor export -o part.stl`. A file
+//! that is only a `part` runs in a default viewer (`functor run`: drag to orbit,
+//! scroll to zoom) — see `<stdlib>/PartViewer.fun` to customize it.
 //!
 //! ```
 //! let part = Solid.group([

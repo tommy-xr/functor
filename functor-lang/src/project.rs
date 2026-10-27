@@ -121,6 +121,7 @@ pub struct BundledModule {
     src: String,
     kind: BundledModuleKind,
     directory: &'static str,
+    entry_default: Option<String>,
 }
 
 impl BundledModule {
@@ -128,6 +129,21 @@ impl BundledModule {
     /// go-to-definition identify it as `<stdlib>/{name}.fun`.
     pub fn implementation(name: impl Into<String>, src: impl Into<String>) -> BundledModule {
         BundledModule::new(name, src, BundledModuleKind::Implementation, "<stdlib>")
+    }
+
+    /// Bundle defaults for the ENTRY module: when the entry defines `when`
+    /// and none of these defs' names, they join the entry as if written
+    /// there (e.g. a viewer for a file that is only a `part`); otherwise they
+    /// are dropped. Diagnostics identify them as `<stdlib>/{name}.fun`.
+    pub fn entry_default(
+        name: impl Into<String>,
+        when: impl Into<String>,
+        src: impl Into<String>,
+    ) -> BundledModule {
+        BundledModule {
+            entry_default: Some(when.into()),
+            ..BundledModule::implementation(name, src)
+        }
     }
 
     /// Bundle a host `.funi` interface module. Diagnostics and
@@ -171,6 +187,7 @@ impl BundledModule {
             src: src.into(),
             kind,
             directory,
+            entry_default: None,
         }
     }
 
@@ -198,14 +215,45 @@ pub struct Project {
     /// [`Project::check`] hands it to the checker so a bare literal never
     /// resolves against an unrelated sibling's type.
     scopes: RecordLiteralScopes,
+    /// Entry defaults that joined the entry, for [`Project::check`].
+    defaults: Vec<JoinedDefault>,
+}
+
+/// An entry default merged into the entry: its file's span range, and the
+/// trigger def its type errors are reported at.
+struct JoinedDefault {
+    module: String,
+    spans: std::ops::Range<usize>,
+    trigger: String,
+    at: crate::Span,
 }
 
 impl Project {
+    /// Type errors inside a joined default are about the entry's trigger def
+    /// (`let part = 3.0` can't be viewed), so report them there — where the
+    /// user, and an editor showing only that file, will see them.
+    fn attribute(&self, mut errors: Vec<CheckError>) -> Vec<CheckError> {
+        for error in &mut errors {
+            if let Some(d) = self
+                .defaults
+                .iter()
+                .find(|d| d.spans.contains(&error.span.start))
+            {
+                error.message = format!(
+                    "`{}` is used by the bundled default {}: {}",
+                    d.trigger, d.module, error.message
+                );
+                error.span = d.at;
+            }
+        }
+        errors
+    }
+
     /// Typecheck the whole program (every module, referenced or not) —
     /// [`crate::check`] with the project's record-literal scopes. Spans
     /// render through [`Project::sources`].
     pub fn check(&self) -> Vec<CheckError> {
-        crate::types::check_with_scopes(&self.module, &self.scopes)
+        self.attribute(crate::types::check_with_scopes(&self.module, &self.scopes))
     }
 
     /// [`Project::check`], also returning the per-expression type table — the
@@ -213,7 +261,8 @@ impl Project {
     /// Spans (keys into the table's positions) are project-wide; render them
     /// through [`Project::sources`].
     pub fn check_with_types(&self) -> (Vec<CheckError>, crate::types::ExprTypes) {
-        crate::types::check_with_scopes_and_types(&self.module, &self.scopes)
+        let (errors, types) = crate::types::check_with_scopes_and_types(&self.module, &self.scopes);
+        (self.attribute(errors), types)
     }
 
     /// The inline `module` block containing project-wide `offset`, if any —
@@ -410,11 +459,31 @@ pub struct SourceFile {
     pub base: usize,
     /// A `.funi` interface file (bodyless signatures), vs a `.fun`.
     pub interface: bool,
+    /// For a bundled entry default, the def the entry must define for this
+    /// file's defs to join it (see [`BundledModule::entry_default`]).
+    pub(crate) entry_default: Option<String>,
 }
 
 /// Whether a path is an interface file (`.funi`).
 fn is_interface(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("funi")
+}
+
+/// [`SourceMap::file_at`] over files ascending by `base`.
+fn file_at(files: &[SourceFile], offset: usize) -> &SourceFile {
+    files
+        .iter()
+        .rev()
+        .find(|file| file.base <= offset)
+        .unwrap_or(&files[0])
+}
+
+/// [`SourceMap::resolve`] over files ascending by `base`.
+fn resolve(files: &[SourceFile], offset: usize) -> (&SourceFile, usize, usize) {
+    let file = file_at(files, offset);
+    let local = (offset - file.base).min(file.src.len());
+    let (line, col) = line_col(&file.src, local);
+    (file, line, col)
 }
 
 /// Renders project-wide span offsets back to `file:line:col`.
@@ -432,19 +501,12 @@ impl SourceMap {
     /// The file containing project-wide offset `offset` (the entry file for
     /// out-of-range offsets — fail soft, this is error rendering).
     pub fn file_at(&self, offset: usize) -> &SourceFile {
-        self.files
-            .iter()
-            .rev()
-            .find(|file| file.base <= offset)
-            .unwrap_or(&self.files[0])
+        file_at(&self.files, offset)
     }
 
     /// Render a project-wide offset as (path, line, col).
     pub fn resolve(&self, offset: usize) -> (&SourceFile, usize, usize) {
-        let file = self.file_at(offset);
-        let local = (offset - file.base).min(file.src.len());
-        let (line, col) = line_col(&file.src, local);
-        (file, line, col)
+        resolve(&self.files, offset)
     }
 
     /// Render an error at a project-wide span offset: `path:line:col: message`.
@@ -744,6 +806,7 @@ come from file names, capitalized",
             module,
             src: src.clone(),
             base,
+            entry_default: None,
         });
         // +1 gap: a span at one file's very end never collides with the
         // next file's base.
@@ -782,6 +845,7 @@ fn push_bundled(
             module: item.name.clone(),
             src: item.src.clone(),
             base,
+            entry_default: item.entry_default.clone(),
         });
         base += item.src.len() + 1;
     }
@@ -794,10 +858,10 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     let entry = files[0].module.clone();
 
     // Parse every file (spans land in the project-wide space).
-    let render_span = |files: &[SourceFile], index: usize, span: crate::Span, message: &str| {
-        let file = &files[index];
-        let local = (span.start - file.base).min(file.src.len());
-        let (line, col) = line_col(&file.src, local);
+    // By span, not by file: an entry default's items are lowered with the
+    // entry but live in their own bundled file.
+    let render_span = |files: &[SourceFile], span: crate::Span, message: &str| {
+        let (file, line, col) = resolve(files, span.start);
         ProjectError {
             path: file.path.clone(),
             line,
@@ -806,15 +870,42 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
         }
     };
     let mut programs: Vec<ast::Program> = Vec::new();
-    for (index, file) in files.iter().enumerate() {
+    for file in files.iter() {
         let parse = if file.interface {
             parse_interface_with_base
         } else {
             parse_with_base
         };
-        let program = parse(&file.src, file.base)
-            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+        let program =
+            parse(&file.src, file.base).map_err(|e| render_span(&files, e.span, &e.message))?;
         programs.push(program);
+    }
+
+    // Entry defaults join the entry when it defines their trigger and none
+    // of their names (a file that is only a `part` gets a viewer), else they
+    // are dropped; their spans still point at their own bundled file.
+    let mut defaults = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let Some(when) = &file.entry_default else {
+            continue;
+        };
+        let items = std::mem::take(&mut programs[index].items);
+        let trigger = programs[0].items.iter().find_map(|item| match item {
+            ast::Item::Let(decl) if &decl.name == when => Some(decl.span),
+            _ => None,
+        });
+        let entry = exports_of(&programs[0].items).defs;
+        if let Some(at) = trigger {
+            if !exports_of(&items).defs.iter().any(|d| entry.contains(d)) {
+                programs[0].items.extend(items);
+                defaults.push(JoinedDefault {
+                    module: file.module.clone(),
+                    spans: file.base..file.base + file.src.len() + 1,
+                    trigger: when.clone(),
+                    at,
+                });
+            }
+        }
     }
 
     // Every module's exports, for cross-module resolution during lowering.
@@ -823,7 +914,7 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
     let mut exports: HashMap<String, Exports> = HashMap::new();
     let mut inline_modules: Vec<InlineModule> = Vec::new();
     let file_modules: HashSet<&str> = files.iter().map(|f| f.module.as_str()).collect();
-    for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
+    for (file, program) in files.iter().zip(&programs) {
         exports.insert(file.module.clone(), exports_of(&program.items));
         for decl in program.items.iter().filter_map(|item| match item {
             ast::Item::Module(decl) => Some(decl),
@@ -840,7 +931,6 @@ fn link(files: Vec<SourceFile>) -> Result<Project, ProjectError> {
             if PROTECTED_NAMESPACES.contains(&name) {
                 return Err(render_span(
                     &files,
-                    index,
                     span,
                     &format!(
                         "`module {name}` collides with the built-in `{name}` namespace — \
@@ -855,7 +945,6 @@ rename it"
                     .expect("module name came from files");
                 return Err(render_span(
                     &files,
-                    index,
                     span,
                     &format!(
                         "`module {name}` collides with the module of {} — rename one",
@@ -893,7 +982,6 @@ rename it"
             if let Some(&previous) = declared_in.get(decl.suffix.as_str()) {
                 return Err(render_span(
                     &files,
-                    index,
                     decl.span,
                     &format!(
                         "duplicate unit `{}` — it is already declared in {} (units are \
@@ -907,7 +995,7 @@ project-wide, like constructors)",
         }
     }
     let mut units: HashMap<String, UnitTarget> = HashMap::new();
-    for (index, (file, program)) in files.iter().zip(&programs).enumerate() {
+    for (file, program) in files.iter().zip(&programs) {
         let env = ProjectEnv {
             name: &file.module,
             entry: &entry,
@@ -915,7 +1003,7 @@ project-wide, like constructors)",
             units: &HashMap::new(),
         };
         let resolved = resolve_units(&program.items, Some(&env))
-            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+            .map_err(|e| render_span(&files, e.span, &e.message))?;
         for (suffix, target, _) in resolved {
             units.insert(suffix, target);
         }
@@ -927,7 +1015,7 @@ project-wide, like constructors)",
     let mut lowered: Vec<Module> = Vec::new();
     let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
     let mut scopes = RecordLiteralScopes::default();
-    for (index, (file, program)) in files.iter().zip(programs).enumerate() {
+    for (file, program) in files.iter().zip(programs) {
         // Record-literal visibility for this module: its own types plus its
         // `open`ed modules' (by canonical name — the entry's are bare).
         // Mirrors `lower::Lowerer::qualify`: the entry file's members stay
@@ -1001,7 +1089,7 @@ project-wide, like constructors)",
             units: &units,
         };
         let (module, next, module_deps) = lower_in_project(program, &env, bases)
-            .map_err(|e| render_span(&files, index, e.span, &e.message))?;
+            .map_err(|e| render_span(&files, e.span, &e.message))?;
         bases = next;
         lowered.push(module);
         // An interface module has no runtime initializers, so its out-edges
@@ -1069,6 +1157,7 @@ allowed (within one file, definitions may still be mutually recursive)",
         entry,
         inline_modules,
         scopes,
+        defaults,
     })
 }
 
@@ -1082,6 +1171,7 @@ pub fn load_single_source(module: &str, src: &str) -> Result<Project, ProjectErr
         module: module.to_string(),
         src: src.to_string(),
         base: 0,
+        entry_default: None,
     }];
     push_bundled(&mut files, &core_modules())?;
     link(files)
@@ -1118,6 +1208,7 @@ pub fn load_single_file_with_bundled_modules(
         module,
         src: src.to_string(),
         base: 0,
+        entry_default: None,
     }];
     push_bundled(&mut files, bundled)?;
     push_bundled(&mut files, &core)?;

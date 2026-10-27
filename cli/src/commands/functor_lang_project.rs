@@ -2617,13 +2617,17 @@ examples move?",
             r#"{"language":"functor-lang","entry":"part.fun"}"#,
         )
         .unwrap();
-        std::fs::write(dir.join("part.fun"), "let part = 3.0\n").unwrap();
+        std::fs::write(
+            dir.join("part.fun"),
+            "let part = Solid.box(1.0, 1.0, 1.0)\nlet lid = 3.0\n",
+        )
+        .unwrap();
         let dir_str = dir.to_string_lossy().into_owned();
         let project = super::detect(&dir_str).unwrap().select(None).unwrap();
         let loaded = project.build(&dir_str, false).unwrap();
         let out = dir.join("part.stl");
         let err = project
-            .export(&loaded, &["part".to_string()], &out)
+            .export(&loaded, &["lid".to_string()], &out)
             .unwrap_err()
             .to_string();
         assert!(err.contains("must be a Solid"), "{err}");

@@ -1495,6 +1495,68 @@ fn bundled_implementation_module_runs_and_checks() {
     assert!(!stdlib.interface);
 }
 
+/// An entry default joins the entry only when the entry defines its trigger
+/// and none of its names; its type errors point at the trigger.
+#[test]
+fn entry_default_joins_an_entry_that_needs_it() {
+    let bundled = [functor_lang::project::BundledModule::entry_default(
+        "View",
+        "part",
+        "let main = () => part * 2.0\n",
+    )];
+    let main_of = |src: &str| {
+        let project = functor_lang::project::load_sources_with_bundled_modules(
+            vec![(PathBuf::from("game.fun"), src.to_string())],
+            &bundled,
+        )
+        .unwrap_or_else(|e| panic!("should load: {}", e.render()));
+        assert!(project.check().is_empty(), "{:?}", project.check());
+        match functor_lang::run(&project.module, Tracing::Off).map(|r| r.outcome) {
+            Ok(RunOutcome::Main(Value::Number(n))) => Some(n),
+            _ => None,
+        }
+    };
+    // Only a part: the default's `main` runs.
+    assert_eq!(main_of("let part = 21.0\n"), Some(42.0));
+    // The entry's own `main` wins; the default is dropped.
+    assert_eq!(
+        main_of("let part = 21.0\nlet main = () => 1.0\n"),
+        Some(1.0)
+    );
+    // No part: nothing joins.
+    assert_eq!(main_of("let other = 21.0\n"), None);
+
+    let project = functor_lang::project::load_sources_with_bundled_modules(
+        vec![(
+            PathBuf::from("game.fun"),
+            "let part = \"text\"\n".to_string(),
+        )],
+        &bundled,
+    )
+    .unwrap_or_else(|e| panic!("should load: {}", e.render()));
+    // A type error inside the default is reported at the entry's `part`.
+    let diags = project.check();
+    let rendered = project
+        .sources
+        .render(diags[0].span.start, &diags[0].message);
+    assert!(rendered.contains("game.fun:1"), "{rendered}");
+    assert!(rendered.contains("`part` is used by the bundled default View"), "{rendered}");
+
+    // Load-time (lowering) errors in a default point at it too.
+    let broken = [functor_lang::project::BundledModule::entry_default(
+        "View",
+        "part",
+        "let main = () => missing\n",
+    )];
+    let error = functor_lang::project::load_sources_with_bundled_modules(
+        vec![(PathBuf::from("game.fun"), "let part = 1.0\n".to_string())],
+        &broken,
+    )
+    .err()
+    .expect("unresolved name in the default");
+    assert_eq!(error.path, PathBuf::from("<stdlib>/View.fun"));
+}
+
 /// Engine stdlib code can depend on an injected host interface: all bundled
 /// modules share the normal export/dependency graph.
 #[test]
