@@ -185,6 +185,7 @@ use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteL
 
 pub mod bytes;
 pub mod mesh;
+pub mod model;
 pub mod solid;
 mod sprite;
 
@@ -1632,6 +1633,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         solid::register(&mut reg);
         bytes::register(&mut reg);
         mesh::register(&mut reg);
+        model::register(&mut reg);
         register_scene(&mut reg);
         register_instance(&mut reg);
         sprite::register(&mut reg);
@@ -4433,6 +4435,7 @@ macro_rules! handle_arg {
 
 use bytes::FunctorLangBytes;
 use mesh::FunctorLangMesh;
+use model::FunctorLangModel;
 use solid::{FunctorLangFont, FunctorLangSketch, FunctorLangSolid};
 
 handle_arg!(
@@ -4441,6 +4444,7 @@ handle_arg!(
     FunctorLangFont => "a Typeface",
     FunctorLangBytes => "Bytes",
     FunctorLangMesh => "a Mesh",
+    FunctorLangModel => "a Model",
     FunctorLangTerrain => "a Terrain",
     FunctorLangScene => "a Scene",
     FunctorLangInstance => "an Instance",
@@ -12324,6 +12328,156 @@ the game dir"
                 .expect("should fail");
             assert!(err.contains(expected), "{main}: {err}");
         }
+    }
+
+    /// A two-bone arm: `upper` at the origin, `lower` 1 up. Vertices: the
+    /// root (upper), the tip and a side point (lower), and a 50/50 blend at
+    /// the tip. `bend` turns `lower` 90° about Z over two frames at 2 fps;
+    /// `lift` also moves `upper` to z = 1.
+    const ARM: &str = "let s = Math.sqrt(0.5)\n\
+        let id = { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }\n\
+        let none = Bytes.fromF32le([])\n\
+        let armData = {\n\
+          positions: Bytes.fromF32le([0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 0.0]),\n\
+          normals: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),\n\
+          uvs: none,\n\
+          joints: Bytes.fromU8([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),\n\
+          weights: Bytes.fromF32le([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0]),\n\
+          triangles: Bytes.fromU32le([0.0, 1.0, 2.0]),\n\
+          skeleton: [\n\
+            { name: \"upper\", parent: Option.None, translation: Vec3.make(0.0, 0.0, 0.0), rotation: id },\n\
+            { name: \"lower\", parent: Option.Some(0.0), translation: Vec3.make(0.0, 1.0, 0.0), rotation: id }\n\
+          ],\n\
+          clips: [\n\
+            { name: \"bend\", fps: 2.0, frames: 2.0, tracks: [\n\
+              { joint: \"lower\", rotations: Bytes.fromF32le([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, s, s]), translations: none }\n\
+            ] },\n\
+            { name: \"lift\", fps: 1.0, frames: 1.0, tracks: [\n\
+              { joint: \"upper\", rotations: none, translations: Bytes.fromF32le([0.0, 0.0, 1.0]) },\n\
+              { joint: \"lower\", rotations: Bytes.fromF32le([0.0, 0.0, s, s]), translations: none }\n\
+            ] }\n\
+          ]\n\
+        }\n\
+        let arm = Model.skinned(armData)\n";
+
+    /// `Model.pose(anim, arm)`'s vertex positions.
+    fn arm_pose(anim: &str) -> Vec<[f32; 3]> {
+        let value = eval_with_prelude(&format!("{ARM}let main = Model.pose({anim}, arm)\n"))
+            .unwrap_or_else(|e| panic!("{anim}: {e}"));
+        let Value::HostData(data) = value else {
+            panic!("{anim}: expected Bytes");
+        };
+        let bytes = data.as_any().downcast_ref::<FunctorLangBytes>().expect("Bytes");
+        bytes
+            .0
+            .as_slice()
+            .chunks_exact(12)
+            .map(|p| std::array::from_fn(|k| f32::from_le_bytes(p[4 * k..4 * k + 4].try_into().unwrap())))
+            .collect()
+    }
+
+    fn assert_near(anim: &str, vertex: usize, expected: [f32; 3]) {
+        let actual = arm_pose(anim)[vertex];
+        assert!(
+            actual.iter().zip(expected).all(|(a, e)| (a - e).abs() < 1e-4),
+            "{anim}: vertex {vertex} is {actual:?}, expected {expected:?}"
+        );
+    }
+
+    /// `Model.pose` against hand-computed positions: rest, the clip (keys,
+    /// interpolation, the wrap key), blend, mask and lookAt.
+    #[test]
+    fn skinned_model_poses_match_hand_computed_positions() {
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        // Rest: the bind pose, every vertex where it was authored.
+        let rest = arm_pose("Anim.rest()");
+        for (vertex, expected) in [[0.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.0, 1.0, 0.0], [0.0, 2.0, 0.0]]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(rest[vertex].iter().zip(expected).all(|(a, e)| (a - e).abs() < 1e-6));
+        }
+        // Frame 1 (t = 0.5): `lower` turned 90°; the blended tip is halfway.
+        let bent = "Anim.clip(\"bend\", 0.5)";
+        assert_near(bent, 0, [0.0, 0.0, 0.0]);
+        assert_near(bent, 1, [-1.0, 1.0, 0.0]);
+        assert_near(bent, 2, [0.0, 2.0, 0.0]);
+        assert_near(bent, 3, [-0.5, 1.5, 0.0]);
+        // Mid-way between keys interpolates: 45°.
+        assert_near("Anim.clip(\"bend\", 0.25)", 1, [-h, 1.0 + h, 0.0]);
+        // After the last key the wrap key interpolates back to frame 0
+        // instead of holding frame 1.
+        assert_near("Anim.clip(\"bend\", 0.75)", 1, [-h, 1.0 + h, 0.0]);
+        let almost = arm_pose("Anim.clip(\"bend\", 0.999)")[1];
+        assert!(almost[0].abs() < 0.01 && (almost[1] - 2.0).abs() < 0.01, "{almost:?}");
+        assert_near("Anim.clip(\"bend\", 1.25)", 1, [-h, 1.0 + h, 0.0]);
+        // Blend: half the bend is 45°.
+        assert_near("Anim.blend([(Anim.clip(\"bend\", 0.5), 1.0), (Anim.rest(), 1.0)])", 1, [-h, 1.0 + h, 0.0]);
+        // A translation key replaces the rest translation.
+        let lift = "Anim.clip(\"lift\", 0.0)";
+        assert_near(lift, 0, [0.0, 0.0, 1.0]);
+        assert_near(lift, 1, [-1.0, 1.0, 1.0]);
+        // Mask: only `lower`'s subtree follows the clip; `upper` stays put.
+        let masked = "Anim.mask([\"lower\"], Anim.clip(\"lift\", 0.0))";
+        assert_near(masked, 0, [0.0, 0.0, 0.0]);
+        assert_near(masked, 1, [-1.0, 1.0, 0.0]);
+        // lookAt: `lower`'s +Z turns to +X (90° about Y), so +X goes to -Z.
+        let aimed = "Anim.lookAt(\"lower\", Vec3.make(1.0, 1.0, 0.0), 120deg, 1.0, Anim.rest())";
+        assert_near(aimed, 2, [0.0, 1.0, -1.0]);
+        assert_near(aimed, 1, [0.0, 2.0, 0.0]);
+    }
+
+    /// `Model.inspect`, and the data's wire form: its source, revalidated
+    /// when read back.
+    #[test]
+    fn skinned_models_inspect_and_serialize() {
+        let main = |expr: &str| eval_with_prelude(&format!("{ARM}let main = {expr}\n"));
+        assert!(matches!(
+            main("Model.inspect(arm).joints == [\"upper\", \"lower\"] \
+                  && List.map((c) => c.duration, Model.inspect(arm).clips) == [1.0, 1.0] \
+                  && Model.inspect(arm).vertices == 4.0"),
+            Ok(Value::Bool(true))
+        ));
+
+        let Value::HostData(model) = main("arm").unwrap() else {
+            panic!("expected a Model");
+        };
+        let model = &model.as_any().downcast_ref::<FunctorLangModel>().unwrap().0;
+        let json = serde_json::to_string(&**model).unwrap();
+        assert!(
+            json.starts_with(r#"{"positions":[[0.0,0.0,0.0],[0.0,2.0,0.0],"#)
+                && json.contains(r#""skeleton":[{"name":"upper","parent":null,"translation":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0,1.0]}"#),
+            "{json}"
+        );
+        let back: crate::model::SkinnedModelData = serde_json::from_str(&json).unwrap();
+        assert_eq!(model.source(), back.source());
+        assert_ne!(model.id(), back.id());
+        // A bad payload is refused with the validation error.
+        let bad = json.replace(r#""joints":[[0,0,0,0]"#, r#""joints":[[9,0,0,0]"#);
+        let err = serde_json::from_str::<crate::model::SkinnedModelData>(&bad)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("joints: vertex 0 uses joint 9"), "{err}");
+    }
+
+    /// Bad data is an error naming the field.
+    #[test]
+    fn skinned_model_errors_name_the_field() {
+        let fail = |replace: (&str, &str)| {
+            let src = ARM.replace(replace.0, replace.1);
+            assert_ne!(src, ARM, "{replace:?} did not apply");
+            eval_with_prelude(&format!("{src}let main = arm\n")).err().expect("should fail")
+        };
+        let err = fail(("weights: Bytes.fromF32le([1.0,", "weights: Bytes.fromF32le([0.0,"));
+        assert_eq!(err, "Model.skinned: weights: vertex 0's weights sum to 0");
+        let err = fail(("parent: Option.Some(0.0)", "parent: Option.Some(1.0)"));
+        assert!(err.starts_with("Model.skinned: skeleton[1] (\"lower\"): parent 1 must come before it"), "{err}");
+        let err = fail(("triangles: Bytes.fromU32le([0.0, 1.0, 2.0])", "triangles: Bytes.fromU32le([0.0, 1.0, 7.0])"));
+        assert_eq!(err, "Model.skinned: triangles: triangle 0 uses vertex 7, but there are 4");
+        let err = fail(("{ joint: \"upper\",", "{ joint: \"elbow\","));
+        assert_eq!(err, "Model.skinned: clips[1] (\"lift\").tracks[0]: no joint named \"elbow\"");
+        let err = fail(("uvs: none", "uvs: Bytes.fromF32le([1.0])"));
+        assert_eq!(err, "Model.skinned: uvs: 4 bytes is not a whole number of 8-byte entries");
     }
 
     /// The persistence spine on the REAL store: `Persistence.save` writes the

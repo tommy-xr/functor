@@ -1,0 +1,80 @@
+//! Skinned, animatable models built from decoded data. Build one once (a
+//! top-level `let`) and pose it with `Anim` exactly like a glTF model: clip
+//! and joint names come from the data.
+//!
+//! Y up, like the scene. Bulk data is little-endian `Bytes` (`Bytes.fromF32le`,
+//! or slices of a decoded file); quaternions are `x, y, z, w`.
+//!
+//! ```
+//! let arm = Model.skinned({
+//!   positions: Bytes.fromF32le([0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 1.0, 2.0, 0.0]),
+//!   normals: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+//!   uvs: Bytes.fromF32le([]),
+//!   joints: Bytes.fromU8([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
+//!   weights: Bytes.fromF32le([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
+//!   triangles: Bytes.fromU32le([0.0, 1.0, 2.0]),
+//!   skeleton: [
+//!     { name: "upper", parent: Option.None, translation: Vec3.make(0.0, 0.0, 0.0), rotation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } },
+//!     { name: "lower", parent: Option.Some(0.0), translation: Vec3.make(0.0, 1.0, 0.0), rotation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }
+//!   ],
+//!   clips: []
+//! })
+//! let tip = Model.pose(Anim.rotate("lower", 0deg, 0deg, 45deg, Anim.rest()), arm)
+//! ```
+
+/// An opaque, immutable skinned model.
+type t = host
+
+/// One skeleton joint's rest pose, local to its parent (unit scale). Joints
+/// are listed parents first; `parent` is an index into the list.
+type joint = {
+  name: string,
+  parent: Option.t<float>,
+  translation: Vec3.t,
+  rotation: Input.quaternion
+}
+
+/// One joint's keys in a clip. `rotations` is f32 `x, y, z, w` per frame and
+/// `translations` f32 `x, y, z` per frame; either may be empty. A key
+/// REPLACES the joint's rest rotation or translation (as a glTF channel does)
+/// rather than adding to it.
+type track = { joint: string, rotations: Bytes.t, translations: Bytes.t }
+
+/// A clip of `frames` keys `1 / fps` seconds apart. It loops seamlessly: the
+/// last frame interpolates back to the first over `frames / fps` seconds.
+type clip = { name: string, fps: float, frames: float, tracks: List<track> }
+
+/// Everything a skinned model is made of. Per vertex: `positions` and
+/// `normals` are f32 `x, y, z` in the bind pose; `uvs` f32 `u, v`, or empty;
+/// `joints` four u8 joint indices and `weights` four f32 weights (normalized
+/// to sum to 1; every index must name a joint, even with zero weight).
+/// `triangles` is u32 vertex index triples, counter-clockwise. At most 200
+/// joints.
+type data = {
+  positions: Bytes.t,
+  normals: Bytes.t,
+  uvs: Bytes.t,
+  joints: Bytes.t,
+  weights: Bytes.t,
+  triangles: Bytes.t,
+  skeleton: List<joint>,
+  clips: List<clip>
+}
+
+/// A clip's name and length in seconds.
+type clipInfo = { name: string, duration: float }
+
+/// What a model holds: counts, joint names (in palette order), and clips.
+type info = { vertices: float, triangles: float, joints: List<string>, clips: List<clipInfo> }
+
+/// A model from `data`, validated once: bad data is an error naming the
+/// field (`Model.skinned: weights: vertex 3's weights sum to 0`). Untextured
+/// for now: it draws white under the frame's lights.
+let skinned : (data) => t
+/// The model's vertex positions under a pose, as f32 `x, y, z` per vertex —
+/// skinned on the CPU exactly as the GPU does, for tests and tools. What
+/// drawing would warn about (an unknown clip or joint name, a bad
+/// `Anim.reach` chain) is an error here.
+let pose : (Anim.t, t) => Bytes.t
+/// The model's counts, joint names and clips.
+let inspect : (t) => info

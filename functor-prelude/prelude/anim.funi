@@ -6,7 +6,7 @@
 /// An opaque animation pose expression.
 type t = host
 
-/// Sample a named glTF clip at a playhead in seconds.
+/// Sample a named clip (glTF, or `Model.skinned`) at a playhead in seconds.
 ///
 /// The clip loops by its duration; negative playheads wrap backwards from the
 /// end. A name the model does not define warns once and renders the bind pose
