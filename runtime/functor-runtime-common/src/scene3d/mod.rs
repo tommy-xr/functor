@@ -25,7 +25,7 @@ use crate::{
         TangentDebugMaterial,
     },
     math::Angle,
-    model::{Model, Skeleton},
+    model::Model,
     render_target::{warn_line, RenderTargetBuffers, RenderTargetDescriptor},
     shader::{Shader, ShaderType},
     shader_program::{ShaderProgram, UniformLocation},
@@ -83,6 +83,10 @@ pub struct SceneContext {
     // the next frame's start once a frame passes undrawn (the instancing
     // cache's rule), so a hot-reloaded or removed part releases its buffers.
     meshes: RefCell<HashMap<usize, RetainedMesh>>,
+    // This frame's skinned poses, so the shadow pass, the forward pass and
+    // both eyes evaluate each model node once. Cleared when a new frame id
+    // begins; see `cached_pose_joints` for the key.
+    poses: RefCell<HashMap<usize, CachedPose>>,
     heightmap_pipeline: Arc<BuiltAssetPipeline<HeightmapData>>,
     terrain_decode_residency: RefCell<TerrainDecodeResidency>,
     terrain_requests: RefCell<BTreeSet<crate::terrain::TerrainSource>>,
@@ -268,6 +272,69 @@ fn resolve_model_for_draw(
     )
 }
 
+/// A pose evaluated this frame, with the inputs it is a pure function of.
+struct CachedPose {
+    // Pins the model, so its address cannot be reused while the entry lives.
+    model: Arc<Model>,
+    animation: Option<crate::anim::AnimExpr>,
+    tts: f32,
+    joints: Arc<[Matrix4<f32>]>,
+}
+
+impl CachedPose {
+    /// Whether this entry was evaluated from exactly these inputs. A NaN in
+    /// the expression never matches, so that node just re-evaluates.
+    fn matches(
+        &self,
+        model: &Arc<Model>,
+        animation: &Option<crate::anim::AnimExpr>,
+        tts: f32,
+    ) -> bool {
+        Arc::ptr_eq(&self.model, model)
+            && self.tts.to_bits() == tts.to_bits()
+            && self.animation == *animation
+    }
+}
+
+/// `model_pose_joints`, memoized for the frame. Keyed by the node's
+/// `ModelDescription` address, which is stable while the frame is drawn; a
+/// hit must also match the model, expression and clock, so an address reused
+/// within the frame (an `expand_instanced` temporary) re-evaluates instead of
+/// aliasing another node's pose.
+fn cached_pose_joints(
+    render_context: &RenderContext,
+    scene_context: &SceneContext,
+    hydrated_model: &Arc<Model>,
+    description: &ModelDescription,
+    file: &str,
+) -> Arc<[Matrix4<f32>]> {
+    let key = description as *const ModelDescription as usize;
+    let tts = render_context.frame_time.tts;
+    if let Some(cached) = scene_context.poses.borrow().get(&key) {
+        if cached.matches(hydrated_model, &description.animation, tts) {
+            return cached.joints.clone();
+        }
+    }
+    let joints: Arc<[Matrix4<f32>]> = model_pose_joints(
+        render_context,
+        scene_context,
+        hydrated_model,
+        &description.animation,
+        file,
+    )
+    .into();
+    scene_context.poses.borrow_mut().insert(
+        key,
+        CachedPose {
+            model: hydrated_model.clone(),
+            animation: description.animation.clone(),
+            tts,
+            joints: joints.clone(),
+        },
+    );
+    joints
+}
+
 /// Evaluate a skinned model's pose ONCE — the declarative `Scene.animate`
 /// expression when attached (unknown clip/joint names warn once; a missing
 /// clip contributes the bind pose, a missing joint is ignored), else the
@@ -323,9 +390,8 @@ so the reach is ignored"
         None => match hydrated_model.animations.first() {
             Some(animation) => {
                 let time = render_context.frame_time.tts % animation.duration;
-                let animated_skeleton =
-                    Skeleton::animate(&hydrated_model.skeleton, animation, time);
-                animated_skeleton.get_skinning_transforms()
+                let skeleton = &hydrated_model.skeleton;
+                skeleton.skinning_transforms_for(&skeleton.sample_pose(animation, time))
             }
             // A skeleton with no clips: identity for EVERY joint (sized by
             // the model, not a fixed count — an undersized palette would
@@ -365,6 +431,7 @@ impl SceneContext {
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
             meshes: RefCell::new(HashMap::new()),
+            poses: RefCell::new(HashMap::new()),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
             terrain_decode_residency: RefCell::new(TerrainDecodeResidency::default()),
             terrain_requests: RefCell::new(BTreeSet::new()),
@@ -432,6 +499,7 @@ impl SceneContext {
         // A stereo pair shares one id, so both eyes sum into one frame.
         if frame != self.current_frame.get() {
             crate::gpu_counters::gpu_counters().begin_skinned_frame();
+            self.poses.borrow_mut().clear();
         }
         self.current_frame.set(frame);
         self.terrain_renderer.borrow_mut().begin_frame(gl, frame);
@@ -1933,15 +2001,15 @@ impl Scene3D {
                         // evaluate it once per model (a blend samples every
                         // clip in the expression) and share it across meshes.
                         let joints = if is_skinned {
-                            model_pose_joints(
+                            cached_pose_joints(
                                 render_context,
                                 scene_context,
                                 &hydrated_model,
-                                &model_description.animation,
+                                model_description,
                                 str,
                             )
                         } else {
-                            vec![]
+                            Arc::from([])
                         };
 
                         for mesh in hydrated_model.meshes.iter() {
@@ -2209,15 +2277,15 @@ impl Scene3D {
                         // the next ladder rung.)
                         let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
                         let joints = if is_skinned {
-                            model_pose_joints(
+                            cached_pose_joints(
                                 render_context,
                                 scene_context,
                                 &hydrated_model,
-                                &recognized.description.animation,
+                                recognized.description,
                                 file,
                             )
                         } else {
-                            vec![]
+                            Arc::from([])
                         };
                         let mut renderer = scene_context.instanced_renderer(render_context);
                         if is_skinned {
@@ -3109,5 +3177,43 @@ mod opacity_tests {
         assert!(json.contains("0.35"), "the alpha is on the wire: {json}");
         let round_tripped: Scene3D = serde_json::from_str(&json).expect("and deserializes");
         assert_eq!(round_tripped, a);
+    }
+}
+
+#[cfg(test)]
+mod pose_cache_tests {
+    use super::*;
+    use crate::anim::AnimExpr;
+
+    fn model() -> Arc<Model> {
+        Arc::new(Model {
+            meshes: vec![],
+            skeleton: crate::model::Skeleton::empty(),
+            animations: vec![],
+        })
+    }
+
+    fn clip(playhead: f32) -> Option<AnimExpr> {
+        Some(AnimExpr::Clip {
+            name: "walk".to_string(),
+            playhead,
+        })
+    }
+
+    #[test]
+    fn a_cached_pose_matches_only_its_own_inputs() {
+        let model = model();
+        let cached = CachedPose {
+            model: model.clone(),
+            animation: clip(0.5),
+            tts: 2.0,
+            joints: Arc::from([]),
+        };
+        assert!(cached.matches(&model, &clip(0.5), 2.0));
+        // A reused address with another model, expression or clock misses.
+        assert!(!cached.matches(&self::model(), &clip(0.5), 2.0));
+        assert!(!cached.matches(&model, &clip(0.75), 2.0));
+        assert!(!cached.matches(&model, &None, 2.0));
+        assert!(!cached.matches(&model, &clip(0.5), 2.5));
     }
 }

@@ -27,8 +27,6 @@
 //! through `Blend`/`Add`: a joint no input drives falls back to the bind
 //! pose, and partial influence blends toward it.
 
-use std::collections::HashMap;
-
 use cgmath::{
     Euler, InnerSpace, Matrix3, Matrix4, One, Quaternion, Rad, Rotation, SquareMatrix, Vector3,
     Vector4, Zero,
@@ -123,8 +121,9 @@ pub enum AnimWarning<'a> {
 
 /// A pose with a per-joint influence weight in `[0, 1]` — how `Mask`
 /// composes through the tree. `finalize` folds it back onto the bind pose.
+/// Indexed by skeleton slot; `None` is a joint no input produced.
 struct WeightedPose {
-    joints: HashMap<i32, (JointPose, f32)>,
+    joints: Vec<Option<(JointPose, f32)>>,
 }
 
 /// Evaluate an expression against a loaded model and return the skinning
@@ -138,7 +137,7 @@ pub fn skinning_transforms(
 ) -> Vec<Matrix4<f32>> {
     let weighted = eval(model, expr, on_warning);
     let pose = finalize(&model.skeleton, weighted);
-    model.skeleton.apply_pose(&pose).get_skinning_transforms()
+    model.skeleton.skinning_transforms_for(&pose)
 }
 
 /// Fold a weighted pose onto the bind pose: fully-driven joints take the
@@ -146,8 +145,8 @@ pub fn skinning_transforms(
 /// between the two.
 fn finalize(skeleton: &Skeleton, weighted: WeightedPose) -> Pose {
     let mut pose = skeleton.base_pose();
-    for (joint_id, (jp, weight)) in weighted.joints {
-        let Some(bind) = pose.joints.get_mut(&joint_id) else {
+    for (bind, joint) in pose.joints.iter_mut().zip(weighted.joints) {
+        let Some((jp, weight)) = joint else {
             continue;
         };
         if weight >= 1.0 {
@@ -199,7 +198,7 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
                 .filter(|(_, weight)| *weight > 0.0)
                 .map(|(sub, weight)| (eval(model, sub, on_warning), *weight))
                 .collect();
-            blend(&inputs)
+            blend(&inputs, model.skeleton.slot_count())
         }
         AnimExpr::Add {
             base,
@@ -209,51 +208,44 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
             let mut base = eval(model, base, on_warning);
             if *weight > 0.0 {
                 let layer = eval(model, layer, on_warning);
-                let bind = model.skeleton.base_pose();
-                add_layer(&mut base, &layer, &bind, *weight);
+                add_layer(&mut base, &layer, &model.skeleton, *weight);
             }
             base
         }
         AnimExpr::Mask { joints, expr } => {
             let mut inner = eval(model, expr, on_warning);
-            let kept = model.skeleton.subtree_joint_ids(joints);
+            let kept = model.skeleton.subtree_slots(joints);
             for name in joints {
                 if model.skeleton.joint_id_by_name(name).is_none() {
                     on_warning(AnimWarning::MissingJoint(name));
                 }
             }
-            for (joint_id, (_, weight)) in inner.joints.iter_mut() {
-                if !kept.contains(joint_id) {
-                    *weight = 0.0;
+            for (joint, kept) in inner.joints.iter_mut().zip(kept) {
+                if let Some((_, weight)) = joint {
+                    if !kept {
+                        *weight = 0.0;
+                    }
                 }
             }
             inner
         }
         AnimExpr::Rotate { joint, euler, expr } => {
             let mut inner = eval(model, expr, on_warning);
-            match model.skeleton.joint_id_by_name(joint) {
-                Some(joint_id) => {
+            match model.skeleton.slot_by_name(joint) {
+                Some(slot) => {
                     // The inner expression may not have produced this joint
                     // (an all-zero-weight blend evaluates empty): rotate over
                     // the bind pose so the joint never silently snaps.
-                    if !inner.joints.contains_key(&joint_id) {
-                        if let Some(jp) = model.skeleton.base_pose().joints.get(&joint_id) {
-                            inner.joints.insert(joint_id, (*jp, 0.0));
-                        }
-                    }
-                    if let Some((jp, weight)) = inner.joints.get_mut(&joint_id) {
-                        let q = Quaternion::from(Euler::new(
-                            Rad(euler[0]),
-                            Rad(euler[1]),
-                            Rad(euler[2]),
-                        ));
-                        jp.rotation = (jp.rotation * q).normalize();
-                        // The joint is explicitly driven — the rotation
-                        // survives a mask/blend BENEATH this node (an
-                        // enclosing Mask that excludes the joint still
-                        // zeroes it, deliberately).
-                        *weight = 1.0;
-                    }
+                    let (jp, weight) = inner.joints[slot]
+                        .get_or_insert((model.skeleton.slot_bind_pose(slot), 0.0));
+                    let q =
+                        Quaternion::from(Euler::new(Rad(euler[0]), Rad(euler[1]), Rad(euler[2])));
+                    jp.rotation = (jp.rotation * q).normalize();
+                    // The joint is explicitly driven — the rotation
+                    // survives a mask/blend BENEATH this node (an
+                    // enclosing Mask that excludes the joint still
+                    // zeroes it, deliberately).
+                    *weight = 1.0;
                 }
                 None => on_warning(AnimWarning::MissingJoint(joint)),
             }
@@ -267,12 +259,12 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
             expr,
         } => {
             let mut inner = eval(model, expr, on_warning);
-            match model.skeleton.joint_id_by_name(joint) {
-                Some(joint_id) => {
+            match model.skeleton.slot_by_name(joint) {
+                Some(slot) => {
                     apply_look_at(
                         &model.skeleton,
                         &mut inner,
-                        joint_id,
+                        slot,
                         Vector3::from(*target),
                         *max_angle,
                         *weight,
@@ -291,9 +283,9 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
             expr,
         } => {
             let mut inner = eval(model, expr, on_warning);
-            let root_id = model.skeleton.joint_id_by_name(root);
-            let middle_id = model.skeleton.joint_id_by_name(middle);
-            let end_id = model.skeleton.joint_id_by_name(end);
+            let root_id = model.skeleton.slot_by_name(root);
+            let middle_id = model.skeleton.slot_by_name(middle);
+            let end_id = model.skeleton.slot_by_name(end);
             for (name, id) in [
                 (root.as_str(), root_id),
                 (middle.as_str(), middle_id),
@@ -330,18 +322,13 @@ fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning))
 /// Resolve one joint exactly as `finalize` would, without allocating a full
 /// pose. Look-at only needs the target joint and its ancestor chain, so this
 /// keeps the post-pass proportional to hierarchy depth.
-fn resolved_joint_pose(
-    skeleton: &Skeleton,
-    pose: &WeightedPose,
-    joint_id: i32,
-) -> Option<JointPose> {
-    match pose.joints.get(&joint_id) {
-        Some((joint, weight)) if *weight >= 1.0 => Some(*joint),
+fn resolved_joint_pose(skeleton: &Skeleton, pose: &WeightedPose, slot: usize) -> JointPose {
+    match &pose.joints[slot] {
+        Some((joint, weight)) if *weight >= 1.0 => *joint,
         Some((joint, weight)) if *weight > 0.0 => {
-            let bind = skeleton.get_joint_bind_pose(joint_id)?;
-            Some(mix_joint(&bind, joint, *weight))
+            mix_joint(&skeleton.slot_bind_pose(slot), joint, *weight)
         }
-        _ => skeleton.get_joint_bind_pose(joint_id),
+        _ => skeleton.slot_bind_pose(slot),
     }
 }
 
@@ -350,23 +337,16 @@ struct ResolvedAbsolute {
     parent_transform: Matrix4<f32>,
 }
 
-fn resolved_absolute(
-    skeleton: &Skeleton,
-    pose: &WeightedPose,
-    joint_id: i32,
-) -> Option<ResolvedAbsolute> {
-    let local = resolved_joint_pose(skeleton, pose, joint_id)?;
-    let parent_transform = match skeleton.get_joint_parent_id(joint_id) {
-        Some(parent_id) => {
-            let parent = resolved_absolute(skeleton, pose, parent_id)?;
-            parent.transform
-        }
+fn resolved_absolute(skeleton: &Skeleton, pose: &WeightedPose, slot: usize) -> ResolvedAbsolute {
+    let local = resolved_joint_pose(skeleton, pose, slot);
+    let parent_transform = match skeleton.slot_parent(slot) {
+        Some(parent) => resolved_absolute(skeleton, pose, parent).transform,
         None => Matrix4::one(),
     };
-    Some(ResolvedAbsolute {
+    ResolvedAbsolute {
         transform: parent_transform * local.transform(),
         parent_transform,
-    })
+    }
 }
 
 fn scaled_shortest_arc(
@@ -392,7 +372,7 @@ fn scaled_shortest_arc(
 fn apply_look_at(
     skeleton: &Skeleton,
     pose: &mut WeightedPose,
-    joint_id: i32,
+    slot: usize,
     target: Vector3<f32>,
     max_angle: f32,
     weight: f32,
@@ -400,12 +380,8 @@ fn apply_look_at(
     if max_angle <= 0.0 || weight <= 0.0 {
         return;
     }
-    let Some(mut joint) = resolved_joint_pose(skeleton, pose, joint_id) else {
-        return;
-    };
-    let Some(absolute) = resolved_absolute(skeleton, pose, joint_id) else {
-        return;
-    };
+    let mut joint = resolved_joint_pose(skeleton, pose, slot);
+    let absolute = resolved_absolute(skeleton, pose, slot);
     let offset = target - absolute.transform.w.truncate();
     if offset.magnitude2() <= 1e-12 {
         return;
@@ -433,7 +409,7 @@ fn apply_look_at(
         weight,
     );
     joint.rotation = (local_correction * joint.rotation).normalize();
-    pose.joints.insert(joint_id, (joint, 1.0));
+    pose.joints[slot] = Some((joint, 1.0));
 }
 
 /// A deterministic direction perpendicular to `axis`, preferring `hint`
@@ -488,18 +464,14 @@ fn normalized_f64(vector: Vector3<f32>) -> Option<Vector3<f32>> {
 fn rotate_segment_toward(
     skeleton: &Skeleton,
     pose: &mut WeightedPose,
-    joint_id: i32,
+    slot: usize,
     current: Vector3<f32>,
     desired: Vector3<f32>,
     bend_normal: Vector3<f32>,
     weight: f32,
 ) -> bool {
-    let Some(mut joint) = resolved_joint_pose(skeleton, pose, joint_id) else {
-        return false;
-    };
-    let Some(absolute) = resolved_absolute(skeleton, pose, joint_id) else {
-        return false;
-    };
+    let mut joint = resolved_joint_pose(skeleton, pose, slot);
+    let absolute = resolved_absolute(skeleton, pose, slot);
     let parent_linear = Matrix3::from_cols(
         absolute.parent_transform.x.truncate(),
         absolute.parent_transform.y.truncate(),
@@ -520,7 +492,7 @@ fn rotate_segment_toward(
     let correction = Quaternion::from_arc(from, to, Some(pole));
     let correction = Quaternion::one().slerp(correction, weight.clamp(0.0, 1.0));
     joint.rotation = (correction * joint.rotation).normalize();
-    pose.joints.insert(joint_id, (joint, 1.0));
+    pose.joints[slot] = Some((joint, 1.0));
     true
 }
 
@@ -539,23 +511,21 @@ enum ReachFailure {
 fn apply_reach(
     skeleton: &Skeleton,
     pose: &mut WeightedPose,
-    root_id: i32,
-    middle_id: i32,
-    end_id: i32,
+    root_id: usize,
+    middle_id: usize,
+    end_id: usize,
     target: Vector3<f32>,
     weight: f32,
 ) -> Result<(), ReachFailure> {
-    if skeleton.get_joint_parent_id(middle_id) != Some(root_id)
-        || skeleton.get_joint_parent_id(end_id) != Some(middle_id)
+    if skeleton.slot_parent(middle_id) != Some(root_id)
+        || skeleton.slot_parent(end_id) != Some(middle_id)
     {
         return Err(ReachFailure::InvalidChain);
     }
     if weight <= 0.0 {
         return Ok(());
     }
-    let Some(root_joint) = resolved_joint_pose(skeleton, pose, root_id) else {
-        return Err(ReachFailure::InvalidChain);
-    };
+    let root_joint = resolved_joint_pose(skeleton, pose, root_id);
     let scale = root_joint.scale.map(f32::abs);
     let largest_scale = scale.x.max(scale.y).max(scale.z);
     let smallest_scale = scale.x.min(scale.y).min(scale.z);
@@ -563,15 +533,9 @@ fn apply_reach(
         return Err(ReachFailure::NonUniformRootScale);
     }
 
-    let Some(root_absolute) = resolved_absolute(skeleton, pose, root_id) else {
-        return Err(ReachFailure::InvalidChain);
-    };
-    let Some(middle_absolute) = resolved_absolute(skeleton, pose, middle_id) else {
-        return Err(ReachFailure::InvalidChain);
-    };
-    let Some(end_absolute) = resolved_absolute(skeleton, pose, end_id) else {
-        return Err(ReachFailure::InvalidChain);
-    };
+    let root_absolute = resolved_absolute(skeleton, pose, root_id);
+    let middle_absolute = resolved_absolute(skeleton, pose, middle_id);
+    let end_absolute = resolved_absolute(skeleton, pose, end_id);
     let Some(model_to_solve) = root_absolute.parent_transform.invert() else {
         return Err(ReachFailure::InvalidChain);
     };
@@ -660,12 +624,8 @@ fn apply_reach(
 
     // Root rotation moved both descendants. Resolve the settled second
     // segment before computing the middle-joint correction.
-    let Some(middle_after) = resolved_absolute(skeleton, pose, middle_id) else {
-        return Err(ReachFailure::InvalidChain);
-    };
-    let Some(end_after) = resolved_absolute(skeleton, pose, end_id) else {
-        return Err(ReachFailure::InvalidChain);
-    };
+    let middle_after = resolved_absolute(skeleton, pose, middle_id);
+    let end_after = resolved_absolute(skeleton, pose, end_id);
     let middle_after = middle_after.transform.w.truncate();
     let lower_after = end_after.transform.w.truncate() - middle_after;
     if rotate_segment_toward(
@@ -685,11 +645,7 @@ fn apply_reach(
 
 fn full_weight(pose: Pose) -> WeightedPose {
     WeightedPose {
-        joints: pose
-            .joints
-            .into_iter()
-            .map(|(joint_id, jp)| (joint_id, (jp, 1.0)))
-            .collect(),
+        joints: pose.joints.into_iter().map(|jp| Some((jp, 1.0))).collect(),
     }
 }
 
@@ -703,21 +659,13 @@ fn full_weight(pose: Pose) -> WeightedPose {
 /// partially driven (nested masks), which `finalize` folds toward bind.
 /// Degenerate accumulations (zero/non-finite totals, opposed rotations
 /// cancelling) fall back to the first input's joint.
-fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
+fn blend(inputs: &[(WeightedPose, f32)], slot_count: usize) -> WeightedPose {
+    let mut joints = vec![None; slot_count];
     let Some((first, _)) = inputs.first() else {
-        return WeightedPose {
-            joints: HashMap::new(),
-        };
+        return WeightedPose { joints };
     };
-    let mut joints = HashMap::new();
-    for &joint_id in inputs
-        .iter()
-        .flat_map(|(input, _)| input.joints.keys())
-        .collect::<std::collections::HashSet<_>>()
-    {
-        let reference = first
-            .joints
-            .get(&joint_id)
+    for (slot, joint) in joints.iter_mut().enumerate() {
+        let reference = first.joints[slot]
             .map(|(jp, _)| jp.rotation)
             .unwrap_or_else(|| Quaternion::new(1.0, 0.0, 0.0, 0.0));
         let mut translation = Vector3::zero();
@@ -730,7 +678,7 @@ fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
         let mut covering = 0.0_f32;
         let mut fallback: Option<JointPose> = None;
         for (input, input_weight) in inputs {
-            let Some((jp, joint_weight)) = input.joints.get(&joint_id) else {
+            let Some((jp, joint_weight)) = &input.joints[slot] else {
                 continue;
             };
             fallback.get_or_insert(*jp);
@@ -764,9 +712,9 @@ fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
                 rotation: rotation.normalize(),
                 scale: scale / total,
             };
-            joints.insert(joint_id, (blended, (total / covering).min(1.0)));
+            *joint = Some((blended, (total / covering).min(1.0)));
         } else if let Some(jp) = fallback {
-            joints.insert(joint_id, (jp, 0.0));
+            *joint = Some((jp, 0.0));
         }
     }
     WeightedPose { joints }
@@ -776,14 +724,12 @@ fn blend(inputs: &[(WeightedPose, f32)]) -> WeightedPose {
 /// scaled additionally by the layer's own joint weight (so a masked layer
 /// only adds where it covers). Rotations compose as
 /// `base_r * slerp(identity, bind_r⁻¹ * layer_r, w)`.
-fn add_layer(base: &mut WeightedPose, layer: &WeightedPose, bind: &Pose, weight: f32) {
-    for (joint_id, (base_jp, _)) in base.joints.iter_mut() {
-        let Some((layer_jp, layer_weight)) = layer.joints.get(joint_id) else {
+fn add_layer(base: &mut WeightedPose, layer: &WeightedPose, skeleton: &Skeleton, weight: f32) {
+    for (slot, (base, layer)) in base.joints.iter_mut().zip(&layer.joints).enumerate() {
+        let (Some((base_jp, _)), Some((layer_jp, layer_weight))) = (base, layer) else {
             continue;
         };
-        let Some(bind_jp) = bind.joints.get(joint_id) else {
-            continue;
-        };
+        let bind_jp = skeleton.slot_bind_pose(slot);
         let w = (weight * layer_weight).clamp(0.0, 1.0);
         if w <= 0.0 {
             continue;
@@ -1647,5 +1593,282 @@ mod tests {
         // 90° + 90° about Y: the X axis lands on -X.
         let x_axis = transforms[0].x.truncate();
         assert!((x_axis.x + 1.0).abs() < 1e-4, "x axis: {x_axis:?}");
+    }
+
+    /// An 80-joint, Mixamo-sized rig: a depth-7 binary tree of skin joints
+    /// `j0..j79` under a non-skinning `Armature` ancestor (cm→m scale), each
+    /// bind a translate + rotate. Two 1 s, 30 fps clips (`walk`, `run`)
+    /// rotate every joint and translate the root.
+    fn rig_model() -> Model {
+        use crate::model::{build_skeleton_from_skin, HierarchyNode};
+        const JOINTS: usize = 80;
+        let mut hierarchy = std::collections::HashMap::new();
+        hierarchy.insert(
+            0,
+            HierarchyNode {
+                parent: None,
+                name: "Armature".to_string(),
+                transform: Matrix4::from_scale(0.01) * Matrix4::from_angle_x(Deg(-90.0)),
+            },
+        );
+        for i in 0..JOINTS {
+            let parent = if i == 0 { 0 } else { (i - 1) / 2 + 1 };
+            hierarchy.insert(
+                i + 1,
+                HierarchyNode {
+                    parent: Some(parent),
+                    name: format!("j{i}"),
+                    transform: Matrix4::from_translation(vec3(0.0, 10.0, 1.0))
+                        * Matrix4::from_angle_z(Deg(std::hint::black_box(5.0 + i as f32))),
+                },
+            );
+        }
+        let inverse_binds = (0..JOINTS)
+            .map(|i| Matrix4::from_translation(vec3(0.0, -(i as f32), 0.0)))
+            .collect();
+        let nodes: Vec<usize> = (1..=JOINTS).collect();
+        let skeleton = build_skeleton_from_skin(inverse_binds, &nodes, &hierarchy);
+        let rig_clip = |name: &str, speed: f32| {
+            let mut channels: Vec<AnimationChannel> = nodes
+                .iter()
+                .map(|&node| AnimationChannel {
+                    target_node_index: node,
+                    target_property: AnimationProperty::Rotation,
+                    keyframes: (0..=30)
+                        .map(|k| {
+                            let phase = std::hint::black_box(k as f32 * speed + node as f32);
+                            let axis = vec3(phase.sin(), phase.cos(), 0.5).normalize();
+                            Keyframe {
+                                time: k as f32 / 30.0,
+                                value: AnimationValue::Rotation(Quaternion::from_axis_angle(
+                                    axis,
+                                    Rad(0.5 * (phase * 0.7).sin()),
+                                )),
+                            }
+                        })
+                        .collect(),
+                })
+                .collect();
+            channels.push(AnimationChannel {
+                target_node_index: 1,
+                target_property: AnimationProperty::Translation,
+                keyframes: (0..=30)
+                    .map(|k| Keyframe {
+                        time: k as f32 / 30.0,
+                        value: AnimationValue::Translation(vec3(
+                            0.0,
+                            100.0 + std::hint::black_box(k as f32 * speed).sin() * 5.0,
+                            k as f32 * speed,
+                        )),
+                    })
+                    .collect(),
+            });
+            Animation {
+                name: name.to_string(),
+                duration: 1.0,
+                channels,
+            }
+        };
+        Model {
+            meshes: vec![],
+            skeleton,
+            animations: vec![rig_clip("walk", 0.2), rig_clip("run", 0.35)],
+        }
+    }
+
+    fn rig_blend(playhead: f32, run: f32) -> AnimExpr {
+        AnimExpr::Blend(vec![
+            (clip("walk", playhead), 1.0 - run),
+            (clip("run", playhead * 1.3), run),
+        ])
+    }
+
+    /// Every node kind over multi-joint chains on the 80-joint rig, pinned to
+    /// recorded fingerprints so an evaluator change that drifts numerically
+    /// fails.
+    #[test]
+    fn rig_poses_match_the_recorded_evaluator() {
+        let model = rig_model();
+        let boxed = Box::new;
+        let names = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let exprs = vec![
+            AnimExpr::Rest,
+            clip("walk", 0.37),
+            clip("run", -2.71),
+            clip("walk", 1.0 / 30.0),
+            rig_blend(0.52, 0.3),
+            AnimExpr::Add {
+                base: boxed(clip("walk", 0.2)),
+                layer: boxed(clip("run", 0.9)),
+                weight: 0.4,
+            },
+            AnimExpr::Blend(vec![
+                (clip("walk", 0.6), 0.5),
+                (
+                    AnimExpr::Mask {
+                        joints: names(&["j3"]),
+                        expr: boxed(clip("run", 0.1)),
+                    },
+                    0.5,
+                ),
+            ]),
+            AnimExpr::Mask {
+                joints: names(&["j1", "j6"]),
+                expr: boxed(AnimExpr::Add {
+                    base: boxed(rig_blend(0.15, 0.6)),
+                    layer: boxed(AnimExpr::Mask {
+                        joints: names(&["j4"]),
+                        expr: boxed(clip("run", 0.45)),
+                    }),
+                    weight: 0.7,
+                }),
+            },
+            AnimExpr::Blend(vec![
+                (
+                    AnimExpr::Mask {
+                        joints: names(&["j2"]),
+                        expr: boxed(AnimExpr::Mask {
+                            joints: names(&["j5"]),
+                            expr: boxed(clip("walk", 0.8)),
+                        }),
+                    },
+                    0.5,
+                ),
+                (
+                    AnimExpr::Mask {
+                        joints: names(&["j5"]),
+                        expr: boxed(clip("run", 0.3)),
+                    },
+                    0.25,
+                ),
+            ]),
+            AnimExpr::Rotate {
+                joint: "j10".to_string(),
+                euler: [0.3, -0.2, 0.9],
+                expr: boxed(AnimExpr::Mask {
+                    joints: names(&["j1"]),
+                    expr: boxed(clip("walk", 0.25)),
+                }),
+            },
+            AnimExpr::Rotate {
+                joint: "j9".to_string(),
+                euler: [0.0, 0.0, 1.2],
+                expr: boxed(AnimExpr::Blend(vec![(clip("walk", 0.5), 0.0)])),
+            },
+            AnimExpr::LookAt {
+                joint: "j19".to_string(),
+                target: [0.3, 0.5, 2.0],
+                max_angle: 1.0,
+                weight: 0.8,
+                expr: boxed(rig_blend(0.33, 0.5)),
+            },
+            AnimExpr::Reach {
+                root: "j1".to_string(),
+                middle: "j3".to_string(),
+                end: "j7".to_string(),
+                target: [0.2, 0.1, 0.9],
+                weight: 0.9,
+                expr: boxed(rig_blend(0.71, 0.4)),
+            },
+            AnimExpr::LookAt {
+                joint: "j8".to_string(),
+                target: [-1.0, 0.2, 0.4],
+                max_angle: 0.5,
+                weight: 1.0,
+                expr: boxed(AnimExpr::Reach {
+                    root: "j0".to_string(),
+                    middle: "j2".to_string(),
+                    end: "j6".to_string(),
+                    target: [0.0, 0.3, 0.3],
+                    weight: 0.5,
+                    expr: boxed(AnimExpr::Mask {
+                        joints: names(&["j2"]),
+                        expr: boxed(clip("run", 0.05)),
+                    }),
+                }),
+            },
+        ];
+        let mut outputs: Vec<Vec<Matrix4<f32>>> = exprs
+            .iter()
+            .map(|expr| skinning_transforms(&model, expr, &mut no_warning))
+            .collect();
+        // The zero-config default path (no expression) and the load-time
+        // absolutes go through the skeleton directly.
+        let skeleton = &model.skeleton;
+        let default_pose = skeleton.sample_pose(&model.animations[1], 0.61);
+        outputs.push(skeleton.skinning_transforms_for(&default_pose));
+        outputs.push(skeleton.get_skinning_transforms());
+        // A position-weighted sum per output: any joint or element moving
+        // shifts it, while libm ulp differences across platforms stay far
+        // inside the tolerance.
+        let fingerprints: Vec<f64> = outputs
+            .iter()
+            .map(|transforms| {
+                assert_eq!(transforms.len(), 80);
+                let mut sum = 0.0;
+                for (j, m) in transforms.iter().enumerate() {
+                    let floats: &[f32; 16] = m.as_ref();
+                    for (k, f) in floats.iter().enumerate() {
+                        sum += f64::from(*f) * (1 + (j * 16 + k) % 7) as f64;
+                    }
+                }
+                sum
+            })
+            .collect();
+        let expected: [f64; 16] = [
+            138.222271,
+            -23.687245,
+            -3.746612,
+            5.565270,
+            0.013203,
+            -242.378618,
+            16.628422,
+            235.866932,
+            158.385884,
+            239.478895,
+            130.841586,
+            8.291764,
+            17.016888,
+            384.925620,
+            -1.762920,
+            138.222228,
+        ];
+        for (i, (got, want)) in fingerprints.iter().zip(expected).enumerate() {
+            assert!((got - want).abs() < 1e-3, "output {i}: {got} vs {want}");
+        }
+    }
+
+    /// The render path (`skinning_transforms_for`) and the skeleton-rebuild
+    /// path (`apply_pose`, behind `Skeleton::animate` and `functor inspect`)
+    /// agree exactly, including at exact key times and past the clip's end.
+    #[test]
+    fn skinning_paths_agree_bit_for_bit() {
+        let model = rig_model();
+        let skeleton = &model.skeleton;
+        for animation in &model.animations {
+            for time in [0.0, 1.0 / 30.0, 0.37, 0.5, 1.0, 1.5] {
+                let pose = skeleton.sample_pose(animation, time);
+                let fast = skeleton.skinning_transforms_for(&pose);
+                let rebuilt = skeleton.apply_pose(&pose).get_skinning_transforms();
+                assert_eq!(fast, rebuilt, "{} at {time}", animation.name);
+            }
+        }
+    }
+
+    /// `cargo test --release -p functor_runtime_common rig_blend_eval_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn rig_blend_eval_bench() {
+        let model = rig_model();
+        let iterations = 20_000;
+        let start = std::time::Instant::now();
+        let mut sink = 0.0;
+        for i in 0..iterations {
+            let t = i as f32 * 0.0137;
+            let transforms = skinning_transforms(&model, &rig_blend(t, 0.4), &mut no_warning);
+            sink += transforms[79].w.x;
+        }
+        let micros = start.elapsed().as_secs_f64() * 1e6 / iterations as f64;
+        println!("80-joint 2-clip blend: {micros:.2} µs/eval (sink {sink})");
     }
 }
