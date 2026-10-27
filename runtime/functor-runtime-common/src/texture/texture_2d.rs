@@ -111,6 +111,14 @@ impl Texture2D {
     pub fn average_color(&self) -> [f32; 3] {
         self.average
     }
+
+    /// Delete the GL texture if hydrated; it must not bind again.
+    pub(crate) fn delete(&self, gl: &glow::Context) {
+        if let Some(texture) = self.ora.get_opt() {
+            unsafe { gl.delete_texture(*texture) };
+            crate::gpu_counters::gpu_counters().texture_deleted();
+        }
+    }
 }
 
 /// Mean RGB over every texel, in the space `texture()` will return the texels

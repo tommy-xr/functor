@@ -428,8 +428,10 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
             }),
             SceneObject::Model(model) => {
                 out.push_str("model(");
-                let super::ModelHandle::File(file) = &model.handle;
-                out.push_str(file);
+                out.push_str(match &model.handle {
+                    super::ModelHandle::File(file) => file,
+                    super::ModelHandle::Data(data) => data.label(),
+                });
                 out.push(')');
             }
             SceneObject::Terrain(_) => out.push_str("terrain"),

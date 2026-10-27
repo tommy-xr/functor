@@ -7635,7 +7635,9 @@ forward: { x: 0, y: 0, z: 1 }, up: { x: 0, y: 1, z: 0 } }"
         let SceneObject::Model(model) = &inner[0].obj else {
             panic!("expected a Model node, got {:?}", inner[0].obj);
         };
-        let ModelHandle::File(path) = &model.handle;
+        let ModelHandle::File(path) = &model.handle else {
+            panic!("expected a file model");
+        };
         assert_eq!(path, "shark.glb");
         assert!(model.overrides.is_empty());
         // And the whole thing speaks the protocol.
@@ -12458,6 +12460,43 @@ the game dir"
             .unwrap_err()
             .to_string();
         assert!(err.contains("joints: vertex 0 uses joint 9"), "{err}");
+    }
+
+    /// `Scene.equals` compares models by identity; `GET /scene` carries the
+    /// model inline.
+    #[test]
+    fn skinned_model_scenes_compare_and_serialize() {
+        let main = |expr: &str| eval_with_prelude(&format!("{ARM}let main = {expr}\n"));
+        // The same value is equal; an identical rebuild is a different model.
+        assert!(matches!(
+            main("Scene.equals(Scene.modelOf(arm), Scene.modelOf(arm))"),
+            Ok(Value::Bool(true))
+        ));
+        assert!(matches!(
+            main("Scene.equals(Scene.modelOf(arm), Scene.modelOf(Model.skinned(armData)))"),
+            Ok(Value::Bool(false))
+        ));
+
+        let Value::HostData(scene) =
+            main("Scene.modelOf(arm) |> Scene.animate(Anim.clip(\"bend\", 0.5))").unwrap()
+        else {
+            panic!("expected a Scene");
+        };
+        let scene = &scene.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let json = serde_json::to_string(scene).unwrap();
+        assert!(
+            json.contains(r#""handle":{"Data":{"positions":[[0.0,0.0,0.0],[0.0,2.0,0.0],"#),
+            "{json}"
+        );
+        let back: Scene3D = serde_json::from_str(&json).unwrap();
+        let (SceneObject::Model(a), SceneObject::Model(b)) = (&scene.obj, &back.obj) else {
+            panic!("expected model nodes");
+        };
+        let (ModelHandle::Data(a), ModelHandle::Data(b)) = (&a.handle, &b.handle) else {
+            panic!("expected data handles");
+        };
+        assert_eq!(a.source(), b.source());
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     /// Bad data is an error naming the field.

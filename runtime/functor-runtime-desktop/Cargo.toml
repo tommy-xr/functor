@@ -82,6 +82,10 @@ harness = false
 name = "stereo_shadow"
 harness = false
 
+[[test]]
+name = "skinned_data"
+harness = false
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features=["HtmlCanvasElement", "WebGl2RenderingContext", "Window"] }
 wasm-bindgen = { version = "0.2" }

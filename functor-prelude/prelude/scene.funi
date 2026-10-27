@@ -39,6 +39,11 @@ let plane : () => t
 /// fallback asset, so a mistyped or unfetched model shows as nothing rather
 /// than failing the frame.
 let model : (Asset.Model) => t
+/// Create a scene node from a model built from data (`Model.skinned`).
+///
+/// Nodes drawing the same model share one GPU upload; `Scene.animate` poses
+/// each independently.
+let modelOf : (Model.t) => t
 /// Create terrain from a rectangular grid of height values.
 let heightmap : (List<List<float>>) => t
 /// Create a scene node from an asset-backed terrain descriptor.

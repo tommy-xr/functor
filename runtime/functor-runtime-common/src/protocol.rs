@@ -71,6 +71,12 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v19: data models — the `ModelHandle::Data` variant, a `Model.skinned`
+/// model carried inline as its source data. Emitted only by `Scene.modelOf`,
+/// so frames without one keep their v18 shape. Each node carries its own
+/// copy, so N nodes sharing a model serialize it N times and read back as N
+/// separate models (a replay uploads each).
+///
 /// v18: passthrough frames — `Frame.passthrough` (`Frame.withPassthrough`),
 /// defaulted and omitted when false, so every other frame keeps its v17 shape.
 ///
@@ -136,7 +142,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -668,7 +674,7 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -695,7 +701,7 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
@@ -718,7 +724,7 @@ mod tests {
         use crate::scene3d::MeshData;
         use crate::{SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         let obj = SceneObject::Geometry(Shape::Mesh {
             mesh: std::sync::Arc::new(MeshData {
                 positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -741,7 +747,7 @@ mod tests {
     fn billboard_geometry_wire_is_pinned() {
         use crate::{SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         let obj = SceneObject::Geometry(Shape::Billboard);
         let json = serde_json::to_string(&obj).expect("serialize billboard geometry");
         assert_eq!(json, r#"{"Geometry":"Billboard"}"#);
@@ -756,7 +762,7 @@ mod tests {
     fn opacity_subtree_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         let scene = SceneObject::Opacity(
             0.35,
             vec![Scene3D {
@@ -780,7 +786,7 @@ mod tests {
     fn instanced_wire_is_pinned() {
         use crate::{InstanceData, MaterialDescription, Scene3D, SceneObject};
 
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         let template = Scene3D {
             obj: SceneObject::Material(
                 MaterialDescription::lit(1.0, 0.5, 0.25, 1.0),
@@ -810,7 +816,7 @@ mod tests {
     fn two_bone_reach_animation_wire_is_pinned() {
         use crate::anim::AnimExpr;
 
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         let reach = AnimExpr::Reach {
             root: "upper".to_string(),
             middle: "lower".to_string(),

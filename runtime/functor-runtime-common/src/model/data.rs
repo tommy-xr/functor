@@ -1,13 +1,17 @@
 //! Skinned models built from plain data (`Model.skinned`): validated once,
-//! then shared by posing and inspection.
+//! then shared by the sim side (posing, inspection) and the render side,
+//! which hydrates a drawable [`Model`] on first draw.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cgmath::{vec4, InnerSpace, Matrix4, Quaternion, SquareMatrix, Vector3, Zero};
+use cgmath::{vec2, vec3, vec4, InnerSpace, Matrix4, Quaternion, SquareMatrix, Vector3, Zero};
 use serde::{Deserialize, Serialize};
 
-use super::{Skeleton, SkeletonBuilder, MAX_JOINTS};
+use super::{Model, ModelMesh, Skeleton, SkeletonBuilder, MAX_JOINTS};
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
+use crate::geometry::IndexedMesh;
+use crate::render::VertexPositionTextureSkinned;
+use crate::texture::{Texture2D, TextureData, TextureOptions};
 
 /// A skinned model's inputs, Y up. Quaternions are `[x, y, z, w]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -105,6 +109,47 @@ impl SkinnedModelData {
 
     pub fn animations(&self) -> &[Animation] {
         &self.animations
+    }
+
+    /// A drawable model; its GPU buffers hydrate on first draw.
+    pub(crate) fn to_model(&self) -> Model {
+        let s = &self.source;
+        let vertices = (0..s.positions.len())
+            .map(|i| {
+                let [x, y, z] = s.positions[i];
+                let [nx, ny, nz] = s.normals[i];
+                let [u, v] = s.uvs.get(i).copied().unwrap_or([0.0, 0.0]);
+                let j = s.joints[i].map(f32::from);
+                let w = s.weights[i];
+                VertexPositionTextureSkinned {
+                    position: vec3(x, y, z),
+                    uv: vec2(u, v),
+                    normal: vec3(nx, ny, nz),
+                    // No skinned normal-map path reads it.
+                    tangent: vec4(1.0, 0.0, 0.0, 1.0),
+                    joint_indices: vec4(j[0], j[1], j[2], j[3]),
+                    weights: vec4(w[0], w[1], w[2], w[3]),
+                }
+            })
+            .collect();
+        let indices = s.triangles.iter().flatten().copied().collect();
+        // Untextured: white, so lighting alone shades it.
+        let white = Texture2D::init_from_data(
+            TextureData::solid_color([255; 4]),
+            TextureOptions {
+                srgb: true,
+                ..TextureOptions::default()
+            },
+        );
+        Model {
+            meshes: vec![ModelMesh {
+                base_color_texture: white,
+                mesh: IndexedMesh::create(vertices, indices),
+                transform: Matrix4::identity(),
+            }],
+            skeleton: self.skeleton.clone(),
+            animations: self.animations.clone(),
+        }
     }
 
     /// Bind-space positions skinned by `palette` (one matrix per joint), as

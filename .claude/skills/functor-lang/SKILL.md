@@ -1006,6 +1006,7 @@ The generated modules:
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
 | `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
+| `Model` | skinned models built from decoded data (`Model.skinned`), drawn with `Scene.modelOf` |
 | `Terrain` | finite asset-backed heightfield terrain shared by rendering and physics |
 | `Physics` | shapes, bodies, the `physics` hook's world, live reads, commands, raycasts, events |
 | `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
@@ -1168,6 +1169,17 @@ boundaries) is what a game should reference.
 misspelled clip or joint from a silent bind pose into a check error; glTF names
 sanitize deterministically (`mixamorig:Head` → `mixamorig_Head`, with `_2`,
 `_3`, … for collisions).
+
+**Skinned models can come from data instead of glTF.** `Model.skinned(data)`
+takes packed little-endian `Bytes` (positions, normals, uvs, 4 joint indices +
+4 weights per vertex, triangles) plus records for the skeleton (parents first,
+rest translation + `x, y, z, w` rotation) and clips (per-joint key bytes at a
+fixed fps). Build it ONCE as a top-level `let`; `Scene.modelOf(m)` nodes then
+share one GPU upload and `Scene.animate` poses each with the data's own clip and
+joint names. Clips loop seamlessly (the last frame interpolates back to the
+first), and a key REPLACES the joint's rest rotation/translation, as glTF
+channels do. `Model.pose(anim, m)` skins on the CPU (positions as `Bytes`) for
+`expect` tests; `Model.inspect(m)` lists joints and clips. See `examples/skinned`.
 
 **The `Net` module is built in but not in the generated reference.** Its types
 need no declaration, and these are the variants to match:

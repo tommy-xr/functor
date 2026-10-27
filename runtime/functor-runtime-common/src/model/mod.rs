@@ -30,6 +30,16 @@ pub struct Model {
     pub animations: Vec<Animation>,
 }
 
+impl Model {
+    /// Free the GPU objects hydrated so far; the model must not draw again.
+    pub(crate) fn delete(&self, gl: &glow::Context) {
+        for mesh in &self.meshes {
+            mesh.mesh.delete(gl);
+            mesh.base_color_texture.delete(gl);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// The shaders hard-code the palette size; keep them in step with

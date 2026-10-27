@@ -192,6 +192,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "skinned-t0.5",
+      "sample": "skinned",
+      "fixedTime": 0.5,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

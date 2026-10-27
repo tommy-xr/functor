@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cgmath::Matrix4;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +12,9 @@ use crate::scene3d::serialize_matrix;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ModelHandle {
     File(String),
+    /// A model built from data (`Model.skinned`), carried inline on the
+    /// wire; equal only to the same built value.
+    Data(Arc<crate::model::SkinnedModelData>),
 }
 
 // Per-mesh selectors/overrides remain part of the serialized `ModelDescription`

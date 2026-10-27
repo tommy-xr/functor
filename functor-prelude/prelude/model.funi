@@ -1,6 +1,8 @@
 //! Skinned, animatable models built from decoded data. Build one once (a
-//! top-level `let`) and pose it with `Anim` exactly like a glTF model: clip
-//! and joint names come from the data.
+//! top-level `let`), draw it with `Scene.modelOf`, and pose it with
+//! `Scene.animate` and `Anim` exactly like a glTF model: clip and joint names
+//! come from the data. The GPU skins it; its mesh uploads once however many
+//! nodes draw it.
 //!
 //! Y up, like the scene. Bulk data is little-endian `Bytes` (`Bytes.fromF32le`,
 //! or slices of a decoded file); quaternions are `x, y, z, w`.
@@ -19,7 +21,7 @@
 //!   ],
 //!   clips: []
 //! })
-//! let tip = Model.pose(Anim.rotate("lower", 0deg, 0deg, 45deg, Anim.rest()), arm)
+//! let bent = Scene.modelOf(arm) |> Scene.animate(Anim.rotate("lower", 0deg, 0deg, 45deg, Anim.rest()))
 //! ```
 
 /// An opaque, immutable skinned model.

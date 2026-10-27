@@ -1,11 +1,13 @@
 use cgmath::{Quaternion, Vector3};
 
+#[derive(Clone)]
 pub struct Animation {
     pub name: String,
     pub channels: Vec<AnimationChannel>,
     pub duration: f32,
 }
 
+#[derive(Clone)]
 pub enum AnimationProperty {
     Translation,
     Rotation,
@@ -14,6 +16,7 @@ pub enum AnimationProperty {
     Weights,
 }
 
+#[derive(Clone)]
 pub struct AnimationChannel {
     pub target_node_index: usize,
     pub target_property: AnimationProperty,
