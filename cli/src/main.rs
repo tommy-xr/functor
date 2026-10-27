@@ -151,6 +151,36 @@ enum Command {
         /// A top-level Solid binding to export; repeat for several parts.
         #[arg(long = "part", default_value = "part")]
         parts: Vec<String>,
+
+        /// Export a glTF model (`.glb`) as a printable solid instead — no
+        /// project needed. E.g. `functor export --model fox.glb --height 60 -o fox.stl`.
+        #[arg(long, value_name = "FILE", conflicts_with = "parts")]
+        model: Option<PathBuf>,
+
+        /// With `--model`: the printed height in mm.
+        #[arg(long, default_value_t = 80.0, requires = "model")]
+        height: f64,
+
+        /// With `--model`: nozzle width in mm; thinner features are thickened to it.
+        #[arg(long, default_value_t = 0.4, requires = "model")]
+        nozzle: f64,
+
+        /// With `--model`: remesh voxel size in mm (default: half the nozzle,
+        /// coarser if the model is too large for that).
+        #[arg(long, requires = "model")]
+        voxel: Option<f64>,
+
+        /// With `--model`: pose skinned meshes at `[ANIMATION@]SECONDS`
+        /// (animation by name or index; the first when omitted).
+        #[arg(long, requires = "model")]
+        pose: Option<String>,
+
+        /// With `--model`: decimate, moving the surface at most this many mm
+        /// (far fewer triangles). Off by default: only coplanar triangles are
+        /// merged, which never changes the shape. Decimated meshes slice fine
+        /// but may self-intersect in thin regions.
+        #[arg(long, value_name = "MM", requires = "model")]
+        simplify: Option<f64>,
     },
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
     /// server; `vr` runs it on an adb-attached headset, re-pushing on save).
@@ -372,6 +402,30 @@ async fn run(args: &Args) -> io::Result<()> {
         return Ok(());
     }
 
+    // `export --model` reads a model file, not a project, so it needs no
+    // functor.json.
+    if let Command::Export {
+        model: Some(model),
+        output,
+        height,
+        nozzle,
+        voxel,
+        pose,
+        simplify,
+        ..
+    } = &args.command
+    {
+        return commands::model_export::execute(&commands::model_export::ModelExport {
+            model,
+            output,
+            height: *height,
+            nozzle: *nozzle,
+            voxel: *voxel,
+            pose: pose.as_deref(),
+            simplify: *simplify,
+        });
+    }
+
     validate_metadata_path(&working_directory)?;
 
     // `import` is language-independent codegen over the project's model files
@@ -429,7 +483,7 @@ async fn run(args: &Args) -> io::Result<()> {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.test(&loaded)
             }
-            Command::Export { output, parts } => {
+            Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.export(&loaded, parts, output)
             }

@@ -5,3 +5,4 @@ pub mod init;
 pub mod inspect;
 pub mod mcp;
 pub mod mcp_net;
+pub mod model_export;

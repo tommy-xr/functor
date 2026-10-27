@@ -12,7 +12,10 @@
 //! into one closed shell.
 
 mod csg;
+pub use csg::simplify;
 mod mesh;
+pub mod model;
+pub mod remesh;
 mod sketch;
 pub mod stl;
 mod text;
