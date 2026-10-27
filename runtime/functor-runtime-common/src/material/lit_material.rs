@@ -64,7 +64,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec3 worldNormal;
         in vec3 worldTangent;
         in vec3 worldBitangent;
-        in vec3 worldPos;
+        in highp vec3 worldPos; // full precision for the light loop (see lighting_glsl)
 
         uniform vec4 baseColor;
         uniform sampler2D texture1;

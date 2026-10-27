@@ -133,8 +133,10 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         // so the tiled detail sampled blocky 1 m squares, and the stepped UVs
         // broke mip selection, so most fetches hit level 0.
         in highp vec3 worldPos;
-        in float localHeight;
-        in vec2 terrainUv;
+        // highp: fp16 terraces the height bands (hundreds of metres) and
+        // steps the 0..1 macro UV across 4 km into ~2 m blocks.
+        in highp float localHeight;
+        in highp vec2 terrainUv;
 
         uniform vec3 terrainColor;
         uniform int useLayers;
