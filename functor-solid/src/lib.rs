@@ -8,15 +8,17 @@
 //! Every primitive meshes closed and outward-facing, and transforms preserve
 //! that. A group keeps each piece its own shell, so pieces must overlap or stay
 //! apart: STL readers join pieces that share a vertex position (see
-//! [`Mesh::shared_positions`]).
+//! [`Mesh::shared_positions`]). Booleans ([`Solid::Boolean`]) merge solids
+//! into one closed shell.
 
+mod csg;
 mod mesh;
 mod sketch;
 pub mod stl;
 mod text;
 pub mod threemf;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
@@ -45,9 +47,50 @@ pub enum Solid {
     /// Pieces placed side by side. Overlaps are NOT merged — each piece stays
     /// its own closed shell (booleans are a separate operation).
     Group(Vec<Arc<Solid>>),
+    /// A boolean of the children: union of all, the first minus the rest, or
+    /// the intersection of all. A group child counts as the union of its pieces.
+    /// Build with [`Solid::boolean`].
+    Boolean {
+        op: BoolOp,
+        children: Vec<Arc<Solid>>,
+        result: BooleanResult,
+    },
+}
+
+/// A boolean's mesh, evaluated once in the boolean's own frame and reused by
+/// every transform above it (e.g. a part rotated in `draw` each frame). Curves
+/// inside are faceted at that frame's scale. Ignored by equality.
+#[derive(Clone, Default)]
+pub struct BooleanResult(Arc<OnceLock<Result<Arc<Mesh>, String>>>);
+
+impl PartialEq for BooleanResult {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for BooleanResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BooleanResult")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoolOp {
+    Union,
+    Subtract,
+    Intersect,
 }
 
 impl Solid {
+    pub fn boolean(op: BoolOp, children: Vec<Arc<Solid>>) -> Solid {
+        Solid::Boolean {
+            op,
+            children,
+            result: BooleanResult::default(),
+        }
+    }
+
     pub fn translate(self: Arc<Self>, offset: [f64; 3]) -> Solid {
         self.transform(Matrix4::from_translation(Vector3::from(offset)))
     }
@@ -73,14 +116,14 @@ impl Solid {
         }
     }
 
-    /// Triangulate the whole tree.
-    pub fn mesh(&self) -> Mesh {
+    /// Triangulate the whole tree. Fails only if a boolean does.
+    pub fn mesh(&self) -> Result<Mesh, String> {
         let mut out = Mesh::default();
-        self.append_to(&mut out, Matrix4::identity());
-        out
+        self.append_to(&mut out, Matrix4::identity())?;
+        Ok(out)
     }
 
-    fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) {
+    pub(crate) fn append_to(&self, out: &mut Mesh, xform: Matrix4<f64>) -> Result<(), String> {
         // Transforms are rigid plus uniform scale, so |det| = scale³. Facets
         // are counted on the radius as it will print, not as written (sketch
         // curves are faceted when drawn, so draw those at final size).
@@ -95,13 +138,21 @@ impl Solid {
                 out.append(&mesh::sphere(*radius, segments_for(radius * scale)), xform)
             }
             Solid::Extrude { sketch, height } => out.append(&sketch.extrude(*height), xform),
-            Solid::Transform { matrix, child } => child.append_to(out, xform * matrix),
+            Solid::Transform { matrix, child } => return child.append_to(out, xform * matrix),
             Solid::Group(children) => {
                 for child in children {
-                    child.append_to(out, xform);
+                    child.append_to(out, xform)?;
                 }
             }
+            Solid::Boolean { result, .. } => {
+                let mesh = result
+                    .0
+                    .get_or_init(|| csg::evaluate(self).map(Arc::new))
+                    .clone()?;
+                out.append(&mesh, xform);
+            }
         }
+        Ok(())
     }
 }
 
@@ -117,6 +168,7 @@ pub(crate) fn segments_for(radius: f64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::FRAC_PI_2;
 
     fn arc(solid: Solid) -> Arc<Solid> {
         Arc::new(solid)
@@ -124,7 +176,7 @@ mod tests {
 
     #[test]
     fn cube_is_twelve_closed_triangles_of_exact_volume() {
-        let mesh = Solid::Box { size: [10.0; 3] }.mesh();
+        let mesh = Solid::Box { size: [10.0; 3] }.mesh().unwrap();
         assert_eq!(mesh.triangles.len(), 12);
         assert_eq!(mesh.non_manifold_edges(), 0);
         assert!((mesh.volume() - 1000.0).abs() < 1e-9);
@@ -139,7 +191,8 @@ mod tests {
             radius: 5.0,
             height: 10.0,
         }
-        .mesh();
+        .mesh()
+        .unwrap();
         assert_eq!(cyl.non_manifold_edges(), 0);
         let exact = PI * 25.0 * 10.0;
         assert!(
@@ -148,7 +201,7 @@ mod tests {
             cyl.volume()
         );
 
-        let sphere = Solid::Sphere { radius: 5.0 }.mesh();
+        let sphere = Solid::Sphere { radius: 5.0 }.mesh().unwrap();
         assert_eq!(sphere.non_manifold_edges(), 0);
         // Inscribed facets sag along both axes at quad centers: ~0.6% under.
         let exact = 4.0 / 3.0 * PI * 125.0;
@@ -165,7 +218,7 @@ mod tests {
             size: [2.0, 4.0, 6.0],
         });
         let turned = arc(cube.rotate(2, std::f64::consts::FRAC_PI_2));
-        let mesh = turned.translate([10.0, 0.0, 3.0]).mesh();
+        let mesh = turned.translate([10.0, 0.0, 3.0]).mesh().unwrap();
         let b = mesh.bounds().unwrap();
         let close = |a: [f64; 3], e: [f64; 3]| a.iter().zip(e).all(|(a, e)| (a - e).abs() < 1e-9);
         assert!(close(b.min, [8.0, -1.0, 0.0]), "{:?}", b.min);
@@ -176,7 +229,10 @@ mod tests {
 
     #[test]
     fn scale_multiplies_volume_by_cube_of_factor() {
-        let mesh = arc(Solid::Box { size: [1.0; 3] }).scale(3.0).mesh();
+        let mesh = arc(Solid::Box { size: [1.0; 3] })
+            .scale(3.0)
+            .mesh()
+            .unwrap();
         assert!((mesh.volume() - 27.0).abs() < 1e-9);
     }
 
@@ -184,7 +240,7 @@ mod tests {
     fn group_keeps_each_piece_closed() {
         let a = arc(Solid::Box { size: [1.0; 3] });
         let b = arc(arc(Solid::Sphere { radius: 1.0 }).translate([5.0, 0.0, 0.0]));
-        let mesh = Solid::Group(vec![a, b]).mesh();
+        let mesh = Solid::Group(vec![a, b]).mesh().unwrap();
         assert_eq!(mesh.non_manifold_edges(), 0);
         assert!(mesh.volume() > 1.0);
     }
@@ -192,18 +248,27 @@ mod tests {
     #[test]
     fn pieces_touching_at_a_face_or_corner_share_positions() {
         let cube = || arc(Solid::Box { size: [2.0; 3] });
-        let face = Solid::Group(vec![cube(), arc(cube().translate([2.0, 0.0, 0.0]))]).mesh();
+        let face = Solid::Group(vec![cube(), arc(cube().translate([2.0, 0.0, 0.0]))])
+            .mesh()
+            .unwrap();
         assert_eq!(face.non_manifold_edges(), 0);
         assert_eq!(face.shared_positions(), 4);
-        let corner = Solid::Group(vec![cube(), arc(cube().translate([2.0, 2.0, 2.0]))]).mesh();
+        let corner = Solid::Group(vec![cube(), arc(cube().translate([2.0, 2.0, 2.0]))])
+            .mesh()
+            .unwrap();
         assert_eq!(corner.shared_positions(), 1);
-        let apart = Solid::Group(vec![cube(), arc(cube().translate([2.5, 0.0, 0.0]))]).mesh();
+        let apart = Solid::Group(vec![cube(), arc(cube().translate([2.5, 0.0, 0.0]))])
+            .mesh()
+            .unwrap();
         assert_eq!(apart.shared_positions(), 0);
     }
 
     #[test]
     fn mirroring_scale_keeps_triangles_facing_outward() {
-        let mesh = arc(Solid::Box { size: [2.0; 3] }).scale(-1.0).mesh();
+        let mesh = arc(Solid::Box { size: [2.0; 3] })
+            .scale(-1.0)
+            .mesh()
+            .unwrap();
         assert!((mesh.volume() - 8.0).abs() < 1e-9, "{}", mesh.volume());
         assert_eq!(mesh.non_manifold_edges(), 0);
     }
@@ -211,13 +276,212 @@ mod tests {
     #[test]
     fn scaled_curves_keep_their_facet_tolerance() {
         use std::f64::consts::PI;
-        let mesh = arc(Solid::Sphere { radius: 1.0 }).scale(100.0).mesh();
+        let mesh = arc(Solid::Sphere { radius: 1.0 })
+            .scale(100.0)
+            .mesh()
+            .unwrap();
         let exact = 4.0 / 3.0 * PI * 1e6;
         assert!(
             (mesh.volume() - exact).abs() / exact < 0.01,
             "{}",
             mesh.volume()
         );
+    }
+
+    fn boolean(op: BoolOp, children: Vec<Arc<Solid>>) -> Mesh {
+        Solid::boolean(op, children).mesh().unwrap()
+    }
+
+    fn closed(mesh: &Mesh) {
+        assert_eq!(mesh.non_manifold_edges(), 0);
+        assert_eq!(mesh.shared_positions(), 0);
+    }
+
+    #[test]
+    fn subtract_and_intersect_partition_the_box() {
+        let cube = || arc(Solid::Box { size: [20.0; 3] });
+        let ball = || arc(Solid::Sphere { radius: 12.0 });
+        let cut = boolean(BoolOp::Subtract, vec![cube(), ball()]);
+        let common = boolean(BoolOp::Intersect, vec![cube(), ball()]);
+        closed(&cut);
+        closed(&common);
+        assert!((cut.volume() + common.volume() - 8000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn union_obeys_inclusion_exclusion() {
+        let a = || {
+            arc(Solid::Cylinder {
+                radius: 5.0,
+                height: 30.0,
+            })
+        };
+        let b = || {
+            arc(arc(Solid::Cylinder {
+                radius: 5.0,
+                height: 30.0,
+            })
+            .rotate(0, FRAC_PI_2))
+        };
+        let (va, vb) = (a().mesh().unwrap().volume(), b().mesh().unwrap().volume());
+        let both = boolean(BoolOp::Union, vec![a(), b()]);
+        let common = boolean(BoolOp::Intersect, vec![a(), b()]);
+        closed(&both);
+        // Inputs snap to a 15 nm grid, so compare relative to unsnapped volumes.
+        assert!((both.volume() - (va + vb - common.volume())).abs() < 1e-5 * both.volume());
+    }
+
+    #[test]
+    fn union_merges_pieces_that_touch() {
+        // Two boxes sharing a face: one closed 2-box solid, no shared vertices.
+        let cube = || arc(Solid::Box { size: [10.0; 3] });
+        let joined = boolean(
+            BoolOp::Union,
+            vec![cube(), arc(cube().translate([10.0, 0.0, 0.0]))],
+        );
+        closed(&joined);
+        assert!((joined.volume() - 2000.0).abs() < 1e-6);
+        // A group operand unions its pieces too.
+        let group = arc(Solid::Group(vec![
+            cube(),
+            arc(cube().translate([10.0, 0.0, 0.0])),
+        ]));
+        assert_eq!(
+            boolean(BoolOp::Union, vec![group]).volume(),
+            joined.volume()
+        );
+    }
+
+    #[test]
+    fn flush_through_hole_is_closed() {
+        let plate = arc(Solid::Box {
+            size: [20.0, 20.0, 4.0],
+        });
+        let pin = arc(Solid::Cylinder {
+            radius: 3.0,
+            height: 4.0,
+        });
+        let (pin_volume, holed) = (
+            pin.mesh().unwrap().volume(),
+            boolean(BoolOp::Subtract, vec![plate, pin]),
+        );
+        closed(&holed);
+        assert!((holed.volume() - (1600.0 - pin_volume)).abs() < 1e-5 * holed.volume());
+    }
+
+    #[test]
+    fn booleans_nest_and_are_deterministic() {
+        let shell = || {
+            let outer = arc(Solid::Sphere { radius: 10.0 });
+            let inner = arc(Solid::Sphere { radius: 9.6 }); // 0.4 mm wall
+            let slot = arc(arc(Solid::Box {
+                size: [30.0, 2.0, 30.0],
+            })
+            .translate([0.0, 0.0, 5.0]));
+            let hollow = arc(Solid::boolean(BoolOp::Subtract, vec![outer, inner]));
+            Solid::boolean(BoolOp::Subtract, vec![hollow, slot])
+                .mesh()
+                .unwrap()
+        };
+        let a = shell();
+        closed(&a);
+        assert!(a.volume() > 0.0);
+        assert_eq!(a, shell());
+    }
+
+    #[test]
+    fn subtract_takes_many_cutters_and_groups_union_inside_booleans() {
+        let cube = || arc(Solid::Box { size: [10.0; 3] });
+        let slab = || {
+            arc(Solid::Box {
+                size: [2.0, 20.0, 20.0],
+            })
+        };
+        let two_slots = boolean(
+            BoolOp::Subtract,
+            vec![
+                cube(),
+                arc(slab().translate([-3.0, 0.0, 0.0])),
+                arc(slab().translate([3.0, 0.0, 0.0])),
+            ],
+        );
+        closed(&two_slots);
+        assert!((two_slots.volume() - 600.0).abs() < 1e-6);
+        // A transformed group of two slabs cuts the same as two separate cutters.
+        let pair = arc(Solid::Group(vec![
+            arc(slab().translate([-3.0, 0.0, 0.0])),
+            arc(slab().translate([3.0, 0.0, 0.0])),
+        ]));
+        let as_group = boolean(
+            BoolOp::Subtract,
+            vec![cube(), arc(pair.translate([0.0, 0.0, 0.0]))],
+        );
+        assert!((as_group.volume() - 600.0).abs() < 1e-6);
+        // Intersect with a group child keeps what overlaps either piece.
+        let pair = arc(Solid::Group(vec![
+            arc(slab().translate([-3.0, 0.0, 0.0])),
+            arc(slab().translate([3.0, 0.0, 0.0])),
+        ]));
+        assert!((boolean(BoolOp::Intersect, vec![cube(), pair]).volume() - 400.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_is_evaluated_once_and_reused_under_transforms() {
+        let part = arc(Solid::boolean(
+            BoolOp::Subtract,
+            vec![
+                arc(Solid::Box { size: [10.0; 3] }),
+                arc(Solid::Sphere { radius: 6.0 }),
+            ],
+        ));
+        let a = arc(part.clone().rotate(2, 0.3)).mesh().unwrap();
+        let Solid::Boolean { result, .. } = &*part else {
+            unreachable!()
+        };
+        assert!(result.0.get().is_some(), "evaluated by the first mesh");
+        let b = arc(part.clone().rotate(2, 0.3)).mesh().unwrap();
+        assert_eq!(a, b);
+        // A boolean inside a plain group is just another shell.
+        let shelf = Solid::Group(vec![
+            part.clone(),
+            arc(Solid::Box { size: [1.0; 3] })
+                .translate([20.0, 0.0, 0.0])
+                .into(),
+        ])
+        .mesh()
+        .unwrap();
+        assert!((shelf.volume() - (part.mesh().unwrap().volume() + 1.0)).abs() < 1e-6);
+    }
+
+    /// Knurls placed with f32 angles (as Functor Lang's `Angle` stores them)
+    /// land ~1e-7 mm off the dome's rim vertices; snapping inputs keeps the
+    /// result free of slivers that f32 export would collapse.
+    #[test]
+    fn near_coincident_cuts_leave_no_slivers() {
+        let body = arc(Solid::boolean(
+            BoolOp::Intersect,
+            vec![
+                arc(arc(Solid::Cylinder {
+                    radius: 15.0,
+                    height: 28.0,
+                })
+                .translate([0.0, 0.0, 14.0])),
+                arc(arc(Solid::Sphere { radius: 40.0 }).translate([0.0, 0.0, -26.0])),
+            ],
+        ));
+        let knurls = (0..24)
+            .map(|i| {
+                let knurl = arc(arc(Solid::Cylinder {
+                    radius: 1.5,
+                    height: 42.0,
+                })
+                .translate([15.0, 0.0, 0.0]));
+                let angle = (std::f64::consts::TAU * i as f64 / 24.0) as f32 as f64;
+                arc(knurl.rotate(2, angle))
+            })
+            .collect();
+        let grip = arc(Solid::boolean(BoolOp::Union, knurls));
+        closed(&boolean(BoolOp::Subtract, vec![body, grip]));
     }
 
     #[test]

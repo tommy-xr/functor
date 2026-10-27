@@ -90,8 +90,15 @@ const RENDER_MESH_CAP: usize = 16;
 struct RenderMeshEntry {
     // Weak: the memo never keeps a solid alive, yet pins its address.
     solid: Weak<Solid>,
-    mesh: Arc<MeshData>,
+    meshed: Meshed,
     last_used: u64,
+}
+
+/// One solid's mesh: f64 for measuring, f32 for the renderer.
+#[derive(Clone)]
+struct Meshed {
+    mesh: Arc<functor_solid::Mesh>,
+    render: Arc<MeshData>,
 }
 
 #[derive(Default)]
@@ -101,14 +108,15 @@ struct RenderMeshMemo {
 }
 
 thread_local! {
-    /// Solid → render mesh, keyed by the solid's `Arc` address. `draw`
-    /// converts the same top-level `let part` every frame; this meshes it once
+    /// Solid → mesh, keyed by the solid's `Arc` address. `draw` converts the
+    /// same top-level `let part` every frame, and booleans are costly to
+    /// re-evaluate: this meshes it once (for `toScene`, `volume`, `bounds`)
     /// and hands the renderer the same `Arc` each time, so the GPU mesh is
-    /// reused too. Pure memoization: it cannot change what is drawn.
+    /// reused too. Pure memoization: it cannot change any result.
     static RENDER_MESHES: RefCell<RenderMeshMemo> = RefCell::new(RenderMeshMemo::default());
 }
 
-fn render_mesh(solid: &Arc<Solid>) -> Arc<MeshData> {
+fn meshed(solid: &Arc<Solid>) -> Result<Meshed, String> {
     let key = Arc::as_ptr(solid) as usize;
     RENDER_MESHES.with(|memo| {
         let mut memo = memo.borrow_mut();
@@ -116,7 +124,7 @@ fn render_mesh(solid: &Arc<Solid>) -> Arc<MeshData> {
         let clock = memo.clock;
         if let Some(entry) = memo.entries.get_mut(&key) {
             entry.last_used = clock;
-            return entry.mesh.clone();
+            return Ok(entry.meshed.clone());
         }
         // Dead solids can never be looked up again — drop them first, then
         // the least recently used if still full.
@@ -132,21 +140,29 @@ fn render_mesh(solid: &Arc<Solid>) -> Arc<MeshData> {
                 memo.entries.remove(&oldest);
             }
         }
-        let mesh = solid.mesh();
-        let mesh = Arc::new(MeshData {
+        let mesh = solid.mesh()?;
+        let render = Arc::new(MeshData {
             positions: mesh.vertices.iter().map(|v| v.map(|x| x as f32)).collect(),
-            triangles: mesh.triangles,
+            triangles: mesh.triangles.clone(),
         });
+        let meshed = Meshed {
+            mesh: Arc::new(mesh),
+            render,
+        };
         memo.entries.insert(
             key,
             RenderMeshEntry {
                 solid: Arc::downgrade(solid),
-                mesh: mesh.clone(),
+                meshed: meshed.clone(),
                 last_used: clock,
             },
         );
-        mesh
+        Ok(meshed)
     })
+}
+
+fn render_mesh(solid: &Arc<Solid>) -> Result<Arc<MeshData>, String> {
+    meshed(solid).map(|m| m.render)
 }
 
 fn sketch(sketch: Sketch) -> FunctorLangSketch {
@@ -241,6 +257,36 @@ which won't print as one solid — overlap them or move them apart"
             Ok(solid(s.0.scale(k)))
         },
     );
+    let boolean = |op: functor_solid::BoolOp, children: Vec<FunctorLangSolid>| {
+        solid(Solid::boolean(
+            op,
+            children.into_iter().map(|s| s.0).collect(),
+        ))
+    };
+    reg.fn1(
+        "Solid.union",
+        "Solid.union([solid, …]) — at least one solid",
+        move |items: Vec<FunctorLangSolid>| {
+            if items.is_empty() {
+                return Err("Solid.union needs at least one solid".to_string());
+            }
+            Ok(boolean(functor_solid::BoolOp::Union, items))
+        },
+    );
+    reg.fn2(
+        "Solid.subtract",
+        "Solid.subtract(cut, solid)",
+        move |cut: FunctorLangSolid, s: FunctorLangSolid| {
+            boolean(functor_solid::BoolOp::Subtract, vec![s, cut])
+        },
+    );
+    reg.fn2(
+        "Solid.intersect",
+        "Solid.intersect(other, solid)",
+        move |other: FunctorLangSolid, s: FunctorLangSolid| {
+            boolean(functor_solid::BoolOp::Intersect, vec![s, other])
+        },
+    );
     reg.fn1(
         "Solid.group",
         "Solid.group([solid, …]) — at least one solid",
@@ -259,33 +305,39 @@ which won't print as one solid — overlap them or move them apart"
         "Solid.toScene",
         "Solid.toScene(solid)",
         |s: FunctorLangSolid| {
-            FunctorLangScene(Scene3D {
+            Ok::<_, String>(FunctorLangScene(Scene3D {
                 obj: SceneObject::Geometry(Shape::Mesh {
-                    mesh: render_mesh(&s.0),
+                    mesh: render_mesh(&s.0).map_err(|e| format!("Solid.toScene: {e}"))?,
                 }),
                 xform: Matrix4::from_scale(0.001) * Matrix4::from_angle_x(Deg(-90.0)),
-            })
+            }))
         },
     );
 
     reg.fn1(
         "Solid.volume",
         "Solid.volume(solid)",
-        |s: FunctorLangSolid| Value::Number(s.0.mesh().volume()),
+        |s: FunctorLangSolid| {
+            let m = meshed(&s.0).map_err(|e| format!("Solid.volume: {e}"))?;
+            Ok(Value::Number(m.mesh.volume()))
+        },
     );
     reg.fn1(
         "Solid.bounds",
         "Solid.bounds(solid)",
         |s: FunctorLangSolid| {
-            // Every constructor yields geometry (groups are never empty).
-            let b = s.0.mesh().bounds().expect("a Solid always has vertices");
+            let m = meshed(&s.0).map_err(|e| format!("Solid.bounds: {e}"))?;
+            let b = m
+                .mesh
+                .bounds()
+                .ok_or("Solid.bounds: the solid is empty (e.g. an intersection of solids that don't overlap)")?;
             let vec3 = |[x, y, z]: [f64; 3]| {
                 Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
             };
-            Value::Record(Rc::new(vec![
+            Ok::<_, String>(Value::Record(Rc::new(vec![
                 ("min".to_string(), vec3(b.min)),
                 ("max".to_string(), vec3(b.max)),
-            ]))
+            ])))
         },
     );
 }
@@ -418,12 +470,15 @@ mod tests {
     #[test]
     fn render_mesh_is_cached_per_solid_and_pruned_when_it_dies() {
         let a = Arc::new(Solid::Box { size: [1.0; 3] });
-        assert!(Arc::ptr_eq(&render_mesh(&a), &render_mesh(&a)));
+        assert!(Arc::ptr_eq(
+            &render_mesh(&a).unwrap(),
+            &render_mesh(&a).unwrap()
+        ));
         assert_eq!(memo_len(), 1);
         drop(a);
         // The next miss prunes the dead solid's entry.
         let b = Arc::new(Solid::Sphere { radius: 1.0 });
-        render_mesh(&b);
+        render_mesh(&b).unwrap();
         assert_eq!(memo_len(), 1);
     }
 
@@ -437,7 +492,7 @@ mod tests {
             })
             .collect();
         for solid in &live {
-            render_mesh(solid);
+            render_mesh(solid).unwrap();
         }
         assert_eq!(memo_len(), RENDER_MESH_CAP);
     }

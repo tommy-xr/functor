@@ -12,6 +12,8 @@ cgmath = "0.18.0"
 i_overlay = "9.1"
 # Constrained triangulation of polygons with holes (extrusion caps).
 i_triangle = "0.50"
+# 3D booleans: pure-Rust Manifold port (exact, closed, identical on native + wasm).
+manifold-rust = "0.19.1"
 # Text: HarfBuzz-compatible shaping + glyph outlines (one read-fonts stack).
 harfrust = "0.8.4"
 # Unhinted outlines only: no autohinter.

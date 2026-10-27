@@ -35,7 +35,7 @@ mod tests {
     #[test]
     fn cube_stl_has_expected_size_and_outward_normals() {
         let mut bytes = Vec::new();
-        write_binary(&Solid::Box { size: [10.0; 3] }.mesh(), &mut bytes).unwrap();
+        write_binary(&Solid::Box { size: [10.0; 3] }.mesh().unwrap(), &mut bytes).unwrap();
         assert_eq!(bytes.len(), 84 + 12 * 50);
         assert_eq!(u32::from_le_bytes(bytes[80..84].try_into().unwrap()), 12);
         // First triangle is the -z face: normal (0, 0, -1).
