@@ -504,29 +504,11 @@ mod tests {
 }
 
 /// A font file in the project (the entry file's folder), read on each call.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn typeface_file(path: &str) -> Result<Font, String> {
-    let outside = || {
-        format!("Typeface.file({path:?}): use a path inside the project, like \"fonts/MyFont.ttf\"")
-    };
-    // The same portable rule as project assets, then resolved so a symlink
-    // can't reach outside either.
-    crate::debug_protocol::validate_project_asset_path(path).map_err(|_| outside())?;
-    let unreadable =
-        |e: std::io::Error| format!("Typeface.file: can't read {path} in the project ({e})");
-    let root = std::fs::canonicalize(crate::storage::project_dir()).map_err(unreadable)?;
-    let full = std::fs::canonicalize(root.join(path)).map_err(unreadable)?;
-    if !full.starts_with(&root) {
-        return Err(outside());
-    }
-    let bytes = std::fs::read(&full).map_err(unreadable)?;
+    let bytes = super::bytes::read_project_file("Typeface.file", path, "fonts/MyFont.ttf")
+        .map_err(|e| match cfg!(any(target_arch = "wasm32", target_os = "android")) {
+            true => format!("{e} — use Typeface.sans() or Typeface.script()"),
+            false => e,
+        })?;
     Font::from_bytes(path, bytes).map_err(|e| format!("Typeface.file: {e}"))
-}
-
-#[cfg(any(target_arch = "wasm32", target_os = "android"))]
-fn typeface_file(path: &str) -> Result<Font, String> {
-    Err(format!(
-        "Typeface.file({path:?}): font files load in desktop runs and `functor export` for \
-now — on the web and Quest, use Typeface.sans() or Typeface.script()"
-    ))
 }
