@@ -109,3 +109,28 @@ fn file_bytes_feed_expects() {
     );
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn a_decoded_mesh_exports_as_a_closed_part() {
+    let dir = project("mesh", "Typeface.sans()");
+    // A unit cube's corners (index = x + 2y + 4z); five faces, no top.
+    let corners: Vec<u8> = (0..8u8)
+        .flat_map(|i| [i & 1, (i >> 1) & 1, (i >> 2) & 1])
+        .flat_map(|c| f32::from(c).to_le_bytes())
+        .collect();
+    std::fs::write(dir.join("cube.bin"), corners).unwrap();
+    std::fs::write(
+        dir.join("part.fun"),
+        "let part = Mesh.fromPolygons(File.bytes(\"cube.bin\"), [[0.0, 2.0, 3.0, 1.0], \
+         [0.0, 1.0, 5.0, 4.0], [1.0, 3.0, 7.0, 5.0], [3.0, 2.0, 6.0, 7.0], [2.0, 0.0, 4.0, 6.0]]) \
+         |> Solid.fromMesh({ height: 20.0, nozzle: 0.8 })\n",
+    )
+    .unwrap();
+    let stl = export(&dir).unwrap();
+    let count = u32::from_le_bytes(stl[80..84].try_into().unwrap()) as usize;
+    assert!(
+        count > 12 && stl.len() == 84 + 50 * count,
+        "{count} triangles"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}

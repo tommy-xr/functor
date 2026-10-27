@@ -6,14 +6,11 @@ use std::io::Error;
 use std::path::Path;
 use std::time::Instant;
 
-use functor_solid::{model, remesh};
+use functor_solid::{model, print};
 
 use super::functor_lang_project::{check_printable, export_format, size_label, write_parts};
 
 use crate::output::{emit, Event};
-
-/// A simplify tolerance (mm) that merges only coplanar triangles.
-const LOSSLESS: f64 = 1e-6;
 
 pub struct ModelExport<'a> {
     pub model: &'a Path,
@@ -38,33 +35,20 @@ pub fn execute(args: &ModelExport) -> Result<(), Error> {
         .map_err(|e| Error::other(format!("cannot read {}: {e}", args.model.display())))?;
     let pose = args.pose.map(parse_pose).transpose()?;
     let failed = |e: String| Error::other(format!("{}: {e}", args.model.display()));
-    let mut soup = model::load_gltf(&bytes, pose).map_err(failed)?;
-    model::to_print_frame(&mut soup, args.height).map_err(failed)?;
+    let soup = model::load_gltf(&bytes, pose).map_err(failed)?;
 
-    // Thicken every surface to the nozzle width so cards and thin features
-    // print; sample at half the nozzle unless that grid would be too large.
-    let offset = args.nozzle / 2.0;
-    let voxel = match args.voxel {
-        Some(v) => v,
-        None => remesh::fitting_voxel(&soup, args.nozzle / 2.0, offset),
-    };
-    // The shell grows the model on every side, so shrink it by that first;
-    // the final rescale below then only corrects voxel rounding and leaves
-    // walls at full width.
-    let shell = remesh::shell(voxel, offset);
-    if 2.0 * shell >= args.height {
-        return Err(Error::other(format!(
-            "--height must be more than twice the {shell:.2} mm shell"
-        )));
-    }
-    model::to_print_frame(&mut soup, args.height - 2.0 * shell).map_err(failed)?;
-    let dense = remesh::printable(&soup, voxel, offset).map_err(Error::other)?;
-    // Lossless by default: merge only coplanar triangles (flat faces drop a
-    // lot; nothing moves). Any real tolerance can self-intersect thin regions,
-    // which slicers tolerate but strict CAD checks reject — so it's opt-in.
-    let mut mesh =
-        functor_solid::simplify(&dense, args.simplify.unwrap_or(LOSSLESS)).map_err(Error::other)?;
-    model::to_print_frame(&mut mesh, args.height).map_err(failed)?;
+    let printed = print::printable(
+        &soup,
+        &print::PrintOptions {
+            height: args.height,
+            nozzle: args.nozzle,
+            voxel: args.voxel,
+            simplify: args.simplify,
+            max_cells: functor_solid::remesh::MAX_CELLS,
+        },
+    )
+    .map_err(failed)?;
+    let mesh = printed.mesh;
 
     let name = args
         .model
@@ -78,14 +62,15 @@ pub fn execute(args: &ModelExport) -> Result<(), Error> {
     write_parts(args.output, three_mf, name, &[(name, &mesh)])?;
     emit(Event::Info {
         message: format!(
-            "exported {} to {}: {} triangles (from {}), {}, {voxel:.2} mm voxels, \
+            "exported {} to {}: {} triangles (from {}), {}, {:.2} mm voxels, \
 {:.2} mm shell, {:.1} s",
             args.model.display(),
             args.output.display(),
             mesh.triangles.len(),
-            dense.triangles.len(),
+            printed.remeshed,
             size_label(&mesh),
-            shell,
+            printed.voxel,
+            printed.shell,
             started.elapsed().as_secs_f64()
         ),
     });

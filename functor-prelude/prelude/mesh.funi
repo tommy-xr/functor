@@ -1,0 +1,26 @@
+//! Triangle meshes built from decoded data — a model's vertex positions and
+//! polygons — in the source's own units, Z up. Print one with
+//! `Solid.fromMesh`, which closes and thickens it.
+//!
+//! ```
+//! let positions = Decode.run(Decode.bytes(12.0 * count), data) |> Binary.require
+//! let part = Mesh.fromPolygons(positions, [[0.0, 1.0, 2.0, 3.0]])
+//!   |> Solid.fromMesh({ height: 60.0, nozzle: 0.4 })
+//! ```
+
+/// An opaque triangle mesh.
+type t = host
+
+/// A mesh from little-endian f32 x, y, z positions (12 bytes each) and polygons
+/// listing 3 or more vertex indices (convex or not; corners that repeat or line up
+/// are dropped).
+let fromPolygons : (Bytes.t, List<List<float>>) => t
+/// The mesh with vertices `start` up to `start + count` moved by a 3×4 matrix:
+/// 12 numbers, rows for x, y and z, each `[a, b, c, translation]`.
+let transformVertices : (float, float, List<float>, t) => t
+/// The meshes as one.
+let combine : (List<t>) => t
+/// The number of triangles.
+let triangleCount : (t) => float
+/// The box enclosing the mesh.
+let bounds : (t) => Solid.bounds

@@ -11,7 +11,7 @@ use crate::Mesh;
 /// Largest voxel grid built (lattice points). Each point costs ~4 bytes (one
 /// f32, reused from distance to signed field, plus a bit), so this caps the
 /// field near 1 GB.
-const MAX_CELLS: usize = 250_000_000;
+pub const MAX_CELLS: usize = 250_000_000;
 
 /// Remesh `soup` (mm) as a closed solid sampled every `voxel` mm, thickening
 /// every surface by `offset` mm so cards and thin features survive.
@@ -27,8 +27,9 @@ pub fn shell(voxel: f64, offset: f64) -> f64 {
     offset.max(0.75 * voxel)
 }
 
-/// The finest voxel, starting from `voxel`, whose grid fits under the cap.
-pub fn fitting_voxel(soup: &Mesh, voxel: f64, offset: f64) -> f64 {
+/// The finest voxel, starting from `voxel`, whose grid fits under `max_cells`
+/// (and the hard cap).
+pub fn fitting_voxel(soup: &Mesh, voxel: f64, offset: f64, max_cells: usize) -> f64 {
     let Some(b) = soup.bounds() else { return voxel };
     let mut h = voxel;
     loop {
@@ -36,7 +37,7 @@ pub fn fitting_voxel(soup: &Mesh, voxel: f64, offset: f64) -> f64 {
         let cells: f64 = (0..3)
             .map(|i| (b.max[i] - b.min[i] + pad) / h + 2.0)
             .product();
-        if cells <= MAX_CELLS as f64 {
+        if cells <= max_cells.min(MAX_CELLS) as f64 {
             return h;
         }
         h *= 1.25;

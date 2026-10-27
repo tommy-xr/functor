@@ -173,6 +173,17 @@ fn solid(solid: Solid) -> FunctorLangSolid {
     FunctorLangSolid(Arc::new(solid))
 }
 
+/// A `{ min, max }` bounds record of `Vec3`s.
+pub(super) fn bounds_value(b: functor_solid::Bounds) -> Value {
+    let vec3 = |[x, y, z]: [f64; 3]| {
+        Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
+    };
+    Value::Record(Rc::new(vec![
+        ("min".to_string(), vec3(b.min)),
+        ("max".to_string(), vec3(b.max)),
+    ]))
+}
+
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     register_sketch(reg);
     reg.fn3(
@@ -331,13 +342,7 @@ which won't print as one solid — overlap them or move them apart"
                 .mesh
                 .bounds()
                 .ok_or("Solid.bounds: the solid is empty (e.g. an intersection of solids that don't overlap)")?;
-            let vec3 = |[x, y, z]: [f64; 3]| {
-                Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
-            };
-            Ok::<_, String>(Value::Record(Rc::new(vec![
-                ("min".to_string(), vec3(b.min)),
-                ("max".to_string(), vec3(b.max)),
-            ])))
+            Ok::<_, String>(bounds_value(b))
         },
     );
 }

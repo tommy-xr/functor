@@ -15,6 +15,7 @@ mod csg;
 pub use csg::simplify;
 mod mesh;
 pub mod model;
+pub mod print;
 pub mod remesh;
 mod sketch;
 pub mod stl;
@@ -25,7 +26,7 @@ use std::sync::{Arc, OnceLock};
 
 use cgmath::{Matrix4, Rad, SquareMatrix, Vector3};
 
-pub use mesh::{face_normal, Bounds, Mesh};
+pub use mesh::{face_normal, triangulate_polygon, Bounds, Mesh};
 pub use sketch::Sketch;
 pub use text::{text, text_width, Font};
 
@@ -56,25 +57,33 @@ pub enum Solid {
     Boolean {
         op: BoolOp,
         children: Vec<Arc<Solid>>,
-        result: BooleanResult,
+        result: MeshCache,
+    },
+    /// Any triangle soup (Z up) as a closed solid `height` mm tall, thickened
+    /// to the `nozzle` width ([`print::printable`]). Build with [`Solid::printed`].
+    Printed {
+        soup: Arc<Mesh>,
+        height: f64,
+        nozzle: f64,
+        result: MeshCache,
     },
 }
 
-/// A boolean's mesh, evaluated once in the boolean's own frame and reused by
-/// every transform above it (e.g. a part rotated in `draw` each frame). Curves
-/// inside are faceted at that frame's scale. Ignored by equality.
+/// A boolean's or printed leaf's mesh, evaluated once in its own frame and
+/// reused by every transform above it (e.g. a part rotated in `draw` each
+/// frame). Curves inside are faceted at that frame's scale. Ignored by equality.
 #[derive(Clone, Default)]
-pub struct BooleanResult(Arc<OnceLock<Result<Arc<Mesh>, String>>>);
+pub struct MeshCache(Arc<OnceLock<Result<Arc<Mesh>, String>>>);
 
-impl PartialEq for BooleanResult {
+impl PartialEq for MeshCache {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl std::fmt::Debug for BooleanResult {
+impl std::fmt::Debug for MeshCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("BooleanResult")
+        f.write_str("MeshCache")
     }
 }
 
@@ -90,7 +99,7 @@ impl Solid {
         Solid::Boolean {
             op,
             children,
-            result: BooleanResult::default(),
+            result: MeshCache::default(),
         }
     }
 
@@ -119,7 +128,19 @@ impl Solid {
         }
     }
 
-    /// Triangulate the whole tree. Fails only if a boolean does.
+    /// A closed, printable solid from any triangle soup (Z up): scaled so it
+    /// is `height` mm tall and thickened to the `nozzle` width. Remeshed once,
+    /// when first meshed.
+    pub fn printed(soup: Arc<Mesh>, height: f64, nozzle: f64) -> Solid {
+        Solid::Printed {
+            soup,
+            height,
+            nozzle,
+            result: MeshCache::default(),
+        }
+    }
+
+    /// Triangulate the whole tree. Fails only if a boolean or printed leaf does.
     pub fn mesh(&self) -> Result<Mesh, String> {
         let mut out = Mesh::default();
         self.append_to(&mut out, Matrix4::identity())?;
@@ -151,6 +172,29 @@ impl Solid {
                 let mesh = result
                     .0
                     .get_or_init(|| csg::evaluate(self).map(Arc::new))
+                    .clone()?;
+                out.append(&mesh, xform);
+            }
+            Solid::Printed {
+                soup,
+                height,
+                nozzle,
+                result,
+            } => {
+                let mesh = result
+                    .0
+                    .get_or_init(|| {
+                        // A part shown in a game remeshes on the game's thread:
+                        // keep its grid (memory, time) small.
+                        let options = print::PrintOptions {
+                            height: *height,
+                            nozzle: *nozzle,
+                            voxel: None,
+                            simplify: None,
+                            max_cells: 20_000_000,
+                        };
+                        print::printable(soup, &options).map(|p| Arc::new(p.mesh))
+                    })
                     .clone()?;
                 out.append(&mesh, xform);
             }
