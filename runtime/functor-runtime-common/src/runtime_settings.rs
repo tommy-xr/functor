@@ -165,7 +165,7 @@ pub struct EnvironmentDepthState {
     pub warning: Option<String>,
 }
 
-/// `GET /state.xr.mesh` (debug protocol v24): the room fused from the
+/// `GET /state.xr.mesh` (debug protocol v25): the room fused from the
 /// environment depth (`Frame.withFusedRoom`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FusedMeshState {
