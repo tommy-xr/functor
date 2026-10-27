@@ -63,6 +63,13 @@ struct Scenario {
     debug_render: Option<String>,
     /// Harnesses that run this scenario (`"native"` / `"wasm"`).
     targets: Vec<String>,
+    /// Native only: drive the sample with this input script (relative to the
+    /// sample) and capture at `captureAtFrame` instead of at `fixedTime` —
+    /// for states only input reaches, like a toggled mode.
+    #[serde(rename = "inputScript", default)]
+    input_script: Option<String>,
+    #[serde(rename = "captureAtFrame", default)]
+    capture_at_frame: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,18 +131,19 @@ fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
     // (from its functor.json) in place — no build step — and forwards the
     // capture flags after `--` to the in-process desktop run loop.
     let fixed_time = scenario.fixed_time.to_string();
+    let script = scenario
+        .input_script
+        .as_ref()
+        .map(|script| sample_dir.join(script));
+    let capture_frame = scenario.capture_at_frame.unwrap_or(0).to_string();
     let mut args = vec![
         "-d",
         sample_dir.to_str().unwrap(),
         "run",
         "native",
         "--",
-        "--fixed-time",
-        &fixed_time,
         "--capture-frame",
         out.to_str().unwrap(),
-        "--capture-time",
-        "1.0",
         // Pin the framebuffer so a reference depends on the renderer, not on
         // the monitor. Without this the same scene captures at 800x600 on a 1x
         // display and 1600x1200 on a Retina one, and every golden fails on a
@@ -143,6 +151,15 @@ fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
         "--capture-size",
         GOLDEN_CAPTURE_SIZE,
     ];
+    match &script {
+        Some(script) => args.extend_from_slice(&[
+            "--input-script",
+            script.to_str().unwrap(),
+            "--capture-at-frame",
+            &capture_frame,
+        ]),
+        None => args.extend_from_slice(&["--fixed-time", &fixed_time, "--capture-time", "1.0"]),
+    }
     if let Some(mode) = &scenario.debug_render {
         args.extend_from_slice(&["--debug-render", mode]);
     }
