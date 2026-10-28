@@ -1270,6 +1270,16 @@ the next step without disturbing its pose or velocity — the same divergence
 rule as `friction`/`restitution`. Per-frame velocity commands are still right
 for *steering* (the controller recipe below); they are the wrong tool for *drag*.
 
+**Level geometry is `Physics.trimesh`.** `Physics.fixed(tag,
+Physics.trimesh({ positions, triangles }))` collides with a triangle mesh
+(`Model.skinned`'s byte layout: f32 `x, y, z` per vertex, u32 index triples).
+Build it in a top-level `let` and re-declare that value every frame: its
+collision structure is built once per value, so frames and rewinds reuse it,
+but each `Physics.trimesh` call copies and validates the bytes. Fixed or
+kinematic only (`Physics.dynamic` is an error). Bodies collide with a face's
+front (counter-clockwise winding) and pass through its back; rays hit both
+sides. A small, fast body can also pass through a face in a single step.
+
 Physics **command effects** are returned beside the model like any effect
 — `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))` — but carry no
 tagger: nothing folds back through `update`; observe outcomes via the

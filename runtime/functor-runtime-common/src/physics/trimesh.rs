@@ -44,7 +44,7 @@ impl TriMeshData {
                 "triangles: no triangles".to_string()
             } else {
                 format!(
-                    "triangles: all {} triangles are degenerate (zero area)",
+                    "triangles: no triangle has any area ({} given)",
                     triangles.len()
                 )
             });
@@ -77,9 +77,10 @@ fn degenerate([a, b, c]: [[f32; 3]; 3]) -> bool {
     !(e1.cross(e2).length() > 1e-6 * e1.length() * e2.length())
 }
 
-/// A trimesh shape with internal edges fixed (balls roll over shared edges
-/// without hopping). Not `ORIENTED`: faces are two-sided surfaces, not a
-/// solid. `None` if rapier rejects the mesh.
+/// A trimesh shape with internal edges fixed, so a ball rolls over shared
+/// edges without hopping. That also makes contacts one-sided (a face's back
+/// lets bodies through); rays still hit both sides. `None` if rapier rejects
+/// the mesh.
 pub(crate) fn shape(positions: Vec<[f32; 3]>, triangles: Vec<[u32; 3]>) -> Option<SharedShape> {
     #[cfg(test)]
     BUILDS.with(|b| b.set(b.get() + 1));
@@ -141,7 +142,7 @@ mod tests {
         Arc::new(TriMeshData::new(positions, vec![[0, 2, 1], [0, 3, 2]]).unwrap())
     }
 
-    /// A closed box of half-extent `h`, 12 triangles.
+    /// A closed box of half-extent `h`, 12 triangles facing inward.
     fn closed_box(h: f32) -> Arc<TriMeshData> {
         let positions = (0..8)
             .map(|i| {
@@ -183,11 +184,16 @@ mod tests {
 
     #[test]
     fn a_ball_comes_to_rest_on_a_trimesh_floor() {
-        let w = stepped([0.0, -9.81, 0.0], vec![trimesh("floor", &floor()), ball(3.0)], 240);
+        let mut w = stepped([0.0, -9.81, 0.0], vec![trimesh("floor", &floor()), ball(3.0)], 240);
         let y = w.body_transform("ball").unwrap().0[1];
         let vy = w.body_velocity("ball").unwrap()[1];
         assert!((y - 0.5).abs() < 0.02, "rests on the floor: y={y}");
         assert!(vy.abs() < 0.05, "at rest: vy={vy}");
+        // The contact reports the body's tag.
+        let landed = w.take_events().into_iter().find(|e| e.started).expect("a contact");
+        let mut pair = [landed.a, landed.b];
+        pair.sort();
+        assert_eq!(pair, ["ball", "floor"]);
     }
 
     #[test]
@@ -198,7 +204,7 @@ mod tests {
         assert!((hit.position[1]).abs() < 1e-5, "{:?}", hit.position);
         assert!((hit.distance - 4.0).abs() < 1e-5, "{}", hit.distance);
         assert!((hit.normal[1].abs() - 1.0).abs() < 1e-5, "{:?}", hit.normal);
-        // Two-sided: from below it hits too.
+        // Rays hit both sides.
         let below = w.raycast([1.0, -4.0, 2.0], [0.0, 1.0, 0.0], 10.0).unwrap();
         assert!((below.distance - 4.0).abs() < 1e-5, "{}", below.distance);
         // Off the edge: a miss.
@@ -313,6 +319,18 @@ mod tests {
         remove_world(DEFAULT_WORLD);
     }
 
+    /// Edge fixing makes contacts one-sided: a body meets a face from its
+    /// front (counter-clockwise) side and passes through from behind.
+    #[test]
+    fn contacts_are_one_sided_and_rays_two_sided() {
+        let rest = |gravity: f32, y: f32| {
+            let w = stepped([0.0, gravity, 0.0], vec![trimesh("floor", &floor()), ball(y)], 240);
+            w.body_transform("ball").unwrap().0[1]
+        };
+        assert!((rest(-9.81, 3.0) - 0.5).abs() < 0.02, "the front side holds");
+        assert!(rest(9.81, -3.0) > 5.0, "the back side lets the ball through");
+    }
+
     #[test]
     fn invalid_meshes_are_errors_naming_the_field() {
         let tri = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
@@ -330,7 +348,7 @@ mod tests {
         let line = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
         assert_eq!(
             err(line, vec![[0, 1, 2], [0, 0, 1]]),
-            "triangles: all 2 triangles are degenerate (zero area)"
+            "triangles: no triangle has any area (2 given)"
         );
         // Degenerate triangles beside a good one are dropped.
         let mesh = TriMeshData::new(tri, vec![[0, 1, 2], [0, 0, 1]]).unwrap();

@@ -3956,6 +3956,43 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         assert!(PhysicsHarness::reports().is_empty());
     }
 
+    /// A top-level `Physics.trimesh` re-declared by the hook every frame is
+    /// one value: the ball lands on it, and neither the frames nor a rewind
+    /// rebuild its collider.
+    #[test]
+    fn a_trimesh_redeclared_every_frame_builds_once() {
+        const SRC: &str = "\
+            let ballTag = Physics.tag(\"ball\")\n\
+            let floor = Physics.trimesh({\n\
+            \x20 positions: Bytes.fromF32le([0.0 - 5.0, 0.0, 0.0 - 5.0, 5.0, 0.0, 0.0 - 5.0,\n\
+            \x20                             5.0, 0.0, 5.0, 0.0 - 5.0, 0.0, 5.0]),\n\
+            \x20 triangles: Bytes.fromU32le([0.0, 2.0, 1.0, 0.0, 3.0, 2.0]) })\n\
+            let init = 0.0\n\
+            let tick = (m, dt, tts) => m\n\
+            let physics = (m) =>\n\
+            \x20 Physics.scene(Vec3.make(0.0, 0.0 - 9.81, 0.0),\n\
+            \x20   [ Physics.fixed(Physics.tag(\"floor\"), floor),\n\
+            \x20     Physics.dynamic(ballTag, Physics.sphere(0.5))\n\
+            \x20       |> Physics.at(Vec3.make(0.0, 3.0, 0.0)) ])\n\
+            let draw = (m, tts) =>\n\
+            \x20 Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, 0.0 - 5.0),\n\
+            \x20                              Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n";
+        let mut h = PhysicsHarness::new(SRC);
+        let before = physics::trimesh_builds();
+        h.ctx().prime_physics();
+        for _ in 0..120 {
+            h.frame();
+        }
+        let y = h.height("ball").expect("ball");
+        assert!((y - 0.5).abs() < 0.02, "the ball rests on the floor: {y}");
+        assert!(h.physics_rt.rewind_to_frame(30).is_empty());
+        for _ in 0..30 {
+            h.frame();
+        }
+        assert_eq!(physics::trimesh_builds() - before, 1);
+        assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
+    }
+
     /// Priming declares; it does not simulate — and rapier's broad phase
     /// ingests colliders at the step, so a synchronous ray query still misses
     /// on frame 1 while body reads answer. Pinning the caveat the docs state.
