@@ -65,8 +65,32 @@ impl<K, V> Node<K, V> {
 }
 
 /// Per-node results of [`PMap::map_values`], so a node shared by several
-/// maps is mapped once.
-pub struct NodeMemo<K, V>(HashMap<*const (), Option<Rc<Node<K, V>>>>);
+/// maps is mapped once. Each entry holds its source node, which keeps the
+/// address from being reused and forces later edits to copy, not mutate.
+#[allow(clippy::type_complexity)]
+pub struct NodeMemo<K, V>(HashMap<*const (), (Rc<Node<K, V>>, Option<Rc<Node<K, V>>>)>);
+
+impl<K, V> AsMut<NodeMemo<K, V>> for NodeMemo<K, V> {
+    fn as_mut(&mut self) -> &mut NodeMemo<K, V> {
+        self
+    }
+}
+
+/// `items` with each element replaced where `f` returns `Some`, or `None`
+/// when nothing changed.
+pub(crate) fn map_changed<T: Clone>(
+    items: &[T],
+    mut f: impl FnMut(&T) -> Option<T>,
+) -> Option<Vec<T>> {
+    let changed: Vec<Option<T>> = items.iter().map(&mut f).collect();
+    changed.iter().any(Option::is_some).then(|| {
+        items
+            .iter()
+            .zip(changed)
+            .map(|(item, new)| new.unwrap_or_else(|| item.clone()))
+            .collect()
+    })
+}
 
 impl<K, V> Default for NodeMemo<K, V> {
     fn default() -> Self {
@@ -324,19 +348,17 @@ impl<K: Clone, V: Clone> PMap<K, V> {
         (value, units)
     }
 
-    /// Call `leaf` with the entries of every leaf whose node (or an
-    /// ancestor) is not yet in `seen`, adding each visited node. A walk over
-    /// many versions sharing one `seen` set visits each distinct node once.
-    /// Returns how many nodes were checked against `seen`.
+    /// Call `leaf` with the entries of every leaf not reached before:
+    /// nodes already in `seen` are skipped with their whole subtree, and
+    /// visited nodes are added. Versions sharing one `seen` set are walked
+    /// once per distinct node.
     pub fn for_each_unseen_leaf<'a>(
         &'a self,
         seen: &mut HashSet<*const ()>,
         mut leaf: impl FnMut(&'a [(K, V)]),
-    ) -> usize {
-        let mut checked = 0;
+    ) {
         let mut stack: Vec<&Node<K, V>> = self.root.as_deref().into_iter().collect();
         while let Some(node) = stack.pop() {
-            checked += 1;
             if !seen.insert(node.ptr()) {
                 continue;
             }
@@ -345,14 +367,14 @@ impl<K: Clone, V: Clone> PMap<K, V> {
                 Node::Internal { children, .. } => stack.extend(children.iter().map(|c| &**c)),
             }
         }
-        checked
     }
 
     /// Match two maps' entries for an equality check: `false` on a length
     /// or key mismatch, else `pair` gets every value pair left to compare.
     /// Identical nodes, and node pairs already in `seen`, are skipped, so
-    /// versions one edit apart cost O(depth). Where shapes differ (other
-    /// edit histories), the two subtrees are compared in key order.
+    /// versions one value edit apart cost O(depth). Where shapes differ (a
+    /// split or merge, other edit histories) the two subtrees are compared
+    /// in key order. Discard `seen` after a `false`.
     pub fn zip_unshared<'a>(
         &'a self,
         other: &'a Self,
@@ -403,11 +425,12 @@ impl<K: Clone, V: Clone> PMap<K, V> {
     /// The map with each value replaced where `f` returns `Some`, or `None`
     /// if nothing changed. Unchanged nodes are shared, not rebuilt; `memo`
     /// carries results across calls so shared nodes are mapped once. `f`
-    /// gets the memo back for maps nested in the values.
-    pub fn map_values(
+    /// gets the memo back (with any caller state around it) for maps nested
+    /// in the values.
+    pub fn map_values<M: AsMut<NodeMemo<K, V>>>(
         &self,
-        memo: &mut NodeMemo<K, V>,
-        f: &mut impl FnMut(&V, &mut NodeMemo<K, V>) -> Option<V>,
+        memo: &mut M,
+        f: &mut impl FnMut(&V, &mut M) -> Option<V>,
     ) -> Option<Self> {
         let root = map_node(self.root.as_ref()?, memo, f)?;
         Some(PMap {
@@ -431,34 +454,19 @@ impl<K: Clone, V: Clone> PMap<K, V> {
     }
 }
 
-fn map_node<K: Clone, V: Clone>(
+fn map_node<K: Clone, V: Clone, M: AsMut<NodeMemo<K, V>>>(
     node: &Rc<Node<K, V>>,
-    memo: &mut NodeMemo<K, V>,
-    f: &mut impl FnMut(&V, &mut NodeMemo<K, V>) -> Option<V>,
+    memo: &mut M,
+    f: &mut impl FnMut(&V, &mut M) -> Option<V>,
 ) -> Option<Rc<Node<K, V>>> {
-    if let Some(done) = memo.0.get(&node.ptr()) {
+    if let Some((_, done)) = memo.as_mut().0.get(&node.ptr()) {
         return done.clone();
     }
     let mapped = match &**node {
-        Node::Leaf(entries) => {
-            let changed: Vec<Option<V>> = entries.iter().map(|(_, v)| f(v, memo)).collect();
-            changed.iter().any(Option::is_some).then(|| {
-                let entries = entries
-                    .iter()
-                    .zip(changed)
-                    .map(|((k, v), new)| (k.clone(), new.unwrap_or_else(|| v.clone())))
-                    .collect();
-                Rc::new(Node::Leaf(entries))
-            })
-        }
+        Node::Leaf(entries) => map_changed(entries, |(k, v)| Some((k.clone(), f(v, memo)?)))
+            .map(|entries| Rc::new(Node::Leaf(entries))),
         Node::Internal { keys, children } => {
-            let changed: Vec<_> = children.iter().map(|c| map_node(c, memo, f)).collect();
-            changed.iter().any(Option::is_some).then(|| {
-                let children = children
-                    .iter()
-                    .zip(changed)
-                    .map(|(old, new)| new.unwrap_or_else(|| old.clone()))
-                    .collect();
+            map_changed(children, |child| map_node(child, memo, f)).map(|children| {
                 Rc::new(Node::Internal {
                     keys: keys.clone(),
                     children,
@@ -466,7 +474,9 @@ fn map_node<K: Clone, V: Clone>(
             })
         }
     };
-    memo.0.insert(node.ptr(), mapped.clone());
+    memo.as_mut()
+        .0
+        .insert(node.ptr(), (node.clone(), mapped.clone()));
     mapped
 }
 
@@ -1137,17 +1147,18 @@ mod tests {
             all_nodes(v, &mut distinct);
         }
         let mut seen = HashSet::new();
-        let (mut checked, mut entries) = (0, 0);
+        let (mut leaves, mut entries) = (0, 0);
         for v in &versions {
-            checked += v.for_each_unseen_leaf(&mut seen, |leaf| entries += leaf.len());
+            v.for_each_unseen_leaf(&mut seen, |leaf| {
+                leaves += 1;
+                entries += leaf.len();
+            });
         }
-        assert_eq!(seen, distinct);
-        // Each check is a root or a child of a distinct internal node.
-        assert!(checked <= versions.len() + CAP * distinct.len());
-        // A walk per version would check every node of every version.
-        let naive: usize = versions.iter().map(|v| v.iter().len() / 12).sum();
-        assert!(checked * 10 < naive, "checked {checked}, naive ~{naive}");
-        assert!(entries < 6800 + 900 * 20 * CAP);
+        assert_eq!(seen, distinct, "every distinct node visited");
+        // Each leaf once: the base map's, then at most 20 new per frame. A
+        // walk per version would see 901 x 6800 entries.
+        assert!(leaves <= 6800 / 8 + 900 * 20, "leaves {leaves}");
+        assert!(entries < 6800 + 900 * 20 * CAP, "entries {entries}");
     }
 
     #[test]
@@ -1249,6 +1260,21 @@ mod tests {
         };
         versions[1].map_values(&mut memo, &mut f);
         assert!(calls <= 20 * CAP, "calls {calls}");
+    }
+
+    #[test]
+    fn node_memo_never_serves_an_edited_node() {
+        // The memo holds its source nodes, so an edit after mapping copies
+        // the leaf instead of mutating it under the memo's key.
+        let mut map = build(0..1);
+        let mut memo = NodeMemo::default();
+        let mut f = |v: &i64, _: &mut NodeMemo<i64, i64>| (*v == 2).then_some(3);
+        assert!(map.map_values(&mut memo, &mut f).is_none());
+        insert(&mut map, 0, 2);
+        let mapped = map
+            .map_values(&mut memo, &mut f)
+            .expect("the new value maps");
+        assert_eq!(get(&mapped, 0), Some(3));
     }
 
     /// 100k seeded random ops against `BTreeMap`. Every 1k ops both maps are

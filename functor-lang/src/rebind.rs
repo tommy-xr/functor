@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ir::{BindingId, Expr, ExprId, ExprKind, Module, Param, Pattern, PatternKind};
-use crate::pmap::NodeMemo;
+use crate::pmap::{map_changed, NodeMemo};
 use crate::value::{Closure, Env, MapKey, Value};
 
 /// What a reload's rebind pass did — the producer prints this.
@@ -110,12 +110,20 @@ pub fn rebind_value(value: &Value, old: &Module, new: &Module) -> (Value, Rebind
     (rebound.unwrap_or_else(|| value.clone()), report)
 }
 
-/// Results by identity, so a container or map node the model shares (a
-/// retained history) is walked once and stays shared.
+/// Results by identity, so a value or map node the model shares (a
+/// retained history) is walked once and stays shared. Keys pair the shared
+/// allocation with a kind/constructor tag: a host may share one `args`
+/// vector between two variants, which must not share a result.
 #[derive(Default)]
 struct Memo {
-    containers: HashMap<*const (), Option<Value>>,
+    values: HashMap<(*const (), usize), Option<Value>>,
     map_nodes: NodeMemo<MapKey, Value>,
+}
+
+impl AsMut<NodeMemo<MapKey, Value>> for Memo {
+    fn as_mut(&mut self) -> &mut NodeMemo<MapKey, Value> {
+        &mut self.map_nodes
+    }
 }
 
 /// The rebound value, or `None` when nothing inside changed: unchanged
@@ -127,13 +135,20 @@ fn walk(
     report: &mut RebindReport,
     memo: &mut Memo,
 ) -> Option<Value> {
-    let ptr = match value {
-        Value::List(items) | Value::Tuple(items) => Rc::as_ptr(items) as *const (),
-        Value::Record(fields) => Rc::as_ptr(fields) as *const (),
-        Value::Variant { args, .. } => Rc::as_ptr(args) as *const (),
-        _ => std::ptr::null(),
+    // Tag: 1 list, 2 tuple, a variant's constructor address, else 0.
+    let key = match value {
+        Value::List(items) => Some((Rc::as_ptr(items) as *const (), 1)),
+        Value::Tuple(items) => Some((Rc::as_ptr(items) as *const (), 2)),
+        Value::Record(fields) => Some((Rc::as_ptr(fields) as *const (), 0)),
+        Value::Variant { ctor, args } => Some((
+            Rc::as_ptr(args) as *const (),
+            Rc::as_ptr(ctor) as *const u8 as usize,
+        )),
+        Value::Closure(closure) => Some((Rc::as_ptr(closure) as *const (), 0)),
+        Value::Partial(partial) => Some((Rc::as_ptr(partial) as *const (), 0)),
+        _ => None,
     };
-    if let Some(done) = memo.containers.get(&ptr) {
+    if let Some(done) = key.and_then(|key| memo.values.get(&key)) {
         return done.clone();
     }
     let rebound = match value {
@@ -152,36 +167,16 @@ fn walk(
         Value::List(items) => {
             walk_all(items, old, new, report, memo).map(|items| Value::List(Rc::new(items)))
         }
-        Value::Map(entries) => {
-            let Memo { containers, map_nodes } = memo;
-            entries
-                .map_values(map_nodes, &mut |value, map_nodes| {
-                    // Hand the node memo back for maps nested in values.
-                    let mut inner = Memo {
-                        containers: std::mem::take(containers),
-                        map_nodes: std::mem::take(map_nodes),
-                    };
-                    let rebound = walk(value, old, new, report, &mut inner);
-                    (*containers, *map_nodes) = (inner.containers, inner.map_nodes);
-                    rebound
-                })
-                .map(Value::Map)
-        }
+        Value::Map(entries) => entries
+            .map_values(memo, &mut |value, memo| walk(value, old, new, report, memo))
+            .map(Value::Map),
         Value::Tuple(items) => {
             walk_all(items, old, new, report, memo).map(|items| Value::Tuple(Rc::new(items)))
         }
-        Value::Record(fields) => {
-            let rebound: Vec<Option<Value>> = fields
-                .iter()
-                .map(|(_, v)| walk(v, old, new, report, memo))
-                .collect();
-            rebound.iter().any(Option::is_some).then(|| {
-                let fields = fields.iter().zip(rebound).map(|((name, value), rebound)| {
-                    (name.clone(), rebound.unwrap_or_else(|| value.clone()))
-                });
-                Value::Record(Rc::new(fields.collect()))
-            })
-        }
+        Value::Record(fields) => map_changed(fields, |(name, value)| {
+            Some((name.clone(), walk(value, old, new, report, memo)?))
+        })
+        .map(|fields| Value::Record(Rc::new(fields))),
         Value::Variant { ctor, args } => {
             walk_all(args, old, new, report, memo).map(|args| Value::Variant {
                 ctor: ctor.clone(),
@@ -194,8 +189,8 @@ fn walk(
         },
         Value::Partial(partial) => rebind_partial(partial, old, new, report, memo),
     };
-    if !ptr.is_null() {
-        memo.containers.insert(ptr, rebound.clone());
+    if let Some(key) = key {
+        memo.values.insert(key, rebound.clone());
     }
     rebound
 }
@@ -208,17 +203,7 @@ fn walk_all(
     report: &mut RebindReport,
     memo: &mut Memo,
 ) -> Option<Vec<Value>> {
-    let rebound: Vec<Option<Value>> = items
-        .iter()
-        .map(|v| walk(v, old, new, report, memo))
-        .collect();
-    rebound.iter().any(Option::is_some).then(|| {
-        items
-            .iter()
-            .zip(rebound)
-            .map(|(item, rebound)| rebound.unwrap_or_else(|| item.clone()))
-            .collect()
-    })
+    map_changed(items, |item| walk(item, old, new, report, memo))
 }
 
 fn rebind_ctor(

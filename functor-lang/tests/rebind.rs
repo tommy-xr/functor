@@ -435,8 +435,8 @@ fn closures_rebind_inside_tuples() {
 }
 
 /// Containers with nothing to rebind are kept, not rebuilt: plain data
-/// keeps its identity, and a map holding one closure among many plain
-/// values rebuilds only that closure's root-to-leaf path.
+/// keeps its identity, and a map holding one closure among plain values
+/// rebuilds only that closure's root-to-leaf path.
 #[test]
 fn rebind_preserves_unchanged_containers() {
     let src = |body: &str| {
@@ -445,7 +445,7 @@ fn rebind_preserves_unchanged_containers() {
              let main = () => (\n\
                {{ name: \"door\", tags: [1.0, 2.0] }},\n\
                List.range(200.0) |> List.map((i) => (i, i)) |> Map.fromList,\n\
-               Map.fromList(List.range(200.0) |> List.map((i) => (i, (x) => x + i)))\n\
+               List.range(200.0) |> List.map((i) => (i, (x) => i)) |> Map.fromList\n\
                  |> Map.insert(5.0, behavior)\n\
              )"
         )
@@ -468,29 +468,86 @@ fn rebind_preserves_unchanged_containers() {
     let (Value::Map(old_fns), Value::Map(new_fns)) = (&old[2], &new[2]) else {
         panic!("expected maps");
     };
+    // Every value here is a closure, so the whole map is rebuilt.
     assert_ne!(old_fns.root_ptr(), new_fns.root_ptr());
     let (_, behavior) = new_fns.iter().nth(5).unwrap();
     assert_eq!(num(&apply(&b, behavior.clone(), 1.0)), 3.0);
 }
 
-/// A container the model shares (two references to one list) is rebound
-/// once, and the two references stay one value.
+/// One closure among plain map values: only its leaf is rebuilt.
 #[test]
-fn rebind_keeps_shared_containers_shared() {
+fn rebind_rebuilds_only_the_changed_map_path() {
     let src = |body: &str| {
         format!(
             "{APPLY}let behavior = (x) => {body}\n\
-             let main = () => let fs = [behavior] in (fs, fs)"
+             type cell = | Plain(n: float) | Fn(f: (float) => float)\n\
+             let main = () => List.range(200.0) |> List.map((i) => (i, Plain(i))) |> Map.fromList\n\
+               |> Map.insert(5.0, Fn(behavior))"
+        )
+    };
+    let (a, b) = (module(&src("x + 1.0")), module(&src("x + 2.0")));
+    let stored = main_value(&a);
+    let (rebound, report) = rebind_value(&stored, &a, &b);
+    assert_eq!(report.rebound, 1);
+    let (Value::Map(old), Value::Map(new)) = (&stored, &rebound) else {
+        panic!("expected maps");
+    };
+    let mut seen = std::collections::HashSet::new();
+    old.for_each_unseen_leaf(&mut seen, |_| {});
+    let mut fresh_leaves = 0;
+    new.for_each_unseen_leaf(&mut seen, |_| fresh_leaves += 1);
+    assert_eq!(fresh_leaves, 1);
+}
+
+/// Values the model shares — a list referenced twice, a closure stored
+/// twice — are rebound once and stay one value.
+#[test]
+fn rebind_keeps_shared_values_shared() {
+    let src = |body: &str| {
+        format!(
+            "{APPLY}let behavior = (x) => {body}\n\
+             let main = () => let fs = [behavior] in (fs, fs, behavior, behavior)"
         )
     };
     let (a, b) = (module(&src("x + 1.0")), module(&src("x + 2.0")));
     let (rebound, report) = rebind_value(&main_value(&a), &a, &b);
     assert_eq!(report.rebound, 1);
-    let Value::Tuple(pair) = rebound else {
+    let Value::Tuple(items) = rebound else {
         panic!("expected a tuple");
     };
-    let (Value::List(x), Value::List(y)) = (&pair[0], &pair[1]) else {
+    let (Value::List(x), Value::List(y)) = (&items[0], &items[1]) else {
         panic!("expected lists");
     };
     assert!(Rc::ptr_eq(x, y));
+    let (Value::Closure(f), Value::Closure(g)) = (&items[2], &items[3]) else {
+        panic!("expected closures");
+    };
+    assert!(Rc::ptr_eq(f, g));
+}
+
+/// A host may share one argument vector between two variants; each keeps
+/// its own constructor.
+#[test]
+fn rebind_keeps_variants_sharing_arguments_distinct() {
+    let src =
+        |body: &str| format!("{APPLY}let behavior = (x) => {body}\nlet main = () => behavior");
+    let (a, b) = (module(&src("x + 1.0")), module(&src("x + 2.0")));
+    let args = Rc::new(vec![main_value(&a)]);
+    let variant = |ctor: &str| Value::Variant {
+        ctor: Rc::from(ctor),
+        args: args.clone(),
+    };
+    let stored = Value::Tuple(Rc::new(vec![variant("Open"), variant("Close")]));
+    let (rebound, _) = rebind_value(&stored, &a, &b);
+    let Value::Tuple(items) = rebound else {
+        panic!("expected a tuple");
+    };
+    let ctors: Vec<String> = items
+        .iter()
+        .map(|item| match item {
+            Value::Variant { ctor, .. } => ctor.to_string(),
+            other => panic!("expected a variant, got {other}"),
+        })
+        .collect();
+    assert_eq!(ctors, ["Open", "Close"]);
 }
