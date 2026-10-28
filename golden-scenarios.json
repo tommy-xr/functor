@@ -268,6 +268,15 @@
       ],
       "inputScript": "shoot.script",
       "captureAtFrame": 420
+    },
+    {
+      "name": "lightmap-layers-t1",
+      "sample": "lightmap-layers",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }
