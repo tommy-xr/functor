@@ -5894,6 +5894,7 @@ dropping the rest"
                     physics::PhysicsCommand::SetVelocityXZ { .. } => "physics.setVelocityXZ",
                     physics::PhysicsCommand::SetVelocityY { .. } => "physics.setVelocityY",
                     physics::PhysicsCommand::Teleport { .. } => "physics.teleport",
+                    physics::PhysicsCommand::Move { .. } => "physics.move",
                 };
                 let tag = command.tag_and_kind().0.to_string();
                 // Outbound suppression protects the LIVE world (a dry run must

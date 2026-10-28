@@ -14,11 +14,12 @@
 
 use std::collections::BTreeMap;
 
+use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{Body, BodyKind, PhysicsScene, Shape};
+use super::{Body, BodyKind, CharacterSettings, PhysicsScene, Shape};
 
 /// The fixed simulation timestep. `step_frame` accumulates real dt and steps
 /// the world in whole `FIXED_DT` substeps — Rapier is never stepped with a
@@ -68,6 +69,10 @@ pub enum PhysicsCommand {
     /// cache is unchanged, so the next frame's unchanged declaration does not
     /// snap it back).
     Teleport { tag: String, position: [f32; 3] },
+    /// Walk a `Physics.character` by up to `translation` (metres) this step:
+    /// collide and slide, climb slopes up to its limit, step up ledges and
+    /// follow the ground down. Moves queued for one step chain.
+    Move { tag: String, translation: [f32; 3] },
 }
 
 impl PhysicsCommand {
@@ -80,6 +85,7 @@ impl PhysicsCommand {
             PhysicsCommand::SetVelocityXZ { tag, .. } => (tag, "setVelocityXZ"),
             PhysicsCommand::SetVelocityY { tag, .. } => (tag, "setVelocityY"),
             PhysicsCommand::Teleport { tag, .. } => (tag, "teleport"),
+            PhysicsCommand::Move { tag, .. } => (tag, "move"),
         }
     }
 }
@@ -179,6 +185,10 @@ pub struct World {
     /// between queue and step must restore them for bit-exact resume).
     #[serde(default)]
     pending: Vec<PhysicsCommand>,
+    /// Per character: whether its last move ended on walkable ground. World
+    /// state, so snapshots, rewinds and replays restore it.
+    #[serde(default)]
+    grounded: BTreeMap<String, bool>,
     /// Bodies given an [`PhysicsCommand::ApplyForce`] this frame — their
     /// forces are cleared once the frame's substeps finish. Intra-call state:
     /// populated and cleared within one `step_frame`/`step`, so it is always
@@ -217,6 +227,7 @@ impl Clone for World {
             accumulator: self.accumulator,
             frame: self.frame,
             pending: self.pending.clone(),
+            grounded: self.grounded.clone(),
             forced: self.forced.clone(),
             events: self.events.clone(),
             command_warnings: self.command_warnings.clone(),
@@ -269,6 +280,7 @@ impl World {
             accumulator: 0.0,
             frame: 0,
             pending: Vec::new(),
+            grounded: BTreeMap::new(),
             forced: Vec::new(),
             events: Vec::new(),
             command_warnings: Vec::new(),
@@ -515,6 +527,13 @@ impl World {
         Some([v.x, v.y, v.z])
     }
 
+    /// Whether a `Physics.character` stood on walkable ground after its last
+    /// move (`false` before any). `None` if `tag` isn't a character.
+    pub fn grounded(&self, tag: &str) -> Option<bool> {
+        self.declared.get(tag)?.character?;
+        Some(self.grounded.get(tag).copied().unwrap_or(false))
+    }
+
     /// Cast a ray against the live world (docs/physics.md Phase 4): the
     /// nearest hit's tag, world-space point, surface normal, and distance.
     /// `dir` need not be normalized (it is here, so `max_dist` is in world
@@ -553,7 +572,7 @@ impl World {
         }
         let ray = rapier3d::prelude::Ray::new(vec3(origin), d / len);
         let (col_handle, hit) = self
-            .queries(exclude)
+            .queries(QueryFilter::default(), exclude)
             .cast_ray_and_get_normal(&ray, max_dist, true)?;
         let tag = self.collider_tag(col_handle)?;
         let kept = match hit.feature {
@@ -591,7 +610,7 @@ impl World {
             return None;
         }
         let swept = collider_of(shape)?.shape;
-        let (col_handle, hit) = self.queries(exclude).cast_shape(
+        let (col_handle, hit) = self.queries(QueryFilter::default(), exclude).cast_shape(
             &Pose::from_translation(vec3(origin)),
             d / len,
             &*swept,
@@ -626,8 +645,7 @@ impl World {
     /// body: a self-probe starting inside a character's capsule would
     /// otherwise hit it at distance 0. A tag not in the world excludes
     /// nothing, so a not-yet-spawned character probes cleanly.
-    fn queries(&self, exclude: Option<&str>) -> QueryPipeline<'_> {
-        let mut filter = QueryFilter::default();
+    fn queries<'a>(&'a self, mut filter: QueryFilter<'a>, exclude: Option<&str>) -> QueryPipeline<'a> {
         // The rigid body, not the tag's one collider, so a body that later
         // gains a second collider still can't hit itself.
         if let Some((body, _)) = exclude.and_then(|tag| self.tags.get(tag)) {
@@ -759,6 +777,14 @@ impl World {
                 ));
                 continue;
             };
+            if let PhysicsCommand::Move { translation, .. } = &command {
+                if !self.move_character(&tag, rb_handle, vec3(*translation)) {
+                    self.push_command_warning(format!(
+                        "physics move on \"{tag}\", which is not a Physics.character, has no effect"
+                    ));
+                }
+                continue;
+            }
             // Rapier silently ignores impulses/forces/velocities on
             // non-dynamic bodies — warn instead, matching the unknown-tag
             // contract. (Teleport is meaningful for every kind.)
@@ -801,6 +827,7 @@ impl World {
                     let rotation = *rb.rotation();
                     rb.set_position(Pose::from_parts(vec3(*position), rotation), true);
                 }
+                PhysicsCommand::Move { .. } => unreachable!("handled above"),
             }
         }
     }
@@ -876,6 +903,54 @@ impl World {
             );
         }
         self.declared.remove(tag);
+        self.grounded.remove(tag);
+    }
+
+    /// One `Move`: rapier's character controller (collide and slide, slope
+    /// limit, snap to ground) plus a step-up probe, applied as the body's
+    /// next kinematic target. Starts from a target already queued this step,
+    /// so moves chain. `false` if `tag` isn't a character.
+    fn move_character(&mut self, tag: &str, rb_handle: RigidBodyHandle, desired: Vector) -> bool {
+        let Some(body) = self.declared.get(tag) else {
+            return false;
+        };
+        let (Some(settings), Some(collider)) = (body.character, collider_of(&body.shape)) else {
+            return false;
+        };
+        let shape = collider.shape;
+        let start = *self.bodies[rb_handle].next_position();
+        let controller = KinematicCharacterController {
+            up: Vector::Y,
+            offset: CharacterLength::Absolute(settings.offset),
+            slide: true,
+            // `step_up` instead: rapier's autostep needs a wall-like hit, but a
+            // capsule meets a step's edge with its rounded bottom.
+            autostep: None,
+            max_slope_climb_angle: settings.max_slope,
+            min_slope_slide_angle: settings.max_slope,
+            snap_to_ground: Some(CharacterLength::Absolute(settings.snap)),
+            normal_nudge_factor: 1.0e-4,
+        };
+        let queries = self.queries(QueryFilter::default().exclude_sensors(), Some(tag));
+        let at = |t: Vector| Pose::from_translation(t) * start;
+        // Walk, then fall: one combined move stalls whenever the capsule sits
+        // just inside the offset gap, as its first sweep hits the floor at 0.
+        let mut move_by = |from: Vector, by: Vector| {
+            from + controller
+                .move_shape(FIXED_DT, &queries, &*shape, &at(from), by, |_| {})
+                .translation
+        };
+        let walked = move_by(Vector::ZERO, Vector::new(desired.x, 0.0, desired.z));
+        let mut translation = move_by(walked, Vector::new(0.0, desired.y, 0.0));
+        if on_walkable_ground(&queries, &*shape, &at(translation), &settings) {
+            if let Some(step) = step_up(&queries, &*shape, &at(translation), desired, translation, &settings) {
+                translation += step;
+            }
+        }
+        let grounded = on_walkable_ground(&queries, &*shape, &at(translation), &settings);
+        self.bodies[rb_handle].set_next_kinematic_position(at(translation));
+        self.grounded.insert(tag.to_string(), grounded);
+        true
     }
 
     /// The declaration for an existing tag changed: write exactly the changed
@@ -1113,6 +1188,79 @@ fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
             .as_deref()
             .map(|data| heightfield_collider(geometry, data)),
     }
+}
+
+/// A sweep that stops `target` short of what it hits.
+fn sweep(
+    queries: &QueryPipeline,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    from: &Pose,
+    dir: Vector,
+    max: f32,
+    target: f32,
+) -> Option<rapier3d::parry::query::ShapeCastHit> {
+    let options = ShapeCastOptions {
+        max_time_of_impact: max,
+        target_distance: target,
+        stop_at_penetration: false,
+        compute_impact_geometry_on_penetration: true,
+    };
+    queries.cast_shape(from, dir, shape, options).map(|(_, hit)| hit)
+}
+
+/// Ground no steeper than the slope limit within the offset plus 5 cm below
+/// the feet (the controller's own contact prediction). The probe starts one
+/// offset up, so a capsule resting just inside its gap still hits cleanly.
+fn on_walkable_ground(
+    queries: &QueryPipeline,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+    s: &CharacterSettings,
+) -> bool {
+    let from = Pose::from_translation(Vector::Y * s.offset) * *at;
+    sweep(queries, shape, &from, -Vector::Y, 2.0 * s.offset + 0.05, 0.0)
+        .is_some_and(|hit| hit.normal1.y >= s.max_slope.cos() - 1.0e-4)
+}
+
+/// Step-up probe for a grounded move that was mostly blocked: lift by the
+/// headroom (at most `step_height`), move far enough forward to stand past the
+/// riser, and drop onto the tread. Returns the extra translation, or `None`
+/// for a wall, a step too tall or a tread too steep.
+fn step_up(
+    queries: &QueryPipeline,
+    shape: &dyn rapier3d::parry::shape::Shape,
+    at: &Pose,
+    desired: Vector,
+    applied: Vector,
+    s: &CharacterSettings,
+) -> Option<Vector> {
+    let want = Vector::new(desired.x, 0.0, desired.z);
+    let len = want.length();
+    if len < 1.0e-6 {
+        return None;
+    }
+    let dir = want / len;
+    if applied.dot(dir) > 0.5 * len {
+        return None; // most of the move went through
+    }
+    let lift = sweep(queries, shape, at, Vector::Y, s.step_height, s.offset)
+        .map_or(s.step_height, |hit| hit.time_of_impact);
+    let lifted = Pose::from_translation(Vector::Y * lift) * *at;
+    // The capsule's bottom must clear the riser's edge, or the next move's
+    // snap pulls it back down.
+    let forward = shape.as_capsule()?.radius + 4.0 * s.offset;
+    if sweep(queries, shape, &lifted, dir, forward, 0.0).is_some() {
+        return None;
+    }
+    let planted = Pose::from_translation(dir * forward) * lifted;
+    let tread = sweep(queries, shape, &planted, -Vector::Y, lift, s.offset)?;
+    let rise = lift - tread.time_of_impact;
+    if rise <= s.offset || tread.normal1.y < s.max_slope.cos() {
+        return None;
+    }
+    let step = Vector::Y * rise + dir * forward;
+    let landed = Pose::from_translation(step) * *at;
+    queries.intersect_shape(landed, shape).next().is_none().then_some(step)
 }
 
 fn heightfield_collider(
