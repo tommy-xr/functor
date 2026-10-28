@@ -4,7 +4,9 @@
 //! scene's metres and Y-up. Every primitive is closed and outward-facing. Bind
 //! the result as `let part = …` and run `functor export -o part.stl`. A file
 //! that is only a `part` runs in a default viewer (`functor run`: drag to orbit,
-//! scroll to zoom) — see `<stdlib>/PartViewer.fun` to customize it.
+//! scroll to zoom) — see `<stdlib>/PartViewer.fun` to customize it. Screw
+//! holes, nut traps, insert and magnet pockets: `<stdlib>/Hardware.fun`, with
+//! print tolerances from `<stdlib>/Fit.fun`.
 //!
 //! ```
 //! let part = Solid.group([
@@ -23,6 +25,10 @@ type bounds = { min: Vec3.t, max: Vec3.t }
 let box : (float, float, float) => t
 /// A Z-axis cylinder of `radius` and `height`, centered on the origin.
 let cylinder : (float, float) => t
+/// A Z-axis cone from `bottomRadius` at the base to `topRadius` at the top,
+/// `height` tall, centered on the origin. One radius may be 0 for a point;
+/// two different radii make a frustum (a countersink, a chamfer).
+let cone : (float, float, float) => t
 /// A sphere of `radius`, centered on the origin.
 let sphere : (float) => t
 

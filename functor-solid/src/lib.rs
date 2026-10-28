@@ -40,6 +40,9 @@ pub enum Solid {
     Box { size: [f64; 3] },
     /// A Z-axis cylinder centered on the origin.
     Cylinder { radius: f64, height: f64 },
+    /// A Z-axis frustum centered on the origin, `bottom` radius at the base and
+    /// `top` at the top; one radius may be zero (a pointed cone).
+    Cone { bottom: f64, top: f64, height: f64 },
     /// A sphere centered on the origin.
     Sphere { radius: f64 },
     /// A 2D profile swept from z = 0 to z = `height`.
@@ -155,7 +158,20 @@ impl Solid {
         match self {
             Solid::Box { size } => out.append(&mesh::boxed(*size), xform),
             Solid::Cylinder { radius, height } => out.append(
-                &mesh::cylinder(*radius, *height, segments_for(radius * scale)),
+                &mesh::cone(*radius, *radius, *height, segments_for(radius * scale)),
+                xform,
+            ),
+            Solid::Cone {
+                bottom,
+                top,
+                height,
+            } => out.append(
+                &mesh::cone(
+                    *bottom,
+                    *top,
+                    *height,
+                    segments_for(bottom.max(*top) * scale),
+                ),
                 xform,
             ),
             Solid::Sphere { radius } => {
@@ -257,6 +273,29 @@ mod tests {
             "{}",
             sphere.volume()
         );
+    }
+
+    #[test]
+    fn cones_are_closed_and_near_analytic_volume() {
+        use std::f64::consts::PI;
+        // Frustum: πh(R² + Rr + r²)/3; a pointed cone is the r = 0 case.
+        for (bottom, top) in [(5.0, 2.0), (2.0, 5.0), (4.0, 0.0), (0.0, 4.0)] {
+            let mesh = Solid::Cone {
+                bottom,
+                top,
+                height: 6.0,
+            }
+            .mesh()
+            .unwrap();
+            assert_eq!(mesh.non_manifold_edges(), 0);
+            assert_eq!(mesh.shared_positions(), 0);
+            let exact = PI * 6.0 * (bottom * bottom + bottom * top + top * top) / 3.0;
+            let v = mesh.volume();
+            assert!((v - exact).abs() / exact < 0.005, "{bottom} {top}: {v}");
+            let b = mesh.bounds().unwrap();
+            assert_eq!((b.min[2], b.max[2]), (-3.0, 3.0));
+            assert!((b.max[0] - bottom.max(top)).abs() < 1e-12);
+        }
     }
 
     #[test]

@@ -210,22 +210,43 @@ pub(crate) fn ring(radius: f64, z: f64, segments: usize) -> impl Iterator<Item =
     })
 }
 
-pub(crate) fn cylinder(radius: f64, height: f64, segments: usize) -> Mesh {
+/// A Z-axis frustum from `bottom` radius at -h/2 to `top` at +h/2. A zero
+/// radius ends in an apex vertex instead of a ring (a pointed cone).
+pub(crate) fn cone(bottom: f64, top: f64, height: f64, segments: usize) -> Mesh {
     let n = segments as u32;
     let h = height / 2.0;
-    // Bottom ring 0..n, top ring n..2n, then bottom and top cap centers.
-    let mut vertices: Vec<_> = ring(radius, -h, segments)
-        .chain(ring(radius, h, segments))
-        .collect();
-    vertices.extend([[0.0, 0.0, -h], [0.0, 0.0, h]]);
-    let (bottom, top) = (2 * n, 2 * n + 1);
+    let mut vertices = Vec::new();
+    // Each end: the first vertex index and whether it is a ring (else an apex).
+    let mut end = |r: f64, z: f64| {
+        let first = vertices.len() as u32;
+        if r > 0.0 {
+            vertices.extend(ring(r, z, segments));
+            vertices.push([0.0, 0.0, z]); // cap center
+        } else {
+            vertices.push([0.0, 0.0, z]);
+        }
+        (first, r > 0.0)
+    };
+    let (lo, lo_ring) = end(bottom, -h);
+    let (hi, hi_ring) = end(top, h);
     let mut triangles = Vec::with_capacity(4 * segments);
     for i in 0..n {
         let j = (i + 1) % n;
-        triangles.push([i, j, n + j]);
-        triangles.push([i, n + j, n + i]);
-        triangles.push([bottom, j, i]);
-        triangles.push([top, n + i, n + j]);
+        match (lo_ring, hi_ring) {
+            (true, true) => {
+                triangles.push([lo + i, lo + j, hi + j]);
+                triangles.push([lo + i, hi + j, hi + i]);
+            }
+            (true, false) => triangles.push([lo + i, lo + j, hi]),
+            (false, true) => triangles.push([lo, hi + j, hi + i]),
+            (false, false) => unreachable!("one radius is positive"),
+        }
+        if lo_ring {
+            triangles.push([lo + n, lo + j, lo + i]);
+        }
+        if hi_ring {
+            triangles.push([hi + n, hi + i, hi + j]);
+        }
     }
     Mesh {
         vertices,

@@ -12478,6 +12478,68 @@ the game dir"
         }
     }
 
+    /// `Hardware` cutters match their tables: radii and depths read back from
+    /// thin cross-sections (`intersect` with a 0.02 mm slab), volumes from
+    /// the analytic shapes.
+    #[test]
+    fn hardware_cuts_match_their_tables() {
+        let prelude = "let near = (a: float, b: float) => Math.abs(a - b) < 0.0005\n\
+             // Widest X of a cut in a 0.02 mm slab centered at height z.\n\
+             let at = (z: float, cut) => Vec3.x(Solid.bounds(Solid.intersect(\
+               Solid.box(100.0, 100.0, 0.02) |> Solid.translate(Vec3.make(0.0, 0.0, z)), cut)).max)\n\
+             let low = (cut) => Vec3.z(Solid.bounds(cut).min)\n\
+             let fit = Fit.clearance\n\
+             let m3 = Hardware.m3\n";
+        let checks = [
+            // Tables.
+            "m3.diameter == 3.0 && m3.headDiameter == 5.5 && m3.nutWidth == 5.5 \
+             && Hardware.m8.sinkDiameter == 17.92 && Hardware.insertM2_5.hole == 3.6",
+            "List.length(Hardware.screws) == 7.0 && List.all((s: Hardware.screw) => \
+             s.headDiameter > s.diameter && s.sinkDiameter > s.headDiameter \
+             && s.nutWidth > s.diameter, Hardware.screws)",
+            "List.length(Hardware.inserts) == 7.0 \
+             && List.all((i: Hardware.insert) => i.hole > 0.0 && i.length > 0.0, Hardware.inserts) \
+             && { Hardware.insertM3 with hole: 4.1 }.hole == 4.1",
+            "Fit.press.gap < Fit.slip.gap && Fit.slip.gap < Fit.clearance.gap && Fit.gap(0.2).gap == 0.2",
+            // Clearance hole: Ø 3 + 2 × 0.3, 10 deep, 1 mm above the face.
+            "near(at(-5.0, Hardware.clearanceHole(m3, fit, 10.0)), 1.8) \
+             && near(low(Hardware.clearanceHole(m3, fit, 10.0)), -10.0) \
+             // Inscribed facets: a 1.8 mm circle's 32-gon holds 0.64% less area.
+             && Math.abs(Solid.volume(Hardware.clearanceHole(m3, fit, 10.0)) / (Math.pi * 1.8 * 1.8 * 11.0) - 1.0) < 0.01",
+            // Counterbore: head pocket Ø 5.5 + 0.6 down to 3.3, then the hole.
+            "near(at(-3.2, Hardware.counterbore(m3, fit, 10.0)), 3.05) \
+             && near(at(-3.4, Hardware.counterbore(m3, fit, 10.0)), 1.8)",
+            // Countersink: Ø 6.72 + 0.6 at the face, shrinking 1 mm per mm down
+            // (read at the slab's top, 0.01 above z).
+            "near(at(0.0, Hardware.countersink(m3, fit, 10.0)), 3.67) \
+             && near(at(-1.0, Hardware.countersink(m3, fit, 10.0)), 2.67) \
+             && near(at(-3.0, Hardware.countersink(m3, fit, 10.0)), 1.8)",
+            // Nut trap: 5.5 + 0.6 across flats (±Y), corners at flats × 2/√3.
+            "near(Vec3.y(Solid.bounds(Hardware.nutTrap(m3, fit, 3.0)).max), 3.05) \
+             && near(Vec3.x(Solid.bounds(Hardware.nutTrap(m3, fit, 3.0)).max), 3.05 * 2.0 / Math.sqrt(3.0)) \
+             && near(low(Hardware.nutTrap(m3, fit, 3.0)), -3.0) \
+             && Math.abs(Solid.volume(Hardware.nutTrap(m3, fit, 3.0)) - 6.1 * 6.1 * Math.sqrt(3.0) / 2.0 * 4.0) < 0.001",
+            // Insert pocket: the maker's hole, no fit added.
+            "near(at(-3.0, Hardware.insertPocket(Hardware.insertM3, 6.7)), 2.0) \
+             && near(low(Hardware.insertPocket(Hardware.insertM3, 6.7)), -6.7)",
+            // Magnet pocket: 6 × 3 mm disc under a press fit.
+            "near(at(-1.0, Hardware.magnetPocket(Fit.press, 6.0, 3.0)), 3.05) \
+             && near(low(Hardware.magnetPocket(Fit.press, 6.0, 3.0)), -3.05)",
+            // A negative gap tightens the sides but never makes a pocket shallow.
+            "near(at(-1.0, Hardware.magnetPocket(Fit.gap(-0.1), 6.0, 3.0)), 2.9) \
+             && near(low(Hardware.magnetPocket(Fit.gap(-0.1), 6.0, 3.0)), -3.0) \
+             && near(at(-2.9, Hardware.counterbore(m3, Fit.gap(-0.1), 10.0)), 2.65)",
+        ];
+        for check in checks {
+            let src = format!("{prelude}let main = {check}\n");
+            assert!(
+                matches!(eval_with_prelude(&src), Ok(Value::Bool(true))),
+                "{check}: {:?}",
+                eval_with_prelude(&src).map(|v| v.to_string())
+            );
+        }
+    }
+
     /// `Mesh.*` from raw f32 positions + polygons, then `Solid.fromMesh`
     /// closes an open box and scales it to the asked height.
     #[test]
