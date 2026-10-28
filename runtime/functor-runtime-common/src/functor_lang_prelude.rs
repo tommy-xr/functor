@@ -12110,6 +12110,7 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             passthrough: None,
             battery: None,
             skinned: Default::default(),
+            cull: Default::default(),
             stages: None,
             build: None,
             xr: None,

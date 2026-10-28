@@ -504,6 +504,11 @@ impl InstancedRenderer {
         }
     }
 
+    /// Mark a culled node's instance buffer used, so it is not evicted.
+    pub(super) fn keep_instances(&mut self, gl: &glow::Context, instances: &InstanceList) {
+        self.instance_buffer(gl, instances);
+    }
+
     /// The retained buffer holding `instances`, uploaded only when its
     /// content is new to the cache.
     fn instance_buffer(&mut self, gl: &glow::Context, instances: &InstanceList) -> glow::Buffer {
