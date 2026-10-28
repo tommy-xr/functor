@@ -4,7 +4,9 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use crate::model::{ClipSource, GroupSource, JointSource, ModelData, ModelSource, TrackSource};
+use crate::model::{
+    ClipSource, GroupSource, JointSource, LightmapSource, ModelData, ModelSource, TrackSource,
+};
 
 use super::bytes::{ByteView, FunctorLangBytes};
 use super::*;
@@ -256,6 +258,16 @@ fn static_source(value: &Value, span: Span) -> Result<ModelSource, RunError> {
             })
         })
         .collect::<Result<_, RunError>>()?;
+    let lightmap = option(get("lightmap")?, "lightmap", "lightmap", span, |v| {
+        let fields = record(v, "lightmap", span)?;
+        let get = |name: &str| field(fields, name, "lightmap", span);
+        let (r, g, b) = color_of(get("floor")?, "lightmap.floor", span)?;
+        Ok(LightmapSource {
+            texture: texture_of(get("texture")?, "lightmap.texture", span)?,
+            scale: number(get("scale")?, "lightmap.scale", span)? as f32,
+            floor: [r, g, b],
+        })
+    })?;
     Ok(ModelSource {
         positions: f32s(get("positions")?, "positions", span)?,
         normals: f32s(get("normals")?, "normals", span)?,
@@ -265,6 +277,7 @@ fn static_source(value: &Value, span: Span) -> Result<ModelSource, RunError> {
         weights: Vec::new(),
         triangles: triangles(get("triangles")?, span)?,
         groups,
+        lightmap,
         skeleton: Vec::new(),
         clips: Vec::new(),
         texture: None,
@@ -304,6 +317,7 @@ fn skinned_source(value: &Value, span: Span) -> Result<ModelSource, RunError> {
         weights: f32s(get("weights")?, "weights", span)?,
         triangles: triangles(get("triangles")?, span)?,
         groups: Vec::new(),
+        lightmap: None,
         skeleton,
         clips,
         texture,

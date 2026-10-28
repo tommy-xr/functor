@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: lightmaps — a static model's `lightmap` (`{texture, scale, floor}`,
+/// omitted when absent) and `"baked": true` on `Light.baked` lights
+/// (omitted when false, so other frames keep their shape).
+///
 /// Also: static data models — `Model.static` data on the `ModelHandle::Data`
 /// wire: `uvs2` and `groups` (omitted when empty), and no `joints`/
 /// `weights`/`skeleton` (omitted when empty; a skinned model always has

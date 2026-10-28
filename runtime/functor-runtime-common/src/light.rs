@@ -11,7 +11,12 @@ use crate::RenderContext;
 pub enum Light {
     /// Uniform light from every direction: its color is added to every lit
     /// surface regardless of orientation.
-    Ambient { color: [f32; 3] },
+    Ambient {
+        color: [f32; 3],
+        /// Already in the lightmaps: lightmapped surfaces skip it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        baked: bool,
+    },
     /// A distant "sun": parallel rays travelling along `direction`. `intensity`
     /// scales `color`. `casts_shadows` opts it into rendering a shadow map.
     Directional {
@@ -20,6 +25,9 @@ pub enum Light {
         intensity: f32,
         #[serde(default)]
         casts_shadows: bool,
+        /// Already in the lightmaps: lightmapped surfaces skip it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        baked: bool,
     },
     /// An omnidirectional point light at `position`, fading to nothing by
     /// `range` (world units). (`casts_shadows` is carried for the API, but point
@@ -31,6 +39,9 @@ pub enum Light {
         range: f32,
         #[serde(default)]
         casts_shadows: bool,
+        /// Already in the lightmaps: lightmapped surfaces skip it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        baked: bool,
     },
     /// A cone of light from `position` aimed along `direction`, with a soft edge
     /// at `cone_angle` (radians from the axis) and distance falloff to `range`.
@@ -43,12 +54,18 @@ pub enum Light {
         cone_angle: f32,
         #[serde(default)]
         casts_shadows: bool,
+        /// Already in the lightmaps: lightmapped surfaces skip it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        baked: bool,
     },
 }
 
 impl Light {
     pub fn ambient(r: f32, g: f32, b: f32) -> Light {
-        Light::Ambient { color: [r, g, b] }
+        Light::Ambient {
+            color: [r, g, b],
+            baked: false,
+        }
     }
 
     pub fn directional(
@@ -65,6 +82,7 @@ impl Light {
             color: [r, g, b],
             intensity,
             casts_shadows: false,
+            baked: false,
         }
     }
 
@@ -75,6 +93,7 @@ impl Light {
             intensity,
             range,
             casts_shadows: false,
+            baked: false,
         }
     }
 
@@ -101,55 +120,40 @@ impl Light {
             range,
             cone_angle,
             casts_shadows: false,
+            baked: false,
         }
     }
 
     /// Opt this light into casting shadows (renders a shadow map). No-op for
     /// ambient lights.
-    pub fn cast_shadows(self) -> Light {
+    pub fn cast_shadows(mut self) -> Light {
+        match &mut self {
+            Light::Directional { casts_shadows, .. }
+            | Light::Point { casts_shadows, .. }
+            | Light::Spot { casts_shadows, .. } => *casts_shadows = true,
+            Light::Ambient { .. } => {}
+        }
+        self
+    }
+
+    /// Mark this light as already in the lightmaps (`Light.baked`).
+    pub fn baked(mut self) -> Light {
+        match &mut self {
+            Light::Ambient { baked, .. }
+            | Light::Directional { baked, .. }
+            | Light::Point { baked, .. }
+            | Light::Spot { baked, .. } => *baked = true,
+        }
+        self
+    }
+
+    /// Whether `Light.baked` marked this light.
+    pub fn is_baked(&self) -> bool {
         match self {
-            Light::Directional {
-                direction,
-                color,
-                intensity,
-                ..
-            } => Light::Directional {
-                direction,
-                color,
-                intensity,
-                casts_shadows: true,
-            },
-            Light::Point {
-                position,
-                color,
-                intensity,
-                range,
-                ..
-            } => Light::Point {
-                position,
-                color,
-                intensity,
-                range,
-                casts_shadows: true,
-            },
-            Light::Spot {
-                position,
-                direction,
-                color,
-                intensity,
-                range,
-                cone_angle,
-                ..
-            } => Light::Spot {
-                position,
-                direction,
-                color,
-                intensity,
-                range,
-                cone_angle,
-                casts_shadows: true,
-            },
-            Light::Ambient { .. } => self,
+            Light::Ambient { baked, .. }
+            | Light::Directional { baked, .. }
+            | Light::Point { baked, .. }
+            | Light::Spot { baked, .. } => *baked,
         }
     }
 
@@ -187,6 +191,8 @@ pub struct LightUniforms {
     pub directions: [f32; 3 * MAX_LIGHTS],
     pub ranges: [f32; MAX_LIGHTS],
     pub cone_cos: [f32; MAX_LIGHTS],
+    /// 1 for a `Light.baked` light.
+    pub baked: [i32; MAX_LIGHTS],
 }
 
 /// Pack up to `MAX_LIGHTS` lights into flattened arrays for the lit shader.
@@ -199,6 +205,7 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
         directions: [0.0; 3 * MAX_LIGHTS],
         ranges: [1.0; MAX_LIGHTS],
         cone_cos: [-1.0; MAX_LIGHTS],
+        baked: [0; MAX_LIGHTS],
     };
 
     for light in lights.iter().take(MAX_LIGHTS) {
@@ -211,7 +218,7 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
             u.colors[c3 + 2] = linear[2] * intensity;
         };
         match light {
-            Light::Ambient { color } => {
+            Light::Ambient { color, .. } => {
                 u.types[i] = TYPE_AMBIENT;
                 set_color(color, 1.0);
             }
@@ -254,6 +261,7 @@ pub fn pack_lights(lights: &[Light]) -> LightUniforms {
                 u.cone_cos[i] = cone_angle.cos();
             }
         }
+        u.baked[i] = light.is_baked() as i32;
         u.count += 1;
     }
 
@@ -280,6 +288,9 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
         uniform highp vec3 lightDirection[MAX_LIGHTS]; // directional / spot (travel dir)
         uniform float lightRange[MAX_LIGHTS];    // point / spot falloff distance
         uniform highp float lightConeCos[MAX_LIGHTS];  // spot: cos(cone angle)
+        uniform int lightBaked[MAX_LIGHTS];      // 1 = Light.baked
+        // Set by lightmapped draws, whose lightmap already holds baked lights.
+        uniform int skipBakedLights;
 
         // Camera world position, for the Blinn-Phong specular view direction.
         uniform highp vec3 viewPos;
@@ -331,6 +342,9 @@ const LIGHTING_GLSL_TEMPLATE: &str = r#"
             specularLight = vec3(0.0);
 
             for (int i = 0; i < numLights; i++) {
+                if (skipBakedLights == 1 && lightBaked[i] == 1) {
+                    continue;
+                }
                 int t = lightType[i];
                 if (t == 0) {
                     diffuseLight += lightColor[i]; // ambient: never shadowed
@@ -399,6 +413,7 @@ pub struct LightingUniforms {
     light_direction_loc: UniformLocation,
     light_range_loc: UniformLocation,
     light_cone_cos_loc: UniformLocation,
+    light_baked_loc: UniformLocation,
     view_pos_loc: UniformLocation,
     shadow_map_loc: UniformLocation,
     light_space_matrix_loc: UniformLocation,
@@ -416,6 +431,7 @@ impl LightingUniforms {
             light_direction_loc: shader.get_uniform_location(gl, "lightDirection"),
             light_range_loc: shader.get_uniform_location(gl, "lightRange"),
             light_cone_cos_loc: shader.get_uniform_location(gl, "lightConeCos"),
+            light_baked_loc: shader.get_uniform_location(gl, "lightBaked"),
             view_pos_loc: shader.get_uniform_location(gl, "viewPos"),
             shadow_map_loc: shader.get_uniform_location(gl, "shadowMap"),
             light_space_matrix_loc: shader.get_uniform_location(gl, "lightSpaceMatrix"),
@@ -445,6 +461,7 @@ impl LightingUniforms {
         p.set_uniform_vec3v(gl, &self.light_direction_loc, &lights.directions);
         p.set_uniform_1fv(gl, &self.light_range_loc, &lights.ranges);
         p.set_uniform_1fv(gl, &self.light_cone_cos_loc, &lights.cone_cos);
+        p.set_uniform_1iv(gl, &self.light_baked_loc, &lights.baked);
 
         // Camera world position (inverse-view translation) for the specular
         // view direction.
@@ -520,6 +537,20 @@ mod tests {
         for channel in &u.colors[0..3] {
             assert!((channel - 0.214_041_14).abs() < 1e-6, "{channel}");
         }
+    }
+
+    // `Light.baked` packs a flag and rides the wire only when set.
+    #[test]
+    fn baked_lights_pack_a_flag() {
+        let point = Light::point(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 5.0);
+        let lights = [Light::ambient(0.1, 0.1, 0.1).baked(), point.clone().cast_shadows().baked()];
+        assert_eq!(pack_lights(&lights).baked[0..2], [1, 1]);
+        assert!(lights[1].casts_shadows());
+        assert_eq!(pack_lights(&[point.clone()]).baked[0], 0);
+        assert!(!serde_json::to_string(&point).unwrap().contains("baked"));
+        let json = serde_json::to_string(&lights[0]).unwrap();
+        assert_eq!(json, r#"{"Ambient":{"color":[0.1,0.1,0.1],"baked":true}}"#);
+        assert_eq!(serde_json::from_str::<Light>(&json).unwrap(), lights[0]);
     }
 
     #[test]

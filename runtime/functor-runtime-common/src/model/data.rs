@@ -37,6 +37,9 @@ pub struct ModelSource {
     /// base texture. Empty draws every triangle untextured.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<GroupSource>,
+    /// Static only: baked light, sampled at `uvs2` (which it needs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lightmap: Option<LightmapSource>,
     /// Parents before children.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skeleton: Vec<JointSource>,
@@ -58,6 +61,16 @@ pub struct GroupSource {
     pub texture: Option<TextureDescription>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unlit: bool,
+}
+
+/// A static model's lightmap: lit groups draw `max(base × lightmap × scale,
+/// floor) + base × unbaked lights`. Its colour space says what its texels
+/// mean (see `model.funi`). `floor` is an authored (sRGB) colour.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LightmapSource {
+    pub texture: TextureDescription,
+    pub scale: f32,
+    pub floor: [f32; 3],
 }
 
 /// A joint's rest pose, local to its parent (unit scale).
@@ -353,6 +366,20 @@ fn validate_static(s: &ModelSource) -> Result<(), String> {
             "groups: cover {next} triangles, but there are {triangles}"
         ));
     }
+    if let Some(lightmap) = &s.lightmap {
+        if s.uvs2.is_empty() {
+            return Err("lightmap: needs uvs2 (one per vertex)".to_string());
+        }
+        if !(lightmap.scale.is_finite() && lightmap.scale >= 0.0) {
+            return Err(format!(
+                "lightmap: scale must be a finite number from 0, got {}",
+                lightmap.scale
+            ));
+        }
+        if !lightmap.floor.iter().all(|c| c.is_finite()) {
+            return Err("lightmap: floor is not a finite colour".to_string());
+        }
+    }
     Ok(())
 }
 
@@ -366,7 +393,11 @@ fn validate_skin(s: &mut ModelSource) -> Result<(), String> {
             ));
         }
     }
-    for (field, empty) in [("uvs2", s.uvs2.is_empty()), ("groups", s.groups.is_empty())] {
+    for (field, empty) in [
+        ("uvs2", s.uvs2.is_empty()),
+        ("groups", s.groups.is_empty()),
+        ("lightmap", s.lightmap.is_none()),
+    ] {
         if !empty {
             return Err(format!("{field}: only static models have them"));
         }
@@ -610,6 +641,7 @@ mod tests {
             weights: vec![[2.0, 0.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]],
             triangles: vec![],
             groups: vec![],
+            lightmap: None,
             skeleton: vec![joint("a", None), joint("b", Some(0))],
             clips: vec![ClipSource {
                 name: "c".to_string(),
@@ -759,6 +791,11 @@ mod tests {
                     unlit: true,
                 },
             ],
+            lightmap: Some(LightmapSource {
+                texture: TextureDescription::File("lm.png".into()),
+                scale: 1.0,
+                floor: [0.0; 3],
+            }),
             skeleton: vec![],
             clips: vec![],
             texture: None,
@@ -805,6 +842,15 @@ mod tests {
             (
                 |s| s.texture = Some(TextureDescription::File("x.png".into())),
                 "texture: a static model has none",
+            ),
+            (|s| s.uvs2.clear(), "lightmap: needs uvs2 (one per vertex)"),
+            (
+                |s| s.lightmap.as_mut().unwrap().scale = -1.0,
+                "lightmap: scale must be a finite number from 0, got -1",
+            ),
+            (
+                |s| s.lightmap.as_mut().unwrap().floor[1] = f32::NAN,
+                "lightmap: floor is not a finite colour",
             ),
         ];
         for (mutate, expected) in cases {

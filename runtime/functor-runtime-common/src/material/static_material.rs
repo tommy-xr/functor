@@ -12,13 +12,16 @@ use super::Material;
 
 // One material group of a static data model (`Model.static`): the group's
 // base texture (unit 0; white when `useTexture` is 0) shaded by the frame's
-// lights with the shared light loop, no highlight (like glTF models). An
-// `unlit` group, or any group in a frame without lights, draws its base
-// fullbright, as static models do in `Frame.create`.
+// lights with the shared light loop, no highlight (like glTF models). With a
+// lightmap (unit 3, sampled at uv2) the baked light replaces the `Light.baked`
+// lights: max(base × lightmap × scale, floor) + base × the other lights. An
+// `unlit` group, or an unlightmapped group in a frame without lights, draws
+// its base fullbright, as static models do in `Frame.create`.
 const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 0) in vec3 inPos;
         layout (location = 1) in vec2 inTex;
         layout (location = 2) in vec3 inNormal;
+        layout (location = 3) in vec2 inTex2;
 
         uniform mat4 world;
         uniform mat3 normalMatrix;
@@ -26,11 +29,13 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         uniform mat4 projection;
 
         out vec2 texCoord;
+        out vec2 lightmapCoord;
         out vec3 worldNormal;
         out vec3 worldPos;
 
         void main() {
             texCoord = inTex;
+            lightmapCoord = inTex2;
             // Unit length at the vertex stage's highp (see LitMaterial).
             worldNormal = normalize(normalMatrix * inNormal);
             vec4 wp = world * vec4(inPos, 1.0);
@@ -44,21 +49,30 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         out vec4 fragColor;
 
         in vec2 texCoord;
+        in vec2 lightmapCoord;
         in vec3 worldNormal;
         in highp vec3 worldPos;
 
         uniform sampler2D texture1;
         uniform int useTexture;
         uniform int unlit;
+        uniform sampler2D lightmap;
+        uniform int useLightmap;
+        uniform float lightmapScale;
+        uniform vec3 lightmapFloor; // linear
 
         void main() {
             vec4 base = useTexture == 1 ? texture(texture1, texCoord) : vec4(1.0);
             vec3 color = base.rgb;
-            if (unlit == 0 && numLights > 0) {
+            if (unlit == 0 && (useLightmap == 1 || numLights > 0)) {
                 vec3 diffuseLight;
                 vec3 specularLight;
                 accumulateLights(normalize(worldNormal), worldPos, diffuseLight, specularLight);
                 color = base.rgb * diffuseLight;
+                if (useLightmap == 1) {
+                    vec3 baked = texture(lightmap, lightmapCoord).rgb * lightmapScale;
+                    color += max(base.rgb * baked, lightmapFloor);
+                }
             }
             fragColor = functorOutput(vec4(applyFog(color, worldPos), base.a));
         }
@@ -72,6 +86,11 @@ struct Uniforms {
     texture_loc: UniformLocation,
     use_texture_loc: UniformLocation,
     unlit_loc: UniformLocation,
+    lightmap_loc: UniformLocation,
+    use_lightmap_loc: UniformLocation,
+    lightmap_scale_loc: UniformLocation,
+    lightmap_floor_loc: UniformLocation,
+    skip_baked_loc: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
@@ -82,7 +101,10 @@ static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 
 /// A static model's shader: `draw_opaque` sets the model's uniforms, then
 /// [`StaticMaterial::set_group`] each group's (its texture bound to unit 0).
-pub struct StaticMaterial;
+pub struct StaticMaterial {
+    /// The lightmap's `scale` and linear `floor`, its texture bound to unit 3.
+    pub lightmap: Option<(f32, [f32; 3])>,
+}
 
 use crate::shader::Shader;
 use crate::shader::ShaderType;
@@ -111,6 +133,11 @@ impl Material for StaticMaterial {
                     texture_loc: shader.get_uniform_location(ctx.gl, "texture1"),
                     use_texture_loc: shader.get_uniform_location(ctx.gl, "useTexture"),
                     unlit_loc: shader.get_uniform_location(ctx.gl, "unlit"),
+                    lightmap_loc: shader.get_uniform_location(ctx.gl, "lightmap"),
+                    use_lightmap_loc: shader.get_uniform_location(ctx.gl, "useLightmap"),
+                    lightmap_scale_loc: shader.get_uniform_location(ctx.gl, "lightmapScale"),
+                    lightmap_floor_loc: shader.get_uniform_location(ctx.gl, "lightmapFloor"),
+                    skip_baked_loc: shader.get_uniform_location(ctx.gl, "skipBakedLights"),
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
@@ -137,6 +164,7 @@ impl Material for StaticMaterial {
                     p.set_uniform_matrix4(ctx.gl, &uniforms.view_loc, view_matrix);
                     p.set_uniform_matrix4(ctx.gl, &uniforms.projection_loc, projection_matrix);
                     p.set_uniform_1i(ctx.gl, &uniforms.texture_loc, 0);
+                    p.set_uniform_1i(ctx.gl, &uniforms.lightmap_loc, 3);
                     uniforms.lighting.set_pass(p, ctx, view_matrix);
                     uniforms.fog.set(p, ctx.gl, ctx.fog, &ctx.camera_pos);
                 }
@@ -146,6 +174,12 @@ impl Material for StaticMaterial {
                     &uniforms.normal_matrix_loc,
                     &normal_matrix(world_matrix),
                 );
+                let (scale, floor) = self.lightmap.unwrap_or((0.0, [0.0; 3]));
+                let lightmapped = self.lightmap.is_some() as i32;
+                p.set_uniform_1i(ctx.gl, &uniforms.use_lightmap_loc, lightmapped);
+                p.set_uniform_1i(ctx.gl, &uniforms.skip_baked_loc, lightmapped);
+                p.set_uniform_1f(ctx.gl, &uniforms.lightmap_scale_loc, scale);
+                p.set_uniform_vec3(ctx.gl, &uniforms.lightmap_floor_loc, &floor.into());
                 LightingUniforms::bind_shadow_map(ctx);
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }

@@ -5,7 +5,10 @@
 //!   every group fullbright;
 //! - one model drawn by several nodes uploads once, steady frames upload
 //!   nothing, and undrawn it is deleted;
-//! - the shadow pass and the instanced (stamped) path draw it.
+//! - the shadow pass and the instanced (stamped) path draw it;
+//! - a lightmapped texel is base × lightmap × scale, in either lightmap
+//!   colour space; `floor` is a minimum; `Light.baked` lights skip
+//!   lightmapped surfaces but still light others; unbaked lights add.
 //!
 //! Self-skipping like `skinned_data` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -19,14 +22,15 @@ use std::sync::Arc;
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::gpu_counters::gpu_counters;
 use functor_runtime_common::math::Angle;
-use functor_runtime_common::model::{GroupSource, ModelData, ModelSource};
+use functor_runtime_common::color_space::{linear_to_srgb, srgb_u8_to_linear};
+use functor_runtime_common::model::{GroupSource, LightmapSource, ModelData, ModelSource};
 use functor_runtime_common::render::VertexPositionTextureLightmap;
 use functor_runtime_common::shadow::ShadowMap;
 use functor_runtime_common::texture::{ColorSpace, PixelData, PixelEncoding};
 use functor_runtime_common::{
     render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, InstanceData, Light,
-    ModelDescription, ModelHandle, Scene3D, SceneContext, SceneObject, TextureDescription,
-    Viewport,
+    MaterialDescription, ModelDescription, ModelHandle, Scene3D, SceneContext, SceneObject,
+    TextureDescription, Viewport,
 };
 use glow::HasContext;
 
@@ -44,12 +48,120 @@ fn main() {
     println!("test one_upload_for_many_nodes ... ok");
     shadow_and_instanced(&mut harness);
     println!("test shadow_and_instanced ... ok");
+    lightmap_texels(&mut harness);
+    println!("test lightmap_texels ... ok");
+    baked_and_unbaked_lights(&mut harness);
+    println!("test baked_and_unbaked_lights ... ok");
 }
 
 /// A 1×1 sRGB texture.
 fn solid(rgb: [u8; 3]) -> TextureDescription {
-    let pixels = PixelData::new(1, 1, PixelEncoding::Rgb8, ColorSpace::Srgb, &rgb);
+    solid_in(rgb, ColorSpace::Srgb)
+}
+
+fn solid_in(rgb: [u8; 3], space: ColorSpace) -> TextureDescription {
+    let pixels = PixelData::new(1, 1, PixelEncoding::Rgb8, space, &rgb);
     TextureDescription::Data(Arc::new(pixels.expect("valid pixels")))
+}
+
+/// The left quad of `room`, one group with `base`, lightmapped by
+/// `lightmap` at `scale` and `floor`.
+fn lightmapped(
+    base: TextureDescription,
+    lightmap: TextureDescription,
+    scale: f32,
+    floor: [f32; 3],
+) -> Arc<ModelData> {
+    let room = room(&base, &base);
+    model(ModelSource {
+        positions: room.positions[..4].to_vec(),
+        normals: room.normals[..4].to_vec(),
+        uvs: room.uvs[..4].to_vec(),
+        uvs2: vec![[0.5, 0.5]; 4],
+        triangles: room.triangles[..2].to_vec(),
+        groups: vec![GroupSource {
+            first: 0,
+            count: 2,
+            texture: Some(base),
+            unlit: false,
+        }],
+        lightmap: Some(LightmapSource {
+            texture: lightmap,
+            scale,
+            floor,
+        }),
+        ..room
+    })
+}
+
+/// Each lightmapped texel is base × lightmap × scale in linear light: a
+/// `Linear` lightmap byte is its value / 255, an `Srgb` one is decoded
+/// first (multiplying in gamma space). No frame lights are needed.
+fn lightmap_texels(harness: &mut Harness) {
+    for space in [ColorSpace::Linear, ColorSpace::Srgb] {
+        for (base, light, scale) in [
+            ([200, 120, 60], [128, 128, 128], 1.0),
+            ([255, 255, 255], [64, 160, 255], 1.0),
+            ([90, 200, 250], [100, 50, 200], 1.5),
+        ] {
+            let room = lightmapped(solid(base), solid_in(light, space), scale, [0.0; 3]);
+            let image = harness.render(&frame(&room, 1, false, vec![]));
+            let want: [u8; 3] = std::array::from_fn(|c| {
+                let lm = match space {
+                    ColorSpace::Linear => light[c] as f32 / 255.0,
+                    ColorSpace::Srgb => srgb_u8_to_linear(light[c]),
+                };
+                let out = srgb_u8_to_linear(base[c]) * lm * scale;
+                (linear_to_srgb(out.min(1.0)) * 255.0).round() as u8
+            });
+            assert_near(rgb(&image, 32, 64), want, &format!("{space:?} {base:?} × {light:?}"));
+        }
+    }
+    // A dark lightmap shows `floor` (an sRGB colour) instead.
+    let room = lightmapped(
+        solid([255, 255, 255]),
+        solid_in([0, 0, 0], ColorSpace::Linear),
+        1.0,
+        [0.5, 0.25, 0.0],
+    );
+    let image = harness.render(&frame(&room, 1, false, vec![]));
+    assert_near(rgb(&image, 32, 64), [128, 64, 0], "floor");
+}
+
+/// A `Light.baked` ambient leaves the lightmapped quad as the lightmap has
+/// it but brightens a lit cube; an unbaked point light adds to the quad.
+fn baked_and_unbaked_lights(harness: &mut Harness) {
+    let room = lightmapped(
+        solid([255, 255, 255]),
+        solid_in([64, 64, 64], ColorSpace::Linear),
+        1.0,
+        [0.0; 3],
+    );
+    let with_cube = |lights: Vec<Light>| {
+        let mut frame = frame(&room, 1, false, lights);
+        let cube = Scene3D::cube().scale_x(1.0).translate_x(1.5);
+        let cube = Scene3D {
+            obj: SceneObject::Material(MaterialDescription::lit(1.0, 1.0, 1.0, 1.0), vec![cube]),
+            xform: cgmath::Matrix4::from_scale(1.0),
+        };
+        let SceneObject::Group(items) = &mut frame.scene.obj else {
+            unreachable!()
+        };
+        items.push(cube);
+        frame
+    };
+    let dark = harness.render(&with_cube(vec![Light::ambient(0.05, 0.05, 0.05)]));
+    let baked = harness.render(&with_cube(vec![Light::ambient(1.0, 1.0, 1.0).baked()]));
+    let unbaked = harness.render(&with_cube(vec![Light::ambient(1.0, 1.0, 1.0)]));
+    let quad = |image: &[u8]| rgb(image, 32, 64);
+    let cube = |image: &[u8]| rgb(image, 96, 64);
+    // 64 / 255 linear encodes to ~137.
+    assert_near(quad(&baked), [137, 137, 137], "baked ambient skips the quad");
+    assert!(cube(&baked)[0] > cube(&dark)[0] + 100, "baked ambient lights the cube");
+    assert!(quad(&unbaked)[0] > 250, "an unbaked ambient adds to the quad");
+    let point = Light::point(-1.5, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 4.0);
+    let lit = harness.render(&with_cube(vec![point]));
+    assert!(quad(&lit)[0] > quad(&baked)[0] + 40, "an unbaked point adds");
 }
 
 /// Two quads filling the view, facing the camera: the left lit and red,
@@ -78,6 +190,7 @@ fn room(red: &TextureDescription, green: &TextureDescription) -> ModelSource {
                 unlit: true,
             },
         ],
+        lightmap: None,
         skeleton: vec![],
         clips: vec![],
         texture: None,
@@ -102,6 +215,7 @@ fn groups(harness: &mut Harness) {
     // No groups: one untextured (white) lit group.
     let plain = model(ModelSource {
         groups: vec![],
+        lightmap: None,
         ..self::room(&red, &green)
     });
     let white = harness.render(&frame(&plain, 1, false, vec![Light::ambient(1.0, 1.0, 1.0)]));
@@ -152,6 +266,7 @@ fn shadow_and_instanced(harness: &mut Harness) {
         uvs: vec![],
         triangles: vec![[0, 1, 2], [0, 2, 3]],
         groups: vec![],
+        lightmap: None,
         ..self::room(&red, &green)
     });
     let sun = vec![

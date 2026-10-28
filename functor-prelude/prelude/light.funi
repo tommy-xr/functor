@@ -13,3 +13,6 @@ let point : (Vec3.t, Color.t, float, float) => t
 let spot : (Vec3.t, Vec3.t, Color.t, float, float, Angle.t) => t
 /// Enable shadow casting; the light is first for piping.
 let castShadows : (t) => t
+/// Mark a light as already baked into the lightmaps (`Model.static`):
+/// lightmapped surfaces skip it, everything else is still lit by it.
+let baked : (t) => t

@@ -329,8 +329,9 @@ fn bind_model_base_color(
     }
 }
 
-/// Draw a static data model: one draw per group with its base texture, or
-/// one draw of every triangle under a pass/debug `override_material`.
+/// Draw a static data model: one draw per group with its base texture (and
+/// the model's lightmap), or one draw of every triangle under a pass/debug
+/// `override_material`.
 fn draw_static_model(
     render_context: &RenderContext,
     scene_context: &SceneContext,
@@ -361,7 +362,28 @@ fn draw_static_model(
     } else {
         &source.groups[..]
     };
-    let mut material = crate::material::StaticMaterial;
+    // The lightmap samples in its own colour space (a file one as sRGB),
+    // clamped so atlas rects never wrap.
+    if let Some(lightmap) = &source.lightmap {
+        let texture = match &lightmap.texture {
+            TextureDescription::File(file) => TextureDescription::FileClamped(file.clone()),
+            other => other.clone(),
+        };
+        material_description::bind_texture_description(
+            &texture,
+            3,
+            SpriteSampling::Linear,
+            &scene_context.texture_pipeline,
+            render_context,
+            scene_context,
+        );
+        unsafe { gl.active_texture(glow::TEXTURE0) };
+    }
+    let mut material = crate::material::StaticMaterial {
+        lightmap: source.lightmap.as_ref().map(|l| {
+            (l.scale, crate::color_space::srgb_to_linear3(l.floor))
+        }),
+    };
     material.initialize(render_context);
     material.draw_opaque(render_context, projection_matrix, view_matrix, matrix, &[]);
     for group in groups {

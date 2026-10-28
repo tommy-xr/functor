@@ -127,6 +127,7 @@ fn scene_frame(count: usize) -> Frame {
             color: [1.0, 1.0, 1.0],
             intensity: 1.0,
             casts_shadows: true,
+            baked: false,
         },
     ];
     frame

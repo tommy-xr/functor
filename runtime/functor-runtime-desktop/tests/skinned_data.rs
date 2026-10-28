@@ -222,6 +222,7 @@ fn arm() -> ModelSource {
         weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
         triangles: vec![[0, 2, 1], [0, 3, 2]],
         groups: vec![],
+        lightmap: None,
         skeleton: vec![joint("upper", None, 0.0), joint("lower", Some(0), 1.0)],
         texture: None,
         clips: vec![ClipSource {
