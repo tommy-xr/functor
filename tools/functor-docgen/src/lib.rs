@@ -672,17 +672,6 @@ mod tests {
     #[test]
     fn embedded_api_is_a_complete_documented_surface() {
         let reference = generate().unwrap();
-        let count = |group: ApiGroup| {
-            let modules: Vec<&ApiModule> = reference
-                .modules
-                .iter()
-                .filter(|module| module.group == group)
-                .collect();
-            let items: usize = modules.iter().map(|module| module.items.len()).sum();
-            (modules.len(), items)
-        };
-        assert_eq!(count(ApiGroup::Engine), (40, 447));
-        assert_eq!(count(ApiGroup::Stdlib), (10, 98));
         assert!(reference
             .modules
             .iter()

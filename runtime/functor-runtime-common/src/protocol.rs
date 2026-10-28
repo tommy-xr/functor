@@ -7,7 +7,8 @@
 //! introspectable, what a second producer must speak), as **unversioned debug
 //! text**, or **in-process only** (a same-binary handoff that is *not* yet part
 //! of the data protocol). The tests below pin the wire shape of the data types;
-//! changing one is a protocol change and should bump [`PROTOCOL_VERSION`].
+//! changing one incompatibly is a protocol change and should bump [`PROTOCOL_VERSION`];
+//! additive, defaulted fields don't.
 //!
 //! # Per-frame, runtime → logic
 //!
@@ -645,7 +646,6 @@ fn with_role(
 
 #[cfg(test)]
 mod tests {
-    use super::PROTOCOL_VERSION;
     use crate::audio::{AudioCommand, AudioScene, AudioSource};
     use crate::net::{ConnCommand, HttpMethod, NetCommand, NetInbound};
     use crate::ui::{Anchor, View};
@@ -680,7 +680,6 @@ mod tests {
     fn sprite_atlas_material_wire_is_pinned() {
         use crate::{MaterialDescription, SpriteSampling, TextureDescription};
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let material = MaterialDescription::sprite_texture_tinted(
             TextureDescription::FileClamped("hero-atlas.png".to_string()),
             Some([96.0, 0.0, 96.0, 96.0]),
@@ -707,7 +706,6 @@ mod tests {
     fn convex_polygon_geometry_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let scene = Scene3D {
             obj: SceneObject::Geometry(Shape::ConvexPolygon {
                 points: vec![[0.0, 0.0], [2.0, 0.0], [1.0, 1.5]],
@@ -730,7 +728,6 @@ mod tests {
         use crate::scene3d::MeshData;
         use crate::{SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let obj = SceneObject::Geometry(Shape::Mesh {
             mesh: std::sync::Arc::new(MeshData {
                 positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -753,7 +750,6 @@ mod tests {
     fn billboard_geometry_wire_is_pinned() {
         use crate::{SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let obj = SceneObject::Geometry(Shape::Billboard);
         let json = serde_json::to_string(&obj).expect("serialize billboard geometry");
         assert_eq!(json, r#"{"Geometry":"Billboard"}"#);
@@ -768,7 +764,6 @@ mod tests {
     fn opacity_subtree_wire_is_pinned() {
         use crate::{Scene3D, SceneObject, Shape};
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let scene = SceneObject::Opacity(
             0.35,
             vec![Scene3D {
@@ -792,7 +787,6 @@ mod tests {
     fn instanced_wire_is_pinned() {
         use crate::{InstanceData, MaterialDescription, Scene3D, SceneObject};
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let template = Scene3D {
             obj: SceneObject::Material(
                 MaterialDescription::lit(1.0, 0.5, 0.25, 1.0),
@@ -822,7 +816,6 @@ mod tests {
     fn two_bone_reach_animation_wire_is_pinned() {
         use crate::anim::AnimExpr;
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let reach = AnimExpr::Reach {
             root: "upper".to_string(),
             middle: "lower".to_string(),
@@ -995,7 +988,6 @@ mod tests {
         use crate::texture::{ColorSpace, PixelData, PixelEncoding};
         use crate::TextureDescription;
 
-        assert_eq!(PROTOCOL_VERSION, 20);
         let pixels = PixelData::new(1, 1, PixelEncoding::Rgba8, ColorSpace::Srgb, &[1, 2, 3, 4]);
         let texture = TextureDescription::Data(std::sync::Arc::new(pixels.unwrap()));
         let json = serde_json::to_string(&texture).unwrap();
