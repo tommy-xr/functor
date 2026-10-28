@@ -72,6 +72,26 @@ let sphere : (float) => shape
 /// Create a capsule shape from half-height and radius.
 let capsule : (float, float) => shape
 
+/// Triangle-mesh data for `Physics.trimesh`, in `Model.skinned`'s layout:
+/// `positions` is little-endian f32 `x, y, z` per vertex (Y up, metres) and
+/// `triangles` is u32 vertex index triples.
+type triangles = { positions: Bytes.t, triangles: Bytes.t }
+
+/// Create triangle-mesh collision geometry: level floors, walls and ramps.
+///
+/// Use it with `Physics.fixed` or `Physics.kinematic`; `Physics.dynamic` is an
+/// error. Faces are surfaces, not a solid. Bodies collide with a face's front,
+/// the side its triangle winds counter-clockwise, and pass through its back;
+/// rays hit both sides. A fast, small body can also pass through a face in one
+/// step; continuous collision detection for such bodies is a follow-up.
+///
+/// Bad data is an error naming the field: an index out of range, a
+/// non-finite position, or no triangle with any area. Zero-area triangles
+/// are dropped. Build it once (a top-level `let`) and re-declare the value:
+/// the collision structure is built once per value, but each call copies and
+/// validates the data.
+let trimesh : (triangles) => shape
+
 /// Create a fixed heightfield body from a shared terrain descriptor.
 ///
 /// The renderer and collider share dimensions, elevation range, asset

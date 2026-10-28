@@ -23,6 +23,7 @@ mod driver;
 mod registry;
 mod scene;
 mod timeline;
+mod trimesh;
 mod world;
 
 #[cfg(test)]
@@ -34,4 +35,7 @@ pub use driver::*;
 pub use registry::*;
 pub use scene::*;
 pub use timeline::*;
+pub use trimesh::TriMeshData;
+#[cfg(test)]
+pub(crate) use trimesh::builds as trimesh_builds;
 pub use world::*;

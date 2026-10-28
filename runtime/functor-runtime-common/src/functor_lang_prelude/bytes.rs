@@ -31,6 +31,25 @@ impl ByteView {
     }
 }
 
+/// Little-endian `N`-component entries of `T` (`size` bytes each).
+pub(super) fn entries<T, const N: usize>(
+    raw: &[u8],
+    size: usize,
+    read: impl Fn(&[u8]) -> T,
+) -> Result<Vec<[T; N]>, String> {
+    let stride = size * N;
+    if raw.len() % stride != 0 {
+        return Err(format!(
+            "{} bytes is not a whole number of {stride}-byte entries",
+            raw.len()
+        ));
+    }
+    Ok(raw
+        .chunks_exact(stride)
+        .map(|entry| std::array::from_fn(|k| read(&entry[size * k..size * (k + 1)])))
+        .collect())
+}
+
 /// [`ByteView`] as an opaque Functor Lang value.
 pub struct FunctorLangBytes(pub ByteView);
 

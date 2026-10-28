@@ -245,6 +245,32 @@ Capture gotcha: `--fixed-time` pins the clock with `dts = 0`, so physics never
 steps under it — a physics golden captures a *settled* scene via plain
 `--capture-time` (rest poses are reproducible) rather than the fixed-time path.
 
+### Triangle meshes: `Physics.trimesh`
+
+`Physics.trimesh({ positions, triangles })` is a `shape` for level geometry
+(floors, walls, ramps), in `Model.skinned`'s byte layout: f32 `x, y, z` per
+vertex and u32 index triples. It composes with `Physics.at` and the rotations
+like `box`, and works only on `fixed` and `kinematic` bodies — a dynamic one is
+a teaching error. Rays and contacts report the body's tag.
+
+- **Built once per value.** The shape holds the validated data in an `Arc`,
+  and the rapier BVH is built lazily on first spawn and kept there. Re-declaring
+  the same value every frame is a pointer compare; keyframes, rewinds and seeks
+  clone the world, whose colliders share that BVH. A hot reload re-evaluates the
+  data into an equal value, which reconcile treats as unchanged. Build it in a
+  top-level `let`: each call copies and validates the bytes.
+- **Validation** names the field: an out-of-range index, a non-finite position,
+  or no triangle with any area. Zero-area triangles are dropped.
+- **Surfaces, not a solid; contacts are one-sided.** Internal edges are fixed
+  (`FIX_INTERNAL_EDGES`) so a ball rolls across shared edges without hopping.
+  That makes a face collide only from its front, the side its triangle winds
+  counter-clockwise: a body behind it passes through. Rays hit both sides, so a
+  ray from inside a closed mesh hits the far wall. Without edge fixing contacts
+  would be two-sided, but a 25 cm ball rolling at 6 m/s hops ~3 cm at every
+  shared edge.
+- **Tunnelling.** A fast, small body can end a step past a thin surface.
+  Continuous collision detection (`Physics.continuous`) is a follow-up.
+
 ## API (F# — reference design, deferred)
 
 **Per-frame draw context.** `draw3d` takes a `DrawContext` record (not a bare

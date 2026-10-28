@@ -2963,6 +2963,52 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
             }))
         },
     );
+    // `Model.skinned`'s byte layout. Each call copies and validates the data,
+    // so games build it once (a top-level `let`) and re-declare the value.
+    reg.fn1(
+        "Physics.trimesh",
+        "Physics.trimesh({ positions, triangles })",
+        |data: Value| {
+            let field = |name: &str| -> Result<bytes::ByteView, String> {
+                let Value::Record(fields) = &data else {
+                    return Err(format!(
+                        "Physics.trimesh: expected a {{ positions, triangles }} record, got {}",
+                        data.kind_name()
+                    ));
+                };
+                match fields.iter().find(|(field, _)| field == name) {
+                    Some((_, Value::HostData(d))) => d
+                        .as_any()
+                        .downcast_ref::<FunctorLangBytes>()
+                        .map(|b| b.0.clone()),
+                    _ => None,
+                }
+                .ok_or_else(|| format!("Physics.trimesh: `{name}` must be Bytes"))
+            };
+            // Little-endian triples: f32 x, y, z per vertex; u32 indices.
+            let triples = |name: &str| {
+                field(name).and_then(|raw| {
+                    bytes::entries::<[u8; 4], 3>(raw.as_slice(), 4, |b| b.try_into().unwrap())
+                        .map_err(|e| format!("Physics.trimesh: {name}: {e}"))
+                })
+            };
+            let positions = triples("positions")?
+                .into_iter()
+                .map(|v| v.map(f32::from_le_bytes))
+                .collect();
+            let triangles = triples("triangles")?
+                .into_iter()
+                .map(|t| t.map(u32::from_le_bytes))
+                .collect();
+            physics::TriMeshData::new(positions, triangles)
+                .map(|mesh| {
+                    FunctorLangShape(physics::Shape::TriMesh {
+                        mesh: std::sync::Arc::new(mesh),
+                    })
+                })
+                .map_err(|e| format!("Physics.trimesh: {e}"))
+        },
+    );
     reg.fn2(
         "Physics.heightfield",
         "Physics.heightfield(tag, terrain)",
@@ -2989,7 +3035,15 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
     reg.fn2(
         "Physics.dynamic",
         "Physics.dynamic(tag, shape)",
-        body_ctor(physics::Body::dynamic),
+        |tag: std::rc::Rc<str>, shape: FunctorLangShape| {
+            if matches!(shape.0, physics::Shape::TriMesh { .. }) {
+                return Err("Physics.dynamic: a trimesh is a surface with no volume or mass, \
+so it can't be dynamic — use Physics.fixed or Physics.kinematic for it, and a box, sphere or \
+capsule for the moving body"
+                    .to_string());
+            }
+            Ok(body_ctor(physics::Body::dynamic)(tag, shape))
+        },
     );
     reg.fn2(
         "Physics.kinematic",
@@ -9871,6 +9925,65 @@ translation-only; use Physics.at with an unrotated Scene.terrain"
         let json = serde_json::to_string(&body.0).expect("serialize");
         let back: physics::Body = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, body.0);
+    }
+
+    // `Physics.trimesh` reads `Model.skinned`'s byte layout. One value is one
+    // shared mesh; bad data and a dynamic trimesh are teaching errors.
+    #[test]
+    fn physics_trimesh_decodes_bytes_and_refuses_bad_data_and_dynamic_bodies() {
+        let mesh = |positions: &str, triangles: &str| {
+            format!(
+                "let floor = Physics.trimesh({{ positions: Bytes.fromF32le([{positions}]), \
+triangles: Bytes.fromU32le([{triangles}]) }})\n"
+            )
+        };
+        let triangle = mesh("0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0", "0.0, 1.0, 2.0");
+        let value = eval(&format!(
+            "{triangle}let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), [\n\
+               Physics.fixed(Physics.tag(\"a\"), floor),\n\
+               Physics.kinematic(Physics.tag(\"b\"), floor) |> Physics.at(Vec3.make(0.0, 1.0, 0.0)),\n\
+             ])"
+        ));
+        let scene = physics_scene_value(&value).expect("a PhysicsScene");
+        let [a, b] = [0, 1].map(|i| match &scene.bodies[i].shape {
+            physics::Shape::TriMesh { mesh } => mesh.clone(),
+            other => panic!("expected a trimesh, got {other:?}"),
+        });
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "one value, one mesh");
+        assert_eq!(scene.bodies[1].kind, physics::BodyKind::Kinematic);
+
+        let fails = |src: String| fail_message(&format!("{src}let main = () => floor"));
+        assert_eq!(
+            fail_message(&format!(
+                "{triangle}let main = () => Physics.dynamic(Physics.tag(\"a\"), floor)"
+            )),
+            "Physics.dynamic: a trimesh is a surface with no volume or mass, so it can't be \
+dynamic — use Physics.fixed or Physics.kinematic for it, and a box, sphere or capsule for the \
+moving body"
+        );
+        assert_eq!(
+            fails(mesh("0.0, 0.0", "0.0, 1.0, 2.0")),
+            "Physics.trimesh: positions: 8 bytes is not a whole number of 12-byte entries"
+        );
+        assert_eq!(
+            fails(mesh("0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0", "0.0, 1.0, 7.0")),
+            "Physics.trimesh: triangles: triangle 0 uses vertex 7, but there are only 3 vertices"
+        );
+        assert_eq!(
+            fails(mesh("0.0, 0.0, 0.0, 0.0 / 0.0, 0.0, 0.0, 0.0, 0.0, 1.0", "0.0, 1.0, 2.0")),
+            "Physics.trimesh: positions: vertex 1 is not finite ([NaN, 0.0, 0.0])"
+        );
+        assert_eq!(
+            fails(mesh("0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0", "0.0, 1.0, 2.0")),
+            "Physics.trimesh: triangles: no triangle has any area (1 given)"
+        );
+        assert_eq!(
+            fail_message(
+                "let main = () => Physics.trimesh({ positions: 1.0, \
+triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
+            ),
+            "Physics.trimesh: `positions` must be Bytes"
+        );
     }
 
     // End to end across the seam: reconcile + step the singleton world the
