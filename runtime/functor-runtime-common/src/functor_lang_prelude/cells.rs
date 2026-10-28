@@ -51,8 +51,7 @@ fn number(value: &Value, what: &str) -> Result<f64, String> {
 }
 
 /// A cell id: a whole number ≥ 0.
-fn id(value: &Value, what: &str) -> Result<u32, String> {
-    let n = number(value, what)?;
+fn cell_id(n: f64, what: &str) -> Result<u32, String> {
     if n >= 0.0 && n.fract() == 0.0 && n <= f64::from(u32::MAX) {
         Ok(n as u32)
     } else {
@@ -60,6 +59,10 @@ fn id(value: &Value, what: &str) -> Result<u32, String> {
             "{what} must be a cell id (a whole number ≥ 0), got {n}"
         ))
     }
+}
+
+fn id(value: &Value, what: &str) -> Result<u32, String> {
+    cell_id(number(value, what)?, what)
 }
 
 fn point(value: &Value, what: &str, span: Span) -> Result<[f32; 3], String> {
@@ -144,6 +147,30 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Cells.segment(a, b, cells)",
         |a: FunctorLangVec3, b: FunctorLangVec3, cells: FunctorLangCells| {
             Value::Bool(cells.0.segment(a.0.into(), b.0.into()))
+        },
+    );
+    reg.fn2(
+        "Scene.cells",
+        "Scene.cells(cells, scene)",
+        |cells: FunctorLangCells, scene: FunctorLangScene| {
+            FunctorLangScene(Scene3D {
+                obj: SceneObject::Cells(crate::CellsNode::Walk(cells.0), vec![scene.0]),
+                xform: Matrix4::from_scale(1.0),
+            })
+        },
+    );
+    reg.fn2(
+        "Scene.inCells",
+        "Scene.inCells(ids, scene)",
+        |ids: Vec<f64>, scene: FunctorLangScene| {
+            let ids = ids
+                .into_iter()
+                .map(|id| cell_id(id, "Scene.inCells: an id"))
+                .collect::<Result<_, _>>()?;
+            Ok::<_, String>(FunctorLangScene(Scene3D {
+                obj: SceneObject::Cells(crate::CellsNode::In(ids), vec![scene.0]),
+                xform: Matrix4::from_scale(1.0),
+            }))
         },
     );
 }

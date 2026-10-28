@@ -80,6 +80,19 @@ fn a_doorway_shows_the_far_room_and_a_wall_hides_it(h: &mut Harness) {
         on == h.render(&beside, &[0], false),
         "culling changed the image"
     );
+
+    // Under `Scene.opacity` (drawn by the transparent pass) nothing hides.
+    let translucent = Scene3D {
+        obj: SceneObject::Opacity(0.5, vec![rooms(true, vec![])]),
+        xform: Matrix4::identity(),
+    };
+    let translucent = frame(along(1.5), translucent, false);
+    let on = h.render(&translucent, &[0], true);
+    assert_eq!(gpu_counters().frame_cells(), CellsCounts::default());
+    assert!(
+        on == h.render(&translucent, &[0], false),
+        "culling changed the image"
+    );
     println!("test a_doorway_shows_the_far_room_and_a_wall_hides_it ... ok");
 }
 

@@ -260,16 +260,24 @@ impl Cells {
 /// A screen rectangle in NDC: `[min x, min y, max x, max y]`.
 type Rect = [f32; 4];
 
+const FULL: Rect = [-1.0, -1.0, 1.0, 1.0];
+
 impl Cells {
     /// The cells an eye at `eye` sees through portals, flooding from its
-    /// cell and narrowing a screen rectangle at each portal. `clip` is the
+    /// cell (every cell holding it, on a shared face) and narrowing a screen
+    /// rectangle at each portal. `clip` is the
     /// eye's `projection * view * world`, `eye` in this cells' space. `None`
     /// (draw every cell) when the eye is outside every cell, or the walk runs
     /// long.
     pub fn visible(&self, eye: Vector3<f32>, clip: &Matrix4<f32>) -> Option<Vec<bool>> {
-        let start = self.locate(eye)? as usize;
+        let mut stack: Vec<(usize, Rect)> = (0..self.len())
+            .filter(|&cell| self.contains(cell, eye))
+            .map(|cell| (cell, FULL))
+            .collect();
+        if stack.is_empty() {
+            return None;
+        }
         let mut reached: Vec<Option<Rect>> = vec![None; self.len()];
-        let mut stack = vec![(start, [-1.0, -1.0, 1.0, 1.0])];
         // Each visit reaches a new cell or grows its rectangle; cap the
         // pathological case.
         let mut budget = 16 * (self.len() + self.data.portals.len());
@@ -306,7 +314,8 @@ impl Cells {
 }
 
 /// A polygon's screen rectangle under `clip`, clipped to the part in front
-/// of the eye (`w > 0`) before the divide. `None` when it is all behind.
+/// of the eye (`w > 0`) before the divide. `None` when it is all behind;
+/// the whole screen when it only grazes the eye (`0 < w < W_MIN`).
 fn project(clip: &Matrix4<f32>, polygon: &[[f32; 3]]) -> Option<Rect> {
     const W_MIN: f32 = 1e-5;
     let corners = polygon.iter().map(|&p| clip * v(p).extend(1.0));
@@ -336,7 +345,11 @@ fn project(clip: &Matrix4<f32>, polygon: &[[f32; 3]]) -> Option<Rect> {
             add(a + (b - a) * ((W_MIN - a.w) / (b.w - a.w)));
         }
     }
-    (rect[0] <= rect[2]).then_some(rect)
+    if rect[0] <= rect[2] {
+        Some(rect)
+    } else {
+        ring.iter().any(|c| c.w > 0.0).then_some(FULL)
+    }
 }
 
 fn contains(outer: Rect, inner: Rect) -> bool {
@@ -808,6 +821,36 @@ pub(crate) mod tests {
             seen(&cells, [3.0, 1.0, 1.5], [3.0, 1.0, 10.0]).unwrap()[1],
             false
         );
+    }
+
+    #[test]
+    fn an_eye_on_a_shared_wall_sees_its_own_room() {
+        // Rooms 0 and 1 with no portal between them: an eye 0.5 mm into room
+        // 1 is within room 0's tolerance too, and sees both.
+        let cells = Cells::new(CellsData {
+            cells: vec![
+                room([0.0, 0.0, -2.0], [4.0, 3.0, 2.0]),
+                room([4.0, 0.0, -2.0], [8.0, 3.0, 2.0]),
+            ],
+            portals: vec![],
+        })
+        .unwrap();
+        assert_eq!(
+            seen(&cells, [4.0005, 1.0, 0.0], [8.0, 1.0, 0.0]),
+            Some(vec![true, true])
+        );
+    }
+
+    #[test]
+    fn a_portal_grazing_the_eye_passes_the_whole_view() {
+        // A clip matrix whose w is 1e-6 at every corner: in front of the eye,
+        // too close to divide by.
+        let polygon = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let mut clip = Matrix4::from_scale(0.0);
+        clip.w.w = 1e-6;
+        assert_eq!(project(&clip, &polygon), Some(FULL));
+        clip.w.w = -1.0;
+        assert_eq!(project(&clip, &polygon), None);
     }
 
     #[test]

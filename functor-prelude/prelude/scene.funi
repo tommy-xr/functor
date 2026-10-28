@@ -169,8 +169,8 @@ let memo : (string, 'd, ('d) => t) => t
 /// cells is visible from that eye through portals. Unmarked nodes always
 /// draw, and so does everything when the eye is outside every cell. Hidden
 /// nodes still cast shadows and stay loaded on the GPU, so turning around
-/// costs no uploads. `Scene.opacity` subtrees always draw. `FUNCTOR_CULL=0`
-/// turns it off.
+/// costs no uploads. `Scene.opacity` subtrees and terrain always draw.
+/// `FUNCTOR_CULL=0` turns it off.
 ///
 /// ```
 /// let draw = (model) => Scene.cells(level, Scene.group([

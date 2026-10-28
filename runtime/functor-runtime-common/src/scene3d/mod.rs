@@ -3007,9 +3007,12 @@ impl Scene3D {
                     }
                 };
                 match node {
-                    // Shadows aren't portal-culled: a hidden room still casts.
+                    // Shadows and translucent subtrees (the transparent pass
+                    // draws them) aren't portal-culled: a hidden room still casts.
                     CellsNode::Walk(cells) => {
-                        let visible = if depth_pass {
+                        let visible = if depth_pass
+                            || render_context.opacity_stage == crate::OpacityStage::Draw
+                        {
                             None
                         } else {
                             scene_context.walk_cells(cells, projection_matrix, view_matrix, &world)
