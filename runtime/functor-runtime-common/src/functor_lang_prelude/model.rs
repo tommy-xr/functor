@@ -230,7 +230,7 @@ impl crate::host_registry::FromArg for StaticArg {
     }
 }
 
-fn static_source(value: &Value, span: Span) -> Result<ModelSource, RunError> {
+pub(super) fn static_source(value: &Value, span: Span) -> Result<ModelSource, RunError> {
     let fields = record(value, "data", span)?;
     let get = |name: &str| field(fields, name, "data", span);
     let whole = |v: &Value, what: &str| index(v, u32::MAX as f64, what, span);

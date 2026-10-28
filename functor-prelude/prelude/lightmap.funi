@@ -1,0 +1,31 @@
+//! Lightmap tools. `unwrap` gives a static model's data a second UV set
+//! (`uvs2`) for a lightmap baked in Blender or in Functor. Edge-adjacent,
+//! coplanar triangles (to within half a texel) become charts; each is laid
+//! flat at `texelsPerMeter`, turned to its smallest rectangle, and packed
+//! like `Texture.atlas` into one power-of-two square.
+//!
+//! ```
+//! let unwrapped = Lightmap.unwrap(roomData, { texelsPerMeter: 16.0, padding: 2.0, maxSize: 1024.0 })
+//! let room = Model.static({ unwrapped.mesh with
+//!   lightmap: Option.Some({ texture: baked, scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+//! ```
+
+/// `texelsPerMeter`: lightmap resolution, the same on every surface.
+/// `padding`: texels kept free around each chart, so filtering never reaches
+/// a neighbour (a bake fills them with copies of the chart's edge).
+/// `maxSize`: the largest atlas side, a power of two up to 4096.
+type options = { texelsPerMeter: float, padding: float, maxSize: float }
+
+/// `mesh` is the input data with `uvs2` filled in and its other per-vertex
+/// fields copied to a new vertex set: a vertex on a seam between charts
+/// needs a lightmap UV in each, so it is duplicated (an indexed 8-vertex
+/// cube comes back with 24). Triangles keep their order, so `groups` and
+/// `lightmap` carry over unchanged. `source` is u32 per new vertex: the
+/// input vertex it copies. The atlas is `width` × `height` texels.
+type unwrapped = { mesh: Model.staticData, source: Bytes.t, width: float, height: float }
+
+/// Lightmap UVs for static model data, validated like `Model.static`. The
+/// same data gives the same bytes. Charts that don't fit `maxSize` are an
+/// error: lower `texelsPerMeter`. Coincident faces share texels, and curved
+/// surfaces become one chart per face (a 16-sided cylinder has 18 charts).
+let unwrap : (Model.staticData, options) => unwrapped
