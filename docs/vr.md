@@ -375,10 +375,10 @@ let physics = (model) =>
   the shell starts the room over.
   - Below the head, not at `y = 0`: in a stationary boundary Quest puts the
     stage origin near head height, not on the floor.
-  - Standing, 1 m below the head rules out a desk or table; seated, it
-    rules out everything but the floor. Standing, a bed or coffee table
-    could pass for the floor until the floor itself is seen, which is lower
-    and then wins.
+  - Seated, 1 m below the head rules out everything but the floor;
+    standing, it usually rules out a desk or table. Until the floor itself
+    has been seen, a bed or coffee table (or, for someone tall, a desk)
+    can pass for it; the floor is lower, and wins once it is seen.
   - A headset at rest on a desk is under 1 m above the floor, so it finds
     no plane until it is worn.
 - The meshes reach physics through the same ordered message queue as every

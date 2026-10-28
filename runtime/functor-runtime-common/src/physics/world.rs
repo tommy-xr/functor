@@ -3500,6 +3500,30 @@ mod fused_room_tests {
         assert!((y - BALL).abs() < 0.01, "y = {y}");
     }
 
+    /// A head that rises later admits the floor it saw while low: the same
+    /// chunks with a higher head re-run floor detection, rebuilding nothing.
+    #[test]
+    fn a_higher_head_admits_the_floor() {
+        let room = stand_in_room();
+        let low = RoomMeshes {
+            top_eye_y: Some(0.5),
+            ..room.clone()
+        };
+        let mut w = world_with(vec![room_body(&Arc::new(low))]);
+        assert_eq!(w.fused_room_colliders().unwrap().1, None);
+        let before = w.rooms["room"].chunks.clone();
+        w.reconcile(&PhysicsScene::create(
+            DEFAULT_GRAVITY,
+            vec![room_body(&Arc::new(room))],
+        ));
+        let floor = w.fused_room_colliders().unwrap().1.expect("a floor");
+        assert!(floor.abs() < 0.01, "{floor}");
+        // Only the floor's chunks changed (their level triangles went to the
+        // plane); the rest kept their colliders.
+        let after = &w.rooms["room"].chunks;
+        assert!(before.iter().any(|(k, h)| after.get(k) == Some(h)));
+    }
+
     /// Re-declaring the same room is free; a re-fused chunk rebuilds only
     /// that chunk's collider.
     #[test]

@@ -32,9 +32,9 @@ const FLOOR_BAND: f32 = 0.03;
 const FLOOR_MIN_AREA: f32 = 0.5;
 /// How far below the highest the head has been the floor must be, metres.
 /// Head height, not `y = 0`: a headset's stage origin need not be on the
-/// floor (in a stationary boundary it sits near head height). Standing, this
-/// rules out a desk or table (the floor is ~1.6 m down, a table ~1.0 m);
-/// seated (~1.2 m), anything but the floor.
+/// floor (in a stationary boundary it sits near head height). Seated (~1.2 m)
+/// this rules out anything but the floor; standing (~1.6 m), usually a desk
+/// or table too. A lower floor, once seen, wins either way.
 const FLOOR_BELOW_EYE: f32 = 1.0;
 /// A newly detected floor within this of the current one keeps the current
 /// one, metres, so re-meshing doesn't rebuild the floor chunks for a
