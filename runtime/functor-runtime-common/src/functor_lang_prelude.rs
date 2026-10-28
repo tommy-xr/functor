@@ -11249,7 +11249,10 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             })
             .collect();
         assert_eq!(keys, ascending);
-        assert_eq!(effect.to_functor_lang().unwrap().to_string(), built.to_string());
+        assert_eq!(
+            effect.to_functor_lang().unwrap().to_string(),
+            built.to_string()
+        );
 
         let json = value_to_json(&built);
         let keys: Vec<f64> = json["$map"]
