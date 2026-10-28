@@ -140,7 +140,8 @@ let instanced : (List<Instance.t>, t) => t
 /// (so an edit to the builder, or to anything it calls, shows next frame).
 /// Otherwise it hands back the SAME scene value as last frame, so the
 /// interpreter skips the rebuild and the renderer skips re-uploading its
-/// `Scene.instanced` lists.
+/// `Scene.instanced` lists. The scene is shared, not copied, so a group,
+/// transform, material or opacity around it costs the same at any size.
 ///
 /// ```functor
 /// let drawTrees = (trees) => Scene.model(Assets.fir) |> Scene.instanced(trees |> List.map(treeAt))

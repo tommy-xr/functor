@@ -4702,14 +4702,17 @@ the cached scene would freeze — make that read outside the memo and pass the v
 builder needs in deps"
                     .to_string());
             }
-            let is_scene = matches!(&scene, Value::HostData(data)
-                if data.as_any().is::<FunctorLangScene>());
-            if !is_scene {
+            let Some(built) = (match &scene {
+                Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangScene>(),
+                _ => None,
+            }) else {
                 return Err(format!(
                     "Scene.memo: the builder must return a Scene, got {}",
                     value_kind(&scene)
                 ));
-            }
+            };
+            // Cache it shared, so wrapping it each frame copies a pointer.
+            let scene = Value::HostData(Rc::new(FunctorLangScene(shared_scene(&built.0))));
             SCENE_MEMOS.with(|memos| {
                 let mut memos = memos.borrow_mut();
                 if memos.sites.len() >= SCENE_MEMO_CAP && !memos.sites.contains_key(&key) {
@@ -4736,6 +4739,18 @@ builder needs in deps"
             Ok(scene)
         }),
     })))
+}
+
+/// `scene` with its object behind one `SceneObject::Shared`.
+fn shared_scene(scene: &Scene3D) -> Scene3D {
+    let obj = match &scene.obj {
+        shared @ SceneObject::Shared(_) => shared.clone(),
+        obj => SceneObject::Shared(std::sync::Arc::new(obj.clone())),
+    };
+    Scene3D {
+        obj,
+        xform: scene.xform,
+    }
 }
 
 /// The lambda a builder runs, and how many of its arguments a partial
@@ -8908,6 +8923,108 @@ let frame = (n) => Scene.memo(\"memo-dag\", deep(60.0), build(n))
         assert!(world.contains("read the live physics world"), "{world}");
         let result = err("let frame = (n) => Scene.memo(\"k4\", n, (d) => d)");
         assert!(result.contains("must return a Scene, got a number"), "{result}");
+    }
+
+    const SHARED_SOURCE: &str = "
+let world = (d) => Scene.group([
+  Scene.model(Asset.model(\"Xbot.glb\")) |> Scene.animate(Anim.clip(\"walk\", 0.5)),
+  Scene.cube() |> Scene.lit(Color.rgb(1.0, 0.5, 0.25)) |> Scene.opacity(0.5)
+    |> Scene.translate(Vec3.make(2.0, 0.0, 0.0))
+])
+let wrap = (s) => Scene.group([s, Scene.cube()]) |> Scene.translate(Vec3.make(1.0, 2.0, 3.0))
+let frame = (n) => wrap(Scene.memo(\"shared-test\", 0.0, world))
+let inline = (n) => wrap(world(0.0))
+let animated = (n) => frame(n) |> Scene.animate(Anim.clip(\"run\", 1.0))
+let animatedInline = (n) => inline(n) |> Scene.animate(Anim.clip(\"run\", 1.0))
+";
+
+    /// A memo result is held by reference, so wrapping it each frame copies a
+    /// pointer; and the wrapped scene is indistinguishable from the same scene
+    /// built inline: equality, `/scene` JSON, the transparent pass, animation.
+    #[test]
+    fn scene_memo_is_shared_and_transparent_under_wrappers() {
+        let session = memo_session(SHARED_SOURCE);
+        let call = |name: &str| {
+            session
+                .call(name, vec![Value::Number(0.0)], &mut FunctorHost)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.message))
+        };
+        // wrap(s) = Group(T)[Group[s, cube]]; `s` is the memo node.
+        let memo_node = |scene: &Value| -> std::sync::Arc<SceneObject> {
+            let SceneObject::Group(outer) = &scene_of(scene).unwrap().obj else {
+                panic!("expected the translate group")
+            };
+            let SceneObject::Group(inner) = &outer[0].obj else {
+                panic!("expected the group")
+            };
+            match &inner[0].obj {
+                SceneObject::Shared(shared) => shared.clone(),
+                other => panic!("expected a Shared memo node, got {other:?}"),
+            }
+        };
+        let (a, b, inline) = (call("frame"), call("frame"), call("inline"));
+        assert!(std::sync::Arc::ptr_eq(&memo_node(&a), &memo_node(&b)));
+
+        let (a, inline) = (scene_of(&a).unwrap(), scene_of(&inline).unwrap());
+        assert!(a == inline && inline == a);
+        assert_eq!(
+            serde_json::to_string(a).unwrap(),
+            serde_json::to_string(inline).unwrap()
+        );
+        let back: Scene3D = serde_json::from_str(&serde_json::to_string(a).unwrap()).unwrap();
+        assert!(back == *a);
+
+        assert!(a.has_opacity());
+        let transparent = |scene: &Scene3D| {
+            let mut out = Vec::new();
+            scene.collect_transparent(&Matrix4::from_scale(1.0), None, &mut out);
+            out.iter()
+                .map(|draw| (draw.node.clone(), draw.parent_world, draw.centroid, draw.material.cloned()))
+                .collect::<Vec<_>>()
+        };
+        let (shared_draws, inline_draws) = (transparent(a), transparent(inline));
+        assert_eq!(shared_draws.len(), 1);
+        assert!(shared_draws == inline_draws);
+
+        let (animated, animated_inline) = (call("animated"), call("animatedInline"));
+        assert!(scene_of(&animated).unwrap() == scene_of(&animated_inline).unwrap());
+        assert!(scene_of(&animated).unwrap() != a, "the pose changed");
+        assert!(*scene_of(&call("frame")).unwrap() == *a, "the memo is untouched");
+    }
+
+    /// `cargo test --release -p functor_runtime_common scene_memo_wrap_bench -- --ignored --nocapture`
+    ///
+    /// A memoized N-node world under a group + translate costs the same per
+    /// frame at 1,500 nodes as at 15.
+    #[test]
+    #[ignore]
+    fn scene_memo_wrap_bench() {
+        let per_frame_ms = |n: usize| {
+            let source = format!(
+                "
+let node = (i) => Scene.cube() |> Scene.lit(Color.rgb(0.5, 0.5, 0.5))
+  |> Scene.translate(Vec3.make(i, 0.0, Math.mod(i, 37.0)))
+let world = (d) => Scene.group(List.map(node, List.range({n}.0)))
+let frame = (k) => Scene.group([Scene.memo(\"bench-{n}\", 0.0, world), Scene.cube()])
+  |> Scene.translate(Vec3.make(k, 0.0, 0.0))
+"
+            );
+            let session = memo_session(&source);
+            memo_frame(&session, 0.0).unwrap();
+            // Best of 5 batches of 200 frames.
+            (0..5)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    for k in 0..200 {
+                        memo_frame(&session, k as f64).unwrap();
+                    }
+                    start.elapsed().as_secs_f64() * 1e3 / 200.0
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        let (small, large) = (per_frame_ms(15), per_frame_ms(1500));
+        println!("memo under group + translate: {small:.4} ms/frame at 15 nodes, {large:.4} at 1,500");
+        assert!(large < small * 3.0, "per-frame cost grows with the memoized subtree");
     }
 
     /// `Scene.equals` sees the instanced node structurally — template AND

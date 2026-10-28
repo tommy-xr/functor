@@ -133,7 +133,7 @@ fn collect_transforms(
     out: &mut BTreeMap<Vec<PathSeg>, Matrix4<f32>>,
 ) {
     let w = world * scene.xform;
-    match &scene.obj {
+    match scene.obj.resolved() {
         SceneObject::Group(children)
         | SceneObject::Material(_, children)
         | SceneObject::Opacity(_, children) => {
@@ -152,6 +152,7 @@ fn collect_transforms(
         // independently, so omitting the node is less misleading than strobing
         // the entire batch as one leaf.
         SceneObject::Instanced { .. } => {}
+        SceneObject::Shared(_) => unreachable!("resolved"),
     }
 }
 
@@ -172,7 +173,7 @@ fn collect_anchor(
     out: &mut BTreeMap<Vec<PathSeg>, AnchorLeaf>,
 ) {
     let w = world * scene.xform;
-    match &scene.obj {
+    match scene.obj.resolved() {
         SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
@@ -195,11 +196,12 @@ fn collect_anchor(
                 AnchorLeaf {
                     world: w,
                     material: material.cloned(),
-                    leaf: scene.obj.clone(),
+                    leaf: scene.obj.resolved().clone(),
                 },
             );
         }
         SceneObject::Instanced { .. } => {}
+        SceneObject::Shared(_) => unreachable!("resolved"),
     }
 }
 
@@ -318,7 +320,7 @@ fn collect_sample_leaves<'a>(
     out: &mut BTreeMap<Vec<PathSeg>, SampleLeaf<'a>>,
 ) {
     let w = world * scene.xform;
-    match &scene.obj {
+    match scene.obj.resolved() {
         SceneObject::Group(children) | SceneObject::Opacity(_, children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
@@ -341,11 +343,12 @@ fn collect_sample_leaves<'a>(
                 SampleLeaf {
                     world: w,
                     material,
-                    leaf: &scene.obj,
+                    leaf: scene.obj.resolved(),
                 },
             );
         }
         SceneObject::Instanced { .. } => {}
+        SceneObject::Shared(_) => unreachable!("resolved"),
     }
 }
 
@@ -1114,6 +1117,8 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
         | SceneObject::Model(_)
         | SceneObject::Terrain(_)
         | SceneObject::Instanced { .. } => {}
+        // Overlays are built from resolved leaves (`collect_anchor`).
+        SceneObject::Shared(_) => unreachable!("overlays hold no shared nodes"),
     }
 }
 
@@ -2116,7 +2121,7 @@ mod tests {
     /// frame's own materials always come first and the overlay's follow — which
     /// is what lets the tests below separate them by index.
     fn material_alphas(scene: &Scene3D, out: &mut Vec<f32>) {
-        match &scene.obj {
+        match scene.obj.resolved() {
             SceneObject::Material(material, items) => {
                 out.push(material.color_alpha().expect("a color-bearing material"));
                 for item in items {
@@ -2132,6 +2137,7 @@ mod tests {
             | SceneObject::Model(_)
             | SceneObject::Terrain(_)
             | SceneObject::Instanced { .. } => {}
+            SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
 

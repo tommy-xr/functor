@@ -193,7 +193,7 @@ fn tint_scene(scene: Scene3D, tint: [f32; 3]) -> Scene3D {
     if tint == [1.0, 1.0, 1.0] {
         return scene;
     }
-    let obj = match scene.obj {
+    let obj = match scene.obj.into_resolved() {
         SceneObject::Material(material, items) => SceneObject::Material(
             tint_material(material, tint),
             items
@@ -226,6 +226,7 @@ fn tint_scene(scene: Scene3D, tint: [f32; 3]) -> Scene3D {
                 .into(),
         },
         leaf @ (SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_)) => leaf,
+        SceneObject::Shared(_) => unreachable!("resolved"),
     };
     Scene3D { obj, ..scene }
 }
@@ -332,7 +333,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
         local: Matrix4<f32>,
         material: Option<&'a MaterialDescription>,
     ) -> Option<RecognizedTemplate<'a>> {
-        match &node.obj {
+        match node.obj.resolved() {
             SceneObject::Geometry(shape) => {
                 let primitive = match shape {
                     Shape::Cube => InstancedPrimitive::Cube,
@@ -400,6 +401,7 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
             SceneObject::Terrain(_)
             | SceneObject::Opacity(..)
             | SceneObject::Instanced { .. } => None,
+            SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
     walk(template, Matrix4::from_scale(1.0), None)
@@ -414,7 +416,7 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
             out.push('…');
             return;
         }
-        match &node.obj {
+        match node.obj.resolved() {
             SceneObject::Geometry(shape) => out.push_str(match shape {
                 Shape::Cube => "cube",
                 Shape::Sphere => "sphere",
@@ -475,6 +477,7 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
                 }
                 out.push(']');
             }
+            SceneObject::Shared(_) => unreachable!("resolved"),
         }
     }
     let mut out = String::new();
