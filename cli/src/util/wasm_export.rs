@@ -162,7 +162,7 @@ struct CopyStats {
 /// real workflow), but symlinked DIRECTORIES are skipped and reported:
 /// following one can recurse forever (a link to an ancestor) or vacuum an
 /// external tree into the bundle. `skip`: canonical `external` folders, never
-/// bundled, not even through a symlinked file; nor is `functor.local.json`.
+/// bundled, not even through a symlinked file.
 fn copy_project(
     src: &Path,
     dst: &Path,
@@ -178,10 +178,7 @@ fn copy_project(
         if name_str.starts_with('.') {
             continue;
         }
-        if is_root
-            && (RESERVED_ROOT.contains(&name_str.as_ref())
-                || name_str == crate::commands::project_files::LOCAL_CONFIG)
-        {
+        if is_root && RESERVED_ROOT.contains(&name_str.as_ref()) {
             continue;
         }
         let from = entry.path();
@@ -328,7 +325,6 @@ mod tests {
         dir.write(".DS_Store", "junk");
         dir.write("dist/web/stale.txt", "from a previous export");
         dir.write("ss2/mesh/a.bin", "external: never bundled");
-        dir.write("functor.local.json", "{\"external\": {}}");
         #[cfg(unix)]
         std::os::unix::fs::symlink(
             dir.path().join("ss2/mesh/a.bin"),
@@ -351,10 +347,6 @@ mod tests {
         let out = &export.out_dir;
         assert!(!out.join("ss2").exists(), "external folders aren't bundled");
         assert!(!out.join("alias.bin").exists(), "nor through a symlink");
-        assert!(
-            !out.join("functor.local.json").exists(),
-            "machine-local config"
-        );
         let index = fs::read_to_string(out.join("index.html")).unwrap();
         assert!(index.contains("window.__functorLangGamePath = \"game.fun\""));
         assert!(index.contains("window.__functorCursorPolicy = \"visible\""));

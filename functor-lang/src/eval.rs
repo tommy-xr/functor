@@ -526,7 +526,7 @@ pub fn run_expects_budgeted(
     };
     if let Err(error) = interp
         .load_unit_operators(module)
-        .and_then(|_| interp.eval_defs(module))
+        .and_then(|_| interp.eval_defs(module, &|_| true))
         .and_then(|_| interp.settle_unit_operators(module))
     {
         return Err(RunFailure {
@@ -620,6 +620,17 @@ impl Session {
     /// session. Unlike [`run`], a `main` def is NOT called — loading a game
     /// must not execute anything beyond its initializers.
     pub fn load(module: &Module, host: &mut dyn Host) -> Result<Session, RunFailure> {
+        Session::load_only(module, &|_| true, host)
+    }
+
+    /// [`Session::load`] evaluating only the defs `keep` names (in file
+    /// order): one value and its dependencies, without the rest of the
+    /// program's initializers.
+    pub fn load_only(
+        module: &Module,
+        keep: &dyn Fn(&str) -> bool,
+        host: &mut dyn Host,
+    ) -> Result<Session, RunFailure> {
         let mut interp = Interp {
             globals: HashMap::new(),
             mut_slots: HashMap::new(),
@@ -635,7 +646,7 @@ impl Session {
         };
         let loaded = interp
             .load_unit_operators(module)
-            .and_then(|_| interp.eval_defs(module))
+            .and_then(|_| interp.eval_defs(module, keep))
             .and_then(|_| interp.settle_unit_operators(module));
         match loaded {
             Ok(()) => Ok(Session {
@@ -877,9 +888,13 @@ struct Interp<'h> {
 impl Interp<'_> {
     /// Evaluate every top-level def, eagerly, in file order (no `main` call —
     /// that is [`Interp::run_module`]'s CLI behavior, not a load semantic).
-    fn eval_defs(&mut self, module: &Module) -> Result<Vec<(String, Value)>, RunError> {
+    fn eval_defs(
+        &mut self,
+        module: &Module,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Result<Vec<(String, Value)>, RunError> {
         let mut bindings = Vec::new();
-        for def in &module.defs {
+        for def in module.defs.iter().filter(|def| keep(&def.name)) {
             let value = self.eval(&def.value, &Env::empty())?;
             self.globals.insert(def.name.clone(), value.clone());
             bindings.push((def.name.clone(), value));
@@ -973,7 +988,7 @@ impl Interp<'_> {
 
     fn run_module(&mut self, module: &Module) -> Result<RunOutcome, RunError> {
         self.load_unit_operators(module)?;
-        let bindings = self.eval_defs(module)?;
+        let bindings = self.eval_defs(module, &|_| true)?;
         self.settle_unit_operators(module)?;
         match module.defs.iter().find(|def| def.name == "main") {
             Some(main_def) => Ok(RunOutcome::Main(self.call_main(main_def)?)),

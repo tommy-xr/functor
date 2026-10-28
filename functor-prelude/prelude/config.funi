@@ -4,6 +4,8 @@
 //! before the shell starts running it. A hot reload that changes it keeps the
 //! running session's config and prints a one-line "restart to apply" warning.
 //! A sibling module may define it instead of the entry file (see `Settings`).
+//! The CLI reads it first, evaluating only `config` and what it uses, so it
+//! can't read files.
 //!
 //! ```functor
 //! let config = Config.create() |> Config.xr(Xr.create() |> Xr.refreshRate(90))
@@ -20,3 +22,8 @@ let create : () => t
 /// Only launch-time knobs are accepted: `Xr.foveation` here is a teaching
 /// error pointing at `settings`.
 let xr : (Xr.t, t) => t
+/// Files under `prefix` (a folder like `"ss2/"`) aren't the project's: they
+/// come from `source` (see `Source`) and are never pushed or bundled.
+/// `File.bytes("ss2/mesh/a.bin")` reads them like any project file. The CLI
+/// reads `config` before anything else, so it can't read files itself.
+let external : (string, Source.t, t) => t

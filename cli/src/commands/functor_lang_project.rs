@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
+use functor_runtime_common::runtime_settings::ExternalPrefix;
 
 use super::project_files;
 use crate::output::{emit, Event, Severity};
@@ -54,6 +55,10 @@ pub struct FunctorLangProject {
     pub mouse_capture: bool,
     /// Whether the shell exposes an absolute pointer to the game.
     pub cursor: CursorPolicy,
+    /// `--mount name=PATH` overrides of this machine's mounts.
+    pub mounts: Vec<String>,
+    /// `config`'s `Config.external` declarations, as the last build read them.
+    external: std::sync::Mutex<Vec<ExternalPrefix>>,
 }
 
 /// Shell pointer behavior declared by `functor.json`'s `cursor` field.
@@ -187,6 +192,8 @@ because capture is now the default",
                 role: role.to_string(),
                 mouse_capture,
                 cursor,
+                mounts: Vec::new(),
+                external: std::sync::Mutex::new(Vec::new()),
             }
         };
         match &self.entries {
@@ -380,7 +387,7 @@ impl FunctorLangProject {
 
     /// The `external` folders (never pushed or bundled), relative to the
     /// project root: `"ss2/"`, or `"src/ss2/"` for an entry in `src/`.
-    fn external_dirs(&self, working_directory: &str) -> Result<Vec<String>, Error> {
+    fn external_dirs(&self) -> Vec<String> {
         let base: String = Path::new(&self.entry)
             .parent()
             .into_iter()
@@ -390,10 +397,81 @@ impl FunctorLangProject {
                 _ => None,
             })
             .collect();
-        Ok(project_files::declared_in(Path::new(working_directory))?
-            .into_iter()
-            .map(|(prefix, _)| format!("{base}{prefix}"))
-            .collect())
+        let external = self.external.lock().unwrap_or_else(|e| e.into_inner());
+        external
+            .iter()
+            .map(|external| format!("{base}{}", external.prefix))
+            .collect()
+    }
+
+    /// `config`'s `Config.external` declarations, read before anything runs:
+    /// only `config` and the definitions it uses are evaluated, and they may
+    /// not read files (the external prefixes say where files come from).
+    fn config_externals(
+        &self,
+        project: &functor_lang::project::Project,
+    ) -> Result<Vec<ExternalPrefix>, Error> {
+        use functor_lang::ir::ExprKind;
+        use functor_runtime_common::functor_lang_prelude::{externals_of, FunctorHost};
+        let names = self
+            .entry_role()
+            .resolve(&self.entry, project)
+            .map_err(Error::other)?;
+        let defs: std::collections::HashMap<&str, &functor_lang::ir::Def> = project
+            .module
+            .defs
+            .iter()
+            .map(|def| (def.name.as_str(), def))
+            .collect();
+        if !defs.contains_key(names.config) {
+            return Ok(Vec::new());
+        }
+        let mut needed = std::collections::HashSet::new();
+        let mut pending = vec![names.config.to_string()];
+        while let Some(name) = pending.pop() {
+            let Some(def) = defs
+                .get(name.as_str())
+                .filter(|_| needed.insert(name.clone()))
+            else {
+                continue;
+            };
+            let mut reads = None;
+            crate::util::asset_verify::walk(&def.value, &mut |expr| match &expr.kind {
+                ExprKind::Global(name) => pending.push(name.clone()),
+                ExprKind::External(path)
+                    if matches!(
+                        path.join(".").as_str(),
+                        "File.bytes" | "File.exists" | "Typeface.file"
+                    ) =>
+                {
+                    reads.get_or_insert((path.join("."), expr.span));
+                }
+                _ => {}
+            });
+            if let Some((api, span)) = reads {
+                return Err(Error::other(project.sources.render(
+                    span.start,
+                    &format!(
+                        "`config` can't read files ({api}): it's read first, to learn which \
+paths are external — move the read into `init` or a top-level binding `config` doesn't use"
+                    ),
+                )));
+            }
+        }
+        let session = functor_lang::Session::load_only(
+            &project.module,
+            &|name| needed.contains(name),
+            &mut FunctorHost,
+        )
+        .map_err(|f| Error::other(project.sources.render(f.error.span.start, &f.error.message)))?;
+        let value = session.global(names.config).expect("config was evaluated");
+        externals_of(&value).ok_or_else(|| {
+            Error::other(format!(
+                "`{}` must be a Config value (Config.create() |> …), got {}",
+                names.config,
+                value.kind_name()
+            ))
+        })
     }
 
     /// Load the project (B8: the entry plus every sibling `.fun` file —
@@ -412,15 +490,8 @@ impl FunctorLangProject {
         refresh_manifest(working_directory);
         let path = self.entry_path(working_directory)?;
         // Project files (`Typeface.file`) and saves resolve from the entry's
-        // folder, as in the native runner; `external` prefixes from their
-        // local mappings.
+        // folder, as in the native runner.
         functor_runtime_common::storage::set_project_root(path.clone());
-        let files = project_files::Resolver::load(
-            Path::new(working_directory),
-            path.parent().unwrap_or(Path::new(".")),
-            &project_files::declared_in(Path::new(working_directory))?,
-        )?;
-        functor_runtime_common::storage::set_project_reader(Some(std::sync::Arc::new(files)));
         let display = path.display().to_string();
         // A load failure (parse error, bad module name, cycle) is a positioned
         // diagnostic too — surface its file:line:col structurally, like a check
@@ -473,6 +544,20 @@ impl FunctorLangProject {
             )));
         }
 
+        // `external` prefixes resolve through this machine's mounts.
+        let externals = self.config_externals(&project)?;
+        let mounts = match externals.is_empty() {
+            true => project_files::Mounts::default(),
+            false => project_files::Mounts::load(&self.mounts)?,
+        };
+        let files = project_files::Resolver::load(
+            path.parent().unwrap_or(Path::new(".")),
+            &externals,
+            &mounts,
+        )?;
+        functor_runtime_common::storage::set_project_reader(Some(std::sync::Arc::new(files)));
+        *self.external.lock().unwrap_or_else(|e| e.into_inner()) = externals;
+
         // B.3: the strict gate also PROVES the typed asset surface — every
         // literal Asset.* locator exists (file on disk, or a verifiable
         // URL). Findings carry spans, so they render exactly like type
@@ -484,7 +569,7 @@ impl FunctorLangProject {
         let findings = crate::util::asset_verify::verify_assets(
             &project.module,
             Path::new(working_directory),
-            &self.external_dirs(working_directory)?,
+            &self.external_dirs(),
             &mut crate::util::asset_verify::probe_url_live,
         );
         for (finding, severity) in findings
@@ -717,6 +802,25 @@ impl FunctorLangProject {
         develop: bool,
     ) -> Result<(), Error> {
         refresh_manifest(working_directory);
+        // Where `external` sources resolve: `dev` (this machine's mounts,
+        // sent to a headset by `run vr`) or `device` (`Source.device`).
+        let (target, runner_args) = crate::take_flag_arg(runner_args, "--target")?;
+        let runner_args = &runner_args[..];
+        match target.as_deref() {
+            None | Some("dev") => {}
+            Some("device") => {
+                return Err(Error::other(
+                    "--target device (reading `Source.device` paths on the headset) isn't \
+implemented yet: the runner can't read headset storage. Use the default, `--target dev`: this \
+machine's mounts, which `run vr` sends to the headset",
+                ))
+            }
+            Some(other) => {
+                return Err(Error::other(format!(
+                    "--target is `dev` (default) or `device`, got `{other}`"
+                )))
+            }
+        }
         if matches!(environment, Environment::Vr) {
             let (refresh_rate, runner_args) = take_refresh_rate_arg(runner_args)?;
             let (limits, runner_args) = take_push_limit_args(&runner_args)?;
@@ -890,7 +994,7 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         // same-file role, so the APK's producer resolves the same contract
         // `run native` and `run wasm` do (and re-resolves it on each re-push).
         let role = self.entry_role();
-        let external = self.external_dirs(working_directory)?;
+        let external = self.external_dirs();
         // Refuse an over-cap project before touching the device (the
         // readiness probe below clears its uploads).
         let scan = project_asset_files(project_root, &external)?;
@@ -1157,7 +1261,7 @@ relative path inside it (got {})",
                 self.cursor.as_str(),
                 &self.prefix,
                 &self.module,
-                &self.external_dirs(working_directory)?,
+                &self.external_dirs(),
             )?;
             for name in &export.shadowed {
                 emit(Event::Warning {
@@ -1649,7 +1753,7 @@ fn project_asset_files(root: &Path, external: &[String]) -> Result<ProjectFiles,
 
 /// Whether `run vr` never pushes this root-relative path: under a hidden
 /// entry, the generated root `dist/`, a build/dependency tree or an
-/// `external` folder (`"ss2/"`), or the machine-local `functor.local.json`.
+/// `external` folder (`"ss2/"`).
 fn is_unpushed(relative: &Path, external: &[String]) -> bool {
     let Some(names) = relative
         .iter()
@@ -1664,10 +1768,9 @@ fn is_unpushed(relative: &Path, external: &[String]) -> bool {
             || (depth == 0 && *name == "dist")
             || *name == "target"
             || *name == "node_modules"
-    }) || locator == project_files::LOCAL_CONFIG
-        || external
-            .iter()
-            .any(|dir| format!("{locator}/").starts_with(dir.as_str()))
+    }) || external
+        .iter()
+        .any(|dir| format!("{locator}/").starts_with(dir.as_str()))
 }
 
 /// Refuse a push over `limits`, naming the file (or total) and the flag.
@@ -2706,20 +2809,20 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let _ = std::fs::remove_dir_all(base);
     }
 
-    /// `external` folders (from the entry's folder, `./` or not), the
-    /// machine-local config, and symlinks into either are never pushed.
+    /// `config`'s external folders (from the entry's folder, `./` or not)
+    /// and symlinks into them are never pushed. A sibling may declare them.
     #[cfg(unix)]
     #[test]
-    fn vr_file_scan_skips_external_folders_and_local_config() {
+    fn vr_file_scan_skips_the_folders_config_declares_external() {
         let root = std::env::temp_dir().join(format!("functor-vr-ext-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src/ss2/deep")).unwrap();
+        std::fs::write(root.join("src/game.fun"), "let init = 0.0\n").unwrap();
         std::fs::write(
-            root.join("functor.json"),
-            r#"{"language": "functor-lang", "external": {"ss2/": "data"}}"#,
+            root.join("src/files.fun"),
+            "let config = Config.create() |> Config.external(\"ss2/\", Source.mount(\"ss2\"))\n",
         )
         .unwrap();
-        std::fs::write(root.join("functor.local.json"), b"{}").unwrap();
         std::fs::write(root.join("src/ss2/deep/a.bin"), b"external").unwrap();
         std::fs::write(root.join("src/data.bin"), b"data").unwrap();
         std::os::unix::fs::symlink(root.join("src/ss2/deep/a.bin"), root.join("alias.bin"))
@@ -2727,13 +2830,53 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let wd = root.to_string_lossy().into_owned();
         for entry in ["./src/game.fun", "src/game.fun"] {
             let project = single(entry).select(None).unwrap();
-            assert_eq!(project.external_dirs(&wd).unwrap(), ["src/ss2/"], "{entry}");
+            project.build(&wd, false).unwrap();
+            assert_eq!(project.external_dirs(), ["src/ss2/"], "{entry}");
         }
         let scan = project_asset_files(&root, &["src/ss2/".to_string()]).unwrap();
         let locators: Vec<&str> = scan.files.iter().map(|f| f.locator.as_str()).collect();
-        assert_eq!(locators, ["functor.json", "src/data.bin"]);
+        assert_eq!(locators, ["src/data.bin", "src/files.fun", "src/game.fun"]);
         assert_eq!(scan.escaped, ["alias.bin"]);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// `config` is read on its own, before anything runs: only it and what it
+    /// uses are evaluated, and it may not read files.
+    #[test]
+    fn config_is_read_alone_and_without_files() {
+        let dir = std::env::temp_dir().join(format!("functor-config-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let wd = dir.to_string_lossy().into_owned();
+        let build = |src: &str| {
+            std::fs::write(dir.join("game.fun"), src).unwrap();
+            let project = single("game.fun").select(None).unwrap();
+            project.build(&wd, false).map(|_| project.external_dirs())
+        };
+        // `heavy` would fail if run (no such file); `config` doesn't use it.
+        let ok = build(
+            "let prefix = \"ss2/\"\n\
+             let heavy = File.bytes(\"missing.bin\")\n\
+             let config = Config.create() |> Config.external(prefix, Source.mount(\"ss2\"))\n",
+        );
+        assert_eq!(ok.unwrap(), ["ss2/"]);
+        let err = build(
+            "let data = File.bytes(\"x.bin\")\n\
+             let config = Config.create() |> Config.external(if Bytes.length(data) > 0.0 then \
+\"a/\" else \"b/\", Source.mount(\"ss2\"))\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("`config` can't read files (File.bytes)"),
+            "{err}"
+        );
+        let err =
+            build("let config = Config.create() |> Config.external(\"x\", Source.mount(\"m\"))\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("ending in `/`"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

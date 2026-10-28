@@ -2922,6 +2922,7 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
                 refresh_rate: Some(72.0),
                 passthrough: false,
             },
+            ..GameConfig::default()
         };
         options.reload(Some(edited), contract.settings, &mut reporter);
         assert!(EMITTED.with(|e| e.borrow()[1].contains("restart to apply")));

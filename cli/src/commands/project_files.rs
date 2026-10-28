@@ -1,10 +1,10 @@
 //! Project files as `File.bytes` sees them on this machine: the entry's
-//! folder, except `external` prefixes. `functor.json` declares those
-//! (`"external": {"ss2/": "player SS2 data"}`); they're never pushed or
-//! bundled. The uncommitted `functor.local.json` beside it maps each to a
-//! folder or a zip entry root (`{"external": {"ss2/":
-//! "~/ss2-25th/sshock2.kpf!data/res/"}}`). Game code only ever says
-//! `File.bytes("ss2/mesh/GRUNT_P.BIN")`.
+//! folder, except the prefixes `config` declares external
+//! (`Config.external("ss2/", Source.mount("ss2"))`), which are never pushed or
+//! bundled. Each machine maps a mount name to a folder or a folder inside a
+//! zip, in `~/.config/functor/mounts.json` (`{"ss2":
+//! "~/ss2-25th/sshock2.kpf!data/res/"}`) or with `--mount ss2=PATH`. Game code
+//! only ever says `File.bytes("ss2/mesh/GRUNT_P.BIN")`.
 //!
 //! Folder mappings are trusted like the project folder: symlinks may not
 //! resolve outside them, but a folder changed mid-read isn't guarded against.
@@ -15,12 +15,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use functor_runtime_common::debug_protocol::validate_project_asset_path;
+use functor_runtime_common::runtime_settings::ExternalPrefix;
 use functor_runtime_common::storage::{self, ProjectReadError, ProjectReader};
 
 /// The largest zip entry read, unpacked (a lying header can't exceed it either).
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
-
-pub const LOCAL_CONFIG: &str = "functor.local.json";
 
 /// `File.bytes` paths resolved on the host (see the module doc).
 pub struct Resolver {
@@ -32,7 +31,8 @@ pub struct Resolver {
 struct External {
     /// `"ss2/"`: matched against `File.bytes` paths, case-sensitively.
     prefix: String,
-    description: String,
+    /// The `Source.mount` name.
+    name: String,
     mount: Option<Mount>,
 }
 
@@ -41,104 +41,101 @@ enum Mount {
     Zip(ZipMount),
 }
 
-/// `functor.json`'s `external` declarations, checked: `[("ss2/", "what it
-/// holds")]`. Prefixes are folder paths ending in `/`, none inside another.
-pub fn declared(json: &serde_json::Value) -> Result<Vec<(String, String)>, String> {
-    let declared = match json.get("external") {
-        None => return Ok(Vec::new()),
-        Some(serde_json::Value::Object(map)) => map,
-        Some(_) => return Err(EXTERNAL_SHAPE.replace("{file}", "functor.json")),
-    };
-    let mut out = Vec::new();
-    for (prefix, description) in declared {
-        let description = description.as_str().ok_or_else(|| {
-            format!(
-                "functor.json external {prefix:?} must describe what it holds, e.g. \
-\"player SS2 data\""
-            )
-        })?;
-        let valid = prefix
-            .strip_suffix('/')
-            .is_some_and(|dir| validate_project_asset_path(dir).is_ok());
-        if !valid {
-            return Err(format!(
-                "functor.json external {prefix:?} must be a folder path ending in `/`, like \
-\"ss2/\""
-            ));
-        }
-        if let Some(other) = declared
-            .keys()
-            .find(|other| *other != prefix && other.starts_with(prefix.as_str()))
-        {
-            return Err(format!(
-                "functor.json external {prefix:?} contains {other:?}; declare one or the other"
-            ));
-        }
-        out.push((prefix.clone(), description.to_string()));
-    }
-    Ok(out)
+/// This machine's mounts, name → target (a folder, or `archive!folder/`):
+/// `--mount name=PATH` over `~/.config/functor/mounts.json`.
+#[derive(Default)]
+pub struct Mounts {
+    /// Target, and the folder a relative target starts at.
+    targets: HashMap<String, (String, PathBuf)>,
 }
 
-/// [`declared`] in `project_dir`'s `functor.json` (none without one).
-pub fn declared_in(project_dir: &Path) -> Result<Vec<(String, String)>, Error> {
-    match read_json(&project_dir.join("functor.json"))? {
-        Some(json) => declared(&json).map_err(Error::other),
-        None => Ok(Vec::new()),
+/// `$XDG_CONFIG_HOME/functor/mounts.json`, else `~/.config/functor/mounts.json`.
+pub fn mounts_file() -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(config.join("functor").join("mounts.json"))
+}
+
+impl Mounts {
+    /// [`mounts_file`], then each `--mount name=PATH` (relative to the
+    /// current folder) over it.
+    pub fn load(overrides: &[String]) -> Result<Mounts, Error> {
+        let mounts = match mounts_file() {
+            Some(file) => Mounts::read(&file)?,
+            None => Mounts::default(),
+        };
+        mounts.with_overrides(overrides, &std::env::current_dir()?)
+    }
+
+    fn with_overrides(mut self, overrides: &[String], here: &Path) -> Result<Mounts, Error> {
+        for flag in overrides {
+            let (name, target) = flag.split_once('=').ok_or_else(|| {
+                Error::other(format!(
+                    "--mount expects NAME=PATH, like ss2=~/ss2/data (got {flag:?})"
+                ))
+            })?;
+            self.targets
+                .insert(name.to_string(), (target.to_string(), here.to_path_buf()));
+        }
+        Ok(self)
+    }
+
+    /// A mounts file: `{"name": "target"}`; relative targets start at its
+    /// folder. A missing file is no mounts.
+    fn read(file: &Path) -> Result<Mounts, Error> {
+        let bad = |why: &str| Error::other(format!("{}: {why}", file.display()));
+        let text = match std::fs::read_to_string(file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Mounts::default()),
+            Err(e) => return Err(bad(&e.to_string())),
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| bad(&e.to_string()))?;
+        let base = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let mut targets = HashMap::new();
+        for (name, target) in json
+            .as_object()
+            .ok_or_else(|| bad("must be an object of mount names, like {\"ss2\": \"~/ss2/\"}"))?
+        {
+            let target = target.as_str().ok_or_else(|| {
+                bad(&format!(
+                    "mount {name:?} must be a path, like \"~/data/\" or \"~/game.zip!data/\""
+                ))
+            })?;
+            targets.insert(name.clone(), (target.to_string(), base.clone()));
+        }
+        Ok(Mounts { targets })
     }
 }
 
 impl Resolver {
-    /// The `declared` prefixes (see [`declared`]) with this machine's
-    /// mappings (`functor.local.json` in `project_dir`). `entry_dir` is the
-    /// entry file's folder.
+    /// `config`'s `externals`, mapped through this machine's `mounts`.
+    /// `entry_dir` is the entry file's folder.
     pub fn load(
-        project_dir: &Path,
         entry_dir: &Path,
-        declared: &[(String, String)],
+        externals: &[ExternalPrefix],
+        mounts: &Mounts,
     ) -> Result<Resolver, Error> {
-        let bad = |message: String| Error::other(message);
-        let project_dir = std::path::absolute(project_dir)?;
-        let mapped = match read_json(&project_dir.join(LOCAL_CONFIG))? {
-            Some(json) => match json.get("external") {
-                None => serde_json::Map::new(),
-                Some(serde_json::Value::Object(map)) => map.clone(),
-                Some(_) => return Err(bad(EXTERNAL_SHAPE.replace("{file}", LOCAL_CONFIG))),
-            },
-            None => serde_json::Map::new(),
-        };
-        if let Some(prefix) = mapped
-            .keys()
-            .find(|prefix| !declared.iter().any(|(declared, _)| declared == *prefix))
-        {
-            return Err(bad(format!(
-                "{LOCAL_CONFIG} maps {prefix:?}, but functor.json doesn't declare it: add \
-\"external\": {{{prefix:?}: \"what it holds\"}} to functor.json"
-            )));
-        }
-        let mut externals = Vec::new();
-        for (prefix, description) in declared {
-            let mount = match mapped.get(prefix) {
+        let mut resolved = Vec::new();
+        for external in externals {
+            let mount = match mounts.targets.get(&external.mount) {
                 None => None,
-                Some(serde_json::Value::String(target)) => Some(
-                    Mount::parse(&project_dir, target)
-                        .map_err(|e| bad(format!("{LOCAL_CONFIG} external {prefix:?}: {e}")))?,
+                Some((target, base)) => Some(
+                    Mount::parse(&std::path::absolute(base)?, target).map_err(|e| {
+                        Error::other(format!("mount {:?} ({target}): {e}", external.mount))
+                    })?,
                 ),
-                Some(_) => {
-                    return Err(bad(format!(
-                        "{LOCAL_CONFIG} external {prefix:?} must be a path string, like \
-\"~/data/\" or \"~/game.zip!data/\""
-                    )))
-                }
             };
-            externals.push(External {
-                prefix: prefix.clone(),
-                description: description.clone(),
+            resolved.push(External {
+                prefix: external.prefix.clone(),
+                name: external.mount.clone(),
                 mount,
             });
         }
         Ok(Resolver {
             root: std::path::absolute(entry_dir)?,
-            externals,
+            externals: resolved,
         })
     }
 
@@ -159,27 +156,17 @@ impl Resolver {
     }
 }
 
-const EXTERNAL_SHAPE: &str = "{file} `external` must be an object of folder prefixes, like \
-{\"ss2/\": …}";
-
-fn read_json(path: &Path) -> Result<Option<serde_json::Value>, Error> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text)
-            .map(Some)
-            .map_err(|e| Error::other(format!("{}: {e}", path.display()))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(Error::other(format!("{}: {e}", path.display()))),
-    }
-}
-
 impl External {
     fn unmapped(&self) -> String {
+        let file = mounts_file().map_or("~/.config/functor/mounts.json".to_string(), |file| {
+            file.display().to_string()
+        });
         format!(
-            "{prefix} is external ({description}) and not mapped on this machine — map it in \
-{LOCAL_CONFIG} beside functor.json: {{\"external\": {{\"{prefix}\": \"path/to/folder/\"}}}}, or \
-\"path/to/archive.zip!folder/\" for a zip",
+            "{prefix} is external (`Source.mount({name:?})`) and this machine has no `{name}` \
+mount — add {{\"{name}\": \"path/to/folder/\"}} (or \"path/to/archive.zip!folder/\") to {file}, \
+or pass --mount {name}=PATH",
             prefix = self.prefix,
-            description = self.description,
+            name = self.name,
         )
     }
 }
@@ -219,13 +206,13 @@ impl ProjectReader for Resolver {
 impl Mount {
     /// `"~/data/"` (a folder) or `"~/game.zip!data/res/"` (entries under
     /// `data/res/` in a zip; `"~/game.zip"` alone is its root). Relative
-    /// paths start at the project folder.
-    fn parse(project_dir: &Path, target: &str) -> Result<Mount, String> {
+    /// paths start at `base`.
+    fn parse(base: &Path, target: &str) -> Result<Mount, String> {
         let resolve = |path: &str| match path.strip_prefix("~/") {
             Some(rest) => std::env::var_os("HOME")
                 .map(|home| PathBuf::from(home).join(rest))
                 .ok_or("`~` needs $HOME"),
-            None => Ok(project_dir.join(path)),
+            None => Ok(base.join(path)),
         };
         // `!` separates an archive from its folder only after a file, so a
         // folder named `Games!` still maps as a folder.
@@ -465,26 +452,52 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, bytes).unwrap();
         }
+        /// `declared`: `{"ss2/": …}`, each prefix `Source.mount`ing the name
+        /// without its `/`; `mapped`: this machine's targets by prefix
+        /// (written as a mounts file in the project).
         fn config(&self, declared: &str, mapped: Option<&str>) {
-            self.write(
-                "functor.json",
-                format!("{{\"language\": \"functor-lang\", \"external\": {declared}}}").as_bytes(),
-            );
+            self.write("declared.json", declared.as_bytes());
             match mapped {
-                Some(mapped) => self.write(
-                    LOCAL_CONFIG,
-                    format!("{{\"external\": {mapped}}}").as_bytes(),
-                ),
+                Some(mapped) => {
+                    let json: serde_json::Value = serde_json::from_str(mapped).unwrap();
+                    let mounts: serde_json::Map<String, serde_json::Value> = json
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(prefix, target)| {
+                            (prefix.trim_end_matches('/').to_string(), target.clone())
+                        })
+                        .collect();
+                    self.write(
+                        "mounts.json",
+                        serde_json::Value::from(mounts).to_string().as_bytes(),
+                    )
+                }
                 None => {
-                    let _ = std::fs::remove_file(self.0.join(LOCAL_CONFIG));
+                    let _ = std::fs::remove_file(self.0.join("mounts.json"));
                 }
             }
         }
-        /// The resolver `build()` installs, or the config error.
+        fn externals(&self) -> Vec<ExternalPrefix> {
+            let Ok(declared) = std::fs::read(self.0.join("declared.json")) else {
+                return Vec::new();
+            };
+            let declared: serde_json::Value = serde_json::from_slice(&declared).unwrap();
+            declared
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|prefix| ExternalPrefix {
+                    prefix: prefix.clone(),
+                    mount: prefix.trim_end_matches('/').to_string(),
+                    device: None,
+                })
+                .collect()
+        }
+        /// The resolver `build()` installs, or the mapping error.
         fn load(&self) -> Result<Resolver, String> {
-            declared_in(&self.0)
-                .and_then(|declared| Resolver::load(&self.0, &self.0, &declared))
-                .map_err(|e| e.to_string())
+            let mounts = Mounts::read(&self.0.join("mounts.json")).map_err(|e| e.to_string())?;
+            Resolver::load(&self.0, &self.externals(), &mounts).map_err(|e| e.to_string())
         }
         fn resolver(&self) -> Resolver {
             self.load().unwrap()
@@ -682,8 +695,9 @@ mod tests {
         let up = std::env::current_dir().unwrap().components().count() - 1;
         let relative = PathBuf::from("../".repeat(up)).join(project.0.strip_prefix("/").unwrap());
         assert!(relative.is_relative() && relative.is_dir());
-        let declared = declared_in(&project.0).unwrap();
-        let resolver = Resolver::load(&relative, &relative, &declared).unwrap();
+        // A mounts file found by a relative path: its targets still resolve.
+        let mounts = Mounts::read(&relative.join("mounts.json")).unwrap();
+        let resolver = Resolver::load(&relative, &project.externals(), &mounts).unwrap();
         let Some(Mount::Dir(dir)) = &resolver.externals[0].mount else {
             panic!("a folder mount");
         };
@@ -720,8 +734,10 @@ mod tests {
         let resolver = project.resolver();
         let err = read(&resolver, "ss2/mesh/a.bin").unwrap_err();
         assert!(
-            err.contains("ss2/ is external (player SS2 data) and not mapped")
-                && err.contains(LOCAL_CONFIG),
+            err.contains("ss2/ is external (`Source.mount(\"ss2\")`)")
+                && err.contains("no `ss2` mount")
+                && err.contains("mounts.json")
+                && err.contains("--mount ss2=PATH"),
             "{err}"
         );
         assert!(!resolver.exists("ss2/mesh/a.bin"));
@@ -732,22 +748,28 @@ mod tests {
     }
 
     #[test]
-    fn malformed_external_config_is_refused() {
+    fn malformed_mounts_are_refused() {
         let project = TempProject::new("config");
         project.write("a.zip", b"");
-        let refused = |declared: &str, mapped: Option<&str>| {
-            project.config(declared, mapped);
+        let refused = |mounts: &str| {
+            project.write("mounts.json", mounts.as_bytes());
+            project.write("declared.json", br#"{"ss2/": "x"}"#);
             project.load().err().unwrap_or_default()
         };
-        assert!(refused(r#"{"ss2": "x"}"#, None).contains("ending in `/`"));
-        assert!(refused(r#"{"../x/": "x"}"#, None).contains("ending in `/`"));
-        assert!(refused(r#"{"ss2/": 1}"#, None).contains("describe what it holds"));
-        assert!(refused(r#"{"a/": "x", "a/b/": "y"}"#, None).contains("contains"));
-        assert!(refused(r#"{}"#, Some(r#"{"ss2/": "x/"}"#)).contains("doesn't declare it"));
-        assert!(
-            refused(r#"{"ss2/": "x"}"#, Some(r#"{"ss2/": "a.zip!../up/"}"#))
-                .contains("plain relative path")
-        );
-        assert!(refused(r#"["ss2/"]"#, None).contains("must be an object"));
+        assert!(refused(r#"["ss2"]"#).contains("must be an object"));
+        assert!(refused(r#"{"ss2": 1}"#).contains("must be a path"));
+        assert!(refused(r#"{"ss2": "a.zip!../up/"}"#).contains("plain relative path"));
+        assert!(refused("{").contains("mounts.json"));
+        // `--mount` takes NAME=PATH, relative to the current folder.
+        let here = std::env::current_dir().unwrap();
+        let mounts = Mounts::default()
+            .with_overrides(&["ss2=data/".to_string()], &here)
+            .unwrap();
+        assert_eq!(mounts.targets["ss2"], ("data/".to_string(), here.clone()));
+        let err = Mounts::default()
+            .with_overrides(&["ss2".to_string()], &here)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("NAME=PATH"), "{err}");
     }
 }

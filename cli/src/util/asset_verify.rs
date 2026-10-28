@@ -168,7 +168,7 @@ fn string_arg(args: &[Expr], i: usize) -> Option<(&str, Span)> {
 }
 
 /// Depth-first walk over every sub-expression, `f` applied pre-order.
-fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+pub(crate) fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     f(expr);
     match &expr.kind {
         ExprKind::Number(_)

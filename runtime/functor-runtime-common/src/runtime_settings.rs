@@ -24,6 +24,23 @@ pub enum FoveationLevel {
 pub struct GameConfig {
     #[serde(default)]
     pub xr: XrConfig,
+    /// Identifies the `Config.external` declarations (see [`ExternalPrefix`]),
+    /// so a reload that changes them warns like any other launch option.
+    #[serde(skip)]
+    pub external_key: u64,
+}
+
+/// `Config.external(prefix, source)`: files under `prefix` aren't the
+/// project's (never pushed or bundled); `source` says where they come from.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalPrefix {
+    /// `"ss2/"`, matched against `File.bytes` paths.
+    pub prefix: String,
+    /// `Source.mount(name)`: this machine's mount `name`, proxied to a
+    /// headset under `functor run vr`.
+    pub mount: String,
+    /// `Source.device(path)`: where a standalone headset finds it.
+    pub device: Option<String>,
 }
 
 /// `config`'s XR knobs, read before the XR session starts rendering the game.
@@ -119,6 +136,7 @@ mod tests {
                 refresh_rate: Some(90.0),
                 passthrough: false,
             },
+            external_key: 7,
         };
         assert_eq!(
             serde_json::to_value(config).unwrap(),
@@ -143,6 +161,7 @@ mod tests {
                 refresh_rate: None,
                 passthrough: true,
             },
+            ..GameConfig::default()
         };
         assert_eq!(
             serde_json::to_value(config).unwrap(),
@@ -166,6 +185,7 @@ mod tests {
                     refresh_rate: None,
                     passthrough: on,
                 },
+                ..GameConfig::default()
             })
         };
         let settings = |on| {

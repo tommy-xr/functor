@@ -304,7 +304,7 @@ let grab = (s) =>
   List, Map, Text, Math, Debug, Scene,
   Sprite, Anim, Asset, Camera3D, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Persistence, Physics, RenderTarget, Ui, Html,
-  Attr, Style, AudioSource, AudioScene, Xr, Config, Settings) is a
+  Attr, Style, AudioSource, AudioScene, Xr, Source, Config, Settings) is a
   load error — rename the file. (`assets.fun` → `Assets` — the generated
   manifest — is fine; only the exact name collides.)
 - **`Net` is a built-in module**, always in scope: `type NetEvent =
@@ -1017,6 +1017,7 @@ The generated modules:
 | `Html` / `Attr` / `Style` | the `webview` hook: an Elm-style HTML tree, attributes/handlers, typed inline CSS |
 | `Input` | the types `sampledInput` receives: snapshot, mouse, XR poses, `point2`/`point3` |
 | `Config` / `Settings` / `Xr` | what the `config` value and `settings` hook are: launch-time and live shell options (XR refresh rate, passthrough, foveation) |
+| `Source` | where a `Config.external` prefix's files come from: `Source.mount("ss2")` (this machine's mount) |
 
 Two more namespaces resolve under the host but have no `.funi` and are NOT in
 the generated reference:
@@ -1540,7 +1541,16 @@ plain value read at load: a hot reload that changes it prints `` `config`
 changed — restart to apply `` and keeps the running value (on Quest, a new
 `functor run vr` push is the restart). `settings` is a pure function of the
 model, so it hot-reloads, replays, and never stores state of its own; a failing
-evaluation keeps the last good value and reports once. Each `Xr` knob belongs to
+evaluation keeps the last good value and reports once.
+
+**External data** (files the player owns, never shipped) is declared in
+`config`: `Config.external("ss2/", Source.mount("ss2"))`. `File.bytes("ss2/…")`
+then reads this machine's `ss2` mount, set in `~/.config/functor/mounts.json`
+(`{"ss2": "~/ss2/sshock2.kpf!data/res/"}`, `!` into a zip) or with
+`--mount ss2=PATH`; never put a local path in code. The CLI evaluates `config`
+alone before anything runs, so `config` can't read files. `run vr` sends the
+headset what it reads. `Source.device(path)` (standalone headset) is declared
+only: `--target device` isn't implemented yet. Each `Xr` knob belongs to
 one bucket — `refreshRate` and `passthrough` in `config`, `foveation` and
 `passthroughEnabled` in `settings` — and the other is a teaching error naming
 the right one, raised at load (`settings` is evaluated on `init` there). Unlike every other entry point, each of these two may come

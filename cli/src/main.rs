@@ -38,6 +38,12 @@ struct Args {
     #[arg(long, global = true)]
     entry: Option<String>,
 
+    /// Map a `Source.mount` name to a folder or zip on this machine
+    /// (`--mount ss2=~/ss2/sshock2.kpf!data/res/`), over
+    /// `~/.config/functor/mounts.json`. Repeatable.
+    #[arg(long = "mount", value_name = "NAME=PATH", global = true)]
+    mounts: Vec<String>,
+
     /// Emit newline-delimited JSON (one event per line) instead of human text.
     #[arg(long, global = true)]
     json: bool,
@@ -469,7 +475,10 @@ async fn run(args: &Args) -> io::Result<()> {
         {
             runner_args.push("--no-debug".to_string());
         }
-        let project = config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
+        // `--mount` after the environment lands in runner_args too.
+        let (trailing_mounts, runner_args) = take_flag_args(&runner_args, "--mount")?;
+        let mut project = config.select(args.entry.as_deref().or(trailing_entry.as_deref()))?;
+        project.mounts = [args.mounts.clone(), trailing_mounts].concat();
         return match &args.command {
             Command::Docs { .. }
             | Command::Init { .. }
@@ -600,6 +609,37 @@ pub(crate) fn take_flag_arg(
         }
     }
     Ok((found, rest))
+}
+
+/// Every `flag <value>` / `flag=<value>` in `runner_args`, and the rest.
+fn take_flag_args(runner_args: &[String], flag: &str) -> io::Result<(Vec<String>, Vec<String>)> {
+    let (mut found, mut rest) = (Vec::new(), runner_args.to_vec());
+    while let (Some(value), remaining) = take_one_flag_arg(&rest, flag)? {
+        found.push(value);
+        rest = remaining;
+    }
+    Ok((found, rest))
+}
+
+/// The first `flag <value>` / `flag=<value>` in `runner_args`, and the rest.
+fn take_one_flag_arg(
+    runner_args: &[String],
+    flag: &str,
+) -> io::Result<(Option<String>, Vec<String>)> {
+    let Some(at) = runner_args
+        .iter()
+        .position(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    else {
+        return Ok((None, runner_args.to_vec()));
+    };
+    let mut rest = runner_args.to_vec();
+    let arg = rest.remove(at);
+    let value = match arg.split_once('=') {
+        Some((_, value)) => value.to_string(),
+        None if at < rest.len() => rest.remove(at),
+        None => return Err(io::Error::other(format!("{flag} requires a value"))),
+    };
+    Ok((Some(value), rest))
 }
 
 fn command_name(command: &Command) -> &'static str {
