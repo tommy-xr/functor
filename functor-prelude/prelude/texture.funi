@@ -74,8 +74,11 @@ let atlas : (atlasInput) => atlasOutput
 /// layer, per channel as stored, clamped to 255 (alpha stays the base's).
 /// An id missing from `intensities` is 0; an id no layer has is ignored.
 /// Build it in `draw` from model state, so time travel shows the right
-/// lights. Only images whose intensities changed re-upload; drawing one
-/// atlas at two sets of intensities in a frame is correct but re-uploads.
+/// lights. Applied to a `withLayers` texture, it replaces the intensities.
+/// Only images whose intensities changed re-upload. The atlas has one GPU
+/// copy: two sets of intensities in one frame are correct but re-upload,
+/// and within one draw (e.g. the atlas also as a base texture) the last
+/// bound wins.
 ///
 /// ```
 /// let lit = Texture.withLayers(Map.fromList([(1.0, 0.5)]), lm.texture)

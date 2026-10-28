@@ -35,16 +35,15 @@ pub struct Block {
     pub rgba8: Vec<u8>,
 }
 
-/// Each layer's intensity, flattened across `images` in order. `intensities`
-/// is sorted by id; an id it lacks is 0.
+/// Each layer's intensity, flattened across `images` in order. An id
+/// `intensities` lacks, or a negative or non-finite intensity, is 0.
 pub fn layer_levels(images: &[LayeredImage], intensities: &[(f64, f32)]) -> Vec<f32> {
     images
         .iter()
         .flat_map(|image| &image.layers)
         .map(|layer| {
-            intensities
-                .binary_search_by(|(id, _)| id.total_cmp(&layer.id))
-                .map_or(0.0, |i| intensities[i].1)
+            let level = intensities.iter().find(|(id, _)| *id == layer.id).map_or(0.0, |l| l.1);
+            if level.is_finite() { level.max(0.0) } else { 0.0 }
         })
         .collect()
 }
@@ -92,15 +91,19 @@ pub fn compose_block(atlas: &PixelData, image: &LayeredImage, levels: &[f32]) ->
     }
 }
 
-/// Check `images` against an atlas `side` texels square: padded rects in
-/// bounds, layer ids finite and distinct per image, layer sizes matching.
-pub fn check_layers(images: &[LayeredImage], side: u32) -> Result<(), String> {
+/// Check `images` against a `width`×`height` atlas: padded rects in bounds,
+/// layer ids finite and distinct per image, layer sizes matching.
+pub fn check_layers(images: &[LayeredImage], width: u32, height: u32) -> Result<(), String> {
     for (i, image) in images.iter().enumerate() {
-        let fits = |at: u32, len: u32| {
+        let fits = |at: u32, len: u32, side: u32| {
             at >= image.padding && at as u64 + len as u64 + image.padding as u64 <= side as u64
         };
-        if image.width == 0 || image.height == 0 || !fits(image.x, image.width) || !fits(image.y, image.height) {
-            return Err(format!("layered image {i} is outside the {side}×{side} atlas"));
+        if image.width == 0
+            || image.height == 0
+            || !fits(image.x, image.width, width)
+            || !fits(image.y, image.height, height)
+        {
+            return Err(format!("layered image {i} is outside the {width}×{height} atlas"));
         }
         let need = image.width as usize * image.height as usize * 4;
         for (j, layer) in image.layers.iter().enumerate() {
@@ -142,7 +145,8 @@ mod tests {
     fn levels_look_up_ids_and_default_to_zero() {
         let (_, image) = atlas();
         assert_eq!(layer_levels(&[image.clone()], &[(2.0, 0.25)]), [0.0, 0.25]);
-        assert_eq!(layer_levels(&[image.clone(), image], &[(2.0, 1.0), (7.0, 0.5), (9.0, 1.0)]), [0.5, 1.0, 0.5, 1.0]);
+        assert_eq!(layer_levels(&[image.clone(), image.clone()], &[(7.0, 0.5), (2.0, 1.0), (9.0, 1.0)]), [0.5, 1.0, 0.5, 1.0]);
+        assert_eq!(layer_levels(&[image], &[(7.0, -1.0), (2.0, f32::NAN)]), [0.0, 0.0]);
     }
 
     /// 0, 0.5 and 1 give base, base + half and base + all; the sum saturates
@@ -175,10 +179,15 @@ mod tests {
         let check = |edit: fn(&mut LayeredImage), side| {
             let mut image = image.clone();
             edit(&mut image);
-            check_layers(&[image], side)
+            check_layers(&[image], side, side)
         };
         assert_eq!(check(|_| {}, 4), Ok(()));
         assert_eq!(check(|_| {}, 3), Err("layered image 0 is outside the 3×3 atlas".into()));
+        // Each axis against its own side: y = 1 + 1 + padding 1 overruns 2.
+        assert_eq!(
+            check_layers(&[image.clone()], 4, 2),
+            Err("layered image 0 is outside the 4×2 atlas".into())
+        );
         assert_eq!(check(|i| i.layers[1].id = 7.0, 4), Err("layers[1]: id 7 repeats layers[0]".into()));
         assert_eq!(check(|i| i.layers[0].id = f64::NAN, 4), Err("layers[0]: id must be finite, got NaN".into()));
         assert_eq!(check(|i| i.layers[0].rgba8.pop().map_or((), drop), 4), Err("layers[0]: 7 RGBA8 bytes, need 8".into()));

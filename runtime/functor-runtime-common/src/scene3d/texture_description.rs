@@ -45,7 +45,7 @@ pub enum TextureDescription {
     /// sampling, whatever the material slot.
     Data(Arc<PixelData>),
     /// `Texture.withLayers`: `base` with its layers mixed in at
-    /// `intensities` (`(id, intensity)`, sorted by id; a missing id is 0).
+    /// `intensities` (`(id, intensity)`; a missing id is 0).
     /// Binding recomposes, on the base's one GPU copy, only the images whose
     /// intensities changed since it last bound.
     Layered {

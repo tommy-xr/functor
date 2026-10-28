@@ -14721,11 +14721,13 @@ let lm = Texture.atlas({ images: [{ pixels: px, layers: [] }, { pixels: px, laye
 padding: 1.0, maxSize: 64.0 })\n";
 
     /// `Texture.atlas` keeps each image's layers where it landed;
-    /// `Texture.withLayers` pairs the atlas with sorted intensities.
+    /// `Texture.withLayers` pairs the atlas with intensities, replacing any it
+    /// already has.
     #[test]
     fn with_layers_pairs_an_atlas_with_intensities() {
         let src = format!(
-            "{PIXELS}{LAYERED}let main = Texture.withLayers(Map.fromList([(3.0, 0.5), (1.0, 1.0)]), lm.texture)\n"
+            "{PIXELS}{LAYERED}let main = Texture.withLayers(Map.fromList([(3.0, 0.5), (1.0, 1.0)]), \
+Texture.withLayers(Map.fromList([(1.0, 0.0)]), lm.texture))\n"
         );
         let Value::HostData(texture) = eval_with_prelude(&src).unwrap() else {
             panic!("expected a texture");

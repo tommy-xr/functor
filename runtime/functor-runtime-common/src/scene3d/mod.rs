@@ -953,8 +953,7 @@ impl SceneContext {
         self.layered_texture(gl, pixels, &[])
     }
 
-    /// The GL texture for `base` with its layers at `intensities` (sorted by
-    /// id). It shares `base`'s one GPU copy: only images whose levels differ
+    /// The GL texture for `base` with its layers at `intensities`. It shares `base`'s one GPU copy: only images whose levels differ
     /// from what that copy holds are recomposed and uploaded, so unchanged
     /// intensities upload nothing.
     pub fn layered_texture(

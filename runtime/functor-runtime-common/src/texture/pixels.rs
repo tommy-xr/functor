@@ -121,7 +121,7 @@ impl PixelData {
 
     /// Attach an atlas's layered images, checked against its size.
     pub fn with_layers(mut self, layers: Vec<LayeredImage>) -> Result<PixelData, String> {
-        super::check_layers(&layers, self.width())?;
+        super::check_layers(&layers, self.width(), self.height())?;
         self.layers = layers;
         Ok(self)
     }

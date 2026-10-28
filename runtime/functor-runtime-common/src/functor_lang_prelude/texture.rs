@@ -282,7 +282,10 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Texture.withLayers",
         "Texture.withLayers(intensities, atlas)",
         |levels: IntensitiesArg, texture: FunctorLangTexture| {
-            let TextureDescription::Data(base) = texture.0 else {
+            // A layered texture gets new intensities for the same atlas.
+            let (TextureDescription::Data(base) | TextureDescription::Layered { base, .. }) =
+                texture.0
+            else {
                 return Err("Texture.withLayers: expected a Texture.atlas or Texture.fromPixels \
 texture"
                     .to_string());
@@ -295,8 +298,7 @@ texture"
     );
 }
 
-/// `Texture.withLayers`'s `Map<float, float>`: finite ids, intensities
-/// finite and from 0, sorted by id.
+/// `Texture.withLayers`'s `Map<float, float>`: intensities finite and from 0.
 struct IntensitiesArg(Vec<(f64, f32)>);
 
 impl crate::host_registry::FromArg for IntensitiesArg {
@@ -305,7 +307,7 @@ impl crate::host_registry::FromArg for IntensitiesArg {
         let Value::Map(entries) = value else {
             return fail(path, format!("expected a Map<float, float>, got {}", value.kind_name()), span);
         };
-        let mut out = entries
+        let out = entries
             .iter()
             .map(|(key, value)| match (key, value) {
                 (MapKey::Number(id), Value::Number(level)) if (*level as f32).is_finite() && *level >= 0.0 => {
@@ -319,7 +321,6 @@ impl crate::host_registry::FromArg for IntensitiesArg {
                 _ => fail(path, "expected a Map<float, float>".to_string(), span),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        out.sort_by(|a, b| a.0.total_cmp(&b.0));
         Ok(IntensitiesArg(out))
     }
 }
