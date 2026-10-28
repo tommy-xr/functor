@@ -33,6 +33,7 @@ use cgmath::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::animation::Animation;
 use crate::model::{JointPose, Model, Pose, Skeleton};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -135,9 +136,31 @@ pub fn skinning_transforms(
     expr: &AnimExpr,
     on_warning: &mut dyn FnMut(AnimWarning),
 ) -> Vec<Matrix4<f32>> {
-    let weighted = eval(model, expr, on_warning);
-    let pose = finalize(&model.skeleton, weighted);
-    model.skeleton.skinning_transforms_for(&pose)
+    rig_skinning_transforms(&model.skeleton, &model.animations, expr, on_warning)
+}
+
+/// [`skinning_transforms`] for a bare skeleton and clips — `Model.pose`
+/// poses on the sim side, which has no GPU [`Model`].
+pub fn rig_skinning_transforms(
+    skeleton: &Skeleton,
+    animations: &[Animation],
+    expr: &AnimExpr,
+    on_warning: &mut dyn FnMut(AnimWarning),
+) -> Vec<Matrix4<f32>> {
+    let rig = Rig {
+        skeleton,
+        animations,
+    };
+    let weighted = eval(rig, expr, on_warning);
+    let pose = finalize(skeleton, weighted);
+    skeleton.skinning_transforms_for(&pose)
+}
+
+/// What evaluation reads from a model.
+#[derive(Clone, Copy)]
+struct Rig<'a> {
+    skeleton: &'a Skeleton,
+    animations: &'a [Animation],
 }
 
 /// Fold a weighted pose onto the bind pose: fully-driven joints take the
@@ -173,7 +196,7 @@ fn mix_joint(a: &JointPose, b: &JointPose, t: f32) -> JointPose {
     }
 }
 
-fn eval(model: &Model, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning)) -> WeightedPose {
+fn eval(model: Rig, expr: &AnimExpr, on_warning: &mut dyn FnMut(AnimWarning)) -> WeightedPose {
     match expr {
         AnimExpr::Clip { name, playhead } => {
             match model.animations.iter().find(|a| a.name == *name) {
