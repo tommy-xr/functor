@@ -99,7 +99,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
     (
         ApiGroup::Stdlib,
         "Numbers & randomness",
-        &["Math", "Random"],
+        &["Math", "Bits", "Random"],
     ),
     (ApiGroup::Stdlib, "Fallibility", &["Option", "Result"]),
     (ApiGroup::Stdlib, "Input", &["Key", "Mouse"]),
@@ -706,7 +706,7 @@ mod tests {
         assert_eq!(
             stdlib,
             [
-                "List", "Map", "Text", "Math", "Random", "Option", "Result", "Key", "Mouse",
+                "List", "Map", "Text", "Math", "Bits", "Random", "Option", "Result", "Key", "Mouse",
                 "Debug"
             ]
         );

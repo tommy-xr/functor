@@ -999,6 +999,80 @@ fn math_smoothstep_is_clamped_and_rejects_degenerate_edges() {
     }
 }
 
+/// `Bits.*` truth tables over the 2-bit inputs 0..3, plus the u32 edges.
+#[test]
+fn bits_truth_tables_and_u32_edges() {
+    let table = |op: &str| {
+        main_result(&format!(
+            "let main = () => List.range(4.0) |> List.concatMap((a) => \
+             List.range(4.0) |> List.map((b) => Bits.{op}(a, b)))"
+        ))
+    };
+    assert_eq!(table("and"), "[0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0, 1, 2, 3]");
+    assert_eq!(table("or"), "[0, 1, 2, 3, 1, 1, 3, 3, 2, 3, 2, 3, 3, 3, 3, 3]");
+    assert_eq!(table("xor"), "[0, 1, 2, 3, 1, 0, 3, 2, 2, 3, 0, 1, 3, 2, 1, 0]");
+    let max = "4294967295.0";
+    for (src, want) in [
+        (format!("Bits.and({max}, 2863311530.0)"), "2863311530"),
+        (format!("Bits.or(0.0, {max})"), "4294967295"),
+        (format!("Bits.xor({max}, {max})"), "0"),
+        ("Bits.complement(0.0)".to_string(), "4294967295"),
+        (format!("Bits.complement({max})"), "0"),
+        ("Bits.complement(1.0)".to_string(), "4294967294"),
+        ("Bits.popcount(0.0)".to_string(), "0"),
+        (format!("Bits.popcount({max})"), "32"),
+        ("Bits.popcount(2147483648.0)".to_string(), "1"),
+        // Shifts: subject-last, u32 overflow drops high bits, counts >= 32 clear.
+        ("1.0 |> Bits.shl(4.0)".to_string(), "16"),
+        ("Bits.shl(0.0, 7.0)".to_string(), "7"),
+        ("Bits.shl(31.0, 1.0)".to_string(), "2147483648"),
+        (format!("Bits.shl(1.0, {max})"), "4294967294"),
+        ("Bits.shl(32.0, 1.0)".to_string(), "0"),
+        (format!("Bits.shl(100.0, {max})"), "0"),
+        (format!("Bits.shr(31.0, {max})"), "1"),
+        (format!("Bits.shr(32.0, {max})"), "0"),
+        ("256.0 |> Bits.shr(8.0)".to_string(), "1"),
+        // testBit / extract.
+        ("Bits.testBit(0.0, 1.0)".to_string(), "true"),
+        ("Bits.testBit(1.0, 1.0)".to_string(), "false"),
+        (format!("Bits.testBit(31.0, {max})"), "true"),
+        ("Bits.testBit(31.0, 2147483647.0)".to_string(), "false"),
+        // 0x7C00 = RGB555 red all-ones.
+        ("Bits.extract(10.0, 5.0, 31744.0)".to_string(), "31"),
+        ("Bits.extract(5.0, 5.0, 31744.0)".to_string(), "0"),
+        (format!("Bits.extract(0.0, 32.0, {max})"), "4294967295"),
+        (format!("Bits.extract(31.0, 1.0, {max})"), "1"),
+        (format!("Bits.extract(32.0, 0.0, {max})"), "0"),
+        ("Bits.extract(4.0, 0.0, 255.0)".to_string(), "0"),
+    ] {
+        assert_eq!(main_result(&format!("let main = () => {src}")), want, "{src}");
+    }
+}
+
+/// Non-integer, negative, non-finite, and over-32-bit operands are teaching
+/// errors naming the call and range, never truncated.
+#[test]
+fn bits_reject_out_of_range_operands() {
+    for (src, want) in [
+        ("Bits.and(1.5, 1.0)", "Bits.and(a, b): `a` must be a whole number in 0..=4294967295, got 1.5"),
+        ("Bits.or(1.0, -1.0)", "Bits.or(a, b): `b` must be a whole number in 0..=4294967295, got -1"),
+        ("Bits.xor(4294967296.0, 0.0)", "`a` must be a whole number in 0..=4294967295, got 4294967296"),
+        ("Bits.complement(0.0 / 0.0)", "Bits.complement(value): `value` must be a whole number"),
+        ("Bits.popcount(1.0 / 0.0)", "Bits.popcount(value): `value` must be a whole number"),
+        ("Bits.shl(-1.0, 1.0)", "Bits.shl(count, value): `count` must be a whole number"),
+        ("Bits.shr(0.5, 1.0)", "Bits.shr(count, value): `count` must be a whole number"),
+        ("Bits.shr(1.0, 0.25)", "Bits.shr(count, value): `value` must be a whole number"),
+        ("Bits.testBit(32.0, 1.0)", "Bits.testBit(bit, value): `bit` must be a whole number in 0..=31, got 32"),
+        ("Bits.extract(33.0, 0.0, 1.0)", "`offset` must be a whole number in 0..=32, got 33"),
+        ("Bits.extract(0.0, 1.5, 1.0)", "`width` must be a whole number in 0..=32, got 1.5"),
+        ("Bits.extract(30.0, 4.0, 1.0)", "Bits.extract(offset, width, value): `offset + width` must be at most 32, got 30 + 4"),
+        ("Bits.and(\"a\", 1.0)", "Bits.and(a, b) expects numbers"),
+    ] {
+        let (message, _, _) = run_err(&format!("let main = () => {src}"));
+        assert!(message.contains(want), "for {src}: {message}");
+    }
+}
+
 /// `Math.round` is HALF AWAY FROM ZERO, and symmetric about it.
 #[test]
 fn math_round_is_half_away_from_zero() {

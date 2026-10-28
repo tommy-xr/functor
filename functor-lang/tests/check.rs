@@ -2135,6 +2135,20 @@ fn the_jam_reached_for_builtins_exist() {
     );
 }
 
+/// `Bits`: numbers in, `testBit` answers a bool, value-last pipes, and the
+/// namespace is closed.
+#[test]
+fn bits_builtins_check_and_pipe() {
+    assert_clean(
+        "let a = Bits.and(1.0, 3.0) + Bits.or(1.0, 2.0) + Bits.xor(1.0, 3.0)\n\
+         let b = 7.0 |> Bits.shr(1.0) |> Bits.shl(2.0) |> Bits.complement |> Bits.popcount\n\
+         let c : bool = 8.0 |> Bits.testBit(3.0)\n\
+         let d = 31744.0 |> Bits.extract(10.0, 5.0)",
+    );
+    let (message, _, _) = single_diag("let x = Bits.nand(1.0, 2.0)");
+    assert!(message.contains("Bits"), "unexpected: {message}");
+}
+
 // THREAD-LAST IS LAW. Every multi-argument addition takes its subject as the
 // FINAL parameter, so the pipeline form means what it reads like.
 //

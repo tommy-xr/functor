@@ -762,6 +762,15 @@ pub fn builtin_signature(b: Builtin) -> Type {
         // last; logs `label: subject` and returns the subject unchanged (Var(0)
         // is generic, so it's transparent in a pipe).
         Builtin::DebugLog => func(vec![String, Var(0)], Var(0)),
+        // Bits.* — u32 values as floats; shift/test/extract are subject-LAST.
+        Builtin::BitsComplement | Builtin::BitsPopcount => func(vec![Float], Float),
+        Builtin::BitsAnd
+        | Builtin::BitsOr
+        | Builtin::BitsXor
+        | Builtin::BitsShl
+        | Builtin::BitsShr => func(vec![Float, Float], Float),
+        Builtin::BitsTestBit => func(vec![Float, Float], Bool),
+        Builtin::BitsExtract => func(vec![Float, Float, Float], Float),
     }
 }
 
