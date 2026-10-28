@@ -138,22 +138,39 @@ fn one_upload_for_many_nodes(harness: &mut Harness) {
     );
 }
 
-/// A shadow-casting light runs the depth pass over the model, and an
-/// instanced copy (stamped) draws what a plain node does.
+/// A static occluder off-screen (between the sun and the room) shadows the
+/// room through the depth pass, and an instanced copy (stamped) draws what
+/// a plain node does.
 fn shadow_and_instanced(harness: &mut Harness) {
     let (red, green) = (solid([255, 0, 0]), solid([0, 255, 0]));
     let room = model(room(&red, &green));
-    let sun = || {
-        vec![
-            Light::ambient(0.2, 0.2, 0.2),
-            Light::directional(0.0, 0.0, -1.0, 1.0, 1.0, 1.0, 1.0).cast_shadows(),
-        ]
+    // Seen from the camera it lies left of the view; the sun, travelling
+    // +x and -z, casts it onto the room at x ≈ -2.4 … -1.4.
+    let occluder = model(ModelSource {
+        positions: vec![[-3.5, -1.0, 1.5], [-2.5, -1.0, 1.5], [-2.5, 1.0, 1.5], [-3.5, 1.0, 1.5]],
+        normals: vec![[0.0, 0.0, 1.0]; 4],
+        uvs: vec![],
+        triangles: vec![[0, 1, 2], [0, 2, 3]],
+        groups: vec![],
+        ..self::room(&red, &green)
+    });
+    let sun = vec![
+        Light::ambient(0.2, 0.2, 0.2),
+        Light::directional(0.5, 0.0, -1.0, 1.0, 1.0, 1.0, 1.0).cast_shadows(),
+    ];
+    let mut shadowed = frame(&room, 1, false, sun.clone());
+    let SceneObject::Group(items) = &mut shadowed.scene.obj else {
+        unreachable!()
     };
-    let plain = harness.render(&frame(&room, 1, false, sun()));
-    let [r, _, _] = rgb(&plain, 32, 64);
-    assert!(r > 200, "sunlit red drew {r}");
-    let instanced = harness.render(&frame(&room, 1, true, sun()));
-    assert!(plain == instanced, "the stamped copy differs");
+    items.push(frame(&occluder, 1, false, vec![]).scene);
+    let lit = harness.render(&frame(&room, 1, false, sun.clone()));
+    let dark = harness.render(&shadowed);
+    // World x = -1.9 on the room plane is pixel 11; x = -0.5 is pixel 50.
+    let (lit_r, dark_r) = (rgb(&lit, 11, 64)[0], rgb(&dark, 11, 64)[0]);
+    assert!(lit_r > 200 && dark_r < 140, "shadow: lit {lit_r}, shadowed {dark_r}");
+    assert_eq!(rgb(&dark, 50, 64), rgb(&lit, 50, 64), "outside the shadow");
+    let instanced = harness.render(&frame(&room, 1, true, sun));
+    assert!(lit == instanced, "the stamped copy differs");
 }
 
 /// Pixel `(x, y)` of a read-back frame (row 0 at the bottom).

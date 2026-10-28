@@ -283,7 +283,7 @@ fn resolve_model_for_draw(
 }
 
 /// Resolve a model node of either handle for drawing, with the name its
-/// warnings use.
+/// warnings use. Not for static data models, which `draw_static_model` draws.
 fn resolve_handle_for_draw<'a>(
     render_context: &RenderContext,
     scene_context: &SceneContext,
@@ -361,11 +361,9 @@ fn draw_static_model(
     } else {
         &source.groups[..]
     };
-    let mut material = crate::material::StaticMaterial {
-        use_texture: false,
-        unlit: false,
-    };
+    let mut material = crate::material::StaticMaterial;
     material.initialize(render_context);
+    material.draw_opaque(render_context, projection_matrix, view_matrix, matrix, &[]);
     for group in groups {
         if let Some(texture) = &group.texture {
             material_description::bind_texture_description(
@@ -377,9 +375,7 @@ fn draw_static_model(
                 scene_context,
             );
         }
-        material.use_texture = group.texture.is_some();
-        material.unlit = group.unlit;
-        material.draw_opaque(render_context, projection_matrix, view_matrix, matrix, &[]);
+        material.set_group(render_context, group.texture.is_some(), group.unlit);
         mesh.draw_range(gl, group.first as i32 * 3, group.count as i32 * 3);
     }
 }
@@ -1591,8 +1587,8 @@ struct RetainedMesh {
     last_used: u64,
 }
 
-/// A `Model.skinned` value's drawable model (GPU buffers hydrate on first
-/// draw and are deleted on eviction).
+/// A data model's upload (GPU buffers hydrate on first draw and are deleted
+/// on eviction).
 struct RetainedModel {
     gpu: DataModelGpu,
     last_used: u64,

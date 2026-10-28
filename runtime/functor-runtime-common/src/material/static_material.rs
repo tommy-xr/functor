@@ -80,11 +80,9 @@ struct Uniforms {
 
 static mut SHADER_PROGRAM: Option<(ShaderProgram, Uniforms)> = None;
 
-/// One group's draw state; the caller binds its base texture to unit 0.
-pub struct StaticMaterial {
-    pub use_texture: bool,
-    pub unlit: bool,
-}
+/// A static model's shader: `draw_opaque` sets the model's uniforms, then
+/// [`StaticMaterial::set_group`] each group's (its texture bound to unit 0).
+pub struct StaticMaterial;
 
 use crate::shader::Shader;
 use crate::shader::ShaderType;
@@ -148,12 +146,23 @@ impl Material for StaticMaterial {
                     &uniforms.normal_matrix_loc,
                     &normal_matrix(world_matrix),
                 );
-                p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, self.use_texture as i32);
-                p.set_uniform_1i(ctx.gl, &uniforms.unlit_loc, self.unlit as i32);
                 LightingUniforms::bind_shadow_map(ctx);
                 uniforms.output.set(p, ctx.gl, ctx.output_srgb_encode, ctx.output_alpha());
             }
         }
         true
+    }
+}
+
+impl StaticMaterial {
+    /// The next group's state; call after `draw_opaque`, before its draw.
+    pub fn set_group(&self, ctx: &RenderContext, use_texture: bool, unlit: bool) {
+        unsafe {
+            #[allow(static_mut_refs)]
+            if let Some((p, uniforms)) = &SHADER_PROGRAM {
+                p.set_uniform_1i(ctx.gl, &uniforms.use_texture_loc, use_texture as i32);
+                p.set_uniform_1i(ctx.gl, &uniforms.unlit_loc, unlit as i32);
+            }
+        }
     }
 }

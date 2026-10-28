@@ -5,7 +5,8 @@ use super::vertex::{BuiltInVertexChannel, Vertex, VertexAttribute, VertexAttribu
 
 /// A static model's vertex (40 B): `uv` samples the base texture, `uv2` the
 /// lightmap. Position, uv and normal sit at locations 0–2 like the other
-/// formats, so depth and debug shaders draw it unchanged.
+/// formats, so depth and debug shaders draw it unchanged (the tangents
+/// debug view reads `uv2` as its tangent).
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct VertexPositionTextureLightmap {

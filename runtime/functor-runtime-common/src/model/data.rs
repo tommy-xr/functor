@@ -40,7 +40,7 @@ pub struct ModelSource {
     /// Parents before children.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skeleton: Vec<JointSource>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub clips: Vec<ClipSource>,
     /// The base color, sampled at `uvs`; `None` draws white. A locator, so
     /// the image loads (and is shared) through the asset cache.
@@ -111,14 +111,16 @@ impl ModelData {
             .map(|clip| build_animation(clip, &source.skeleton))
             .collect();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let kind = if source.skeleton.is_empty() { "static" } else { "skinned" };
-        Ok(ModelData {
+        let mut data = ModelData {
             id,
-            label: format!("Model.{kind}#{id}"),
+            label: String::new(),
             source,
             skeleton,
             animations,
-        })
+        };
+        let kind = if data.is_static() { "static" } else { "skinned" };
+        data.label = format!("Model.{kind}#{id}");
+        Ok(data)
     }
 
     /// Unique per built model, never reused: the render-side cache key.
@@ -135,7 +137,8 @@ impl ModelData {
         &self.source
     }
 
-    /// No skeleton: drawn by the static path, in groups.
+    /// No skeleton (validation gives every skinned model a joint): drawn by
+    /// the static path, in groups.
     pub fn is_static(&self) -> bool {
         self.source.skeleton.is_empty()
     }
