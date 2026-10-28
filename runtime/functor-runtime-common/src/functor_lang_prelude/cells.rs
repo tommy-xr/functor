@@ -117,10 +117,6 @@ impl crate::host_registry::FromArg for CellsData {
     }
 }
 
-fn vector((x, y, z): (f32, f32, f32)) -> cgmath::Vector3<f32> {
-    cgmath::Vector3::new(x, y, z)
-}
-
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1(
         "Cells.make",
@@ -138,7 +134,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             crate::input::option_value(
                 cells
                     .0
-                    .locate(vector(p.0))
+                    .locate(p.0.into())
                     .map(|cell| Value::Number(f64::from(cell))),
             )
         },
@@ -147,7 +143,7 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Cells.segment",
         "Cells.segment(a, b, cells)",
         |a: FunctorLangVec3, b: FunctorLangVec3, cells: FunctorLangCells| {
-            Value::Bool(cells.0.segment(vector(a.0), vector(b.0)))
+            Value::Bool(cells.0.segment(a.0.into(), b.0.into()))
         },
     );
 }

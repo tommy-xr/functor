@@ -50,7 +50,7 @@ pub struct CellsData {
 #[derive(Debug)]
 pub struct Cells {
     data: CellsData,
-    // Per cell: its box, grown by the tolerance, and its portals' indices.
+    // Per cell: its box (within the tolerance) and its portals' indices.
     bounds: Vec<Aabb>,
     outgoing: Vec<Vec<u32>>,
     // Per portal: the `from` face it lies on, and its unit normal wound
@@ -147,19 +147,27 @@ impl Cells {
             if !polygon.iter().all(|&p| inside_edges(&polygon, normal, p)) {
                 return Err(format!("{what} isn't convex"));
             }
-            let planes = &data.cells[from].planes;
-            let on = |plane: &Plane| {
-                polygon
+            // On a face of both cells: corners on one of its planes, inside the rest.
+            let face_of = |cell: usize| {
+                let planes = &data.cells[cell].planes;
+                let inside = polygon
                     .iter()
-                    .all(|&p| plane.distance(p).abs() <= TOLERANCE)
+                    .all(|&p| planes.iter().all(|plane| plane.distance(p) >= -TOLERANCE));
+                planes
+                    .iter()
+                    .find(|plane| {
+                        polygon
+                            .iter()
+                            .all(|&p| plane.distance(p).abs() <= TOLERANCE)
+                    })
+                    .filter(|_| inside)
             };
-            let inside = polygon
-                .iter()
-                .all(|&p| planes.iter().all(|plane| plane.distance(p) >= -TOLERANCE));
-            let face = planes.iter().find(|plane| on(plane)).filter(|_| inside);
-            let Some(face) = face else {
+            let Some(face) = face_of(from) else {
                 return Err(format!("{what} isn't on a face of cell {from}"));
             };
+            if face_of(to).is_none() {
+                return Err(format!("{what} isn't on a face of cell {to}"));
+            }
             faces.push((*face, normal));
             outgoing[from].push(k as u32);
         }
@@ -227,9 +235,11 @@ impl Cells {
                 .fold(f32::INFINITY, f32::min)
                 .max(t);
             let x = a + dir * exit;
+            // A portal on a face the segment leaves through, containing `x`.
             let through = self.outgoing[cell].iter().find(|&&k| {
                 let (face, normal) = &self.faces[k as usize];
-                face.distance(x).abs() <= TOLERANCE
+                v(face.n).dot(dir) < 0.0
+                    && face.distance(x).abs() <= TOLERANCE
                     && inside_edges(&self.polygon(k as usize), *normal, x)
             });
             let Some(&k) = through else {
@@ -260,13 +270,14 @@ fn inside_edges(polygon: &[Vector3<f32>], normal: Vector3<f32>, p: Vector3<f32>)
     })
 }
 
-/// A cell's box (grown by the tolerance), from the corners where its planes
-/// meet. A far box closes an open cell, so a corner on it means unbounded.
+/// The box of a cell grown by the tolerance (every point `locate` accepts),
+/// from the corners where its tolerance-offset planes meet. A far box closes
+/// an open cell, so a corner on it means unbounded.
 fn cell_bounds(planes: &[Plane]) -> Result<Aabb, &'static str> {
-    const FAR: f64 = 1e5;
+    const FAR: f64 = 1e7;
     let mut all: Vec<([f64; 3], f64)> = planes
         .iter()
-        .map(|p| (p.n.map(f64::from), f64::from(p.d)))
+        .map(|p| (p.n.map(f64::from), f64::from(p.d) + f64::from(TOLERANCE)))
         .collect();
     for axis in 0..3 {
         for sign in [1.0, -1.0] {
@@ -283,7 +294,6 @@ fn cell_bounds(planes: &[Plane]) -> Result<Aabb, &'static str> {
             a[0] * b[1] - a[1] * b[0],
         ]
     };
-    let tol = f64::from(TOLERANCE);
     let mut bounds = Aabb::empty();
     for i in 0..all.len() {
         for j in i + 1..all.len() {
@@ -296,7 +306,7 @@ fn cell_bounds(planes: &[Plane]) -> Result<Aabb, &'static str> {
                 }
                 let p: [f64; 3] =
                     std::array::from_fn(|c| -(di * jk[c] + dj * ki[c] + dk * ij[c]) / det);
-                if !all.iter().all(|&(n, d)| dot(n, p) + d >= -tol) {
+                if !all.iter().all(|&(n, d)| dot(n, p) + d >= -1e-6) {
                     continue;
                 }
                 if p.iter().any(|c| c.abs() > FAR / 2.0) {
@@ -309,11 +319,7 @@ fn cell_bounds(planes: &[Plane]) -> Result<Aabb, &'static str> {
     if bounds.is_empty() {
         return Err("is empty: its planes enclose no point");
     }
-    let grow = Vector3::new(TOLERANCE, TOLERANCE, TOLERANCE);
-    Ok(Aabb {
-        min: bounds.min - grow,
-        max: bounds.max + grow,
-    })
+    Ok(bounds)
 }
 
 #[cfg(test)]
@@ -457,6 +463,44 @@ pub(crate) mod tests {
         assert!(cells.segment(p(5.0, 1.0, 1.0), p(5.0, 1.0, 5.5)));
         // Diagonally across the corner cell into the leg, via both portals.
         assert!(cells.segment(p(3.5, 1.0, 1.0), p(4.8, 1.0, 2.5)));
+        // Through the corner where both portals meet: leaves by the first
+        // portal, not back by its return.
+        assert!(cells.segment(p(3.0, 1.0, 1.0), p(5.0, 1.0, 3.0)));
+    }
+
+    #[test]
+    fn locate_accepts_the_tolerance_at_acute_corners() {
+        // A prism |x| + |y| ≤ 1, 0 ≤ z ≤ 1: 1.2 mm past the x = 1 corner is
+        // within 1 mm of both slanted planes.
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let plane = |n: [f32; 3], d: f32| Plane { n, d };
+        let prism = Cell {
+            planes: vec![
+                plane([-s, -s, 0.0], s),
+                plane([-s, s, 0.0], s),
+                plane([s, -s, 0.0], s),
+                plane([s, s, 0.0], s),
+                plane([0.0, 0.0, 1.0], 0.0),
+                plane([0.0, 0.0, -1.0], 1.0),
+            ],
+        };
+        let cells = Cells::new(CellsData {
+            cells: vec![prism],
+            portals: vec![],
+        })
+        .unwrap();
+        assert_eq!(cells.locate(p(1.0012, 0.0, 0.5)), Some(0));
+        assert_eq!(cells.locate(p(1.002, 0.0, 0.5)), None);
+    }
+
+    #[test]
+    fn far_from_the_origin_is_still_bounded() {
+        let far = room([60_000.0, 0.0, 0.0], [60_004.0, 3.0, 4.0]);
+        assert!(Cells::new(CellsData {
+            cells: vec![far],
+            portals: vec![]
+        })
+        .is_ok());
     }
 
     #[test]
@@ -527,6 +571,16 @@ pub(crate) mod tests {
             err(portal(0, 1, inside)),
             "portal 0 (0 → 1) isn't on a face of cell 0"
         );
+        // On cell 0's face, but cell 1 starts 1 m further on.
+        let gap = CellsData {
+            cells: vec![unit(), room([2.0, 0.0, 0.0], [3.0, 1.0, 1.0])],
+            portals: vec![Portal {
+                from: 0,
+                to: 1,
+                polygon: face.clone(),
+            }],
+        };
+        assert_eq!(err(gap), "portal 0 (0 → 1) isn't on a face of cell 1");
         // On the face's plane but past the cell's edge.
         let past: Vec<[f32; 3]> = face.iter().map(|&[x, y, z]| [x, y + 0.5, z]).collect();
         assert!(err(portal(0, 1, past)).contains("isn't on a face"));
