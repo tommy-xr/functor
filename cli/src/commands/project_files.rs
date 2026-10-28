@@ -98,11 +98,10 @@ like \"ss2/\""
             }
             let mount = match mapped.get(prefix) {
                 None => None,
-                Some(serde_json::Value::String(target)) => {
-                    Some(Mount::parse(project_dir, target).map_err(|e| {
-                        bad(format!("{LOCAL_CONFIG} external {prefix:?}: {e}"))
-                    })?)
-                }
+                Some(serde_json::Value::String(target)) => Some(
+                    Mount::parse(project_dir, target)
+                        .map_err(|e| bad(format!("{LOCAL_CONFIG} external {prefix:?}: {e}")))?,
+                ),
                 Some(_) => {
                     return Err(bad(format!(
                         "{LOCAL_CONFIG} external {prefix:?} must be a path string, like \
@@ -124,7 +123,9 @@ like \"ss2/\""
 
     /// The declared prefixes (`"ss2/"`), relative to the entry's folder.
     pub fn external_prefixes(&self) -> impl Iterator<Item = &str> {
-        self.externals.iter().map(|external| external.prefix.as_str())
+        self.externals
+            .iter()
+            .map(|external| external.prefix.as_str())
     }
 
     fn external<'a>(&self, path: &'a str) -> Option<(&External, &'a str)> {
@@ -256,7 +257,10 @@ enum Entry {
 }
 
 impl ZipMount {
-    fn with_index<T>(&self, f: impl FnOnce(&mut ZipIndex) -> Result<T, String>) -> Result<T, String> {
+    fn with_index<T>(
+        &self,
+        f: impl FnOnce(&mut ZipIndex) -> Result<T, String>,
+    ) -> Result<T, String> {
         let unreadable = |e: &dyn std::fmt::Display| format!("{}: {e}", self.archive.display());
         let meta = std::fs::metadata(&self.archive).map_err(|e| unreadable(&e))?;
         let stamp = (meta.len(), meta.modified().ok());
@@ -285,7 +289,10 @@ impl ZipMount {
                 if size > self.max_entry {
                     return Err(too_big(&name, size, self.max_entry));
                 }
-                let mut entry = index.zip.by_index(at).map_err(|e| format!("{archive}: {e}"))?;
+                let mut entry = index
+                    .zip
+                    .by_index(at)
+                    .map_err(|e| format!("{archive}: {e}"))?;
                 let mut bytes = Vec::with_capacity(size as usize);
                 // `take` caps a header that understates the size.
                 Read::by_ref(&mut entry)
@@ -408,10 +415,8 @@ mod tests {
 
     impl TempProject {
         fn new(name: &str) -> TempProject {
-            let dir = std::env::temp_dir().join(format!(
-                "functor-files-{name}-{}",
-                std::process::id()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("functor-files-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             TempProject(dir)
@@ -427,7 +432,10 @@ mod tests {
                 format!("{{\"language\": \"functor-lang\", \"external\": {declared}}}").as_bytes(),
             );
             if let Some(mapped) = mapped {
-                self.write(LOCAL_CONFIG, format!("{{\"external\": {mapped}}}").as_bytes());
+                self.write(
+                    LOCAL_CONFIG,
+                    format!("{{\"external\": {mapped}}}").as_bytes(),
+                );
             }
         }
         fn resolver(&self) -> Resolver {
@@ -498,7 +506,10 @@ mod tests {
         );
         let resolver = project.resolver();
         assert_eq!(read(&resolver, "ss2/mesh/a.bin"), Ok(vec![7]));
-        assert_eq!(read(&resolver, "ss2/mesh/out.bin"), Err("outside".to_string()));
+        assert_eq!(
+            read(&resolver, "ss2/mesh/out.bin"),
+            Err("outside".to_string())
+        );
         assert!(resolver.exists("ss2/mesh/a.bin") && !resolver.exists("ss2/mesh/out.bin"));
         assert_eq!(resolver.external_prefixes().collect::<Vec<_>>(), ["ss2/"]);
         let _ = std::fs::remove_file(data.0.parent().unwrap().join("functor-files-secret.bin"));
@@ -517,9 +528,15 @@ mod tests {
                 ("data/other.bin", Some(&[0])),
             ],
         );
-        project.config(r#"{"ss2/": "SS2 data"}"#, Some(r#"{"ss2/": "game.kpf!data/res/"}"#));
+        project.config(
+            r#"{"ss2/": "SS2 data"}"#,
+            Some(r#"{"ss2/": "game.kpf!data/res/"}"#),
+        );
         let resolver = project.resolver();
-        assert_eq!(read(&resolver, "ss2/mesh/GRUNT_P.BIN"), Ok(b"LGMD".to_vec()));
+        assert_eq!(
+            read(&resolver, "ss2/mesh/GRUNT_P.BIN"),
+            Ok(b"LGMD".to_vec())
+        );
         assert_eq!(read(&resolver, "ss2/motions/ogpstd_.mc"), Ok(vec![1, 2, 3]));
         assert!(resolver.exists("ss2/mesh/GRUNT_P.BIN"));
         let err = read(&resolver, "ss2/mesh/grunt_p.bin").unwrap_err();
@@ -642,8 +659,10 @@ mod tests {
         assert!(refused(r#"{"ss2/": 1}"#, None).contains("describe what it holds"));
         assert!(refused(r#"{"a/": "x", "a/b/": "y"}"#, None).contains("contains"));
         assert!(refused(r#"{}"#, Some(r#"{"ss2/": "x/"}"#)).contains("doesn't declare it"));
-        assert!(refused(r#"{"ss2/": "x"}"#, Some(r#"{"ss2/": "a.zip!../up/"}"#))
-            .contains("plain relative path"));
+        assert!(
+            refused(r#"{"ss2/": "x"}"#, Some(r#"{"ss2/": "a.zip!../up/"}"#))
+                .contains("plain relative path")
+        );
         assert!(refused(r#"["ss2/"]"#, None).contains("must be an object"));
     }
 }

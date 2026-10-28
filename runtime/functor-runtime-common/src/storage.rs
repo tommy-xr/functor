@@ -410,8 +410,14 @@ mod tests {
             .unwrap();
         set_project_root(dir.path().to_path_buf());
         let reader = ProjectDirReader;
-        assert_eq!(reader.read("data/a.bin").ok().as_deref(), Some(&[1u8, 2, 3][..]));
-        assert_eq!(reader.read("in.bin").ok().as_deref(), Some(&[1u8, 2, 3][..]));
+        assert_eq!(
+            reader.read("data/a.bin").ok().as_deref(),
+            Some(&[1u8, 2, 3][..])
+        );
+        assert_eq!(
+            reader.read("in.bin").ok().as_deref(),
+            Some(&[1u8, 2, 3][..])
+        );
         assert!(reader.exists("data/a.bin") && reader.exists("in.bin"));
         assert!(matches!(
             reader.read("out.bin"),

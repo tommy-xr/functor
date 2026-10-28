@@ -81,11 +81,7 @@ crate::host_returnable!(FunctorLangBytes);
 /// The bytes of a file in the project (the entry file's folder). `api` and
 /// `example` shape the errors: `Typeface.file("…"): use a path inside the
 /// project, like "fonts/MyFont.ttf"`.
-pub(super) fn read_project_file(
-    api: &str,
-    path: &str,
-    example: &str,
-) -> Result<Arc<[u8]>, String> {
+pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<Arc<[u8]>, String> {
     use crate::storage::ProjectReadError;
     let outside = || format!("{api}({path:?}): use a path inside the project, like {example:?}");
     // The same portable rule as project assets; the platform's reader keeps

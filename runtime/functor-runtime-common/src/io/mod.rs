@@ -117,10 +117,13 @@ fn read_through_project(path: &str, disk_error: std::io::Error) -> Result<Vec<u8
     let reader = crate::storage::project_reader()
         .filter(|_| crate::debug_protocol::validate_project_asset_path(path).is_ok())
         .ok_or_else(|| format!("{path}: {disk_error}"))?;
-    reader.read(path).map(|bytes| bytes.to_vec()).map_err(|e| match e {
-        ProjectReadError::Outside => format!("{path}: resolves outside the project"),
-        ProjectReadError::Unreadable(e) => format!("{path}: {e}"),
-    })
+    reader
+        .read(path)
+        .map(|bytes| bytes.to_vec())
+        .map_err(|e| match e {
+            ProjectReadError::Outside => format!("{path}: resolves outside the project"),
+            ProjectReadError::Unreadable(e) => format!("{path}: {e}"),
+        })
 }
 
 /// See the FUNCTOR_THROTTLE_ASSETS comment in [`load_bytes_async2`].
@@ -585,7 +588,10 @@ mod tests {
         cache.replace_uploaded("ext/skin.gif", vec![1, 2]);
         crate::storage::set_project_reader(Some(cache));
         let missing = || std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert_eq!(read_through_project("ext/skin.gif", missing()), Ok(vec![1, 2]));
+        assert_eq!(
+            read_through_project("ext/skin.gif", missing()),
+            Ok(vec![1, 2])
+        );
         let err = read_through_project("ext/other.gif", missing()).unwrap_err();
         assert!(err.starts_with("ext/other.gif: not pushed"), "{err}");
         let err = read_through_project("../ext/skin.gif", missing()).unwrap_err();
