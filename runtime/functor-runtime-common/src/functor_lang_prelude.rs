@@ -12140,6 +12140,35 @@ the game dir"
         assert!(err.contains("inside the project"), "{err}");
     }
 
+    /// `File.bytes`/`File.exists` go through the installed project reader
+    /// (the Quest shell's pushed-file cache), not the disk.
+    #[test]
+    fn file_reads_use_the_installed_project_reader() {
+        let _guard = crate::storage::SAVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cache = std::sync::Arc::new(crate::asset::AssetCache::new());
+        cache.replace_uploaded("data/pushed.bin", vec![5, 6, 7]);
+        crate::storage::set_project_reader(Some(cache));
+        let result = eval_with_prelude(
+            "let main = Bytes.length(File.bytes(\"data/pushed.bin\")) == 3.0 \
+             && File.exists(\"data/pushed.bin\") && not File.exists(\"other.bin\") \
+             && not File.exists(\"../data/pushed.bin\")\n",
+        );
+        let missing = eval_with_prelude("let main = File.bytes(\"other.bin\")\n");
+        crate::storage::set_project_reader(None);
+        assert!(
+            matches!(result, Ok(Value::Bool(true))),
+            "{:?}",
+            result.map(|v| v.to_string())
+        );
+        let err = missing.err().expect("should fail");
+        assert!(
+            err.contains("can't read other.bin in the project (not pushed to this device)"),
+            "{err}"
+        );
+    }
+
     /// `Decode` (bundled Functor code) over a small made-up format: a header
     /// naming where a point list starts, read with `at`, `list`, `map3`.
     #[test]

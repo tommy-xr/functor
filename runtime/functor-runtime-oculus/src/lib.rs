@@ -1280,6 +1280,8 @@ pub fn android_main(app: AndroidApp) {
     );
 
     let asset_cache = Arc::new(AssetCache::new());
+    // `File.bytes` reads the files `functor run vr` pushed.
+    functor_runtime_common::storage::set_project_reader(Some(asset_cache.clone()));
     let scene_context = SceneContext::new();
     // The eye swapchain is SRGB8_ALPHA8 (COLOR_FORMAT): the hardware encodes
     // on write, so the shared shader epilogue must pass through — see the

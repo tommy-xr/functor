@@ -239,6 +239,25 @@ impl AssetCache {
     }
 }
 
+/// Project files pushed over the debug protocol (`functor run vr`): the Quest
+/// shell's `File.bytes`. Only uploads count, not bytes loaded from elsewhere.
+impl crate::storage::ProjectReader for AssetCache {
+    fn read(&self, path: &str) -> Result<Vec<u8>, crate::storage::ProjectReadError> {
+        self.exists(path)
+            .then(|| self.cached_bytes(path))
+            .flatten()
+            .ok_or_else(|| {
+                crate::storage::ProjectReadError::Unreadable(
+                    "not pushed to this device".to_string(),
+                )
+            })
+    }
+    fn exists(&self, path: &str) -> bool {
+        self.uploaded_paths.lock().unwrap().contains(path)
+            && self.bytes_cache.lock().unwrap().contains_key(path)
+    }
+}
+
 /// The asset to RENDER for a primary that carries an `Asset.whilePending`
 /// chain: the primary when LOADED; while it is still loading, the first
 /// LOADED chain entry; otherwise the pipeline fallback. A FAILED primary
@@ -404,6 +423,43 @@ mod tests {
                 .cloned(),
             Some(vec![4, 5])
         );
+    }
+
+    /// `File.bytes` on Quest: pushed files read back (hit, replaced, then
+    /// deleted by a manifest); misses and non-uploaded bytes don't.
+    #[test]
+    fn project_reader_serves_uploads_only() {
+        use crate::storage::{ProjectReadError, ProjectReader};
+        let cache = AssetCache::new();
+        let read = |path: &str| match cache.read(path) {
+            Ok(bytes) => Ok(bytes),
+            Err(ProjectReadError::Unreadable(e)) => Err(e),
+            Err(ProjectReadError::Outside) => Err("outside".to_string()),
+        };
+        assert_eq!(
+            read("data/a.bin"),
+            Err("not pushed to this device".to_string())
+        );
+        assert!(!cache.exists("data/a.bin"));
+
+        cache.replace_uploaded("data/a.bin", vec![1, 2]);
+        assert_eq!(read("data/a.bin"), Ok(vec![1, 2]));
+        assert!(cache.exists("data/a.bin"));
+        cache.replace_uploaded("data/a.bin", vec![3]);
+        assert_eq!(read("data/a.bin"), Ok(vec![3]));
+
+        cache.retain_uploaded(&HashSet::new());
+        assert!(read("data/a.bin").is_err());
+        assert!(!cache.exists("data/a.bin"));
+
+        // Bytes cached by a renderer load aren't project files.
+        cache
+            .bytes_cache
+            .lock()
+            .unwrap()
+            .insert("loaded.png".to_string(), vec![9]);
+        assert!(read("loaded.png").is_err());
+        assert!(!cache.exists("loaded.png"));
     }
 
     #[test]

@@ -123,7 +123,7 @@ screenshot run has no reason to grab your mouse.
 | `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first; `?module=`/`?prefix=` declares the same-file entry role |
 | `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init`; takes the same role query |
 | `GET /project` | the running program's own `.fun` sources as a JSON array of `[path, source]` pairs, entry first — the read half of the push routes (see below) |
-| `POST /reload-asset` | upload one project-relative texture/model/audio asset as a binary path+bytes envelope |
+| `POST /reload-asset` | upload one project-relative file (texture/model/audio asset or `File.bytes` data) as a binary path+bytes envelope |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
 | `POST /display-refresh-rate` | request a headset display rate, `{"hz":90}`; it must be one of `display_refresh_rate.available`, and `current` moves once the runtime confirms the switch. 400 on desktop (protocol v15) |
@@ -680,11 +680,17 @@ raw asset bytes. Paths are forward-slash, project-relative locators with no
 changed files, `POST /sync-assets` receives the complete current path list and
 evicts uploads deleted on the host.
 
-`functor run vr` performs this automatically for self-contained `.glb` models,
-textures, and sounds. (`.gltf` models with external URI dependencies remain a
-renderer limitation and are not live-synchronized.) It scans recursively,
-excluding hidden paths and the generated root `dist/` tree; the watch loop
-fingerprints metadata and reads large bytes only when an asset changes.
+`functor run vr` performs this automatically for every project file: models,
+textures, sounds, and data that `File.bytes`/`File.exists` read from the
+upload cache on the device. (`.gltf` models with external URI dependencies
+remain a renderer limitation and are not synchronized.) It scans recursively,
+excluding hidden paths, the generated root `dist/` tree, `target/`,
+`node_modules/`, and symlinks resolving outside the project, and caps the push
+(`--max-file-mb`, default 64; `--max-push-mb`, default 512). The initial sync
+finishes before `/load-project`, so top-level `File.bytes` sees the files. The
+watch loop fingerprints metadata and reads large bytes only when a file
+changes; a changed data file (anything but a renderer asset) also triggers
+`/reload-project`, so top-level bindings re-read it.
 Replacing an upload evicts cached model/texture/skybox decodes so the next
 frame uses the new bytes. The TypeScript SDK exposes the same flow as
 `client.reloadAsset(path, bytes)` and `client.reloadAssets(files)`. It also

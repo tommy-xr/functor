@@ -52,33 +52,29 @@ crate::host_returnable!(FunctorLangBytes);
 /// The bytes of a file in the project (the entry file's folder). `api` and
 /// `example` shape the errors: `Typeface.file("…"): use a path inside the
 /// project, like "fonts/MyFont.ttf"`.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub(super) fn read_project_file(api: &str, path: &str, example: &str) -> Result<Vec<u8>, String> {
+    use crate::storage::ProjectReadError;
     let outside = || format!("{api}({path:?}): use a path inside the project, like {example:?}");
-    // The same portable rule as project assets, then resolved so a symlink
-    // can't reach outside either.
+    // The same portable rule as project assets; the platform's reader keeps
+    // symlinks from reaching outside too.
     crate::debug_protocol::validate_project_asset_path(path).map_err(|_| outside())?;
-    let unreadable = |e: std::io::Error| format!("{api}: can't read {path} in the project ({e})");
-    let root = std::fs::canonicalize(crate::storage::project_dir()).map_err(unreadable)?;
-    let full = std::fs::canonicalize(root.join(path)).map_err(unreadable)?;
-    if !full.starts_with(&root) {
-        return Err(outside());
-    }
-    std::fs::read(&full).map_err(unreadable)
+    let reader = crate::storage::project_reader().ok_or_else(|| {
+        format!(
+            "{api}({path:?}): project files load on desktop, in `functor export` and on Quest \
+(`functor run vr`), not on the web yet"
+        )
+    })?;
+    reader.read(path).map_err(|e| match e {
+        ProjectReadError::Outside => outside(),
+        ProjectReadError::Unreadable(e) => format!("{api}: can't read {path} in the project ({e})"),
+    })
 }
 
-/// Whether `path` names a readable file in the project (false for paths
-/// outside it, and on hosts that can't read project files).
+/// Whether `path` names a file in the project (false for paths outside it,
+/// and on hosts that can't read project files).
 fn project_file_exists(path: &str) -> bool {
-    read_project_file("File.exists", path, "").is_ok()
-}
-
-#[cfg(any(target_arch = "wasm32", target_os = "android"))]
-pub(super) fn read_project_file(api: &str, path: &str, _example: &str) -> Result<Vec<u8>, String> {
-    Err(format!(
-        "{api}({path:?}): project files load in desktop runs and `functor export` for now, \
-not on the web or Quest"
-    ))
+    crate::debug_protocol::validate_project_asset_path(path).is_ok()
+        && crate::storage::project_reader().is_some_and(|reader| reader.exists(path))
 }
 
 /// A `Binary.error` record at `offset` with an empty path.

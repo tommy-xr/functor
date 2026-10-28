@@ -692,14 +692,15 @@ impl FunctorLangProject {
         refresh_manifest(working_directory);
         if matches!(environment, Environment::Vr) {
             let (refresh_rate, runner_args) = take_refresh_rate_arg(runner_args)?;
+            let (limits, runner_args) = take_push_limit_args(&runner_args)?;
             if !runner_args.is_empty() {
                 emit(Event::Warning {
-                    message: "runner args are ignored on vr except --refresh-rate (they configure \
-the desktop runtime)"
+                    message: "runner args are ignored on vr except --refresh-rate, --max-file-mb \
+and --max-push-mb (they configure the desktop runtime)"
                         .to_string(),
                 });
             }
-            return self.run_vr(working_directory, refresh_rate).await;
+            return self.run_vr(working_directory, refresh_rate, limits).await;
         }
         if matches!(environment, Environment::Wasm) {
             return self.run_wasm(working_directory, runner_args, develop).await;
@@ -854,6 +855,7 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         &self,
         working_directory: &str,
         refresh_rate: Option<f32>,
+        limits: PushLimits,
     ) -> Result<(), Error> {
         let entry_path = self.entry_path(working_directory)?;
         let project_root = Path::new(working_directory);
@@ -917,12 +919,18 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
             }
         }
 
-        let mut attempted_assets = project_asset_files(project_root)?;
+        // Data files (`File.bytes`) land with the assets, before the load
+        // evaluates top-level bindings.
+        let scan = project_asset_files(project_root)?;
+        let mut escaped = Vec::new();
+        warn_escaped_links(&scan.escaped, &mut escaped);
+        check_push_limits(&scan.files, limits)?;
+        let mut attempted_assets = scan.files;
         let report = sync_project_assets(&addr, &attempted_assets, None)?;
         let mut observed_assets = attempted_assets.clone();
         emit(Event::Info {
             message: format!(
-                "synced {} project asset(s) ({:.1} MB) to the headset",
+                "synced {} project file(s) ({:.1} MB) to the headset",
                 report.files,
                 report.bytes as f64 / (1024.0 * 1024.0)
             ),
@@ -974,6 +982,8 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         // The watch loop, shaped like `push --watch`: poll contents (not
         // mtimes), track the last ATTEMPTED file set, and re-push the WHOLE
         // set on any change (file = module — a sibling edit must ship too).
+        // `reload_pending`: a synced data change still owes a reload.
+        let mut reload_pending = false;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             // Atomic-save editors briefly unlink files mid-save; wait for
@@ -981,11 +991,15 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             let Ok(current) = read_project_json(&entry_path) else {
                 continue;
             };
-            let Ok(current_assets) = project_asset_files(project_root) else {
+            let Ok(ProjectFiles {
+                files: current_assets,
+                ..
+            }) = project_asset_files(project_root)
+            else {
                 continue;
             };
             let assets_changed = current_assets != observed_assets;
-            if current == attempted && !assets_changed {
+            if current == attempted && !assets_changed && !reload_pending {
                 continue;
             }
             // The same check gate `run native` uses — structured file:line
@@ -1002,13 +1016,26 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             // An asset add/rename can regenerate assets.fun during `build`.
             // Sync and push the exact post-build snapshots, in that order.
             let current = read_project_json(&entry_path)?;
-            let current_assets = project_asset_files(project_root)?;
+            let scan = project_asset_files(project_root)?;
+            warn_escaped_links(&scan.escaped, &mut escaped);
+            let current_assets = scan.files;
+            if let Err(e) = check_push_limits(&current_assets, limits) {
+                emit(Event::Warning {
+                    message: format!("{e} — the headset keeps the previous program"),
+                });
+                attempted = current;
+                observed_assets = current_assets;
+                continue;
+            }
+            // A changed data file only shows after a reload re-evaluates the
+            // top-level `File.bytes` bindings.
+            let data_changed = data_files_changed(&attempted_assets, &current_assets);
             if current_assets != attempted_assets {
                 match sync_project_assets(&addr, &current_assets, Some(&attempted_assets)) {
                     Ok(report) => {
                         emit(Event::Info {
                             message: format!(
-                                "synced {} changed asset(s) ({:.1} MB) to the headset",
+                                "synced {} changed file(s) ({:.1} MB) to the headset",
                                 report.files,
                                 report.bytes as f64 / (1024.0 * 1024.0)
                             ),
@@ -1028,19 +1055,22 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             } else {
                 observed_assets = current_assets;
             }
-            if current == attempted {
+            reload_pending |= data_changed;
+            if current == attempted && !reload_pending {
                 continue;
             }
             match post_project(&addr, "/reload-project", &current, &role) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
+                    reload_pending = false;
                 }
                 Ok((status, body)) => {
                     emit(Event::Warning {
                         message: format!("push rejected ({status}): {body}"),
                     });
                     attempted = current;
+                    reload_pending = false;
                 }
                 // Transport failure (cable out, app restarting): leave
                 // `attempted` alone so the same content retries next poll.
@@ -1451,14 +1481,43 @@ struct AssetSyncReport {
     bytes: u64,
 }
 
-/// Recursively collect self-contained GLB models, textures, and audio files.
-/// Hidden directories and the generated `dist/` tree never ship.
-fn project_asset_files(root: &Path) -> Result<Vec<ProjectAssetFile>, Error> {
+/// Caps on what `run vr` pushes into the headset's memory, in bytes
+/// (`--max-file-mb`, `--max-push-mb`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PushLimits {
+    file: u64,
+    total: u64,
+}
+
+impl Default for PushLimits {
+    fn default() -> Self {
+        PushLimits {
+            file: 64 * 1024 * 1024,
+            total: 512 * 1024 * 1024,
+        }
+    }
+}
+
+/// The project files to push, plus file symlinks skipped because they
+/// resolve outside the project.
+#[derive(Debug, Default)]
+struct ProjectFiles {
+    files: Vec<ProjectAssetFile>,
+    escaped: Vec<String>,
+}
+
+/// Recursively collect every project file the headset may read: assets for
+/// the renderer, data for `File.bytes`. Skipped: hidden entries (`.git`,
+/// `.functor`), the generated `dist/` at the root, `target/`, `node_modules/`,
+/// symlinked directories, and multi-file `.gltf` (its URIs don't resolve
+/// against the cache yet).
+fn project_asset_files(root: &Path) -> Result<ProjectFiles, Error> {
     fn visit(
         root: &Path,
+        canonical_root: &Path,
         directory: &Path,
         is_root: bool,
-        out: &mut Vec<ProjectAssetFile>,
+        out: &mut ProjectFiles,
     ) -> Result<(), Error> {
         for entry in std::fs::read_dir(directory)? {
             let entry = entry?;
@@ -1466,20 +1525,39 @@ fn project_asset_files(root: &Path) -> Result<Vec<ProjectAssetFile>, Error> {
             let name = name
                 .to_str()
                 .ok_or_else(|| Error::other(format!("non-UTF8 file name: {:?}", name)))?;
-            if name.starts_with('.') || (is_root && name == "dist") {
+            if name.starts_with('.')
+                || (is_root && name == "dist")
+                || name == "target"
+                || name == "node_modules"
+            {
                 continue;
             }
             let path = entry.path();
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                visit(root, &path, false, out)?;
+                visit(root, canonical_root, &path, false, out)?;
                 continue;
             }
-            // Follow symlinked files (matching `build wasm`), but never recurse
-            // through symlinked directories.
+            if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("gltf"))
+            {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| Error::other(format!("asset escaped project: {}", path.display())))?;
+            // Follow symlinked files that stay inside the project, but never
+            // recurse through symlinked directories.
             let metadata = if file_type.is_symlink() {
                 match std::fs::metadata(&path) {
-                    Ok(metadata) if metadata.is_file() => metadata,
+                    Ok(metadata) if metadata.is_file() => {
+                        if !std::fs::canonicalize(&path)?.starts_with(canonical_root) {
+                            out.escaped.push(relative.display().to_string());
+                            continue;
+                        }
+                        metadata
+                    }
                     _ => continue,
                 }
             } else if file_type.is_file() {
@@ -1487,12 +1565,6 @@ fn project_asset_files(root: &Path) -> Result<Vec<ProjectAssetFile>, Error> {
             } else {
                 continue;
             };
-            if !functor_runtime_common::asset::is_live_project_asset_file(&path) {
-                continue;
-            }
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| Error::other(format!("asset escaped project: {}", path.display())))?;
             let locator = relative
                 .components()
                 .map(|component| {
@@ -1509,7 +1581,7 @@ fn project_asset_files(root: &Path) -> Result<Vec<ProjectAssetFile>, Error> {
                 .ok()
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |duration| duration.as_nanos());
-            out.push(ProjectAssetFile {
+            out.files.push(ProjectAssetFile {
                 locator,
                 disk_path: path,
                 len: metadata.len(),
@@ -1519,10 +1591,48 @@ fn project_asset_files(root: &Path) -> Result<Vec<ProjectAssetFile>, Error> {
         Ok(())
     }
 
-    let mut files = Vec::new();
-    visit(root, root, true, &mut files)?;
-    files.sort_by(|a, b| a.locator.cmp(&b.locator));
-    Ok(files)
+    let mut out = ProjectFiles::default();
+    visit(root, &std::fs::canonicalize(root)?, root, true, &mut out)?;
+    out.files.sort_by(|a, b| a.locator.cmp(&b.locator));
+    out.escaped.sort();
+    Ok(out)
+}
+
+/// Refuse a push over `limits`, naming the file (or total) and the flag.
+fn check_push_limits(files: &[ProjectAssetFile], limits: PushLimits) -> Result<(), Error> {
+    let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+    const UNPUSHED: &str = "hidden folders, dist/, target/ and node_modules/ aren't pushed";
+    if let Some(big) = files.iter().find(|file| file.len > limits.file) {
+        return Err(Error::other(format!(
+            "{} is {:.1} MB, over the {:.0} MB per-file push limit — raise it with \
+`--max-file-mb`, or keep the file out of the project ({UNPUSHED})",
+            big.locator,
+            mb(big.len),
+            mb(limits.file)
+        )));
+    }
+    let total: u64 = files.iter().map(|file| file.len).sum();
+    if total > limits.total {
+        return Err(Error::other(format!(
+            "the project's files total {:.1} MB, over the {:.0} MB push limit — raise it with \
+`--max-push-mb`, or keep big files out of the project ({UNPUSHED})",
+            mb(total),
+            mb(limits.total)
+        )));
+    }
+    Ok(())
+}
+
+/// Whether a file changed between two scans in a way only a session reload
+/// shows: a `File.bytes` input, not an asset the renderer re-decodes itself.
+fn data_files_changed(previous: &[ProjectAssetFile], current: &[ProjectAssetFile]) -> bool {
+    let is_data = |file: &&ProjectAssetFile| {
+        !functor_runtime_common::asset::is_live_project_asset_file(Path::new(&file.locator))
+    };
+    let data = |files: &[ProjectAssetFile]| -> Vec<ProjectAssetFile> {
+        files.iter().filter(is_data).cloned().collect()
+    };
+    data(previous) != data(current)
 }
 
 /// Push added/changed files individually, then finalize with the complete path
@@ -1628,6 +1738,48 @@ fn post_project(
 fn post_display_refresh_rate(addr: &str, hz: f32) -> Result<(u16, String), Error> {
     let body = serde_json::json!({ "hz": hz }).to_string();
     http_post(addr, "/display-refresh-rate", "application/json", &body)
+}
+
+/// Pull `--max-file-mb <n>` / `--max-push-mb <n>` out of `run vr`'s
+/// trailing args (defaults: [`PushLimits::default`]).
+fn take_push_limit_args(runner_args: &[String]) -> Result<(PushLimits, Vec<String>), Error> {
+    let mut limits = PushLimits::default();
+    let mut rest = runner_args.to_vec();
+    for (flag, limit) in [
+        ("--max-file-mb", &mut limits.file),
+        ("--max-push-mb", &mut limits.total),
+    ] {
+        let (value, remaining) = crate::take_flag_arg(&rest, flag)?;
+        rest = remaining;
+        if let Some(value) = value {
+            *limit = match value.parse::<u64>() {
+                Ok(mb) if mb > 0 => mb.saturating_mul(1024 * 1024),
+                _ => {
+                    return Err(Error::other(format!(
+                        "{flag} expects a size in MB, e.g. 128 (got `{value}`)"
+                    )))
+                }
+            };
+        }
+    }
+    Ok((limits, rest))
+}
+
+/// Warn about file symlinks the push skips because they point outside the
+/// project, once per change to that set.
+fn warn_escaped_links(escaped: &[String], warned: &mut Vec<String>) {
+    if escaped == warned.as_slice() {
+        return;
+    }
+    for link in escaped.iter().filter(|link| !warned.contains(link)) {
+        emit(Event::Warning {
+            message: format!(
+                "{link} links outside the project, so it isn't pushed to the headset \
+(copy the file in instead)"
+            ),
+        });
+    }
+    *warned = escaped.to_vec();
 }
 
 /// Pull `--refresh-rate <hz>` / `--refresh-rate=<hz>` out of `run vr`'s
@@ -1850,9 +2002,11 @@ mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
     use super::{
-        manifest_mouse_capture, nth_line, project_asset_files, resolve_debug_args, CursorPolicy,
-        FunctorLangConfig, FunctorLangEntries, FunctorLangProject,
+        check_push_limits, data_files_changed, manifest_mouse_capture, nth_line,
+        project_asset_files, resolve_debug_args, take_push_limit_args, CursorPolicy,
+        FunctorLangConfig, FunctorLangEntries, FunctorLangProject, ProjectAssetFile, PushLimits,
     };
+    use std::path::{Path, PathBuf};
 
     fn resolve(develop: bool, args: &[&str]) -> (Vec<String>, Option<String>) {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
@@ -2407,10 +2561,17 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     }
 
     #[test]
-    fn vr_asset_scan_is_recursive_and_skips_hidden_and_dist_files() {
+    fn vr_file_scan_is_recursive_and_skips_ignored_files() {
         let root = std::env::temp_dir().join(format!("functor-vr-assets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for directory in ["models", "textures/walls", ".cache", "dist/web"] {
+        for directory in [
+            "models",
+            "textures/walls",
+            ".cache",
+            "dist/web",
+            "target/debug",
+            "lib/node_modules",
+        ] {
             std::fs::create_dir_all(root.join(directory)).unwrap();
         }
         for (path, bytes) in [
@@ -2419,20 +2580,125 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             ("models/ship.gltf", b"external model"),
             ("textures/walls/grid.PNG", b"texture"),
             ("theme.ogg", b"audio"),
-            ("notes.txt", b"not an asset"),
+            ("notes.txt", b"data"),
             (".cache/hidden.png", b"hidden"),
             ("dist/web/stale.glb", b"generated"),
+            ("target/debug/out.bin", b"build output"),
+            ("lib/node_modules/x.js", b"dependency"),
         ] {
             std::fs::write(root.join(path), bytes).unwrap();
         }
 
-        let files = project_asset_files(&root).unwrap();
-        let locators: Vec<&str> = files.iter().map(|asset| asset.locator.as_str()).collect();
+        let scan = project_asset_files(&root).unwrap();
+        let locators: Vec<&str> = scan
+            .files
+            .iter()
+            .map(|asset| asset.locator.as_str())
+            .collect();
         assert_eq!(
             locators,
-            vec!["models/ship.glb", "textures/walls/grid.PNG", "theme.ogg",]
+            vec![
+                "models/ship.bin",
+                "models/ship.glb",
+                "notes.txt",
+                "textures/walls/grid.PNG",
+                "theme.ogg",
+            ]
         );
+        assert!(scan.escaped.is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A file symlink is pushed only when its target stays inside the project.
+    #[cfg(unix)]
+    #[test]
+    fn vr_file_scan_skips_symlinks_out_of_the_project() {
+        let base = std::env::temp_dir().join(format!("functor-vr-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (outside, root) = (base.join("outside"), base.join("project"));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(outside.join("secret.bin"), b"secret").unwrap();
+        std::fs::write(root.join("data.bin"), b"data").unwrap();
+        let link = |target: &Path, name: &str| {
+            std::os::unix::fs::symlink(target, root.join(name)).unwrap()
+        };
+        link(&outside.join("secret.bin"), "out.bin");
+        link(&root.join("data.bin"), "in.bin");
+        link(&outside, "outdir");
+
+        let scan = project_asset_files(&root).unwrap();
+        let locators: Vec<&str> = scan
+            .files
+            .iter()
+            .map(|file| file.locator.as_str())
+            .collect();
+        assert_eq!(locators, vec!["data.bin", "in.bin"]);
+        assert_eq!(scan.escaped, vec!["out.bin"]);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn vr_push_limits_name_the_file_and_flag() {
+        let file = |locator: &str, len: u64| ProjectAssetFile {
+            locator: locator.to_string(),
+            disk_path: PathBuf::from(locator),
+            len,
+            modified_ns: 0,
+        };
+        let limits = PushLimits {
+            file: 10,
+            total: 15,
+        };
+        assert!(check_push_limits(&[file("a.bin", 10), file("b.bin", 5)], limits).is_ok());
+        let err = check_push_limits(&[file("a.bin", 11)], limits)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("a.bin") && err.contains("--max-file-mb"),
+            "{err}"
+        );
+        let err = check_push_limits(&[file("a.bin", 10), file("b.bin", 6)], limits)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--max-push-mb"), "{err}");
+
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (parsed, rest) =
+            take_push_limit_args(&args(&["--max-file-mb", "2", "--max-push-mb=3", "--x"])).unwrap();
+        assert_eq!((parsed.file, parsed.total), (2 << 20, 3 << 20));
+        assert_eq!(rest, args(&["--x"]));
+        assert_eq!(take_push_limit_args(&[]).unwrap().0, PushLimits::default());
+        assert!(take_push_limit_args(&args(&["--max-file-mb", "0"])).is_err());
+    }
+
+    /// Data changes (not renderer assets) owe a session reload.
+    #[test]
+    fn vr_data_changes_need_a_reload() {
+        let file = |locator: &str, len: u64| ProjectAssetFile {
+            locator: locator.to_string(),
+            disk_path: PathBuf::from(locator),
+            len,
+            modified_ns: 0,
+        };
+        let base = vec![file("a.png", 1), file("data/x.bin", 1)];
+        assert!(!data_files_changed(&base, &base));
+        assert!(!data_files_changed(
+            &base,
+            &[file("a.png", 2), file("data/x.bin", 1)]
+        ));
+        assert!(data_files_changed(
+            &base,
+            &[file("a.png", 1), file("data/x.bin", 2)]
+        ));
+        assert!(
+            data_files_changed(&base, &[file("a.png", 1)]),
+            "a deleted data file"
+        );
+        assert!(
+            data_files_changed(&[file("a.png", 1)], &base),
+            "an added data file"
+        );
     }
 
     /// Every shipped example typechecks against the engine prelude — the

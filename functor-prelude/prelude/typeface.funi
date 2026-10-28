@@ -11,6 +11,6 @@ let script : () => t
 let sans : () => t
 /// A TrueType or OpenType font file, relative to the entry file's folder:
 /// `Typeface.file("fonts/MyScript.ttf")`. It is read on each call, so bind it
-/// once at the top level, not in `draw`. Desktop runs and `functor export`
-/// only, for now.
+/// once at the top level, not in `draw`. Desktop, `functor export` and Quest;
+/// not the web yet.
 let file : (string) => t
