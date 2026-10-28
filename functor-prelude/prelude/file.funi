@@ -9,7 +9,9 @@
 //! holds `{"ss2": "~/ss2/sshock2.kpf!data/res/"}` (a folder, or `!` into a
 //! zip), or pass `--mount ss2=PATH`. Then `File.bytes("ss2/mesh/x.bin")` reads
 //! `data/res/mesh/x.bin` in the archive, case-sensitively. External folders are
-//! never pushed or bundled.
+//! never pushed or bundled. On Quest, `functor run vr` sends them when the game
+//! first asks: `File.exists` is false until then, and the game reloads once
+//! they arrive.
 
 /// The bytes of a file: `File.bytes("data/model.bin")`.
 let bytes : (string) => Bytes.t

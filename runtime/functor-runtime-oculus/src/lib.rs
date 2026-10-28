@@ -35,6 +35,7 @@ use functor_runtime_common::debug_protocol::{
     CaptureError, DebugRequest, DisplayRefreshRate, InputCommand, RuntimeState, RuntimeView,
     RuntimeViewport,
 };
+use functor_runtime_common::device_files::DeviceFiles;
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::runtime_settings::FoveationLevel;
@@ -728,6 +729,7 @@ fn service_debug_request(
     eyes: &[EyeTarget],
     session_running: bool,
     asset_cache: &Arc<AssetCache>,
+    device_files: &DeviceFiles,
     scene_context: &SceneContext,
     passthrough: &passthrough::Passthrough,
 ) {
@@ -952,7 +954,10 @@ desktop runtime's --headless/--debug-port path"
                 ));
             });
         }
-        DebugRequest::LoadProject(files, role, response) => {
+        DebugRequest::LoadProject(files, role, host, response) => {
+            // Files the device lacks are asked of this host, if any (before
+            // the load reads them).
+            device_files.begin(host);
             // Waits: a successful load restarts the shell's clock.
             let mut result = sim.call(move |g| {
                 functor_runtime_common::protocol::load_with_role(g, role, |g| {
@@ -990,6 +995,20 @@ desktop runtime's --headless/--debug-port path"
             let status = if changed { "reloaded" } else { "unchanged" };
             log::info!("{status} project asset '{}'", asset.path);
             let _ = response.send(Ok(format!("{status} asset {}", asset.path)));
+        }
+        DebugRequest::ProjectFileRequests(response) => {
+            let _ = response.send(Ok(device_files.requests()));
+        }
+        DebugRequest::ProjectFileReply(reply, response) => {
+            let result = device_files.accept(reply).map(|(status, locator)| {
+                // A texture that failed to load retries with the new bytes.
+                if let Some(locator) = locator {
+                    asset_cache.evict(&locator);
+                    scene_context.evict_asset(&locator);
+                }
+                status
+            });
+            let _ = response.send(result);
         }
         DebugRequest::SyncAssets(paths, response) => {
             let current: HashSet<String> = paths.into_iter().collect();
@@ -1294,8 +1313,15 @@ pub fn android_main(app: AndroidApp) {
     );
 
     let asset_cache = Arc::new(AssetCache::new());
-    // `File.bytes` reads the files `functor run vr` pushed.
-    functor_runtime_common::storage::set_project_reader(Some(asset_cache.clone()));
+    // `File.bytes` reads the files `functor run vr` pushed, then those it
+    // fetched from the host, kept in app storage across launches.
+    let device_files = Arc::new(DeviceFiles::new(
+        asset_cache.clone(),
+        app.internal_data_path()
+            .map(|dir| dir.join("project-files")),
+        functor_runtime_common::device_files::DEFAULT_STORE_BYTES,
+    ));
+    functor_runtime_common::storage::set_project_reader(Some(device_files.clone()));
     let scene_context = SceneContext::new();
     // The eye swapchain is SRGB8_ALPHA8 (COLOR_FORMAT): the hardware encodes
     // on write, so the shared shader epilogue must pass through — see the
@@ -1480,6 +1506,7 @@ pub fn android_main(app: AndroidApp) {
                     &eyes,
                     session_running,
                     &asset_cache,
+                    &device_files,
                     &scene_context,
                     &passthrough,
                 );

@@ -130,7 +130,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 23 adds the optional `build` field on `GET /state`: which runtime build is
 /// answering (`pr | <sha7>` for a CI-built Quest APK, `dev` for a local one),
 /// omitted by runtimes that don't report it.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 23;
+///
+/// 24 lets the headset get files it lacks
+/// from the host: `/load-project` takes `session` and the entry's folder
+/// (`dir`), and `GET`/`POST /project-files` carry the device's misses and the
+/// host's replies ([`ProjectFileRequests`], [`ProjectFileReply`]).
+pub const DEBUG_PROTOCOL_VERSION: u32 = 24;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -219,7 +224,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/load-project",
-        description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push; ?module=Server / ?prefix=server declares the same-file entry role",
+        description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push; ?module=Server / ?prefix=server declares the same-file entry role; &session=N&dir=src lets the device ask this host for files it lacks (GET /project-files), resolved from the entry's folder",
     },
     DebugRoute {
         method: "GET",
@@ -230,6 +235,16 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/reload-asset",
         description: "upload one project asset as a binary path+bytes envelope and evict its decoded render data",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/project-files",
+        description: "project files the game asked for that the device lacks, as {session, requests:[{path, have}]} (have = the version it holds, to confirm); 409 on runtimes that read the project from disk",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/project-files",
+        description: "answer one request from GET /project-files: a binary envelope (u32 header length, JSON header {session, path, status: bytes|current|missing, version?, message?}, then the bytes); 409 for another session or an unrequested path",
     },
     DebugRoute {
         method: "POST",
@@ -761,6 +776,179 @@ pub struct ProjectAsset {
 /// The set of uploaded project assets that should remain available.
 pub type ProjectAssetPaths = Vec<String>;
 
+/// A `functor run vr` host that serves the files the device lacks
+/// (`/load-project?session=N&dir=src`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectSession {
+    /// Chosen per host run; replies from another session are stale.
+    pub id: u64,
+    /// The entry's folder, `""` or `"src/"`: `File.bytes` paths start there.
+    pub entry_dir: String,
+}
+
+/// Split `session`/`dir` off a `/load-project` query, returning the rest
+/// (the entry role, for [`parse_entry_role_query`]).
+pub fn take_project_session(query: &str) -> Result<(Option<ProjectSession>, String), String> {
+    let (mut id, mut dir, mut rest) = (None, None, Vec::new());
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        match pair.split_once('=') {
+            Some(("session", value)) if id.is_none() => {
+                id = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| "session must be a number")?,
+                )
+            }
+            Some(("dir", value)) if dir.is_none() => dir = Some(value),
+            Some(("session" | "dir", _)) => return Err("session or dir declared twice".into()),
+            _ => rest.push(pair),
+        }
+    }
+    let entry_dir = match dir.filter(|dir| !dir.is_empty()) {
+        Some(dir) => {
+            let dir = percent_decode(dir)?;
+            validate_project_asset_path(&dir).map_err(|e| format!("dir: {e}"))?;
+            format!("{dir}/")
+        }
+        None => String::new(),
+    };
+    let session = match id {
+        Some(id) => Some(ProjectSession { id, entry_dir }),
+        None if !entry_dir.is_empty() => return Err("dir needs a session".to_string()),
+        None => None,
+    };
+    Ok((session, rest.join("&")))
+}
+
+/// `%XX` escapes decoded (`my%20src` → `my src`).
+fn percent_decode(value: &str) -> Result<String, String> {
+    let mut out = Vec::with_capacity(value.len());
+    let mut at = 0;
+    while at < value.len() {
+        if value.as_bytes()[at] == b'%' {
+            let byte = value
+                .get(at + 1..at + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                .ok_or("dir has a bad %-escape")?;
+            out.push(byte);
+            at += 3;
+        } else {
+            out.push(value.as_bytes()[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| "dir must be UTF-8".to_string())
+}
+
+/// `GET /project-files`: what the device lacks, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFileRequests {
+    /// The session the requests belong to (0 = none yet).
+    pub session: u64,
+    pub requests: Vec<ProjectFileRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFileRequest {
+    /// As the game asked for it: relative to the entry's folder.
+    pub path: String,
+    /// The version the device already holds, to confirm instead of resend.
+    pub have: Option<String>,
+}
+
+/// `POST /project-files`: the host's answer to one request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectFileReply {
+    pub session: u64,
+    pub path: String,
+    pub status: ProjectFileStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectFileStatus {
+    /// The file, with a version (size + mtime, or a zip entry's crc + size)
+    /// the device keeps to confirm it next session.
+    Bytes { version: String, bytes: Vec<u8> },
+    /// The device's copy (`have`) is current.
+    Current { version: String },
+    /// Not on the host either; the reason, for `File.bytes`'s error.
+    Missing { message: String },
+}
+
+#[derive(Serialize, Deserialize)]
+struct ProjectFileHeader {
+    session: u64,
+    path: String,
+    status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+/// The `POST /project-files` body: a big-endian u32 header length, the JSON
+/// header, then the file's bytes (empty unless `Bytes`).
+pub fn encode_project_file_reply(reply: &ProjectFileReply) -> Vec<u8> {
+    let (status, version, message, bytes) = match &reply.status {
+        ProjectFileStatus::Bytes { version, bytes } => ("bytes", Some(version), None, &bytes[..]),
+        ProjectFileStatus::Current { version } => ("current", Some(version), None, &[][..]),
+        ProjectFileStatus::Missing { message } => ("missing", None, Some(message), &[][..]),
+    };
+    let header = serde_json::to_vec(&ProjectFileHeader {
+        session: reply.session,
+        path: reply.path.clone(),
+        status: status.to_string(),
+        version: version.cloned(),
+        message: message.cloned(),
+    })
+    .expect("a plain header serializes");
+    let mut body = Vec::with_capacity(4 + header.len() + bytes.len());
+    body.extend_from_slice(&(header.len() as u32).to_be_bytes());
+    body.extend_from_slice(&header);
+    body.extend_from_slice(bytes);
+    body
+}
+
+/// Decode [`encode_project_file_reply`]'s body.
+pub fn decode_project_file_reply(mut body: Vec<u8>) -> Result<ProjectFileReply, String> {
+    let header_len = body
+        .get(..4)
+        .map(|len| u32::from_be_bytes(len.try_into().unwrap()) as usize)
+        .ok_or("reply is missing its header length")?;
+    let header_end = 4usize
+        .checked_add(header_len)
+        .filter(|end| *end <= body.len() && header_len <= MAX_ASSET_PATH_BYTES * 2)
+        .ok_or("reply is shorter than its header")?;
+    let header: ProjectFileHeader =
+        serde_json::from_slice(&body[4..header_end]).map_err(|e| format!("reply header: {e}"))?;
+    validate_project_asset_path(&header.path)?;
+    // The rest is the file: drop the header in place rather than copy it.
+    body.drain(..header_end);
+    let bytes = body;
+    if bytes.len() > MAX_ASSET_BYTES {
+        return Err(format!("file is over {MAX_ASSET_BYTES} bytes"));
+    }
+    let version = || header.version.clone().ok_or("reply needs a version");
+    let status = match header.status.as_str() {
+        "bytes" => ProjectFileStatus::Bytes {
+            version: version()?,
+            bytes,
+        },
+        "current" => ProjectFileStatus::Current {
+            version: version()?,
+        },
+        "missing" => ProjectFileStatus::Missing {
+            message: header.message.clone().unwrap_or_default(),
+        },
+        other => return Err(format!("unknown reply status {other:?}")),
+    };
+    Ok(ProjectFileReply {
+        session: header.session,
+        path: header.path,
+        status,
+    })
+}
+
 /// Encode one asset for `POST /reload-asset`: a big-endian u32 path length,
 /// UTF-8 project-relative path, then the raw file bytes.
 pub fn encode_project_asset(path: &str, bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -853,11 +1041,17 @@ pub enum DebugRequest {
         Option<crate::functor_lang_producer::EntryRole>,
         Sender<Result<String, String>>,
     ),
+    /// Also the host session serving missing files, when one was declared.
     LoadProject(
         ProjectSources,
         Option<crate::functor_lang_producer::EntryRole>,
+        Option<ProjectSession>,
         Sender<Result<String, String>>,
     ),
+    /// `Err` (409) on runtimes that read the project from disk.
+    ProjectFileRequests(Sender<Result<ProjectFileRequests, String>>),
+    /// `Err` (409) for a stale session or an unrequested path.
+    ProjectFileReply(ProjectFileReply, Sender<Result<String, String>>),
     ReloadAsset(ProjectAsset, Sender<Result<String, String>>),
     SyncAssets(ProjectAssetPaths, Sender<Result<String, String>>),
     Rewind(u64, Sender<Result<String, String>>),
@@ -911,6 +1105,89 @@ mod tests {
             parse_entry_role_query("prefix="),
             Ok(Some(EntryRole::Prefix(String::new())))
         );
+    }
+
+    /// `/load-project`'s host session splits off the role query; a bad
+    /// folder or a folder without a session is refused.
+    #[test]
+    fn a_load_declares_its_host_session_beside_the_role() {
+        assert_eq!(
+            take_project_session("prefix=&session=7&dir=src"),
+            Ok((
+                Some(ProjectSession {
+                    id: 7,
+                    entry_dir: "src/".to_string()
+                }),
+                "prefix=".to_string()
+            ))
+        );
+        assert_eq!(
+            take_project_session("session=7&dir="),
+            Ok((
+                Some(ProjectSession {
+                    id: 7,
+                    entry_dir: String::new()
+                }),
+                String::new()
+            ))
+        );
+        assert_eq!(
+            take_project_session("session=7&dir=my%20src/v%C3%A9")
+                .map(|(session, _)| session.unwrap().entry_dir),
+            Ok("my src/vé/".to_string())
+        );
+        assert_eq!(
+            take_project_session("module=Server"),
+            Ok((None, "module=Server".to_string()))
+        );
+        for bad in [
+            "session=x",
+            "session=1&dir=../up",
+            "dir=src",
+            "session=1&session=2",
+            "session=1&dir=a%2",
+            "session=1&dir=%2E%2E",
+        ] {
+            assert!(take_project_session(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Each reply status survives the envelope; malformed ones don't decode.
+    #[test]
+    fn project_file_replies_round_trip() {
+        for status in [
+            ProjectFileStatus::Bytes {
+                version: "12:34".to_string(),
+                bytes: vec![1, 2, 3],
+            },
+            ProjectFileStatus::Current {
+                version: "12:34".to_string(),
+            },
+            ProjectFileStatus::Missing {
+                message: "ss2/ isn't mapped".to_string(),
+            },
+        ] {
+            let reply = ProjectFileReply {
+                session: 9,
+                path: "ss2/mesh/a.bin".to_string(),
+                status,
+            };
+            assert_eq!(
+                decode_project_file_reply(encode_project_file_reply(&reply)),
+                Ok(reply)
+            );
+        }
+        let mut bad = encode_project_file_reply(&ProjectFileReply {
+            session: 9,
+            path: "../up.bin".to_string(),
+            status: ProjectFileStatus::Missing {
+                message: String::new(),
+            },
+        });
+        assert!(decode_project_file_reply(bad.clone()).is_err());
+        bad.truncate(6);
+        assert!(decode_project_file_reply(bad).is_err());
+        assert!(decode_project_file_reply(vec![0, 0]).is_err());
     }
 
     /// A role that cannot be honored exactly must be REFUSED, never coerced:
@@ -1355,6 +1632,8 @@ mod tests {
             "POST /reload-project",
             "POST /load-project",
             "POST /reload-asset",
+            "GET /project-files",
+            "POST /project-files",
             "POST /sync-assets",
             "POST /rewind",
             "POST /display-refresh-rate",

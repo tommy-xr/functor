@@ -559,6 +559,84 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
             respond_result(&mut stream, cors_origin, recv(resp_rx), "asset reload")
         }
+        ("GET", "/project-files") => {
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::ProjectFileRequests(resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            match recv(resp_rx) {
+                Ok(Ok(requests)) => respond_bytes(
+                    &mut stream,
+                    cors_origin,
+                    200,
+                    "OK",
+                    "application/json",
+                    serde_json::to_string(&requests)
+                        .expect("requests are plain data")
+                        .as_bytes(),
+                ),
+                Ok(Err(message)) => {
+                    respond_text(&mut stream, cors_origin, 409, "Conflict", &message)
+                }
+                Err(_) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    500,
+                    "Internal Server Error",
+                    "project files failed",
+                ),
+            }
+        }
+        ("POST", "/project-files") => {
+            let body = match read_body(
+                &mut reader,
+                content_length,
+                debug_protocol::MAX_ASSET_BYTES + 2 * debug_protocol::MAX_ASSET_PATH_BYTES + 4,
+            ) {
+                Ok(body) => body,
+                Err(BodyError::MissingLength | BodyError::TooLarge) => {
+                    respond_text(
+                        &mut stream,
+                        cors_origin,
+                        413,
+                        "Payload Too Large",
+                        "file too large (or missing Content-Length); limit is 256MB",
+                    );
+                    return Some(());
+                }
+                Err(BodyError::Invalid) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", "bad body");
+                    return Some(());
+                }
+            };
+            let reply = match debug_protocol::decode_project_file_reply(body) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                    return Some(());
+                }
+            };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx
+                .send(DebugRequest::ProjectFileReply(reply, resp_tx))
+                .is_err()
+            {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            match recv(resp_rx) {
+                Ok(Ok(status)) => respond_text(&mut stream, cors_origin, 200, "OK", &status),
+                Ok(Err(message)) => {
+                    respond_text(&mut stream, cors_origin, 409, "Conflict", &message)
+                }
+                Err(_) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    500,
+                    "Internal Server Error",
+                    "project file reply failed",
+                ),
+            }
+        }
         ("POST", "/sync-assets") => {
             let paths = match parse_json_capped::<ProjectAssetPaths>(
                 &mut reader,
@@ -633,9 +711,22 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                         return Some(());
                     }
                 };
+                // A load may name the host session serving missing files.
+                let (session, query) = match debug_protocol::take_project_session(query) {
+                    Ok(split) if path == "/load-project" || split.0.is_none() => split,
+                    Ok(_) => {
+                        let error = "only /load-project declares a session";
+                        respond_text(&mut stream, cors_origin, 400, "Bad Request", error);
+                        return Some(());
+                    }
+                    Err(error) => {
+                        respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                        return Some(());
+                    }
+                };
                 // The push may DECLARE its same-file entry role in the query
                 // string; no query means the running role stands.
-                let role = match debug_protocol::parse_entry_role_query(query) {
+                let role = match debug_protocol::parse_entry_role_query(&query) {
                     Ok(role) => role,
                     Err(error) => {
                         respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
@@ -643,7 +734,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     }
                 };
                 if path == "/load-project" {
-                    DebugRequest::LoadProject(files, role, resp_tx)
+                    DebugRequest::LoadProject(files, role, session, resp_tx)
                 } else {
                     DebugRequest::ReloadProject(files, role, resp_tx)
                 }
@@ -927,9 +1018,10 @@ mod tests {
         let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
 
         match rx.recv().unwrap() {
-            DebugRequest::LoadProject(files, role, response) => {
+            DebugRequest::LoadProject(files, role, session, response) => {
                 assert_eq!(files, vec![("game.fun".into(), "let init = 1".into())]);
                 assert_eq!(role, None, "no query = the running role stands");
+                assert_eq!(session, None);
                 response.send(Ok("loaded project".into())).unwrap();
             }
             _ => panic!("expected new project load request"),
@@ -939,6 +1031,98 @@ mod tests {
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("loaded project"));
+    }
+
+    /// The project-files routes: a load names its host session, the device's
+    /// requests come back as JSON, and a reply reaches the runtime decoded;
+    /// the runtime's refusals are 409s.
+    #[test]
+    fn project_files_routes_carry_sessions_requests_and_replies() {
+        use crate::debug_protocol::{
+            encode_project_file_reply, ProjectFileReply, ProjectFileRequest, ProjectFileRequests,
+            ProjectFileStatus, ProjectSession,
+        };
+        let serve = |request: String| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let client = connect(&listener, request);
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            (client, server, rx)
+        };
+
+        let body = r#"[["game.fun","let init = 1"]]"#;
+        let (client, server, rx) = serve(format!(
+            "POST /load-project?prefix=&session=5&dir=src HTTP/1.1\r\nHost: localhost\r\n\
+Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        ));
+        match rx.recv().unwrap() {
+            DebugRequest::LoadProject(_, role, session, response) => {
+                assert!(role.is_some());
+                let entry_dir = "src/".to_string();
+                assert_eq!(session, Some(ProjectSession { id: 5, entry_dir }));
+                response.send(Ok("loaded".into())).unwrap();
+            }
+            _ => panic!("expected a load"),
+        }
+        server.join().unwrap();
+        assert!(client.join().unwrap().starts_with("HTTP/1.1 200 OK\r\n"));
+
+        let (client, server, rx) =
+            serve("GET /project-files HTTP/1.1\r\nHost: localhost\r\n\r\n".into());
+        match rx.recv().unwrap() {
+            DebugRequest::ProjectFileRequests(response) => response
+                .send(Ok(ProjectFileRequests {
+                    session: 5,
+                    requests: vec![ProjectFileRequest {
+                        path: "ss2/a.bin".into(),
+                        have: None,
+                    }],
+                }))
+                .unwrap(),
+            _ => panic!("expected a requests poll"),
+        }
+        server.join().unwrap();
+        assert!(client
+            .join()
+            .unwrap()
+            .ends_with(r#"{"session":5,"requests":[{"path":"ss2/a.bin","have":null}]}"#));
+
+        let reply = ProjectFileReply {
+            session: 4,
+            path: "ss2/a.bin".into(),
+            status: ProjectFileStatus::Bytes {
+                version: "v".into(),
+                bytes: b"abc".to_vec(),
+            },
+        };
+        let body = String::from_utf8(encode_project_file_reply(&reply)).unwrap();
+        let (client, server, rx) = serve(format!(
+            "POST /project-files HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ));
+        match rx.recv().unwrap() {
+            DebugRequest::ProjectFileReply(got, response) => {
+                assert_eq!(got, reply);
+                response.send(Err("stale session".into())).unwrap();
+            }
+            _ => panic!("expected a reply"),
+        }
+        server.join().unwrap();
+        let response = client.join().unwrap();
+        assert!(
+            response.starts_with("HTTP/1.1 409 Conflict\r\n"),
+            "{response}"
+        );
+
+        // Only a load declares a session.
+        let (client, server, _rx) = serve(format!(
+            "POST /reload-project?session=5 HTTP/1.1\r\nHost: localhost\r\n\
+Content-Length: {}\r\n\r\n{}",
+            2, "[]"
+        ));
+        server.join().unwrap();
+        assert!(client.join().unwrap().starts_with("HTTP/1.1 400"));
     }
 
     /// A project push may DECLARE its same-file entry role in the query

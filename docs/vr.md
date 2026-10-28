@@ -76,8 +76,11 @@ full, proven sequence. The short path is:
    save; any changed file hot-reloads the game, so top-level `File.bytes`
    re-reads it. Hidden entries, `dist/`, `target/`, `node_modules/`, `.gltf`
    files and symlinks out of the project aren't pushed; paths are
-   case-sensitive and resolve from the project root. Pushes are capped at 64 MB per file and 512 MB in total
-   (`--max-file-mb`, `--max-push-mb`).
+   case-sensitive and resolve from the entry's folder. Pushes are capped at 64 MB per file and 512 MB in total
+   (`--max-file-mb`, `--max-push-mb`). Files the headset lacks, such as
+   `config`'s `Config.external` prefixes (this machine's mounts), are fetched from this
+   machine when the game asks for them; the game reloads once they arrive, and
+   the headset keeps them for later sessions.
 3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and
    restart NativeActivity with `am start -S`. Wait for `/state`'s frame to
    advance; server readiness alone does not mean XR is rendering.

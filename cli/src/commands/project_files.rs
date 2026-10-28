@@ -14,7 +14,10 @@ use std::io::{Error, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use functor_runtime_common::debug_protocol::validate_project_asset_path;
+use functor_runtime_common::debug_protocol::{
+    validate_project_asset_path, ProjectFileReply, ProjectFileRequest, ProjectFileStatus,
+    MAX_ASSET_BYTES,
+};
 use functor_runtime_common::runtime_settings::ExternalPrefix;
 use functor_runtime_common::storage::{self, ProjectReadError, ProjectReader};
 
@@ -89,7 +92,7 @@ impl Mounts {
 
     /// A mounts file: `{"name": "target"}`; relative targets start at its
     /// folder. A missing file is no mounts.
-    fn read(file: &Path) -> Result<Mounts, Error> {
+    pub fn read(file: &Path) -> Result<Mounts, Error> {
         let bad = |why: &str| Error::other(format!("{}: {why}", file.display()));
         let text = match std::fs::read_to_string(file) {
             Ok(text) => text,
@@ -150,6 +153,71 @@ impl Resolver {
             path.strip_prefix(external.prefix.as_str())
                 .map(|rest| (external, rest))
         })
+    }
+
+    /// What the headset gets for `request` (`functor run vr` serving the
+    /// files it lacks): `Current` when its copy (`have`) matches this
+    /// machine's version, else the bytes, else why not.
+    pub fn reply(&self, session: u64, request: &ProjectFileRequest) -> ProjectFileReply {
+        let path = &request.path;
+        let version = self.version(path);
+        // What the push never sends, the proxy doesn't either.
+        let hidden = path.split('/').any(|part| part.starts_with('.'));
+        let status = match (&request.have, version) {
+            _ if hidden => ProjectFileStatus::Missing {
+                message: "hidden files aren't sent to the headset".to_string(),
+            },
+            (Some(have), Some(version)) if *have == version => {
+                ProjectFileStatus::Current { version }
+            }
+            (_, version) => match self.read(path) {
+                // One upload's limit: a bigger file would be refused (413)
+                // and asked for forever.
+                Ok(bytes) if bytes.len() > MAX_ASSET_BYTES => ProjectFileStatus::Missing {
+                    message: format!(
+                        "it's {:.0} MB, over the {} MB a headset fetch carries",
+                        bytes.len() as f64 / 1048576.0,
+                        MAX_ASSET_BYTES >> 20
+                    ),
+                },
+                Ok(bytes) => ProjectFileStatus::Bytes {
+                    version: version.unwrap_or_default(),
+                    bytes: bytes.to_vec(),
+                },
+                Err(ProjectReadError::Outside) => ProjectFileStatus::Missing {
+                    message: "it resolves outside the project".to_string(),
+                },
+                Err(ProjectReadError::Unreadable(message)) => {
+                    ProjectFileStatus::Missing { message }
+                }
+            },
+        };
+        ProjectFileReply {
+            session,
+            path: path.clone(),
+            status,
+        }
+    }
+
+    /// Changes when the file does: size + mtime on disk, crc + size in a zip.
+    fn version(&self, path: &str) -> Option<String> {
+        let on_disk = |root: &Path, path: &str| {
+            let meta = std::fs::metadata(storage::resolve_confined(root, path).ok()?).ok()?;
+            let mtime = meta
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?;
+            Some(format!("{}:{}", meta.len(), mtime.as_nanos()))
+        };
+        match self.external(path) {
+            None => on_disk(&self.root, path),
+            Some((external, rest)) => match &external.mount {
+                None => None,
+                Some(Mount::Dir(dir)) => on_disk(dir, rest),
+                Some(Mount::Zip(zip)) => zip.version(rest),
+            },
+        }
     }
 
     /// A prefix `path` matches only ignoring case (`SS2/` for `ss2/`): on a
@@ -277,7 +345,7 @@ struct ZipIndex {
 }
 
 enum Entry {
-    File { index: usize, size: u64 },
+    File { index: usize, size: u64, crc: u32 },
     Symlink,
 }
 
@@ -298,6 +366,17 @@ impl ZipMount {
         f(index.as_mut().expect("just built"))
     }
 
+    /// The entry's crc and size: changes when its contents do.
+    fn version(&self, rest: &str) -> Option<String> {
+        let name = format!("{}{rest}", self.inner);
+        self.with_index(|index| match index.entries.get(&name) {
+            Some(Entry::File { size, crc, .. }) => Ok(Some(format!("zip:{crc:08x}:{size}"))),
+            _ => Ok(None),
+        })
+        .ok()
+        .flatten()
+    }
+
     fn exists(&self, rest: &str) -> bool {
         let name = format!("{}{rest}", self.inner);
         self.with_index(|index| Ok(matches!(index.entries.get(&name), Some(Entry::File { .. }))))
@@ -309,7 +388,9 @@ impl ZipMount {
         let name = format!("{}{rest}", self.inner);
         let archive = self.archive.display();
         self.with_index(|index| match index.entries.get(&name) {
-            Some(Entry::File { index: at, size }) => {
+            Some(Entry::File {
+                index: at, size, ..
+            }) => {
                 let (at, size) = (*at, *size);
                 if size > self.max_entry {
                     return Err(too_big(&name, size, self.max_entry));
@@ -385,6 +466,7 @@ ambiguous, so it isn't read",
                 Entry::File {
                     index,
                     size: entry.size(),
+                    crc: entry.crc32(),
                 }
             };
             folded.entry(name.to_lowercase()).or_insert(name.clone());
@@ -751,6 +833,56 @@ mod tests {
         project.config(r#"{"ss2/": "data"}"#, Some(r#"{"ss2/": "nope.kpf!data/"}"#));
         let err = read(&project.resolver(), "ss2/a.bin").unwrap_err();
         assert!(err.contains("nope.kpf"), "{err}");
+    }
+
+    /// What the headset gets per request: bytes with a version, `Current`
+    /// when its copy matches, why not when the file isn't here either.
+    #[test]
+    fn replies_carry_versions_and_confirm_current_copies() {
+        let project = TempProject::new("reply");
+        project.write("data/a.bin", &[1, 2]);
+        write_zip(&project.0.join("game.kpf"), &[("res/m.bin", Some(b"zip"))]);
+        project.config(
+            r#"{"ss2/": "game data", "gone/": "unmapped"}"#,
+            Some(r#"{"ss2/": "game.kpf!res/"}"#),
+        );
+        let resolver = project.resolver();
+        let ask = |path: &str, have: Option<&str>| {
+            let request = ProjectFileRequest {
+                path: path.to_string(),
+                have: have.map(str::to_string),
+            };
+            resolver.reply(3, &request).status
+        };
+        let ProjectFileStatus::Bytes { version, bytes } = ask("ss2/m.bin", None) else {
+            panic!("bytes");
+        };
+        assert_eq!(
+            (version.as_str(), bytes),
+            ("zip:421d9546:3", b"zip".to_vec())
+        );
+        assert_eq!(
+            ask("ss2/m.bin", Some(&version)),
+            ProjectFileStatus::Current { version }
+        );
+        let ProjectFileStatus::Bytes { version, .. } = ask("data/a.bin", Some("stale")) else {
+            panic!("bytes for a stale copy");
+        };
+        assert!(version.starts_with("2:"), "size:mtime, got {version}");
+        let ProjectFileStatus::Missing { message } = ask("gone/x.bin", None) else {
+            panic!("missing");
+        };
+        assert!(message.contains("no `gone` mount"), "{message}");
+        assert!(matches!(
+            ask("data/none.bin", None),
+            ProjectFileStatus::Missing { .. }
+        ));
+        // Never sent, like the push: hidden files.
+        project.write(".env", b"secret");
+        let ProjectFileStatus::Missing { message } = ask(".env", None) else {
+            panic!(".env sent");
+        };
+        assert!(message.contains("aren't sent"), "{message}");
     }
 
     #[test]
