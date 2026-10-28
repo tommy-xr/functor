@@ -126,11 +126,7 @@ impl crate::host_registry::FromArg for AtlasArg {
                     Value::List(layers) if layers.is_empty() => {}
                     _ => return fail(&what, "layers aren't supported yet; pass []".into(), span),
                 }
-                pixels_of(
-                    field(image, "pixels", &what, span)?,
-                    &format!("{what}.pixels"),
-                    span,
-                )
+                pixels_of(field(image, "pixels", &what, span)?, &what, span)
             })
             .collect::<Result<_, _>>()?;
         let padding = finite_record_number(fields, "padding", "atlas", path, span)?;

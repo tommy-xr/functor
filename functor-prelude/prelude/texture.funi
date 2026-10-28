@@ -41,12 +41,14 @@ type layer = { id: float, pixels: Bytes.t }
 /// One image to pack. `layers` must be `[]` for now.
 type image = { pixels: pixels, layers: List<layer> }
 
-/// Where an image landed: its top-left texel (`x`, `y`) and its UVs, inset
-/// half a texel so filtering stays inside it (`v0` is its first row).
+/// Where an image landed: its first texel (`x`, `y`: row 0, column 0) and
+/// its UVs, inset half a texel so filtering stays inside it (`v0` is row 0).
 type rect = { x: float, y: float, u0: float, v0: float, u1: float, v1: float }
 
 /// What `atlas` packs: `padding` texels of edge copies around each image, in
-/// a square of at most `maxSize` texels a side.
+/// a square of at most `maxSize` (a power of two) texels a side. Lightmaps
+/// are `Linear`; an `Srgb` atlas is mipmapped, so distant mips blend
+/// neighbouring images.
 type atlasInput = { images: List<image>, padding: float, maxSize: float }
 
 /// The packed texture and one rect per image, in input order.

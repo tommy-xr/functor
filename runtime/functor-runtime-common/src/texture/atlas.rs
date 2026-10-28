@@ -4,7 +4,7 @@
 
 use super::PixelData;
 
-/// Where one image landed: its top-left texel in the atlas.
+/// Where one image landed: its first texel (row 0, column 0) in the atlas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placement {
     pub x: u32,
@@ -24,6 +24,9 @@ pub fn atlas(
         return Err("images is empty".to_string());
     };
     super::check_side("maxSize", max_size as f64)?;
+    if !max_size.is_power_of_two() {
+        return Err(format!("maxSize must be a power of two, got {max_size}"));
+    }
     if let Some(i) = images
         .iter()
         .position(|image| image.color_space() != first.color_space())
@@ -34,10 +37,22 @@ pub fn atlas(
             first.color_space()
         ));
     }
+    // Each padded image must fit alone; checked in u64 so a huge `padding`
+    // is an error, not an overflow.
     let padded: Vec<(u32, u32)> = images
         .iter()
-        .map(|image| (image.width() + 2 * padding, image.height() + 2 * padding))
-        .collect();
+        .enumerate()
+        .map(|(i, image)| {
+            let pad = |side: u32| side as u64 + 2 * padding as u64;
+            let (w, h) = (pad(image.width()), pad(image.height()));
+            if w.max(h) > max_size as u64 {
+                return Err(format!(
+                    "images[{i}] is {w}×{h} with padding, over maxSize {max_size}"
+                ));
+            }
+            Ok((w as u32, h as u32))
+        })
+        .collect::<Result<_, _>>()?;
     let area: u64 = padded.iter().map(|&(w, h)| w as u64 * h as u64).sum();
     let widest = padded.iter().map(|&(w, h)| w.max(h)).max().unwrap_or(1);
     let mut side = widest
@@ -265,5 +280,10 @@ mod tests {
             "images need more than 8×8 (180 texels with padding)"
         );
         assert!(err(&[&small], 5000).starts_with("maxSize must be 1 to 4096"));
+        assert_eq!(err(&[&small], 48), "maxSize must be a power of two, got 48");
+        assert_eq!(
+            atlas(&[&small], u32::MAX, 4096).err().unwrap(),
+            "images[0] is 8589934594×8589934594 with padding, over maxSize 4096"
+        );
     }
 }

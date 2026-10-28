@@ -13300,7 +13300,7 @@ colour space"
         );
         assert_eq!(
             atlas("[{ pixels: { px with width: 3.0 }, layers: [] }]"),
-            "Texture.atlas: images[0].pixels: pixels: 6 bytes, but 3×1 Rgb8 needs 9 (3 per pixel)"
+            "Texture.atlas: images[0]: pixels: 6 bytes, but 3×1 Rgb8 needs 9 (3 per pixel)"
         );
     }
 
