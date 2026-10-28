@@ -14527,10 +14527,10 @@ maxSize 16; lower texelsPerMeter or padding"
 
     const BAKES: &str = "let bakes = [{ name: \"room\", mesh: roomData, lights: \
 [Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0, 1.0, 1.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 4.0) \
-|> Light.castShadows] }]\n";
+|> Light.castShadows], albedo: [Color.rgb(0.8, 0.8, 0.8), Color.rgb(0.8, 0.2, 0.1)] }]\n";
 
     /// `functor bake`'s jobs: the mesh validated (its `uvs2` and lightmap
-    /// dropped, since the bake replaces them) and the lights as they are.
+    /// dropped, since the bake replaces them), the lights and albedo as they are.
     #[test]
     fn bake_jobs_read_the_bakes_list() {
         let value = eval_with_prelude(&format!("{ROOM}{BAKES}let main = bakes\n")).unwrap();
@@ -14542,6 +14542,7 @@ maxSize 16; lower texelsPerMeter or padding"
         assert!(job.mesh.uvs2.is_empty() && job.mesh.lightmap.is_none());
         assert!(matches!(job.lights[0], Light::Ambient { .. }));
         assert!(job.lights[1].casts_shadows());
+        assert_eq!(job.albedo, [[0.8, 0.8, 0.8], [0.8, 0.2, 0.1]]);
     }
 
     #[test]
@@ -14571,6 +14572,10 @@ maxSize 16; lower texelsPerMeter or padding"
         assert!(
             fail(("lights: [", "lights: [3.0, ")).starts_with("bakes[0].lights[0]"),
             "a non-light names its index"
+        );
+        assert!(
+            fail(("albedo: [", "albedo: [3.0, ")).starts_with("bakes[0].albedo[0]"),
+            "a non-colour names its index"
         );
         assert_eq!(
             lightmap::bake_jobs(&Value::Number(1.0)).unwrap_err(),

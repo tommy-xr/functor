@@ -94,12 +94,14 @@ fn mesh_fields(mesh: &ModelSource) -> [(&'static str, Value); 5] {
     ]
 }
 
-/// One `Lightmap.bakeJob`: a validated mesh and the lights to bake into it.
+/// One `Lightmap.bakeJob`: a validated mesh, the lights to bake into it,
+/// and each group's authored (sRGB) albedo.
 #[derive(Debug, Clone)]
 pub struct BakeJob {
     pub name: String,
     pub mesh: ModelSource,
     pub lights: Vec<Light>,
+    pub albedo: Vec<[f32; 3]>,
 }
 
 /// The jobs in a `List<Lightmap.bakeJob>` value (`functor bake`'s `bakes`),
@@ -160,7 +162,24 @@ pub fn bake_jobs(value: &Value) -> Result<Vec<BakeJob>, String> {
                     .map_err(|e| e.message)
             })
             .collect::<Result<_, _>>()?;
-        out.push(BakeJob { name, mesh, lights });
+        let Value::List(albedo) = get("albedo")? else {
+            return Err(format!("{what}.albedo: expected a list of colours"));
+        };
+        let albedo = albedo
+            .iter()
+            .enumerate()
+            .map(|(c, color)| {
+                color_of(color, &format!("{what}.albedo[{c}]"), span)
+                    .map(|(r, g, b)| [r, g, b])
+                    .map_err(|e| e.message)
+            })
+            .collect::<Result<_, _>>()?;
+        out.push(BakeJob {
+            name,
+            mesh,
+            lights,
+            albedo,
+        });
     }
     Ok(out)
 }

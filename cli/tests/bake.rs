@@ -19,7 +19,7 @@ let lights = [Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0
 // The loading pattern `lightmap.funi` documents: guarded, so the first bake runs.
 let floor = if File.exists(Path.of("baked/floor.png")) then
   Model.static({ Lightmap.readMesh(File.bytes(Path.of("baked/floor.mesh.bin"))) with
-    lightmap: Option.Some({ texture: Texture.fromPng(File.bytes(Path.of("baked/floor.png")), Texture.Linear),
+    lightmap: Option.Some({ texture: Texture.fromPng(File.bytes(Path.of("baked/floor.png")), Texture.Srgb),
       scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
   else Model.static(floorData)
 "#;
@@ -56,13 +56,13 @@ fn bake(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-const ONE: &str = r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights }]"#;
+const ONE: &str = r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [Color.rgb(0.8, 0.8, 0.8)] }]"#;
 
 #[test]
 fn bakes_write_a_lightmap_and_a_mesh() {
     let dir = project("ok", ONE);
     // Default: `baked/` in the project.
-    let out = bake(&dir, &["--samples", "4", "--texels-per-meter", "8"]).unwrap();
+    let out = bake(&dir, &["--ao-samples", "4", "--gi-samples", "4", "--texels-per-meter", "8"]).unwrap();
     assert!(
         out.contains("baked `floor`: 2 triangles, 2 lights, 32×32 lightmap"),
         "{out}"
@@ -90,11 +90,12 @@ fn bakes_write_a_lightmap_and_a_mesh() {
         .iter()
         .map(|t| (t.keyword.as_str(), t.text.as_str()))
         .collect();
-    assert!(text.contains(&("functor-bake-version", "1")), "{text:?}");
+    assert!(text.contains(&("functor-bake-version", "2")), "{text:?}");
+    assert!(text.contains(&("functor-bake-color-space", "srgb")), "{text:?}");
     assert!(
         text.contains(&(
             "functor-bake-settings",
-            "texelsPerMeter=8 samples=4 aoDistance=1 seed=0 maxSize=2048"
+            "texelsPerMeter=8 aoSamples=4 aoDistance=1 bounces=1 giSamples=4 scale=1 seed=0 maxSize=2048"
         )),
         "{text:?}"
     );
@@ -105,7 +106,9 @@ fn bakes_write_a_lightmap_and_a_mesh() {
     bake(
         &dir,
         &[
-            "--samples",
+            "--ao-samples",
+            "4",
+            "--gi-samples",
             "4",
             "--texels-per-meter",
             "8",
@@ -120,14 +123,14 @@ fn bakes_write_a_lightmap_and_a_mesh() {
     // A stale bake (here garbage) reads as missing while the next one runs.
     std::fs::write(dir.join("baked/floor.mesh.bin"), b"stale").unwrap();
     std::fs::write(dir.join("baked/floor.png"), b"stale").unwrap();
-    bake(&dir, &["--samples", "4", "--texels-per-meter", "8"]).unwrap();
+    bake(&dir, &["--ao-samples", "4", "--gi-samples", "4", "--texels-per-meter", "8"]).unwrap();
     assert_eq!(std::fs::read(dir.join("baked/floor.png")).unwrap(), png);
     std::fs::remove_dir_all(dir).ok();
 }
 
 #[test]
 fn bad_bakes_and_flags_are_errors() {
-    let cases: [(&str, &str, &[&str], &str); 7] = [
+    let cases: [(&str, &str, &[&str], &str); 9] = [
         (
             "none",
             "let x = 1.0",
@@ -142,7 +145,7 @@ fn bad_bakes_and_flags_are_errors() {
         ),
         (
             "twice",
-            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights }, { name: "floor", mesh: floorData, lights: [] }]"#,
+            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [] }, { name: "floor", mesh: floorData, lights: [], albedo: [] }]"#,
             &[],
             "`bakes`: bakes[1].name: \"floor\" is used twice",
         ),
@@ -169,6 +172,18 @@ fn bad_bakes_and_flags_are_errors() {
             ONE,
             &["--ao-distance", "0"],
             "`floor`: the occlusion distance must be a finite number above 0, got 0",
+        ),
+        (
+            "scale",
+            ONE,
+            &["--scale", "0"],
+            "--scale must be a finite number above 0, got 0",
+        ),
+        (
+            "albedo",
+            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [] }]"#,
+            &[],
+            "`floor`: albedo: one colour per group: expected 1, got 0",
         ),
     ];
     for (name, bakes, args, expected) in cases {

@@ -80,7 +80,7 @@ pub fn bake_mesh(
     let groups = source.groups.len().max(1);
     if albedo.len() != groups {
         return Err(format!(
-            "albedo: {} colours for {groups} groups (one per group)",
+            "albedo: one colour per group: expected {groups}, got {}",
             albedo.len()
         ));
     }
@@ -165,6 +165,10 @@ pub fn bake(
         let mut last: Vec<[f32; 3]> = direct.iter().map(|(l, _)| *l).collect();
         let mut indirect = vec![[0.0f32; 3]; samples.len()];
         for bounce in 0..options.bounces {
+            // Nothing left to bounce (e.g. ambient light alone).
+            if last.iter().all(|c| *c == [0.0; 3]) {
+                break;
+            }
             let lit = lightmap(unwrapped, &samples, &last, padding);
             last = par_map(&samples, threads, |s| scene.gather(s, &lit, bounce));
             indirect.iter_mut().zip(&last).for_each(|(i, l)| *i = add(*i, *l));

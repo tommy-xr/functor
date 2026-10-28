@@ -61,9 +61,10 @@ let file : (string) => t
 /// sprites, terrain, `Asset.whilePending` and `Effect.preload` need a file
 /// asset.
 let fromPixels : (pixels) => Asset.Texture
-/// A texture from a PNG's bytes, in `colorSpace`: `Linear` for a lightmap
-/// `functor bake` wrote (`Texture.fromPng(File.bytes(Path.of("baked/room.png")),
-/// Texture.Linear)`), `Srgb` for colour. Bad bytes are an error.
+/// A texture from a PNG's bytes, in `colorSpace`: `Srgb` for colour and for
+/// a lightmap `functor bake` wrote
+/// (`Texture.fromPng(File.bytes(Path.of("baked/room.png")), Texture.Srgb)`),
+/// `Linear` for data stored as is. Bad bytes are an error.
 let fromPng : (Bytes.t, colorSpace) => Asset.Texture
 /// Pack images into one texture (lightmaps): the smallest power-of-two
 /// square that fits, by a deterministic skyline packer. Every image must

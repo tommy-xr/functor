@@ -190,8 +190,8 @@ enum Command {
     },
     /// Bake lightmaps headlessly (no GPU): evaluates the project's top-level
     /// `let bakes : List<Lightmap.bakeJob>`, unwraps each mesh, lights it
-    /// (direct light, shadows, ambient occlusion) and writes `<name>.png` and
-    /// `<name>.mesh.bin`. The same flags give the same bytes.
+    /// (direct light, shadows, ambient occlusion, bounced light) and writes
+    /// `<name>.png` and `<name>.mesh.bin`. The same flags give the same bytes.
     /// E.g. `functor -d examples/lightmap-bake bake`.
     Bake {
         /// The folder to write (default: `baked/` beside the entry file).
@@ -204,11 +204,24 @@ enum Command {
 
         /// Ambient-occlusion rays per texel (0: ambient light unoccluded).
         #[arg(long, default_value_t = 64)]
-        samples: u32,
+        ao_samples: u32,
 
         /// How far occlusion rays look for geometry, in world units.
         #[arg(long, default_value_t = 1.0)]
         ao_distance: f32,
+
+        /// Times light bounces off lit surfaces (0: direct light only).
+        #[arg(long, default_value_t = 1)]
+        bounces: u32,
+
+        /// Rays per texel per bounce.
+        #[arg(long, default_value_t = 32)]
+        gi_samples: u32,
+
+        /// The lightmap stores light ÷ this (light above it clips); set the
+        /// game's lightmap `scale` to the same.
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
 
         /// The sampling seed.
         #[arg(long, default_value_t = 0)]
@@ -531,8 +544,11 @@ async fn run(args: &Args) -> io::Result<()> {
             Command::Bake {
                 output,
                 texels_per_meter,
-                samples,
+                ao_samples,
                 ao_distance,
+                bounces,
+                gi_samples,
+                scale,
                 seed,
                 max_size,
             } => {
@@ -545,8 +561,11 @@ async fn run(args: &Args) -> io::Result<()> {
                     }),
                     &commands::bake::Settings {
                         texels_per_meter: *texels_per_meter,
-                        samples: *samples,
+                        ao_samples: *ao_samples,
                         ao_distance: *ao_distance,
+                        bounces: *bounces,
+                        gi_samples: *gi_samples,
+                        scale: *scale,
                         seed: *seed,
                         max_size: *max_size,
                     },

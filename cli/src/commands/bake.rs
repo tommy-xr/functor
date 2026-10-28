@@ -1,6 +1,6 @@
 //! `functor bake`: lightmaps for the project's `bakes` (see `lightmap.funi`).
-//! Each job writes `<name>.png` (linear light, RGBA8; alpha marks texels
-//! the bake reached) and `<name>.mesh.bin` (the unwrapped mesh).
+//! Each job writes `<name>.png` (light ÷ `scale`, sRGB-encoded RGBA8; alpha
+//! marks texels the bake reached) and `<name>.mesh.bin` (the unwrapped mesh).
 
 use std::io::Error;
 use std::path::Path;
@@ -19,8 +19,11 @@ const PADDING: u32 = 2;
 
 pub struct Settings {
     pub texels_per_meter: f64,
-    pub samples: u32,
+    pub ao_samples: u32,
     pub ao_distance: f32,
+    pub bounces: u32,
+    pub gi_samples: u32,
+    pub scale: f32,
     pub seed: u64,
     pub max_size: u32,
 }
@@ -43,6 +46,12 @@ pub fn execute(
     let value = session.global("bakes").ok_or_else(|| {
         Error::other("no top-level `let bakes = …` (a List<Lightmap.bakeJob>) to bake")
     })?;
+    if !(settings.scale.is_finite() && settings.scale > 0.0) {
+        return Err(Error::other(format!(
+            "--scale must be a finite number above 0, got {}",
+            settings.scale
+        )));
+    }
     let jobs = bake_jobs(&value).map_err(|e| Error::other(format!("`bakes`: {e}")))?;
     if jobs.is_empty() {
         return Err(Error::other("`bakes` is empty: nothing to bake"));
@@ -53,17 +62,22 @@ pub fn execute(
             padding: PADDING,
             max_size: settings.max_size,
         },
-        ao_samples: settings.samples,
+        ao_samples: settings.ao_samples,
         ao_distance: settings.ao_distance,
+        bounces: settings.bounces,
+        gi_samples: settings.gi_samples,
         seed: settings.seed,
         threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
     };
     // Recorded in the PNG, so a lightmap says how it was made.
     let made = format!(
-        "texelsPerMeter={} samples={} aoDistance={} seed={} maxSize={}",
+        "texelsPerMeter={} aoSamples={} aoDistance={} bounces={} giSamples={} scale={} seed={} maxSize={}",
         settings.texels_per_meter,
-        settings.samples,
+        settings.ao_samples,
         settings.ao_distance,
+        settings.bounces,
+        settings.gi_samples,
+        settings.scale,
         settings.seed,
         settings.max_size
     );
@@ -73,22 +87,28 @@ pub fn execute(
     let mut reports = Vec::new();
     for job in &jobs {
         let start = Instant::now();
-        let (mesh, lightmap) = bake_mesh(&job.mesh, &job.lights, &options)
+        let (mesh, lightmap) = bake_mesh(&job.mesh, &job.lights, &job.albedo, &options)
             .map_err(|e| Error::other(format!("`{}`: {e}", job.name)))?;
         let png = output.join(format!("{}.png", job.name));
         let bin = output.join(format!("{}.mesh.bin", job.name));
         let filled = lightmap.filled.iter().filter(|&&f| f).count();
+        // The brightest channel, so clipping (over `scale`) shows.
+        let peak = lightmap.light.iter().flatten().fold(0.0f32, |a, &b| a.max(b));
         reports.push(format!(
-            "baked `{}`: {} triangles, {} lights, {s}×{s} lightmap ({filled} texels), in {:.2} s → {}, {}",
+            "baked `{}`: {} triangles, {} lights, {s}×{s} lightmap ({filled} texels, peak {peak:.2}{}), in {:.2} s → {}, {}",
             job.name,
             mesh.triangles.len(),
             job.lights.len(),
+            if peak > settings.scale { ", clipped: raise --scale" } else { "" },
             start.elapsed().as_secs_f64(),
             png.display(),
             bin.display(),
             s = lightmap.size,
         ));
-        files.push((png, encode_png(lightmap.size, &lightmap.rgba8(), &made)?));
+        files.push((
+            png,
+            encode_png(lightmap.size, &lightmap.rgba8(settings.scale), &made)?,
+        ));
         files.push((bin, write_mesh(&mesh)));
     }
     // Write beside the targets, then rename each into place, so a failed
@@ -125,7 +145,7 @@ fn encode_png(size: u32, rgba: &[u8], made: &str) -> Result<Vec<u8>, Error> {
         ("Software", "functor bake".to_string()),
         ("functor-bake-version", BAKE_VERSION.to_string()),
         ("functor-bake-settings", made.to_string()),
-        ("functor-bake-color-space", "linear".to_string()),
+        ("functor-bake-color-space", "srgb".to_string()),
     ];
     for (key, value) in text {
         encoder
