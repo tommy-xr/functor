@@ -31,12 +31,14 @@ type colorSpace =
   | Linear
 
 /// Decoded pixels, top row first: `width × height` pixels in `format`. Each
-/// side is a whole number from 1 to 4096.
+/// side is a whole number from 1 to 4096. Row 0 is sampled at v = 0, as with
+/// `Texture.file` (on `Scene.quad`, the bottom edge).
 type pixels = { width: float, height: float, format: format, colorSpace: colorSpace, pixels: Bytes.t }
 
 /// Load an image texture from a path relative to the game directory.
 let file : (string) => t
 /// A texture from decoded pixels, validated once: a size or byte-count
-/// mismatch is an error naming the field. Takes any 3D texture material;
-/// sprites need a file asset.
+/// mismatch is an error naming the field. 3D texture materials take it;
+/// sprites, terrain, `Asset.whilePending` and `Effect.preload` need a file
+/// asset.
 let fromPixels : (pixels) => Asset.Texture

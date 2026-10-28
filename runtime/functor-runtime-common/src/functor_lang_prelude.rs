@@ -12885,6 +12885,11 @@ supports), got 0"
             "Texture.fromPixels: height must be a whole number, got 0.5"
         );
         assert_eq!(
+            fail(("width: 2.0", "width: -1.0")),
+            "Texture.fromPixels: width must be 1 to 4096 (the largest texture every target \
+supports), got -1"
+        );
+        assert_eq!(
             fail(("width: 2.0", "width: 5000.0")),
             "Texture.fromPixels: width must be 1 to 4096 (the largest texture every target \
 supports), got 5000"

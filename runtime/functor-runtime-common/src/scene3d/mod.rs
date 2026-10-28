@@ -608,45 +608,31 @@ impl SceneContext {
         gl: &glow::Context,
         pixels: &crate::texture::PixelData,
     ) -> glow::Texture {
+        use crate::asset::RenderableAsset;
         let frame = self.current_frame.get();
+        let counters = crate::gpu_counters::gpu_counters();
         let mut textures = self.pixel_textures.borrow_mut();
-        let entry = textures.entry(pixels.id()).or_insert_with(|| unsafe {
-            let srgb = pixels.color_space() == crate::texture::ColorSpace::Srgb;
-            let texture = gl.create_texture().expect("pixel texture");
-            crate::gpu_counters::gpu_counters().texture_created();
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                if srgb { glow::SRGB8_ALPHA8 } else { glow::RGBA8 } as i32,
-                pixels.width() as i32,
-                pixels.height() as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(pixels.rgba8())),
-            );
-            crate::gpu_counters::gpu_counters().uploaded(pixels.rgba8().len());
-            let (wrap, min) = if srgb {
-                gl.generate_mipmap(glow::TEXTURE_2D);
-                (glow::REPEAT, glow::LINEAR_MIPMAP_LINEAR)
-            } else {
-                (glow::CLAMP_TO_EDGE, glow::LINEAR)
-            };
-            for (param, value) in [
-                (glow::TEXTURE_WRAP_S, wrap),
-                (glow::TEXTURE_WRAP_T, wrap),
-                (glow::TEXTURE_MIN_FILTER, min),
-                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
+        let entry = match textures.entry(pixels.id()) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+                counters.cache_hit();
+                e.into_mut()
             }
-            gl.bind_texture(glow::TEXTURE_2D, None);
-            RetainedTexture {
-                texture,
-                last_used: frame,
+            std::collections::hash_map::Entry::Vacant(e) => {
+                counters.cache_miss();
+                let srgb = pixels.color_space() == crate::texture::ColorSpace::Srgb;
+                let options = crate::texture::TextureOptions {
+                    wrap: srgb,
+                    linear: true,
+                    mipmap: srgb,
+                    srgb,
+                    ..Default::default()
+                };
+                e.insert(RetainedTexture {
+                    texture: pixels.texture_data().hydrate(gl, &options),
+                    last_used: frame,
+                })
             }
-        });
+        };
         entry.last_used = frame;
         entry.texture
     }

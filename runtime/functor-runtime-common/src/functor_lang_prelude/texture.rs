@@ -9,8 +9,8 @@ use super::*;
 
 /// `Texture.fromPixels`'s record, unpacked (validation is [`PixelData::new`]'s).
 struct PixelsArg {
-    width: f64,
-    height: f64,
+    width: u32,
+    height: u32,
     encoding: PixelEncoding,
     color_space: ColorSpace,
     pixels: FunctorLangBytes,
@@ -25,15 +25,6 @@ fn fail<T>(message: String, span: Span) -> Result<T, RunError> {
     })
 }
 
-/// A whole number, or an error naming `name` (range is checked later).
-fn side(value: f64, name: &str) -> Result<u32, String> {
-    if value.fract() == 0.0 && (0.0..=u32::MAX as f64).contains(&value) {
-        Ok(value as u32)
-    } else {
-        Err(format!("{name} must be a whole number, got {value}"))
-    }
-}
-
 impl crate::host_registry::FromArg for PixelsArg {
     fn from_arg(value: &Value, _path: &str, span: Span) -> Result<Self, RunError> {
         let Value::Record(fields) = value else {
@@ -46,12 +37,9 @@ impl crate::host_registry::FromArg for PixelsArg {
             Some((_, value)) => Ok(value),
             None => fail(format!("missing `{name}`"), span),
         };
-        let number = |name: &str| match get(name)? {
-            Value::Number(n) => Ok(*n),
-            other => fail(
-                format!("{name}: expected a number, got {}", other.kind_name()),
-                span,
-            ),
+        let side = |name: &str| {
+            let n = finite_record_number(fields, name, "pixels", PATH, span)?;
+            crate::texture::check_side(name, n as f64).or_else(|e| fail(e, span))
         };
         let ctor = |name: &str| match get(name)? {
             Value::Variant { ctor, args } if args.is_empty() => Ok(ctor.to_string()),
@@ -72,8 +60,8 @@ impl crate::host_registry::FromArg for PixelsArg {
             other => return fail(format!("colorSpace: unknown colour space {other}"), span),
         };
         Ok(PixelsArg {
-            width: number("width")?,
-            height: number("height")?,
+            width: side("width")?,
+            height: side("height")?,
             encoding,
             color_space,
             pixels: crate::host_registry::FromArg::from_arg(
@@ -87,12 +75,14 @@ impl crate::host_registry::FromArg for PixelsArg {
 
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     reg.fn1(PATH, "Texture.fromPixels(pixels)", |p: PixelsArg| {
-        let build = || {
-            let (w, h) = (side(p.width, "width")?, side(p.height, "height")?);
-            PixelData::new(w, h, p.encoding, p.color_space, p.pixels.0.as_slice())
-        };
-        build()
-            .map(|data| FunctorLangTexture(TextureDescription::Data(Arc::new(data))))
-            .map_err(|e| format!("{PATH}: {e}"))
+        PixelData::new(
+            p.width,
+            p.height,
+            p.encoding,
+            p.color_space,
+            p.pixels.0.as_slice(),
+        )
+        .map(|data| FunctorLangTexture(TextureDescription::Data(Arc::new(data))))
+        .map_err(|e| format!("{PATH}: {e}"))
     });
 }

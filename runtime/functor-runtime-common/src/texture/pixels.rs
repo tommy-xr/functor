@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-/// The largest side every target (desktop GL, WebGL2, Quest) uploads.
+use super::{PixelFormat, TextureData};
+
+/// The largest side accepted: what every GPU we ship on (desktop, browsers,
+/// Quest) supports in practice, though GLES 3 / WebGL2 promise only 2048.
 pub const MAX_TEXTURE_SIZE: u32 = 4096;
 
 /// How the input bytes encode a pixel. Rows run top first.
@@ -49,10 +52,8 @@ pub enum ColorSpace {
 /// Validated RGBA8 pixels, top row first. Immutable; equality is identity.
 pub struct PixelData {
     id: u64,
-    width: u32,
-    height: u32,
     color_space: ColorSpace,
-    rgba8: Vec<u8>,
+    data: TextureData,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -66,7 +67,8 @@ impl PixelData {
         color_space: ColorSpace,
         pixels: &[u8],
     ) -> Result<PixelData, String> {
-        check_size(width, height)?;
+        check_side("width", width as f64)?;
+        check_side("height", height as f64)?;
         let need = width as usize * height as usize * encoding.bytes_per_pixel();
         if pixels.len() != need {
             return Err(format!(
@@ -100,13 +102,17 @@ impl PixelData {
         Ok(Self::from_rgba8(width, height, color_space, rgba8))
     }
 
+    /// Wrap already-checked RGBA8 pixels with a fresh identity.
     fn from_rgba8(width: u32, height: u32, color_space: ColorSpace, rgba8: Vec<u8>) -> PixelData {
         PixelData {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            width,
-            height,
             color_space,
-            rgba8,
+            data: TextureData {
+                bytes: rgba8,
+                width,
+                height,
+                format: PixelFormat::RGBA,
+            },
         }
     }
 
@@ -116,11 +122,11 @@ impl PixelData {
     }
 
     pub fn width(&self) -> u32 {
-        self.width
+        self.data.width
     }
 
     pub fn height(&self) -> u32 {
-        self.height
+        self.data.height
     }
 
     pub fn color_space(&self) -> ColorSpace {
@@ -129,20 +135,27 @@ impl PixelData {
 
     /// Four bytes per pixel, top row first.
     pub fn rgba8(&self) -> &[u8] {
-        &self.rgba8
+        &self.data.bytes
+    }
+
+    /// The pixels as upload input.
+    pub fn texture_data(&self) -> &TextureData {
+        &self.data
     }
 }
 
-fn check_size(width: u32, height: u32) -> Result<(), String> {
-    for (name, side) in [("width", width), ("height", height)] {
-        if side == 0 || side > MAX_TEXTURE_SIZE {
-            return Err(format!(
-                "{name} must be 1 to {MAX_TEXTURE_SIZE} (the largest texture every target \
-supports), got {side}"
-            ));
-        }
+/// A side length as a whole number of texels, `1..=MAX_TEXTURE_SIZE`.
+pub fn check_side(name: &str, side: f64) -> Result<u32, String> {
+    if side.fract() != 0.0 {
+        return Err(format!("{name} must be a whole number, got {side}"));
     }
-    Ok(())
+    if !(1.0..=MAX_TEXTURE_SIZE as f64).contains(&side) {
+        return Err(format!(
+            "{name} must be 1 to {MAX_TEXTURE_SIZE} (the largest texture every target \
+supports), got {side}"
+        ));
+    }
+    Ok(side as u32)
 }
 
 impl PartialEq for PixelData {
@@ -155,8 +168,8 @@ impl std::fmt::Debug for PixelData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PixelData")
             .field("id", &self.id)
-            .field("width", &self.width)
-            .field("height", &self.height)
+            .field("width", &self.data.width)
+            .field("height", &self.data.height)
             .field("color_space", &self.color_space)
             .finish()
     }
@@ -165,20 +178,20 @@ impl std::fmt::Debug for PixelData {
 /// The wire form: size, colour space and RGBA8 bytes inline.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PixelWire {
+struct PixelWire<B> {
     width: u32,
     height: u32,
     color_space: ColorSpace,
-    rgba8: Vec<u8>,
+    rgba8: B,
 }
 
 impl Serialize for PixelData {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         PixelWire {
-            width: self.width,
-            height: self.height,
+            width: self.width(),
+            height: self.height(),
             color_space: self.color_space,
-            rgba8: self.rgba8.clone(),
+            rgba8: self.rgba8(),
         }
         .serialize(serializer)
     }
@@ -187,15 +200,20 @@ impl Serialize for PixelData {
 // Reading it back validates and gives a fresh identity.
 impl<'de> Deserialize<'de> for PixelData {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let w = PixelWire::deserialize(deserializer)?;
-        PixelData::new(
+        let w = PixelWire::<Vec<u8>>::deserialize(deserializer)?;
+        let checked = check_side("width", w.width as f64)
+            .and(check_side("height", w.height as f64))
+            .and_then(|_| match w.width as usize * w.height as usize * 4 {
+                need if need == w.rgba8.len() => Ok(()),
+                need => Err(format!("rgba8: {} bytes, need {need}", w.rgba8.len())),
+            });
+        checked.map_err(serde::de::Error::custom)?;
+        Ok(PixelData::from_rgba8(
             w.width,
             w.height,
-            PixelEncoding::Rgba8,
             w.color_space,
-            &w.rgba8,
-        )
-        .map_err(serde::de::Error::custom)
+            w.rgba8,
+        ))
     }
 }
 
