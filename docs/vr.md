@@ -78,7 +78,7 @@ full, proven sequence. The short path is:
    files and symlinks out of the project aren't pushed; paths are
    case-sensitive and resolve from the entry's folder. Pushes are capped at 64 MB per file and 512 MB in total
    (`--max-file-mb`, `--max-push-mb`). Files the headset lacks, such as
-   `external` prefixes mapped in `functor.local.json`, are fetched from this
+   `config`'s `Config.external` prefixes (this machine's mounts), are fetched from this
    machine when the game asks for them; the game reloads once they arrive, and
    the headset keeps them for later sessions.
 3. If Meta Home remains visible, recreate `adb forward`, send `prox_close`, and

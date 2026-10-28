@@ -1073,17 +1073,25 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
 
         // A v24 runtime asks this machine for files it lacks (`external`
         // prefixes, anything not pushed), resolved as on desktop.
-        let declared = project_files::declared_in(project_root)?;
+        let externals = self
+            .external
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mounts = match externals.is_empty() {
+            true => project_files::Mounts::default(),
+            false => project_files::Mounts::load(&self.mounts)?,
+        };
         let proxy = match probe_protocol_version(&addr) {
             Some(version) if version >= FILE_PROXY_PROTOCOL_VERSION => Some(FileProxy::new(
                 project_files::Resolver::load(
-                    project_root,
                     entry_path.parent().unwrap_or(project_root),
-                    &declared,
+                    &externals,
+                    &mounts,
                 )?,
                 &self.entry,
             )),
-            _ if declared.is_empty() => None,
+            _ if externals.is_empty() => None,
             version => {
                 emit(Event::Warning {
                     message: format!(
@@ -3171,24 +3179,20 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         let root = std::env::temp_dir().join(format!("functor-vr-proxy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("store")).unwrap();
-        std::fs::write(
-            root.join("functor.json"),
-            r#"{"language": "functor-lang", "external": {"ss2/": "game data"}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("functor.local.json"),
-            r#"{"external": {"ss2/": "game.zip!res/"}}"#,
-        )
-        .unwrap();
+        std::fs::write(root.join("mounts.json"), r#"{"ss2": "game.zip!res/"}"#).unwrap();
         let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join("game.zip")).unwrap());
         zip.start_file("res/mesh/a.bin", zip::write::SimpleFileOptions::default())
             .unwrap();
         std::io::Write::write_all(&mut zip, b"mesh").unwrap();
         zip.finish().unwrap();
         let resolver = || {
-            let declared = project_files::declared_in(&root).unwrap();
-            project_files::Resolver::load(&root, &root, &declared).unwrap()
+            let external = functor_runtime_common::runtime_settings::ExternalPrefix {
+                prefix: "ss2/".to_string(),
+                mount: "ss2".to_string(),
+                device: None,
+            };
+            let mounts = project_files::Mounts::read(&root.join("mounts.json")).unwrap();
+            project_files::Resolver::load(&root, &[external], &mounts).unwrap()
         };
 
         // A debug server whose runtime answers from `device` (swappable, to
@@ -3265,7 +3269,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     fn the_file_proxy_names_the_entry_folder() {
         let files = || {
             let dir = std::env::temp_dir();
-            project_files::Resolver::load(&dir, &dir, &[]).unwrap()
+            project_files::Resolver::load(&dir, &[], &project_files::Mounts::default()).unwrap()
         };
         let dir = |entry: &str| FileProxy::new(files(), entry).entry_dir;
         assert_eq!(dir("game.fun"), None);

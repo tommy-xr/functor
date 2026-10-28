@@ -92,7 +92,7 @@ impl Mounts {
 
     /// A mounts file: `{"name": "target"}`; relative targets start at its
     /// folder. A missing file is no mounts.
-    fn read(file: &Path) -> Result<Mounts, Error> {
+    pub fn read(file: &Path) -> Result<Mounts, Error> {
         let bad = |why: &str| Error::other(format!("{}: {why}", file.display()));
         let text = match std::fs::read_to_string(file) {
             Ok(text) => text,
@@ -162,11 +162,10 @@ impl Resolver {
         let path = &request.path;
         let version = self.version(path);
         // What the push never sends, the proxy doesn't either.
-        let unserved = path == LOCAL_CONFIG || path.split('/').any(|part| part.starts_with('.'));
+        let hidden = path.split('/').any(|part| part.starts_with('.'));
         let status = match (&request.have, version) {
-            _ if unserved => ProjectFileStatus::Missing {
-                message: "hidden files and functor.local.json aren't sent to the headset"
-                    .to_string(),
+            _ if hidden => ProjectFileStatus::Missing {
+                message: "hidden files aren't sent to the headset".to_string(),
             },
             (Some(have), Some(version)) if *have == version => {
                 ProjectFileStatus::Current { version }
@@ -873,19 +872,17 @@ mod tests {
         let ProjectFileStatus::Missing { message } = ask("gone/x.bin", None) else {
             panic!("missing");
         };
-        assert!(message.contains("not mapped"), "{message}");
+        assert!(message.contains("no `gone` mount"), "{message}");
         assert!(matches!(
             ask("data/none.bin", None),
             ProjectFileStatus::Missing { .. }
         ));
-        // Never sent, like the push: hidden files and the local config.
+        // Never sent, like the push: hidden files.
         project.write(".env", b"secret");
-        for path in [".env", LOCAL_CONFIG] {
-            let ProjectFileStatus::Missing { message } = ask(path, None) else {
-                panic!("{path} sent");
-            };
-            assert!(message.contains("aren't sent"), "{message}");
-        }
+        let ProjectFileStatus::Missing { message } = ask(".env", None) else {
+            panic!(".env sent");
+        };
+        assert!(message.contains("aren't sent"), "{message}");
     }
 
     #[test]
