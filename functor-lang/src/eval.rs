@@ -33,10 +33,10 @@
 use crate::ir::{
     BindingId, Def, ExpectDef, Expr, ExprKind, Module, Pattern, PatternKind, StringPart,
 };
+use crate::pmap::{PMap, Search};
 use crate::span::Span;
 use crate::value::{canonicalize_map_entries, Closure, Env, MapKey, Value};
 use crate::RunError;
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -1165,29 +1165,33 @@ implementation",
         Ok(())
     }
 
-    /// Binary-search a canonical Map vector, charging before each key
+    /// Find `key`'s position in a map, charging before each key
     /// comparison. Precharging matters for strings: their shared prefix can
     /// be arbitrarily long, so charging only after `str::cmp` would let the
     /// comparison itself escape the evaluator's bound.
     fn map_search(
         &mut self,
-        entries: &[(MapKey, Value)],
+        entries: &PMap<MapKey, Value>,
         key: &MapKey,
         span: Span,
-    ) -> Result<Result<usize, usize>, RunError> {
-        let mut left = 0usize;
-        let mut right = entries.len();
-        while left < right {
-            let mid = left + (right - left) / 2;
-            let candidate = &entries[mid].0;
-            self.charge(candidate.comparison_units(key), span)?;
-            match candidate.compare(key) {
-                Ordering::Less => left = mid + 1,
-                Ordering::Greater => right = mid,
-                Ordering::Equal => return Ok(Ok(mid)),
-            }
-        }
-        Ok(Err(left))
+    ) -> Result<Search, RunError> {
+        entries.search(&mut |stored: &MapKey| {
+            self.charge(stored.comparison_units(key), span)?;
+            Ok(stored.compare(key))
+        })
+    }
+
+    /// [`Self::map_search`] for a read: the value under `key`, if any.
+    fn map_get<'m>(
+        &mut self,
+        entries: &'m PMap<MapKey, Value>,
+        key: &MapKey,
+        span: Span,
+    ) -> Result<Option<&'m Value>, RunError> {
+        entries.get(&mut |stored: &MapKey| {
+            self.charge(stored.comparison_units(key), span)?;
+            Ok(stored.compare(key))
+        })
     }
 
     fn eval(&mut self, expr: &Expr, env: &Env) -> Result<Value, RunError> {
@@ -2690,59 +2694,50 @@ most 1000000 cells"
                 _ => err("List.concatMap(fn, list) expects a function and a list".to_string()),
             },
             Builtin::MapEmpty => match args.as_slice() {
-                [] => Ok(Value::Map(Rc::new(Vec::new()))),
+                [] => Ok(Value::Map(PMap::new())),
                 _ => unreachable!("builtin arity checked before dispatch"),
             },
-            // Maps are immutable sorted vectors. Lookup is binary search;
-            // updates copy one canonical vector and preserve key order.
+            // Maps are persistent B+trees in canonical key order (`pmap`).
+            // An update copies its root-to-leaf path and charges the nodes it
+            // writes. Updates take the map BY VALUE: a uniquely owned map (a
+            // pipeline temporary) is then edited in place, not copied.
             // Subject-LAST throughout, so `map |> Map.get(key)` works.
             Builtin::MapGet => match args.as_slice() {
                 [key, Value::Map(entries)] => {
                     let key = map_key_from_value(key, builtin_name(b))
                         .map_err(|message| RunError { message, span })?;
-                    let found = self.map_search(entries, &key, span)?;
-                    Ok(option_value(
-                        found.ok().map(|index| entries[index].1.clone()),
-                    ))
+                    let found = self.map_get(entries, &key, span)?.cloned();
+                    Ok(option_value(found))
                 }
                 _ => err("Map.get(key, map) expects a key and a map".to_string()),
             },
-            Builtin::MapInsert => match args.as_slice() {
-                [key, value, Value::Map(entries)] => {
-                    let key = map_key_from_value(key, builtin_name(b))
+            Builtin::MapInsert => match <[Value; 3]>::try_from(args) {
+                Ok([key, value, Value::Map(mut entries)]) => {
+                    let key = map_key_from_value(&key, builtin_name(b))
                         .map_err(|message| RunError { message, span })?;
-                    let found = self.map_search(entries, &key, span)?;
-                    let out_len = if found.is_ok() {
-                        entries.len()
-                    } else {
-                        entries.len().saturating_add(1)
-                    };
-                    // Pre-charge the immutable copy so a low-budget tool
-                    // cannot allocate it before discovering it is over fuel.
-                    self.charge(out_len as u64, span)?;
-                    let mut out = entries.as_ref().clone();
-                    match found {
-                        Ok(index) => out[index].1 = value.clone(),
-                        Err(index) => out.insert(index, (key, value.clone())),
-                    }
-                    Ok(Value::Map(Rc::new(out)))
+                    let search = self.map_search(&entries, &key, span)?;
+                    // Refuse before allocating, then charge what was written.
+                    self.preflight_charge(search.insert_units_ceiling(), span)?;
+                    let units = entries.insert_at(search, key, value);
+                    self.charge(units, span)?;
+                    Ok(Value::Map(entries))
                 }
                 _ => {
                     err("Map.insert(key, value, map) expects a key, a value, and a map".to_string())
                 }
             },
-            Builtin::MapRemove => match args.as_slice() {
-                [key, Value::Map(entries)] => {
-                    let key = map_key_from_value(key, builtin_name(b))
+            Builtin::MapRemove => match <[Value; 2]>::try_from(args) {
+                Ok([key, Value::Map(mut entries)]) => {
+                    let key = map_key_from_value(&key, builtin_name(b))
                         .map_err(|message| RunError { message, span })?;
-                    let found = self.map_search(entries, &key, span)?;
-                    let Ok(index) = found else {
-                        return Ok(Value::Map(entries.clone()));
-                    };
-                    self.charge(entries.len().saturating_sub(1) as u64, span)?;
-                    let mut out = entries.as_ref().clone();
-                    out.remove(index);
-                    Ok(Value::Map(Rc::new(out)))
+                    let search = self.map_search(&entries, &key, span)?;
+                    if !search.found() {
+                        return Ok(Value::Map(entries));
+                    }
+                    self.preflight_charge(search.remove_units_ceiling(), span)?;
+                    let (_, units) = entries.remove_at(search);
+                    self.charge(units, span)?;
+                    Ok(Value::Map(entries))
                 }
                 _ => err("Map.remove(key, map) expects a key and a map".to_string()),
             },
@@ -2750,8 +2745,8 @@ most 1000000 cells"
                 [key, Value::Map(entries)] => {
                     let key = map_key_from_value(key, builtin_name(b))
                         .map_err(|message| RunError { message, span })?;
-                    let found = self.map_search(entries, &key, span)?;
-                    Ok(Value::Bool(found.is_ok()))
+                    let found = self.map_get(entries, &key, span)?;
+                    Ok(Value::Bool(found.is_some()))
                 }
                 _ => err("Map.member(key, map) expects a key and a map".to_string()),
             },
@@ -2822,7 +2817,12 @@ most 1000000 cells"
                     let (out, comparison_work) = canonicalize_map_entries(sorted);
                     debug_assert!(comparison_work <= comparison_work_ceiling);
                     self.charge(comparison_work, span)?;
-                    Ok(Value::Map(Rc::new(out)))
+                    // The bulk build moves the (already charged) entries into
+                    // leaves; charge the internal nodes it adds (~n/12, none
+                    // for a one-leaf map).
+                    let (map, units) = PMap::from_sorted(out);
+                    self.charge(units, span)?;
+                    Ok(Value::Map(map))
                 }
                 _ => {
                     err("Map.fromList(entries) expects one list of (key, value) tuples".to_string())

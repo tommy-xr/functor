@@ -344,6 +344,141 @@ fn map_from_list_preflights_string_comparison_bytes() {
     assert!(matches!(out[0].outcome, ExpectOutcome::Pass));
 }
 
+/// The smallest budget under which `expect` passes for `value`. Fuel is
+/// deterministic, so this is the exact cost of building `value`. The
+/// trailing pad outweighs every preflight ceiling here (the 6.8k sort's is
+/// ~180k), so the binding bound is always the actual charge.
+fn min_budget(defs: &str, value: &str) -> u64 {
+    let src =
+        format!("{defs}\nexpect (let m = {value} in let pad = List.range(250000.0) in true)\n");
+    let passes = |budget| matches!(budgeted(&src, budget)[0].outcome, ExpectOutcome::Pass);
+    let (mut lo, mut hi) = (0u64, 10_000_000u64);
+    assert!(passes(hi), "{value} should fit the largest budget");
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if passes(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// Fuel charged by applying `op` (a pipeline step) to `setup`'s value.
+fn op_cost(defs: &str, setup: &str, op: &str) -> u64 {
+    min_budget(defs, &format!("({setup}) |> {op}")) - min_budget(defs, setup)
+}
+
+const MAP_DEFS: &str = "let sorted = (n) => List.range(n) |> List.map((i) => (i, i))";
+
+/// Per-call overhead of a Map builtin: replacing the value in a one-entry
+/// map does 1 comparison and writes 1 entry.
+fn map_call_overhead() -> u64 {
+    op_cost(
+        MAP_DEFS,
+        "Map.insert(0.0, 0.0, Map.empty())",
+        "Map.insert(0.0, 1.0)",
+    ) - 2
+}
+
+#[test]
+fn map_updates_charge_comparisons_plus_the_nodes_they_write() {
+    let call = map_call_overhead();
+    // A full 16-entry leaf takes a 17th key: 4 comparisons, then the
+    // split writes both halves (17) and a new two-child root (2).
+    let split = op_cost(
+        MAP_DEFS,
+        "Map.fromList(sorted(16.0))",
+        "Map.insert(16.0, 0.0)",
+    );
+    assert_eq!(split, call + 4 + 17 + 2);
+    // Leaves 9 + 8; removing 16 underfills the right leaf, which borrows
+    // from the left: 4 comparisons; donor 8 + borrower 8 + root 2.
+    let borrow = op_cost(MAP_DEFS, "Map.fromList(sorted(17.0))", "Map.remove(16.0)");
+    assert_eq!(borrow, call + 4 + 8 + 8 + 2);
+    // Leaves 8 + 8; removing 16 merges them: 4 comparisons; the merged
+    // leaf (15) plus the one-child root (1) that then collapses.
+    let merge = op_cost(
+        MAP_DEFS,
+        "Map.fromList(sorted(17.0)) |> Map.remove(0.0)",
+        "Map.remove(16.0)",
+    );
+    assert_eq!(merge, call + 4 + 15 + 1);
+}
+
+#[test]
+fn map_bulk_build_charges_entries_sort_and_internal_nodes() {
+    let call = map_call_overhead();
+    for n in [16usize, 17, 300] {
+        // The sort's comparison count on this (already sorted) input, as
+        // `Map.fromList` will run it; numeric keys cost 1 unit each.
+        let mut sort = 0u64;
+        let mut keys: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        keys.sort_by(|a, b| {
+            sort += 1;
+            a.partial_cmp(b).unwrap()
+        });
+        let dedup = n as u64 - 1;
+        // Internal nodes written by the bulk build: none for one leaf, the
+        // root's 2 children at 17, 19 leaves + a 2-child root at 300.
+        let internal = match n {
+            16 => 0,
+            17 => 2,
+            _ => 19 + 2,
+        };
+        let cost = op_cost(MAP_DEFS, &format!("sorted({n}.0)"), "Map.fromList");
+        assert_eq!(cost, call + n as u64 + sort + dedup + internal, "n = {n}");
+    }
+}
+
+#[test]
+fn map_internal_separators_charge_compared_string_bytes() {
+    let call = map_call_overhead();
+    // 17 keys sharing a 1000-byte prefix: leaves "a".."i" + "j".."q".
+    // Finding "q" compares against separator "j", then 3 leaf keys; each
+    // comparison costs the common length + 1 = 1002.
+    let prefix = "a".repeat(1000);
+    let keys: Vec<String> = ('a'..='q')
+        .map(|c| format!("(\"{prefix}{c}\", 0.0)"))
+        .collect();
+    let setup = format!("Map.fromList([{}])", keys.join(", "));
+    let probe = format!("Map.member(\"{prefix}q\")");
+    let member = op_cost("", &setup, &probe) - call;
+    assert_eq!(member, 4 * 1002);
+}
+
+#[test]
+fn large_map_updates_charge_the_path_not_the_map() {
+    // The old flat-vector copy charged ~6800 per update; the tree charges
+    // its root-to-leaf path (depth 4 here).
+    let cost = op_cost(
+        MAP_DEFS,
+        "Map.fromList(sorted(6800.0))",
+        "Map.insert(3.5, 0.0)",
+    );
+    assert!(cost < 100, "insert into 6.8k entries cost {cost}");
+    let cost = op_cost(MAP_DEFS, "Map.fromList(sorted(6800.0))", "Map.remove(3.0)");
+    assert!(cost < 100, "remove from 6.8k entries cost {cost}");
+}
+
+#[test]
+fn maps_with_different_edit_histories_are_equal() {
+    // Different insert/remove orders build different tree shapes; equality
+    // and display compare entries in key order.
+    let src = "let up = List.range(300.0) |> List.fold((m, k) => Map.insert(k, k, m), Map.empty())\n\
+               let down = List.range(600.0) |> List.reverse\n\
+                 |> List.fold((m, k) => Map.insert(k, k, m), Map.empty())\n\
+                 |> (m) => List.range(300.0) |> List.fold((acc, k) => Map.remove(k + 300.0, acc), m)\n\
+               expect up == down\n";
+    let out = reports(src);
+    assert!(
+        matches!(out[0].outcome, ExpectOutcome::Pass),
+        "{:?}",
+        out[0].outcome
+    );
+}
+
 #[test]
 fn text_join_doubling_cannot_amplify_past_the_budget() {
     // The string flavor of the same amplifier: join("", [s, s]) doubles s.

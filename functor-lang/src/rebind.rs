@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ir::{BindingId, Expr, ExprId, ExprKind, Module, Param, Pattern, PatternKind};
+use crate::pmap::PMap;
 use crate::value::{Closure, Env, Value};
 
 /// What a reload's rebind pass did — the producer prints this.
@@ -122,12 +123,15 @@ fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut Rebind
         Value::List(items) => Value::List(Rc::new(
             items.iter().map(|v| walk(v, old, new, report)).collect(),
         )),
-        Value::Map(entries) => Value::Map(Rc::new(
-            entries
-                .iter()
-                .map(|(key, value)| (key.clone(), walk(value, old, new, report)))
-                .collect(),
-        )),
+        Value::Map(entries) => Value::Map(
+            PMap::from_sorted(
+                entries
+                    .iter()
+                    .map(|(key, value)| (key.clone(), walk(value, old, new, report)))
+                    .collect(),
+            )
+            .0,
+        ),
         Value::Tuple(items) => Value::Tuple(Rc::new(
             items.iter().map(|v| walk(v, old, new, report)).collect(),
         )),

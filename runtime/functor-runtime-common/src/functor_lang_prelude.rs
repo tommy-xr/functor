@@ -636,7 +636,7 @@ impl EffectValue {
                 // same canonical order and last-write-wins rule as
                 // Map.fromList instead of trusting serialized entry order.
                 let (canonical, _) = functor_lang::value::canonicalize_map_entries(sorted);
-                Value::Map(Rc::new(canonical))
+                Value::Map(functor_lang::pmap::PMap::from_sorted(canonical).0)
             }
             EffectValue::Tuple(items) => Value::Tuple(Rc::new(
                 items
@@ -4781,7 +4781,7 @@ fn plain_data(value: &Value) -> Result<(), String> {
                 }
             }
             Value::Map(entries) => {
-                if seen.insert(Rc::as_ptr(entries) as *const ()) {
+                if seen.insert(entries.root_ptr()) {
                     work.extend(entries.iter().map(|(_, v)| v));
                 }
             }
@@ -4828,7 +4828,7 @@ fn same_plain_data(a: &Value, b: &Value) -> bool {
                 }
             }
             (Value::Map(x), Value::Map(y)) => {
-                if fresh(Rc::as_ptr(x) as *const (), Rc::as_ptr(y) as *const ()) {
+                if fresh(x.root_ptr(), y.root_ptr()) {
                     if x.len() != y.len() {
                         return false;
                     }
@@ -11214,6 +11214,59 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
         }
     }
 
+    /// Past 16 entries a map is a multi-level tree. Every runtime walker
+    /// still sees canonical key order, and maps holding equal entries compare
+    /// equal whatever their tree shape (edit history).
+    #[test]
+    fn multi_leaf_maps_keep_key_order_through_runtime_walkers() {
+        let built = eval(
+            "let main = () => List.range(40.0) |> List.map((i) => (i, i * 2.0)) |> Map.fromList",
+        );
+        let edited = eval(
+            "let main = () => List.range(80.0) |> List.reverse\n\
+               |> List.fold((m, k) => Map.insert(k, k * 2.0, m), Map.empty())\n\
+               |> (m) => List.range(40.0) |> List.fold((acc, k) => Map.remove(k + 40.0, acc), m)",
+        );
+        assert_eq!(built.to_string(), edited.to_string());
+        assert!(plain_data(&built).is_ok());
+        assert!(same_plain_data(&built, &edited));
+        let changed = eval(
+            "let main = () => List.range(40.0) |> List.map((i) => (i, i * 2.0)) |> Map.fromList\n\
+               |> Map.insert(39.0, 0.0)",
+        );
+        assert!(!same_plain_data(&built, &changed));
+
+        let ascending: Vec<f64> = (0..40).map(f64::from).collect();
+        let effect = effect_value_from_value(&built).unwrap();
+        let EffectValue::Map(entries) = &effect else {
+            panic!("expected an effect map");
+        };
+        let keys: Vec<f64> = entries
+            .iter()
+            .map(|(key, _)| match key {
+                EffectMapKey::Number(n) => *n,
+                other => panic!("unexpected key {other:?}"),
+            })
+            .collect();
+        assert_eq!(keys, ascending);
+        assert_eq!(effect.to_functor_lang().unwrap().to_string(), built.to_string());
+
+        let json = value_to_json(&built);
+        let keys: Vec<f64> = json["$map"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pair| pair[0].as_f64().unwrap())
+            .collect();
+        assert_eq!(keys, ascending);
+
+        let closures = eval(
+            "let main = () => List.range(40.0) |> List.map((i) => (i, (x) => x + i)) |> Map.fromList",
+        );
+        assert!(built.is_reload_safe_snapshot());
+        assert!(!closures.is_reload_safe_snapshot());
+    }
+
     /// The lossy model-JSON walker (`GET /state` `model`, v4): plain data
     /// maps structurally; callables, host values, and non-finite numbers
     /// become sigil placeholders instead of failing.
@@ -11238,16 +11291,19 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             ),
             (
                 "scores".to_string(),
-                Value::Map(Rc::new(vec![
-                    (
-                        functor_lang::value::MapKey::String(Rc::from("a")),
-                        Value::Number(1.0),
-                    ),
-                    (
-                        functor_lang::value::MapKey::String(Rc::from("b")),
-                        Value::Number(2.0),
-                    ),
-                ])),
+                Value::Map(
+                    functor_lang::pmap::PMap::from_sorted(vec![
+                        (
+                            functor_lang::value::MapKey::String(Rc::from("a")),
+                            Value::Number(1.0),
+                        ),
+                        (
+                            functor_lang::value::MapKey::String(Rc::from("b")),
+                            Value::Number(2.0),
+                        ),
+                    ])
+                    .0,
+                ),
             ),
             (
                 "pos".to_string(),
@@ -11452,10 +11508,13 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
             ))])),
         )]));
         assert!(contains_effect(&nested));
-        let in_map = Value::Map(std::rc::Rc::new(vec![(
-            functor_lang::value::MapKey::String(std::rc::Rc::from("command")),
-            nested,
-        )]));
+        let in_map = Value::Map(
+            functor_lang::pmap::PMap::from_sorted(vec![(
+                functor_lang::value::MapKey::String(std::rc::Rc::from("command")),
+                nested,
+            )])
+            .0,
+        );
         assert!(contains_effect(&in_map));
         assert!(!contains_effect(&Value::Number(1.0)));
     }
