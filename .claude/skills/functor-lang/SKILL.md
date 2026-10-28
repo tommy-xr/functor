@@ -1620,7 +1620,8 @@ on a mesh the runtime fuses from that depth over time (8 cm voxels; it keeps
 surfaces out of view and forgets moved furniture in a second or two;
 `GET /state.xr.mesh`). `Physics.fusedRoom(tag)` (a body for the `physics`
 hook, drawn or not) makes that mesh solid: one static triangle mesh per
-chunk, plus an infinite floor plane at the detected floor, so balls rest
+chunk, plus an infinite floor plane at the detected floor (the lowest level
+surface at least 1 m below the highest the headset has been), so balls rest
 still and do not fall through floor nobody has looked at. Pipe
 `Physics.restitution`/`friction`; `Physics.at`/`rotate*` on it are errors; a
 room fused while rendering frame N collides from frame N+1's step. Its walls

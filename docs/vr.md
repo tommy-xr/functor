@@ -368,12 +368,19 @@ let physics = (model) =>
 - The floor is a plane. The fused floor ripples by a few millimetres, which
   keeps a resting ball rolling, and it has holes wherever nobody looked
   (behind the desk). The runtime takes as the floor the lowest level surface
-  with at least 0.5 m² within 3 cm of one height and within 20 cm of
-  `y = 0` (the stage floor; a bed or a table never counts), drops the level
+  with at least 0.5 m² within 3 cm of one height, at least 1 m below the
+  highest the headset (the depth camera) has been, drops the level
   triangles there from the chunks, and puts an infinite plane at that
-  height. It moves only when the estimate moves by 2 mm, and stays
-  until the shell starts the room over. A world whose floor is not near
-  `y = 0` gets no plane and collides with its fused floor as it is.
+  height. It moves only when the estimate moves by 2 mm, and stays until
+  the shell starts the room over.
+  - Below the head, not at `y = 0`: in a stationary boundary Quest puts the
+    stage origin near head height, not on the floor.
+  - Standing, 1 m below the head rules out a desk or table; seated, it
+    rules out everything but the floor. Standing, a bed or coffee table
+    could pass for the floor until the floor itself is seen, which is lower
+    and then wins.
+  - A headset at rest on a desk is under 1 m above the floor, so it finds
+    no plane until it is worn.
 - The meshes reach physics through the same ordered message queue as every
   other shell call: the room fused while rendering frame N collides from the
   physics step of frame N+1. Desktop runs pinned by `--fixed-time` or

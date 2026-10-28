@@ -3273,7 +3273,10 @@ mod fused_room_tests {
                 };
             }
         }
-        RoomMeshes { chunks }
+        RoomMeshes {
+            chunks,
+            top_eye_y: volume.top_eye_y,
+        }
     }
 
     fn room_body(room: &Arc<RoomMeshes>) -> Body {

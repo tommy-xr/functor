@@ -112,10 +112,11 @@ let heightfield : (tag, Terrain.t) => body
 /// room need not be drawn. Each 64 cm chunk is a static triangle mesh,
 /// rebuilt when that chunk re-meshes, so balls bounce off the real walls and
 /// furniture as soon as they are seen. The floor — the lowest level surface
-/// of at least 0.5 m² within 20 cm of `y = 0`, where a passthrough game's
-/// stage floor is — is an infinite plane instead of the fused floor's
-/// ripple, so a resting ball stays still and nothing falls through floor
-/// nobody has looked at yet.
+/// of at least 0.5 m² at least 1 m below the highest the headset has been —
+/// is an infinite plane instead of the fused floor's ripple, so a resting
+/// ball stays still and nothing falls through floor nobody has looked at
+/// yet. It is found by height below the head, not at `y = 0`: a headset's
+/// stage origin is not always on the floor.
 ///
 /// New surfaces reach the body at the physics step after they fuse. The
 /// room is already in world space: `Physics.at` and the rotations are

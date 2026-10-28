@@ -98,6 +98,8 @@ pub struct Volume {
     dirty: BTreeSet<ChunkKey>,
     /// Depth frames integrated so far.
     pub fused_frames: u64,
+    /// The highest the depth camera (the head) has been, world metres.
+    pub top_eye_y: Option<f32>,
 }
 
 fn voxel_index(x: i32, y: i32, z: i32) -> usize {
@@ -203,6 +205,7 @@ impl Volume {
         }
         // The camera centre is the point clip space sends to infinity.
         let eye = unproject(&inverse, Vector4::new(0.0, 0.0, 1.0, 0.0));
+        self.top_eye_y = Some(self.top_eye_y.map_or(eye.y, |top| top.max(eye.y)));
 
         // Each pixel's surface depth along the view axis (clip `w`; NaN:
         // none), and the chunks the in-range surfaces' truncation bands reach.
@@ -688,6 +691,7 @@ pub(crate) mod tests {
             assert!((p[2] - 2.03).abs() < 0.01, "vertex off the wall: {p:?}");
         }
         assert_eq!(volume.fused_frames, 1);
+        assert!((volume.top_eye_y.unwrap() - 1.5).abs() < 1e-3, "{:?}", volume.top_eye_y);
     }
 
     /// Seen at a grazing angle the floor's depth changes fast from pixel to
