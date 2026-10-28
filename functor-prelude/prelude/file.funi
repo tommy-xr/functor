@@ -1,6 +1,7 @@
 //! Files in the project, read when called — bind them at the top level, not in
 //! `draw`. Paths are relative to the entry file's folder and must stay inside
-//! the project. Desktop runs and `functor export` only, for now.
+//! the project. Desktop, `functor export`, and Quest (`functor run vr` pushes
+//! the project's files first); not the web yet.
 
 /// The bytes of a file: `File.bytes("data/model.bin")`.
 let bytes : (string) => Bytes.t

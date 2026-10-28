@@ -255,6 +255,71 @@ pub use backend::{read_slot, write_slot};
 #[cfg(not(target_arch = "wasm32"))]
 pub use backend::{project_dir, set_project_root};
 
+/// How this platform reads project files (`File.bytes`, `Typeface.file`).
+/// Paths arrive checked by `validate_project_asset_path`. Desktop reads the
+/// project directory; the Quest shell installs its pushed-file cache.
+pub trait ProjectReader: Send + Sync {
+    fn read(&self, path: &str) -> Result<Vec<u8>, ProjectReadError>;
+    /// Without reading the file.
+    fn exists(&self, path: &str) -> bool;
+}
+
+pub enum ProjectReadError {
+    /// The path resolves outside the project (a symlink).
+    Outside,
+    /// Missing or unreadable; the reason.
+    Unreadable(String),
+}
+
+static PROJECT_READER: std::sync::RwLock<Option<std::sync::Arc<dyn ProjectReader>>> =
+    std::sync::RwLock::new(None);
+
+/// Replace the platform's default project reader (see [`project_reader`]);
+/// `None` restores the default.
+pub fn set_project_reader(reader: Option<std::sync::Arc<dyn ProjectReader>>) {
+    *PROJECT_READER.write().unwrap_or_else(|e| e.into_inner()) = reader;
+}
+
+/// The installed reader, else the platform default: the project directory on
+/// desktop, none on the web or Quest until a shell installs one.
+pub fn project_reader() -> Option<std::sync::Arc<dyn ProjectReader>> {
+    let installed = PROJECT_READER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    let installed = installed.or_else(|| Some(std::sync::Arc::new(ProjectDirReader)));
+    installed
+}
+
+/// Reads [`project_dir`], resolving symlinks so none reaches outside it.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+struct ProjectDirReader;
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+impl ProjectDirReader {
+    fn resolve(path: &str) -> Result<std::path::PathBuf, ProjectReadError> {
+        let unreadable = |e: std::io::Error| ProjectReadError::Unreadable(e.to_string());
+        let root = std::fs::canonicalize(project_dir()).map_err(unreadable)?;
+        let full = std::fs::canonicalize(root.join(path)).map_err(unreadable)?;
+        if full.starts_with(&root) {
+            Ok(full)
+        } else {
+            Err(ProjectReadError::Outside)
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+impl ProjectReader for ProjectDirReader {
+    fn read(&self, path: &str) -> Result<Vec<u8>, ProjectReadError> {
+        std::fs::read(Self::resolve(path)?).map_err(|e| ProjectReadError::Unreadable(e.to_string()))
+    }
+    fn exists(&self, path: &str) -> bool {
+        Self::resolve(path).is_ok_and(|full| full.is_file())
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 use backend::saves_dir;
 
@@ -304,6 +369,41 @@ mod tests {
         write_slot("fresh", "{\"n\":2}").unwrap();
         assert_eq!(read_slot("fresh").unwrap().as_deref(), Some("{\"n\":2}"));
         assert!(!dir.path().join(".functor/saves/fresh.json.tmp").exists());
+    }
+
+    /// The desktop reader: files inside the project read; missing files and
+    /// symlinks resolving outside it don't, and neither counts as existing.
+    #[cfg(unix)]
+    #[test]
+    fn project_dir_reader_confines_reads() {
+        let _guard = SAVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.bin"), [7]).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/a.bin"), [1, 2, 3]).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.bin"),
+            dir.path().join("out.bin"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(dir.path().join("data/a.bin"), dir.path().join("in.bin"))
+            .unwrap();
+        set_project_root(dir.path().to_path_buf());
+        let reader = ProjectDirReader;
+        assert_eq!(reader.read("data/a.bin").ok(), Some(vec![1, 2, 3]));
+        assert_eq!(reader.read("in.bin").ok(), Some(vec![1, 2, 3]));
+        assert!(reader.exists("data/a.bin") && reader.exists("in.bin"));
+        assert!(matches!(
+            reader.read("out.bin"),
+            Err(ProjectReadError::Outside)
+        ));
+        assert!(matches!(
+            reader.read("missing.bin"),
+            Err(ProjectReadError::Unreadable(_))
+        ));
+        assert!(!reader.exists("out.bin") && !reader.exists("missing.bin"));
+        assert!(!reader.exists("data"), "a directory is not a file");
     }
 
     /// A project is named by its directory OR its entry file (both are valid

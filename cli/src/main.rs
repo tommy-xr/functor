@@ -193,8 +193,9 @@ enum Command {
         /// only). E.g. `run native --fixed-time 2 --capture-frame f.png`. A
         /// leading `--` is also accepted. On wasm these are ignored except
         /// `--no-open`, which keeps the dev server but skips launching the browser.
-        /// On vr only `--refresh-rate <hz>` is used: the headset display rate to
-        /// request (one it offers, e.g. 90 or 120).
+        /// On vr only `--refresh-rate <hz>` (the headset display rate to request,
+        /// one it offers, e.g. 90 or 120) and the push caps `--max-file-mb <n>`
+        /// (default 64) and `--max-push-mb <n>` (default 512) are used.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         runner_args: Vec<String>,
     },
