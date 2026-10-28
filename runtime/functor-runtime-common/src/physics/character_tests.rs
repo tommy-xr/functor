@@ -134,9 +134,46 @@ fn a_character_climbs_a_step_up_to_step_height_and_not_a_taller_one() {
     let p = climb(0.3);
     assert!(p[0] > 4.0, "walked on across the tread: {p:?}");
     assert!((p[1] - (0.3 + STAND)).abs() < 0.01, "stands on the tread: {p:?}");
+    // Walking back off a 0.25 m step follows the ground down.
+    let step = aabb([2.0, -1.0, -5.0], [6.0, 0.25, 5.0]);
+    let mut w = world(vec![level(&[floor(), step]), player([4.0, 0.25 + STAND, 0.0])]);
+    let trace = walk(&mut w, [-2.0, 0.0], 90);
+    assert!(trace[1..].iter().all(|(_, g)| *g), "grounded down the step");
+    let p = last(&trace);
+    assert!(p[0] < 1.1 && (p[1] - STAND).abs() < 0.01, "on the floor: {p:?}");
     let p = climb(0.45);
     assert!(p[0] < 2.0 - 0.3 + 0.01, "blocked at the riser: {p:?}");
     assert!((p[1] - STAND).abs() < 0.01, "still on the floor: {p:?}");
+}
+
+/// Everyday stairs (0.18 m rise, 0.28 m tread): the capsule is wider than a
+/// tread, and still climbs the flight.
+#[test]
+fn a_character_climbs_a_flight_of_stairs() {
+    let mut pieces = vec![floor()];
+    pieces.extend((1..=5).map(|i| {
+        let x0 = 2.0 + 0.28 * (i - 1) as f32;
+        aabb([x0, -1.0, -5.0], [9.0, 0.18 * i as f32, 5.0])
+    }));
+    let mut w = world(vec![level(&pieces), player([0.0, STAND, 0.0])]);
+    let p = last(&walk(&mut w, [1.5, 0.0], 240));
+    assert!(p[0] > 4.0, "walked up and on: {p:?}");
+    assert!((p[1] - (0.9 + STAND)).abs() < 0.01, "on the top step: {p:?}");
+}
+
+/// A jump leaves the ground at once: the move is upward, so it isn't
+/// grounded even while the feet are within the ground probe's reach.
+#[test]
+fn an_upward_move_is_not_grounded() {
+    let mut w = world(vec![level(&[floor()]), player([0.0, STAND, 0.0])]);
+    walk(&mut w, [0.0, 0.0], 10);
+    assert_eq!(w.grounded("player"), Some(true));
+    w.queue_command(PhysicsCommand::Move {
+        tag: "player".to_string(),
+        translation: [0.0, 0.01, 0.0],
+    });
+    w.step_frame(FIXED_DT);
+    assert_eq!(w.grounded("player"), Some(false));
 }
 
 #[test]
@@ -241,7 +278,7 @@ fn a_character_walks_on_boxes_and_heightfields() {
 }
 
 #[test]
-fn moves_on_non_characters_warn_and_settings_are_read_per_move() {
+fn moves_on_non_characters_warn() {
     let mut w = world(vec![level(&[floor()]), player([0.0, STAND, 0.0])]);
     w.queue_command(PhysicsCommand::Move {
         tag: "level".to_string(),

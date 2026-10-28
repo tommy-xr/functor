@@ -292,15 +292,27 @@ metres at the next step, using rapier's character controller:
   (trimesh, box, heightfield). Every move is swept, so a character can't
   tunnel through a thin wall at any speed, from either side of a trimesh face.
 - **Slopes** up to `maxSlope` are climbed and held; steeper ones slide the
-  character down. **Snap**: a grounded move follows the ground down by up to
-  `snap` (stairs, ramps), but only when the move has a downward part.
+  character down.
 - **Steps** up to `stepHeight` are climbed by a probe: when a grounded move is
   mostly blocked, lift by the headroom, move past the riser, and drop onto a
   walkable tread the capsule fits on. Rapier's own autostep isn't used: it
   needs a wall-like hit, and a capsule meets a step's edge with its rounded
-  bottom.
+  bottom. The probe moves the capsule forward by its radius plus a margin, more
+  than one frame's walk (a visible hop, and a one-step velocity spike against
+  dynamic bodies): a shorter hop leaves the rounded bottom on the edge, and the
+  capsule slides back off.
 - Each move runs as a horizontal pass then a vertical one: one combined move
-  stalls whenever the capsule sits just inside its `offset` gap.
+  stalls whenever the capsule sits just inside its `offset` gap. A grounded
+  move that isn't upward then follows the ground down by up to `snap`
+  (rapier's own snap is per pass, and the walk pass never moves down).
+- **Grounded** means the last move wasn't upward and ended resting on an
+  upward-facing contact whose face is no steeper than `maxSlope` (found by a
+  short ray at the contact, so a capsule rolling off a ledge's edge stays
+  grounded). It updates only when a step runs, so at 90 Hz a tick can read the
+  previous step's value: reset the vertical speed only when it isn't rising.
+- **Query latency.** Moves run before the step, against the broad phase the
+  last step built, like `Physics.cast`: a body declared this frame is invisible
+  to this frame's moves, including the level on the very first frame.
 
 **State.** The character's position and `grounded` flag are world state, so
 keyframes, rewinds and seeks restore them, and moves are recorded commands, so
@@ -308,8 +320,9 @@ replay is bit-exact. `Physics.grounded(tag)` is whether the last move ended on
 walkable ground. The game keeps intent and vertical speed in its model:
 
 ```functor
-let vy = (if grounded && model.jump then jumpSpeed else if grounded then 0.0 else model.vy)
-         - gravity * dt in
+let vy = (if grounded && model.jump then jumpSpeed
+          else if grounded && model.vy <= 0.0 then 0.0
+          else model.vy) - gravity * dt in
 (next, Physics.move(playerTag, Vec3.make(vx * dt, vy * dt, vz * dt)))
 ```
 

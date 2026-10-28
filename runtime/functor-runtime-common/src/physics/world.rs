@@ -527,8 +527,8 @@ impl World {
         Some([v.x, v.y, v.z])
     }
 
-    /// Whether a `Physics.character` stood on walkable ground after its last
-    /// move (`false` before any). `None` if `tag` isn't a character.
+    /// Whether a `Physics.character`'s last move ended on walkable ground and
+    /// wasn't upward (`false` before any). `None` if `tag` isn't a character.
     pub fn grounded(&self, tag: &str) -> Option<bool> {
         self.declared.get(tag)?.character?;
         Some(self.grounded.get(tag).copied().unwrap_or(false))
@@ -610,18 +610,9 @@ impl World {
             return None;
         }
         let swept = collider_of(shape)?.shape;
-        let (col_handle, hit) = self.queries(QueryFilter::default(), exclude).cast_shape(
-            &Pose::from_translation(vec3(origin)),
-            d / len,
-            &*swept,
-            ShapeCastOptions {
-                max_time_of_impact: max_dist,
-                target_distance: 0.0,
-                // A start overlap is a hit at 0 unless the sweep moves out.
-                stop_at_penetration: false,
-                compute_impact_geometry_on_penetration: true,
-            },
-        )?;
+        let queries = self.queries(QueryFilter::default(), exclude);
+        let from = Pose::from_translation(vec3(origin));
+        let (col_handle, hit) = sweep(&queries, &*swept, &from, d / len, max_dist, 0.0)?;
         let tag = self.collider_tag(col_handle)?;
         // Shape casts report no feature, so find the triangle under the
         // contact point (on a shared edge, either neighbour).
@@ -771,14 +762,14 @@ impl World {
         for command in std::mem::take(&mut self.pending) {
             let (tag, kind) = command.tag_and_kind();
             let (tag, kind) = (tag.to_string(), kind);
-            let Some(&(rb_handle, _)) = self.tags.get(tag.as_str()) else {
+            let Some(&(rb_handle, col_handle)) = self.tags.get(tag.as_str()) else {
                 self.push_command_warning(format!(
                     "physics {kind} for unknown tag \"{tag}\""
                 ));
                 continue;
             };
             if let PhysicsCommand::Move { translation, .. } = &command {
-                if !self.move_character(&tag, rb_handle, vec3(*translation)) {
+                if !self.move_character(&tag, rb_handle, col_handle, vec3(*translation)) {
                     self.push_command_warning(format!(
                         "physics move on \"{tag}\", which is not a Physics.character, has no effect"
                     ));
@@ -910,14 +901,17 @@ impl World {
     /// limit, snap to ground) plus a step-up probe, applied as the body's
     /// next kinematic target. Starts from a target already queued this step,
     /// so moves chain. `false` if `tag` isn't a character.
-    fn move_character(&mut self, tag: &str, rb_handle: RigidBodyHandle, desired: Vector) -> bool {
-        let Some(body) = self.declared.get(tag) else {
+    fn move_character(
+        &mut self,
+        tag: &str,
+        rb_handle: RigidBodyHandle,
+        col_handle: ColliderHandle,
+        desired: Vector,
+    ) -> bool {
+        let Some(settings) = self.declared.get(tag).and_then(|body| body.character) else {
             return false;
         };
-        let (Some(settings), Some(collider)) = (body.character, collider_of(&body.shape)) else {
-            return false;
-        };
-        let shape = collider.shape;
+        let shape = self.colliders[col_handle].shared_shape().clone();
         let start = *self.bodies[rb_handle].next_position();
         let controller = KinematicCharacterController {
             up: Vector::Y,
@@ -928,14 +922,16 @@ impl World {
             autostep: None,
             max_slope_climb_angle: settings.max_slope,
             min_slope_slide_angle: settings.max_slope,
-            snap_to_ground: Some(CharacterLength::Absolute(settings.snap)),
+            // Snapped below instead, across both passes.
+            snap_to_ground: None,
             normal_nudge_factor: 1.0e-4,
         };
         let queries = self.queries(QueryFilter::default().exclude_sensors(), Some(tag));
         let at = |t: Vector| Pose::from_translation(t) * start;
+        let was_grounded = on_walkable_ground(&queries, &*shape, &start, &settings);
         // Walk, then fall: one combined move stalls whenever the capsule sits
         // just inside the offset gap, as its first sweep hits the floor at 0.
-        let mut move_by = |from: Vector, by: Vector| {
+        let move_by = |from: Vector, by: Vector| {
             from + controller
                 .move_shape(FIXED_DT, &queries, &*shape, &at(from), by, |_| {})
                 .translation
@@ -946,8 +942,16 @@ impl World {
             if let Some(step) = step_up(&queries, &*shape, &at(translation), desired, translation, &settings) {
                 translation += step;
             }
+        } else if was_grounded && desired.y <= 0.0 {
+            // Follow the ground down a stair or ramp by up to `snap`.
+            let below = sweep(&queries, &*shape, &at(translation), -Vector::Y, settings.snap, settings.offset);
+            if let Some((_, hit)) = below {
+                translation.y -= hit.time_of_impact;
+            }
         }
-        let grounded = on_walkable_ground(&queries, &*shape, &at(translation), &settings);
+        // Rising (a jump) isn't grounded, even while the feet are still close.
+        let grounded =
+            desired.y <= 0.0 && on_walkable_ground(&queries, &*shape, &at(translation), &settings);
         self.bodies[rb_handle].set_next_kinematic_position(at(translation));
         self.grounded.insert(tag.to_string(), grounded);
         true
@@ -1190,7 +1194,8 @@ fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
     }
 }
 
-/// A sweep that stops `target` short of what it hits.
+/// A sweep that stops `target` short of what it hits. A start overlap is a
+/// hit at 0 unless the sweep moves out of it.
 fn sweep(
     queries: &QueryPipeline,
     shape: &dyn rapier3d::parry::shape::Shape,
@@ -1198,19 +1203,21 @@ fn sweep(
     dir: Vector,
     max: f32,
     target: f32,
-) -> Option<rapier3d::parry::query::ShapeCastHit> {
+) -> Option<(ColliderHandle, rapier3d::parry::query::ShapeCastHit)> {
     let options = ShapeCastOptions {
         max_time_of_impact: max,
         target_distance: target,
         stop_at_penetration: false,
         compute_impact_geometry_on_penetration: true,
     };
-    queries.cast_shape(from, dir, shape, options).map(|(_, hit)| hit)
+    queries.cast_shape(from, dir, shape, options)
 }
 
-/// Ground no steeper than the slope limit within the offset plus 5 cm below
-/// the feet (the controller's own contact prediction). The probe starts one
-/// offset up, so a capsule resting just inside its gap still hits cleanly.
+/// Resting on an upward-facing contact within the offset plus 5 cm (the
+/// controller's own contact reach), unless the face there is steeper than the
+/// slope limit. The face comes from a short ray at the contact point, because a
+/// capsule rolling off a ledge touches its edge at a slant. The sweep starts
+/// one offset up, so a capsule resting just inside its gap still hits cleanly.
 fn on_walkable_ground(
     queries: &QueryPipeline,
     shape: &dyn rapier3d::parry::shape::Shape,
@@ -1218,8 +1225,15 @@ fn on_walkable_ground(
     s: &CharacterSettings,
 ) -> bool {
     let from = Pose::from_translation(Vector::Y * s.offset) * *at;
-    sweep(queries, shape, &from, -Vector::Y, 2.0 * s.offset + 0.05, 0.0)
-        .is_some_and(|hit| hit.normal1.y >= s.max_slope.cos() - 1.0e-4)
+    let Some((_, hit)) = sweep(queries, shape, &from, -Vector::Y, 2.0 * s.offset + 0.05, 0.0)
+    else {
+        return false;
+    };
+    let face = Ray::new(hit.witness1 + Vector::Y * 0.05, -Vector::Y);
+    let steep = queries
+        .cast_ray_and_get_normal(&face, 0.1, true)
+        .is_some_and(|(_, ray)| ray.normal.y < s.max_slope.cos() - 1.0e-4);
+    hit.normal1.y > 1.0e-3 && !steep
 }
 
 /// Step-up probe for a grounded move that was mostly blocked: lift by the
@@ -1244,7 +1258,7 @@ fn step_up(
         return None; // most of the move went through
     }
     let lift = sweep(queries, shape, at, Vector::Y, s.step_height, s.offset)
-        .map_or(s.step_height, |hit| hit.time_of_impact);
+        .map_or(s.step_height, |(_, hit)| hit.time_of_impact);
     let lifted = Pose::from_translation(Vector::Y * lift) * *at;
     // The capsule's bottom must clear the riser's edge, or the next move's
     // snap pulls it back down.
@@ -1253,7 +1267,7 @@ fn step_up(
         return None;
     }
     let planted = Pose::from_translation(dir * forward) * lifted;
-    let tread = sweep(queries, shape, &planted, -Vector::Y, lift, s.offset)?;
+    let (_, tread) = sweep(queries, shape, &planted, -Vector::Y, lift, s.offset)?;
     let rise = lift - tread.time_of_impact;
     if rise <= s.offset || tread.normal1.y < s.max_slope.cos() {
         return None;

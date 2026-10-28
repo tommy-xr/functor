@@ -279,9 +279,10 @@ let teleport : (tag, Vec3.t) => Effect.t
 
 /// Walk a `Physics.character` by up to a displacement, in metres, at the next
 /// step: velocity × `dt`, including the vertical speed. It collides and slides,
-/// steps up ledges up to `stepHeight`, and stays on the ground going down. Keep
-/// gravity in the displacement even when grounded: snapping to the ground
-/// needs a downward move. Several moves before one step chain.
+/// steps up ledges up to `stepHeight`, and stays on the ground going down
+/// unless the move is upward (a jump). Several moves before one step chain. Like
+/// `Physics.cast`, a move sees bodies as of the last step, so one declared
+/// this frame doesn't block it yet.
 let move : (tag, Vec3.t) => Effect.t
 
 /// Cast a ray and tag its `Physics.rayHit` result as a message.

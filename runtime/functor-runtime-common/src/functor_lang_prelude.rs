@@ -3080,15 +3080,15 @@ capsule for the moving body"
                 Some(Value::Number(n)) if n.is_finite() && *n >= 0.0 => Ok(*n as f32),
                 _ => Err(format!("{WHAT}: `{name}` must be a non-negative number of metres")),
             };
-            let max_slope = match get("maxSlope") {
-                Some(Value::HostData(d)) => d
-                    .as_any()
-                    .downcast_ref::<FunctorLangAngle>()
-                    .map(|a| a.0.radians()),
-                _ => None,
+            let max_slope = get("maxSlope")
+                .ok_or_else(|| format!("{WHAT}: missing `maxSlope`"))
+                .and_then(|v| {
+                    angle_of(v, "Physics.character maxSlope", Span::new(0, 0)).map_err(|e| e.message)
+                })?
+                .radians();
+            if !(max_slope > 0.0 && max_slope < std::f32::consts::FRAC_PI_2) {
+                return Err(format!("{WHAT}: `maxSlope` must be between 0deg and 90deg"));
             }
-            .filter(|r| *r > 0.0 && *r < std::f32::consts::FRAC_PI_2)
-            .ok_or_else(|| format!("{WHAT}: `maxSlope` must be an angle between 0deg and 90deg"))?;
             // Rapier's controller needs a gap to stay numerically stable.
             let offset = length("offset")?;
             if offset == 0.0 {
@@ -10415,7 +10415,7 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
                 "Physics.capsule(0.6, 0.3)",
                 "{ stepHeight: 0.35, maxSlope: Angle.degrees(90.0), snap: 0.3, offset: 0.02 }"
             ),
-            "Physics.character: `maxSlope` must be an angle between 0deg and 90deg"
+            "Physics.character: `maxSlope` must be between 0deg and 90deg"
         );
         assert_eq!(
             fails(

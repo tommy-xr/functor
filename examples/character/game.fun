@@ -131,10 +131,11 @@ let tick = (model, dt, tts) =>
   // Forward is (sin yaw, cos yaw); right is (-cos yaw, sin yaw).
   let vx = walkSpeed * (model.walk * Math.sin(yaw) - model.strafe * Math.cos(yaw)) in
   let vz = walkSpeed * (model.walk * Math.cos(yaw) + model.strafe * Math.sin(yaw)) in
-  // The ground resets the fall, but gravity always pulls: a move needs a
-  // downward part to follow stairs and ramps down.
-  let vy = (if grounded && model.jump then jumpSpeed else if grounded then 0.0 else model.vy)
-           - gravity * dt in
+  // Landing resets the fall and a jump sets it upward. `grounded` is from the
+  // last step, so while rising (and before the jump's step) keep `vy`.
+  let vy = (if grounded && model.jump then jumpSpeed
+            else if grounded && model.vy <= 0.0 then 0.0
+            else model.vy) - gravity * dt in
   let next = { model with yaw: yaw, vy: vy, jump: false } in
   if Physics.position(playerTag).y < -10.0 then
     ({ next with vy: 0.0 }, Physics.teleport(playerTag, spawn))
