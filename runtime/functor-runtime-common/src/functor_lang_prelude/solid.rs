@@ -184,6 +184,35 @@ pub(super) fn bounds_value(b: functor_solid::Bounds) -> Value {
     ]))
 }
 
+/// `Solid.split`'s `{ normal, offset }` plane.
+struct Plane {
+    normal: [f64; 3],
+    offset: f64,
+}
+
+impl crate::host_registry::FromArg for Plane {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        let field = |name: &str| match value {
+            Value::Record(fields) => fields.iter().find(|(f, _)| f == name).map(|(_, v)| v),
+            _ => None,
+        };
+        let (Some(normal), Some(offset)) = (field("normal"), field("offset")) else {
+            return Err(RunError {
+                message: format!(
+                    "{path}: expected a plane {{ normal: Vec3, offset: float }}, got {}",
+                    value.kind_name()
+                ),
+                span,
+            });
+        };
+        let (x, y, z) = vec3_of(normal, &format!("{path} plane normal"), span)?;
+        Ok(Plane {
+            normal: [x, y, z].map(f64::from),
+            offset: f64::from_arg(offset, path, span)?,
+        })
+    }
+}
+
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
     register_sketch(reg);
     reg.fn3(
@@ -330,6 +359,16 @@ which won't print as one solid — overlap them or move them apart"
         "Solid.intersect(other, solid)",
         move |other: FunctorLangSolid, s: FunctorLangSolid| {
             boolean(functor_solid::BoolOp::Intersect, vec![s, other])
+        },
+    );
+    reg.fn2(
+        "Solid.split",
+        "Solid.split({ normal, offset }, solid)",
+        |p: Plane, s: FunctorLangSolid| {
+            let (above, below) =
+                Solid::split(s.0, p.normal, p.offset).map_err(|e| format!("Solid.split: {e}"))?;
+            let half = |h| Value::HostData(Rc::new(solid(h)));
+            Ok::<_, String>(Value::Tuple(Rc::new(vec![half(above), half(below)])))
         },
     );
     reg.fn1(

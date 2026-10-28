@@ -82,21 +82,35 @@ pub enum Solid {
         nozzle: f64,
         result: MeshCache,
     },
+    /// One side of a plane cut through `child`: `above` keeps
+    /// `normal·p ≥ offset` (`normal` unit length), closed by the cut face.
+    /// Both sides share one cut. Build with [`Solid::split`].
+    Half {
+        child: Arc<Solid>,
+        normal: [f64; 3],
+        offset: f64,
+        above: bool,
+        cut: CutCache,
+    },
 }
 
 /// A boolean's or printed leaf's mesh, evaluated once in its own frame and
 /// reused by every transform above it (e.g. a part rotated in `draw` each
-/// frame). Curves inside are faceted at that frame's scale. Ignored by equality.
+/// frame), or a plane cut's two halves. Curves inside are faceted at that
+/// frame's scale. Ignored by equality.
 #[derive(Clone, Default)]
-pub struct MeshCache(Arc<OnceLock<Result<Arc<Mesh>, String>>>);
+pub struct MeshCache<T = Arc<Mesh>>(Arc<OnceLock<Result<T, String>>>);
 
-impl PartialEq for MeshCache {
+/// Both halves of a plane cut, evaluated once for the pair.
+pub type CutCache = MeshCache<[Arc<Mesh>; 2]>;
+
+impl<T> PartialEq for MeshCache<T> {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl std::fmt::Debug for MeshCache {
+impl<T> std::fmt::Debug for MeshCache<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("MeshCache")
     }
@@ -157,6 +171,32 @@ got {diameter}, {pitch}, {length}, {offset}"
             BoolOp::Intersect,
             vec![Arc::new(helix), Arc::new(slab)],
         ))
+    }
+
+    /// Cut `child` in two along the plane `normal·p = offset`: (the side the
+    /// normal points to, the other side). Normal and offset are scaled
+    /// together, so `([0, 0, 2], 10)` is the plane z = 5.
+    pub fn split(
+        child: Arc<Solid>,
+        normal: [f64; 3],
+        offset: f64,
+    ) -> Result<(Solid, Solid), String> {
+        let length = normal.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if !(length > 0.0 && length.is_finite() && offset.is_finite()) {
+            return Err(format!(
+                "a split plane needs a non-zero, finite normal and a finite offset, \
+got {normal:?} and {offset}"
+            ));
+        }
+        let cut = CutCache::default();
+        let half = |above| Solid::Half {
+            child: child.clone(),
+            normal: normal.map(|x| x / length),
+            offset: offset / length,
+            above,
+            cut: cut.clone(),
+        };
+        Ok((half(true), half(false)))
     }
 
     pub fn translate(self: Arc<Self>, offset: [f64; 3]) -> Solid {
@@ -279,6 +319,19 @@ got {diameter}, {pitch}, {length}, {offset}"
                     })
                     .clone()?;
                 out.append(&mesh, xform);
+            }
+            Solid::Half {
+                child,
+                normal,
+                offset,
+                above,
+                cut,
+            } => {
+                let halves = cut
+                    .0
+                    .get_or_init(|| csg::split(child, *normal, *offset).map(|h| h.map(Arc::new)))
+                    .clone()?;
+                out.append(&halves[if *above { 0 } else { 1 }], xform);
             }
         }
         Ok(())
@@ -634,6 +687,87 @@ mod tests {
             .collect();
         let grip = arc(Solid::boolean(BoolOp::Union, knurls));
         closed(&boolean(BoolOp::Subtract, vec![body, grip]));
+    }
+
+    /// A plate with a hole, moved off the origin: a boolean child under a transform.
+    fn holed_plate() -> Arc<Solid> {
+        let plate = arc(Solid::Box {
+            size: [30.0, 20.0, 40.0],
+        });
+        let hole = arc(Solid::Cylinder {
+            radius: 4.0,
+            height: 50.0,
+        });
+        arc(arc(Solid::boolean(BoolOp::Subtract, vec![plate, hole])).translate([5.0, -3.0, 20.0]))
+    }
+
+    #[test]
+    fn split_normalizes_the_plane_and_keeps_each_side() {
+        // Normal (0, 0, 2), offset 30 is the plane z = 15.
+        let (above, below) = Solid::split(holed_plate(), [0.0, 0.0, 2.0], 30.0).unwrap();
+        let (above, below) = (arc(above), arc(below));
+        // Rejoined: no overlap, no gap.
+        let both = vec![above.clone(), below.clone()];
+        assert_eq!(boolean(BoolOp::Intersect, both.clone()).volume(), 0.0);
+        let whole = holed_plate().mesh().unwrap().volume();
+        assert!((boolean(BoolOp::Union, both).volume() - whole).abs() < 1e-9);
+        let (above, below) = (above.mesh().unwrap(), below.mesh().unwrap());
+        closed(&above);
+        closed(&below);
+        assert_eq!(above.bounds().unwrap().min[2], 15.0);
+        assert_eq!(below.bounds().unwrap().max[2], 15.0);
+        assert!((above.volume() - whole * 25.0 / 40.0).abs() < 1e-9);
+        assert!((below.volume() - whole * 15.0 / 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn oblique_halves_sum_to_the_original() {
+        let whole = holed_plate();
+        // An unnormalized, oblique normal through the part's middle.
+        let normal = [1.0, 2.0, 3.0];
+        let offset = 3.0 * 20.0 + 2.0 * -3.0 + 5.0;
+        let (above, below) = Solid::split(whole.clone(), normal, offset).unwrap();
+        let (above, below) = (arc(above), arc(below));
+        let (a, b) = (above.mesh().unwrap(), below.mesh().unwrap());
+        closed(&a);
+        closed(&b);
+        let v = whole.mesh().unwrap().volume();
+        assert!((a.volume() + b.volume() - v).abs() < 1e-6 * v);
+        // Both sides of the plane, nothing on the wrong one.
+        let unit = 14f64.sqrt();
+        let side = |m: &Mesh| {
+            m.vertices
+                .iter()
+                .map(|p| (p[0] + 2.0 * p[1] + 3.0 * p[2] - offset) / unit)
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+                    (lo.min(d), hi.max(d))
+                })
+        };
+        assert!(
+            side(&a).0 > -1e-4 && side(&b).1 < 1e-4,
+            "{:?} {:?}",
+            side(&a),
+            side(&b)
+        );
+    }
+
+    #[test]
+    fn split_refuses_bad_planes() {
+        for normal in [[0.0; 3], [f64::NAN, 0.0, 1.0]] {
+            let err = Solid::split(holed_plate(), normal, 1.0).unwrap_err();
+            assert!(err.contains("non-zero, finite normal"), "{err}");
+        }
+        // The plate spans z 0..40: a plane past it, or on its top face, leaves
+        // nothing on one side.
+        for offset in [55.0, 40.0, 0.0] {
+            let (above, _) = Solid::split(holed_plate(), [0.0, 0.0, 1.0], offset).unwrap();
+            let err = above.mesh().unwrap_err();
+            assert!(
+                err.contains("misses or only touches the solid")
+                    && err.contains("spans 0.000 to 40.000"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
