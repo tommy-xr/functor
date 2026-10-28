@@ -465,8 +465,8 @@ impl CachedPose {
     }
 }
 
-/// `model_pose_joints` and the posed bounds, memoized for the frame. Keyed by the node's
-/// `ModelDescription` address, which is stable while the frame is drawn; a
+/// `model_pose_joints` and the posed bounds, memoized for the frame. Keyed by
+/// the node's `ModelDescription` address, which is stable while the frame is drawn; a
 /// hit must also match the model, expression and clock, so an address reused
 /// within the frame (an `expand_instanced` temporary) re-evaluates instead of
 /// aliasing another node's pose.
@@ -2974,7 +2974,8 @@ impl Scene3D {
                 // resident. CPU-expanded templates cull per leaf instead.
                 let culled = |template: Option<Aabb>| {
                     template.filter(|t| !t.is_empty()).is_some_and(|template| {
-                        let bounds = scene_context.instances_bounds(instances, template.radius());
+                        let bounds =
+                            scene_context.instances_bounds(instances, template.radius());
                         scene_context.culled(projection_matrix, view_matrix, &xform, &bounds)
                     })
                 };
@@ -3020,9 +3021,10 @@ impl Scene3D {
                                 file,
                             )
                         } else {
-                            let bounds = hydrated_model.meshes.iter().fold(Aabb::EMPTY, |acc, mesh| {
-                                acc.union(&mesh.bounds.local.transform(&mesh.transform))
-                            });
+                            let bounds =
+                                hydrated_model.meshes.iter().fold(Aabb::EMPTY, |acc, mesh| {
+                                    acc.union(&mesh.bounds.local.transform(&mesh.transform))
+                                });
                             (Arc::from([]), Some(bounds))
                         };
                         let bounds = bounds.map(|bounds| bounds.transform(&recognized.local));

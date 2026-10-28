@@ -50,15 +50,26 @@ fn behind_the_camera_culls_and_turning_back_uploads_nothing(h: &mut Harness) {
         let x = i as f32 * 1.5 - 5.25;
         items.push(xbot().translate_x(x).translate_z(6.0));
         items.push(lit(mesh().translate_x(x).translate_y(2.5).translate_z(6.0)));
-        items.push(lit(Scene3D::cube().translate_x(x).translate_y(-1.0).translate_z(6.0)));
+        items.push(lit(Scene3D::cube()
+            .translate_x(x)
+            .translate_y(-1.0)
+            .translate_z(6.0)));
     }
     let row: Vec<InstanceData> = (0..8)
         .map(|i| InstanceData::at([i as f32 * 1.5 - 5.25, 4.0, 6.0]))
         .collect();
     items.push(Scene3D::instanced(lit(scaled(Scene3D::sphere(), 0.3)), row));
     let scene = group(items);
-    let toward = frame(Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, 6.0], UP, fov()), scene.clone(), false);
-    let away = frame(Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, -18.0], UP, fov()), scene, false);
+    let toward = frame(
+        Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, 6.0], UP, fov()),
+        scene.clone(),
+        false,
+    );
+    let away = frame(
+        Camera::look_at([0.0, 1.0, -6.0], [0.0, 1.0, -18.0], UP, fov()),
+        scene,
+        false,
+    );
     h.warm(&toward);
 
     let before = h.render(&toward, &[0], true);
@@ -72,14 +83,30 @@ fn behind_the_camera_culls_and_turning_back_uploads_nothing(h: &mut Harness) {
     for _ in 0..10 {
         let pixels = h.render(&away, &[0], true);
         assert!(blank(&pixels[0]), "something drew behind the camera");
-        assert_eq!(gpu_counters().frame_cull(), CullCounts { tested, culled: tested });
-        assert_eq!(gpu_counters().frame_skinned().draws, 0, "skinned meshes drew");
+        assert_eq!(
+            gpu_counters().frame_cull(),
+            CullCounts {
+                tested,
+                culled: tested
+            }
+        );
+        assert_eq!(
+            gpu_counters().frame_skinned().draws,
+            0,
+            "skinned meshes drew"
+        );
     }
     let after = h.render(&toward, &[0], true);
     let window = gpu_counters().take_window();
-    assert_eq!(window.bytes_uploaded, 0, "turning back re-uploaded: {window:?}");
+    assert_eq!(
+        window.bytes_uploaded, 0,
+        "turning back re-uploaded: {window:?}"
+    );
     let now = gpu_counters().live();
-    assert_eq!((now.buffers, now.vaos, now.textures), (live.buffers, live.vaos, live.textures));
+    assert_eq!(
+        (now.buffers, now.vaos, now.textures),
+        (live.buffers, live.vaos, live.textures)
+    );
     assert!(after == before, "turning back changed the image");
     println!("test behind_the_camera_culls_and_turning_back_uploads_nothing ... ok");
 }
@@ -95,8 +122,15 @@ fn a_ring_culls_most_and_matches_culling_off(h: &mut Harness) {
         })
         .collect();
     let mut items = vec![lit(group(cubes))];
-    items.push(lit(Scene3D::cube().scale_x(24.0).scale_y(0.02).scale_z(24.0)));
-    let ring = frame(Camera::look_at([0.0, 2.0, 0.0], [0.0, 0.0, 10.0], UP, fov()), group(items), true);
+    items.push(lit(Scene3D::cube()
+        .scale_x(24.0)
+        .scale_y(0.02)
+        .scale_z(24.0)));
+    let ring = frame(
+        Camera::look_at([0.0, 2.0, 0.0], [0.0, 0.0, 10.0], UP, fov()),
+        group(items),
+        true,
+    );
     let off = h.render(&ring, &[0], false);
     let on = h.render(&ring, &[0], true);
     let counts = gpu_counters().frame_cull();
@@ -131,7 +165,13 @@ fn stereo_culls_per_eye(h: &mut Harness) {
     stereo.lights = vec![Light::ambient(1.0, 1.0, 1.0)];
     h.ipd = ipd;
     let on = h.render(&stereo, &[0, 1], true);
-    assert_eq!(gpu_counters().frame_cull(), CullCounts { tested: 2, culled: 1 });
+    assert_eq!(
+        gpu_counters().frame_cull(),
+        CullCounts {
+            tested: 2,
+            culled: 1
+        }
+    );
     let off = h.render(&stereo, &[0, 1], false);
     assert!(on == off, "culling changed a stereo eye");
     assert!(!blank(&on[0]), "the left eye lost its cube");
@@ -150,9 +190,21 @@ fn an_offscreen_caster_still_casts_its_shadow(h: &mut Harness) {
     let shadowed = h.render(&with, &[0], true);
     let counts = gpu_counters().frame_cull();
     // Shadow pass: floor + caster drawn. Eye: floor drawn, caster culled.
-    assert_eq!(counts, CullCounts { tested: 4, culled: 1 });
-    assert!(shadowed == h.render(&with, &[0], false), "culling changed the shadow");
-    assert!(shadowed != h.render(&without, &[0], true), "the caster cast no shadow");
+    assert_eq!(
+        counts,
+        CullCounts {
+            tested: 4,
+            culled: 1
+        }
+    );
+    assert!(
+        shadowed == h.render(&with, &[0], false),
+        "culling changed the shadow"
+    );
+    assert!(
+        shadowed != h.render(&without, &[0], true),
+        "the caster cast no shadow"
+    );
     println!("test an_offscreen_caster_still_casts_its_shadow ... ok");
 }
 
@@ -204,7 +256,12 @@ fn xbot() -> Scene3D {
 /// A unit tetrahedron with its own `Arc`, so each is a separate GPU mesh.
 fn mesh() -> Scene3D {
     let data = MeshData {
-        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        positions: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
         triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
     };
     Scene3D {
@@ -262,7 +319,13 @@ impl Harness {
         let fbo = unsafe {
             let color = gl.create_texture().expect("texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(color));
-            gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, (2 * EYE) as i32, EYE as i32);
+            gl.tex_storage_2d(
+                glow::TEXTURE_2D,
+                1,
+                glow::RGBA8,
+                (2 * EYE) as i32,
+                EYE as i32,
+            );
             let depth = gl.create_renderbuffer().expect("renderbuffer");
             gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
             gl.renderbuffer_storage(

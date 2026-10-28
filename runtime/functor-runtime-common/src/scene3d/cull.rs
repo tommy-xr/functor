@@ -34,8 +34,16 @@ impl Aabb {
     }
 
     pub fn include(&mut self, p: Vector3<f32>) {
-        self.min = Vector3::new(self.min.x.min(p.x), self.min.y.min(p.y), self.min.z.min(p.z));
-        self.max = Vector3::new(self.max.x.max(p.x), self.max.y.max(p.y), self.max.z.max(p.z));
+        self.min = Vector3::new(
+            self.min.x.min(p.x),
+            self.min.y.min(p.y),
+            self.min.z.min(p.z),
+        );
+        self.max = Vector3::new(
+            self.max.x.max(p.x),
+            self.max.y.max(p.y),
+            self.max.z.max(p.z),
+        );
     }
 
     pub fn union(mut self, other: &Aabb) -> Aabb {
