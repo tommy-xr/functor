@@ -6,8 +6,8 @@
 // Desktop: functor -d examples/room-bounce run native
 //          a stand-in room (floor, desk, three walls) stands in for the real
 //          one; Space shoots along the view, a click through the clicked
-//          point, G shows or hides the fused room (`shoot.script` replays a
-//          few shots)
+//          point, G shows or hides the fused room (`--input-script
+//          shoot.script --capture-size 1600x1200` replays a few shots)
 //
 // `Physics.fusedRoom` is the whole room as one static body: the runtime fuses
 // the depth into a mesh as you look around, and each chunk collides.
