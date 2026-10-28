@@ -364,7 +364,9 @@ mod tests {
         pushed.replace_uploaded("data/a.bin", vec![1]);
         let files = DeviceFiles::new(pushed, None, DEFAULT_STORE_BYTES);
         assert_eq!(read(&files, "data/a.bin"), Ok(vec![1]));
-        assert!(read(&files, "ss2/x.bin").unwrap_err().starts_with("not pushed"));
+        assert!(read(&files, "ss2/x.bin")
+            .unwrap_err()
+            .starts_with("not pushed"));
         assert!(!files.exists("ss2/x.bin"));
         assert_eq!(files.requests().requests, vec![]);
     }
@@ -386,7 +388,10 @@ mod tests {
         assert!(!files.exists("ss2/b.bin"));
         assert_eq!(
             paths(&files),
-            [("ss2/a.bin".to_string(), None), ("ss2/b.bin".to_string(), None)]
+            [
+                ("ss2/a.bin".to_string(), None),
+                ("ss2/b.bin".to_string(), None)
+            ]
         );
         // Polled: the host is fetching.
         let err = read(&files, "ss2/a.bin").unwrap_err();
@@ -395,7 +400,10 @@ mod tests {
         let accepted = files.accept(reply(7, "ss2/a.bin", bytes("v1", b"abc")));
         assert_eq!(
             accepted,
-            Ok(("stored ss2/a.bin".to_string(), Some("src/ss2/a.bin".to_string())))
+            Ok((
+                "stored ss2/a.bin".to_string(),
+                Some("src/ss2/a.bin".to_string())
+            ))
         );
         assert_eq!(read(&files, "ss2/a.bin"), Ok(b"abc".to_vec()));
         assert!(files.exists("ss2/a.bin"));
@@ -419,7 +427,10 @@ mod tests {
             message: "ss2/ isn't mapped".to_string(),
         };
         assert!(files.accept(reply(1, "ss2/a.bin", missing)).is_ok());
-        assert_eq!(read(&files, "ss2/a.bin"), Err("ss2/ isn't mapped".to_string()));
+        assert_eq!(
+            read(&files, "ss2/a.bin"),
+            Err("ss2/ isn't mapped".to_string())
+        );
         assert!(!files.exists("ss2/a.bin"));
         assert_eq!(paths(&files), []);
 
@@ -446,13 +457,20 @@ mod tests {
         files.begin(session(1, ""));
         let _ = read(&files, "ss2/a.bin");
         let _ = read(&files, "ss2/b.bin");
-        files.accept(reply(1, "ss2/a.bin", bytes("v1", b"abc"))).unwrap();
-        files.accept(reply(1, "ss2/b.bin", bytes("v1", b"old"))).unwrap();
+        files
+            .accept(reply(1, "ss2/a.bin", bytes("v1", b"abc")))
+            .unwrap();
+        files
+            .accept(reply(1, "ss2/b.bin", bytes("v1", b"old")))
+            .unwrap();
         drop(files);
 
         let files = open();
         files.begin(session(2, ""));
-        assert!(!files.exists("ss2/a.bin"), "unconfirmed until the host says so");
+        assert!(
+            !files.exists("ss2/a.bin"),
+            "unconfirmed until the host says so"
+        );
         let _ = read(&files, "ss2/b.bin");
         assert_eq!(
             paths(&files),
@@ -470,7 +488,9 @@ mod tests {
         );
         assert_eq!(read(&files, "ss2/a.bin"), Ok(b"abc".to_vec()));
         // b changed on the host: new bytes replace the stored copy.
-        files.accept(reply(2, "ss2/b.bin", bytes("v2", b"new"))).unwrap();
+        files
+            .accept(reply(2, "ss2/b.bin", bytes("v2", b"new")))
+            .unwrap();
         assert_eq!(read(&files, "ss2/b.bin"), Ok(b"new".to_vec()));
         // A "current" for a version the device doesn't hold refetches.
         files.begin(session(3, ""));

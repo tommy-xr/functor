@@ -17,6 +17,8 @@
 
 use std::io::{Error, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use clap::Parser;
 use functor_runtime_common::debug_protocol::DEFAULT_DEVELOP_PORT;
@@ -1020,21 +1022,6 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         let mut escaped = Vec::new();
         warn_escaped_links(&scan.escaped, &mut escaped);
         check_push_limits(&scan.files, limits)?;
-        // Desktop resolves `File.bytes` from the entry's folder; the headset
-        // only knows project-root locators.
-        if let Some(dir) = Path::new(&self.entry)
-            .parent()
-            .filter(|dir| !dir.as_os_str().is_empty() && *dir != Path::new("."))
-        {
-            emit(Event::Warning {
-                message: format!(
-                    "the entry is in {}/: on the headset, File.bytes paths resolve from the \
-project root, not from {}/",
-                    dir.display(),
-                    dir.display()
-                ),
-            });
-        }
         let serial = adb_device().await?;
         adb_require_runtime(&serial).await?;
         // `am start` on the running singleTask activity is a no-op resume —
@@ -1091,6 +1078,49 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
             }
         }
 
+        // A v24 runtime asks this machine for files it lacks (`external`
+        // prefixes, anything not pushed), resolved as on desktop.
+        let declared = project_files::declared_in(project_root)?;
+        let proxy = match probe_protocol_version(&addr) {
+            Some(version) if version >= FILE_PROXY_PROTOCOL_VERSION => Some(FileProxy::new(
+                project_files::Resolver::load(
+                    project_root,
+                    entry_path.parent().unwrap_or(project_root),
+                    &declared,
+                )?,
+                &self.entry,
+            )),
+            _ if declared.is_empty() => None,
+            version => {
+                emit(Event::Warning {
+                    message: format!(
+                        "the headset's functor runtime speaks debug protocol v{}; getting files \
+it lacks from this machine (`external` prefixes) needs v{FILE_PROXY_PROTOCOL_VERSION} — reinstall \
+the tool APK",
+                        version.unwrap_or(0)
+                    ),
+                });
+                None
+            }
+        };
+        // Desktop resolves `File.bytes` from the entry's folder; without the
+        // folder, the headset resolves from the project root.
+        if let Some(dir) = Path::new(&self.entry)
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty() && *dir != Path::new("."))
+            .filter(|_| proxy.as_ref().is_none_or(|proxy| proxy.entry_dir.is_none()))
+        {
+            emit(Event::Warning {
+                message: format!(
+                    "the entry is in {}/: on the headset, File.bytes paths resolve from the \
+project root, not from {}/",
+                    dir.display(),
+                    dir.display()
+                ),
+            });
+        }
+        let load_query = proxy.as_ref().map_or(String::new(), FileProxy::load_query);
+
         let mut attempted_assets = scan.files;
         let report = sync_project_assets(&addr, &attempted_assets, None)?;
         let mut observed_assets = attempted_assets.clone();
@@ -1107,15 +1137,25 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
         // between the readiness probe and this request.
         let files = read_project_json(&entry_path)?;
         let mut attempted = None;
+        let mut fetch_rounds = 0;
         for _ in 0..20 {
-            match post_project(&addr, "/load-project", &files, &role) {
+            match post_project(&addr, "/load-project", &files, &role, &load_query) {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = Some(files.clone());
                     break;
                 }
+                // A load that failed on a file the headset lacks (top-level
+                // `File.bytes`) loads again once this machine has sent it.
                 Ok((status, body)) => {
-                    return Err(Error::other(format!("push rejected ({status}): {body}")))
+                    let fetched = match &proxy {
+                        Some(proxy) if fetch_rounds < 16 => proxy.serve(&addr)?,
+                        _ => false,
+                    };
+                    if !fetched {
+                        return Err(Error::other(format!("push rejected ({status}): {body}")));
+                    }
+                    fetch_rounds += 1;
                 }
                 Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
             }
@@ -1146,13 +1186,23 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             ),
         });
 
+        // Later misses (a `File.exists` fallback, a texture) are served off
+        // the watch loop; it reloads once they've arrived.
+        let fetched = Arc::new(AtomicBool::new(false));
+        if let Some(proxy) = proxy {
+            proxy.spawn(addr.clone(), fetched.clone());
+        }
+
         // The watch loop, shaped like `push --watch`: poll contents (not
         // mtimes), track the last ATTEMPTED file set, and re-push the WHOLE
         // set on any change (file = module — a sibling edit must ship too).
-        // `reload_pending`: a synced file change still owes a reload.
+        // `reload_pending`: a synced or fetched file still owes a reload.
         let mut reload_pending = false;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            if fetched.swap(false, Ordering::SeqCst) {
+                reload_pending = true;
+            }
             // Atomic-save editors briefly unlink files mid-save; wait for
             // the next poll rather than failing the loop.
             let Ok(current) = read_project_json(&entry_path) else {
@@ -1226,7 +1276,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
             if current == attempted && !reload_pending {
                 continue;
             }
-            match post_project(&addr, "/reload-project", &current, &role) {
+            match post_project(&addr, "/reload-project", &current, &role, "") {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
                     attempted = current;
@@ -1895,6 +1945,127 @@ fn read_project_json(entry_path: &Path) -> Result<String, Error> {
     serde_json::to_string(&files).map_err(Error::other)
 }
 
+/// The debug protocol version whose runtime asks the host for files it lacks.
+const FILE_PROXY_PROTOCOL_VERSION: u64 = 24;
+
+/// Bytes sent per round of requests; the rest wait for the next poll.
+const PROXY_ROUND_BYTES: u64 = 64 * 1024 * 1024;
+
+/// `run vr` serving the files the headset lacks (`GET`/`POST
+/// /project-files`), from the project folder or an `external` mapping.
+struct FileProxy {
+    files: project_files::Resolver,
+    /// Replies from an earlier `run vr` are refused as stale.
+    session: u64,
+    /// The entry's folder for `/load-project` (`None`: the project root, or a
+    /// name the query can't carry).
+    entry_dir: Option<String>,
+}
+
+impl FileProxy {
+    fn new(files: project_files::Resolver, entry: &str) -> FileProxy {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        let dir: Vec<String> = Path::new(entry)
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .filter_map(|part| match part {
+                std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect();
+        let plain = |name: &String| {
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        };
+        FileProxy {
+            files,
+            session: (now ^ std::process::id() as u64).max(1),
+            entry_dir: (!dir.is_empty() && dir.iter().all(plain)).then(|| dir.join("/")),
+        }
+    }
+
+    fn load_query(&self) -> String {
+        match &self.entry_dir {
+            Some(dir) => format!("&session={}&dir={dir}", self.session),
+            None => format!("&session={}", self.session),
+        }
+    }
+
+    /// Answer this session's queued requests once; whether new data arrived
+    /// (so the game should reload).
+    fn serve(&self, addr: &str) -> Result<bool, Error> {
+        use functor_runtime_common::debug_protocol::{
+            encode_project_file_reply, ProjectFileRequests, ProjectFileStatus,
+        };
+        let timeout = std::time::Duration::from_secs(5);
+        let (status, body) =
+            http_request(addr, "GET", "/project-files", "text/plain", &[], timeout)?;
+        if status != 200 {
+            return Err(Error::other(format!("project files ({status}): {body}")));
+        }
+        let requests: ProjectFileRequests = serde_json::from_str(&body).map_err(Error::other)?;
+        // Another `run vr`'s session (or none yet): not ours to answer.
+        if requests.session != self.session {
+            return Ok(false);
+        }
+        let (mut sent, mut bytes, mut changed) = (0, 0, false);
+        for request in &requests.requests {
+            if bytes >= PROXY_ROUND_BYTES {
+                break;
+            }
+            let reply = self.files.reply(self.session, request);
+            let len = match &reply.status {
+                ProjectFileStatus::Bytes { bytes, .. } => bytes.len() as u64,
+                _ => 0,
+            };
+            let ready = !matches!(reply.status, ProjectFileStatus::Missing { .. });
+            let body = encode_project_file_reply(&reply);
+            let upload = std::time::Duration::from_secs(30);
+            match http_post_bytes(
+                addr,
+                "/project-files",
+                "application/octet-stream",
+                &body,
+                upload,
+            )? {
+                (200, _) => {
+                    changed |= ready;
+                    sent += (len > 0) as usize;
+                    bytes += len;
+                }
+                // Stale or already answered: the device moved on.
+                (409, _) => {}
+                (status, body) => {
+                    return Err(Error::other(format!("project file ({status}): {body}")))
+                }
+            }
+        }
+        if changed {
+            emit(Event::Info {
+                message: format!(
+                    "sent the headset {sent} file(s) ({:.1} MB) it asked for; reloading",
+                    bytes as f64 / (1024.0 * 1024.0)
+                ),
+            });
+        }
+        Ok(changed)
+    }
+
+    /// Serve requests off the watch loop until the process ends; `fetched`
+    /// tells it to reload. Transport errors (cable, app restart) retry.
+    fn spawn(self, addr: String, fetched: Arc<AtomicBool>) {
+        std::thread::spawn(move || loop {
+            if let Ok(true) = self.serve(&addr) {
+                fetched.store(true, Ordering::SeqCst);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+    }
+}
+
 /// POST the whole project file set (the `read_project_json` body) to one of
 /// the runtime's project routes, DECLARING this entry's same-file role in the
 /// query string. A device session takes its role from the push (no command
@@ -1908,9 +2079,10 @@ fn post_project(
     route: &str,
     files_json: &str,
     role: &functor_runtime_common::functor_lang_producer::EntryRole,
+    extra_query: &str,
 ) -> Result<(u16, String), Error> {
     let path = format!(
-        "{route}{}",
+        "{route}{}{extra_query}",
         functor_runtime_common::debug_protocol::encode_entry_role_query(role)
     );
     http_post(addr, &path, "application/json", files_json)
@@ -2037,6 +2209,17 @@ fn http_post_bytes(
     body: &[u8],
     timeout: std::time::Duration,
 ) -> Result<(u16, String), Error> {
+    http_request(addr, "POST", path, content_type, body, timeout)
+}
+
+fn http_request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    content_type: &str,
+    body: &[u8],
+    timeout: std::time::Duration,
+) -> Result<(u16, String), Error> {
     use std::io::{Read, Write};
     use std::net::ToSocketAddrs;
     // connect_timeout, not connect: a blackholed host must fail on our
@@ -2050,7 +2233,7 @@ fn http_post_bytes(
     stream.set_write_timeout(Some(timeout))?;
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: {content_type}\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: {content_type}\r\n\
 Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
@@ -2188,9 +2371,9 @@ mod tests {
     #[cfg(feature = "web")]
     use super::entry_escapes_project;
     use super::{
-        check_push_limits, manifest_mouse_capture, nth_line,
-        project_asset_files, resolve_debug_args, take_push_limit_args, CursorPolicy,
-        FunctorLangConfig, FunctorLangEntries, FunctorLangProject, ProjectAssetFile, PushLimits,
+        check_push_limits, manifest_mouse_capture, nth_line, project_asset_files, project_files,
+        resolve_debug_args, take_push_limit_args, Arc, CursorPolicy, FileProxy, FunctorLangConfig,
+        FunctorLangEntries, FunctorLangProject, ProjectAssetFile, PushLimits,
     };
     use std::path::{Path, PathBuf};
 
@@ -2919,6 +3102,131 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
                 .to_string();
         assert!(err.contains("ending in `/`"), "{err}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The `run vr` file proxy against a real debug server whose runtime is
+    /// a headset's `DeviceFiles` (no headset): a miss is fetched from an
+    /// external zip mapping and then reads; after an app restart the stored
+    /// copy is confirmed rather than resent; another session's requests
+    /// aren't answered.
+    #[test]
+    fn the_file_proxy_serves_a_headsets_misses() {
+        use functor_runtime_common::debug_protocol::{DebugRequest, ProjectSession};
+        use functor_runtime_common::device_files::DeviceFiles;
+        use functor_runtime_common::storage::ProjectReader;
+
+        let root = std::env::temp_dir().join(format!("functor-vr-proxy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("store")).unwrap();
+        std::fs::write(
+            root.join("functor.json"),
+            r#"{"language": "functor-lang", "external": {"ss2/": "game data"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("functor.local.json"),
+            r#"{"external": {"ss2/": "game.zip!res/"}}"#,
+        )
+        .unwrap();
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(root.join("game.zip")).unwrap());
+        zip.start_file("res/mesh/a.bin", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, b"mesh").unwrap();
+        zip.finish().unwrap();
+        let resolver = || {
+            let declared = project_files::declared_in(&root).unwrap();
+            project_files::Resolver::load(&root, &root, &declared).unwrap()
+        };
+
+        // A debug server whose runtime answers from `device` (swappable, to
+        // restart the app).
+        let device = Arc::new(std::sync::Mutex::new(Arc::new(DeviceFiles::new(
+            Arc::new(functor_runtime_common::asset::AssetCache::new()),
+            Some(root.join("store")),
+            1 << 20,
+        ))));
+        let (bound, rx) = functor_runtime_common::debug_http::spawn(("127.0.0.1", 0)).unwrap();
+        let runtime = device.clone();
+        std::thread::spawn(move || {
+            for request in rx {
+                let files = runtime.lock().unwrap().clone();
+                match request {
+                    DebugRequest::ProjectFileRequests(response) => {
+                        let _ = response.send(Ok(files.requests()));
+                    }
+                    DebugRequest::ProjectFileReply(reply, response) => {
+                        let _ = response.send(files.accept(reply).map(|(status, _)| status));
+                    }
+                    _ => panic!("unexpected request"),
+                }
+            }
+        });
+        let addr = bound.to_string();
+        let mut proxy = FileProxy::new(resolver(), "game.fun");
+        assert_eq!(proxy.entry_dir, None);
+        proxy.session = 11;
+        let begin = |files: &DeviceFiles, id| {
+            files.begin(ProjectSession {
+                id,
+                entry_dir: String::new(),
+            })
+        };
+
+        let files = device.lock().unwrap().clone();
+        begin(&files, 11);
+        assert!(files.read("ss2/mesh/a.bin").is_err(), "a miss, queued");
+        assert!(proxy.serve(&addr).unwrap(), "fetched: reload");
+        assert_eq!(
+            files.read("ss2/mesh/a.bin").ok().as_deref(),
+            Some(&b"mesh"[..])
+        );
+        assert!(!proxy.serve(&addr).unwrap(), "nothing left to send");
+
+        // The app restarts; a new `run vr` confirms the stored copy.
+        let files = Arc::new(DeviceFiles::new(
+            Arc::new(functor_runtime_common::asset::AssetCache::new()),
+            Some(root.join("store")),
+            1 << 20,
+        ));
+        *device.lock().unwrap() = files.clone();
+        begin(&files, 12);
+        assert!(!files.exists("ss2/mesh/a.bin"));
+        assert!(!proxy.serve(&addr).unwrap(), "another session's requests");
+        proxy.session = 12;
+        let have = files.requests().requests[0].have.clone();
+        assert!(
+            have.is_some_and(|v| v.starts_with("zip:")),
+            "offers its stored copy"
+        );
+        assert!(proxy.serve(&addr).unwrap());
+        assert_eq!(
+            files.read("ss2/mesh/a.bin").ok().as_deref(),
+            Some(&b"mesh"[..])
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_file_proxy_names_the_entry_folder_when_the_query_can_carry_it() {
+        let files = || {
+            let dir = std::env::temp_dir();
+            project_files::Resolver::load(&dir, &dir, &[]).unwrap()
+        };
+        let dir = |entry: &str| FileProxy::new(files(), entry).entry_dir;
+        assert_eq!(dir("game.fun"), None);
+        assert_eq!(dir("./game.fun"), None);
+        assert_eq!(dir("src/game.fun"), Some("src".to_string()));
+        assert_eq!(dir("./src/v1.2/game.fun"), Some("src/v1.2".to_string()));
+        assert_eq!(
+            dir("my src/game.fun"),
+            None,
+            "a space doesn't fit the query"
+        );
+        let proxy = FileProxy::new(files(), "src/game.fun");
+        assert_eq!(
+            proxy.load_query(),
+            format!("&session={}&dir=src", proxy.session)
+        );
     }
 
     #[test]

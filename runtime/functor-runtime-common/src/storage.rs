@@ -308,7 +308,7 @@ impl ProjectReader for ProjectDirReader {
 
 /// `root/path`, resolving symlinks so none reaches outside `root`.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-fn resolve_confined(
+pub fn resolve_confined(
     root: &std::path::Path,
     path: &str,
 ) -> Result<std::path::PathBuf, ProjectReadError> {

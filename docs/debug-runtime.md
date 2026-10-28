@@ -121,9 +121,11 @@ screenshot run has no reason to grab your mouse.
 | `POST /time` | control the frame clock (see below) |
 | `POST /reload-source` | swap game logic from the request body (see below) |
 | `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first; `?module=`/`?prefix=` declares the same-file entry role |
-| `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init`; takes the same role query |
+| `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init`; takes the same role query, plus `&session=N&dir=src` naming a host that serves files the device lacks (protocol v24) |
 | `GET /project` | the running program's own `.fun` sources as a JSON array of `[path, source]` pairs, entry first — the read half of the push routes (see below) |
 | `POST /reload-asset` | upload one project-relative file (texture/model/audio asset or `File.bytes` data) as a binary path+bytes envelope |
+| `GET /project-files` | files the game asked for that the device lacks: `{session, requests: [{path, have}]}`, `have` = the version it holds; 409 on desktop (protocol v24) |
+| `POST /project-files` | answer one request: big-endian u32 header length, JSON header `{session, path, status: "bytes"\|"current"\|"missing", version?, message?}`, then the bytes; 409 for another session or an unrequested path (protocol v24) |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` (pin the clock first) |
 | `POST /display-refresh-rate` | request a headset display rate, `{"hz":90}`; it must be one of `display_refresh_rate.available`, and `current` moves once the runtime confirms the switch. 400 on desktop (protocol v15) |
@@ -691,6 +693,21 @@ finishes before `/load-project`, so top-level `File.bytes` sees the files. The
 watch loop fingerprints metadata and reads large bytes only when a file
 changes; any synced change also triggers `/reload-project` (model preserved),
 so top-level `File.bytes` bindings re-read it.
+
+Files the device lacks (`external` prefixes, which are never pushed, or
+anything else not pushed) come from the host on demand (protocol v24). A read
+the device can't satisfy fails like a missing file, so `File.exists` is false
+for a moment, and is queued; it never blocks the game. `run vr` polls
+`GET /project-files` off its watch loop, resolves each path as desktop does
+(the project folder, or an `external` mapping to a folder or zip), answers
+through `POST /project-files` (at most 64 MB per round), then reloads the game
+once. A load that failed on a missing file loads again after the fetch. The
+device keeps fetched files in app storage (1 GB, least recently used out)
+under the host's version (size + mtime, or a zip entry's crc + size), so the
+next session confirms them (`current`) instead of resending. Replies from
+another `run vr` session are refused (409). When no host has polled in 5 s, a
+miss says `functor run vr` isn't connected. `/load-project`'s `dir` makes the
+device resolve `File.bytes` from the entry's folder, as desktop does.
 Replacing an upload evicts cached model/texture/skybox decodes so the next
 frame uses the new bytes. The TypeScript SDK exposes the same flow as
 `client.reloadAsset(path, bytes)` and `client.reloadAssets(files)`. It also

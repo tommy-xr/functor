@@ -793,7 +793,11 @@ pub fn take_project_session(query: &str) -> Result<(Option<ProjectSession>, Stri
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         match pair.split_once('=') {
             Some(("session", value)) if id.is_none() => {
-                id = Some(value.parse::<u64>().map_err(|_| "session must be a number")?)
+                id = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| "session must be a number")?,
+                )
             }
             Some(("dir", value)) if dir.is_none() => dir = Some(value),
             Some(("session" | "dir", _)) => return Err("session or dir declared twice".into()),
@@ -907,7 +911,9 @@ pub fn decode_project_file_reply(mut body: Vec<u8>) -> Result<ProjectFileReply, 
             version: version()?,
             bytes,
         },
-        "current" => ProjectFileStatus::Current { version: version()? },
+        "current" => ProjectFileStatus::Current {
+            version: version()?,
+        },
         "missing" => ProjectFileStatus::Missing {
             message: header.message.clone().unwrap_or_default(),
         },

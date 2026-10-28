@@ -31,11 +31,11 @@ use std::time::Instant;
 
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use functor_runtime_common::asset::AssetCache;
-use functor_runtime_common::device_files::DeviceFiles;
 use functor_runtime_common::debug_protocol::{
     CaptureError, DebugRequest, DisplayRefreshRate, InputCommand, RuntimeState, RuntimeView,
     RuntimeViewport,
 };
+use functor_runtime_common::device_files::DeviceFiles;
 use functor_runtime_common::functor_lang_game_embedded::{FunctorLangEmbeddedGame, NativePlatform};
 use functor_runtime_common::protocol::GameProducer;
 use functor_runtime_common::runtime_settings::FoveationLevel;
@@ -1318,7 +1318,8 @@ pub fn android_main(app: AndroidApp) {
     // fetched from the host, kept in app storage across launches.
     let device_files = Arc::new(DeviceFiles::new(
         asset_cache.clone(),
-        app.internal_data_path().map(|dir| dir.join("project-files")),
+        app.internal_data_path()
+            .map(|dir| dir.join("project-files")),
         functor_runtime_common::device_files::DEFAULT_STORE_BYTES,
     ));
     functor_runtime_common::storage::set_project_reader(Some(device_files.clone()));

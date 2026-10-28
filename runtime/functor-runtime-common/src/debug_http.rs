@@ -617,7 +617,10 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 }
             };
             let (resp_tx, resp_rx) = mpsc::channel();
-            if tx.send(DebugRequest::ProjectFileReply(reply, resp_tx)).is_err() {
+            if tx
+                .send(DebugRequest::ProjectFileReply(reply, resp_tx))
+                .is_err()
+            {
                 return runtime_gone(&mut stream, cors_origin);
             }
             match recv(resp_rx) {
@@ -1107,7 +1110,10 @@ Content-Length: {}\r\n\r\n{body}",
         }
         server.join().unwrap();
         let response = client.join().unwrap();
-        assert!(response.starts_with("HTTP/1.1 409 Conflict\r\n"), "{response}");
+        assert!(
+            response.starts_with("HTTP/1.1 409 Conflict\r\n"),
+            "{response}"
+        );
 
         // Only a load declares a session.
         let (client, server, _rx) = serve(format!(
