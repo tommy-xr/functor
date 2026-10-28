@@ -45,8 +45,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::ir::{BindingId, Expr, ExprId, ExprKind, Module, Param, Pattern, PatternKind};
-use crate::pmap::PMap;
-use crate::value::{Closure, Env, Value};
+use crate::pmap::NodeMemo;
+use crate::value::{Closure, Env, MapKey, Value};
 
 /// What a reload's rebind pass did — the producer prints this.
 #[derive(Debug, Default)]
@@ -105,12 +105,38 @@ pub fn rebind_value(value: &Value, old: &Module, new: &Module) -> (Value, Rebind
     let old_index = index_module(old);
     let new_index = index_module(new);
     let mut report = RebindReport::default();
-    let rebound = walk(value, &old_index, &new_index, &mut report);
-    (rebound, report)
+    let mut memo = Memo::default();
+    let rebound = walk(value, &old_index, &new_index, &mut report, &mut memo);
+    (rebound.unwrap_or_else(|| value.clone()), report)
 }
 
-fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut RebindReport) -> Value {
-    match value {
+/// Results by identity, so a container or map node the model shares (a
+/// retained history) is walked once and stays shared.
+#[derive(Default)]
+struct Memo {
+    containers: HashMap<*const (), Option<Value>>,
+    map_nodes: NodeMemo<MapKey, Value>,
+}
+
+/// The rebound value, or `None` when nothing inside changed: unchanged
+/// containers are kept, not rebuilt.
+fn walk(
+    value: &Value,
+    old: &ModuleIndex,
+    new: &ModuleIndex,
+    report: &mut RebindReport,
+    memo: &mut Memo,
+) -> Option<Value> {
+    let ptr = match value {
+        Value::List(items) | Value::Tuple(items) => Rc::as_ptr(items) as *const (),
+        Value::Record(fields) => Rc::as_ptr(fields) as *const (),
+        Value::Variant { args, .. } => Rc::as_ptr(args) as *const (),
+        _ => std::ptr::null(),
+    };
+    if let Some(done) = memo.containers.get(&ptr) {
+        return done.clone();
+    }
+    let rebound = match value {
         Value::Number(_)
         | Value::String(_)
         | Value::Bool(_)
@@ -118,36 +144,81 @@ fn walk(value: &Value, old: &ModuleIndex, new: &ModuleIndex, report: &mut Rebind
         | Value::HostFn(_)
         // Host values are opaque to the language; they cannot hold Functor Lang
         // closures.
-        | Value::HostData(_) => value.clone(),
-        Value::Ctor { name, arity } => rebind_ctor(name, *arity, old, new, report),
-        Value::List(items) => Value::List(Rc::new(
-            items.iter().map(|v| walk(v, old, new, report)).collect(),
-        )),
-        Value::Map(entries) => Value::Map(
-            PMap::from_sorted(
-                entries
-                    .iter()
-                    .map(|(key, value)| (key.clone(), walk(value, old, new, report)))
-                    .collect(),
-            )
-            .0,
-        ),
-        Value::Tuple(items) => Value::Tuple(Rc::new(
-            items.iter().map(|v| walk(v, old, new, report)).collect(),
-        )),
-        Value::Record(fields) => Value::Record(Rc::new(
-            fields
-                .iter()
-                .map(|(n, v)| (n.clone(), walk(v, old, new, report)))
-                .collect(),
-        )),
-        Value::Variant { ctor, args } => Value::Variant {
-            ctor: ctor.clone(),
-            args: Rc::new(args.iter().map(|v| walk(v, old, new, report)).collect()),
+        | Value::HostData(_) => None,
+        Value::Ctor { name, arity } => match rebind_ctor(name, *arity, old, new, report) {
+            Value::Ctor { arity: kept, .. } if kept == *arity => None,
+            rebound => Some(rebound),
         },
-        Value::Closure(closure) => rebind_closure(closure, old, new, report),
-        Value::Partial(partial) => rebind_partial(partial, old, new, report),
+        Value::List(items) => {
+            walk_all(items, old, new, report, memo).map(|items| Value::List(Rc::new(items)))
+        }
+        Value::Map(entries) => {
+            let Memo { containers, map_nodes } = memo;
+            entries
+                .map_values(map_nodes, &mut |value, map_nodes| {
+                    // Hand the node memo back for maps nested in values.
+                    let mut inner = Memo {
+                        containers: std::mem::take(containers),
+                        map_nodes: std::mem::take(map_nodes),
+                    };
+                    let rebound = walk(value, old, new, report, &mut inner);
+                    (*containers, *map_nodes) = (inner.containers, inner.map_nodes);
+                    rebound
+                })
+                .map(Value::Map)
+        }
+        Value::Tuple(items) => {
+            walk_all(items, old, new, report, memo).map(|items| Value::Tuple(Rc::new(items)))
+        }
+        Value::Record(fields) => {
+            let rebound: Vec<Option<Value>> = fields
+                .iter()
+                .map(|(_, v)| walk(v, old, new, report, memo))
+                .collect();
+            rebound.iter().any(Option::is_some).then(|| {
+                let fields = fields.iter().zip(rebound).map(|((name, value), rebound)| {
+                    (name.clone(), rebound.unwrap_or_else(|| value.clone()))
+                });
+                Value::Record(Rc::new(fields.collect()))
+            })
+        }
+        Value::Variant { ctor, args } => {
+            walk_all(args, old, new, report, memo).map(|args| Value::Variant {
+                ctor: ctor.clone(),
+                args: Rc::new(args),
+            })
+        }
+        Value::Closure(closure) => match rebind_closure(closure, old, new, report, memo) {
+            Value::Closure(kept) if Rc::ptr_eq(&kept, closure) => None,
+            rebound => Some(rebound),
+        },
+        Value::Partial(partial) => rebind_partial(partial, old, new, report, memo),
+    };
+    if !ptr.is_null() {
+        memo.containers.insert(ptr, rebound.clone());
     }
+    rebound
+}
+
+/// Rebind each item; `None` when none changed.
+fn walk_all(
+    items: &[Value],
+    old: &ModuleIndex,
+    new: &ModuleIndex,
+    report: &mut RebindReport,
+    memo: &mut Memo,
+) -> Option<Vec<Value>> {
+    let rebound: Vec<Option<Value>> = items
+        .iter()
+        .map(|v| walk(v, old, new, report, memo))
+        .collect();
+    rebound.iter().any(Option::is_some).then(|| {
+        items
+            .iter()
+            .zip(rebound)
+            .map(|(item, rebound)| rebound.unwrap_or_else(|| item.clone()))
+            .collect()
+    })
 }
 
 fn rebind_ctor(
@@ -201,14 +272,17 @@ fn rebind_partial(
     old: &ModuleIndex,
     new: &ModuleIndex,
     report: &mut RebindReport,
-) -> Value {
-    let callee = walk(&partial.callee, old, new, report);
-    let applied: Vec<Value> = partial
-        .applied
-        .iter()
-        .map(|value| walk(value, old, new, report))
-        .collect();
-    Value::Partial(Rc::new(crate::value::Partial { callee, applied }))
+    memo: &mut Memo,
+) -> Option<Value> {
+    let callee = walk(&partial.callee, old, new, report, memo);
+    let applied = walk_all(&partial.applied, old, new, report, memo);
+    if callee.is_none() && applied.is_none() {
+        return None;
+    }
+    Some(Value::Partial(Rc::new(crate::value::Partial {
+        callee: callee.unwrap_or_else(|| partial.callee.clone()),
+        applied: applied.unwrap_or_else(|| partial.applied.clone()),
+    })))
 }
 
 fn rebind_closure(
@@ -216,6 +290,7 @@ fn rebind_closure(
     old: &ModuleIndex,
     new: &ModuleIndex,
     report: &mut RebindReport,
+    memo: &mut Memo,
 ) -> Value {
     // A kept closure is kept ATOMICALLY: its captured env is not walked, so
     // closures inside it stay on their old bodies too — the old body refers
@@ -300,7 +375,7 @@ edit ({} before, {} now); keeping its old body",
                 ),
             );
         };
-        let value = walk(&value, old, new, report);
+        let value = walk(&value, old, new, report, memo).unwrap_or(value);
         vars.push((*new_binding, value));
     }
     report.rebound += 1;

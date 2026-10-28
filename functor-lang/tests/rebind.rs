@@ -433,3 +433,64 @@ fn closures_rebind_inside_tuples() {
     };
     assert_eq!(num(&apply(&b, items[0].clone(), 5.0)), 11.0);
 }
+
+/// Containers with nothing to rebind are kept, not rebuilt: plain data
+/// keeps its identity, and a map holding one closure among many plain
+/// values rebuilds only that closure's root-to-leaf path.
+#[test]
+fn rebind_preserves_unchanged_containers() {
+    let src = |body: &str| {
+        format!(
+            "{APPLY}let behavior = (x) => {body}\n\
+             let main = () => (\n\
+               {{ name: \"door\", tags: [1.0, 2.0] }},\n\
+               List.range(200.0) |> List.map((i) => (i, i)) |> Map.fromList,\n\
+               Map.fromList(List.range(200.0) |> List.map((i) => (i, (x) => x + i)))\n\
+                 |> Map.insert(5.0, behavior)\n\
+             )"
+        )
+    };
+    let (a, b) = (module(&src("x + 1.0")), module(&src("x + 2.0")));
+    let stored = main_value(&a);
+    let (rebound, report) = rebind_value(&stored, &a, &b);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let (Value::Tuple(old), Value::Tuple(new)) = (&stored, &rebound) else {
+        panic!("expected tuples");
+    };
+    let (Value::Record(old_rec), Value::Record(new_rec)) = (&old[0], &new[0]) else {
+        panic!("expected records");
+    };
+    assert!(Rc::ptr_eq(old_rec, new_rec), "plain record kept");
+    let (Value::Map(old_plain), Value::Map(new_plain)) = (&old[1], &new[1]) else {
+        panic!("expected maps");
+    };
+    assert_eq!(old_plain.root_ptr(), new_plain.root_ptr(), "plain map kept");
+    let (Value::Map(old_fns), Value::Map(new_fns)) = (&old[2], &new[2]) else {
+        panic!("expected maps");
+    };
+    assert_ne!(old_fns.root_ptr(), new_fns.root_ptr());
+    let (_, behavior) = new_fns.iter().nth(5).unwrap();
+    assert_eq!(num(&apply(&b, behavior.clone(), 1.0)), 3.0);
+}
+
+/// A container the model shares (two references to one list) is rebound
+/// once, and the two references stay one value.
+#[test]
+fn rebind_keeps_shared_containers_shared() {
+    let src = |body: &str| {
+        format!(
+            "{APPLY}let behavior = (x) => {body}\n\
+             let main = () => let fs = [behavior] in (fs, fs)"
+        )
+    };
+    let (a, b) = (module(&src("x + 1.0")), module(&src("x + 2.0")));
+    let (rebound, report) = rebind_value(&main_value(&a), &a, &b);
+    assert_eq!(report.rebound, 1);
+    let Value::Tuple(pair) = rebound else {
+        panic!("expected a tuple");
+    };
+    let (Value::List(x), Value::List(y)) = (&pair[0], &pair[1]) else {
+        panic!("expected lists");
+    };
+    assert!(Rc::ptr_eq(x, y));
+}

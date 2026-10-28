@@ -382,8 +382,51 @@ impl Value {
 
 #[cfg(test)]
 mod map_tests {
-    use super::{canonicalize_map_entries, MapKey, Value};
+    use super::{canonicalize_map_entries, reload_safe_walk, MapKey, Value};
+    use crate::pmap::PMap;
     use std::rc::Rc;
+
+    fn insert(map: &mut PMap<MapKey, Value>, key: f64, value: Value) {
+        let key = MapKey::Number(key);
+        let search = map
+            .search(&mut |stored: &MapKey| Ok::<_, ()>(stored.compare(&key)))
+            .unwrap();
+        map.insert_at(search, key, value);
+    }
+
+    /// The gap bench's history (6.8k entries, 900 frames of 20 writes) is
+    /// walked once per distinct node, not once per snapshot.
+    #[test]
+    fn reload_safety_walks_a_shared_history_once() {
+        let entries = (0..6800).map(|k| (MapKey::Number(k as f64), Value::Number(0.0)));
+        let mut map = PMap::from_sorted(entries.collect()).0;
+        let mut history = vec![Value::Map(map.clone())];
+        for frame in 0..900 {
+            for j in 0..20 {
+                let key = ((frame * 13 + j * 7) % 6800) as f64;
+                insert(&mut map, key, Value::Number(frame as f64));
+            }
+            history.push(Value::Map(map.clone()));
+        }
+        let visited = reload_safe_walk(&history).expect("plain data is safe");
+        // Roots, plus the base map's values once, plus each frame's new
+        // leaves (at most 20 of 16 values).
+        assert!(
+            visited <= history.len() + 6800 + 900 * 20 * 16,
+            "visited {visited}"
+        );
+        // A per-snapshot walk would visit 901 x 6800 values.
+        assert!(visited * 20 < 901 * 6800);
+
+        // A non-data value in one late snapshot is still found.
+        let ctor = Value::Ctor {
+            name: Rc::from("Door"),
+            arity: 1,
+        };
+        insert(&mut map, 6799.0, ctor);
+        history.push(Value::Map(map));
+        assert!(!Value::all_reload_safe(&history));
+    }
 
     #[test]
     fn comparison_units_cover_string_bytes_and_scalar_constant_work() {
@@ -567,26 +610,14 @@ impl Value {
     /// values are conservatively excluded, and opaque host values decide
     /// through [`HostData`].
     pub fn is_reload_safe_snapshot(&self) -> bool {
-        match self {
-            Value::List(items) | Value::Tuple(items) => {
-                items.iter().all(Value::is_reload_safe_snapshot)
-            }
-            Value::Map(entries) => entries
-                .iter()
-                .all(|(_, value)| value.is_reload_safe_snapshot()),
-            Value::Record(fields) => fields
-                .iter()
-                .all(|(_, value)| value.is_reload_safe_snapshot()),
-            Value::Variant { args, .. } => args.iter().all(Value::is_reload_safe_snapshot),
-            Value::Closure(_) => false,
-            Value::Partial(partial) => {
-                partial.callee.is_reload_safe_snapshot()
-                    && partial.applied.iter().all(Value::is_reload_safe_snapshot)
-            }
-            Value::Number(_) | Value::String(_) | Value::Bool(_) => true,
-            Value::Ctor { .. } | Value::Builtin(_) | Value::HostFn(_) => false,
-            Value::HostData(data) => data.is_reload_safe_snapshot(),
-        }
+        Value::all_reload_safe([self])
+    }
+
+    /// [`Self::is_reload_safe_snapshot`] for every value. One walk with one
+    /// `seen` set: containers and map nodes shared between values (a
+    /// history of snapshots) are checked once, not once per snapshot.
+    pub fn all_reload_safe<'a>(values: impl IntoIterator<Item = &'a Value>) -> bool {
+        reload_safe_walk(values).is_some()
     }
 
     /// What kind of value this is, for error messages ("cannot call a number").
@@ -608,4 +639,51 @@ impl Value {
             Value::HostData(data) => data.type_name(),
         }
     }
+}
+
+/// The reload-safety walk: `None` if any value is unsafe, else how many
+/// values it visited. Iterative, since value depth is user-controlled.
+fn reload_safe_walk<'a>(values: impl IntoIterator<Item = &'a Value>) -> Option<usize> {
+    let mut seen = std::collections::HashSet::new();
+    let mut work: Vec<&Value> = values.into_iter().collect();
+    let mut visited = 0;
+    while let Some(value) = work.pop() {
+        visited += 1;
+        match value {
+            Value::List(items) | Value::Tuple(items) => {
+                if seen.insert(Rc::as_ptr(items) as *const ()) {
+                    work.extend(items.iter());
+                }
+            }
+            Value::Map(entries) => {
+                entries.for_each_unseen_leaf(&mut seen, |leaf| {
+                    work.extend(leaf.iter().map(|(_, value)| value))
+                });
+            }
+            Value::Record(fields) => {
+                if seen.insert(Rc::as_ptr(fields) as *const ()) {
+                    work.extend(fields.iter().map(|(_, value)| value));
+                }
+            }
+            Value::Variant { args, .. } => {
+                if seen.insert(Rc::as_ptr(args) as *const ()) {
+                    work.extend(args.iter());
+                }
+            }
+            Value::Partial(partial) => {
+                work.push(&partial.callee);
+                work.extend(partial.applied.iter());
+            }
+            Value::Number(_) | Value::String(_) | Value::Bool(_) => {}
+            Value::Closure(_) | Value::Ctor { .. } | Value::Builtin(_) | Value::HostFn(_) => {
+                return None
+            }
+            Value::HostData(data) => {
+                if !data.is_reload_safe_snapshot() {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(visited)
 }
