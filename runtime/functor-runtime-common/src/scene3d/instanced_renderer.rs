@@ -402,18 +402,37 @@ impl SkinnedPrograms {
     }
 }
 
+/// Which model an instanced VAO set belongs to.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(super) enum ModelKey {
+    File(String),
+    /// A `Model.skinned` value's id: unique, and forgotten when its buffers
+    /// are deleted.
+    Data(u64),
+}
+
+impl ModelKey {
+    pub(super) fn of(handle: &super::ModelHandle) -> ModelKey {
+        match handle {
+            super::ModelHandle::File(file) => ModelKey::File(file.clone()),
+            super::ModelHandle::Data(data) => ModelKey::Data(data.id()),
+        }
+    }
+}
+
 /// Persistent GPU state for `Scene.instanced`'s hardware path.
 pub(super) struct InstancedRenderer {
     meshes: HashMap<InstancedPrimitive, MeshBuffers>,
-    // Keyed by the model's asset locator, so the entry count is bounded by
-    // the model FILES a session actually instanced — a hot reload/evict
+    // Keyed by the model's asset locator (or data id), so the entry count is
+    // bounded by the model FILES a session actually instanced (data entries
+    // go with their model's eviction) — a hot reload/evict
     // replaces the entry in place (each draw validates the cached VAOs
     // against the meshes' live vertex-buffer handles and rebuilds on
     // mismatch) instead of stranding a dead generation.
-    model_meshes: HashMap<String, ModelInstancedState>,
+    model_meshes: HashMap<ModelKey, ModelInstancedState>,
     // The skinned twin — same state shape, but its VAOs enable the joint
     // channels and carry the instance layout at locations 6-8.
-    skinned_model_meshes: HashMap<String, ModelInstancedState>,
+    skinned_model_meshes: HashMap<ModelKey, ModelInstancedState>,
     forward: ShaderProgram,
     forward_uniforms: ForwardUniforms,
     depth: ShaderProgram,
@@ -472,6 +491,17 @@ impl InstancedRenderer {
             counters.buffer_deleted();
         }
         counters.begin_instance_frame();
+    }
+
+    /// Delete the VAOs built over a model whose buffers are being deleted.
+    pub(super) fn forget_model(&mut self, gl: &glow::Context, key: &ModelKey) {
+        let counters = crate::gpu_counters::gpu_counters();
+        for cache in [&mut self.model_meshes, &mut self.skinned_model_meshes] {
+            for cached in cache.remove(key).iter().flat_map(|state| &state.meshes) {
+                unsafe { gl.delete_vertex_array(cached.vao) };
+                counters.vao_deleted();
+            }
+        }
     }
 
     /// The retained buffer holding `instances`, uploaded only when its
@@ -657,7 +687,7 @@ impl InstancedRenderer {
     pub(super) fn draw_model(
         &mut self,
         ctx: &RenderContext,
-        file: &str,
+        key: &ModelKey,
         model: &Arc<Model>,
         local: &Matrix4<f32>,
         instances: &InstanceList,
@@ -682,7 +712,7 @@ impl InstancedRenderer {
             acquire_model_vaos(
                 ctx.gl,
                 &mut self.model_meshes,
-                file,
+                key,
                 &handles,
                 instance_buffer,
                 false,
@@ -760,7 +790,7 @@ impl InstancedRenderer {
     pub(super) fn draw_skinned_model(
         &mut self,
         ctx: &RenderContext,
-        file: &str,
+        key: &ModelKey,
         model: &Arc<Model>,
         joints: &[Matrix4<f32>],
         local: &Matrix4<f32>,
@@ -789,7 +819,7 @@ impl InstancedRenderer {
             acquire_model_vaos(
                 ctx.gl,
                 &mut self.skinned_model_meshes,
-                file,
+                key,
                 &handles,
                 instance_buffer,
                 true,
@@ -889,7 +919,7 @@ fn depth_fragment_source() -> String {
     )
 }
 
-/// Acquire one model's per-file instanced GPU state — apply the staleness
+/// Acquire one model's instanced GPU state — apply the staleness
 /// guard, build the state on miss, upload the instance records ONCE into the
 /// shared buffer — and return the per-mesh VAOs (Copy handles, so no borrow
 /// is carried into the draw loop).
@@ -897,21 +927,22 @@ fn depth_fragment_source() -> String {
 /// Fetch (or build) a model's instanced VAOs and point each at
 /// `instance_buffer`.
 ///
-/// Staleness: the cache is keyed by asset locator, so an asset
+/// Staleness: a file entry is keyed by asset locator, so an asset
 /// evict/hot-reload (a NEW Arc with new GL buffers) shows up as a
-/// vertex-buffer mismatch — drop the whole entry and rebuild. Nothing else
-/// in the tree deletes mesh VBOs, so a handle mismatch is a reliable
-/// staleness signal (and entries stay bounded by the model files a session
-/// actually instanced).
+/// vertex-buffer mismatch — drop the whole entry and rebuild. File models'
+/// VBOs are never deleted, so a handle mismatch is a reliable staleness
+/// signal (and entries stay bounded by the model files a session actually
+/// instanced). Data models do delete theirs, but their keys are never
+/// reused and are forgotten first (`forget_model`).
 unsafe fn acquire_model_vaos(
     gl: &glow::Context,
-    cache: &mut HashMap<String, ModelInstancedState>,
-    file: &str,
+    cache: &mut HashMap<ModelKey, ModelInstancedState>,
+    key: &ModelKey,
     handles: &[MeshBufferHandles],
     instance_buffer: glow::Buffer,
     skinned: bool,
 ) -> Vec<glow::VertexArray> {
-    let stale = cache.get(file).is_some_and(|state| {
+    let stale = cache.get(key).is_some_and(|state| {
         state.meshes.len() != handles.len()
             || state
                 .meshes
@@ -920,18 +951,18 @@ unsafe fn acquire_model_vaos(
                 .any(|(cached, live)| cached.vertex_buffer != live.vbo)
     });
     if stale {
-        let state = cache.remove(file).expect("checked above");
+        let state = cache.remove(key).expect("checked above");
         let counters = crate::gpu_counters::gpu_counters();
         for cached in &state.meshes {
             gl.delete_vertex_array(cached.vao);
             counters.vao_deleted();
         }
     }
-    let state = match cache.get_mut(file) {
+    let state = match cache.get_mut(key) {
         Some(state) => state,
         None => {
             let state = create_model_state(gl, handles, skinned);
-            cache.entry(file.to_string()).or_insert(state)
+            cache.entry(key.clone()).or_insert(state)
         }
     };
     gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));

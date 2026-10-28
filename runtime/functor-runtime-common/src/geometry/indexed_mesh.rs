@@ -51,6 +51,22 @@ impl<T: Vertex> IndexedMesh<T> {
             index_count: data.len,
         }
     }
+
+    /// Delete the GL objects if hydrated; the mesh must not draw again.
+    pub(crate) fn delete(&self, gl: &glow::Context) {
+        let Some(data) = self.ora.get_opt() else {
+            return;
+        };
+        let counters = crate::gpu_counters::gpu_counters();
+        unsafe {
+            gl.delete_vertex_array(data.vao);
+            counters.vao_deleted();
+            gl.delete_buffer(data.vbo);
+            counters.buffer_deleted();
+            gl.delete_buffer(data.ebo);
+            counters.buffer_deleted();
+        }
+    }
 }
 
 impl<T: Vertex> RenderableAsset for IndexedMeshData<T> {

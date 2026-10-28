@@ -83,6 +83,9 @@ pub struct SceneContext {
     // the next frame's start once a frame passes undrawn (the instancing
     // cache's rule), so a hot-reloaded or removed part releases its buffers.
     meshes: RefCell<HashMap<usize, RetainedMesh>>,
+    // One drawable model per `Model.skinned` value, keyed by its id and
+    // swept like `meshes`, so N nodes sharing a model upload it once.
+    data_models: RefCell<HashMap<u64, RetainedModel>>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
@@ -276,6 +279,27 @@ fn resolve_model_for_draw(
     )
 }
 
+/// Resolve a model node of either handle for drawing, with the name its
+/// warnings use.
+fn resolve_handle_for_draw<'a>(
+    render_context: &RenderContext,
+    scene_context: &SceneContext,
+    description: &'a ModelDescription,
+) -> (Arc<Model>, &'a str) {
+    match &description.handle {
+        ModelHandle::File(file) => (
+            resolve_model_for_draw(
+                render_context,
+                scene_context,
+                file,
+                &description.while_pending,
+            ),
+            file,
+        ),
+        ModelHandle::Data(data) => (scene_context.data_model(data), data.label()),
+    }
+}
+
 /// A pose evaluated this frame, with the inputs it is a pure function of.
 struct CachedPose {
     // Pins the model, so its address cannot be reused while the entry lives.
@@ -360,14 +384,14 @@ fn model_pose_joints(
                     format!("anim-clip:{file}:{name}"),
                     format!(
                         "[anim] model \"{file}\" has no clip \
-named \"{name}\" — rendering the bind pose (functor inspect lists a model's clips)"
+named \"{name}\" — rendering the bind pose (functor inspect or Model.inspect lists a model's clips)"
                     ),
                 ),
                 crate::anim::AnimWarning::MissingJoint(name) => (
                     format!("anim-joint:{file}:{name}"),
                     format!(
                         "[anim] model \"{file}\" has no joint \
-named \"{name}\" — ignoring it (functor inspect lists a model's joints)"
+named \"{name}\" — ignoring it (functor inspect or Model.inspect lists a model's joints)"
                     ),
                 ),
                 crate::anim::AnimWarning::InvalidChain { root, middle, end } => (
@@ -435,6 +459,7 @@ impl SceneContext {
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
             meshes: RefCell::new(HashMap::new()),
+            data_models: RefCell::new(HashMap::new()),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -523,6 +548,40 @@ impl SceneContext {
                 entry.gpu.delete(gl);
             }
         }
+        let mut data_models = self.data_models.borrow_mut();
+        let mut instanced = self.instanced.borrow_mut();
+        data_models.retain(|id, entry| {
+            let keep = frame.wrapping_sub(entry.last_used) <= 1;
+            if !keep {
+                if let Some(instanced) = instanced.as_mut() {
+                    instanced.forget_model(gl, &instanced_renderer::ModelKey::Data(*id));
+                }
+                entry.model.delete(gl);
+            }
+            keep
+        });
+    }
+
+    /// The drawable model for `data`, built on first use this residency.
+    fn data_model(&self, data: &crate::model::SkinnedModelData) -> Arc<Model> {
+        let frame = self.current_frame.get();
+        let counters = crate::gpu_counters::gpu_counters();
+        let mut models = self.data_models.borrow_mut();
+        let entry = match models.entry(data.id()) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+                counters.cache_hit();
+                e.into_mut()
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                counters.cache_miss();
+                e.insert(RetainedModel {
+                    model: Arc::new(data.to_model()),
+                    last_used: frame,
+                })
+            }
+        };
+        entry.last_used = frame;
+        entry.model.clone()
     }
 
     /// The instanced renderer, created on first use.
@@ -1386,6 +1445,13 @@ struct RetainedMesh {
     last_used: u64,
 }
 
+/// A `Model.skinned` value's drawable model (GPU buffers hydrate on first
+/// draw and are deleted on eviction).
+struct RetainedModel {
+    model: Arc<Model>,
+    last_used: u64,
+}
+
 /// Triangle-mesh geometry: positions plus counter-clockwise (outward-facing)
 /// index triples.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1933,161 +1999,153 @@ impl Scene3D {
 
         match &self.obj {
             SceneObject::Model(model_description) => {
-                match &model_description.handle {
-                    ModelHandle::File(str) => {
-                        // While the primary streams in, an `Asset.whilePending`
-                        // chain renders its first loaded placeholder instead of
-                        // the empty fallback (chainless models resolve exactly
-                        // like the old `get()`).
-                        let hydrated_model = resolve_model_for_draw(
-                            render_context,
-                            scene_context,
-                            str,
-                            &model_description.while_pending,
-                        );
+                // While the primary streams in, an `Asset.whilePending`
+                // chain renders its first loaded placeholder instead of
+                // the empty fallback (chainless models resolve exactly
+                // like the old `get()`).
+                let (hydrated_model, str) =
+                    resolve_handle_for_draw(render_context, scene_context, model_description);
 
-                        let matrix = world_matrix * self.xform;
+                let matrix = world_matrix * self.xform;
 
-                        // Skinned models pay for the joint-matrix uniform array;
-                        // static models (no skeleton) render with the lit model
-                        // material in a lit frame and the basic (albedo)
-                        // material in an unlit one. In a debug render mode, both swap to
-                        // the matching diagnostic material (the skinned variant
-                        // deforms the normal by the joint blend).
-                        let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
-                        let debug_override = !matches!(
-                            render_context.debug_render_mode,
-                            DebugRenderMode::Default
-                                | DebugRenderMode::Transparent
-                                | DebugRenderMode::Physics
-                        );
-                        // In the depth pass, draw the model with a depth material
-                        // that still skins (so animated models cast a correctly
-                        // deforming shadow), else the lit material or the matching
-                        // diagnostic material (skinned variants deform the
-                        // normal/tangent by the joint blend).
-                        let mut model_material: Box<dyn Material> = match (depth_pass, is_skinned) {
-                            (true, true) => SkinnedDepthMaterial::create(),
-                            (true, false) => DepthMaterial::create(),
-                            (false, _) => match render_context.debug_render_mode {
-                                DebugRenderMode::Default
-                                | DebugRenderMode::Transparent
-                                | DebugRenderMode::Physics
-                                    if is_skinned =>
-                                {
-                                    SkinnedMaterial::create()
-                                }
-                                // A static model is lit like any lit surface
-                                // when the frame HAS lights; an unlit frame
-                                // (`Frame.create`) still draws its albedo,
-                                // where lit shading would turn it black.
-                                DebugRenderMode::Default
-                                | DebugRenderMode::Transparent
-                                | DebugRenderMode::Physics
-                                    if !render_context.lights.is_empty() =>
-                                {
-                                    LitMaterial::model()
-                                }
-                                DebugRenderMode::Default
-                                | DebugRenderMode::Transparent
-                                | DebugRenderMode::Physics => BasicMaterial::create(),
-                                DebugRenderMode::Normals if is_skinned => {
-                                    SkinnedNormalDebugMaterial::create()
-                                }
-                                DebugRenderMode::Normals => NormalDebugMaterial::create(),
-                                DebugRenderMode::Tangents if is_skinned => {
-                                    SkinnedTangentDebugMaterial::create()
-                                }
-                                DebugRenderMode::Tangents => TangentDebugMaterial::create(),
-                            },
-                        };
-                        model_material.initialize(&render_context);
+                // Skinned models pay for the joint-matrix uniform array;
+                // static models (no skeleton) render with the lit model
+                // material in a lit frame and the basic (albedo)
+                // material in an unlit one. In a debug render mode, both swap to
+                // the matching diagnostic material (the skinned variant
+                // deforms the normal by the joint blend).
+                let is_skinned = hydrated_model.skeleton.get_joint_count() > 0;
+                let debug_override = !matches!(
+                    render_context.debug_render_mode,
+                    DebugRenderMode::Default
+                        | DebugRenderMode::Transparent
+                        | DebugRenderMode::Physics
+                );
+                // In the depth pass, draw the model with a depth material
+                // that still skins (so animated models cast a correctly
+                // deforming shadow), else the lit material or the matching
+                // diagnostic material (skinned variants deform the
+                // normal/tangent by the joint blend).
+                let mut model_material: Box<dyn Material> = match (depth_pass, is_skinned) {
+                    (true, true) => SkinnedDepthMaterial::create(),
+                    (true, false) => DepthMaterial::create(),
+                    (false, _) => match render_context.debug_render_mode {
+                        DebugRenderMode::Default
+                        | DebugRenderMode::Transparent
+                        | DebugRenderMode::Physics
+                            if is_skinned =>
+                        {
+                            SkinnedMaterial::create()
+                        }
+                        // A static model is lit like any lit surface
+                        // when the frame HAS lights; an unlit frame
+                        // (`Frame.create`) still draws its albedo,
+                        // where lit shading would turn it black.
+                        DebugRenderMode::Default
+                        | DebugRenderMode::Transparent
+                        | DebugRenderMode::Physics
+                            if !render_context.lights.is_empty() =>
+                        {
+                            LitMaterial::model()
+                        }
+                        DebugRenderMode::Default
+                        | DebugRenderMode::Transparent
+                        | DebugRenderMode::Physics => BasicMaterial::create(),
+                        DebugRenderMode::Normals if is_skinned => {
+                            SkinnedNormalDebugMaterial::create()
+                        }
+                        DebugRenderMode::Normals => NormalDebugMaterial::create(),
+                        DebugRenderMode::Tangents if is_skinned => {
+                            SkinnedTangentDebugMaterial::create()
+                        }
+                        DebugRenderMode::Tangents => TangentDebugMaterial::create(),
+                    },
+                };
+                model_material.initialize(&render_context);
 
-                        // The pose depends only on the model + expression, so
-                        // evaluate it once per model (a blend samples every
-                        // clip in the expression) and share it across meshes.
-                        let joints = if is_skinned {
-                            cached_pose_joints(
-                                render_context,
-                                scene_context,
-                                &hydrated_model,
-                                model_description,
-                                str,
-                            )
-                        } else {
-                            Arc::from([])
-                        };
+                // The pose depends only on the model + expression, so
+                // evaluate it once per model (a blend samples every
+                // clip in the expression) and share it across meshes.
+                let joints = if is_skinned {
+                    cached_pose_joints(
+                        render_context,
+                        scene_context,
+                        &hydrated_model,
+                        model_description,
+                        str,
+                    )
+                } else {
+                    Arc::from([])
+                };
 
-                        for mesh in hydrated_model.meshes.iter() {
-                            // Go through selectors, and adjust
-                            // let override_material_description = Some(MaterialDescription::Texture(
-                            //     TextureDescription::File("vr_glove_color.jpg".to_string()),
-                            // ));
+                for mesh in hydrated_model.meshes.iter() {
+                    // Go through selectors, and adjust
+                    // let override_material_description = Some(MaterialDescription::Texture(
+                    //     TextureDescription::File("vr_glove_color.jpg".to_string()),
+                    // ));
 
-                            let mut override_material_description: Option<&MaterialDescription> =
-                                None;
+                    let mut override_material_description: Option<&MaterialDescription> =
+                        None;
 
-                            // glTF 2.0: "When a mesh is skinned, the transform
-                            // of the node that references the mesh MUST be
-                            // ignored; only the joint transforms apply." The
-                            // skeleton already carries the full chain up to
-                            // the scene root, so a skinned mesh takes only the
-                            // Scene-graph transform; static meshes keep their
-                            // node transform. This matrix also feeds the
-                            // depth/shadow pass (the material choice above),
-                            // so shadows agree with the main pass.
-                            let mut matrix = match is_skinned {
-                                true => matrix,
-                                false => matrix * mesh.transform,
-                            };
+                    // glTF 2.0: "When a mesh is skinned, the transform
+                    // of the node that references the mesh MUST be
+                    // ignored; only the joint transforms apply." The
+                    // skeleton already carries the full chain up to
+                    // the scene root, so a skinned mesh takes only the
+                    // Scene-graph transform; static meshes keep their
+                    // node transform. This matrix also feeds the
+                    // depth/shadow pass (the material choice above),
+                    // so shadows agree with the main pass.
+                    let mut matrix = match is_skinned {
+                        true => matrix,
+                        false => matrix * mesh.transform,
+                    };
 
-                            for (_selector, override_) in &model_description.overrides {
-                                match override_ {
-                                    MeshOverride::Material(material) => {
-                                        override_material_description = Some(material);
-                                    }
-                                    MeshOverride::Transform(xform) => {
-                                        matrix = matrix * xform;
-                                    }
-                                }
+                    for (_selector, override_) in &model_description.overrides {
+                        match override_ {
+                            MeshOverride::Material(material) => {
+                                override_material_description = Some(material);
                             }
-
-                            // A debug render mode or the depth pass overrides
-                            // everything — ignore per-mesh material selectors so
-                            // the whole model is drawn with the override material.
-                            if debug_override || depth_pass {
-                                override_material_description = None;
-                            }
-
-                            if let Some(material_description) = override_material_description {
-                                let material =
-                                    material_description.get(render_context, scene_context);
-
-                                material.draw_opaque(
-                                    &render_context,
-                                    projection_matrix,
-                                    view_matrix,
-                                    &matrix,
-                                    &[],
-                                );
-                            } else {
-                                // Bind textures
-                                mesh.base_color_texture.bind(0, &render_context);
-                                model_material.draw_opaque(
-                                    &render_context,
-                                    projection_matrix,
-                                    view_matrix,
-                                    &matrix,
-                                    &joints,
-                                );
-                            };
-
-                            // TODO: Bring back drawing
-                            mesh.mesh.draw(&render_context.gl);
-                            if is_skinned {
-                                crate::gpu_counters::gpu_counters().skinned_drawn();
+                            MeshOverride::Transform(xform) => {
+                                matrix = matrix * xform;
                             }
                         }
+                    }
+
+                    // A debug render mode or the depth pass overrides
+                    // everything — ignore per-mesh material selectors so
+                    // the whole model is drawn with the override material.
+                    if debug_override || depth_pass {
+                        override_material_description = None;
+                    }
+
+                    if let Some(material_description) = override_material_description {
+                        let material =
+                            material_description.get(render_context, scene_context);
+
+                        material.draw_opaque(
+                            &render_context,
+                            projection_matrix,
+                            view_matrix,
+                            &matrix,
+                            &[],
+                        );
+                    } else {
+                        // Bind textures
+                        mesh.base_color_texture.bind(0, &render_context);
+                        model_material.draw_opaque(
+                            &render_context,
+                            projection_matrix,
+                            view_matrix,
+                            &matrix,
+                            &joints,
+                        );
+                    };
+
+                    // TODO: Bring back drawing
+                    mesh.mesh.draw(&render_context.gl);
+                    if is_skinned {
+                        crate::gpu_counters::gpu_counters().skinned_drawn();
                     }
                 }
             }
@@ -2267,13 +2325,12 @@ impl Scene3D {
                         );
                     }
                     Some(instancing::RecognizedTemplate::Model(recognized)) => {
-                        let ModelHandle::File(file) = &recognized.description.handle;
-                        let hydrated_model = resolve_model_for_draw(
+                        let (hydrated_model, file) = resolve_handle_for_draw(
                             render_context,
                             scene_context,
-                            file,
-                            &recognized.description.while_pending,
+                            recognized.description,
                         );
+                        let key = instanced_renderer::ModelKey::of(&recognized.description.handle);
                         // Whether the model is rigid or skinned is only
                         // knowable now. A SKINNED model instances at the
                         // SHARED pose: the stamp of a group of same-tts
@@ -2297,7 +2354,7 @@ impl Scene3D {
                         if is_skinned {
                             renderer.draw_skinned_model(
                                 render_context,
-                                file,
+                                &key,
                                 &hydrated_model,
                                 &joints,
                                 &recognized.local,
@@ -2309,7 +2366,7 @@ impl Scene3D {
                         } else {
                             renderer.draw_model(
                                 render_context,
-                                file,
+                                &key,
                                 &hydrated_model,
                                 &recognized.local,
                                 instances,

@@ -1,4 +1,5 @@
-//! `Model.*` — skinned models built from decoded data (see `model.funi`).
+//! `Model.*` and `Scene.modelOf` — skinned models built from decoded data
+//! (see `model.funi`), drawn and animated like glTF models.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -318,6 +319,18 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                     )),
                 ),
             ])
+        },
+    );
+    reg.fn1(
+        "Scene.modelOf",
+        "Scene.modelOf(model)",
+        |model: FunctorLangModel| {
+            FunctorLangScene(Scene3D::model(ModelDescription {
+                handle: ModelHandle::Data(model.0),
+                overrides: Vec::new(),
+                animation: None,
+                while_pending: Vec::new(),
+            }))
         },
     );
 }
