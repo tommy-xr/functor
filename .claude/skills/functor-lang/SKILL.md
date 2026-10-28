@@ -1179,7 +1179,9 @@ share one GPU upload and `Scene.animate` poses each with the data's own clip and
 joint names. Clips loop seamlessly (the last frame interpolates back to the
 first), and a key REPLACES the joint's rest rotation/translation, as glTF
 channels do. `Model.pose(anim, m)` skins on the CPU (positions as `Bytes`) for
-`expect` tests; `Model.inspect(m)` lists joints and clips. See `examples/skinned`.
+`expect` tests; `Model.inspect(m)` lists joints and clips. `texture:
+Option.Some(Asset.texture("skin.gif"))` samples a base color at the uvs (v = 0 is
+the image top, as in glTF); `Option.None` draws white. See `examples/skinned`.
 
 **The `Net` module is built in but not in the generated reference.** Its types
 need no declaration, and these are the variants to match:

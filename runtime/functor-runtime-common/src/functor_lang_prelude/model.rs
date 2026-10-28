@@ -144,24 +144,35 @@ fn f32s<const N: usize>(value: &Value, what: &str, span: Span) -> Result<Vec<[f3
     })
 }
 
+/// `Option.Some(x)` as `Some(some(x))`, `Option.None` as `None`.
+fn option<T>(
+    value: &Value,
+    what: &str,
+    inner: &str,
+    span: Span,
+    some: impl FnOnce(&Value) -> Result<T, RunError>,
+) -> Result<Option<T>, RunError> {
+    match value {
+        Value::Variant { ctor, args } if ctor.as_ref() == "Option.Some" && args.len() == 1 => {
+            some(&args[0]).map(Some)
+        }
+        Value::Variant { ctor, .. } if ctor.as_ref() == "Option.None" => Ok(None),
+        other => fail(
+            format!(
+                "{what}: expected Option.Some({inner}) or Option.None, got {}",
+                other.kind_name()
+            ),
+            span,
+        ),
+    }
+}
+
 fn joint(value: &Value, what: &str, span: Span) -> Result<JointSource, RunError> {
     let fields = record(value, what, span)?;
     let get = |name: &str| field(fields, name, what, span);
-    let parent = match get("parent")? {
-        Value::Variant { ctor, args } if ctor.as_ref() == "Option.Some" && args.len() == 1 => Some(
-            index(&args[0], u32::MAX as f64, &format!("{what}.parent"), span)?,
-        ),
-        Value::Variant { ctor, .. } if ctor.as_ref() == "Option.None" => None,
-        other => {
-            return fail(
-                format!(
-                    "{what}.parent: expected Option.Some(index) or Option.None, got {}",
-                    other.kind_name()
-                ),
-                span,
-            )
-        }
-    };
+    let parent = option(get("parent")?, &format!("{what}.parent"), "index", span, |v| {
+        index(v, u32::MAX as f64, &format!("{what}.parent"), span)
+    })?;
     let (x, y, z) = vec3_of(
         get("translation")?,
         &format!("Model.skinned: {what}.translation"),
@@ -227,6 +238,9 @@ impl crate::host_registry::FromArg for SourceArg {
             .enumerate()
             .map(|(c, value)| clip(value, &format!("clips[{c}]"), span))
             .collect::<Result<_, _>>()?;
+        let texture = option(get("texture")?, "texture", "texture", span, |v| {
+            texture_of(v, "Model.skinned: texture", span)
+        })?;
         Ok(SourceArg(SkinnedModelSource {
             positions: f32s(get("positions")?, "positions", span)?,
             normals: f32s(get("normals")?, "normals", span)?,
@@ -238,6 +252,7 @@ impl crate::host_registry::FromArg for SourceArg {
             })?,
             skeleton,
             clips,
+            texture,
         }))
     }
 }

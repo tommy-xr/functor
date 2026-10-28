@@ -300,6 +300,32 @@ fn resolve_handle_for_draw<'a>(
     }
 }
 
+/// Bind a model mesh's base color to unit 0: a `Model.skinned` texture
+/// through the asset cache (one load shared by every node; the checkerboard
+/// stand-in until it lands, like `Scene.litTexture`), else the mesh's own.
+fn bind_model_base_color(
+    handle: &ModelHandle,
+    mesh: &crate::model::ModelMesh,
+    render_context: &RenderContext,
+    scene_context: &SceneContext,
+) {
+    let texture = match handle {
+        ModelHandle::Data(data) => data.source().texture.as_ref(),
+        ModelHandle::File(_) => None,
+    };
+    match texture {
+        Some(texture) => material_description::bind_texture_description(
+            texture,
+            0,
+            SpriteSampling::Linear,
+            &scene_context.texture_pipeline,
+            render_context,
+            scene_context,
+        ),
+        None => mesh.base_color_texture.bind(0, render_context),
+    }
+}
+
 /// A pose evaluated this frame, with the inputs it is a pure function of.
 struct CachedPose {
     // Pins the model, so its address cannot be reused while the entry lives.
@@ -2131,8 +2157,15 @@ impl Scene3D {
                             &[],
                         );
                     } else {
-                        // Bind textures
-                        mesh.base_color_texture.bind(0, &render_context);
+                        // The depth material samples no albedo.
+                        if !depth_pass {
+                            bind_model_base_color(
+                                &model_description.handle,
+                                mesh,
+                                render_context,
+                                scene_context,
+                            );
+                        }
                         model_material.draw_opaque(
                             &render_context,
                             projection_matrix,
@@ -2356,6 +2389,14 @@ impl Scene3D {
                                 render_context,
                                 &key,
                                 &hydrated_model,
+                                &|mesh| {
+                                    bind_model_base_color(
+                                        &recognized.description.handle,
+                                        mesh,
+                                        render_context,
+                                        scene_context,
+                                    )
+                                },
                                 &joints,
                                 &recognized.local,
                                 instances,

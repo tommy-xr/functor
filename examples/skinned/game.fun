@@ -52,7 +52,8 @@ let arm = Model.skinned({
     { name: "swing", fps: 8.0, frames: frames, tracks: [
       { joint: "lower", rotations: Bytes.fromF32le(swing), translations: Bytes.fromF32le([]) }
     ] }
-  ]
+  ],
+  texture: Option.None
 })
 
 let init = {}
