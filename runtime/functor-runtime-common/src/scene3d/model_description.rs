@@ -14,7 +14,7 @@ pub enum ModelHandle {
     File(String),
     /// A model built from data (`Model.skinned`), carried inline on the
     /// wire; equal only to the same built value.
-    Data(Arc<crate::model::SkinnedModelData>),
+    Data(Arc<crate::model::ModelData>),
 }
 
 // Per-mesh selectors/overrides remain part of the serialized `ModelDescription`

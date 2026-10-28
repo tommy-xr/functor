@@ -32,6 +32,7 @@ mod skinned_depth_material;
 mod skinned_material;
 mod skinned_normal_debug_material;
 mod skinned_tangent_debug_material;
+mod static_material;
 mod tangent_debug_material;
 
 pub use basic_material::*;
@@ -44,6 +45,7 @@ pub use skinned_depth_material::*;
 pub use skinned_material::*;
 pub use skinned_normal_debug_material::*;
 pub use skinned_tangent_debug_material::*;
+pub use static_material::*;
 pub use tangent_debug_material::*;
 
 use crate::RenderContext;

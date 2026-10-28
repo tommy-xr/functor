@@ -52,6 +52,16 @@ impl<T: Vertex> IndexedMesh<T> {
         }
     }
 
+    /// Draw `count` indices from index `first` (a material group).
+    pub(crate) fn draw_range(&self, gl: &glow::Context, first: i32, count: i32) {
+        let ctx = self.ora.get(gl);
+        unsafe {
+            gl.bind_vertex_array(Some(ctx.vao));
+            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ctx.ebo));
+            gl.draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, first * 4);
+        }
+    }
+
     /// Delete the GL objects if hydrated; the mesh must not draw again.
     pub(crate) fn delete(&self, gl: &glow::Context) {
         let Some(data) = self.ora.get_opt() else {

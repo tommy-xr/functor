@@ -1,8 +1,9 @@
-//! Skinned, animatable models built from decoded data. Build one once (a
-//! top-level `let`), draw it with `Scene.modelOf`, and pose it with
+//! Models built from decoded data: skinned, animatable ones
+//! (`Model.skinned`) and static world geometry (`Model.static`). Build one
+//! once (a top-level `let`) and draw it with `Scene.modelOf`; its mesh
+//! uploads once however many nodes draw it. Pose a skinned model with
 //! `Scene.animate` and `Anim` exactly like a glTF model: clip and joint names
-//! come from the data. The GPU skins it; its mesh uploads once however many
-//! nodes draw it.
+//! come from the data. The GPU skins it.
 //!
 //! Y up, like the scene. Bulk data is little-endian `Bytes` (`Bytes.fromF32le`,
 //! or slices of a decoded file); quaternions are `x, y, z, w`.
@@ -73,6 +74,36 @@ type data = {
   texture: Option.t<Asset.Texture>
 }
 
+/// `count` triangles from triangle `first`, drawn with one base texture
+/// (`Option.None` draws white). `unlit` draws it fullbright, ignoring the
+/// frame's lights.
+type group = { first: float, count: float, texture: Option.t<Asset.Texture>, unlit: bool }
+
+/// Everything a static model is made of. Per vertex: `positions` and
+/// `normals` f32 `x, y, z`; `uvs` (base textures) and `uvs2` (a second set,
+/// for lightmaps) f32 `u, v` each, or empty. `triangles` is u32 vertex index
+/// triples, counter-clockwise. `groups` run in order with no gaps and cover
+/// every triangle (one draw each); `[]` draws them all untextured.
+///
+/// ```
+/// let floor = Model.static({
+///   positions: Bytes.fromF32le([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 - 1.0, 0.0, 0.0, 0.0 - 1.0]),
+///   normals: Bytes.fromF32le([0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0]),
+///   uvs: Bytes.fromF32le([0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+///   uvs2: Bytes.fromF32le([]),
+///   triangles: Bytes.fromU32le([0.0, 1.0, 2.0, 0.0, 2.0, 3.0]),
+///   groups: [{ first: 0.0, count: 2.0, texture: Option.Some(Asset.texture("tiles.png")), unlit: false }]
+/// })
+/// ```
+type staticData = {
+  positions: Bytes.t,
+  normals: Bytes.t,
+  uvs: Bytes.t,
+  uvs2: Bytes.t,
+  triangles: Bytes.t,
+  groups: List<group>
+}
+
 /// A clip's name and length in seconds.
 type clipInfo = { name: string, duration: float }
 
@@ -82,10 +113,14 @@ type info = { vertices: float, triangles: float, joints: List<string>, clips: Li
 /// A model from `data`, validated once: bad data is an error naming the
 /// field (`Model.skinned: weights: vertex 3's weights sum to 0`).
 let skinned : (data) => t
+/// A static model from `data`, validated once: bad data is an error naming
+/// the field (`Model.static: groups: cover 10 triangles, but there are 12`).
+/// Lit by the frame's lights like `Scene.lit`, with no highlight.
+let static : (staticData) => t
 /// The model's vertex positions under a pose, as f32 `x, y, z` per vertex —
 /// skinned on the CPU exactly as the GPU does, for tests and tools. What
 /// drawing would warn about (an unknown clip or joint name, a bad
-/// `Anim.reach` chain) is an error here.
+/// `Anim.reach` chain) is an error here, as is a static model.
 let pose : (Anim.t, t) => Bytes.t
 /// The model's counts, joint names and clips.
 let inspect : (t) => info

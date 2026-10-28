@@ -83,8 +83,8 @@ pub struct SceneContext {
     // the next frame's start once a frame passes undrawn (the instancing
     // cache's rule), so a hot-reloaded or removed part releases its buffers.
     meshes: RefCell<HashMap<usize, RetainedMesh>>,
-    // One drawable model per `Model.skinned` value, keyed by its id and
-    // swept like `meshes`, so N nodes sharing a model upload it once.
+    // One upload per `Model.skinned`/`Model.static` value, keyed by its id
+    // and swept like `meshes`, so N nodes sharing a model upload it once.
     data_models: RefCell<HashMap<u64, RetainedModel>>,
     // One GL texture per `Texture.fromPixels` value, keyed by its id and
     // swept like `data_models`, so N nodes sharing it upload it once.
@@ -326,6 +326,61 @@ fn bind_model_base_color(
             scene_context,
         ),
         None => mesh.base_color_texture.bind(0, render_context),
+    }
+}
+
+/// Draw a static data model: one draw per group with its base texture, or
+/// one draw of every triangle under a pass/debug `override_material`.
+fn draw_static_model(
+    render_context: &RenderContext,
+    scene_context: &SceneContext,
+    data: &crate::model::ModelData,
+    matrix: &Matrix4<f32>,
+    projection_matrix: &Matrix4<f32>,
+    view_matrix: &Matrix4<f32>,
+    override_material: Option<&dyn Material>,
+) {
+    let DataModelGpu::Static(mesh) = scene_context.data_model_gpu(data) else {
+        unreachable!("a static model uploads a static mesh");
+    };
+    let gl = &render_context.gl;
+    if let Some(material) = override_material {
+        material.draw_opaque(render_context, projection_matrix, view_matrix, matrix, &[]);
+        mesh.draw(gl);
+        return;
+    }
+    let source = data.source();
+    let whole = [crate::model::GroupSource {
+        first: 0,
+        count: source.triangles.len() as u32,
+        texture: None,
+        unlit: false,
+    }];
+    let groups = if source.groups.is_empty() {
+        &whole[..]
+    } else {
+        &source.groups[..]
+    };
+    let mut material = crate::material::StaticMaterial {
+        use_texture: false,
+        unlit: false,
+    };
+    material.initialize(render_context);
+    for group in groups {
+        if let Some(texture) = &group.texture {
+            material_description::bind_texture_description(
+                texture,
+                0,
+                SpriteSampling::Linear,
+                &scene_context.texture_pipeline,
+                render_context,
+                scene_context,
+            );
+        }
+        material.use_texture = group.texture.is_some();
+        material.unlit = group.unlit;
+        material.draw_opaque(render_context, projection_matrix, view_matrix, matrix, &[]);
+        mesh.draw_range(gl, group.first as i32 * 3, group.count as i32 * 3);
     }
 }
 
@@ -586,7 +641,10 @@ impl SceneContext {
                 if let Some(instanced) = instanced.as_mut() {
                     instanced.forget_model(gl, &instanced_renderer::ModelKey::Data(*id));
                 }
-                entry.model.delete(gl);
+                match &entry.gpu {
+                    DataModelGpu::Skinned(model) => model.delete(gl),
+                    DataModelGpu::Static(mesh) => mesh.delete(gl),
+                }
             }
             keep
         });
@@ -637,8 +695,8 @@ impl SceneContext {
         entry.texture
     }
 
-    /// The drawable model for `data`, built on first use this residency.
-    fn data_model(&self, data: &crate::model::SkinnedModelData) -> Arc<Model> {
+    /// The GPU side of `data`, built on first use this residency.
+    fn data_model_gpu(&self, data: &crate::model::ModelData) -> DataModelGpu {
         let frame = self.current_frame.get();
         let counters = crate::gpu_counters::gpu_counters();
         let mut models = self.data_models.borrow_mut();
@@ -649,14 +707,27 @@ impl SceneContext {
             }
             std::collections::hash_map::Entry::Vacant(e) => {
                 counters.cache_miss();
+                let gpu = if data.is_static() {
+                    DataModelGpu::Static(Arc::new(data.to_static_mesh()))
+                } else {
+                    DataModelGpu::Skinned(Arc::new(data.to_model()))
+                };
                 e.insert(RetainedModel {
-                    model: Arc::new(data.to_model()),
+                    gpu,
                     last_used: frame,
                 })
             }
         };
         entry.last_used = frame;
-        entry.model.clone()
+        entry.gpu.clone()
+    }
+
+    /// The drawable model for a skinned `data`.
+    fn data_model(&self, data: &crate::model::ModelData) -> Arc<Model> {
+        match self.data_model_gpu(data) {
+            DataModelGpu::Skinned(model) => model,
+            DataModelGpu::Static(_) => unreachable!("static models draw by draw_static_model"),
+        }
     }
 
     /// The instanced renderer, created on first use.
@@ -1523,8 +1594,15 @@ struct RetainedMesh {
 /// A `Model.skinned` value's drawable model (GPU buffers hydrate on first
 /// draw and are deleted on eviction).
 struct RetainedModel {
-    model: Arc<Model>,
+    gpu: DataModelGpu,
     last_used: u64,
+}
+
+/// A data model's upload: a drawable rig, or a static model's one mesh.
+#[derive(Clone)]
+enum DataModelGpu {
+    Skinned(Arc<Model>),
+    Static(Arc<geometry::IndexedMesh<crate::render::VertexPositionTextureLightmap>>),
 }
 
 struct RetainedTexture {
@@ -2142,6 +2220,18 @@ impl Scene3D {
         let geometry_material = override_material.as_ref().unwrap_or(current_material);
 
         match self.obj.resolved() {
+            SceneObject::Model(ModelDescription {
+                handle: ModelHandle::Data(data),
+                ..
+            }) if data.is_static() => draw_static_model(
+                render_context,
+                scene_context,
+                data,
+                &(world_matrix * self.xform),
+                projection_matrix,
+                view_matrix,
+                override_material.as_deref(),
+            ),
             SceneObject::Model(model_description) => {
                 // While the primary streams in, an `Asset.whilePending`
                 // chain renders its first loaded placeholder instead of

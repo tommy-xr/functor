@@ -13053,12 +13053,12 @@ Config.create())",
                 && json.contains(r#""skeleton":[{"name":"upper","parent":null,"translation":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0,1.0]}"#),
             "{json}"
         );
-        let back: crate::model::SkinnedModelData = serde_json::from_str(&json).unwrap();
+        let back: crate::model::ModelData = serde_json::from_str(&json).unwrap();
         assert_eq!(model.source(), back.source());
         assert_ne!(model.id(), back.id());
         // A bad payload is refused with the validation error.
         let bad = json.replace(r#""joints":[[0,0,0,0]"#, r#""joints":[[9,0,0,0]"#);
-        let err = serde_json::from_str::<crate::model::SkinnedModelData>(&bad)
+        let err = serde_json::from_str::<crate::model::ModelData>(&bad)
             .unwrap_err()
             .to_string();
         assert!(err.contains("joints: vertex 0 uses joint 9"), "{err}");
@@ -13164,6 +13164,102 @@ Config.create())",
         assert_eq!(err, "Model.skinned: clips[1] (\"lift\").tracks[0]: no joint named \"elbow\"");
         let err = fail(("uvs: none", "uvs: Bytes.fromF32le([1.0])"));
         assert_eq!(err, "Model.skinned: uvs: 4 bytes is not a whole number of 8-byte entries");
+    }
+
+    /// A unit quad of two triangles, one group each: the first textured by
+    /// pixels, the second unlit and untextured.
+    const ROOM: &str = "let none = Bytes.fromF32le([])\n\
+        let px = Texture.fromPixels({ width: 1.0, height: 1.0, format: Texture.Rgb8, \
+colorSpace: Texture.Srgb, pixels: Bytes.fromU8([200.0, 100.0, 50.0]) })\n\
+        let roomData = {\n\
+          positions: Bytes.fromF32le([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0]),\n\
+          normals: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),\n\
+          uvs: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]),\n\
+          uvs2: Bytes.fromF32le([0.0, 0.0, 0.5, 0.0, 0.5, 0.5, 0.0, 0.5]),\n\
+          triangles: Bytes.fromU32le([0.0, 1.0, 2.0, 0.0, 2.0, 3.0]),\n\
+          groups: [\n\
+            { first: 0.0, count: 1.0, texture: Option.Some(px), unlit: false },\n\
+            { first: 1.0, count: 1.0, texture: Option.None, unlit: true }\n\
+          ]\n\
+        }\n\
+        let room = Model.static(roomData)\n";
+
+    /// A static model draws through `Scene.modelOf`, has no rig, and rides
+    /// `GET /scene` inline (its pixel texture too) and back.
+    #[test]
+    fn static_models_build_and_serialize() {
+        let main = |expr: &str| eval_with_prelude(&format!("{ROOM}let main = {expr}\n"));
+        assert!(matches!(
+            main("Model.inspect(room).joints == [] && Model.inspect(room).triangles == 2.0"),
+            Ok(Value::Bool(true))
+        ));
+        assert_eq!(
+            main("Model.pose(Anim.rest(), room)").err().unwrap(),
+            "Model.pose: a static model has no skeleton to pose"
+        );
+        let Value::HostData(scene) = main("Scene.modelOf(room)").unwrap() else {
+            panic!("expected a Scene");
+        };
+        let scene = &scene.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let json = serde_json::to_string(scene).unwrap();
+        assert!(
+            json.contains(r#""groups":[{"first":0,"count":1,"texture":{"Data":{"width":1,"#)
+                && json.contains(r#"{"first":1,"count":1,"unlit":true}]"#)
+                && !json.contains("joints"),
+            "{json}"
+        );
+        let back: Scene3D = serde_json::from_str(&json).unwrap();
+        let SceneObject::Model(model) = &back.obj else {
+            panic!("expected a model node");
+        };
+        let ModelHandle::Data(data) = &model.handle else {
+            panic!("expected a data handle");
+        };
+        assert!(data.is_static());
+        assert_eq!(data.source().uvs2[2], [0.5, 0.5]);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    /// Bad static data is an error naming the field.
+    #[test]
+    fn static_model_errors_name_the_field() {
+        let fail = |replace: (&str, &str)| {
+            let src = ROOM.replace(replace.0, replace.1);
+            assert_ne!(src, ROOM, "{replace:?} did not apply");
+            eval_with_prelude(&format!("{src}let main = room\n")).err().expect("should fail")
+        };
+        assert_eq!(
+            fail(("{ first: 1.0, count: 1.0,", "{ first: 1.0, count: 2.0,")),
+            "Model.static: groups: cover 3 triangles, but there are 2"
+        );
+        assert_eq!(
+            fail(("{ first: 1.0, count: 1.0,", "{ first: 0.0, count: 1.0,")),
+            "Model.static: groups[1]: first is 0, but the previous group ends at 1 \
+(groups run in order, with no gaps)"
+        );
+        assert_eq!(
+            fail(("uvs2: Bytes.fromF32le([0.0, 0.0, 0.5,", "uvs2: Bytes.fromF32le([0.5,")),
+            "Model.static: uvs2: 3 vertices, but positions has 4 (or leave uvs2 empty)"
+        );
+        assert_eq!(
+            fail(("uvs: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0])", "uvs: none")),
+            "Model.static: groups[0]: texture needs uvs (one per vertex)"
+        );
+        assert_eq!(
+            fail(("{ first: 0.0, count: 1.0,", "{ first: 0.5, count: 1.0,")),
+            "Model.static: groups[0].first: expected a whole number from 0, got 0.5"
+        );
+        assert_eq!(
+            fail(("triangles: Bytes.fromU32le([0.0, 1.0, 2.0,", "triangles: Bytes.fromU32le([0.0, 1.0, 9.0,")),
+            "Model.static: triangles: triangle 0 uses vertex 9, but there are 4"
+        );
+        // Untextured groups need no uvs; no groups draws everything.
+        let src = ROOM
+            .replace("texture: Option.Some(px)", "texture: Option.None")
+            .replace("uvs: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0])", "uvs: none");
+        assert!(eval_with_prelude(&format!("{src}let main = room\n")).is_ok());
+        let ungrouped = "Model.static({ roomData with groups: [] })";
+        assert!(eval_with_prelude(&format!("{ROOM}let main = {ungrouped}\n")).is_ok());
     }
 
     const PIXELS: &str = "let px = { width: 2.0, height: 1.0, format: Texture.Rgb8, \

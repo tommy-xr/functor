@@ -363,6 +363,10 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                 if material.is_some() || !description.overrides.is_empty() {
                     return None;
                 }
+                // Static data models draw per group; they stamp.
+                if matches!(&description.handle, super::ModelHandle::Data(d) if d.is_static()) {
+                    return None;
+                }
                 Some(RecognizedTemplate::Model(RecognizedModel {
                     description,
                     local: local * node.xform,

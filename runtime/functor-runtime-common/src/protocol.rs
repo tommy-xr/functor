@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// Also: static data models — `Model.static` data on the `ModelHandle::Data`
+/// wire: `uvs2` and `groups`, and no `joints`/`weights`/`skeleton`/`clips`
+/// (each omitted when empty, so skinned models keep their v19 shape).
+///
 /// v20: pixel textures — the `TextureDescription::Data` variant, a
 /// `Texture.fromPixels` texture carried inline as its RGBA8 pixels. Emitted
 /// only by that constructor, so other frames keep their v19 shape. Like v19,
