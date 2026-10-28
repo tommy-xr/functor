@@ -1,5 +1,5 @@
 //! `functor bake`: lightmaps for the project's `bakes` (see `lightmap.funi`).
-//! Each job writes `<name>.png` (light ÷ `scale`, sRGB-encoded RGBA8; alpha
+//! Each job writes `<name>.png` (light ÷ its `scale`, sRGB-encoded RGBA8; alpha
 //! marks texels the bake reached) and `<name>.mesh.bin` (the unwrapped mesh).
 
 use std::io::Error;
@@ -23,7 +23,6 @@ pub struct Settings {
     pub ao_distance: f32,
     pub bounces: u32,
     pub gi_samples: u32,
-    pub scale: f32,
     pub seed: u64,
     pub max_size: u32,
 }
@@ -46,12 +45,6 @@ pub fn execute(
     let value = session.global("bakes").ok_or_else(|| {
         Error::other("no top-level `let bakes = …` (a List<Lightmap.bakeJob>) to bake")
     })?;
-    if !(settings.scale.is_finite() && settings.scale > 0.0) {
-        return Err(Error::other(format!(
-            "--scale must be a finite number above 0, got {}",
-            settings.scale
-        )));
-    }
     let jobs = bake_jobs(&value).map_err(|e| Error::other(format!("`bakes`: {e}")))?;
     if jobs.is_empty() {
         return Err(Error::other("`bakes` is empty: nothing to bake"));
@@ -71,13 +64,12 @@ pub fn execute(
     };
     // Recorded in the PNG, so a lightmap says how it was made.
     let made = format!(
-        "texelsPerMeter={} aoSamples={} aoDistance={} bounces={} giSamples={} scale={} seed={} maxSize={}",
+        "texelsPerMeter={} aoSamples={} aoDistance={} bounces={} giSamples={} seed={} maxSize={}",
         settings.texels_per_meter,
         settings.ao_samples,
         settings.ao_distance,
         settings.bounces,
         settings.gi_samples,
-        settings.scale,
         settings.seed,
         settings.max_size
     );
@@ -103,7 +95,7 @@ pub fn execute(
             job.name,
             mesh.triangles.len(),
             job.lights.len(),
-            if peak > settings.scale { ", clipped: raise --scale" } else { "" },
+            if peak > job.scale { ", clipped: raise its `scale`" } else { "" },
             start.elapsed().as_secs_f64(),
             png.display(),
             bin.display(),
@@ -111,7 +103,7 @@ pub fn execute(
         ));
         files.push((
             png,
-            encode_png(lightmap.size, &lightmap.rgba8(settings.scale), &made)?,
+            encode_png(lightmap.size, &lightmap.rgba8(job.scale), &made, job.scale)?,
         ));
         files.push((bin, write_mesh(&mesh)));
     }
@@ -139,8 +131,8 @@ pub fn execute(
     Ok(())
 }
 
-/// An RGBA8 PNG with the baker's version and settings as text chunks.
-fn encode_png(size: u32, rgba: &[u8], made: &str) -> Result<Vec<u8>, Error> {
+/// An RGBA8 PNG with the baker's version, settings and scale as text chunks.
+fn encode_png(size: u32, rgba: &[u8], made: &str, scale: f32) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, size, size);
     encoder.set_color(png::ColorType::Rgba);
@@ -150,6 +142,7 @@ fn encode_png(size: u32, rgba: &[u8], made: &str) -> Result<Vec<u8>, Error> {
         ("functor-bake-version", BAKE_VERSION.to_string()),
         ("functor-bake-settings", made.to_string()),
         ("functor-bake-color-space", "srgb".to_string()),
+        ("functor-bake-scale", scale.to_string()),
     ];
     for (key, value) in text {
         encoder

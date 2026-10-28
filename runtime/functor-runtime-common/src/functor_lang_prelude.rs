@@ -14527,7 +14527,7 @@ maxSize 16; lower texelsPerMeter or padding"
 
     const BAKES: &str = "let bakes = [{ name: \"room\", mesh: roomData, lights: \
 [Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0, 1.0, 1.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 4.0) \
-|> Light.castShadows], albedo: [Color.rgb(0.8, 0.8, 0.8), Color.rgb(0.8, 0.2, 0.1)] }]\n";
+|> Light.castShadows], albedo: [Color.rgb(0.8, 0.8, 0.8), Color.rgb(0.8, 0.2, 0.1)], scale: 2.0 }]\n";
 
     /// `functor bake`'s jobs: the mesh validated (its `uvs2` and lightmap
     /// dropped, since the bake replaces them), the lights and albedo as they are.
@@ -14543,6 +14543,7 @@ maxSize 16; lower texelsPerMeter or padding"
         assert!(matches!(job.lights[0], Light::Ambient { .. }));
         assert!(job.lights[1].casts_shadows());
         assert_eq!(job.albedo, [[0.8, 0.8, 0.8], [0.8, 0.2, 0.1]]);
+        assert_eq!(job.scale, 2.0);
     }
 
     #[test]

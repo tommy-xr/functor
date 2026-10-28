@@ -56,7 +56,7 @@ fn bake(dir: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-const ONE: &str = r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [Color.rgb(0.8, 0.8, 0.8)] }]"#;
+const ONE: &str = r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [Color.rgb(0.8, 0.8, 0.8)], scale: 1.0 }]"#;
 
 #[test]
 fn bakes_write_a_lightmap_and_a_mesh() {
@@ -103,13 +103,14 @@ fn bakes_write_a_lightmap_and_a_mesh() {
         .collect();
     assert!(text.contains(&("functor-bake-version", "2")), "{text:?}");
     assert!(
-        text.contains(&("functor-bake-color-space", "srgb")),
+        text.contains(&("functor-bake-color-space", "srgb"))
+            && text.contains(&("functor-bake-scale", "1")),
         "{text:?}"
     );
     assert!(
         text.contains(&(
             "functor-bake-settings",
-            "texelsPerMeter=8 aoSamples=4 aoDistance=1 bounces=1 giSamples=4 scale=1 seed=0 maxSize=2048"
+            "texelsPerMeter=8 aoSamples=4 aoDistance=1 bounces=1 giSamples=4 seed=0 maxSize=2048"
         )),
         "{text:?}"
     );
@@ -155,7 +156,7 @@ fn bakes_write_a_lightmap_and_a_mesh() {
 
 #[test]
 fn bad_bakes_and_flags_are_errors() {
-    let cases: [(&str, &str, &[&str], &str); 9] = [
+    let cases: [(&str, &str, &[&str], &str); 10] = [
         (
             "none",
             "let x = 1.0",
@@ -170,7 +171,7 @@ fn bad_bakes_and_flags_are_errors() {
         ),
         (
             "twice",
-            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [] }, { name: "floor", mesh: floorData, lights: [], albedo: [] }]"#,
+            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [], scale: 1.0 }, { name: "floor", mesh: floorData, lights: [], albedo: [], scale: 1.0 }]"#,
             &[],
             "`bakes`: bakes[1].name: \"floor\" is used twice",
         ),
@@ -200,15 +201,21 @@ fn bad_bakes_and_flags_are_errors() {
         ),
         (
             "scale",
-            ONE,
-            &["--scale", "0"],
-            "--scale must be a finite number above 0, got 0",
+            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [Color.rgb(0.8, 0.8, 0.8)], scale: 0.0 }]"#,
+            &[],
+            "`bakes`: bakes[0].scale: must be above 0, got 0",
         ),
         (
             "albedo",
-            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [] }]"#,
+            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [], scale: 1.0 }]"#,
             &[],
             "`floor`: albedo: one colour per group: expected 1, got 0",
+        ),
+        (
+            "reflectance",
+            r#"let bakes = [{ name: "floor", mesh: floorData, lights: lights, albedo: [Color.rgb(1.5, 0.0, 0.0)], scale: 1.0 }]"#,
+            &[],
+            "`floor`: albedo[0]: a reflectance, each channel from 0 to 1, got [1.5, 0.0, 0.0]",
         ),
     ];
     for (name, bakes, args, expected) in cases {

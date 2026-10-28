@@ -6,9 +6,10 @@
 //! lit surfaces, and are denoised within each chart. Each chart is finally
 //! dilated into its padding.
 //!
-//! Deterministic: a texel's samples come from `(seed, texel, sample)`, each
-//! pass reads only the previous pass's finished lightmap, and nearest hits
-//! break ties by triangle index, so the bytes don't depend on the thread count.
+//! Deterministic: a texel's samples come from `(seed, texel, sample)` and
+//! each pass reads only the previous pass's finished lightmap, so the bytes
+//! don't depend on the thread count. Nearest hits break ties by triangle
+//! index, so they don't depend on the BVH's layout either.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -82,6 +83,15 @@ pub fn bake_mesh(
         return Err(format!(
             "albedo: one colour per group: expected {groups}, got {}",
             albedo.len()
+        ));
+    }
+    if let Some((g, c)) = albedo
+        .iter()
+        .enumerate()
+        .find(|(_, c)| !c.iter().all(|v| (0.0..=1.0).contains(v)))
+    {
+        return Err(format!(
+            "albedo[{g}]: a reflectance, each channel from 0 to 1, got {c:?}"
         ));
     }
     // Per triangle, linear.
@@ -258,7 +268,8 @@ fn luminance(c: [f32; 3]) -> f32 {
 /// B3-spline taps at strides 1, 2 and 4) that only reads texels of the same
 /// chart (`chart`, `u32::MAX` where none) and weighs each tap down by its
 /// relative difference in brightness, so seams, corners and real gradients
-/// stay. Each pass reads only the last.
+/// stay. Brightness is compared after a 5 × 5 mean, so a lone dark or bright
+/// texel (noise) still blends. Each pass reads only the last.
 pub(crate) fn denoise(
     size: u32,
     chart: &[u32],
@@ -270,29 +281,42 @@ pub(crate) fn denoise(
     const SIGMA: f32 = 0.5;
     let size = size as i64;
     let texels: Vec<usize> = (0..chart.len()).filter(|&i| chart[i] != u32::MAX).collect();
+    // The same-chart texels within `reach` taps of `i`, `stride` apart.
+    let around = |i: usize, reach: i64, stride: i64| {
+        let (x, y) = (i as i64 % size, i as i64 / size);
+        (-reach..=reach)
+            .flat_map(move |dy| (-reach..=reach).map(move |dx| (dx, dy)))
+            .filter_map(move |(dx, dy)| {
+                let (qx, qy) = (x + dx * stride, y + dy * stride);
+                let inside = qx >= 0 && qy >= 0 && qx < size && qy < size;
+                let q = (qy * size + qx) as usize;
+                (inside && chart[q] == chart[i]).then_some((dx, dy, q))
+            })
+    };
+    let mut guide = vec![0.0f32; light.len()];
+    let means = par_map(&texels, threads, |&i| {
+        let (sum, count) = around(i, 2, 1).fold((0.0f32, 0.0f32), |(s, c), (_, _, q)| {
+            (s + luminance(light[q]), c + 1.0)
+        });
+        sum / count
+    });
+    for (&i, mean) in texels.iter().zip(means) {
+        guide[i] = mean;
+    }
     let mut out = light.to_vec();
     for stride in [1i64, 2, 4] {
         let prev = out.clone();
         let filtered = par_map(&texels, threads, |&i| {
-            let (x, y) = (i as i64 % size, i as i64 / size);
-            let l = luminance(prev[i]);
+            let l = guide[i];
             let (mut sum, mut total) = ([0.0f32; 3], 0.0f32);
-            for (dy, ky) in KERNEL.iter().enumerate() {
-                for (dx, kx) in KERNEL.iter().enumerate() {
-                    let (qx, qy) = (x + (dx as i64 - 2) * stride, y + (dy as i64 - 2) * stride);
-                    if qx < 0 || qy < 0 || qx >= size || qy >= size {
-                        continue;
-                    }
-                    let q = (qy * size + qx) as usize;
-                    if chart[q] != chart[i] {
-                        continue;
-                    }
-                    let lq = luminance(prev[q]);
-                    let relative = (l - lq).abs() / (SIGMA * 0.5 * (l + lq) + 1e-4);
-                    let w = kx * ky * (-relative * relative).exp();
-                    sum = add(sum, prev[q].map(|c| c * w));
-                    total += w;
-                }
+            for (dx, dy, q) in around(i, 2, stride) {
+                let lq = guide[q];
+                let relative = (l - lq).abs() / (SIGMA * 0.5 * (l + lq) + 1e-4);
+                let w = KERNEL[(dx + 2) as usize]
+                    * KERNEL[(dy + 2) as usize]
+                    * (-relative * relative).exp();
+                sum = add(sum, prev[q].map(|c| c * w));
+                total += w;
             }
             sum.map(|c| c / total)
         });
@@ -725,7 +749,7 @@ impl<'a> Scene<'a> {
 
     /// The first triangle along unit `dir` within `max`, and the hit's
     /// barycentric weights. A tie (a ray through a shared edge) goes to the
-    /// lowest triangle, whatever order the BVH visits them in.
+    /// lowest triangle, so hits don't depend on the BVH's layout.
     fn nearest(&self, origin: Vector, dir: Vector, max: f32) -> Option<(u32, [f32; 3])> {
         let ray = Ray::new(origin, dir);
         let mut best: Option<(f32, u32, [f32; 3])> = None;
@@ -1234,6 +1258,28 @@ mod tests {
         assert!(after < 0.25 * before, "{after} vs {before}");
     }
 
+    /// Sparse noise (a gather that missed every lit surface) blends in: a
+    /// chart at 0.1 with one texel in eight at 0 comes out with no texel
+    /// under 0.07.
+    #[test]
+    fn denoise_blends_sparse_speckles() {
+        let size = 16u32;
+        let n = (size * size) as usize;
+        let light: Vec<[f32; 3]> = (0..n)
+            .map(|i| {
+                if hash(5, i as u64) % 8 == 0 {
+                    [0.0; 3]
+                } else {
+                    [0.1; 3]
+                }
+            })
+            .collect();
+        assert!(light.iter().any(|c| c[0] == 0.0));
+        let out = denoise(size, &vec![0; n], &light, 2);
+        let min = out.iter().map(|c| c[0]).fold(1.0, f32::min);
+        assert!(min > 0.07, "{min}");
+    }
+
     /// sRGB bytes keep the darks: a 0–0.1 linear ramp gets over three times
     /// as many levels as linear bytes would give, and `scale` divides
     /// before encoding.
@@ -1300,8 +1346,7 @@ mod tests {
     /// (~26k triangles) at 8 and 16, each direct only and with bounces.
     /// Timing only: add `--config
     /// 'profile.dev.package.functor_runtime_common.opt-level=3'` (and parry3d,
-    /// glam), then `-- --ignored --nocapture`. `BAKE_TIMES=tpm,ao,bounces,gi`
-    /// times the level at one setting instead.
+    /// glam), then `-- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn bake_times() {
@@ -1353,11 +1398,6 @@ mod tests {
             .chain([Light::ambient(0.2, 0.2, 0.25)])
             .collect();
         let level = (&positions[..], &normals[..], &triangles[..]);
-        if let Ok(setting) = std::env::var("BAKE_TIMES") {
-            let n: Vec<f64> = setting.split(',').map(|x| x.parse().unwrap()).collect();
-            let at = |i: usize| n[i] as u32;
-            return time("level", level, &lights, (n[0], at(1), at(2), at(3)));
-        }
         let box_lights = [Light::ambient(0.3, 0.3, 0.3), lamp().cast_shadows()];
         let m = cornell();
         for setting in [(32.0, 64, 0, 0), (32.0, 64, 1, 64), (32.0, 64, 2, 64)] {

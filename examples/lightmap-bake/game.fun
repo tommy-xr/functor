@@ -4,9 +4,8 @@
 // (occlusion).
 // `bakes` below is what the baker reads; it writes baked/room.png (light)
 // and baked/room.mesh.bin (the mesh with lightmap UVs), and room-ao, ambient
-// alone. Rebake after an edit (`--scale 2` leaves headroom above 1; `load`
-// sets the lightmap's `scale` to match):
-//   functor -d examples/lightmap-bake bake --texels-per-meter 32 --scale 2
+// alone. Rebake after an edit:
+//   functor -d examples/lightmap-bake bake --texels-per-meter 32
 //
 // The view cycles every 3 s: baked, occlusion only, realtime (no lightmap:
 // the engine has no point-light shadows). 1, 2 and 3 pick one.
@@ -76,26 +75,27 @@ let roomData = {
 
 // The lights, marked `Light.baked`: lightmapped surfaces already hold them.
 // The ceiling half a metre above the lamp, with bounced light, passes 1,
-// hence `--scale 2`. Ambient is low: bounced light fills the shadows.
+// hence `scale` 2 below. Ambient is low: bounced light fills the shadows.
 let lampAt = v(0.0, 2.5, 0.0 - 2.0)
 let ambient = Light.ambient(Color.rgb(0.2, 0.2, 0.2))
 let lamp = Light.point(lampAt, Color.rgb(1.0, 0.92, 0.8), 0.85, 6.0) |> Light.castShadows
 let bakedLights = [ambient |> Light.baked, lamp |> Light.baked]
 
+// `scale`: the lightmap stores light ÷ scale; `load` multiplies it back.
 let bakes = [
-  { name: "room", mesh: roomData, lights: bakedLights, albedo: albedo },
-  { name: "room-ao", mesh: roomData, lights: [Light.ambient(Color.rgb(1.0, 1.0, 1.0))], albedo: albedo }
+  { name: "room", mesh: roomData, lights: bakedLights, albedo: albedo, scale: 2.0 },
+  { name: "room-ao", mesh: roomData, lights: [Light.ambient(Color.rgb(1.0, 1.0, 1.0))], albedo: albedo, scale: 1.0 }
 ]
 
 // The baked room, once `functor bake` has run.
 let bakeDir = Path.of("baked")
-let load = (name: string) =>
+let load = (name: string, scale: float) =>
   let mesh = bakeDir |> Path.join($"{name}.mesh.bin") |> File.bytes |> Lightmap.readMesh in
   Model.static({ mesh with groups: groups, lightmap: Option.Some({
     texture: Texture.fromPng(bakeDir |> Path.join($"{name}.png") |> File.bytes, Texture.Srgb),
-    scale: 2.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+    scale: scale, floor: Color.rgb(0.0, 0.0, 0.0) }) })
 let baked = if File.exists(Path.join("room.png", bakeDir)) && File.exists(Path.join("room-ao.png", bakeDir))
-  then Option.Some((load("room"), load("room-ao")))
+  then Option.Some((load("room", 2.0), load("room-ao", 1.0)))
   else Option.None
 let realtime = Model.static(roomData)
 

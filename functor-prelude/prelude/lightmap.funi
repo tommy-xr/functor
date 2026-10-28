@@ -40,7 +40,7 @@ let unwrap : (Model.staticData, options) => unwrapped
 ///
 /// ```
 /// let bakes = [{ name: "room", mesh: roomData, lights: roomLights,
-///   albedo: [Color.rgb(0.87, 0.87, 0.87), Color.rgb(0.81, 0.28, 0.25)] }]
+///   albedo: [Color.rgb(0.87, 0.87, 0.87), Color.rgb(0.81, 0.28, 0.25)], scale: 1.0 }]
 /// // `functor bake` evaluates the whole project, so guard the load: the
 /// // first bake runs before its files exist, and while it runs the files it
 /// // writes read as missing.
@@ -60,9 +60,10 @@ let unwrap : (Model.staticData, options) => unwrapped
 /// are none), the share of light it reflects, e.g. its texture's average
 /// colour. Ambient light doesn't bounce; it already stands in for bounced
 /// light. Mark the same lights `Light.baked` in the game so lightmapped
-/// surfaces don't get them twice. Light above 1 clips: bake with
-/// `--scale 2` and set the lightmap's `scale` to 2.
-type bakeJob = { name: string, mesh: Model.staticData, lights: List<Light.t>, albedo: List<Color.t> }
+/// surfaces don't get them twice. The PNG stores light ÷ `scale`, so light
+/// above `scale` clips (`functor bake` reports the peak): load it with the
+/// same `scale` in the lightmap, e.g. 2.0 for light up to 2.
+type bakeJob = { name: string, mesh: Model.staticData, lights: List<Light.t>, albedo: List<Color.t>, scale: float }
 
 /// The mesh in a `.mesh.bin` that `functor bake` wrote: `Model.staticData`
 /// with its `uvs2`, groups without textures (the triangles keep their order,

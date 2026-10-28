@@ -218,11 +218,6 @@ enum Command {
         #[arg(long, default_value_t = 32)]
         gi_samples: u32,
 
-        /// The lightmap stores light ÷ this (light above it clips); set the
-        /// game's lightmap `scale` to the same.
-        #[arg(long, default_value_t = 1.0)]
-        scale: f32,
-
         /// The sampling seed.
         #[arg(long, default_value_t = 0)]
         seed: u64,
@@ -548,7 +543,6 @@ async fn run(args: &Args) -> io::Result<()> {
                 ao_distance,
                 bounces,
                 gi_samples,
-                scale,
                 seed,
                 max_size,
             } => {
@@ -565,7 +559,6 @@ async fn run(args: &Args) -> io::Result<()> {
                         ao_distance: *ao_distance,
                         bounces: *bounces,
                         gi_samples: *gi_samples,
-                        scale: *scale,
                         seed: *seed,
                         max_size: *max_size,
                     },

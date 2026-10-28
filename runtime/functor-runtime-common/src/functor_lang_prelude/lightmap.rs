@@ -95,13 +95,14 @@ fn mesh_fields(mesh: &ModelSource) -> [(&'static str, Value); 5] {
 }
 
 /// One `Lightmap.bakeJob`: a validated mesh, the lights to bake into it,
-/// and each group's authored (sRGB) albedo.
+/// each group's authored (sRGB) albedo, and the light stored as 1.
 #[derive(Debug, Clone)]
 pub struct BakeJob {
     pub name: String,
     pub mesh: ModelSource,
     pub lights: Vec<Light>,
     pub albedo: Vec<[f32; 3]>,
+    pub scale: f32,
 }
 
 /// The jobs in a `List<Lightmap.bakeJob>` value (`functor bake`'s `bakes`),
@@ -174,11 +175,22 @@ pub fn bake_jobs(value: &Value) -> Result<Vec<BakeJob>, String> {
                     .map_err(|e| e.message)
             })
             .collect::<Result<_, _>>()?;
+        let scale = match get("scale")? {
+            Value::Number(n) if n.is_finite() && *n > 0.0 => *n as f32,
+            Value::Number(n) => return Err(format!("{what}.scale: must be above 0, got {n}")),
+            other => {
+                return Err(format!(
+                    "{what}.scale: expected a number, got {}",
+                    other.kind_name()
+                ))
+            }
+        };
         out.push(BakeJob {
             name,
             mesh,
             lights,
             albedo,
+            scale,
         });
     }
     Ok(out)
