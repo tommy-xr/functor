@@ -207,6 +207,25 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             Ok(solid(Solid::Cylinder { radius, height }))
         },
     );
+    reg.fn3(
+        "Solid.cone",
+        "Solid.cone(bottomRadius, topRadius, height) — one radius may be 0",
+        |b: f64, t: f64, h: f64| {
+            let height = positive(h, "Solid.cone height")?;
+            let ok = |r: f64| r.is_finite() && r >= 0.0;
+            if !(ok(b) && ok(t) && (b > 0.0 || t > 0.0)) {
+                return Err(format!(
+                    "Solid.cone radii must be finite and not negative, one of them positive; \
+got {b} and {t}"
+                ));
+            }
+            Ok(solid(Solid::Cone {
+                bottom: b,
+                top: t,
+                height,
+            }))
+        },
+    );
     reg.fn1("Solid.sphere", "Solid.sphere(radius)", |r: f64| {
         let radius = positive(r, "Solid.sphere radius")?;
         Ok(solid(Solid::Sphere { radius }))

@@ -2827,6 +2827,24 @@ examples move?",
         (project, loaded)
     }
 
+    /// Part examples check their geometry with `expect`s (dimensions, walls,
+    /// fits); `verify` only typechecks `game.fun` examples, so run them here.
+    #[test]
+    fn part_examples_expects_pass() {
+        for name in ["hardware"] {
+            let dir: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), "..", "examples", name]
+                .iter()
+                .collect();
+            let dir = dir.to_string_lossy().into_owned();
+            let project = super::detect(&dir).unwrap().select(None).unwrap();
+            let loaded = project.build(&dir, false).unwrap();
+            let run = functor_runtime_common::functor_lang_test::run_expects_in(&loaded)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.message));
+            assert!(run.total() > 0, "{name}: no expects");
+            assert_eq!(run.failed(), 0, "{name}: {} expect(s) failed", run.failed());
+        }
+    }
+
     /// Duplicate parts are refused; so are parts that only an STL would weld.
     #[test]
     fn export_rejects_duplicate_parts() {
