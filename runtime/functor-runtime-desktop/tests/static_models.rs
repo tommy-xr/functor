@@ -117,6 +117,24 @@ fn lightmap_texels(harness: &mut Harness) {
             assert_near(rgb(&image, 32, 64), want, &format!("{space:?} {base:?} × {light:?}"));
         }
     }
+    // uv2 indexes the lightmap: across the quad it runs between the texel
+    // centres of a black | white 2×1 map, so the light ramps up left to right.
+    let ramp = PixelData::new(2, 1, PixelEncoding::Rgb8, ColorSpace::Linear, &[0, 0, 0, 255, 255, 255]);
+    let ramp = TextureDescription::Data(Arc::new(ramp.expect("valid pixels")));
+    let room = lightmapped(solid([255, 255, 255]), ramp, 1.0, [0.0; 3]);
+    let room = model(ModelSource {
+        uvs2: vec![[0.25, 0.5], [0.75, 0.5], [0.75, 0.5], [0.25, 0.5]],
+        ..room.source().clone()
+    });
+    let image = harness.render(&frame(&room, 1, false, vec![]));
+    for x in [8, 32, 56] {
+        // Pixel x sees world x = (x / 64 - 1) × 2.31, on a quad from -3 to 0.
+        let world = (x as f32 / 64.0 - 1.0) * 4.0 * 30f32.to_radians().tan();
+        let light = (world + 3.0) / 3.0;
+        let want = (linear_to_srgb(light) * 255.0).round() as u8;
+        let seen = rgb(&image, x, 64)[0];
+        assert!(seen.abs_diff(want) <= 6, "uv2 ramp at {x}: drew {seen}, want {want}");
+    }
     // A dark lightmap shows `floor` (an sRGB colour) instead.
     let room = lightmapped(
         solid([255, 255, 255]),
