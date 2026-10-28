@@ -14716,6 +14716,90 @@ colour space"
         );
     }
 
+    const LAYERED: &str = "let layer = (id, v) => { id: id, pixels: Bytes.fromU8([v, v, v, v, v, v]) }\n\
+let lm = Texture.atlas({ images: [{ pixels: px, layers: [] }, { pixels: px, layers: [layer(3.0, 1.0), layer(1.0, 2.0)] }], \
+padding: 1.0, maxSize: 64.0 })\n";
+
+    /// `Texture.atlas` keeps each image's layers where it landed;
+    /// `Texture.withLayers` pairs the atlas with sorted intensities.
+    #[test]
+    fn with_layers_pairs_an_atlas_with_intensities() {
+        let src = format!(
+            "{PIXELS}{LAYERED}let main = Texture.withLayers(Map.fromList([(3.0, 0.5), (1.0, 1.0)]), lm.texture)\n"
+        );
+        let Value::HostData(texture) = eval_with_prelude(&src).unwrap() else {
+            panic!("expected a texture");
+        };
+        let texture = &texture.as_any().downcast_ref::<FunctorLangTexture>().unwrap().0;
+        let TextureDescription::Layered { base, intensities } = texture else {
+            panic!("expected a layered texture, got {texture:?}");
+        };
+        assert_eq!(intensities, &[(1.0, 1.0), (3.0, 0.5)]);
+        let [image] = base.layers() else {
+            panic!("one layered image, got {:?}", base.layers());
+        };
+        let ids: Vec<f64> = image.layers.iter().map(|l| l.id).collect();
+        assert_eq!((image.width, image.height, image.padding, ids), (2, 1, 1, vec![3.0, 1.0]));
+        assert_eq!(image.layers[1].rgba8, [2, 2, 2, 255, 2, 2, 2, 255]);
+    }
+
+    #[test]
+    fn layer_errors_name_the_layer() {
+        let run = |main: &str| {
+            eval_with_prelude(&format!("{PIXELS}{LAYERED}let main = {main}\n"))
+                .err()
+                .expect("should fail")
+        };
+        let atlas = |layers: &str| {
+            run(&format!(
+                "Texture.atlas({{ images: [{{ pixels: px, layers: {layers} }}], padding: 0.0, maxSize: 64.0 }})"
+            ))
+        };
+        assert_eq!(
+            atlas("[{ id: 1.0, pixels: Bytes.fromU8([1.0, 2.0, 3.0]) }]"),
+            "Texture.atlas: images[0]: layers[0]: pixels: 3 bytes, but 2×1 Rgb8 needs 6 (3 per pixel)"
+        );
+        assert_eq!(
+            atlas("[layer(4.0, 1.0), layer(4.0, 2.0)]"),
+            "Texture.atlas: images[0]: layers[1]: id 4 repeats layers[0]"
+        );
+        assert_eq!(
+            run("Texture.withLayers(Map.fromList([(1.0, 0.0 - 1.0)]), lm.texture)"),
+            "Texture.withLayers: layer 1: intensity must be a finite number from 0, got -1"
+        );
+        assert_eq!(
+            run("Texture.withLayers(Map.fromList([(1.0, 1.0)]), Asset.texture(\"a.png\"))"),
+            "Texture.withLayers: expected a Texture.atlas or Texture.fromPixels texture"
+        );
+    }
+
+    /// `Scene.withLightmap` overrides only lightmapped static models' texture.
+    #[test]
+    fn with_lightmap_overrides_lightmapped_static_models() {
+        use crate::scene3d::{MeshOverride, MeshSelector};
+        let src = format!(
+            "{ROOM}let bare = Model.static({{ roomData with lightmap: Option.None }})\n\
+let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
+|> Scene.withLightmap(Texture.withLayers(Map.fromList([(1.0, 1.0)]), px))\n"
+        );
+        let Value::HostData(scene) = eval_with_prelude(&src).unwrap() else {
+            panic!("expected a scene");
+        };
+        let scene = &scene.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        let SceneObject::Group(items) = &scene.obj else {
+            panic!("expected a group, got {:?}", scene.obj);
+        };
+        let overrides = |i: usize| match &items[i].obj {
+            SceneObject::Model(model) => model.overrides.clone(),
+            other => panic!("expected a model, got {other:?}"),
+        };
+        assert!(matches!(
+            overrides(0).as_slice(),
+            [(MeshSelector::All, MeshOverride::Lightmap(TextureDescription::Layered { .. }))]
+        ));
+        assert!(overrides(1).is_empty(), "no lightmap, no override");
+    }
+
     /// The persistence spine on the REAL store: `Persistence.save` writes the
     /// project's slot file (atomically, as canonical plain-data JSON) and a
     /// later `Persistence.load` restores exactly the saved value into a fresh

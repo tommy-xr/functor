@@ -35,10 +35,11 @@ type colorSpace =
 /// `Texture.file` (on `Scene.quad`, the bottom edge).
 type pixels = { width: float, height: float, format: format, colorSpace: colorSpace, pixels: Bytes.t }
 
-/// A switchable contribution to an atlas image (same size and format).
+/// A switchable contribution to an atlas image: the image's size and
+/// format, mixed in by `withLayers` under its `id` (e.g. one per light).
 type layer = { id: float, pixels: Bytes.t }
 
-/// One image to pack. `layers` must be `[]` for now.
+/// One image to pack, with its layers (`[]` for none; ids distinct).
 type image = { pixels: pixels, layers: List<layer> }
 
 /// Where an image landed: its first texel (`x`, `y`: row 0, column 0) and
@@ -69,3 +70,14 @@ let fromPng : (Bytes.t, colorSpace) => Asset.Texture
 /// square that fits, by a deterministic skyline packer. Every image must
 /// share the first's colour space; too much for `maxSize` is an error.
 let atlas : (atlasInput) => atlasOutput
+/// The atlas with its layers mixed in: each texel is base + Σ intensity ×
+/// layer, per channel as stored, clamped to 255 (alpha stays the base's).
+/// An id missing from `intensities` is 0; an id no layer has is ignored.
+/// Build it in `draw` from model state, so time travel shows the right
+/// lights. Only images whose intensities changed re-upload; drawing one
+/// atlas at two sets of intensities in a frame is correct but re-uploads.
+///
+/// ```
+/// let lit = Texture.withLayers(Map.fromList([(1.0, 0.5)]), lm.texture)
+/// ```
+let withLayers : (Map<float, float>, Asset.Texture) => Asset.Texture

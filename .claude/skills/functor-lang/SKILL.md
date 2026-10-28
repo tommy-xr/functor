@@ -1009,7 +1009,7 @@ The generated modules:
 | `Vec3` | branded 3D vectors and their arithmetic |
 | `Angle` | branded angles (`degrees` / `radians`; suffixes `deg` / `rad`) |
 | `Time` | branded durations (`seconds` / `millis` / `micros` / `minutes` / `hours`; suffixes `s` / `ms` / `us` / `min` / `hr`) |
-| `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator); `Texture.fromPixels` — one from decoded pixels (`Rgba8`/`Rgb8`/`Rgb555le`, `Srgb` colour or `Linear` data such as lightmaps); `Texture.atlas` — pack pixel images into one padded texture, returning UV rects |
+| `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator); `Texture.fromPixels` — one from decoded pixels (`Rgba8`/`Rgb8`/`Rgb555le`, `Srgb` colour or `Linear` data such as lightmaps); `Texture.atlas` — pack pixel images (each with optional switchable layers) into one padded texture, returning UV rects; `Texture.withLayers` — an atlas with its layers mixed in at given intensities |
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
 | `Path` | branded, normalized project-relative paths — what `File.bytes` / `File.exists` take (`"data/x.bin" \|> Path.of \|> File.bytes`; a bare string is a check error) |
@@ -1210,7 +1210,10 @@ the lightmap with `Light.baked` (they still light everything else). A
 `Texture.Linear` lightmap is multiplied as stored; an `Srgb` one (or any
 file) is decoded first, which matches multiplying in gamma space. Pack
 per-surface lightmaps with `Texture.atlas` and point `uvs2` into its rects.
-See `examples/lightmap`.
+See `examples/lightmap`. For flickering or switchable lights, give atlas
+images `layers` (one per light id) and draw `Scene.modelOf(room) |>
+Scene.withLightmap(Texture.withLayers(model.lights, atlas.texture))` with
+the intensities as model state; see `examples/lightmap-layers`.
 
 **The `Net` module is built in but not in the generated reference.** Its types
 need no declaration, and these are the variants to match:

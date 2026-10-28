@@ -190,6 +190,13 @@ let inCells : (List<float>, t) => t
 /// clock — attaching one is what puts the playhead under the game's control.
 let animate : (Anim.t, t) => t
 
+/// Draw this subtree's lightmapped static models (`Model.static` with a
+/// `lightmap`) with `texture` in place of their lightmap's texture, keeping
+/// its `scale` and `floor` — typically `Texture.withLayers(model.lights,
+/// atlas)`, so switching or flickering lights is state in the model. Other
+/// models are unaffected. The scene is last for piping.
+let withLightmap : (Asset.Texture, t) => t
+
 /// Translate a scene node; the scene is last for piping.
 let translate : (Vec3.t, t) => t
 /// Scale a scene node uniformly; the scene is last for piping.
