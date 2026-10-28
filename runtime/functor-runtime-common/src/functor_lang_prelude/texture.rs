@@ -51,6 +51,30 @@ fn side(
     crate::texture::check_side(name, n as f64).or_else(|e| fail(what, e, span))
 }
 
+/// A `Texture.colorSpace` constructor.
+fn color_space_of(value: &Value, what: &str, span: Span) -> Result<ColorSpace, RunError> {
+    match value {
+        Value::Variant { ctor, args } if args.is_empty() => match &**ctor {
+            "Texture.Srgb" => Ok(ColorSpace::Srgb),
+            "Texture.Linear" => Ok(ColorSpace::Linear),
+            other => fail(what, format!("colorSpace: unknown colour space {other}"), span),
+        },
+        other => fail(
+            what,
+            format!("colorSpace: expected a constructor, got {}", other.kind_name()),
+            span,
+        ),
+    }
+}
+
+struct ColorSpaceArg(ColorSpace);
+
+impl crate::host_registry::FromArg for ColorSpaceArg {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        color_space_of(value, path, span).map(ColorSpaceArg)
+    }
+}
+
 /// A `Texture.pixels` record, validated and converted. Errors start `what: `.
 fn pixels_of(value: &Value, what: &str, span: Span) -> Result<PixelData, RunError> {
     let fields = record(value, what, span)?;
@@ -68,17 +92,7 @@ fn pixels_of(value: &Value, what: &str, span: Span) -> Result<PixelData, RunErro
         "Texture.Rgb555le" => PixelEncoding::Rgb555le,
         other => return fail(what, format!("format: unknown format {other}"), span),
     };
-    let color_space = match ctor("colorSpace")?.as_str() {
-        "Texture.Srgb" => ColorSpace::Srgb,
-        "Texture.Linear" => ColorSpace::Linear,
-        other => {
-            return fail(
-                what,
-                format!("colorSpace: unknown colour space {other}"),
-                span,
-            )
-        }
-    };
+    let color_space = color_space_of(field(fields, "colorSpace", what, span)?, what, span)?;
     let bytes: FunctorLangBytes = crate::host_registry::FromArg::from_arg(
         field(fields, "pixels", what, span)?,
         &format!("{what}: pixels"),
@@ -156,6 +170,20 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
         "Texture.fromPixels",
         "Texture.fromPixels(pixels)",
         |p: PixelsArg| texture_value(p.0),
+    );
+    reg.fn2(
+        "Texture.fromPng",
+        "Texture.fromPng(File.bytes(\"baked/room.png\"), Texture.Linear)",
+        |png: FunctorLangBytes, space: ColorSpaceArg| {
+            let fail = |e: String| format!("Texture.fromPng: {e}");
+            let image = image::load_from_memory_with_format(png.0.as_slice(), image::ImageFormat::Png)
+                .map_err(|e| fail(e.to_string()))?
+                .to_rgba8();
+            let (width, height) = image.dimensions();
+            PixelData::new(width, height, PixelEncoding::Rgba8, space.0, image.as_raw())
+                .map(texture_value)
+                .map_err(fail)
+        },
     );
     reg.fn1(
         "Texture.atlas",

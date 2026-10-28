@@ -184,7 +184,7 @@ use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
 
 pub mod bytes;
-mod lightmap;
+pub mod lightmap;
 pub mod mesh;
 pub mod model;
 pub mod solid;
@@ -13345,6 +13345,114 @@ maxSize 16; lower texelsPerMeter or padding"
         assert_eq!(
             fail(("Bytes.fromU32le([0.0, 1.0, 2.0,", "Bytes.fromU32le([0.0, 1.0, 9.0,")),
             "Lightmap.unwrap: triangles: triangle 0 uses vertex 9, but there are 4"
+        );
+    }
+
+    /// `bytes` as a Functor `Bytes.fromU8([…])` literal.
+    fn bytes_literal(bytes: &[u8]) -> String {
+        let list: Vec<String> = bytes.iter().map(|b| format!("{b}.0")).collect();
+        format!("Bytes.fromU8([{}])", list.join(", "))
+    }
+
+    /// `Lightmap.readMesh` gives back `functor bake`'s mesh as
+    /// `Model.staticData`; groups lose their textures, nothing else changes.
+    #[test]
+    fn read_mesh_round_trips_a_baked_mesh() {
+        let Value::HostData(model) = eval_with_prelude(&format!("{ROOM}let main = room\n")).unwrap() else {
+            panic!("expected a Model");
+        };
+        let mut mesh = model.as_any().downcast_ref::<model::FunctorLangModel>().unwrap().0.source().clone();
+        let bin = bytes_literal(&crate::lightmap::write_mesh(&mesh));
+        let read = |expr: &str| eval_with_prelude(&format!("let m = Lightmap.readMesh({bin})\nlet main = {expr}\n"));
+        let Value::HostData(back) = read("Model.static(m)").unwrap() else {
+            panic!("expected a Model");
+        };
+        mesh.lightmap = None;
+        mesh.groups[0].texture = None;
+        assert_eq!(back.as_any().downcast_ref::<model::FunctorLangModel>().unwrap().0.source(), &mesh);
+        assert!(matches!(read("Option.isNone(m.lightmap) && List.length(m.groups) == 2.0"), Ok(Value::Bool(true))));
+        assert_eq!(
+            eval_with_prelude("let main = Lightmap.readMesh(Bytes.fromU8([1.0, 2.0]))").err().unwrap(),
+            "Lightmap.readMesh: cut short: needs 4 bytes at byte 0, has 2"
+        );
+    }
+
+    /// `Texture.fromPng` decodes into a pixel texture in the colour space
+    /// asked for; bad bytes are an error.
+    #[test]
+    fn from_png_decodes_in_its_colour_space() {
+        use crate::texture::ColorSpace;
+        let image = image::RgbaImage::from_raw(2, 1, vec![10, 20, 30, 255, 40, 50, 60, 0]).unwrap();
+        let mut png = Vec::new();
+        image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let png = bytes_literal(&png);
+        for (space, expected) in [("Linear", ColorSpace::Linear), ("Srgb", ColorSpace::Srgb)] {
+            let src = format!("let main = Texture.fromPng({png}, Texture.{space})\n");
+            let Value::HostData(data) = eval_with_prelude(&src).unwrap() else {
+                panic!("expected a texture");
+            };
+            let TextureDescription::Data(pixels) = &data.as_any().downcast_ref::<FunctorLangTexture>().unwrap().0 else {
+                panic!("expected a pixel texture");
+            };
+            assert_eq!((pixels.width(), pixels.height(), pixels.color_space()), (2, 1, expected));
+            assert_eq!(pixels.rgba8(), [10, 20, 30, 255, 40, 50, 60, 0]);
+        }
+        let err = eval_with_prelude("let main = Texture.fromPng(Bytes.fromU8([1.0]), Texture.Linear)\n")
+            .err()
+            .unwrap();
+        assert!(err.starts_with("Texture.fromPng: "), "{err}");
+    }
+
+    const BAKES: &str = "let bakes = [{ name: \"room\", mesh: roomData, lights: \
+[Light.ambient(Color.rgb(0.2, 0.2, 0.2)), Light.point(Vec3.make(0.0, 1.0, 1.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 4.0) \
+|> Light.castShadows] }]\n";
+
+    /// `functor bake`'s jobs: the mesh validated (its `uvs2` and lightmap
+    /// dropped, since the bake replaces them) and the lights as they are.
+    #[test]
+    fn bake_jobs_read_the_bakes_list() {
+        let value = eval_with_prelude(&format!("{ROOM}{BAKES}let main = bakes\n")).unwrap();
+        let jobs = lightmap::bake_jobs(&value).unwrap();
+        assert_eq!(jobs.len(), 1);
+        let job = &jobs[0];
+        assert_eq!(job.name, "room");
+        assert_eq!((job.mesh.positions.len(), job.mesh.groups.len()), (4, 2));
+        assert!(job.mesh.uvs2.is_empty() && job.mesh.lightmap.is_none());
+        assert!(matches!(job.lights[0], Light::Ambient { .. }));
+        assert!(job.lights[1].casts_shadows());
+    }
+
+    #[test]
+    fn bake_job_errors_name_the_job_and_field() {
+        let fail = |replace: (&str, &str)| {
+            let src = format!("{ROOM}{BAKES}").replace(replace.0, replace.1);
+            assert_ne!(src, format!("{ROOM}{BAKES}"), "{replace:?} did not apply");
+            // `room` would fail first on a broken mesh.
+            let src = src.replace("let room = Model.static(roomData)\n", "");
+            let value = eval_with_prelude_unchecked(&format!("{src}let main = bakes\n")).unwrap();
+            lightmap::bake_jobs(&value).unwrap_err()
+        };
+        for bad in ["../room", "a:b", ".room", ""] {
+            assert_eq!(
+                fail(("name: \"room\"", &format!("name: {bad:?}"))),
+                format!("bakes[0].name: {bad:?} must be a file name of letters, digits, `-`, `_` and `.` (it names `<name>.png`)")
+            );
+        }
+        assert_eq!(
+            fail(("}]\n", "}, { name: \"Room\", mesh: roomData, lights: [] }]\n")),
+            "bakes[1].name: \"Room\" is used twice"
+        );
+        assert_eq!(
+            fail(("Bytes.fromU32le([0.0, 1.0, 2.0,", "Bytes.fromU32le([0.0, 1.0, 9.0,")),
+            "bakes[0].mesh: triangles: triangle 0 uses vertex 9, but there are 4"
+        );
+        assert!(
+            fail(("lights: [", "lights: [3.0, ")).starts_with("bakes[0].lights[0]"),
+            "a non-light names its index"
+        );
+        assert_eq!(
+            lightmap::bake_jobs(&Value::Number(1.0)).unwrap_err(),
+            "expected a list of Lightmap.bakeJob, got a number"
         );
     }
 

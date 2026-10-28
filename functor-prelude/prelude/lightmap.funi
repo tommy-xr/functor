@@ -1,5 +1,5 @@
 //! Lightmap tools. `unwrap` gives a static model's data a second UV set
-//! (`uvs2`) for a lightmap baked in Blender or in Functor. Edge-adjacent
+//! (`uvs2`) for a lightmap baked in Blender or with `functor bake`. Edge-adjacent
 //! triangles facing the same way (within ~6°) become charts, split wherever
 //! laid flat they would overlap; each is laid flat at `texelsPerMeter`,
 //! turned to its smallest rectangle, and packed like `Texture.atlas` into one
@@ -32,3 +32,34 @@ type unwrapped = { mesh: Model.staticData, source: Bytes.t, width: float, height
 /// error: lower `texelsPerMeter`. Curved surfaces become one chart per face
 /// (a 16-sided cylinder has 18 charts).
 let unwrap : (Model.staticData, options) => unwrapped
+
+/// One lightmap for `functor bake`, which reads a top-level
+/// `let bakes : List<Lightmap.bakeJob>`, unwraps each `mesh` (its `uvs2` are
+/// replaced) and writes `<name>.png` (linear light, RGBA8) and
+/// `<name>.mesh.bin` (the unwrapped mesh) for the game to load:
+///
+/// ```
+/// let bakes = [{ name: "room", mesh: roomData, lights: roomLights }]
+/// // `functor bake` evaluates the whole project, so guard the load: the
+/// // first bake runs before its files exist, and while it runs the files it
+/// // writes read as missing.
+/// let room = if File.exists("baked/room.png") then
+///   Model.static({ Lightmap.readMesh(File.bytes("baked/room.mesh.bin")) with
+///     groups: roomData.groups,
+///     lightmap: Option.Some({ texture: Texture.fromPng(File.bytes("baked/room.png"), Texture.Linear),
+///       scale: 1.0, floor: Color.rgb(0.0, 0.0, 0.0) }) })
+///   else Model.static(roomData)
+/// ```
+///
+/// The baked texels hold light, not colour: the shader multiplies in each
+/// group's texture. Lights work as at runtime (same falloff; only
+/// `castShadows` lights cast shadows); ambient light is darkened where
+/// geometry is near (occlusion). Mark the same lights `Light.baked` in the
+/// game so lightmapped surfaces don't get them twice. Light above 1 clips:
+/// lower it and raise the lightmap's `scale`.
+type bakeJob = { name: string, mesh: Model.staticData, lights: List<Light.t> }
+
+/// The mesh in a `.mesh.bin` that `functor bake` wrote: `Model.staticData`
+/// with its `uvs2`, groups without textures (the triangles keep their order,
+/// so the original `groups` fit), and no lightmap. Bad bytes are an error.
+let readMesh : (Bytes.t) => Model.staticData

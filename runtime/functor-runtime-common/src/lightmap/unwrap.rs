@@ -365,10 +365,10 @@ fn convex_hull(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    type Mesh = (Vec<[f32; 3]>, Vec<[u32; 3]>);
+    pub(crate) type Mesh = (Vec<[f32; 3]>, Vec<[u32; 3]>);
 
     const OPTIONS: UnwrapOptions = UnwrapOptions {
         texels_per_meter: 16.0,
@@ -460,7 +460,7 @@ mod tests {
     /// `n` rooms of 6×3×6 m in a row, every wall, floor and ceiling tiled
     /// with 1 m polygons of their own, plus six 0.5 m crates per room at
     /// assorted angles: about medsci1's triangle count at `n` = 72.
-    fn level(n: usize) -> Mesh {
+    pub(crate) fn level(n: usize) -> Mesh {
         let (mut positions, mut tris) = (Vec::new(), Vec::new());
         let tile = |positions: &mut Vec<[f32; 3]>, tris: &mut Vec<[u32; 3]>, corners: [[f32; 3]; 4]| {
             let base = positions.len() as u32;

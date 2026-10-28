@@ -1007,7 +1007,7 @@ The generated modules:
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
 | `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
 | `Model` | models built from decoded data — skinned (`Model.skinned`) or static world geometry in textured groups (`Model.static`) — drawn with `Scene.modelOf` |
-| `Lightmap` | `Lightmap.unwrap` — lightmap UVs (`uvs2`) for `Model.staticData`: planar charts packed into one atlas at a fixed `texelsPerMeter`, seam vertices duplicated |
+| `Lightmap` | `Lightmap.unwrap` — lightmap UVs (`uvs2`) for `Model.staticData`: planar charts packed into one atlas at a fixed `texelsPerMeter`, seam vertices duplicated; `bakeJob` — what `functor bake` reads from a top-level `let bakes` (it writes `<name>.png` + `<name>.mesh.bin`); `readMesh` loads the baked mesh back (`Texture.fromPng(…, Texture.Linear)` the light) |
 | `Terrain` | finite asset-backed heightfield terrain shared by rendering and physics |
 | `Physics` | shapes, bodies, the `physics` hook's world, live reads, commands, raycasts, events |
 | `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
