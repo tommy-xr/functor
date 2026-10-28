@@ -1,9 +1,11 @@
-//! `Lightmap.unwrap` (see `lightmap.funi`).
+//! `Lightmap.unwrap`, `Lightmap.readMesh` and the `bakes` jobs `functor bake`
+//! reads (see `lightmap.funi`).
 
 use std::rc::Rc;
 
-use crate::lightmap::{unwrap, UnwrapOptions};
-use crate::model::ModelData;
+use crate::light::Light;
+use crate::lightmap::{read_mesh, unwrap, unwrapped_source, UnwrapOptions};
+use crate::model::{ModelData, ModelSource};
 
 use super::bytes::{ByteView, FunctorLangBytes};
 use super::*;
@@ -74,8 +76,89 @@ fn bytes(data: Vec<u8>) -> Value {
 }
 
 /// Little-endian f32 components of each entry.
-fn f32s<const N: usize>(entries: impl Iterator<Item = [f32; N]>) -> Value {
-    bytes(entries.flatten().flat_map(f32::to_le_bytes).collect())
+fn f32s<const N: usize>(entries: &[[f32; N]]) -> Value {
+    bytes(entries.as_flattened().iter().flat_map(|f| f.to_le_bytes()).collect())
+}
+
+/// `mesh`'s vertex data and triangles as `Model.staticData` fields.
+fn mesh_fields(mesh: &ModelSource) -> [(&'static str, Value); 5] {
+    [
+        ("positions", f32s(&mesh.positions)),
+        ("normals", f32s(&mesh.normals)),
+        ("uvs", f32s(&mesh.uvs)),
+        ("uvs2", f32s(&mesh.uvs2)),
+        (
+            "triangles",
+            bytes(mesh.triangles.as_flattened().iter().flat_map(|v| v.to_le_bytes()).collect()),
+        ),
+    ]
+}
+
+/// One `Lightmap.bakeJob`: a validated mesh and the lights to bake into it.
+#[derive(Debug, Clone)]
+pub struct BakeJob {
+    pub name: String,
+    pub mesh: ModelSource,
+    pub lights: Vec<Light>,
+}
+
+/// The jobs in a `List<Lightmap.bakeJob>` value (`functor bake`'s `bakes`),
+/// or an error naming the job and field. Names must be unique file stems.
+pub fn bake_jobs(value: &Value) -> Result<Vec<BakeJob>, String> {
+    let span = Span::new(0, 0);
+    let Value::List(jobs) = value else {
+        return Err(format!("expected a list of Lightmap.bakeJob, got {}", value.kind_name()));
+    };
+    let mut out: Vec<BakeJob> = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        let what = format!("bakes[{i}]");
+        let Value::Record(fields) = job else {
+            return Err(format!("{what}: expected a record, got {}", job.kind_name()));
+        };
+        let get = |name: &str| {
+            fields
+                .iter()
+                .find(|(field, _)| field == name)
+                .map(|(_, v)| v)
+                .ok_or_else(|| format!("{what}: missing `{name}`"))
+        };
+        let name = match get("name")? {
+            Value::String(name) => name.to_string(),
+            other => return Err(format!("{what}.name: expected a string, got {}", other.kind_name())),
+        };
+        if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\']) {
+            return Err(format!(
+                "{what}.name: {name:?} must be a file name without a folder (it names `<name>.png`)"
+            ));
+        }
+        if out.iter().any(|job| job.name == name) {
+            return Err(format!("{what}.name: {name:?} is used twice"));
+        }
+        let mut mesh = model::static_source(get("mesh")?, span)
+            .map_err(|e| format!("{what}.mesh: {}", e.message))?;
+        // The bake unwraps it, so neither needs to be valid.
+        mesh.uvs2.clear();
+        mesh.lightmap = None;
+        let mesh = ModelData::new(mesh)
+            .map_err(|e| format!("{what}.mesh: {e}"))?
+            .source()
+            .clone();
+        let Value::List(lights) = get("lights")? else {
+            return Err(format!("{what}.lights: expected a list"));
+        };
+        let lights = lights
+            .iter()
+            .enumerate()
+            .map(|(l, light)| {
+                let path = format!("{what}.lights[{l}]");
+                <FunctorLangLight as crate::host_registry::FromArg>::from_arg(light, &path, span)
+                    .map(|light| light.0)
+                    .map_err(|e| e.message)
+            })
+            .collect::<Result<_, _>>()?;
+        out.push(BakeJob { name, mesh, lights });
+    }
+    Ok(out)
 }
 
 pub(super) fn register(reg: &mut crate::host_registry::Registry) {
@@ -86,24 +169,10 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
             let s = input.data.source();
             let out = unwrap(&s.positions, &s.triangles, options.0)
                 .map_err(|e| format!("{NAME}: {e}"))?;
-            let copy = |values: &[[f32; 3]]| f32s(out.source.iter().map(|&v| values[v as usize]));
-            let uvs = if s.uvs.is_empty() {
-                f32s::<2>(std::iter::empty())
-            } else {
-                f32s(out.source.iter().map(|&v| s.uvs[v as usize]))
-            };
-            let replaced = [
-                ("positions", copy(&s.positions)),
-                ("normals", copy(&s.normals)),
-                ("uvs", uvs),
-                ("uvs2", f32s(out.uvs2.iter().copied())),
-                (
-                    "triangles",
-                    bytes(out.triangles.iter().flatten().flat_map(|v| v.to_le_bytes()).collect()),
-                ),
-                // A lightmap baked for the old uvs2 no longer fits.
-                ("lightmap", crate::input::option_value(None)),
-            ];
+            // A lightmap baked for the old uvs2 no longer fits.
+            let replaced = mesh_fields(&unwrapped_source(s, &out))
+                .into_iter()
+                .chain([("lightmap", crate::input::option_value(None))]);
             let mut mesh = (*input.fields).clone();
             for (name, value) in replaced {
                 let field = mesh.iter_mut().find(|(field, _)| field == name);
@@ -119,6 +188,29 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                 ("width", side.clone()),
                 ("height", side),
             ]))
+        },
+    );
+    reg.fn1(
+        "Lightmap.readMesh",
+        "Lightmap.readMesh(File.bytes(\"baked/room.mesh.bin\"))",
+        |data: FunctorLangBytes| {
+            let mesh = read_mesh(data.0.as_slice()).map_err(|e| format!("Lightmap.readMesh: {e}"))?;
+            let groups = mesh
+                .groups
+                .iter()
+                .map(|g| {
+                    crate::input::record([
+                        ("first", Value::Number(g.first as f64)),
+                        ("count", Value::Number(g.count as f64)),
+                        ("texture", crate::input::option_value(None)),
+                        ("unlit", Value::Bool(g.unlit)),
+                    ])
+                })
+                .collect();
+            Ok::<_, String>(crate::input::record(mesh_fields(&mesh).into_iter().chain([
+                ("groups", Value::List(Rc::new(groups))),
+                ("lightmap", crate::input::option_value(None)),
+            ])))
         },
     );
 }

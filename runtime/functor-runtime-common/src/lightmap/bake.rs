@@ -17,6 +17,9 @@ use super::{unwrap, UnwrapOptions, Unwrapped};
 use crate::light::{cone_falloff, distance_falloff, radiance, Light};
 use crate::model::ModelSource;
 
+/// Bumped when the same inputs would bake different texels.
+pub const BAKE_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Copy)]
 pub struct BakeOptions {
     pub unwrap: UnwrapOptions,
@@ -114,7 +117,7 @@ pub fn bake(
             options.ao_distance
         ));
     }
-    let scene = Scene::new(positions, normals, triangles, lights, options)?;
+    let scene = Scene::new(positions, normals, triangles, unwrapped, lights, options)?;
     let samples = rasterize(unwrapped);
 
     // Texels in chunks, claimed in turn by each worker; each lands at its
@@ -278,12 +281,29 @@ fn dilate(baked: &mut Baked, u: &Unwrapped, padding: u32) {
 
 const NEIGHBOURS: [(i64, i64); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
 
+/// Points per texel, on a jittered 2 × 2 grid: shadow edges and occlusion
+/// average over the texel instead of stepping at its centre.
+const SUBSAMPLES: usize = 4;
+
+/// A point a texel samples: its position, shading normal, ray origin, and
+/// face normal (on the shading normal's side), about which occlusion looks.
+#[derive(Clone, Copy)]
+struct Point {
+    p: Vector,
+    n: Vector,
+    origin: Vector,
+    face: Vector,
+}
+
 /// The mesh as rays see it, plus what shading a sample needs.
 struct Scene<'a> {
     mesh: TriMesh,
     positions: &'a [[f32; 3]],
     normals: &'a [[f32; 3]],
     triangles: &'a [[u32; 3]],
+    /// Each triangle's corners in atlas texels.
+    texels: Vec<[[f64; 2]; 3]>,
+    size: u32,
     lights: &'a [Light],
     /// How far ray origins sit off the surface, against self-hits.
     bias: f32,
@@ -303,6 +323,7 @@ impl<'a> Scene<'a> {
         positions: &'a [[f32; 3]],
         normals: &'a [[f32; 3]],
         triangles: &'a [[u32; 3]],
+        unwrapped: &Unwrapped,
         lights: &'a [Light],
         options: &BakeOptions,
     ) -> Result<Self, String> {
@@ -320,6 +341,12 @@ impl<'a> Scene<'a> {
             positions,
             normals,
             triangles,
+            texels: unwrapped
+                .triangles
+                .iter()
+                .map(|t| t.map(|v| unwrapped.uvs2[v as usize].map(|x| x as f64 * unwrapped.size as f64)))
+                .collect(),
+            size: unwrapped.size,
             lights,
             bias: (diagonal * 1e-4).max(1e-4),
             far: diagonal * 2.0 + 1.0,
@@ -334,80 +361,104 @@ impl<'a> Scene<'a> {
         max > 0.0 && self.mesh.intersects_local_ray(&Ray::new(origin, dir), max)
     }
 
-    /// Linear light arriving at a sample: each light's `radiance × N·L ×
-    /// falloff`, shadowed if it casts shadows, plus ambient × unoccluded share.
-    fn light_at(&self, s: &Sample) -> [f32; 3] {
+    /// Sub-sample `j` of texel `s`, on its triangle (a point past an edge
+    /// moves onto it).
+    fn point(&self, s: &Sample, j: usize, h: u64) -> Point {
         let tri = self.triangles[s.triangle as usize];
+        let [ta, tb, tc] = self.texels[s.triangle as usize];
+        let (x, y) = ((s.texel % self.size) as f64, (s.texel / self.size) as f64);
+        let at = [
+            x + ((j & 1) as f64 + unit(hash(h, 2 * j as u64 + 2)) as f64) / 2.0,
+            y + ((j >> 1) as f64 + unit(hash(h, 2 * j as u64 + 3)) as f64) / 2.0,
+        ];
+        let area = cross(ta, tb, tc);
+        let weights = if area == 0.0 {
+            s.weights
+        } else {
+            let w = [cross(tb, tc, at), cross(tc, ta, at), cross(ta, tb, at)].map(|w| (w / area).max(0.0));
+            let sum: f64 = w.iter().sum();
+            w.map(|w| (w / sum) as f32)
+        };
         let mix = |values: &[[f32; 3]]| {
-            (0..3).fold(Vector::ZERO, |acc, k| acc + v(values[tri[k] as usize]) * s.weights[k])
+            (0..3).fold(Vector::ZERO, |acc, k| acc + v(values[tri[k] as usize]) * weights[k])
         };
         let p = mix(self.positions);
         let [a, b, c] = tri.map(|i| v(self.positions[i as usize]));
-        let mut geometric = (b - a).cross(c - a).normalize_or_zero();
+        let mut face = (b - a).cross(c - a).normalize_or_zero();
         let mut n = mix(self.normals).normalize_or_zero();
         if n == Vector::ZERO {
-            n = geometric;
+            n = face;
         }
         // The authored normal picks the lit side.
-        if geometric.dot(n) < 0.0 {
-            geometric = -geometric;
+        if face.dot(n) < 0.0 {
+            face = -face;
         }
-        if geometric == Vector::ZERO {
-            geometric = n;
+        if face == Vector::ZERO {
+            face = n;
         }
-        let origin = p + geometric * self.bias;
+        Point { p, n, origin: p + face * self.bias, face }
+    }
 
+    /// Linear light arriving at a texel, averaged over its sub-samples: each
+    /// light's `radiance × N·L × falloff`, shadowed if it casts shadows, plus
+    /// ambient × the unoccluded share.
+    fn light_at(&self, s: &Sample) -> [f32; 3] {
+        let h = hash(self.seed, s.texel as u64);
+        let points: [_; SUBSAMPLES] = std::array::from_fn(|j| self.point(s, j, h));
         let mut total = Vector::ZERO;
         let mut occlusion = None;
         for light in self.lights {
-            let (color, l, atten, max) = match *light {
-                Light::Ambient { color, .. } => {
-                    let open = *occlusion.get_or_insert_with(|| self.unoccluded(origin, geometric, s.texel));
-                    total += v(radiance(color, 1.0)) * open;
-                    continue;
-                }
-                Light::Directional { direction, color, intensity, .. } => {
-                    (radiance(color, intensity), -v(direction).normalize_or_zero(), 1.0, self.far)
-                }
-                Light::Point { position, color, intensity, range, .. } => {
-                    let to = v(position) - p;
-                    let d = to.length();
-                    (radiance(color, intensity), to / d.max(1e-4), distance_falloff(d, range), d - self.bias)
-                }
-                Light::Spot { position, direction, color, intensity, range, cone_angle, .. } => {
-                    let to = v(position) - p;
-                    let d = to.length();
-                    let l = to / d.max(1e-4);
-                    let cone = cone_falloff((-l).dot(v(direction).normalize_or_zero()), cone_angle.cos());
-                    (radiance(color, intensity), l, distance_falloff(d, range) * cone, d - self.bias)
-                }
-            };
-            let ndotl = n.dot(l).max(0.0);
-            if ndotl * atten <= 0.0 || (light.casts_shadows() && self.blocked(origin, l, max)) {
+            if let Light::Ambient { color, .. } = *light {
+                let open = *occlusion.get_or_insert_with(|| self.unoccluded(&points, h));
+                total += v(radiance(color, 1.0)) * open;
                 continue;
             }
-            total += v(color) * (ndotl * atten);
+            for &Point { p, n, origin, .. } in &points {
+                let (color, l, atten, max) = match *light {
+                    Light::Ambient { .. } => unreachable!("handled above"),
+                    Light::Directional { direction, color, intensity, .. } => {
+                        (radiance(color, intensity), -v(direction).normalize_or_zero(), 1.0, self.far)
+                    }
+                    Light::Point { position, color, intensity, range, .. } => {
+                        let to = v(position) - p;
+                        let d = to.length();
+                        (radiance(color, intensity), to / d.max(1e-4), distance_falloff(d, range), d - self.bias)
+                    }
+                    Light::Spot { position, direction, color, intensity, range, cone_angle, .. } => {
+                        let to = v(position) - p;
+                        let d = to.length();
+                        let l = to / d.max(1e-4);
+                        let cone = cone_falloff((-l).dot(v(direction).normalize_or_zero()), cone_angle.cos());
+                        (radiance(color, intensity), l, distance_falloff(d, range) * cone, d - self.bias)
+                    }
+                };
+                let ndotl = n.dot(l).max(0.0);
+                if ndotl * atten <= 0.0 || (light.casts_shadows() && self.blocked(origin, l, max)) {
+                    continue;
+                }
+                total += v(color) * (ndotl * atten / SUBSAMPLES as f32);
+            }
         }
         total.to_array()
     }
 
-    /// The share of `ao_samples` cosine-weighted rays about `normal` that
-    /// travel `ao_distance` unblocked: 1 in the open, less in corners.
-    fn unoccluded(&self, origin: Vector, normal: Vector, texel: u32) -> f32 {
-        if self.ao_samples == 0 {
+    /// The share of `ao_samples` cosine-weighted rays, spread over the
+    /// sub-samples, that travel `ao_distance` unblocked: 1 in the open, less
+    /// in corners. Directions are a Hammersley set rotated per texel.
+    fn unoccluded(&self, points: &[Point; SUBSAMPLES], h: u64) -> f32 {
+        let n = self.ao_samples;
+        if n == 0 {
             return 1.0;
         }
-        let (t, b) = basis(normal);
-        // A Hammersley set, rotated per texel (Cranley–Patterson).
-        let h = hash(self.seed, texel as u64);
         let (r1, r2) = (unit(h), unit(hash(h, 1)));
-        let n = self.ao_samples;
         let open = (0..n)
             .filter(|&k| {
+                let Point { origin, face, .. } = points[k as usize % SUBSAMPLES];
+                let (t, b) = basis(face);
                 let u1 = ((k as f32 + 0.5) / n as f32 + r1).fract();
                 let u2 = (radical_inverse(k) + r2).fract();
                 let (r, phi) = (u1.sqrt(), u2 * std::f32::consts::TAU);
-                let dir = t * (r * phi.cos()) + b * (r * phi.sin()) + normal * (1.0 - u1).max(0.0).sqrt();
+                let dir = t * (r * phi.cos()) + b * (r * phi.sin()) + face * (1.0 - u1).max(0.0).sqrt();
                 !self.blocked(origin, dir.normalize_or_zero(), self.ao_distance)
             })
             .count();
@@ -476,10 +527,10 @@ mod tests {
             let [x0, y0, z0] = lo;
             let [x1, y1, z1] = hi;
             self.quad([x0, y1, z0], [0.0, 0.0, d], [w, 0.0, 0.0]);
-            self.quad([x0, y0, z0], [0.0, h, 0.0], [0.0, 0.0, d]);
-            self.quad([x1, y0, z0], [0.0, 0.0, d], [0.0, h, 0.0]);
-            self.quad([x0, y0, z0], [w, 0.0, 0.0], [0.0, h, 0.0]);
-            self.quad([x0, y0, z1], [0.0, h, 0.0], [w, 0.0, 0.0]);
+            self.quad([x0, y0, z0], [0.0, 0.0, d], [0.0, h, 0.0]);
+            self.quad([x1, y0, z0], [0.0, h, 0.0], [0.0, 0.0, d]);
+            self.quad([x0, y0, z0], [0.0, h, 0.0], [w, 0.0, 0.0]);
+            self.quad([x0, y0, z1], [w, 0.0, 0.0], [0.0, h, 0.0]);
         }
     }
 

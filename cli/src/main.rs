@@ -188,6 +188,36 @@ enum Command {
         #[arg(long, value_name = "MM", requires = "model")]
         simplify: Option<f64>,
     },
+    /// Bake lightmaps headlessly (no GPU): evaluates the project's top-level
+    /// `let bakes : List<Lightmap.bakeJob>`, unwraps each mesh, lights it
+    /// (direct light, shadows, ambient occlusion) and writes `<name>.png` and
+    /// `<name>.mesh.bin`. The same flags give the same bytes.
+    /// E.g. `functor -d examples/lightmap-bake bake`.
+    Bake {
+        /// The folder to write (default: `baked/` in the project).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Lightmap resolution, the same on every surface.
+        #[arg(long, default_value_t = 16.0)]
+        texels_per_meter: f64,
+
+        /// Ambient-occlusion rays per texel (0: ambient light unoccluded).
+        #[arg(long, default_value_t = 64)]
+        samples: u32,
+
+        /// How far occlusion rays look for geometry, in world units.
+        #[arg(long, default_value_t = 1.0)]
+        ao_distance: f32,
+
+        /// The sampling seed.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+
+        /// The largest lightmap side: a power of two up to 4096.
+        #[arg(long, default_value_t = 2048)]
+        max_size: u32,
+    },
     /// Run the game (default `native`, an OpenGL window; `wasm` serves a dev
     /// server; `vr` runs it on an adb-attached headset, re-pushing on save).
     /// E.g. `functor -d examples/primitives run native`.
@@ -449,6 +479,7 @@ async fn run(args: &Args) -> io::Result<()> {
         Command::Build { .. }
             | Command::Test
             | Command::Export { .. }
+            | Command::Bake { .. }
             | Command::Run { .. }
             | Command::Develop { .. }
             | Command::Push { .. }
@@ -496,6 +527,27 @@ async fn run(args: &Args) -> io::Result<()> {
             Command::Export { output, parts, .. } => {
                 let loaded = project.build(&working_directory_str, false)?;
                 project.export(&loaded, parts, output)
+            }
+            Command::Bake {
+                output,
+                texels_per_meter,
+                samples,
+                ao_distance,
+                seed,
+                max_size,
+            } => {
+                let loaded = project.build(&working_directory_str, false)?;
+                commands::bake::execute(
+                    &loaded,
+                    &output.clone().unwrap_or_else(|| working_directory.join("baked")),
+                    &commands::bake::Settings {
+                        texels_per_meter: *texels_per_meter,
+                        samples: *samples,
+                        ao_distance: *ao_distance,
+                        seed: *seed,
+                        max_size: *max_size,
+                    },
+                )
             }
             // `build` is the strict typecheck gate — nothing compiles for
             // either target (native interprets the file; wasm ships it as
@@ -565,6 +617,7 @@ async fn run(args: &Args) -> io::Result<()> {
         Command::Build { .. }
         | Command::Test
         | Command::Export { .. }
+        | Command::Bake { .. }
         | Command::Run { .. }
         | Command::Develop { .. } => {
             Err(io::Error::other(
@@ -628,6 +681,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Build { .. } => "build",
         Command::Test => "test",
         Command::Export { .. } => "export",
+        Command::Bake { .. } => "bake",
         Command::Run { .. } => "run",
         Command::Develop { .. } => "develop",
         Command::Mcp => "mcp",

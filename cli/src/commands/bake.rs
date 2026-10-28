@@ -1,0 +1,103 @@
+//! `functor bake`: lightmaps for the project's `bakes` (see `lightmap.funi`).
+//! Each job writes `<name>.png` (linear light, RGBA8; alpha marks texels
+//! the bake reached) and `<name>.mesh.bin` (the unwrapped mesh).
+
+use std::io::Error;
+use std::path::Path;
+use std::time::Instant;
+
+use functor_runtime_common::functor_lang_prelude::lightmap::bake_jobs;
+use functor_runtime_common::functor_lang_prelude::FunctorHost;
+use functor_runtime_common::lightmap::{bake_mesh, write_mesh, BakeOptions, UnwrapOptions, BAKE_VERSION};
+
+use crate::output::{emit, Event};
+
+/// Texels kept around each chart, filled by dilation.
+const PADDING: u32 = 2;
+
+pub struct Settings {
+    pub texels_per_meter: f64,
+    pub samples: u32,
+    pub ao_distance: f32,
+    pub seed: u64,
+    pub max_size: u32,
+}
+
+pub fn execute(project: &functor_lang::project::Project, output: &Path, settings: &Settings) -> Result<(), Error> {
+    let session = functor_lang::Session::load(&project.module, &mut FunctorHost).map_err(|failure| {
+        Error::other(project.sources.render(failure.error.span.start, &failure.error.message))
+    })?;
+    let value = session.global("bakes").ok_or_else(|| {
+        Error::other("no top-level `let bakes = …` (a List<Lightmap.bakeJob>) to bake")
+    })?;
+    let jobs = bake_jobs(&value).map_err(|e| Error::other(format!("`bakes`: {e}")))?;
+    if jobs.is_empty() {
+        return Err(Error::other("`bakes` is empty: nothing to bake"));
+    }
+    let options = BakeOptions {
+        unwrap: UnwrapOptions {
+            texels_per_meter: settings.texels_per_meter,
+            padding: PADDING,
+            max_size: settings.max_size,
+        },
+        ao_samples: settings.samples,
+        ao_distance: settings.ao_distance,
+        seed: settings.seed,
+        threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+    };
+    // Bake everything before writing anything, so an error leaves old files.
+    let mut baked = Vec::new();
+    for job in &jobs {
+        let start = Instant::now();
+        let (mesh, lightmap) = bake_mesh(&job.mesh, &job.lights, &options)
+            .map_err(|e| Error::other(format!("`{}`: {e}", job.name)))?;
+        baked.push((job, mesh, lightmap, start.elapsed()));
+    }
+    std::fs::create_dir_all(output)?;
+    // Recorded in the PNG, so a lightmap says how it was made.
+    let made = format!(
+        "texelsPerMeter={} samples={} aoDistance={} seed={} maxSize={}",
+        settings.texels_per_meter, settings.samples, settings.ao_distance, settings.seed, settings.max_size
+    );
+    for (job, mesh, lightmap, took) in baked {
+        let png = output.join(format!("{}.png", job.name));
+        let bin = output.join(format!("{}.mesh.bin", job.name));
+        std::fs::write(&png, encode_png(lightmap.size, &lightmap.rgba8(), &made)?)?;
+        std::fs::write(&bin, write_mesh(&mesh))?;
+        let filled = lightmap.filled.iter().filter(|&&f| f).count();
+        emit(Event::Info {
+            message: format!(
+                "baked `{}`: {} triangles, {} lights, {s}×{s} lightmap ({filled} texels), in {:.2} s → {}, {}",
+                job.name,
+                mesh.triangles.len(),
+                job.lights.len(),
+                took.as_secs_f64(),
+                png.display(),
+                bin.display(),
+                s = lightmap.size,
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// An RGBA8 PNG with the baker's version and settings as text chunks.
+fn encode_png(size: u32, rgba: &[u8], made: &str) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, size, size);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let text = [
+        ("Software", "functor bake".to_string()),
+        ("functor-bake-version", BAKE_VERSION.to_string()),
+        ("functor-bake-settings", made.to_string()),
+        ("functor-bake-color-space", "linear".to_string()),
+    ];
+    for (key, value) in text {
+        encoder.add_text_chunk(key.to_string(), value).map_err(Error::other)?;
+    }
+    let mut writer = encoder.write_header().map_err(Error::other)?;
+    writer.write_image_data(rgba).map_err(Error::other)?;
+    writer.finish().map_err(Error::other)?;
+    Ok(out)
+}
