@@ -2753,9 +2753,10 @@ most 1000000 cells"
             Builtin::MapValues => match args.as_slice() {
                 [Value::Map(entries)] => {
                     self.charge(entries.len() as u64, span)?;
-                    Ok(Value::List(Rc::new(
-                        entries.iter().map(|(_, value)| value.clone()).collect(),
-                    )))
+                    // `for_each` walks whole leaves (`Iter::fold`).
+                    let mut out = Vec::with_capacity(entries.len());
+                    entries.iter().for_each(|(_, value)| out.push(value.clone()));
+                    Ok(Value::List(Rc::new(out)))
                 }
                 _ => err("Map.values(map) expects one map".to_string()),
             },
@@ -2763,14 +2764,11 @@ most 1000000 cells"
                 [Value::Map(entries)] => {
                     // Each entry materializes a two-cell tuple.
                     self.charge((entries.len() as u64).saturating_mul(2), span)?;
-                    Ok(Value::List(Rc::new(
-                        entries
-                            .iter()
-                            .map(|(key, value)| {
-                                Value::Tuple(Rc::new(vec![key.to_value(), value.clone()]))
-                            })
-                            .collect(),
-                    )))
+                    let mut out = Vec::with_capacity(entries.len());
+                    entries.iter().for_each(|(key, value)| {
+                        out.push(Value::Tuple(Rc::new(vec![key.to_value(), value.clone()])))
+                    });
+                    Ok(Value::List(Rc::new(out)))
                 }
                 _ => err("Map.toList(map) expects one map".to_string()),
             },
