@@ -74,27 +74,29 @@ let fromController = (model, xr: Input.xr) =>
     else next
   | Option.None => next
 
-// Keys and mouse: Space shoots along the view, a click through the clicked point.
-let fromDesk = (model, snapshot: Input.snapshot) =>
+// Keys and mouse: Space shoots along the view, a click through the clicked
+// point; neither shoots when the controller already did this step.
+let fromDesk = (model, snapshot: Input.snapshot, canShoot) =>
   let keys = snapshot.pressedKeys in
   let next = toggled(model, keys |> List.any((k) => k == Key.G)) in
   let next =
-    if keys |> List.any((k) => k == Key.Space) then
+    if canShoot && (keys |> List.any((k) => k == Key.Space)) then
       shoot(next, eye, ahead)
     else next in
-  if snapshot.mouse.pressed.left then
+  if canShoot && snapshot.mouse.pressed.left then
     match Camera3D.toWorldRay(snapshot.mouse, camera) with
     | Option.Some(ray) => shoot(next, ray.origin, ray.direction)
     | Option.None => next
   else next
 
 // The keys work on the headset too, so `POST /input` can drive it headless.
+// (`--emulate-xr` maps Space and the mouse onto the controller as well.)
 let sampledInput = (model, snapshot: Input.snapshot) =>
   let held =
     match snapshot.xr with
     | Option.Some(xr) => fromController(model, xr)
     | Option.None => model in
-  fromDesk(held, snapshot)
+  fromDesk(held, snapshot, held.nextId == model.nextId)
 
 let tick = (model, dt, tts) => model
 
