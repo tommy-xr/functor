@@ -109,6 +109,7 @@ pub fn modules() -> Vec<(String, String)> {
             include_str!("../prelude/render_target.funi"),
         ),
         module("Texture", include_str!("../prelude/texture.funi")),
+        module("Lightmap", include_str!("../prelude/lightmap.funi")),
         module("Time", include_str!("../prelude/time.funi")),
         module("Input", include_str!("../prelude/input.funi")),
         module("Sub", include_str!("../prelude/sub.funi")),

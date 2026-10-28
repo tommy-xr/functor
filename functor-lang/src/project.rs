@@ -77,6 +77,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Skybox",
     "Angle",
     "Texture",
+    "Lightmap",
     "Time",
     "Input",
     "Sub",

@@ -184,6 +184,7 @@ use crate::webview::HtmlNode;
 use crate::{Camera, Camera2D, Frame, Light, Scene3D, SceneObject, Shape, SpriteLayer};
 
 pub mod bytes;
+mod lightmap;
 pub mod mesh;
 pub mod model;
 pub mod solid;
@@ -1643,6 +1644,7 @@ pub(crate) fn registry() -> &'static crate::host_registry::Registry {
         register_frame(&mut reg);
         register_render_resources(&mut reg);
         texture::register(&mut reg);
+        lightmap::register(&mut reg);
         register_physics(&mut reg);
         register_assets(&mut reg);
         register_anim(&mut reg);
@@ -13291,6 +13293,59 @@ Light.point(Vec3.make(0.0, 1.0, 0.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 5.0)])\n";
         );
         let ungrouped = "Model.static({ roomData with groups: [] })";
         assert!(eval_with_prelude(&format!("{ROOM}let main = {ungrouped}\n")).is_ok());
+    }
+
+    const UNWRAP: &str = "let u = Lightmap.unwrap(roomData, { texelsPerMeter: 16.0, padding: 1.0, \
+maxSize: 64.0 })\n";
+
+    /// `Lightmap.unwrap`'s mesh feeds `Model.static`: new `uvs2` in its
+    /// chart, groups carried over, the lightmap cleared.
+    #[test]
+    fn unwrapped_data_builds_a_static_model() {
+        let main = |expr: &str| eval_with_prelude(&format!("{ROOM}{UNWRAP}let main = {expr}\n"));
+        assert!(matches!(
+            main("u.width == 32.0 && u.height == 32.0 && Bytes.length(u.source) == 16.0"),
+            Ok(Value::Bool(true))
+        ));
+        let Value::HostData(model) = main("Model.static(u.mesh)").unwrap() else {
+            panic!("expected a Model");
+        };
+        let s = model.as_any().downcast_ref::<model::FunctorLangModel>().unwrap().0.source().clone();
+        // A 1 m quad at 16 texels/m: one 16×16 chart, 1 texel in.
+        assert_eq!(s.positions.len(), 4);
+        for uv in &s.uvs2 {
+            assert!(uv.iter().all(|&x| (1.0 / 32.0..=17.0 / 32.0).contains(&x)), "{uv:?}");
+        }
+        assert_eq!((s.groups.len(), s.groups[1].unlit), (2, true));
+        // The old lightmap was baked for the old uvs2.
+        assert!(s.lightmap.is_none());
+    }
+
+    #[test]
+    fn unwrap_errors_name_the_field() {
+        let fail = |replace: (&str, &str)| {
+            // Without `room`, which would fail first.
+            let room = ROOM.replace("let room = Model.static(roomData)\n", "");
+            let src = format!("{room}{UNWRAP}").replace(replace.0, replace.1);
+            eval_with_prelude(&format!("{src}let main = u\n")).err().expect("should fail")
+        };
+        assert_eq!(
+            fail(("padding: 1.0", "padding: 0.5")),
+            "Lightmap.unwrap: padding must be a whole number from 0, got 0.5"
+        );
+        assert_eq!(
+            fail(("maxSize: 64.0", "maxSize: 48.0")),
+            "Lightmap.unwrap: maxSize must be a power of two, got 48"
+        );
+        assert_eq!(
+            fail(("maxSize: 64.0", "maxSize: 16.0")),
+            "Lightmap.unwrap: the chart from triangle 0 is 16×16 texels plus padding, over \
+maxSize 16; lower texelsPerMeter or padding"
+        );
+        assert_eq!(
+            fail(("Bytes.fromU32le([0.0, 1.0, 2.0,", "Bytes.fromU32le([0.0, 1.0, 9.0,")),
+            "Lightmap.unwrap: triangles: triangle 0 uses vertex 9, but there are 4"
+        );
     }
 
     const PIXELS: &str = "let px = { width: 2.0, height: 1.0, format: Texture.Rgb8, \

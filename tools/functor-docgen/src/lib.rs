@@ -63,6 +63,7 @@ const CATEGORIES: &[(ApiGroup, &str, &[&str])] = &[
             "Light",
             "Skybox",
             "Texture",
+            "Lightmap",
             "Fog",
             "RenderTarget",
         ],
