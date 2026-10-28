@@ -52,6 +52,7 @@ const PROTECTED_NAMESPACES: &[&str] = &[
     "Map",
     "Text",
     "Math",
+    "Bits",
     "Random",
     "Scene",
     "Instance",
@@ -366,6 +367,7 @@ const LIST_DOC_SRC: &str = include_str!("../stdlib/list.funi");
 const MAP_DOC_SRC: &str = include_str!("../stdlib/map.funi");
 const TEXT_DOC_SRC: &str = include_str!("../stdlib/text.funi");
 const MATH_DOC_SRC: &str = include_str!("../stdlib/math.funi");
+const BITS_DOC_SRC: &str = include_str!("../stdlib/bits.funi");
 const DEBUG_DOC_SRC: &str = include_str!("../stdlib/debug.funi");
 
 /// Language-owned modules available in every embedding, including the plain
@@ -419,7 +421,7 @@ impl DocumentationModule {
 /// Two kinds of module appear here, and the difference is invisible to a game:
 ///
 /// - the namespaces the interpreter implements in Rust (`List`, `Map`,
-///   `Text`, `Math`, `Random`, `Debug`), documented by the `.funi` sources
+///   `Text`, `Math`, `Bits`, `Random`, `Debug`), documented by the `.funi` sources
 ///   above — `Random`'s is the very module [`core_modules`] injects, and the
 ///   rest are documentation-only interfaces pinned to the builtin registry by
 ///   a drift test;
@@ -442,6 +444,7 @@ pub fn stdlib_documentation_modules() -> Vec<DocumentationModule> {
         interface("Map", MAP_DOC_SRC),
         interface("Text", TEXT_DOC_SRC),
         interface("Math", MATH_DOC_SRC),
+        interface("Bits", BITS_DOC_SRC),
         interface("Random", RANDOM_MODULE_SRC),
         interface("Debug", DEBUG_DOC_SRC),
         implementation("Option", OPTION_MODULE_SRC),

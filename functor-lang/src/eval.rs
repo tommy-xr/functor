@@ -3388,7 +3388,93 @@ got edge0 {edge0} and edge1 {edge1}"
                     "Debug.log(label, subject) expects a string label and a value".to_string(),
                 ),
             },
+            Builtin::BitsAnd
+            | Builtin::BitsOr
+            | Builtin::BitsXor
+            | Builtin::BitsComplement
+            | Builtin::BitsShl
+            | Builtin::BitsShr
+            | Builtin::BitsPopcount
+            | Builtin::BitsTestBit
+            | Builtin::BitsExtract => bits(b, &args).map_err(|message| RunError { message, span }),
         }
+    }
+}
+
+/// `Bits.*`: unsigned 32-bit operations on numbers carried as floats.
+/// Operands are validated, never truncated: `Bits.and(1.5, x)` is an error.
+fn bits(b: Builtin, args: &[Value]) -> Result<Value, String> {
+    let usage = match b {
+        Builtin::BitsAnd => "Bits.and(a, b)",
+        Builtin::BitsOr => "Bits.or(a, b)",
+        Builtin::BitsXor => "Bits.xor(a, b)",
+        Builtin::BitsComplement => "Bits.complement(value)",
+        Builtin::BitsShl => "Bits.shl(count, value)",
+        Builtin::BitsShr => "Bits.shr(count, value)",
+        Builtin::BitsPopcount => "Bits.popcount(value)",
+        Builtin::BitsTestBit => "Bits.testBit(bit, value)",
+        Builtin::BitsExtract => "Bits.extract(offset, width, value)",
+        _ => unreachable!("bits() handles only Bits.* builtins"),
+    };
+    // Unpack into a fixed array: these calls sit in decode hot loops.
+    let mut buf = [0.0; 3];
+    for (slot, a) in buf.iter_mut().zip(args) {
+        match a {
+            Value::Number(n) => *slot = *n,
+            _ => return Err(format!("{usage} expects numbers")),
+        }
+    }
+    let nums = &buf[..args.len().min(3)];
+    // A whole number in `0..=max`, else an error naming the call, the operand
+    // and the valid range.
+    let whole = |name: &str, n: f64, max: f64| {
+        if n.fract() == 0.0 && (0.0..=max).contains(&n) {
+            Ok(n)
+        } else {
+            Err(format!(
+                "{usage}: `{name}` must be a whole number in 0..={max}, got {n}"
+            ))
+        }
+    };
+    let u32_arg = |name: &str, n: f64| whole(name, n, u32::MAX as f64).map(|n| n as u32);
+    let num = |x: u32| Ok(Value::Number(x as f64));
+    match (b, nums) {
+        (Builtin::BitsAnd, &[a, c]) => num(u32_arg("a", a)? & u32_arg("b", c)?),
+        (Builtin::BitsOr, &[a, c]) => num(u32_arg("a", a)? | u32_arg("b", c)?),
+        (Builtin::BitsXor, &[a, c]) => num(u32_arg("a", a)? ^ u32_arg("b", c)?),
+        (Builtin::BitsComplement, &[v]) => num(!u32_arg("value", v)?),
+        (Builtin::BitsPopcount, &[v]) => num(u32_arg("value", v)?.count_ones()),
+        // Counts of 32 or more shift every bit out (0), unlike C/JS, which
+        // wrap the count.
+        (Builtin::BitsShl | Builtin::BitsShr, &[count, v]) => {
+            if count.fract() != 0.0 || !(count >= 0.0) {
+                return Err(format!(
+                    "{usage}: `count` must be a whole number >= 0, got {count}"
+                ));
+            }
+            let v = u32_arg("value", v)?;
+            num(match (count >= 32.0, b == Builtin::BitsShl) {
+                (true, _) => 0,
+                (false, true) => v << count as u32,
+                (false, false) => v >> count as u32,
+            })
+        }
+        (Builtin::BitsTestBit, &[bit, v]) => {
+            let bit = whole("bit", bit, 31.0)? as u32;
+            Ok(Value::Bool(u32_arg("value", v)? >> bit & 1 == 1))
+        }
+        (Builtin::BitsExtract, &[offset, width, v]) => {
+            let offset = whole("offset", offset, 32.0)? as u32;
+            let width = whole("width", width, 32.0)? as u32;
+            if offset + width > 32 {
+                return Err(format!(
+                    "{usage}: `offset + width` must be at most 32, got {offset} + {width}"
+                ));
+            }
+            let v = u32_arg("value", v)? as u64;
+            num((v >> offset & ((1u64 << width) - 1)) as u32)
+        }
+        _ => Err(format!("{usage} expects {} numbers", builtin_arity(b))),
     }
 }
 
@@ -3821,6 +3907,7 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::MathClamp
         | Builtin::MathLerp
         | Builtin::MathSmoothstep
+        | Builtin::BitsExtract
         | Builtin::MapInsert
         | Builtin::MapUpdate
         | Builtin::MapFold => 3,
@@ -3851,7 +3938,13 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::DebugLog
         | Builtin::MapGet
         | Builtin::MapRemove
-        | Builtin::MapMember => 2,
+        | Builtin::MapMember
+        | Builtin::BitsAnd
+        | Builtin::BitsOr
+        | Builtin::BitsXor
+        | Builtin::BitsShl
+        | Builtin::BitsShr
+        | Builtin::BitsTestBit => 2,
         Builtin::ListRange
         | Builtin::ListMaximum
         | Builtin::ListMinimum
@@ -3893,7 +3986,10 @@ pub fn builtin_arity(b: Builtin) -> usize {
         // `Math.pi` resolves straight to a number in `eval` (it's a constant,
         // never a callable value), so this arity is never consulted.
         Builtin::MathPi | Builtin::MapEmpty => 0,
-        Builtin::RandomSeed | Builtin::RandomStep => 1,
+        Builtin::RandomSeed
+        | Builtin::RandomStep
+        | Builtin::BitsComplement
+        | Builtin::BitsPopcount => 1,
     }
 }
 
@@ -3980,6 +4076,15 @@ pub enum Builtin {
     RandomRange,
     RandomFork,
     DebugLog,
+    BitsAnd,
+    BitsOr,
+    BitsXor,
+    BitsComplement,
+    BitsShl,
+    BitsShr,
+    BitsPopcount,
+    BitsTestBit,
+    BitsExtract,
 }
 
 /// Pure seeded PRNG — the splitmix64 finalizer over a 52-bit Weyl counter.
@@ -4077,7 +4182,7 @@ fn unknown_external_error(path: &[String], joined: String, span: Span) -> RunErr
 /// these is a typo (a plain error), never a host-provided external — the
 /// distinction the unknown-external error message (and through it the
 /// expect gutter's `unrunnable` classification) rests on.
-pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random", "Debug"];
+pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random", "Debug", "Bits"];
 
 /// The complete builtin registry as a list. Hand-listed because [`Builtin`] is
 /// not iterable — keep in sync with the enum (`builtins_list_is_exhaustive`
@@ -4086,7 +4191,7 @@ pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
-pub const ALL_BUILTINS: [Builtin; 81] = [
+pub const ALL_BUILTINS: [Builtin; 90] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
@@ -4168,6 +4273,15 @@ pub const ALL_BUILTINS: [Builtin; 81] = [
     Builtin::RandomRange,
     Builtin::RandomFork,
     Builtin::DebugLog,
+    Builtin::BitsAnd,
+    Builtin::BitsOr,
+    Builtin::BitsXor,
+    Builtin::BitsComplement,
+    Builtin::BitsShl,
+    Builtin::BitsShr,
+    Builtin::BitsPopcount,
+    Builtin::BitsTestBit,
+    Builtin::BitsExtract,
 ];
 
 /// The member names a builtin namespace owns (`List` → `map`, `filter`, …),
@@ -4266,6 +4380,15 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Random.range" => Builtin::RandomRange,
         "Random.fork" => Builtin::RandomFork,
         "Debug.log" => Builtin::DebugLog,
+        "Bits.and" => Builtin::BitsAnd,
+        "Bits.or" => Builtin::BitsOr,
+        "Bits.xor" => Builtin::BitsXor,
+        "Bits.complement" => Builtin::BitsComplement,
+        "Bits.shl" => Builtin::BitsShl,
+        "Bits.shr" => Builtin::BitsShr,
+        "Bits.popcount" => Builtin::BitsPopcount,
+        "Bits.testBit" => Builtin::BitsTestBit,
+        "Bits.extract" => Builtin::BitsExtract,
         _ => return None,
     })
 }
@@ -4354,6 +4477,15 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::RandomRange => "Random.range",
         Builtin::RandomFork => "Random.fork",
         Builtin::DebugLog => "Debug.log",
+        Builtin::BitsAnd => "Bits.and",
+        Builtin::BitsOr => "Bits.or",
+        Builtin::BitsXor => "Bits.xor",
+        Builtin::BitsComplement => "Bits.complement",
+        Builtin::BitsShl => "Bits.shl",
+        Builtin::BitsShr => "Bits.shr",
+        Builtin::BitsPopcount => "Bits.popcount",
+        Builtin::BitsTestBit => "Bits.testBit",
+        Builtin::BitsExtract => "Bits.extract",
     }
 }
 
@@ -4575,12 +4707,21 @@ mod builtin_registry_tests {
                 | Builtin::RandomStep
                 | Builtin::RandomRange
                 | Builtin::RandomFork
-                | Builtin::DebugLog => {}
+                | Builtin::DebugLog
+                | Builtin::BitsAnd
+                | Builtin::BitsOr
+                | Builtin::BitsXor
+                | Builtin::BitsComplement
+                | Builtin::BitsShl
+                | Builtin::BitsShr
+                | Builtin::BitsPopcount
+                | Builtin::BitsTestBit
+                | Builtin::BitsExtract => {}
             }
         }
         assert_eq!(
             ALL_BUILTINS.len(),
-            81,
+            90,
             "ALL_BUILTINS must list every Builtin"
         );
 

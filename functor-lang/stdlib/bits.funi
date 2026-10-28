@@ -1,0 +1,46 @@
+//! Bitwise operations on unsigned 32-bit integers, for flags and packed
+//! fields in binary formats.
+//!
+//! Functor Lang has no integer type, so a 32-bit value travels as a `float`
+//! holding a whole number in `0..=4294967295` — exactly what `Bytes.u32le`
+//! reads. Every operand is checked: a fraction, a negative, or a number past
+//! 32 bits is an error naming the function and the valid range, never a silent
+//! truncation. Read signed fields with the unsigned readers (`Bytes.u32le`,
+//! not `Bytes.i32le`) before handing them here.
+//!
+//! The shift, test, and extract functions take their value LAST, so they pipe:
+//! `flags |> Bits.shr(8.0) |> Bits.and(255.0)`.
+
+/// The bits set in both `a` and `b`.
+let and : (float, float) => float
+
+/// The bits set in either `a` or `b`.
+let or : (float, float) => float
+
+/// The bits set in exactly one of `a` and `b`.
+let xor : (float, float) => float
+
+/// Every bit flipped within 32 bits: `Bits.complement(0.0)` is `4294967295`.
+/// (Named `complement` because `not` is the boolean keyword.)
+let complement : (float) => float
+
+/// `value` shifted left by `count` bits; bits pushed past bit 31 are dropped.
+/// A `count` of 32 or more answers `0` (C and JavaScript wrap the count
+/// instead).
+let shl : (float, float) => float
+
+/// `value` shifted right by `count` bits, filling with zeros. A `count` of 32
+/// or more answers `0`.
+let shr : (float, float) => float
+
+/// The number of set bits: `Bits.popcount(255.0)` is `8`.
+let popcount : (float) => float
+
+/// Whether bit `bit` (`0..=31`, 0 the lowest) of `value` is set:
+/// `flags |> Bits.testBit(3.0)`.
+let testBit : (float, float) => bool
+
+/// The `width`-bit field starting at bit `offset`, as a number:
+/// `Bits.extract(10.0, 5.0, rgb555)` is the red channel. `offset + width`
+/// must be at most 32.
+let extract : (float, float, float) => float

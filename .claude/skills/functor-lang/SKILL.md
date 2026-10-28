@@ -301,7 +301,7 @@ let grab = (s) =>
   that creates no cycle.
 - **Protected namespaces**: a file whose module name collides with a
   builtin/prelude or bundled-core namespace (Net, Key, Mouse, Random, Option, Result,
-  List, Map, Text, Math, Debug, Scene,
+  List, Map, Text, Math, Bits, Debug, Scene,
   Sprite, Anim, Asset, Camera3D, Camera2D, Frame, Light, Fog, Color, Vec3, Skybox,
   Angle, Texture, Time, Input, Sub, Effect, Persistence, Physics, RenderTarget, Ui, Html,
   Attr, Style, AudioSource, AudioScene, Xr, Source, Config, Settings) is a
@@ -554,7 +554,7 @@ open Widget                                              // …or open, bringing
   an ordinary comment and still appears in user-code hover for backwards
   compatibility. `functor docs` renders the embedded API as Markdown or
   JSON — the engine prelude AND the language standard library (`List`, `Map`,
-  `Text`, `Math`, `Random`, `Debug`, `Option`, `Result`, `Key`, `Mouse`,
+  `Text`, `Math`, `Bits`, `Random`, `Debug`, `Option`, `Result`, `Key`, `Mouse`,
   documented in `functor-lang/stdlib/`), as two groups; in the repository,
   `npm run generate:docs` recreates the gitignored local reference artifacts
   and `npm run check:docs` validates both renderers. Both repository scripts
@@ -871,7 +871,7 @@ of truth for names, argument order, and per-function behavior:
   (`--format json`, `--output <path>`, `--check <path>`); `npm run generate:docs`
   writes the local artifacts.
 - The sources are in-repo and readable directly: interfaces in
-  `functor-lang/stdlib/*.funi` (`list`, `map`, `text`, `math`, `random`,
+  `functor-lang/stdlib/*.funi` (`list`, `map`, `text`, `math`, `bits`, `random`,
   `debug`) and bundled implementations in `functor-lang/stdlib/*.fun`
   (`option`, `result`, `key`, `mouse`).
 - In VSCode, hover shows the same doc block and go-to-definition opens the
@@ -883,6 +883,7 @@ of truth for names, argument order, and per-function behavior:
 | `Map` | immutable keyed collections; keys are `bool`, FINITE `float`, or `string` |
 | `Text` | string building, formatting, inspection (there is no char type) |
 | `Math` | numeric functions and `Math.pi`; `Math.mod` / `Math.pow` stand in for `%` / `^` |
+| `Bits` | unsigned 32-bit bit ops on whole floats (`and`, `shr`, `popcount`, `extract`, …) for binary formats |
 | `Random` | pure seeded PRNG threaded through the model — no hidden global generator |
 | `Debug` | `Debug.log` — the one impure observability hatch, returns its value unchanged |
 | `Option` | `Option.Some` / `Option.None`, plus helpers — what every partial accessor answers with |
@@ -901,7 +902,7 @@ What a signature can't tell you:
   fills the first tuple slot), `Text.contains(needle, s)`,
   `Math.clamp(low, high, n)`, `Math.lerp(target, t, from)`.
 - **The builtin registry is CLOSED.** A builtin namespace (`List`, `Map`,
-  `Text`, `Math`, `Random`, `Debug`) owns exactly the members in the reference,
+  `Text`, `Math`, `Bits`, `Random`, `Debug`) owns exactly the members in the reference,
   in every embedding, so anything else is a **check-time error** —
   `functor-lang check` (and `functor build`) reject `List.tail` /
   `Text.padLeft` with `` `List` has no builtin `tail` `` plus the nearest name
