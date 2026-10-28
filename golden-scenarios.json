@@ -219,6 +219,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "scene-grid-t2",
+      "sample": "scene-grid",
+      "fixedTime": 2.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

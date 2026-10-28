@@ -72,6 +72,10 @@
 /// for now — nothing transmits or checks it; [`GameProducer`] impls all speak
 /// the current version.
 ///
+/// v22: surface grids — `Frame.surface_grid` (`Frame.withSurfaceGrid`),
+/// defaulted and omitted when absent, so every other frame keeps its v21
+/// shape.
+///
 /// v21: stand-in room geometry — `Frame.stand_in_room`
 /// (`Frame.withStandInRoom`), defaulted and omitted when absent, so every
 /// other frame keeps its v20 shape.
@@ -162,7 +166,7 @@
 /// omitted when empty, so v1 frames read back and chainless frames stay v1-
 /// shaped) and the `TextureDescription::FileWhilePending` variant (a v1
 /// reader cannot decode a frame carrying one).
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// The producer side of the protocol: one game logic instance as consumed by a
 /// runtime shell's frame loop. Every method carries a payload enumerated in
@@ -946,11 +950,18 @@ mod tests {
             pure_2d: false,
             passthrough: true,
             stand_in_room: Some(Box::new(Scene3D::cube())),
+            surface_grid: Some(crate::surface_grid::SurfaceGrid {
+                cell: 0.25,
+                color: [0.35, 0.9, 1.0],
+            }),
         };
         assert_json_stable(&frame);
         assert!(serde_json::to_string(&frame)
             .unwrap()
             .contains(r#""stand_in_room":{"obj":{"Geometry":"Cube"}"#));
+        assert!(serde_json::to_string(&frame)
+            .unwrap()
+            .contains(r#""surface_grid":{"cell":0.25,"color":[0.35,0.9,1.0]}"#));
 
         // `lights` was added to Frame later (`render_targets` and `fog` later
         // still); a frame serialized without them must still decode
@@ -967,6 +978,7 @@ mod tests {
         assert!(legacy.clear_color.is_none());
         assert!(legacy.sprite_layers.is_empty());
         assert!(legacy.stand_in_room.is_none());
+        assert!(legacy.surface_grid.is_none());
     }
 
     // The render-target wire vocabulary: the reader (a texture by target id)

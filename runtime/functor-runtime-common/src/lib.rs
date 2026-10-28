@@ -98,6 +98,7 @@ mod shader;
 pub mod shadow;
 pub mod passthrough_room;
 pub mod skybox;
+pub mod surface_grid;
 mod shader_program;
 mod sprite2d;
 // The built-in font is an implementation detail of `Sprite.text`, not public

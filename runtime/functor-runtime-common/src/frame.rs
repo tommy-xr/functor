@@ -86,6 +86,10 @@ pub struct Frame {
     /// Boxed so frames without one stay their old size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stand_in_room: Option<Box<Scene3D>>,
+    /// A grid shaded onto the room's surfaces (`Frame.withSurfaceGrid`),
+    /// wherever the frame has environment depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_grid: Option<crate::surface_grid::SurfaceGrid>,
 }
 
 /// The clear under a passthrough frame's stand-in room wherever no real feed
@@ -109,6 +113,7 @@ impl Frame {
             pure_2d: false,
             passthrough: false,
             stand_in_room: None,
+            surface_grid: None,
         }
     }
 
@@ -218,6 +223,12 @@ impl Frame {
     /// The stand-in room's geometry (`Frame.withStandInRoom`).
     pub fn with_stand_in_room(mut frame: Frame, room: Scene3D) -> Frame {
         frame.stand_in_room = Some(Box::new(room));
+        frame
+    }
+
+    /// Shade `grid` onto the room's surfaces (`Frame.withSurfaceGrid`).
+    pub fn with_surface_grid(mut frame: Frame, grid: crate::surface_grid::SurfaceGrid) -> Frame {
+        frame.surface_grid = Some(grid);
         frame
     }
 

@@ -270,6 +270,35 @@ let draw = (model, tts) =>
   granted, `/state.xr.depth` reads `{"mode":"device","width":320,
   "height":320}` and `frames` advances (about 66 images a second at 80 Hz).
 
+### Scene-grid kata
+
+`examples/scene-grid` shades a world-aligned grid (25 cm cells, thin cyan
+lines) onto whatever surfaces the depth finds — floor, desk, walls, you —
+with nothing modelled:
+
+```sh
+functor -d examples/scene-grid run vr
+functor -d examples/scene-grid run native   # the stand-in floor, desk and wall
+```
+
+- `frame |> Frame.withSurfaceGrid(cell, color)` is a fullscreen pass between
+  the room and the scene. Each pixel walks its eye ray onto the environment
+  depth (a nearest step from a 1.5 m guess, then a bilinear one — the depth
+  cameras sit a few centimetres off the eyes), unprojects the world point,
+  and draws triplanar lines there, fading 4–8 m out and where a pixel spans
+  a large share of a cell (depth edges, grazing angles). Desktop and web run
+  the same shader over the stand-in room's depth; the golden
+  `scene-grid-t2` covers it.
+- X toggles the grid (G on desktop), so the overlay can be judged against
+  plain passthrough.
+- On Quest the lines follow real walls and furniture but wave where the
+  320x320 depth is noisy, and round off into corners, which the depth
+  smooths.
+- Quest 3, release APK, 120 Hz, foveation Off, nobody wearing it
+  (2026-10-26): grid on 120.4 fps, App 3.27–3.29 ms, 82–171 stale frames in
+  30 s; grid off App 0.55 ms, 0 stale. The pass is about 2.7 ms of GPU at
+  full eye resolution.
+
 ### Mixed-reality parts viewer
 
 `examples/parts-mr` shows a printable part on your real desk at true scale
