@@ -4,9 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `closed` runs only to cancel the PR's in-flight run (see concurrency).
+    types: [opened, synchronize, reopened, closed]
+
+# A new push to a PR, or closing it, cancels its in-flight run. On main, a
+# newer push replaces the queued run but lets the running one finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-native:
+    if: github.event.action != 'closed'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:

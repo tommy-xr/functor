@@ -25,6 +25,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `closed` runs only to cancel the PR's in-flight run (see concurrency).
+    types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
     inputs:
       update_snapshots:
@@ -32,8 +34,16 @@ on:
         type: boolean
         default: false
 
+# A new push to a PR, or closing it, cancels its in-flight run. On main, a
+# newer push replaces the queued run but lets the running one finish.
+concurrency:
+  # Manual runs get their own group so a push never replaces them.
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   golden-wasm:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
