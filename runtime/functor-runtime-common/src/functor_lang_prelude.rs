@@ -138,6 +138,7 @@
 //! Physics.linearDamping/angularDamping(n, body)             -> Body
 //! Physics.sensor(body)                                      -> Body
 //! Physics.upright(body)                                     -> Body
+//! Physics.continuous(body)                                  -> Body
 //! Physics.scene(Vec3.make(gx, gy, gz), [body, …])                      -> PhysicsScene
 //! Physics.position(tag)                                     -> {x, y, z}
 //! Physics.transformed(tag, scene)                           -> Scene
@@ -3298,6 +3299,11 @@ capsule for the moving body"
         "Physics.upright",
         "Physics.upright(body)",
         |body: FunctorLangBody| FunctorLangBody(body.0.as_upright()),
+    );
+    reg.fn1(
+        "Physics.continuous",
+        "Physics.continuous(body)",
+        |body: FunctorLangBody| FunctorLangBody(body.0.as_continuous()),
     );
     reg.fn2(
         "Physics.scene",

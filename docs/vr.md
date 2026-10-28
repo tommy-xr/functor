@@ -379,6 +379,9 @@ let physics = (model) =>
   a `Physics.fusedRoom` body exists, so a scripted capture is the same
   pipelined or not. On Quest fusion runs on its own thread and new chunks
   arrive whenever it finishes.
+- Walls are surfaces with no thickness. A body that moves farther than its
+  radius in one 1/60 s step can end a step behind one, so give small, fast
+  bodies `|> Physics.continuous` (continuous collision detection).
 
 ### Mixed-reality parts viewer
 

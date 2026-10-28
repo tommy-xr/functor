@@ -119,7 +119,8 @@ let heightfield : (tag, Terrain.t) => body
 /// New surfaces reach the body at the physics step after they fuse. The
 /// room is already in world space: `Physics.at` and the rotations are
 /// errors. Pipe `Physics.friction` and `Physics.restitution` to tune
-/// contacts; a ray or contact on any chunk reports this tag.
+/// contacts; a ray or contact on any chunk reports this tag. Walls are
+/// surfaces with no thickness: give fast, small bodies `Physics.continuous`.
 let fusedRoom : (tag) => body
 
 /// Create a dynamic body affected by forces and collisions.
@@ -206,6 +207,17 @@ let sensor : (body) => body
 /// topple, which also invalidates any fixed standing-height assumption a
 /// grounding probe makes. The body is last for piping.
 let upright : (body) => body
+
+/// Sweep a fast body along each physics step (continuous collision
+/// detection), so it cannot pass through a thin surface between two steps;
+/// the body is last for piping.
+///
+/// Without it a body is tested only where each step lands it, and one that
+/// moves farther than its own radius per step (a 5 cm ball at a few metres a
+/// second, at 60 steps a second) can end a step past a wall that is only a
+/// surface, like `Physics.fusedRoom`'s. It costs only while the body is
+/// fast. Changing it reconciles onto the live body.
+let continuous : (body) => body
 
 /// Declare a physics world from gravity and bodies.
 let scene : (Vec3.t, List<body>) => world

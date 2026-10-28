@@ -951,7 +951,8 @@ impl World {
             // the integrator applies, not a contact response. Rapier only
             // integrates a dynamic body, so it is inert on kinematic/fixed.
             .linear_damping(body.linear_damping)
-            .angular_damping(body.angular_damping);
+            .angular_damping(body.angular_damping)
+            .ccd_enabled(body.continuous);
         if body.rotation_locked {
             // An upright body translates but never tips (the character-capsule
             // case). This stops the solver from ACCUMULATING spin; a body that
@@ -1297,6 +1298,9 @@ impl World {
                 collider.set_restitution(next.restitution);
                 collider.set_sensor(next.sensor);
             }
+        }
+        if prev.continuous != next.continuous {
+            self.bodies[rb_handle].enable_ccd(next.continuous);
         }
         if prev.rotation_locked != next.rotation_locked {
             let rb = &mut self.bodies[rb_handle];
@@ -3237,18 +3241,31 @@ mod fused_room_tests {
     #[test]
     fn a_ball_rolled_at_the_wall_bounces_off_it() {
         let room = Arc::new(stand_in_room());
-        let mut w = world_with(vec![
-            room_body(&room),
-            ball([-1.5, BALL, 1.2], [0.0, 0.0, 3.0]),
-        ]);
-        let (mut nearest, mut back) = (f32::NEG_INFINITY, 0.0f32);
-        run(&mut w, 120, |w| {
-            nearest = nearest.max(w.body_transform("ball").unwrap().0[2]);
-            back = back.min(w.body_velocity("ball").unwrap()[2]);
-        });
-        assert!(nearest < 2.375, "went through the wall: z = {nearest}");
-        assert!(nearest > 2.375 - BALL - 0.03, "never reached it: {nearest}");
-        assert!(back < -1.5, "did not bounce back: vz = {back}");
+        let rolled = ball([-1.5, BALL, 1.2], [0.0, 0.0, 3.0]);
+        let thrown = |speed| ball([-1.5, 1.2, 1.2], [0.0, 0.0, speed]).as_continuous();
+        // The wall is a surface with no thickness: a thrown ball is swept
+        // along each step, at any speed.
+        for body in [rolled, thrown(5.0), thrown(6.0), thrown(9.0), thrown(15.0)] {
+            let speed = body.velocity[2];
+            let mut w = world_with(vec![room_body(&room), body]);
+            let (mut nearest, mut back) = (f32::NEG_INFINITY, 0.0f32);
+            run(&mut w, 120, |w| {
+                nearest = nearest.max(w.body_transform("ball").unwrap().0[2]);
+                back = back.min(w.body_velocity("ball").unwrap()[2]);
+            });
+            assert!(nearest < 2.375, "{speed} m/s went through the wall: z = {nearest}");
+            assert!(nearest > 2.375 - BALL - 0.03, "{speed} m/s never reached it: {nearest}");
+            assert!(back < -0.4 * speed, "{speed} m/s did not bounce back: vz = {back}");
+        }
+    }
+
+    #[test]
+    fn continuous_reconciles_onto_the_live_body() {
+        let swept = ball([0.0, 1.0, 0.0], [0.0; 3]).as_continuous();
+        let mut w = world_with(vec![swept]);
+        assert!(w.bodies[w.tags["ball"]].is_ccd_enabled());
+        w.reconcile(&PhysicsScene::create(DEFAULT_GRAVITY, vec![ball([0.0, 1.0, 0.0], [0.0; 3])]));
+        assert!(!w.bodies[w.tags["ball"]].is_ccd_enabled());
     }
 
     /// Nobody saw the floor behind the desk; the floor plane is there anyway.

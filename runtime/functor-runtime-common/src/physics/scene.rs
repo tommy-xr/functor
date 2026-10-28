@@ -107,6 +107,11 @@ pub struct Body {
     /// tumble when it lands, scuffs a ledge, or leans on a wall.
     #[serde(default)]
     pub rotation_locked: bool,
+    /// Continuous collision detection: a fast body is swept along its step
+    /// instead of tested where it lands, so it cannot pass through a thin
+    /// surface (a fused room's walls) between two steps.
+    #[serde(default)]
+    pub continuous: bool,
     pub authority: Authority,
     /// `Some` for a `Physics.character`: a kinematic capsule that
     /// `PhysicsCommand::Move` walks through the world.
@@ -147,6 +152,7 @@ impl Body {
             angular_damping: 0.0,
             sensor: false,
             rotation_locked: false,
+            continuous: false,
             authority: Authority::Local,
             character: None,
         }
@@ -224,6 +230,12 @@ impl Body {
     /// Lock the body's rotation so it translates but never tips.
     pub fn as_upright(mut self) -> Body {
         self.rotation_locked = true;
+        self
+    }
+
+    /// Sweep the body along each step (continuous collision detection).
+    pub fn as_continuous(mut self) -> Body {
+        self.continuous = true;
         self
     }
 
