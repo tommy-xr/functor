@@ -18,8 +18,9 @@ const SAMPLE = process.env.FUNCTOR_SAMPLE || "lighting";
 const manifest = JSON.parse(
   readFileSync(new URL("../golden-scenarios.json", import.meta.url)),
 );
+// Scripted scenarios (`inputScript`) are native-only.
 const scenarios = manifest.scenarios.filter(
-  (s) => s.sample === SAMPLE && s.targets.includes("wasm"),
+  (s) => s.sample === SAMPLE && s.targets.includes("wasm") && !s.inputScript,
 );
 
 for (const scenario of scenarios) {

@@ -4,9 +4,10 @@
 //! and **shared** with the wasm Playwright test (`e2e/golden-wasm.spec.mjs`), so
 //! a scenario added there is validated on both targets. Each scenario renders a
 //! sample at a fixed frame time (so the pose is deterministic) via
-//! `functor ... run native --fixed-time`, optionally with a `--debug-render`
-//! mode, captures the framebuffer to a PNG, and compares it to a reference
-//! with a small tolerance. This test runs every scenario whose `targets`
+//! `functor ... run native --fixed-time` — or, for a state only input reaches,
+//! at a fixed frame of an input script (native only) — optionally with a
+//! `--debug-render` mode, captures the framebuffer to a PNG, and compares it
+//! to a reference with a small tolerance. This test runs every scenario whose `targets`
 //! includes `"native"`.
 //!
 //! Each sample is a Functor Lang project (`functor.json` with `"language": "functor-lang"`) and
@@ -55,14 +56,22 @@ struct Scenario {
     name: String,
     /// Sample directory under `examples/`.
     sample: String,
-    /// Frame time to pin (seconds) for a deterministic pose.
-    #[serde(rename = "fixedTime")]
-    fixed_time: f64,
+    /// Frame time to pin (seconds) for a deterministic pose; absent for a
+    /// scripted scenario.
+    #[serde(rename = "fixedTime", default)]
+    fixed_time: Option<f64>,
     /// Optional debug-render mode (e.g. `"normals"`); `None` = default shading.
     #[serde(rename = "debugRender")]
     debug_render: Option<String>,
     /// Harnesses that run this scenario (`"native"` / `"wasm"`).
     targets: Vec<String>,
+    /// Native only: drive the sample with this input script (relative to the
+    /// sample) and capture at `captureAtFrame` instead of at `fixedTime` —
+    /// for states only input reaches, like a toggled mode.
+    #[serde(rename = "inputScript", default)]
+    input_script: Option<String>,
+    #[serde(rename = "captureAtFrame", default)]
+    capture_at_frame: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,7 +116,8 @@ fn functor_bin() -> PathBuf {
     bin
 }
 
-/// Render `scenario`'s sample at its fixed time (plus any debug-render mode),
+/// Render `scenario`'s sample at its fixed time or scripted frame (plus any
+/// debug-render mode),
 /// capture to a temp PNG, and assert it matches the committed
 /// `examples/<sample>/golden/<name>.png` within tolerance.
 fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
@@ -123,19 +133,28 @@ fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
     // `functor -d <sample_dir> run native` interprets the sample's Functor Lang entry
     // (from its functor.json) in place — no build step — and forwards the
     // capture flags after `--` to the in-process desktop run loop.
-    let fixed_time = scenario.fixed_time.to_string();
+    let (fixed_time, script, capture_frame) = match (
+        scenario.fixed_time,
+        &scenario.input_script,
+        scenario.capture_at_frame,
+    ) {
+        (Some(time), None, None) => (time.to_string(), None, String::new()),
+        (None, Some(script), Some(frame)) => {
+            (String::new(), Some(sample_dir.join(script)), frame.to_string())
+        }
+        _ => panic!(
+            "scenario '{}': set fixedTime, or inputScript with captureAtFrame",
+            scenario.name
+        ),
+    };
     let mut args = vec![
         "-d",
         sample_dir.to_str().unwrap(),
         "run",
         "native",
         "--",
-        "--fixed-time",
-        &fixed_time,
         "--capture-frame",
         out.to_str().unwrap(),
-        "--capture-time",
-        "1.0",
         // Pin the framebuffer so a reference depends on the renderer, not on
         // the monitor. Without this the same scene captures at 800x600 on a 1x
         // display and 1600x1200 on a Retina one, and every golden fails on a
@@ -143,6 +162,15 @@ fn assert_scenario_matches(scenario: &Scenario, extra: &[&str]) {
         "--capture-size",
         GOLDEN_CAPTURE_SIZE,
     ];
+    match &script {
+        Some(script) => args.extend_from_slice(&[
+            "--input-script",
+            script.to_str().unwrap(),
+            "--capture-at-frame",
+            &capture_frame,
+        ]),
+        None => args.extend_from_slice(&["--fixed-time", &fixed_time, "--capture-time", "1.0"]),
+    }
     if let Some(mode) = &scenario.debug_render {
         args.extend_from_slice(&["--debug-render", mode]);
     }

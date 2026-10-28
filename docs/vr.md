@@ -289,8 +289,13 @@ functor -d examples/scene-grid run native   # the stand-in floor, desk and wall
   a large share of a cell (depth edges, grazing angles). Desktop and web run
   the same shader over the stand-in room's depth; the golden
   `scene-grid-t2` covers it.
-- X toggles the grid (G on desktop), so the overlay can be judged against
-  plain passthrough.
+- X cycles the source (G on desktop): raw depth (`withSurfaceGrid`), the
+  fused room mesh (`withFusedRoom`, same cells and colour, see below), and
+  off, so the two sources can be compared directly and both judged against
+  plain passthrough. `toggle.script` cycles them headlessly; the goldens
+  `scene-grid-fused` (frame 90) and `scene-grid-off` (frame 120) capture it.
+  Once the fused mode has been shown, fusion keeps running in the background
+  in every mode, so the mesh is still there on the next cycle.
 - On Quest the lines follow real walls and furniture but wave where the
   320x320 depth is noisy, and round off into corners, which the depth
   smooths.

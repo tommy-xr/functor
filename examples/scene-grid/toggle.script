@@ -1,3 +1,6 @@
-# Deterministic desktop proof: G toggles the grid off (plain passthrough).
+# Deterministic desktop proof: G cycles raw -> fused (frame 90, 70 frames
+# of fusion) -> off (frame 120); the goldens capture each.
 20 G down
 24 G up
+100 G down
+104 G up

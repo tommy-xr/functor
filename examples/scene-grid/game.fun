@@ -1,15 +1,19 @@
-// Scene-grid kata: a world-aligned grid shaded onto the real room's surfaces.
+// Scene-grid kata: a world-aligned grid on the real room's surfaces, from two
+// sources of the same depth, side by side.
 //
 // Quest:   functor -d examples/scene-grid run vr
-//          X (left primary) toggles the grid; the headset's depth sensing
-//          finds the surfaces (grant the spatial data permission once — see
-//          docs/vr.md)
+//          X (left primary) cycles raw -> fused -> off; the headset's depth
+//          sensing finds the surfaces (grant the spatial data permission once
+//          — see docs/vr.md)
 // Desktop: functor -d examples/scene-grid run native
 //          a stand-in room (floor, desk, wall) stands in for the real one; G
-//          toggles the grid (`--input-script toggle.script` does it headlessly)
+//          cycles (`--input-script toggle.script` does it headlessly)
 //
-// The grid is a fullscreen pass over the environment depth, so it lands on
-// whatever is there — floor, desk, walls, you — with nothing modelled.
+// Raw: a fullscreen pass over this frame's depth. It lands on whatever is
+// there now — floor, desk, walls, you — and wobbles with the depth noise.
+// Fused: the same lines on a mesh the runtime fuses from the depth over time.
+// Steadier, it keeps what is out of view and forgets moved furniture within a
+// second or two. Off: plain passthrough.
 
 // Launch options: the camera feed and the room's depth for this run.
 let config =
@@ -24,21 +28,33 @@ let camera =
     Angle.degrees(0.0),
     Angle.degrees(90.0))
 
-let init = { grid: true, togglePressed: false }
+type Source =
+  | Raw
+  | Fused
+  | Off
 
-let toggled = (model) => { model with grid: not model.grid }
+let init = { source: Raw, togglePressed: false }
 
-expect toggled(init).grid == false
-expect toggled(toggled(init)).grid == true
+let next = (source) =>
+  match source with
+  | Raw => Fused
+  | Fused => Off
+  | Off => Raw
 
-// X toggles on its press edge, so holding it does not flicker.
+let toggled = (model) => { model with source: next(model.source) }
+
+expect toggled(init).source == Fused
+expect toggled(toggled(init)).source == Off
+expect toggled(toggled(toggled(init))).source == Raw
+
+// X cycles on its press edge, so holding it does not skip ahead.
 let sampledInput = (model, snapshot: Input.snapshot) =>
   match snapshot.xr with
   | Option.None => model
   | Option.Some(xr) =>
     let pressed = xr.left.primaryPressed in
-    let next = { model with togglePressed: pressed } in
-    if pressed && not model.togglePressed then toggled(next) else next
+    let held = { model with togglePressed: pressed } in
+    if pressed && not model.togglePressed then toggled(held) else held
 
 let input = (model, key, isDown) =>
   match key with
@@ -78,4 +94,7 @@ let draw = (model, tts) =>
       |> Frame.withPassthrough
       |> Frame.withStandInRoom(room)
   in
-  if model.grid then frame |> Frame.withSurfaceGrid(gridCell, gridColor) else frame
+  match model.source with
+  | Raw => frame |> Frame.withSurfaceGrid(gridCell, gridColor)
+  | Fused => frame |> Frame.withFusedRoom(gridCell, gridColor)
+  | Off => frame

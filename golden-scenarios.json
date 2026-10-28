@@ -228,6 +228,26 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "scene-grid-fused",
+      "sample": "scene-grid",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "toggle.script",
+      "captureAtFrame": 90
+    },
+    {
+      "name": "scene-grid-off",
+      "sample": "scene-grid",
+      "debugRender": null,
+      "targets": [
+        "native"
+      ],
+      "inputScript": "toggle.script",
+      "captureAtFrame": 120
     }
   ]
 }
