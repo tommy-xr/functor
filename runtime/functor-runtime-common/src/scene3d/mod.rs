@@ -86,6 +86,9 @@ pub struct SceneContext {
     // One drawable model per `Model.skinned` value, keyed by its id and
     // swept like `meshes`, so N nodes sharing a model upload it once.
     data_models: RefCell<HashMap<u64, RetainedModel>>,
+    // One GL texture per `Texture.fromPixels` value, keyed by its id and
+    // swept like `data_models`, so N nodes sharing it upload it once.
+    pixel_textures: RefCell<HashMap<u64, RetainedTexture>>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
@@ -486,6 +489,7 @@ impl SceneContext {
             polygons: RefCell::new(HashMap::new()),
             meshes: RefCell::new(HashMap::new()),
             data_models: RefCell::new(HashMap::new()),
+            pixel_textures: RefCell::new(HashMap::new()),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -586,6 +590,65 @@ impl SceneContext {
             }
             keep
         });
+        self.pixel_textures.borrow_mut().retain(|_, entry| {
+            let keep = frame.wrapping_sub(entry.last_used) <= 1;
+            if !keep {
+                unsafe { gl.delete_texture(entry.texture) };
+                crate::gpu_counters::gpu_counters().texture_deleted();
+            }
+            keep
+        });
+    }
+
+    /// The GL texture for `pixels`, uploaded on first use this residency.
+    /// Wrap and filtering are set here, from its colour space: `Srgb` is
+    /// mipmapped and repeats, `Linear` (lightmaps) is clamped with no mips.
+    pub(crate) fn pixel_texture(
+        &self,
+        gl: &glow::Context,
+        pixels: &crate::texture::PixelData,
+    ) -> glow::Texture {
+        let frame = self.current_frame.get();
+        let mut textures = self.pixel_textures.borrow_mut();
+        let entry = textures.entry(pixels.id()).or_insert_with(|| unsafe {
+            let srgb = pixels.color_space() == crate::texture::ColorSpace::Srgb;
+            let texture = gl.create_texture().expect("pixel texture");
+            crate::gpu_counters::gpu_counters().texture_created();
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                if srgb { glow::SRGB8_ALPHA8 } else { glow::RGBA8 } as i32,
+                pixels.width() as i32,
+                pixels.height() as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(pixels.rgba8())),
+            );
+            crate::gpu_counters::gpu_counters().uploaded(pixels.rgba8().len());
+            let (wrap, min) = if srgb {
+                gl.generate_mipmap(glow::TEXTURE_2D);
+                (glow::REPEAT, glow::LINEAR_MIPMAP_LINEAR)
+            } else {
+                (glow::CLAMP_TO_EDGE, glow::LINEAR)
+            };
+            for (param, value) in [
+                (glow::TEXTURE_WRAP_S, wrap),
+                (glow::TEXTURE_WRAP_T, wrap),
+                (glow::TEXTURE_MIN_FILTER, min),
+                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+            ] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
+            }
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            RetainedTexture {
+                texture,
+                last_used: frame,
+            }
+        });
+        entry.last_used = frame;
+        entry.texture
     }
 
     /// The drawable model for `data`, built on first use this residency.
@@ -1475,6 +1538,11 @@ struct RetainedMesh {
 /// draw and are deleted on eviction).
 struct RetainedModel {
     model: Arc<Model>,
+    last_used: u64,
+}
+
+struct RetainedTexture {
+    texture: glow::Texture,
     last_used: u64,
 }
 
