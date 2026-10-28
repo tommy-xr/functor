@@ -163,11 +163,12 @@ pub fn bake(
 }
 
 /// Each texel whose centre lies in one of its chart's triangles (the lowest
-/// on a shared edge), in texel order. A chart too thin to hold a texel
-/// centre samples its first triangle's centroid instead, so it isn't black.
+/// on a shared edge). A chart too thin to hold a texel centre samples its
+/// first triangle's centroid instead, so it isn't black.
 pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
     let size = u.size as usize;
-    let mut owner: Vec<Option<Sample>> = vec![None; size * size];
+    let mut taken = vec![false; size * size];
+    let mut samples = Vec::new();
     let mut first = vec![u32::MAX; u.charts.len()];
     let mut sampled = vec![false; u.charts.len()];
     for (t, tri) in u.triangles.iter().enumerate() {
@@ -193,8 +194,9 @@ pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
                 let w = [cross(p[1], p[2], c), cross(p[2], p[0], c), cross(p[0], p[1], c)]
                     .map(|w| w / area);
                 let texel = y as usize * size + x as usize;
-                if w.iter().all(|&w| w >= -1e-9) && owner[texel].is_none() {
-                    owner[texel] = Some(Sample {
+                if w.iter().all(|&w| w >= -1e-9) && !taken[texel] {
+                    taken[texel] = true;
+                    samples.push(Sample {
                         texel: texel as u32,
                         triangle: t as u32,
                         weights: w.map(|w| w as f32),
@@ -218,13 +220,13 @@ pub(crate) fn rasterize(u: &Unwrapped) -> Vec<Sample> {
         };
         let clamp = |v: f64, lo: u32, len: u32| (v.floor() as i64).clamp(lo as i64, (lo + len - 1) as i64) as usize;
         let texel = clamp(centroid(1), rect.y, rect.height) * size + clamp(centroid(0), rect.x, rect.width);
-        owner[texel] = Some(Sample {
+        samples.push(Sample {
             texel: texel as u32,
             triangle: t,
             weights: [1.0 / 3.0; 3],
         });
     }
-    owner.into_iter().flatten().collect()
+    samples
 }
 
 /// Twice the signed area of `a b c`.
@@ -233,8 +235,8 @@ fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
 }
 
 /// Fill each chart's empty texels, out to `padding` past its rect, with the
-/// mean of their filled neighbours, a ring per pass, so filtering at chart
-/// edges never reaches background. Each pass reads only the previous one.
+/// mean of their filled neighbours, a ring at a time, so filtering at chart
+/// edges never reaches background. A ring reads only earlier rings.
 fn dilate(baked: &mut Baked, u: &Unwrapped, padding: u32) {
     let size = baked.size as i64;
     for rect in &u.charts {
@@ -243,38 +245,52 @@ fn dilate(baked: &mut Baked, u: &Unwrapped, padding: u32) {
             (rect.x + rect.width + padding) as i64,
             (rect.y + rect.height + padding) as i64,
         );
-        loop {
-            let mut updates = Vec::new();
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let i = (y * size + x) as usize;
-                    if baked.filled[i] {
-                        continue;
-                    }
-                    let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
-                    for (dx, dy) in NEIGHBOURS {
-                        let (nx, ny) = (x + dx, y + dy);
-                        if nx < x0 || ny < y0 || nx >= x1 || ny >= y1 {
-                            continue;
-                        }
-                        let j = (ny * size + nx) as usize;
-                        if baked.filled[j] {
-                            (0..3).for_each(|k| sum[k] += baked.light[j][k]);
-                            n += 1.0;
-                        }
-                    }
-                    if n > 0.0 {
-                        updates.push((i, sum.map(|s| s / n)));
-                    }
+        let neighbours = |i: usize| {
+            let (x, y) = (i as i64 % size, i as i64 / size);
+            NEIGHBOURS
+                .iter()
+                .map(move |(dx, dy)| (x + dx, y + dy))
+                .filter(move |&(x, y)| x >= x0 && y >= y0 && x < x1 && y < y1)
+                .map(move |(x, y)| (y * size + x) as usize)
+        };
+        let mut queued = vec![false; ((x1 - x0) * (y1 - y0)) as usize];
+        let mut queue = |i: usize, queued: &mut [bool]| {
+            let k = ((i as i64 / size - y0) * (x1 - x0) + i as i64 % size - x0) as usize;
+            !std::mem::replace(&mut queued[k], true)
+        };
+        let mut ring: Vec<usize> = Vec::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y * size + x) as usize;
+                if !baked.filled[i] && neighbours(i).any(|j| baked.filled[j]) && queue(i, &mut queued) {
+                    ring.push(i);
                 }
             }
-            if updates.is_empty() {
-                break;
-            }
-            for (i, value) in updates {
+        }
+        while !ring.is_empty() {
+            let values: Vec<[f32; 3]> = ring
+                .iter()
+                .map(|&i| {
+                    let filled: Vec<usize> = neighbours(i).filter(|&j| baked.filled[j]).collect();
+                    let sum = filled.iter().fold([0.0f32; 3], |acc, &j| {
+                        [0, 1, 2].map(|k| acc[k] + baked.light[j][k])
+                    });
+                    sum.map(|c| c / filled.len() as f32)
+                })
+                .collect();
+            for (&i, value) in ring.iter().zip(values) {
                 baked.light[i] = value;
                 baked.filled[i] = true;
             }
+            let mut next = Vec::new();
+            for &i in &ring {
+                for j in neighbours(i) {
+                    if !baked.filled[j] && queue(j, &mut queued) {
+                        next.push(j);
+                    }
+                }
+            }
+            ring = next;
         }
     }
 }

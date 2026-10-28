@@ -210,6 +210,15 @@
       "targets": [
         "native"
       ]
+    },
+    {
+      "name": "lightmap-bake-t1",
+      "sample": "lightmap-bake",
+      "fixedTime": 1.0,
+      "debugRender": null,
+      "targets": [
+        "native"
+      ]
     }
   ]
 }

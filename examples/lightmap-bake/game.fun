@@ -2,7 +2,8 @@
 // ambient light darkened into corners and under the blocks (occlusion).
 // `bakes` below is what the baker reads; it writes baked/room.png (light)
 // and baked/room.mesh.bin (the mesh with lightmap UVs), and room-ao, ambient
-// alone. Rebake after an edit:  functor -d examples/lightmap-bake bake
+// alone. Rebake after an edit:
+//   functor -d examples/lightmap-bake bake --texels-per-meter 32
 //
 // The view cycles every 3 s: baked, occlusion only, realtime (no lightmap:
 // the engine has no point-light shadows). 1, 2 and 3 pick one.
