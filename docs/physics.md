@@ -282,6 +282,40 @@ a teaching error. Rays and contacts report the body's tag.
   distance 0 unless it moves out of it. `Physics.shapeCastExcluding(tag, …)`
   ignores one body, for sweeps from a character's own position.
 
+### Characters: `Physics.character`
+
+`Physics.character(tag, capsule, { stepHeight, maxSlope, snap, offset })` is a
+kinematic capsule body, and `Physics.move(tag, v)` walks it by up to `v`
+metres at the next step, using rapier's character controller:
+
+- **Collide and slide** against every other body except sensors, of any shape
+  (trimesh, box, heightfield). Every move is swept, so a character can't
+  tunnel through a thin wall at any speed, from either side of a trimesh face.
+- **Slopes** up to `maxSlope` are climbed and held; steeper ones slide the
+  character down. **Snap**: a grounded move follows the ground down by up to
+  `snap` (stairs, ramps), but only when the move has a downward part.
+- **Steps** up to `stepHeight` are climbed by a probe: when a grounded move is
+  mostly blocked, lift by the headroom, move past the riser, and drop onto a
+  walkable tread the capsule fits on. Rapier's own autostep isn't used: it
+  needs a wall-like hit, and a capsule meets a step's edge with its rounded
+  bottom.
+- Each move runs as a horizontal pass then a vertical one: one combined move
+  stalls whenever the capsule sits just inside its `offset` gap.
+
+**State.** The character's position and `grounded` flag are world state, so
+keyframes, rewinds and seeks restore them, and moves are recorded commands, so
+replay is bit-exact. `Physics.grounded(tag)` is whether the last move ended on
+walkable ground. The game keeps intent and vertical speed in its model:
+
+```functor
+let vy = (if grounded && model.jump then jumpSpeed else if grounded then 0.0 else model.vy)
+         - gravity * dt in
+(next, Physics.move(playerTag, Vec3.make(vx * dt, vy * dt, vz * dt)))
+```
+
+`examples/character` is the worked level (stairs, a ledge too tall, ramps, a
+wall; keyboard and VR thumbsticks).
+
 ## API (F# — reference design, deferred)
 
 **Per-frame draw context.** `draw3d` takes a `DrawContext` record (not a bare

@@ -3061,6 +3061,48 @@ capsule for the moving body"
         "Physics.fixed(tag, shape)",
         body_ctor(physics::Body::fixed),
     );
+    reg.fn3(
+        "Physics.character",
+        "Physics.character(tag, capsule, { stepHeight, maxSlope, snap, offset })",
+        |tag: std::rc::Rc<str>, shape: FunctorLangShape, settings: Value| {
+            const WHAT: &str = "Physics.character";
+            if !matches!(shape.0, physics::Shape::Capsule { .. }) {
+                return Err(format!("{WHAT}: the shape must be a Physics.capsule"));
+            }
+            let Value::Record(fields) = &settings else {
+                return Err(format!(
+                    "{WHAT}: expected a {{ stepHeight, maxSlope, snap, offset }} record, got {}",
+                    settings.kind_name()
+                ));
+            };
+            let get = |name: &str| fields.iter().find(|(f, _)| f == name).map(|(_, v)| v);
+            let length = |name: &str| match get(name) {
+                Some(Value::Number(n)) if n.is_finite() && *n >= 0.0 => Ok(*n as f32),
+                _ => Err(format!("{WHAT}: `{name}` must be a non-negative number of metres")),
+            };
+            let max_slope = match get("maxSlope") {
+                Some(Value::HostData(d)) => d
+                    .as_any()
+                    .downcast_ref::<FunctorLangAngle>()
+                    .map(|a| a.0.radians()),
+                _ => None,
+            }
+            .filter(|r| *r > 0.0 && *r < std::f32::consts::FRAC_PI_2)
+            .ok_or_else(|| format!("{WHAT}: `maxSlope` must be an angle between 0deg and 90deg"))?;
+            // Rapier's controller needs a gap to stay numerically stable.
+            let offset = length("offset")?;
+            if offset == 0.0 {
+                return Err(format!("{WHAT}: `offset` must be positive"));
+            }
+            let settings = physics::CharacterSettings {
+                step_height: length("stepHeight")?,
+                max_slope,
+                snap: length("snap")?,
+                offset,
+            };
+            Ok(FunctorLangBody(physics::Body::character(tag.to_string(), shape.0, settings)))
+        },
+    );
     // Body LAST (subject-last), so they pipe:
     // `Physics.dynamic(crateTag, Physics.box(1.0, 1.0, 1.0)) |> Physics.at(Vec3.make(0.0, 5.0, 0.0))`.
     reg.fn2(
@@ -3201,6 +3243,16 @@ capsule for the moving body"
             None => Err(no_body(&tag)),
         },
     );
+    // A world read like `Physics.position`; `false` before a character's
+    // first move (and while priming).
+    reg.fn1("Physics.grounded", "Physics.grounded(tag)", |tag: std::rc::Rc<str>| {
+        note_world_read();
+        physics::with_world(physics::active_world(), |w| w.grounded(&tag))
+            .flatten()
+            .or_else(|| PRIMING.with(|p| p.get()).then_some(false))
+            .map(Value::Bool)
+            .ok_or_else(|| format!("no Physics.character tagged \"{tag}\" in the physics world"))
+    });
     // SYNCHRONOUS world queries — the character-controller surface. Unlike
     // `Physics.raycast` (an Effect deferred past the step, so its answer
     // reaches `tick` a frame late) these answer in-place, in the same class as
@@ -3310,6 +3362,11 @@ capsule for the moving body"
         "Physics.teleport",
         "Physics.teleport(tag, v)",
         physics_command(|tag, position| physics::PhysicsCommand::Teleport { tag, position }),
+    );
+    reg.fn2(
+        "Physics.move",
+        "Physics.move(tag, v)",
+        physics_command(|tag, translation| physics::PhysicsCommand::Move { tag, translation }),
     );
     // Per-axis velocity writes. `setVelocity` replaces all three components,
     // which forces a character controller to author a vertical velocity every
@@ -10327,6 +10384,64 @@ triangles: Bytes.fromU32le([0.0, 1.0, 2.0]) })"
         );
         assert!(matches!(field(&unknown, "tag"), Value::String(s) if &*s == "ball"));
 
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+    }
+
+    #[test]
+    fn physics_character_builds_a_kinematic_capsule_and_validates_its_settings() {
+        let ok = "{ stepHeight: 0.35, maxSlope: Angle.degrees(45.0), snap: 0.3, offset: 0.02 }";
+        let character = |shape: &str, settings: &str| {
+            format!(
+                "let main = () => Physics.character(Physics.tag(\"p\"), {shape}, {settings})"
+            )
+        };
+        let value = eval(&format!(
+            "let main = () => Physics.scene(Vec3.make(0.0, 0.0, 0.0), \
+             [Physics.character(Physics.tag(\"p\"), Physics.capsule(0.6, 0.3), {ok})])"
+        ));
+        let body = &physics_scene_value(&value).expect("a scene").bodies[0];
+        assert_eq!(body.kind, physics::BodyKind::Kinematic);
+        let settings = body.character.expect("character settings");
+        assert!((settings.max_slope - std::f32::consts::FRAC_PI_4).abs() < 1e-6);
+        assert_eq!((settings.step_height, settings.snap, settings.offset), (0.35, 0.3, 0.02));
+
+        let fails = |shape: &str, settings: &str| fail_message(&character(shape, settings));
+        assert_eq!(
+            fails("Physics.sphere(0.3)", ok),
+            "Physics.character: the shape must be a Physics.capsule"
+        );
+        assert_eq!(
+            fails(
+                "Physics.capsule(0.6, 0.3)",
+                "{ stepHeight: 0.35, maxSlope: Angle.degrees(90.0), snap: 0.3, offset: 0.02 }"
+            ),
+            "Physics.character: `maxSlope` must be an angle between 0deg and 90deg"
+        );
+        assert_eq!(
+            fails(
+                "Physics.capsule(0.6, 0.3)",
+                "{ stepHeight: -1.0, maxSlope: Angle.degrees(45.0), snap: 0.3, offset: 0.02 }"
+            ),
+            "Physics.character: `stepHeight` must be a non-negative number of metres"
+        );
+        assert_eq!(
+            fails(
+                "Physics.capsule(0.6, 0.3)",
+                "{ stepHeight: 0.35, maxSlope: Angle.degrees(45.0), snap: 0.3, offset: 0.0 }"
+            ),
+            "Physics.character: `offset` must be positive"
+        );
+
+        // `grounded` reads a character; anything else is an error.
+        crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
+        assert_eq!(
+            fail_message("let main = () => Physics.grounded(Physics.tag(\"p\"))"),
+            "no Physics.character tagged \"p\" in the physics world"
+        );
+        let scene = crate::physics::PhysicsScene::create([0.0; 3], vec![body.clone()]);
+        crate::physics::with_world(crate::physics::DEFAULT_WORLD, |w| w.reconcile(&scene));
+        let grounded = eval("let main = () => Physics.grounded(Physics.tag(\"p\"))");
+        assert!(matches!(grounded, Value::Bool(false)), "no move yet");
         crate::physics::remove_world(crate::physics::DEFAULT_WORLD);
     }
 

@@ -111,6 +111,22 @@ let kinematic : (tag, shape) => body
 /// Create a fixed body that does not move.
 let fixed : (tag, shape) => body
 
+/// How a `Physics.character` moves. Lengths are metres: the tallest ledge it
+/// steps up onto, how far down a grounded move follows the ground (stairs,
+/// slopes) instead of stepping off into a fall, and the gap it keeps from the
+/// world (positive, about 0.02). It walks slopes up to `maxSlope` and slides
+/// down steeper ones.
+type characterSettings = { stepHeight: float, maxSlope: Angle.t, snap: float, offset: float }
+
+/// Create a character: a kinematic capsule that `Physics.move` walks through
+/// the world, colliding and sliding against every other body except sensors.
+///
+/// Its position is world state, like any body's: read it with
+/// `Physics.position`, and declare it with `Physics.at` once, not every frame
+/// (a changed declaration teleports it). Keep the vertical speed in your model:
+/// `Physics.grounded` says when to reset it.
+let character : (tag, shape, characterSettings) => body
+
 /// Set a body's initial world position; the body is last for piping.
 let at : (Vec3.t, body) => body
 /// Rotate a body about world X around its center; the body is last for piping.
@@ -188,6 +204,10 @@ let position : (tag) => position
 /// body-builder attribute that sets an *initial* velocity.)
 let linearVelocity : (tag) => velocity
 
+/// Whether a character's last move ended on walkable ground (`false` before
+/// its first move). A world read like `Physics.position`.
+let grounded : (tag) => bool
+
 /// Cast a ray against the world and get the nearest hit immediately.
 ///
 /// Unlike `Physics.raycast` — an effect whose answer arrives through `update`
@@ -256,6 +276,13 @@ let setVelocityXZ : (tag, float, float) => Effect.t
 let setVelocityY : (tag, float) => Effect.t
 /// Move a body immediately to a world position.
 let teleport : (tag, Vec3.t) => Effect.t
+
+/// Walk a `Physics.character` by up to a displacement, in metres, at the next
+/// step: velocity × `dt`, including the vertical speed. It collides and slides,
+/// steps up ledges up to `stepHeight`, and stays on the ground going down. Keep
+/// gravity in the displacement even when grounded: snapping to the ground
+/// needs a downward move. Several moves before one step chain.
+let move : (tag, Vec3.t) => Effect.t
 
 /// Cast a ray and tag its `Physics.rayHit` result as a message.
 let raycast : (Vec3.t, Vec3.t, float, (rayHit) => 'msg) => Effect.t
