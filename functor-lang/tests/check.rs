@@ -80,6 +80,12 @@ fn map_key_domain_is_checked_for_concrete_calls_and_annotations() {
         "Map keys must be bool, finite float, or string; got List<float>"
     );
 
+    let (message, _, _) = single_diag("let bad = () => Map.empty() |> Map.update([1.0], (o) => o)");
+    assert_eq!(
+        message,
+        "Map keys must be bool, finite float, or string; got List<float>"
+    );
+
     let (message, _, _) = single_diag("let bad = (map: Map<List<float>, string>) => map");
     assert_eq!(
         message,

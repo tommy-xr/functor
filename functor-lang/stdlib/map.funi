@@ -15,10 +15,11 @@
 //! Unicode scalar value (not locale-aware). So `values`, `toList`, structural
 //! equality, and display all agree byte-for-byte between native and wasm.
 //!
-//! A map is a persistent tree: `get`, `member`, `insert`, and `remove` are
-//! logarithmic, and an update copies only the few small nodes on its path,
-//! sharing the rest with the old map. `size` is constant; `keys`, `values`,
-//! `toList`, and `fold` are linear; `fromList` is O(n log n).
+//! A map is a persistent tree: `get`, `member`, `insert`, `remove`, and
+//! `update` (plus its function) are logarithmic, and an update copies only
+//! the few small nodes on its path, sharing the rest with the old map. `size`
+//! is constant; `keys`, `values`, `toList`, and `fold` are linear; `fromList`
+//! is O(n log n).
 
 /// The empty map.
 let empty : () => Map<'a, 'b>

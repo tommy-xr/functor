@@ -2853,8 +2853,7 @@ most 1000000 cells"
                         .map_err(|message| RunError { message, span })?;
                     let search = self.map_search(&entries, &key, span)?;
                     let current = entries.get_at(&search).cloned();
-                    let found = current.is_some();
-                    let label = builtin_name(b).to_string();
+                    let label = format!("<{} function>", builtin_name(b));
                     let next = self.call(
                         f,
                         vec![option_value(current)],
@@ -2862,30 +2861,24 @@ most 1000000 cells"
                         span,
                         Some(builtin_name(b)),
                     )?;
-                    let (ctor, payload) = match &next {
-                        Value::Variant { ctor, args } => (&**ctor, args.as_slice()),
-                        _ => ("", &[][..]),
+                    let usage = "Map.update function must return Option.Some(value) or Option.None";
+                    let Value::Variant { ctor, args } = &next else {
+                        return err(format!("{usage}, got {}", next.kind_name()));
                     };
-                    match (ctor, payload) {
+                    match (&**ctor, args.as_slice()) {
                         ("Option.Some", [value]) => {
                             self.preflight_charge(search.insert_units_ceiling(), span)?;
                             let units = entries.insert_at(search, key, value.clone());
                             self.charge(units, span)?;
                         }
                         ("Option.None", []) => {
-                            if found {
+                            if search.found() {
                                 self.preflight_charge(search.remove_units_ceiling(), span)?;
                                 let (_, units) = entries.remove_at(search);
                                 self.charge(units, span)?;
                             }
                         }
-                        _ => {
-                            return err(format!(
-                                "Map.update function must return Option.Some(value) or \
-Option.None, got {}",
-                                next.kind_name()
-                            ))
-                        }
+                        _ => return err(format!("{usage}, got {ctor}")),
                     }
                     Ok(Value::Map(entries))
                 }

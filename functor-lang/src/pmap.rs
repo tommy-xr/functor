@@ -299,6 +299,7 @@ impl<K: Clone, V: Clone> PMap<K, V> {
 
     /// The value a successful [`Search`] found.
     pub fn get_at(&self, search: &Search) -> Option<&V> {
+        debug_assert!(search.origin == (self.root_ptr(), self.len), "stale Search");
         let index = search.slot.ok()?;
         let mut node = self.root.as_deref()?;
         for &i in &search.path {

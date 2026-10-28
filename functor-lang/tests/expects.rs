@@ -697,7 +697,7 @@ fn map_fold_and_update_charge_their_calls() {
     assert!(per_entry >= 1);
     assert_eq!(fold(300) - fold(16), 284 * per_entry);
     // Update charges exactly what insert (a write) or member (no write)
-    // would, plus one callback call, at any map size.
+    // would, plus its one callback call, at any map size.
     let mut extras = Vec::new();
     for n in [16, 6800] {
         let setup = format!("Map.fromList(sorted({n}.0))");
@@ -705,8 +705,5 @@ fn map_fold_and_update_charge_their_calls() {
         extras.push(cost("Map.update(3.0, (o) => o)") - cost("Map.insert(3.0, 3.0)"));
         extras.push(cost("Map.update(3.5, (o) => o)") - cost("Map.member(3.5)"));
     }
-    assert!(
-        extras[0] >= 1 && extras.iter().all(|e| *e == extras[0]),
-        "{extras:?}"
-    );
+    assert!(extras.iter().all(|e| *e == 1), "{extras:?}");
 }
