@@ -23,10 +23,7 @@ pub fn atlas(
     let Some(first) = images.first() else {
         return Err("images is empty".to_string());
     };
-    super::check_side("maxSize", max_size as f64)?;
-    if !max_size.is_power_of_two() {
-        return Err(format!("maxSize must be a power of two, got {max_size}"));
-    }
+    check_max_size(max_size)?;
     if let Some(i) = images
         .iter()
         .position(|image| image.color_space() != first.color_space())
@@ -53,22 +50,9 @@ pub fn atlas(
             Ok((w as u32, h as u32))
         })
         .collect::<Result<_, _>>()?;
-    let area: u64 = padded.iter().map(|&(w, h)| w as u64 * h as u64).sum();
-    let widest = padded.iter().map(|&(w, h)| w.max(h)).max().unwrap_or(1);
-    let mut side = widest
-        .max((area as f64).sqrt().ceil() as u32)
-        .next_power_of_two();
-    let slots = loop {
-        if side > max_size {
-            return Err(format!(
-                "images need more than {max_size}×{max_size} ({area} texels with padding)"
-            ));
-        }
-        if let Some(slots) = skyline(&padded, side) {
-            break slots;
-        }
-        side *= 2;
-    };
+    let (side, slots) = pack(&padded, max_size).map_err(|area| {
+        format!("images need more than {max_size}×{max_size} ({area} texels with padding)")
+    })?;
     let mut rgba8 = vec![0u8; side as usize * side as usize * 4];
     let placements = images
         .iter()
@@ -85,6 +69,39 @@ pub fn atlas(
         PixelData::from_rgba8(side, side, first.color_space(), rgba8),
         placements,
     ))
+}
+
+/// `maxSize` for an atlas: a texture side (1 to 4096) and a power of two.
+pub fn check_max_size(max_size: u32) -> Result<(), String> {
+    super::check_side("maxSize", max_size as f64)?;
+    if !max_size.is_power_of_two() {
+        return Err(format!("maxSize must be a power of two, got {max_size}"));
+    }
+    Ok(())
+}
+
+/// Pack rectangles (each at most `max_size` a side) into the smallest
+/// power-of-two square that holds them all: its side and each rectangle's
+/// corner, in input order. `Err` is their total area when `max_size` is too
+/// small.
+pub fn pack(sizes: &[(u32, u32)], max_size: u32) -> Result<(u32, Vec<(u32, u32)>), u64> {
+    let area: u64 = sizes.iter().map(|&(w, h)| w as u64 * h as u64).sum();
+    if area > max_size as u64 * max_size as u64 {
+        return Err(area);
+    }
+    let widest = sizes.iter().map(|&(w, h)| w.max(h)).max().unwrap_or(1);
+    let mut side = widest
+        .max((area as f64).sqrt().ceil() as u32)
+        .next_power_of_two();
+    loop {
+        if side > max_size {
+            return Err(area);
+        }
+        if let Some(slots) = skyline(sizes, side) {
+            return Ok((side, slots));
+        }
+        side *= 2;
+    }
 }
 
 /// Bottom-left skyline packing of `sizes` into a `side`² square, tallest
