@@ -21,7 +21,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-use super::InstanceList;
+use super::{Aabb, InstanceList};
 
 /// An entry not drawn in the previous frame is evicted at the next frame's
 /// start (the terrain renderer's retention rule), so a game that rebuilds
@@ -34,7 +34,33 @@ struct Retained<B> {
     list: InstanceList,
     buffer: B,
     capacity: usize,
+    extent: InstanceExtent,
     last_used: u64,
+}
+
+/// Where a list's copies reach, for culling: the box of their positions,
+/// and the most any copy stretches its template (scale times the growth a
+/// non-unit quaternion adds in the instance shader's `rotate`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InstanceExtent {
+    pub positions: Aabb,
+    pub stretch: f32,
+}
+
+impl InstanceExtent {
+    fn of(list: &[super::InstanceData]) -> InstanceExtent {
+        let mut positions = Aabb::empty();
+        let mut stretch = 0.0f32;
+        for copy in list {
+            positions.extend(copy.position.into());
+            // `rotate(q, v)` = (1 - |q|²) v + |q|² R v, so |q|² > 1 grows v
+            // by up to 2|q|² - 1.
+            let q2: f32 = copy.rotation.iter().map(|c| c * c).sum();
+            let scale = copy.scale.iter().fold(0.0f32, |s, a| s.max(a.abs()));
+            stretch = stretch.max(scale * (2.0 * q2 - 1.0).max(1.0));
+        }
+        InstanceExtent { positions, stretch }
+    }
 }
 
 /// One draw's buffer, and whether the caller must upload into it.
@@ -43,6 +69,7 @@ pub(crate) struct Acquired<'a, B> {
     /// `Some(capacity)`: upload the list into `buffer` (growing the
     /// high-water `capacity` as needed). `None`: it already holds the list.
     pub upload: Option<&'a mut usize>,
+    pub extent: InstanceExtent,
 }
 
 pub(crate) struct InstanceBufferCache<B> {
@@ -99,9 +126,13 @@ impl<B: Copy> InstanceBufferCache<B> {
                     entry.list.ptr_eq(list) || slice_bytes(&entry.list) == slice_bytes(list);
                 entry.list = list.clone();
                 entry.last_used = frame;
+                if !unchanged {
+                    entry.extent = InstanceExtent::of(list);
+                }
                 Acquired {
                     buffer: entry.buffer,
                     upload: (!unchanged).then_some(&mut entry.capacity),
+                    extent: entry.extent,
                 }
             }
             Entry::Vacant(vacant) => {
@@ -110,11 +141,13 @@ impl<B: Copy> InstanceBufferCache<B> {
                     list: list.clone(),
                     buffer,
                     capacity,
+                    extent: InstanceExtent::of(list),
                     last_used: frame,
                 });
                 Acquired {
                     buffer: entry.buffer,
                     upload: Some(&mut entry.capacity),
+                    extent: entry.extent,
                 }
             }
         }
@@ -229,6 +262,19 @@ mod tests {
         assert_eq!(cache.begin_frame(21).unwrap().len(), 1);
         assert!(cache.entries.is_empty());
         assert_eq!(cache.begin_frame(22).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_extent_covers_scale_and_a_non_unit_rotation() {
+        let mut far = InstanceData::at([5.0, 0.0, -1.0]);
+        far.scale = [1.0, -3.0, 1.0];
+        let mut stretched = InstanceData::at([0.0; 3]);
+        // |q|² = 4: the shader's `rotate` grows vectors up to 7×.
+        stretched.rotation = [2.0, 0.0, 0.0, 0.0];
+        let extent = InstanceExtent::of(&[far, InstanceData::at([0.0; 3])]);
+        assert_eq!(extent.positions, crate::scene3d::Aabb::new([0.0, 0.0, -1.0], [5.0, 0.0, 0.0]));
+        assert_eq!(extent.stretch, 3.0);
+        assert_eq!(InstanceExtent::of(&[stretched]).stretch, 7.0);
     }
 
     #[test]

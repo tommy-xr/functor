@@ -9,19 +9,9 @@ use cgmath::{Matrix4, Vector3, Vector4};
 
 use crate::render::VertexPositionTextureSkinned;
 
-/// An axis-aligned box. Empty (`min > max`) when it holds no point.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Aabb {
-    pub min: Vector3<f32>,
-    pub max: Vector3<f32>,
-}
+pub use crate::inspect::Aabb;
 
 impl Aabb {
-    pub const EMPTY: Aabb = Aabb {
-        min: Vector3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
-        max: Vector3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
-    };
-
     pub const fn new(min: [f32; 3], max: [f32; 3]) -> Aabb {
         Aabb {
             min: Vector3::new(min[0], min[1], min[2]),
@@ -29,27 +19,10 @@ impl Aabb {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        !(self.min.x <= self.max.x && self.min.y <= self.max.y && self.min.z <= self.max.z)
-    }
-
-    pub fn include(&mut self, p: Vector3<f32>) {
-        self.min = Vector3::new(
-            self.min.x.min(p.x),
-            self.min.y.min(p.y),
-            self.min.z.min(p.z),
-        );
-        self.max = Vector3::new(
-            self.max.x.max(p.x),
-            self.max.y.max(p.y),
-            self.max.z.max(p.z),
-        );
-    }
-
     pub fn union(mut self, other: &Aabb) -> Aabb {
         if !other.is_empty() {
-            self.include(other.min);
-            self.include(other.max);
+            self.extend(other.min);
+            self.extend(other.max);
         }
         self
     }
@@ -114,10 +87,10 @@ pub struct MeshBounds {
 
 impl MeshBounds {
     pub fn of(vertices: &[VertexPositionTextureSkinned]) -> MeshBounds {
-        let mut local = Aabb::EMPTY;
+        let mut local = Aabb::empty();
         let mut joints: Vec<Aabb> = Vec::new();
         for v in vertices {
-            local.include(v.position);
+            local.extend(v.position);
             let slots = [
                 (v.joint_indices.x, v.weights.x),
                 (v.joint_indices.y, v.weights.y),
@@ -130,9 +103,9 @@ impl MeshBounds {
                 }
                 let joint = joint as usize;
                 if joint >= joints.len() {
-                    joints.resize(joint + 1, Aabb::EMPTY);
+                    joints.resize(joint + 1, Aabb::empty());
                 }
-                joints[joint].include(v.position);
+                joints[joint].extend(v.position);
             }
         }
         MeshBounds { local, joints }
@@ -143,7 +116,7 @@ impl MeshBounds {
     /// the hull of those joints' transformed boxes. `None` (draw) when a
     /// joint is missing from the palette.
     pub fn posed(&self, palette: &[Matrix4<f32>]) -> Option<Aabb> {
-        let mut out = Aabb::EMPTY;
+        let mut out = Aabb::empty();
         for (joint, bounds) in self.joints.iter().enumerate() {
             if bounds.is_empty() {
                 continue;
@@ -201,7 +174,7 @@ mod tests {
 
     #[test]
     fn empty_and_nan_boxes_are_never_culled() {
-        assert!(!outside(&clip(), &Aabb::EMPTY));
+        assert!(!outside(&clip(), &Aabb::empty()));
         let nan = Aabb::new([f32::NAN; 3], [f32::NAN; 3]);
         assert!(!outside(&(clip() * unit_at(0.0, 0.0, 5.0)), &nan));
     }

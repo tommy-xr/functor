@@ -504,14 +504,27 @@ impl InstancedRenderer {
         }
     }
 
-    /// Mark a culled node's instance buffer used, so it is not evicted.
-    pub(super) fn keep_instances(&mut self, gl: &glow::Context, instances: &InstanceList) {
-        self.instance_buffer(gl, instances);
+    /// Where `instances` reach, for culling. Acquires (and if new, uploads)
+    /// the list's buffer as a draw would, so a culled node stays resident.
+    pub(super) fn instance_extent(
+        &mut self,
+        gl: &glow::Context,
+        instances: &InstanceList,
+    ) -> super::instance_cache::InstanceExtent {
+        self.acquire_instances(gl, instances).1
     }
 
     /// The retained buffer holding `instances`, uploaded only when its
     /// content is new to the cache.
     fn instance_buffer(&mut self, gl: &glow::Context, instances: &InstanceList) -> glow::Buffer {
+        self.acquire_instances(gl, instances).0
+    }
+
+    fn acquire_instances(
+        &mut self,
+        gl: &glow::Context,
+        instances: &InstanceList,
+    ) -> (glow::Buffer, super::instance_cache::InstanceExtent) {
         let acquired = self.instance_buffers.acquire(instances, || {
             crate::gpu_counters::gpu_counters().buffer_created();
             unsafe { gl.create_buffer().expect("instance data") }
@@ -524,7 +537,7 @@ impl InstancedRenderer {
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
             }
         }
-        acquired.buffer
+        (acquired.buffer, acquired.extent)
     }
 
     fn mesh(&mut self, gl: &glow::Context, primitive: InstancedPrimitive) -> &mut MeshBuffers {

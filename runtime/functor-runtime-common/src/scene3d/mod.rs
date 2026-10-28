@@ -94,10 +94,6 @@ pub struct SceneContext {
     // Frustum culling on (default) or off (`FUNCTOR_CULL=0`, or
     // `set_frustum_culling`), for A/B checks.
     cull: Cell<bool>,
-    // Per `Scene.instanced` list (keyed by its `Arc`, which the entry pins):
-    // the copies' position box and largest scale, so a retained list's
-    // bounds cost nothing per frame. Swept like `meshes`.
-    instance_bounds: RefCell<HashMap<usize, RetainedInstanceBounds>>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
     // both eyes evaluate each model node once. Cleared when a new frame id
     // begins; see `cached_pose_joints` for the key.
@@ -492,10 +488,14 @@ fn cached_pose_joints(
         file,
     )
     .into();
-    let bounds = hydrated_model
-        .meshes
-        .iter()
-        .try_fold(Aabb::EMPTY, |acc, mesh| Some(acc.union(&mesh.bounds.posed(&joints)?)));
+    // Only culling reads them.
+    let bounds = scene_context.cull.get().then(|| {
+        hydrated_model
+            .meshes
+            .iter()
+            .try_fold(Aabb::empty(), |acc, mesh| Some(acc.union(&mesh.bounds.posed(&joints)?)))
+    });
+    let bounds = bounds.flatten();
     scene_context.poses.borrow_mut().insert(
         key,
         CachedPose {
@@ -611,7 +611,6 @@ impl SceneContext {
                 std::env::var("FUNCTOR_CULL").as_deref(),
                 Ok("0" | "off")
             )),
-            instance_bounds: RefCell::new(HashMap::new()),
             poses: RefCell::new(HashMap::new()),
             main_shadow: Cell::new(None),
             heightmap_pipeline: asset::build_pipeline(Box::new(HeightmapPipeline)),
@@ -843,9 +842,6 @@ impl SceneContext {
                 entry.gpu.delete(gl);
             }
         }
-        self.instance_bounds
-            .borrow_mut()
-            .retain(|_, entry| frame.wrapping_sub(entry.last_used) <= 1);
         let mut data_models = self.data_models.borrow_mut();
         let mut instanced = self.instanced.borrow_mut();
         data_models.retain(|id, entry| {
@@ -964,33 +960,6 @@ impl SceneContext {
         let culled = cull::outside(&(projection * view * world), bounds);
         crate::gpu_counters::gpu_counters().cull_tested(culled);
         culled
-    }
-
-    /// The box holding every copy of a template whose own bounds reach
-    /// `radius` from its origin, in the instanced node's space.
-    fn instances_bounds(&self, instances: &InstanceList, radius: f32) -> Aabb {
-        let frame = self.current_frame.get();
-        let mut cache = self.instance_bounds.borrow_mut();
-        let entry = cache.entry(instances.addr()).or_insert_with(|| {
-            let mut positions = Aabb::EMPTY;
-            let mut scale = 0.0f32;
-            for copy in instances.iter() {
-                positions.include(copy.position.into());
-                scale = copy.scale.iter().fold(scale, |s, a| s.max(a.abs()));
-            }
-            RetainedInstanceBounds {
-                _list: instances.clone(),
-                positions,
-                scale,
-                last_used: frame,
-            }
-        });
-        entry.last_used = frame;
-        let reach = cgmath::vec3(1.0, 1.0, 1.0) * (radius * entry.scale);
-        Aabb {
-            min: entry.positions.min - reach,
-            max: entry.positions.max + reach,
-        }
     }
 
     /// The instanced renderer, created on first use.
@@ -1990,15 +1959,6 @@ struct RetainedMesh {
     last_used: u64,
 }
 
-/// A `Scene.instanced` list's position box and largest scale. `_list` pins
-/// the `Arc`, so its address (the cache key) cannot be reused.
-struct RetainedInstanceBounds {
-    _list: InstanceList,
-    positions: Aabb,
-    scale: f32,
-    last_used: u64,
-}
-
 /// A data model's upload (GPU buffers hydrate on first draw and are deleted
 /// on eviction).
 struct RetainedModel {
@@ -2754,19 +2714,21 @@ impl Scene3D {
                         }
                     }
 
-                    // Skinned meshes test the posed bounds (unknown: draw).
-                    let bounds = if is_skinned { posed } else { Some(mesh.bounds.local) };
-                    if bounds.is_some_and(|bounds| {
-                        scene_context.culled(projection_matrix, view_matrix, &matrix, &bounds)
-                    }) {
-                        continue;
-                    }
-
                     // A debug render mode or the depth pass overrides
                     // everything — ignore per-mesh material selectors so
                     // the whole model is drawn with the override material.
                     if debug_override || depth_pass {
                         override_material_description = None;
+                    }
+
+                    // A skinned draw tests the posed bounds (unknown: draw); a
+                    // material override draws the mesh unskinned.
+                    let skinned_draw = is_skinned && override_material_description.is_none();
+                    let bounds = if skinned_draw { posed } else { Some(mesh.bounds.local) };
+                    if bounds.is_some_and(|bounds| {
+                        scene_context.culled(projection_matrix, view_matrix, &matrix, &bounds)
+                    }) {
+                        continue;
                     }
 
                     if let Some(material_description) = override_material_description {
@@ -2969,23 +2931,30 @@ impl Scene3D {
                     return;
                 }
                 let xform = world_matrix * self.xform;
-                // A whole node culls when every copy's box is outside; it
-                // still acquires its instance buffer, so the list stays
+                // A whole node culls when every copy's box is outside. The
+                // extent acquires the list's buffer, so a culled list stays
                 // resident. CPU-expanded templates cull per leaf instead.
-                let culled = |template: Option<Aabb>| {
-                    template.filter(|t| !t.is_empty()).is_some_and(|template| {
-                        let bounds =
-                            scene_context.instances_bounds(instances, template.radius());
-                        scene_context.culled(projection_matrix, view_matrix, &xform, &bounds)
-                    })
+                let culled = |renderer: &mut InstancedRenderer, template: Option<Aabb>| {
+                    let Some(template) = template.filter(|t| !t.is_empty()) else {
+                        return false;
+                    };
+                    if !scene_context.cull.get() {
+                        return false;
+                    }
+                    let extent = renderer.instance_extent(render_context.gl, instances);
+                    let reach = cgmath::vec3(1.0, 1.0, 1.0) * (template.radius() * extent.stretch);
+                    let bounds = Aabb {
+                        min: extent.positions.min - reach,
+                        max: extent.positions.max + reach,
+                    };
+                    scene_context.culled(projection_matrix, view_matrix, &xform, &bounds)
                 };
                 match instancing::recognize(template) {
                     Some(instancing::RecognizedTemplate::Primitive(recognized)) => {
                         let bounds = primitive_bounds(recognized.primitive)
                             .map(|bounds| bounds.transform(&recognized.local));
                         let mut renderer = scene_context.instanced_renderer(render_context);
-                        if culled(bounds) {
-                            renderer.keep_instances(render_context.gl, instances);
+                        if culled(&mut renderer, bounds) {
                             return;
                         }
                         renderer.draw_primitive(
@@ -3022,15 +2991,14 @@ impl Scene3D {
                             )
                         } else {
                             let bounds =
-                                hydrated_model.meshes.iter().fold(Aabb::EMPTY, |acc, mesh| {
+                                hydrated_model.meshes.iter().fold(Aabb::empty(), |acc, mesh| {
                                     acc.union(&mesh.bounds.local.transform(&mesh.transform))
                                 });
                             (Arc::from([]), Some(bounds))
                         };
                         let bounds = bounds.map(|bounds| bounds.transform(&recognized.local));
                         let mut renderer = scene_context.instanced_renderer(render_context);
-                        if culled(bounds) {
-                            renderer.keep_instances(render_context.gl, instances);
+                        if culled(&mut renderer, bounds) {
                             return;
                         }
                         if is_skinned {
@@ -3238,9 +3206,9 @@ Scene.emissive material, or a bare Scene.model leaf under transforms)"
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         counters.cache_miss();
-                        let mut bounds = Aabb::EMPTY;
+                        let mut bounds = Aabb::empty();
                         for p in &mesh.positions {
-                            bounds.include((*p).into());
+                            bounds.extend((*p).into());
                         }
                         e.insert(RetainedMesh {
                             _source: mesh.clone(),

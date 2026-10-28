@@ -142,11 +142,6 @@ impl InstanceList {
     pub fn ptr_eq(&self, other: &InstanceList) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
-
-    /// The allocation's address: an identity while the `Arc` is held.
-    pub(crate) fn addr(&self) -> usize {
-        Arc::as_ptr(&self.0) as *const InstanceData as usize
-    }
 }
 
 impl std::ops::Deref for InstanceList {
