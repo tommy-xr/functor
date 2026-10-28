@@ -268,7 +268,7 @@ Makes me think of John Carmack's comments in this [gamasutra article about funct
 ## Credits
 
 - Demo 3D assets are from [BabylonJS Assets](https://github.com/BabylonJS/Assets/)
-  (CC-BY 4.0). `Xbot.glb` (`examples/hello`, `examples/animation`, `examples/crossfade`) is Adobe
+  (CC-BY 4.0). `Xbot.glb` (`examples/hello`, `examples/animation`, `examples/crossfade`, `examples/crowd`) is Adobe
   Mixamo's "X Bot" character, distributed via BabylonJS Assets.
 - The hand model in `examples/glove` (`vr_glove_model.glb`) is from Valve's
   [SteamVR Unity Plugin](https://github.com/ValveSoftware/steamvr_unity_plugin)

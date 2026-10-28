@@ -281,6 +281,7 @@ fn model_pose_joints(
     animation: &Option<crate::anim::AnimExpr>,
     file: &str,
 ) -> Vec<Matrix4<f32>> {
+    crate::gpu_counters::gpu_counters().pose_evaluated();
     match animation {
         Some(expr) => crate::anim::skinning_transforms(hydrated_model, expr, &mut |warning| {
             let (key, message) = match warning {
@@ -428,6 +429,10 @@ impl SceneContext {
             self.terrain_frame_serial.set(next);
             next
         });
+        // A stereo pair shares one id, so both eyes sum into one frame.
+        if frame != self.current_frame.get() {
+            crate::gpu_counters::gpu_counters().begin_skinned_frame();
+        }
         self.current_frame.set(frame);
         self.terrain_renderer.borrow_mut().begin_frame(gl, frame);
         if let Some(instanced) = self.instanced.borrow_mut().as_mut() {
@@ -2004,7 +2009,10 @@ impl Scene3D {
                             };
 
                             // TODO: Bring back drawing
-                            mesh.mesh.draw(&render_context.gl)
+                            mesh.mesh.draw(&render_context.gl);
+                            if is_skinned {
+                                crate::gpu_counters::gpu_counters().skinned_drawn();
+                            }
                         }
                     }
                 }

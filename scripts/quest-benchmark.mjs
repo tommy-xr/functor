@@ -257,6 +257,16 @@ async function main() {
   console.log(`- VrApi target rate: ${telemetry.target_hz.join(", ") || "not reported"} Hz`);
   console.log(`- Sample: ${telemetry.samples} complete VrApi one-second buckets after ${options.warmup}s warmup`);
   console.log(`- FPS: ${telemetry.fps.mean} mean, ${telemetry.fps.p5} p5, ${telemetry.fps.min} min`);
+  // Protocol v22+: the last frame's skinned work and the shell's stage means.
+  if (after.skinned) {
+    console.log(`- Skinned per frame: ${after.skinned.draws} draws, ${after.skinned.pose_evals} pose evaluations`);
+  }
+  if (after.stages) {
+    const s = after.stages;
+    console.log(
+      `- Stages over ${s.frames} frames: sim ${s.sim_ms.toFixed(2)} ms, render ${s.render_ms.toFixed(2)} ms, sim-wait ${s.sim_wait_ms.toFixed(2)} ms, frame ${s.frame_ms.toFixed(2)} ms (${after.sim_thread ?? "sim thread n/a"})`,
+    );
+  }
   console.log("");
   console.log("| Metric | Mean | p95 | Max |");
   console.log("| --- | ---: | ---: | ---: |");

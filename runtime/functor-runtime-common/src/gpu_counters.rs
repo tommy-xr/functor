@@ -43,6 +43,9 @@ pub struct GpuCounters {
     // One word (patches << 32 | vertices) so a reader on another thread
     // never pairs one draw's patches with another's vertices.
     frame_terrain: AtomicU64,
+    // The current rendered frame's skinned-model work, zeroed when a new
+    // frame begins (same contract). One word (draws << 32 | pose evals).
+    frame_skinned: AtomicU64,
 }
 
 static COUNTERS: GpuCounters = GpuCounters::new();
@@ -81,6 +84,15 @@ pub struct TerrainDraws {
     pub vertices: u64,
 }
 
+/// One frame's skinned-model work, summed over every pass (shadow and each
+/// eye): mesh draw calls (an instanced draw counts once), and pose
+/// evaluations (one per skinned model per pass).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkinnedWork {
+    pub draws: u64,
+    pub pose_evals: u64,
+}
+
 /// One frame's `Scene.instanced` instance-buffer uploads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstanceUploads {
@@ -102,6 +114,7 @@ impl GpuCounters {
             frame_instance_uploads: AtomicU64::new(0),
             frame_instance_upload_bytes: AtomicU64::new(0),
             frame_terrain: AtomicU64::new(0),
+            frame_skinned: AtomicU64::new(0),
         }
     }
 
@@ -178,6 +191,30 @@ impl GpuCounters {
         }
     }
 
+    /// Record one skinned mesh draw.
+    pub fn skinned_drawn(&self) {
+        self.frame_skinned.fetch_add(1 << 32, Ordering::Relaxed);
+    }
+
+    /// Record one skinned-model pose evaluation.
+    pub fn pose_evaluated(&self) {
+        self.frame_skinned.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Zero the per-frame skinned work (a new rendered frame began).
+    pub fn begin_skinned_frame(&self) {
+        self.frame_skinned.store(0, Ordering::Relaxed);
+    }
+
+    /// The skinned work of the most recently rendered frame.
+    pub fn frame_skinned(&self) -> SkinnedWork {
+        let packed = self.frame_skinned.load(Ordering::Relaxed);
+        SkinnedWork {
+            draws: packed >> 32,
+            pose_evals: packed & u64::from(u32::MAX),
+        }
+    }
+
     pub fn cache_hit(&self) {
         self.cache_hits.fetch_add(1, Ordering::Relaxed);
     }
@@ -223,5 +260,22 @@ mod tests {
         assert_eq!(counters.frame_terrain(), both_eyes);
         counters.begin_terrain_frame();
         assert_eq!(counters.frame_terrain(), TerrainDraws::default());
+    }
+
+    #[test]
+    fn skinned_work_sums_per_frame_and_resets() {
+        let counters = GpuCounters::new();
+        for _ in 0..3 {
+            counters.pose_evaluated();
+            counters.skinned_drawn();
+            counters.skinned_drawn();
+        }
+        let expected = SkinnedWork {
+            draws: 6,
+            pose_evals: 3,
+        };
+        assert_eq!(counters.frame_skinned(), expected);
+        counters.begin_skinned_frame();
+        assert_eq!(counters.frame_skinned(), SkinnedWork::default());
     }
 }
