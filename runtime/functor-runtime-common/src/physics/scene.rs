@@ -104,6 +104,26 @@ pub struct Body {
     #[serde(default)]
     pub rotation_locked: bool,
     pub authority: Authority,
+    /// `Some` for a `Physics.character`: a kinematic capsule that
+    /// `PhysicsCommand::Move` walks through the world.
+    #[serde(default)]
+    pub character: Option<CharacterSettings>,
+}
+
+/// How a `Physics.character` moves. Read by every move, so changing it
+/// takes effect at the next one.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CharacterSettings {
+    /// The tallest ledge a move steps up onto, in metres.
+    pub step_height: f32,
+    /// The steepest walkable slope, in radians: climbed up to it, slid down
+    /// past it.
+    pub max_slope: f32,
+    /// How far down a grounded move follows the ground (stairs, slopes)
+    /// instead of stepping off into a fall.
+    pub snap: f32,
+    /// The gap kept between the capsule and the world.
+    pub offset: f32,
 }
 
 impl Body {
@@ -124,6 +144,7 @@ impl Body {
             sensor: false,
             rotation_locked: false,
             authority: Authority::Local,
+            character: None,
         }
     }
 
@@ -140,6 +161,14 @@ impl Body {
     /// A body that never moves (ground, walls).
     pub fn fixed(tag: String, shape: Shape) -> Body {
         Body::new(tag, BodyKind::Fixed, shape)
+    }
+
+    /// A kinematic character moved by `PhysicsCommand::Move`.
+    pub fn character(tag: String, shape: Shape, settings: CharacterSettings) -> Body {
+        Body {
+            character: Some(settings),
+            ..Body::kinematic(tag, shape)
+        }
     }
 
     pub fn at(mut self, position: [f32; 3]) -> Body {

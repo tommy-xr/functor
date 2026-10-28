@@ -3824,12 +3824,14 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
 
         /// One rendered frame at exactly one fixed substep.
         fn frame(&mut self) {
-            self.tts += physics::FIXED_DT;
-            let frame_time = FrameTime {
-                dts: physics::FIXED_DT,
-                tts: self.tts,
-            };
-            self.ctx().run_frame(frame_time, None);
+            self.frame_at(physics::FIXED_DT, None);
+        }
+
+        /// One rendered frame of `dt`, with `snapshot` as its sampled input.
+        fn frame_at(&mut self, dt: f32, snapshot: Option<&crate::InputSnapshot>) {
+            self.tts += dt;
+            let frame_time = FrameTime { dts: dt, tts: self.tts };
+            self.ctx().run_frame(frame_time, snapshot);
         }
 
         /// A body's live world-space height, `None` when no such body exists.
@@ -3991,6 +3993,78 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
             h.frame();
         }
         assert_eq!(physics::trimesh_builds() - before, 1);
+        assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
+    }
+
+    /// The `examples/character` game, scripted headless: holding W walks the
+    /// capsule up its stairs onto the 0.75 m landing; letting go stops it
+    /// there, grounded. Seeking back replays the walk bit-exact.
+    #[test]
+    fn the_character_example_climbs_its_stairs() {
+        const SRC: &str = include_str!("../../../examples/character/game.fun");
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        let walk = crate::InputSnapshot {
+            held_keys: vec![crate::Key::W],
+            ..crate::InputSnapshot::default()
+        };
+        let idle = crate::InputSnapshot::default();
+        let pos = || {
+            physics::with_world(physics::DEFAULT_WORLD, |w| w.body_transform("player"))
+                .flatten()
+                .unwrap()
+                .0
+        };
+        let snapshot = || physics::with_world(physics::DEFAULT_WORLD, |w| w.snapshot()).unwrap();
+        // Pre-step snapshots of fixed frames 45 and 100 (one step per frame).
+        let mut seen = Vec::new();
+        for frame in 0..120 {
+            if frame == 45 || frame == 100 {
+                seen.push((frame, snapshot()));
+            }
+            h.frame_at(physics::FIXED_DT, Some(if frame < 90 { &walk } else { &idle }));
+        }
+        let p = pos();
+        assert!(p[0] > 3.5 && p[0] < 6.0, "on the landing: {p:?}");
+        assert!((p[1] - (0.75 + 0.92)).abs() < 0.02, "standing on it: {p:?}");
+        assert!((p[2] + 5.0).abs() < 0.01, "walked straight: {p:?}");
+        let grounded = physics::with_world(physics::DEFAULT_WORLD, |w| w.grounded("player"));
+        assert_eq!(grounded.flatten(), Some(true));
+        assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
+
+        // Seeking replays the recorded moves from a keyframe, bit-exact.
+        for (frame, expected) in seen {
+            assert!(h.physics_rt.seek_to_frame(frame).is_empty());
+            assert!(snapshot() == expected, "frame {frame} replays bit-exact");
+        }
+    }
+
+    /// At 90 Hz most ticks run without a physics step after the last, so they
+    /// read a stale `grounded`: the example's jump must still leave the ground.
+    #[test]
+    fn the_character_example_jumps_at_90_hz() {
+        const SRC: &str = include_str!("../../../examples/character/game.fun");
+        let mut h = PhysicsHarness::new(SRC);
+        h.ctx().prime_physics();
+        let dt = 1.0 / 90.0;
+        let idle = crate::InputSnapshot::default();
+        let jump = crate::InputSnapshot {
+            held_keys: vec![crate::Key::Space],
+            ..crate::InputSnapshot::default()
+        };
+        let height = |h: &PhysicsHarness| h.height("player").unwrap();
+        for _ in 0..60 {
+            h.frame_at(dt, Some(&idle));
+        }
+        let rest = height(&h);
+        let mut top = rest;
+        for frame in 0..120 {
+            h.frame_at(dt, Some(if frame < 3 { &jump } else { &idle }));
+            top = top.max(height(&h));
+        }
+        // 4.5 m/s under 9.81 m/s² peaks about 1 m up.
+        assert!(top - rest > 0.9, "jumped {} m", top - rest);
+        assert!((height(&h) - rest).abs() < 0.01, "landed again");
         assert!(PhysicsHarness::reports().is_empty(), "{:?}", PhysicsHarness::reports());
     }
 

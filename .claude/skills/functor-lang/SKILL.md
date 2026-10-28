@@ -1305,6 +1305,16 @@ sides. A small, fast body can also pass through a face in a single step.
 `Physics.shapeCast(shape, origin, dir, maxDist)` sweeps a box, sphere or
 capsule into the same `rayHit` record (two-sided, like rays).
 
+**Walking a level is `Physics.character`**, not a dynamic capsule:
+`Physics.character(tag, Physics.capsule(0.6, 0.3), { stepHeight: 0.35,
+maxSlope: 45deg, snap: 0.3, offset: 0.02 }) |> Physics.at(spawn)` declares a
+kinematic capsule, and `tick` returns `Physics.move(tag, Vec3.make(vx * dt,
+vy * dt, vz * dt))` each frame: collide and slide, climb steps and slopes,
+follow the ground down. Keep `vy` in the model, reset it when
+`Physics.grounded(tag) && vy <= 0.0` (grounded is per step, so a 90 Hz tick
+can still read it just after a jump), and subtract `gravity * dt`. See
+`examples/character`.
+
 Physics **command effects** are returned beside the model like any effect
 — `(model, Physics.applyImpulse(ballTag, Vec3.make(0.0, 5.0, 0.0)))` — but carry no
 tagger: nothing folds back through `update`; observe outcomes via the

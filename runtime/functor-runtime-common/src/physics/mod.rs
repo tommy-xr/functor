@@ -27,6 +27,8 @@ mod trimesh;
 mod world;
 
 #[cfg(test)]
+mod character_tests;
+#[cfg(test)]
 mod goldens;
 
 // `driver::SteppedPhysics` is the production drive: the recorded wrapper the

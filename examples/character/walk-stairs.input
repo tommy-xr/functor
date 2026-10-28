@@ -1,0 +1,12 @@
+# walk-stairs.input — a reproducible headless run of the character example.
+#
+#   functor -d examples/character run native -- \
+#     --input-script "$PWD/examples/character/walk-stairs.input" \
+#     --script-dt 0.0166667 --capture-frame /tmp/f.png --capture-at-frame 150
+#
+# f 1..90    walk +x up the two 0.25 m stairs onto the 0.75 m landing.
+# f 92..140  turn right, toward the ramps; standing on the landing, grounded.
+1 W down
+90 W up
+92 Right down
+140 Right up
