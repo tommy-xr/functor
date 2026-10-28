@@ -574,7 +574,9 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
             }
             let start = self.front.pos;
             let take = (self.front.leaf.len() - start).min(self.remaining);
-            acc = self.front.leaf[start..start + take].iter().fold(acc, &mut f);
+            acc = self.front.leaf[start..start + take]
+                .iter()
+                .fold(acc, &mut f);
             self.front.pos += take;
             self.remaining -= take;
         }

@@ -2755,7 +2755,9 @@ most 1000000 cells"
                     self.charge(entries.len() as u64, span)?;
                     // `for_each` walks whole leaves (`Iter::fold`).
                     let mut out = Vec::with_capacity(entries.len());
-                    entries.iter().for_each(|(_, value)| out.push(value.clone()));
+                    entries
+                        .iter()
+                        .for_each(|(_, value)| out.push(value.clone()));
                     Ok(Value::List(Rc::new(out)))
                 }
                 _ => err("Map.values(map) expects one map".to_string()),
