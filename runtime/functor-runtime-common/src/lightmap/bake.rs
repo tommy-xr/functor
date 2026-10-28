@@ -707,11 +707,39 @@ mod tests {
         }
     }
 
-    /// medsci1's scale (~26k triangles) at 8 texels a metre. Timing only:
-    /// `cargo test --release … -- --ignored --nocapture`.
+    /// Bake times: the Cornell box at 32 texels a metre and 64 occlusion
+    /// rays, and medsci1's scale (~26k triangles) at 8 and 16. Timing only:
+    /// add `--config 'profile.dev.package.functor_runtime_common.opt-level=3'`
+    /// (and parry3d, glam), then `-- --ignored --nocapture`.
     #[test]
     #[ignore]
-    fn bake_a_level() {
+    fn bake_times() {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let time = |name: &str, (positions, normals, triangles): (&[[f32; 3]], &[[f32; 3]], &[[u32; 3]]), lights: &[Light], tpm: f64, ao: u32| {
+            let o = BakeOptions {
+                unwrap: UnwrapOptions { texels_per_meter: tpm, padding: 2, max_size: 4096 },
+                ao_samples: ao,
+                threads,
+                ..options(0)
+            };
+            let start = std::time::Instant::now();
+            let u = unwrap(positions, triangles, o.unwrap).unwrap();
+            let unwrapped = start.elapsed();
+            bake(positions, normals, triangles, &u, lights, &o).unwrap();
+            eprintln!(
+                "{name}: {} triangles, {} charts, {s}×{s}, {} texels, {} lights, {ao} AO rays, {threads} threads: unwrap {unwrapped:?}, total {:?}",
+                triangles.len(),
+                u.charts.len(),
+                rasterize(&u).len(),
+                lights.len(),
+                start.elapsed(),
+                s = u.size,
+            );
+        };
+        let box_lights = [Light::ambient(0.3, 0.3, 0.3), lamp().cast_shadows()];
+        let m = cornell();
+        time("cornell", (&m.positions, &m.normals, &m.triangles), &box_lights, 32.0, 64);
+
         let (positions, triangles) = super::super::unwrap::tests::level(72);
         let normals = triangles.iter().fold(vec![[0.0; 3]; positions.len()], |mut n, t| {
             let [a, b, c] = t.map(|i| v(positions[i as usize]));
@@ -722,24 +750,8 @@ mod tests {
             .map(|r| Light::point(r as f32 * 7.0 + 3.0, 2.6, 3.0, 1.0, 0.9, 0.8, 1.0, 6.0).cast_shadows())
             .chain([Light::ambient(0.2, 0.2, 0.25)])
             .collect();
-        let mut o = options(16);
-        o.unwrap = UnwrapOptions { texels_per_meter: 8.0, padding: 1, max_size: 2048 };
-        o.threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let start = std::time::Instant::now();
-        let u = unwrap(&positions, &triangles, o.unwrap).unwrap();
-        let unwrapped = start.elapsed();
-        let baked = bake(&positions, &normals, &triangles, &u, &lights, &o).unwrap();
-        eprintln!(
-            "{} triangles, {} charts, {}² atlas, {} texels sampled, {} lights + 16 AO rays, {} threads: unwrap {:?}, total {:?}",
-            triangles.len(),
-            u.charts.len(),
-            u.size,
-            rasterize(&u).len(),
-            lights.len(),
-            o.threads,
-            unwrapped,
-            start.elapsed()
-        );
-        assert!(baked.filled.iter().any(|&f| f));
+        for (tpm, ao) in [(8.0, 16), (16.0, 64)] {
+            time("level", (&positions, &normals, &triangles), &lights, tpm, ao);
+        }
     }
 }
