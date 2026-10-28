@@ -3413,15 +3413,18 @@ fn bits(b: Builtin, args: &[Value]) -> Result<Value, String> {
         Builtin::BitsShr => "Bits.shr(count, value)",
         Builtin::BitsPopcount => "Bits.popcount(value)",
         Builtin::BitsTestBit => "Bits.testBit(bit, value)",
-        _ => "Bits.extract(offset, width, value)",
+        Builtin::BitsExtract => "Bits.extract(offset, width, value)",
+        _ => unreachable!("bits() handles only Bits.* builtins"),
     };
-    let nums: Vec<f64> = args
-        .iter()
-        .map(|a| match a {
-            Value::Number(n) => Ok(*n),
-            _ => Err(format!("{usage} expects numbers")),
-        })
-        .collect::<Result<_, _>>()?;
+    // Unpack into a fixed array: these calls sit in decode hot loops.
+    let mut buf = [0.0; 3];
+    for (slot, a) in buf.iter_mut().zip(args) {
+        match a {
+            Value::Number(n) => *slot = *n,
+            _ => return Err(format!("{usage} expects numbers")),
+        }
+    }
+    let nums = &buf[..args.len().min(3)];
     // A whole number in `0..=max`, else an error naming the call, the operand
     // and the valid range.
     let whole = |name: &str, n: f64, max: f64| {
@@ -3435,7 +3438,7 @@ fn bits(b: Builtin, args: &[Value]) -> Result<Value, String> {
     };
     let u32_arg = |name: &str, n: f64| whole(name, n, u32::MAX as f64).map(|n| n as u32);
     let num = |x: u32| Ok(Value::Number(x as f64));
-    match (b, nums.as_slice()) {
+    match (b, nums) {
         (Builtin::BitsAnd, &[a, c]) => num(u32_arg("a", a)? & u32_arg("b", c)?),
         (Builtin::BitsOr, &[a, c]) => num(u32_arg("a", a)? | u32_arg("b", c)?),
         (Builtin::BitsXor, &[a, c]) => num(u32_arg("a", a)? ^ u32_arg("b", c)?),
@@ -3444,7 +3447,11 @@ fn bits(b: Builtin, args: &[Value]) -> Result<Value, String> {
         // Counts of 32 or more shift every bit out (0), unlike C/JS, which
         // wrap the count.
         (Builtin::BitsShl | Builtin::BitsShr, &[count, v]) => {
-            let count = whole("count", count, f64::MAX)?;
+            if count.fract() != 0.0 || !(count >= 0.0) {
+                return Err(format!(
+                    "{usage}: `count` must be a whole number >= 0, got {count}"
+                ));
+            }
             let v = u32_arg("value", v)?;
             num(match (count >= 32.0, b == Builtin::BitsShl) {
                 (true, _) => 0,

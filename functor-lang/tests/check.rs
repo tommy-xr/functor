@@ -2146,7 +2146,7 @@ fn bits_builtins_check_and_pipe() {
          let d = 31744.0 |> Bits.extract(10.0, 5.0)",
     );
     let (message, _, _) = single_diag("let x = Bits.nand(1.0, 2.0)");
-    assert!(message.contains("Bits"), "unexpected: {message}");
+    assert!(message.contains("`Bits` has no builtin `nand`"), "unexpected: {message}");
 }
 
 // THREAD-LAST IS LAW. Every multi-argument addition takes its subject as the
