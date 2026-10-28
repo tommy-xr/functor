@@ -9,6 +9,7 @@
 
 use crate::eval::builtin_name;
 use crate::ir::{BindingId, Expr, Param};
+use crate::pmap::PMap;
 use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
@@ -139,9 +140,10 @@ pub enum Value {
     String(Rc<str>),
     Bool(bool),
     List(Rc<Vec<Value>>),
-    /// Immutable keyed data in canonical key order. Language and host
+    /// Immutable keyed data in canonical key order: a persistent B+tree, so
+    /// an update copies only its root-to-leaf path. Language and host
     /// construction seams validate keys and keep entries unique.
-    Map(Rc<Vec<(MapKey, Value)>>),
+    Map(PMap<MapKey, Value>),
     /// At least two elements; structural equality, `(1, 2)` display.
     Tuple(Rc<Vec<Value>>),
     /// Field order is the construction order (deterministic output).

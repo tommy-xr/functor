@@ -264,7 +264,7 @@ snapshots — no GPU, fully agent-verifiable.
       `empty` / `get` / `insert` / `remove` / `member` / `values` /
       `toList` / `fromList`. Keys are deliberately bounded to bool, finite
       float, and string; `-0.0` canonicalizes to `0.0`, and NaN/infinities are
-      rejected. Storage is one immutable vector sorted by an explicit
+      rejected. Storage is kept sorted by an explicit
       cross-target order (bool < float < string; false < true; ascending
       numeric/text order), with unique keys and last-write-wins
       `fromList`. That representation makes iteration, structural equality,

@@ -15,8 +15,9 @@
 //! Unicode scalar value (not locale-aware). So `values`, `toList`, structural
 //! equality, and display all agree byte-for-byte between native and wasm.
 //!
-//! `get` and `member` are logarithmic; the immutable `insert` and `remove`
-//! copy the ordered storage and are linear, as are `values` and `toList`;
+//! A map is a persistent tree: `get`, `member`, `insert`, and `remove` are
+//! logarithmic, and an update copies only the few small nodes on its path,
+//! sharing the rest with the old map. `values` and `toList` are linear;
 //! `fromList` is O(n log n).
 
 /// The empty map.

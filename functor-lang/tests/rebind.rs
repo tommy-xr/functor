@@ -232,7 +232,8 @@ fn closures_nested_in_maps_rebind_and_keep_snapshots_unsafe() {
         panic!("expected map");
     };
     assert_eq!(entries.len(), 1);
-    assert_eq!(num(&apply(&b, entries[0].1.clone(), 2.0)), 12.0);
+    let (_, behavior) = entries.iter().next().unwrap();
+    assert_eq!(num(&apply(&b, behavior.clone(), 2.0)), 12.0);
 }
 
 #[test]

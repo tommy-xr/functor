@@ -155,8 +155,9 @@ impl<K: Clone, V: Clone> PMap<K, V> {
     /// of the entries, so a single-leaf map costs nothing extra.
     pub fn from_sorted(entries: Vec<(K, V)>) -> (Self, u64) {
         let len = entries.len();
-        if len == 0 {
-            return (PMap::default(), 0);
+        if len <= CAP {
+            let root = (len > 0).then(|| Rc::new(Node::Leaf(entries)));
+            return (PMap { root, len }, 0);
         }
         // Each level is (smallest key under the node, node).
         let mut level: Vec<(K, Rc<Node<K, V>>)> = even_chunks(entries)
@@ -563,6 +564,25 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.remaining, Some(self.remaining))
     }
+
+    /// Whole leaf slices at a time: `for_each` over a map runs as fast as
+    /// over a flat vector.
+    fn fold<B, F: FnMut(B, Self::Item) -> B>(mut self, init: B, mut f: F) -> B {
+        let mut acc = init;
+        while self.remaining > 0 {
+            if self.front.pos == self.front.leaf.len() {
+                self.front.step_leaf(true);
+            }
+            let start = self.front.pos;
+            let take = (self.front.leaf.len() - start).min(self.remaining);
+            acc = self.front.leaf[start..start + take]
+                .iter()
+                .fold(acc, &mut f);
+            self.front.pos += take;
+            self.remaining -= take;
+        }
+        acc
+    }
 }
 
 impl<K, V> DoubleEndedIterator for Iter<'_, K, V> {
@@ -694,6 +714,9 @@ mod tests {
         let forward: Vec<_> = map.iter().map(|(k, v)| (*k, *v)).collect();
         let expected: Vec<_> = model.iter().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(forward, expected);
+        let mut folded = Vec::new();
+        map.iter().for_each(|(k, v)| folded.push((*k, *v)));
+        assert_eq!(folded, expected);
         let backward: Vec<_> = map.iter().rev().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(backward, expected.iter().rev().copied().collect::<Vec<_>>());
         assert_eq!(map.iter().len(), model.len());
@@ -858,6 +881,20 @@ mod tests {
         }
         seen.sort();
         assert_eq!(seen, (0..100).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn fold_yields_only_what_remains() {
+        let map = build(0..100);
+        for (front, back) in [(0, 0), (5, 0), (17, 30), (40, 59), (0, 100)] {
+            let mut iter = map.iter();
+            iter.by_ref().take(front).for_each(drop);
+            iter.by_ref().rev().take(back).for_each(drop);
+            let mut rest = Vec::new();
+            iter.for_each(|(k, _)| rest.push(*k));
+            let expected: Vec<i64> = (front as i64..100 - back as i64).collect();
+            assert_eq!(rest, expected, "front {front}, back {back}");
+        }
     }
 
     #[test]
