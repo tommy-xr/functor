@@ -299,6 +299,51 @@ functor -d examples/scene-grid run native   # the stand-in floor, desk and wall
   30 s; grid off App 0.55 ms, 0 stale. The pass is about 2.7 ms of GPU at
   full eye resolution.
 
+### Fused room mesh
+
+The surface grid reads each frame's depth afresh, so it only covers what the
+headset sees now, and it waves with the depth noise. While `config` requests
+`Xr.scene`, the runtime also fuses the depth into a mesh of the room that
+fills in as the headset looks around — the approach Lasertag and Hauntify
+take on Quest 3, with no Space Setup:
+
+```functor
+frame |> Frame.withFusedRoom(0.25, Color.rgb(0.35, 0.9, 1.0))
+```
+
+- Every 4th frame the main pass packs its environment depth layer (the
+  left eye on Quest; desktop's stand-in depth, downsampled) into a 320x320
+  RGBA8 target and `glReadPixels` it into a pixel-pack buffer. A later frame
+  maps the buffer once its fence has signalled, so the render thread never
+  waits on the GPU.
+- A background thread folds each frame into a truncated signed distance
+  volume: 8 cm voxels in 8³ chunks hashed by position, distances truncated
+  at 3 voxels, a weighted average capped at 32 observations. Voxels a ray
+  passes through on its way to a surface count as free space, so a surface
+  that is no longer there — a chair that moved — wears away within about 40
+  fusions (1–2 s of looking where it was). Marching cubes re-meshes only
+  the chunks whose voxels changed sign or drifted about a centimetre, and
+  the chunk meshes reach the renderer as ordinary `Shape::Mesh` geometry.
+- `Frame.withFusedRoom(cell, color)` draws those meshes with the surface
+  grid's lines (the same GLSL): a depth pass first, then the lines of the
+  nearest surface, so the mesh also hides virtual geometry behind real
+  surfaces. Fusion starts on the first frame that draws the room and keeps
+  running while `config` requests `Xr.scene`, so a game can switch back to it
+  without starting over; without `Xr.scene(true)` nothing is fused or drawn.
+- The mesh lives in world coordinates, which on Quest come from the rig
+  reference and `Frame.camera`. Recentring the rig or moving the authored
+  camera starts the mesh over.
+- Depth beyond 4 m builds no surface but still clears the free space in
+  front of it, so a chair moved away from a far wall still fades.
+- `/state.xr.mesh` (debug protocol v25) reports `{chunks, triangles,
+  fused_frames, voxel_m}`.
+- Desktop and web fuse the stand-in room's depth through the same code.
+  Runs pinned by `--fixed-time` or `--input-script` (and wasm, which has no
+  threads) fuse inline on the render thread, so a capture after a fixed
+  number of frames always shows the same mesh.
+- GLES 3.0 has no compute shaders, so fusion runs on the CPU; a GLES 3.1
+  compute path is the follow-up if the CPU cost matters.
+
 ### Mixed-reality parts viewer
 
 `examples/parts-mr` shows a printable part on your real desk at true scale

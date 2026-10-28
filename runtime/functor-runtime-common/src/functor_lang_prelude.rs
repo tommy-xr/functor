@@ -95,6 +95,8 @@
 //! Frame.withSurfaceGrid(cell, color, frame)                 -> Frame
 //!   (a world-aligned grid shaded onto the room's surfaces, read per pixel
 //!    from the environment depth; nothing without `Xr.scene(true)`)
+//! Frame.withFusedRoom(cell, color, frame)                   -> Frame
+//!   (the room meshed from that depth over time, drawn with the same grid)
 //! Ui.text(s) / Ui.textColor(color, s)                       -> View
 //! Ui.column([view, …]) / Ui.row([view, …])                  -> View
 //! Ui.panel(anchor, view)                                    -> View
@@ -2743,6 +2745,22 @@ fn register_light(reg: &mut crate::host_registry::Registry) {
     );
 }
 
+/// A grid for `Frame.withSurfaceGrid`/`withFusedRoom`; `cell` must be positive.
+fn surface_grid(
+    call: &str,
+    cell: f64,
+    color: FunctorLangColor,
+) -> Result<crate::surface_grid::SurfaceGrid, String> {
+    if !(cell as f32 > 0.0) {
+        return Err(format!("{call}: the cell size must be positive, got {cell}"));
+    }
+    let (r, g, b) = color.0;
+    Ok(crate::surface_grid::SurfaceGrid {
+        cell: cell as f32,
+        color: [r, g, b],
+    })
+}
+
 fn register_frame(reg: &mut crate::host_registry::Registry) {
     reg.fn2(
         "Frame.create",
@@ -2769,6 +2787,7 @@ fn register_frame(reg: &mut crate::host_registry::Registry) {
                 passthrough: false,
                 stand_in_room: None,
                 surface_grid: None,
+                fused_room: None,
             })
         },
     );
@@ -2834,19 +2853,17 @@ passthrough frame wherever no camera feed is composited",
         "Frame.withSurfaceGrid(cell, color, frame) — cell is the grid spacing in \
 world units (metres in passthrough), > 0",
         |cell: f64, color: FunctorLangColor, frame: FunctorLangFrame| {
-            if !(cell as f32 > 0.0) {
-                return Err(format!(
-                    "Frame.withSurfaceGrid: the cell size must be positive, got {cell}"
-                ));
-            }
-            let (r, g, b) = color.0;
-            Ok(FunctorLangFrame(Frame::with_surface_grid(
-                frame.0,
-                crate::surface_grid::SurfaceGrid {
-                    cell: cell as f32,
-                    color: [r, g, b],
-                },
-            )))
+            let grid = surface_grid("Frame.withSurfaceGrid", cell, color)?;
+            Ok(FunctorLangFrame(Frame::with_surface_grid(frame.0, grid)))
+        },
+    );
+    reg.fn3(
+        "Frame.withFusedRoom",
+        "Frame.withFusedRoom(cell, color, frame) — cell is the grid spacing in \
+world units (metres in passthrough), > 0",
+        |cell: f64, color: FunctorLangColor, frame: FunctorLangFrame| {
+            let grid = surface_grid("Frame.withFusedRoom", cell, color)?;
+            Ok(FunctorLangFrame(Frame::with_fused_room(frame.0, grid)))
         },
     );
     // See `Scene.equals` — the same explicit structural walk, one level up.
@@ -9948,9 +9965,17 @@ piped through RenderTarget.sized"
              Frame.create(Camera3D.lookAt(Vec3.make(0.0, 1.6, 0.0), Vec3.make(0.0, 1.6, 1.0)), Scene.group([]))\n\
              |> Frame.withPassthrough\n\
              |> Frame.withStandInRoom(Scene.cube())\n\
-             |> Frame.withSurfaceGrid(0.25, Color.rgb(0.0, 1.0, 1.0))",
+             |> Frame.withSurfaceGrid(0.25, Color.rgb(0.0, 1.0, 1.0))\n\
+             |> Frame.withFusedRoom(0.5, Color.rgb(1.0, 0.0, 1.0))",
         );
         assert_eq!(frame.stand_in_room.as_deref(), Some(&Scene3D::cube()));
+        assert_eq!(
+            frame.fused_room,
+            Some(crate::surface_grid::SurfaceGrid {
+                cell: 0.5,
+                color: [1.0, 0.0, 1.0],
+            })
+        );
         assert_eq!(
             frame.surface_grid,
             Some(crate::surface_grid::SurfaceGrid {

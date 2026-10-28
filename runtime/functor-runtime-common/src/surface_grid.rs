@@ -24,6 +24,28 @@ pub struct SurfaceGrid {
 // Reuses the compositor's fullscreen quad; `vUv` spans the viewport.
 pub const GRID_VERTEX_SHADER_SOURCE: &str = crate::composite::COMPOSITE_VERTEX_SHADER_SOURCE;
 
+/// The grid's line coverage at world point `p`, `dist` from the eye — shared
+/// by the depth pass here and the fused room's mesh (`crate::fused_room`),
+/// so both sources draw the same lines.
+pub const GRID_LINES_GLSL: &str = r#"
+        // Triplanar: each axis plane draws its two in-plane line sets,
+        // weighted by how squarely the surface faces it.
+        float gridLines(highp vec3 p, highp float cell, highp float dist) {
+            highp vec3 n = normalize(cross(dFdx(p), dFdy(p)));
+            highp vec3 w = pow(abs(n), vec3(4.0));
+            w /= w.x + w.y + w.z;
+            highp vec3 q = p / cell;
+            // Distance to the nearest line, in pixels, per axis.
+            highp vec3 dq = fwidth(q);
+            highp vec3 d = abs(fract(q - 0.5) - 0.5) / max(dq, vec3(1e-5));
+            vec3 lines = 1.0 - clamp(min(d.yxx, d.zzy) - 0.5, 0.0, 1.0);
+            // Fade out where a pixel spans a large share of a cell: depth
+            // edges (the point jumps between neighbours) and grazing angles.
+            return dot(w, lines) * (1.0 - smoothstep(4.0, 8.0, dist))
+                * (1.0 - smoothstep(0.2, 0.4, max(max(dq.x, dq.y), dq.z)));
+        }
+"#;
+
 pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec2 vUv;
         out vec4 fragColor;
@@ -94,20 +116,7 @@ pub const GRID_FRAGMENT_SHADER_SOURCE: &str = r#"
             t = onSurface(dir, t, true, hit);
             highp vec3 p = eye + dir * t;
 
-            // Triplanar: each axis plane draws its two in-plane line sets,
-            // weighted by how squarely the surface faces it.
-            highp vec3 n = normalize(cross(dFdx(p), dFdy(p)));
-            highp vec3 w = pow(abs(n), vec3(4.0));
-            w /= w.x + w.y + w.z;
-            highp vec3 q = p / cell;
-            // Distance to the nearest line, in pixels, per axis.
-            highp vec3 dq = fwidth(q);
-            highp vec3 d = abs(fract(q - 0.5) - 0.5) / max(dq, vec3(1e-5));
-            vec3 lines = 1.0 - clamp(min(d.yxx, d.zzy) - 0.5, 0.0, 1.0);
-            // Fade out where a pixel spans a large share of a cell: depth
-            // edges (the point jumps between neighbours) and grazing angles.
-            float alpha = dot(w, lines) * (1.0 - smoothstep(4.0, 8.0, t))
-                * (1.0 - smoothstep(0.2, 0.4, max(max(dq.x, dq.y), dq.z)));
+            float alpha = gridLines(p, cell, t);
             // `!(alpha > 0.0)` also drops a NaN from a degenerate normal.
             if (!hit || t <= 0.0 || !(alpha > 0.0)) {
                 discard;

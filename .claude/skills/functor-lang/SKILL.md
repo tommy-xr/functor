@@ -1614,7 +1614,10 @@ floor does not count — declare one); it is dropped under a composited feed and
 ignored on a non-passthrough frame (`GET /state.xr.depth`).
 `frame |> Frame.withSurfaceGrid(cell, color)` shades a world-aligned grid onto
 whatever that depth finds (`examples/scene-grid`); without `Xr.scene(true)` it
-draws nothing.
+draws nothing. `frame |> Frame.withFusedRoom(cell, color)` draws the same grid
+on a mesh the runtime fuses from that depth over time (8 cm voxels; it keeps
+surfaces out of view and forgets moved furniture in a second or two;
+`GET /state.xr.mesh`).
 
 **UI on world screens**: `frame |> Frame.withUiTarget(target, view)` paints a
 `Ui.*` tree into a render target (declared once with

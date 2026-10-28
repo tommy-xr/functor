@@ -1090,6 +1090,7 @@ fn service_debug_request(
             let terrain = counters.frame_terrain();
             let skinned = counters.frame_skinned();
             let stand_in_depth = scene_context.stand_in_depth_stats();
+            let fused_room = scene_context.fused_room_state();
             sim.post(move |g| {
                 let _ = resp.send(debug_server::RuntimeState {
                     frame,
@@ -1119,6 +1120,7 @@ fn service_debug_request(
                     xr: functor_runtime_common::runtime_settings::XrState::emulated(
                         g.config(),
                         stand_in_depth,
+                        fused_room,
                     ),
                 });
             });
@@ -2027,6 +2029,9 @@ Escape releases while captured"
         let mut last_asset_poll = Instant::now();
 
         let scene_context = SceneContext::new();
+        // Deterministic runs fuse the room inline, so frame N always shows
+        // the same mesh.
+        scene_context.set_fusion_inline(args.fixed_time.is_some() || args.input_script.is_some());
         // The GLFW backbuffer is driven as a non-sRGB surface (shader
         // epilogue encodes), exactly like the WebGL2 canvas: FRAMEBUFFER_SRGB
         // stays off outside render-target writes (see

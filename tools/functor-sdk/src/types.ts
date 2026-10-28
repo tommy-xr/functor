@@ -261,8 +261,10 @@ export interface RuntimeState {
    * — a headset depth image this frame (`device`), a running provider with no
    * image yet (`waiting`), the desktop/web stand-in room rendered as depth
    * (`emulated`), or `unavailable` (with the reason in `warning`); `frames`
-   * counts images acquired or stand-in passes rendered. Protocol v25+;
-   * omitted unless `config` requests `Xr.scene`. */
+   * counts images acquired or stand-in passes rendered. `mesh` is the room
+   * fused from that depth (`Frame.withFusedRoom`): chunks with surface, their
+   * triangles, depth frames fused, and the voxel edge in metres. Protocol
+   * v25+; omitted unless `config` requests `Xr.scene`. */
   xr?: {
     depth: {
       mode: "device" | "waiting" | "emulated" | "unavailable";
@@ -270,6 +272,12 @@ export interface RuntimeState {
       height: number;
       frames: number;
       warning?: string;
+    };
+    mesh: {
+      chunks: number;
+      triangles: number;
+      fused_frames: number;
+      voxel_m: number;
     };
   };
   /** Which runtime build is answering: `pr | <sha7>` for a CI-built Quest

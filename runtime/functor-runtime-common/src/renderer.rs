@@ -287,6 +287,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
             pass.frame.fog_cull_distance(),
             pass.frame.drawn_stand_in_room(false),
             None,
+            None,
             width as f32 / height as f32,
             height as f32,
             &pass.frame.camera,
@@ -355,6 +356,13 @@ are ignored — declare Frame.withUiTarget on the main frame",
         main_projection * camera.view_matrix(),
         viewport,
     );
+    // Fold it into the fused room every few frames (`Frame.withFusedRoom`).
+    scene_context.fuse_environment_depth(
+        gl,
+        shader_version,
+        environment_depth,
+        frame.fused_room.is_some(),
+    );
 
     // Main (forward) pass into the bound framebuffer, at the viewport's
     // sub-rectangle (x,y default to 0 = full window). The scissor clips the clear
@@ -413,6 +421,7 @@ are ignored — declare Frame.withUiTarget on the main frame",
         frame.fog_cull_distance(),
         frame.drawn_stand_in_room(scene_context.passthrough_composited()),
         frame.surface_grid.as_ref().zip(environment_depth),
+        frame.fused_room,
         viewport.aspect(),
         viewport.height as f32,
         lod_view.map_or(&frame.camera, |(camera, _, _, _)| camera),
@@ -508,6 +517,7 @@ fn render_sprite_layers(
             None,
             None,
             false,
+            None,
             None,
             None,
             None,
@@ -674,6 +684,7 @@ pub fn render_composited_frames_with_view(
             frame.passthrough,
             frame.fog_cull_distance(),
             frame.drawn_stand_in_room(false),
+            None,
             None,
             width as f32 / height as f32,
             height as f32,
@@ -876,6 +887,9 @@ fn forward_pass(
         &crate::surface_grid::SurfaceGrid,
         crate::environment_depth::EnvironmentDepthView,
     )>,
+    // `Frame.withFusedRoom`: the fused room's mesh with this grid's lines,
+    // drawn after the surface grid.
+    fused_room: Option<crate::surface_grid::SurfaceGrid>,
     aspect: f32,
     viewport_height: f32,
     lod_camera: &Camera,
@@ -1016,6 +1030,15 @@ fn forward_pass(
                 depth,
                 &(projection_matrix * view_matrix),
                 camera.eye,
+            );
+        }
+        if let Some(grid) = fused_room.filter(|_| with_grid) {
+            scene_context.draw_fused_room(
+                &render_context,
+                grid,
+                &projection_matrix,
+                &view_matrix,
+                stand_in_room.is_some(),
             );
         }
         Scene3D::render(
