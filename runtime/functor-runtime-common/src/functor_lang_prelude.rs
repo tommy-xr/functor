@@ -13299,7 +13299,7 @@ Light.point(Vec3.make(0.0, 1.0, 0.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 5.0)])\n";
 maxSize: 64.0 })\n";
 
     /// `Lightmap.unwrap`'s mesh feeds `Model.static`: new `uvs2` in its
-    /// chart, groups and lightmap carried over.
+    /// chart, groups carried over, the lightmap cleared.
     #[test]
     fn unwrapped_data_builds_a_static_model() {
         let main = |expr: &str| eval_with_prelude(&format!("{ROOM}{UNWRAP}let main = {expr}\n"));
@@ -13317,7 +13317,8 @@ maxSize: 64.0 })\n";
             assert!(uv.iter().all(|&x| (1.0 / 32.0..=17.0 / 32.0).contains(&x)), "{uv:?}");
         }
         assert_eq!((s.groups.len(), s.groups[1].unlit), (2, true));
-        assert!(s.lightmap.is_some());
+        // The old lightmap was baked for the old uvs2.
+        assert!(s.lightmap.is_none());
     }
 
     #[test]
@@ -13339,7 +13340,7 @@ maxSize: 64.0 })\n";
         assert_eq!(
             fail(("maxSize: 64.0", "maxSize: 16.0")),
             "Lightmap.unwrap: the chart from triangle 0 is 16×16 texels plus padding, over \
-maxSize 16; lower texelsPerMeter"
+maxSize 16; lower texelsPerMeter or padding"
         );
         assert_eq!(
             fail(("Bytes.fromU32le([0.0, 1.0, 2.0,", "Bytes.fromU32le([0.0, 1.0, 9.0,")),

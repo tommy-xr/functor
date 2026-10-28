@@ -1,16 +1,22 @@
-//! `Lightmap.unwrap`: lightmap UVs for a static mesh. Edge-adjacent, coplanar
-//! triangles become charts; each is projected onto its plane at a fixed
-//! texel density, turned to its smallest bounding rectangle, and packed with
-//! `Texture.atlas`'s packer. A vertex on a seam between charts is
-//! duplicated, since it needs a lightmap UV in each.
+//! `Lightmap.unwrap`: lightmap UVs for a static mesh. Edge-adjacent triangles
+//! facing (nearly) the same way become charts; each is projected onto its
+//! first triangle's plane at a fixed texel density, turned to its smallest
+//! bounding rectangle, and packed with `Texture.atlas`'s packer. A vertex on
+//! a seam between charts is duplicated, since it needs a lightmap UV in each.
 
 use std::collections::HashMap;
+
+use cgmath::{InnerSpace, Vector3, Zero};
+use functor_solid::face_normal;
 
 use crate::texture::{check_max_size, pack};
 
 /// A chart only takes triangles facing within ~5.7° of its first one, so
 /// projecting onto that plane shrinks no triangle by more than 0.5%.
 const MIN_COS: f64 = 0.995;
+
+/// The overlap grid's cell, in texels.
+const CELL_TEXELS: f64 = 16.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct UnwrapOptions {
@@ -46,30 +52,8 @@ pub struct Unwrapped {
     pub size: u32,
 }
 
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-/// `a` normalized, or zero for a zero vector.
-fn unit(a: V3) -> V3 {
-    let len = dot(a, a).sqrt();
-    if len > 0.0 {
-        a.map(|x| x / len)
-    } else {
-        [0.0; 3]
-    }
-}
+type V3 = Vector3<f64>;
+type Flat = [[f64; 2]; 3];
 
 /// Lightmap UVs for `triangles` over `positions`, whose indices the caller
 /// has checked. Deterministic: charts grow from the lowest unassigned
@@ -90,7 +74,7 @@ pub fn unwrap(
         ));
     }
     check_max_size(max_size)?;
-    let at = |v: u32| positions[v as usize].map(f64::from);
+    let at = |v: u32| V3::from(positions[v as usize].map(f64::from));
 
     // Weld by position, so a chart spans polygons that don't share vertices
     // (`+ 0.0` turns -0 into 0).
@@ -104,26 +88,25 @@ pub fn unwrap(
         .collect();
     let normals: Vec<V3> = triangles
         .iter()
-        .map(|t| {
-            let o = at(t[0]);
-            unit(cross(sub(at(t[1]), o), sub(at(t[2]), o)))
-        })
+        .map(|t| face_normal(at(t[0]), at(t[1]), at(t[2])))
         .collect();
     let edge = |t: &[u32; 3], k: usize| {
         let (a, b) = (weld[t[k] as usize], weld[t[(k + 1) % 3] as usize]);
         (a.min(b), a.max(b))
     };
+    // Collapsed edges (both ends welded together) join nothing.
     let mut edges: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
     for (i, t) in triangles.iter().enumerate() {
-        for k in 0..3 {
-            edges.entry(edge(t, k)).or_default().push(i as u32);
+        for e in (0..3).map(|k| edge(t, k)).filter(|e| e.0 != e.1) {
+            edges.entry(e).or_default().push(i as u32);
         }
     }
 
     // Grow each chart across edges from its seed, taking triangles that face
-    // its way and lie within half a texel of its plane. The plane test keeps
-    // gentle curves (a spiral ramp) from wrapping onto themselves.
-    let half_texel = 0.5 / tpm;
+    // its way and, laid flat, overlap none it has (a gently rising spiral
+    // ramp would otherwise wrap onto itself). A grid of cells finds the
+    // triangles to test.
+    let cell = CELL_TEXELS / tpm;
     let mut chart_of = vec![u32::MAX; triangles.len()];
     let mut seeds: Vec<usize> = Vec::new();
     let mut stack = Vec::new();
@@ -135,25 +118,45 @@ pub fn unwrap(
         seeds.push(seed);
         chart_of[seed] = chart;
         let n = normals[seed];
-        let origin = at(triangles[seed][0]);
         // A degenerate seed has no plane: it stays alone.
-        if n == [0.0; 3] {
+        if n.is_zero() {
             continue;
         }
-        let fits = |t: usize| {
-            let m = normals[t];
-            (m == [0.0; 3] || dot(m, n) >= MIN_COS)
-                && triangles[t]
-                    .iter()
-                    .all(|&v| dot(sub(at(v), origin), n).abs() <= half_texel)
+        let (bt, bb) = basis(n);
+        let flat = |t: usize| triangles[t].map(|v| [at(v).dot(bt), at(v).dot(bb)]);
+        let cells = |f: &Flat| {
+            let range = |k: usize| {
+                let lo = f.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min);
+                let hi = f.iter().map(|p| p[k]).fold(f64::NEG_INFINITY, f64::max);
+                (lo / cell).floor() as i64..=(hi / cell).floor() as i64
+            };
+            let ys = range(1);
+            range(0).flat_map(move |x| ys.clone().map(move |y| (x, y)))
         };
+        let mut grid: HashMap<(i64, i64), Vec<Flat>> = HashMap::new();
+        let place = |grid: &mut HashMap<(i64, i64), Vec<Flat>>, f: Flat| {
+            cells(&f).for_each(|c| grid.entry(c).or_default().push(f));
+        };
+        place(&mut grid, flat(seed));
         stack.push(seed);
         while let Some(t) = stack.pop() {
             for k in 0..3 {
-                for &u in &edges[&edge(&triangles[t], k)] {
+                let Some(next) = edges.get(&edge(&triangles[t], k)) else {
+                    continue;
+                };
+                for &u in next {
                     let u = u as usize;
-                    if chart_of[u] == u32::MAX && fits(u) {
+                    let m = normals[u];
+                    if chart_of[u] != u32::MAX || !(m.is_zero() || m.dot(n) >= MIN_COS) {
+                        continue;
+                    }
+                    let f = flat(u);
+                    let hit = cells(&f).any(|c| {
+                        grid.get(&c).is_some_and(|placed| placed.iter().any(|g| overlap(&f, g)))
+                    });
+                    if !hit {
                         chart_of[u] = chart;
+                        place(&mut grid, f);
                         stack.push(u);
                     }
                 }
@@ -164,6 +167,7 @@ pub fn unwrap(
     // One output vertex per (chart, input vertex), in triangle order.
     let mut remap: HashMap<(u32, u32), u32> = HashMap::new();
     let mut source = Vec::new();
+    let mut vertex_chart = Vec::new();
     let mut members: Vec<Vec<u32>> = vec![Vec::new(); seeds.len()];
     let mut out_triangles = Vec::with_capacity(triangles.len());
     for (t, &chart) in triangles.iter().zip(&chart_of) {
@@ -171,6 +175,7 @@ pub fn unwrap(
             *remap.entry((chart, v)).or_insert_with(|| {
                 let id = source.len() as u32;
                 source.push(v);
+                vertex_chart.push(chart);
                 members[chart as usize].push(id);
                 id
             })
@@ -182,12 +187,12 @@ pub fn unwrap(
     let mut sizes = Vec::with_capacity(seeds.len());
     for (chart, verts) in members.iter().enumerate() {
         let n = normals[seeds[chart]];
-        let (t, b) = basis(if n == [0.0; 3] { [0.0, 0.0, 1.0] } else { n });
+        let (t, b) = basis(if n.is_zero() { V3::unit_z() } else { n });
         let flat: Vec<[f64; 2]> = verts
             .iter()
             .map(|&i| {
                 let p = at(source[i as usize]);
-                [dot(p, t), dot(p, b)]
+                [p.dot(t), p.dot(b)]
             })
             .collect();
         let (c, s) = min_area_rotation(&flat);
@@ -210,7 +215,7 @@ pub fn unwrap(
         if w + 2.0 * padding as f64 > max_size as f64 || h + 2.0 * padding as f64 > max_size as f64 {
             return Err(format!(
                 "the chart from triangle {} is {w}×{h} texels plus padding, over maxSize \
-{max_size}; lower texelsPerMeter",
+{max_size}; lower texelsPerMeter or padding",
                 seeds[chart]
             ));
         }
@@ -241,10 +246,6 @@ lower texelsPerMeter or raise maxSize",
             height,
         })
         .collect();
-    let mut vertex_chart = vec![0u32; source.len()];
-    for (chart, verts) in members.iter().enumerate() {
-        verts.iter().for_each(|&i| vertex_chart[i as usize] = chart as u32);
-    }
     let uvs2 = local
         .iter()
         .zip(&vertex_chart)
@@ -272,10 +273,31 @@ fn basis(n: V3) -> (V3, V3) {
     let k = (0..3)
         .min_by(|&i, &j| n[i].abs().total_cmp(&n[j].abs()))
         .unwrap();
-    let mut axis = [0.0; 3];
+    let mut axis = V3::zero();
     axis[k] = 1.0;
-    let t = unit(cross(axis, n));
-    (t, cross(n, t))
+    let t = axis.cross(n).normalize();
+    (t, n.cross(t))
+}
+
+/// Whether two flat triangles share interior area (separating axes; touching
+/// edges and corners don't count).
+fn overlap(a: &Flat, b: &Flat) -> bool {
+    let separates = |tri: &Flat, i: usize| {
+        let (p, q) = (tri[i], tri[(i + 1) % 3]);
+        let axis = [p[1] - q[1], q[0] - p[0]];
+        let len = (axis[0] * axis[0] + axis[1] * axis[1]).sqrt();
+        if len == 0.0 {
+            return false;
+        }
+        let span = |t: &Flat| {
+            let d = t.map(|v| (v[0] * axis[0] + v[1] * axis[1]) / len);
+            (d.iter().copied().fold(f64::INFINITY, f64::min), d.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+        };
+        let ((a0, a1), (b0, b1)) = (span(a), span(b));
+        // A micrometre of slack, for shared edges rounded differently.
+        a1 <= b0 + 1e-6 || b1 <= a0 + 1e-6
+    };
+    !(0..3).any(|i| separates(a, i) || separates(b, i))
 }
 
 /// The rotation `(cos, sin)` that gives `points` their smallest bounding
@@ -297,7 +319,8 @@ fn min_area_rotation(points: &[[f64; 2]]) -> (f64, f64) {
     for (i, a) in hull.iter().enumerate() {
         let b = hull[(i + 1) % hull.len()];
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let len = dx.hypot(dy);
+        // `sqrt`, not `hypot`: IEEE-exact on every target, so layouts match.
+        let len = (dx * dx + dy * dy).sqrt();
         if len == 0.0 {
             continue;
         }
@@ -415,15 +438,15 @@ mod tests {
         (positions, tris)
     }
 
-    /// A ramp curling 1.5 times round a column, rising 0.1 m a turn: its
-    /// normals stay within 2° of each other, so only the plane test keeps
+    /// A ramp curling 1.5 times round a column, rising `rise` m a turn: its
+    /// normals stay within 2° of each other, so only the overlap test keeps
     /// it from projecting onto itself.
-    fn spiral() -> Mesh {
+    fn spiral(rise: f32) -> Mesh {
         let steps = 96;
         let mut positions = Vec::new();
         for i in 0..=steps {
             let a = i as f32 / 64.0 * std::f32::consts::TAU;
-            let y = 0.1 * i as f32 / 64.0;
+            let y = rise * i as f32 / 64.0;
             positions.extend([[a.cos(), y, a.sin()], [2.0 * a.cos(), y, 2.0 * a.sin()]]);
         }
         let mut tris = Vec::new();
@@ -523,8 +546,8 @@ mod tests {
         }
         let mut areas = vec![(0.0, 0.0); u.charts.len()];
         for (i, t) in tris.iter().enumerate() {
-            let [a, b, c] = t.map(|v| positions[v as usize].map(f64::from));
-            let world = dot(cross(sub(b, a), sub(c, a)), cross(sub(b, a), sub(c, a))).sqrt();
+            let [a, b, c] = t.map(|v| V3::from(positions[v as usize].map(f64::from)));
+            let world = (b - a).cross(c - a).magnitude();
             let chart = &mut areas[u.chart_of[i] as usize];
             chart.0 += uv_area(&u, i).abs();
             chart.1 += world;
@@ -599,9 +622,12 @@ mod tests {
 
     #[test]
     fn a_gentle_spiral_splits_instead_of_overlapping() {
-        let u = check(&spiral(), OPTIONS);
-        assert!(u.charts.len() > 1, "{} charts", u.charts.len());
-        assert_no_overlap(&u);
+        // 1 cm a turn is under a texel: still two layers.
+        for rise in [0.1, 0.01] {
+            let u = check(&spiral(rise), OPTIONS);
+            assert!(u.charts.len() > 1, "{} charts", u.charts.len());
+            assert_no_overlap(&u);
+        }
     }
 
     #[test]
@@ -625,6 +651,19 @@ mod tests {
         assert_eq!((&a.source, &a.triangles, bits(&a)), (&b.source, &b.triangles, bits(&b)));
     }
 
+    /// The layout is pinned: a bake made on one target samples right on
+    /// another. Changing the algorithm changes this hash on purpose.
+    #[test]
+    fn layout_bytes_are_pinned() {
+        let mesh = level(4);
+        let u = unwrap(&mesh.0, &mesh.1, OPTIONS).unwrap();
+        let bytes = u.uvs2.iter().flatten().flat_map(|x| x.to_le_bytes());
+        let bytes = bytes.chain(u.triangles.iter().flatten().flat_map(|v| v.to_le_bytes()));
+        // FNV-1a.
+        let hash = bytes.fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+        assert_eq!((u.size, hash), (512, 4082979079778684463));
+    }
+
     #[test]
     fn errors_name_the_problem() {
         let (positions, tris) = cube(1.0, 1.0, 1.0);
@@ -640,7 +679,7 @@ mod tests {
         assert_eq!(
             err(UnwrapOptions { max_size: 16, ..OPTIONS }),
             "the chart from triangle 0 is 16×16 texels plus padding, over maxSize 16; lower \
-texelsPerMeter"
+texelsPerMeter or padding"
         );
         assert_eq!(
             err(UnwrapOptions { max_size: 32, ..OPTIONS }),

@@ -1,7 +1,8 @@
 // Lightmap.unwrap on a room: an indexed box seen from inside, a turned
-// crate and a 16-sided column, unwrapped at 16 texels a metre and drawn
-// with a checker lightmap of 4-texel squares. Equal squares on every
-// surface are equal texel density; each flat face is its own chart.
+// crate and a 12-sided column, unwrapped at 16 texels a metre and drawn
+// with a checker lightmap of 4-texel squares laid over the whole atlas.
+// Equal squares on every surface are equal texel density; each flat face is
+// its own chart, so the pattern restarts at chart edges.
 
 // A box's eight corners (index = x + 2y + 4z), centred on (cx, cz), turned
 // `a` radians about Y.
@@ -16,11 +17,11 @@ let boxCorners = (cx: float, cz: float, w: float, h: float, d: float, a: float):
 let inward = [(0.0, 2.0, 6.0, 4.0), (1.0, 5.0, 7.0, 3.0), (0.0, 4.0, 5.0, 1.0), (2.0, 3.0, 7.0, 6.0), (0.0, 1.0, 3.0, 2.0), (4.0, 6.0, 7.0, 5.0)]
 let outward = List.map((q) => let (a, b, c, d) = q in (d, c, b, a), inward)
 
-// A floor-to-ceiling column: a ring of 16 at y = 0, then at y = 3.
-let column = List.range(32.0) |> List.concatMap((k) =>
-  let a = Math.mod(k, 16.0) / 16.0 * 2.0 * Math.pi in
-  [0.0 - 1.6 + 0.4 * Math.cos(a), if k < 16.0 then 0.0 else 3.0, 0.0 - 1.2 + 0.4 * Math.sin(a)])
-let columnQuads = List.range(16.0) |> List.map((i) => (i, 16.0 + i, 16.0 + Math.mod(i + 1.0, 16.0), Math.mod(i + 1.0, 16.0)))
+// A floor-to-ceiling column: a ring of 12 at y = 0, then at y = 3.
+let column = List.range(24.0) |> List.concatMap((k) =>
+  let a = Math.mod(k, 12.0) / 12.0 * 2.0 * Math.pi in
+  [0.0 - 1.6 + 0.6 * Math.cos(a), if k < 12.0 then 0.0 else 3.0, 0.0 - 1.2 + 0.6 * Math.sin(a)])
+let columnQuads = List.range(12.0) |> List.map((i) => (i, 12.0 + i, 12.0 + Math.mod(i + 1.0, 12.0), Math.mod(i + 1.0, 12.0)))
 
 let quadTris = (base: float, q): List<float> => let (a, b, c, d) = q in [a, b, c, a, c, d] |> List.map((v) => base + v)
 let positions = List.flatten([boxCorners(0.0, 0.0, 6.0, 3.0, 6.0, 0.0), boxCorners(1.0, 0.0 - 1.0, 1.0, 1.0, 1.0, 0.5), column])
@@ -30,11 +31,11 @@ let triangles = List.flatten([
   List.concatMap((q) => quadTris(16.0, q), columnQuads)
 ])
 
-// Shared corners: 48 vertices in, one per chart corner out.
+// Shared corners: 40 vertices in, one per chart corner out.
 let unwrapped = Lightmap.unwrap({
   positions: Bytes.fromF32le(positions),
   // Only the lightmap lights this room, so normals go unused.
-  normals: Bytes.fromF32le(List.range(48.0) |> List.concatMap((i) => [0.0, 1.0, 0.0])),
+  normals: Bytes.fromF32le(List.range(40.0) |> List.concatMap((i) => [0.0, 1.0, 0.0])),
   uvs: Bytes.fromF32le([]),
   uvs2: Bytes.fromF32le([]),
   triangles: Bytes.fromU32le(triangles),

@@ -17,8 +17,8 @@ fn fail<T>(message: String, span: Span) -> Result<T, RunError> {
     })
 }
 
-/// The `Model.staticData` record, kept whole (its `groups` and `lightmap`
-/// pass through) beside its validated contents.
+/// The `Model.staticData` record, kept whole (its `groups` pass through)
+/// beside its validated contents.
 struct DataArg {
     fields: Rc<Vec<(String, Value)>>,
     data: ModelData,
@@ -26,7 +26,10 @@ struct DataArg {
 
 impl crate::host_registry::FromArg for DataArg {
     fn from_arg(value: &Value, _path: &str, span: Span) -> Result<Self, RunError> {
-        let source = model::static_source(value, span).or_else(|e| fail(e.message, e.span))?;
+        let mut source = model::static_source(value, span).or_else(|e| fail(e.message, e.span))?;
+        // Both are replaced, so neither needs to be valid.
+        source.uvs2.clear();
+        source.lightmap = None;
         let data = ModelData::new(source).or_else(|e| fail(e, span))?;
         let Value::Record(fields) = value else {
             unreachable!("static_source checked the record");
@@ -98,12 +101,13 @@ pub(super) fn register(reg: &mut crate::host_registry::Registry) {
                     "triangles",
                     bytes(out.triangles.iter().flatten().flat_map(|v| v.to_le_bytes()).collect()),
                 ),
+                // A lightmap baked for the old uvs2 no longer fits.
+                ("lightmap", crate::input::option_value(None)),
             ];
             let mut mesh = (*input.fields).clone();
             for (name, value) in replaced {
-                if let Some(field) = mesh.iter_mut().find(|(field, _)| field == name) {
-                    field.1 = value;
-                }
+                let field = mesh.iter_mut().find(|(field, _)| field == name);
+                field.expect("static_source checked the field").1 = value;
             }
             let side = Value::Number(out.size as f64);
             Ok::<_, String>(crate::input::record([
