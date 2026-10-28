@@ -317,7 +317,7 @@ impl AudioPlayer {
         let bytes = match self
             .asset_cache
             .cached_bytes(path)
-            .map(Ok)
+            .map(|bytes| Ok(bytes.to_vec()))
             .unwrap_or_else(|| std::fs::read(path))
         {
             Ok(bytes) => bytes,

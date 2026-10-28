@@ -34,7 +34,7 @@ struct ProgressState {
 }
 
 pub struct AssetCache {
-    bytes_cache: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    bytes_cache: Arc<Mutex<HashMap<String, Arc<[u8]>>>>,
     progress: Arc<Mutex<ProgressState>>,
     /// Paths whose bytes came from the debug protocol rather than disk/CDN.
     /// The final manifest of each sync removes uploads deleted on the host.
@@ -70,10 +70,10 @@ impl AssetCache {
         self.bytes_cache.lock().unwrap().keys().cloned().collect()
     }
 
-    /// Clone bytes already resident in the shared cache without starting a
-    /// filesystem/network load. Native audio uses this for remotely uploaded
-    /// sounds; render pipelines use the async handle path below.
-    pub fn cached_bytes(&self, path: &str) -> Option<Vec<u8>> {
+    /// Bytes already resident in the shared cache (shared, not copied),
+    /// without starting a filesystem/network load. Native audio uses this for
+    /// remotely uploaded sounds; render pipelines use the async handle path below.
+    pub fn cached_bytes(&self, path: &str) -> Option<Arc<[u8]>> {
         self.bytes_cache.lock().unwrap().get(path).cloned()
     }
 
@@ -98,10 +98,10 @@ impl AssetCache {
     pub fn replace_uploaded(&self, path: &str, bytes: Vec<u8>) -> bool {
         let changed = {
             let mut cache = self.bytes_cache.lock().unwrap();
-            if cache.get(path).is_some_and(|current| *current == bytes) {
+            if cache.get(path).is_some_and(|current| **current == *bytes) {
                 false
             } else {
-                cache.insert(path.to_string(), bytes);
+                cache.insert(path.to_string(), bytes.into());
                 true
             }
         };
@@ -170,8 +170,7 @@ impl AssetCache {
 
         // Check cache
         if let Some(cached_bytes) = self.bytes_cache.lock().unwrap().get(&asset_path_owned) {
-            // TODO: Can we avoid the clone here
-            let bytes = cached_bytes.clone();
+            let bytes = cached_bytes.to_vec();
 
             let pipeline = pipeline.clone();
             let context = super::AssetPipelineContext {};
@@ -224,7 +223,7 @@ impl AssetCache {
             bytes_cache
                 .lock()
                 .unwrap()
-                .insert(asset_path_owned.clone(), bytes.clone());
+                .insert(asset_path_owned.clone(), bytes.as_slice().into());
 
             let pipeline = pipeline.clone();
             let context = AssetPipelineContext {};
@@ -242,7 +241,7 @@ impl AssetCache {
 /// Project files pushed over the debug protocol (`functor run vr`): the Quest
 /// shell's `File.bytes`. Only uploads count, not bytes loaded from elsewhere.
 impl crate::storage::ProjectReader for AssetCache {
-    fn read(&self, path: &str) -> Result<Vec<u8>, crate::storage::ProjectReadError> {
+    fn read(&self, path: &str) -> Result<Arc<[u8]>, crate::storage::ProjectReadError> {
         self.exists(path)
             .then(|| self.cached_bytes(path))
             .flatten()
@@ -422,7 +421,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .get("textures/a.png")
-                .cloned(),
+                .map(|bytes| bytes.to_vec()),
             Some(vec![4, 5])
         );
     }
@@ -434,7 +433,7 @@ mod tests {
         use crate::storage::{ProjectReadError, ProjectReader};
         let cache = AssetCache::new();
         let read = |path: &str| match cache.read(path) {
-            Ok(bytes) => Ok(bytes),
+            Ok(bytes) => Ok(bytes.to_vec()),
             Err(ProjectReadError::Unreadable(e)) => Err(e),
             Err(ProjectReadError::Outside) => Err("outside".to_string()),
         };
@@ -456,7 +455,7 @@ mod tests {
             .bytes_cache
             .lock()
             .unwrap()
-            .insert("loaded.png".to_string(), vec![9]);
+            .insert("loaded.png".to_string(), [9u8].as_slice().into());
         assert!(read("loaded.png").is_err());
         assert!(!cache.exists("loaded.png"));
     }
