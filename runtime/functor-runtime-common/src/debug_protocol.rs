@@ -806,7 +806,8 @@ pub fn take_project_session(query: &str) -> Result<(Option<ProjectSession>, Stri
     }
     let entry_dir = match dir.filter(|dir| !dir.is_empty()) {
         Some(dir) => {
-            validate_project_asset_path(dir).map_err(|e| format!("dir: {e}"))?;
+            let dir = percent_decode(dir)?;
+            validate_project_asset_path(&dir).map_err(|e| format!("dir: {e}"))?;
             format!("{dir}/")
         }
         None => String::new(),
@@ -817,6 +818,26 @@ pub fn take_project_session(query: &str) -> Result<(Option<ProjectSession>, Stri
         None => None,
     };
     Ok((session, rest.join("&")))
+}
+
+/// `%XX` escapes decoded (`my%20src` → `my src`).
+fn percent_decode(value: &str) -> Result<String, String> {
+    let mut out = Vec::with_capacity(value.len());
+    let mut at = 0;
+    while at < value.len() {
+        if value.as_bytes()[at] == b'%' {
+            let byte = value
+                .get(at + 1..at + 3)
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                .ok_or("dir has a bad %-escape")?;
+            out.push(byte);
+            at += 3;
+        } else {
+            out.push(value.as_bytes()[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| "dir must be UTF-8".to_string())
 }
 
 /// `GET /project-files`: what the device lacks, oldest first.
@@ -901,7 +922,9 @@ pub fn decode_project_file_reply(mut body: Vec<u8>) -> Result<ProjectFileReply, 
     let header: ProjectFileHeader =
         serde_json::from_slice(&body[4..header_end]).map_err(|e| format!("reply header: {e}"))?;
     validate_project_asset_path(&header.path)?;
-    let bytes = body.split_off(header_end);
+    // The rest is the file: drop the header in place rather than copy it.
+    body.drain(..header_end);
+    let bytes = body;
     if bytes.len() > MAX_ASSET_BYTES {
         return Err(format!("file is over {MAX_ASSET_BYTES} bytes"));
     }
@@ -1109,6 +1132,11 @@ mod tests {
             ))
         );
         assert_eq!(
+            take_project_session("session=7&dir=my%20src/v%C3%A9")
+                .map(|(session, _)| session.unwrap().entry_dir),
+            Ok("my src/vé/".to_string())
+        );
+        assert_eq!(
             take_project_session("module=Server"),
             Ok((None, "module=Server".to_string()))
         );
@@ -1117,6 +1145,8 @@ mod tests {
             "session=1&dir=../up",
             "dir=src",
             "session=1&session=2",
+            "session=1&dir=a%2",
+            "session=1&dir=%2E%2E",
         ] {
             assert!(take_project_session(bad).is_err(), "{bad}");
         }

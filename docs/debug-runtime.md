@@ -700,7 +700,7 @@ the device can't satisfy fails like a missing file, so `File.exists` is false
 for a moment, and is queued; it never blocks the game. `run vr` polls
 `GET /project-files` off its watch loop, resolves each path as desktop does
 (the project folder, or an `external` mapping to a folder or zip), answers
-through `POST /project-files` (at most 64 MB per round), then reloads the game
+through `POST /project-files` (whole files, up to about 64 MB per round), then reloads the game
 once. A load that failed on a missing file loads again after the fetch. The
 device keeps fetched files in app storage (1 GB, least recently used out)
 under the host's version (size + mtime, or a zip entry's crc + size), so the

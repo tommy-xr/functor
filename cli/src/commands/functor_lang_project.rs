@@ -386,17 +386,10 @@ impl FunctorLangProject {
 
     /// The `external` folders (never pushed or bundled), relative to the
     /// project root: `"ss2/"`, or `"src/ss2/"` for an entry in `src/`.
-    fn external_dirs(&self, externals: &[ExternalPrefix]) -> Vec<String> {
-        let base: String = Path::new(&self.entry)
-            .parent()
-            .into_iter()
-            .flat_map(Path::components)
-            .filter_map(|part| match part {
-                std::path::Component::Normal(name) => Some(name.to_string_lossy() + "/"),
-                _ => None,
-            })
-            .collect();
-        externals
+    fn external_dirs(&self) -> Vec<String> {
+        let base = entry_dir(&self.entry);
+        let external = self.external.lock().unwrap_or_else(|e| e.into_inner());
+        external
             .iter()
             .map(|external| format!("{base}{}", external.prefix))
             .collect()
@@ -1108,7 +1101,7 @@ the tool APK",
         if let Some(dir) = Path::new(&self.entry)
             .parent()
             .filter(|dir| !dir.as_os_str().is_empty() && *dir != Path::new("."))
-            .filter(|_| proxy.as_ref().is_none_or(|proxy| proxy.entry_dir.is_none()))
+            .filter(|_| proxy.is_none())
         {
             emit(Event::Warning {
                 message: format!(
@@ -1945,6 +1938,20 @@ fn read_project_json(entry_path: &Path) -> Result<String, Error> {
     serde_json::to_string(&files).map_err(Error::other)
 }
 
+/// The entry's folder relative to the project root: `""`, or `"src/"`
+/// (`./` and `..` parts dropped).
+fn entry_dir(entry: &str) -> String {
+    Path::new(entry)
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .filter_map(|part| match part {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy() + "/"),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The debug protocol version whose runtime asks the host for files it lacks.
 const FILE_PROXY_PROTOCOL_VERSION: u64 = 24;
 
@@ -1957,8 +1964,7 @@ struct FileProxy {
     files: project_files::Resolver,
     /// Replies from an earlier `run vr` are refused as stale.
     session: u64,
-    /// The entry's folder for `/load-project` (`None`: the project root, or a
-    /// name the query can't carry).
+    /// The entry's folder for `/load-project` (`None`: the project root).
     entry_dir: Option<String>,
 }
 
@@ -1967,29 +1973,29 @@ impl FileProxy {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64);
-        let dir: Vec<String> = Path::new(entry)
-            .parent()
-            .into_iter()
-            .flat_map(Path::components)
-            .filter_map(|part| match part {
-                std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
-                _ => None,
-            })
-            .collect();
-        let plain = |name: &String| {
-            name.chars()
-                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-        };
+        let dir = entry_dir(entry);
         FileProxy {
             files,
             session: (now ^ std::process::id() as u64).max(1),
-            entry_dir: (!dir.is_empty() && dir.iter().all(plain)).then(|| dir.join("/")),
+            entry_dir: Some(dir.trim_end_matches('/').to_string()).filter(|dir| !dir.is_empty()),
         }
     }
 
     fn load_query(&self) -> String {
         match &self.entry_dir {
-            Some(dir) => format!("&session={}&dir={dir}", self.session),
+            Some(dir) => {
+                // Percent-encoded, so any folder name fits the query.
+                let dir: String = dir
+                    .bytes()
+                    .map(
+                        |b| match b.is_ascii_alphanumeric() || b"._-~/".contains(&b) {
+                            true => (b as char).to_string(),
+                            false => format!("%{b:02X}"),
+                        },
+                    )
+                    .collect();
+                format!("&session={}&dir={dir}", self.session)
+            }
             None => format!("&session={}", self.session),
         }
     }
@@ -1998,7 +2004,7 @@ impl FileProxy {
     /// (so the game should reload).
     fn serve(&self, addr: &str) -> Result<bool, Error> {
         use functor_runtime_common::debug_protocol::{
-            encode_project_file_reply, ProjectFileRequests, ProjectFileStatus,
+            encode_project_file_reply, ProjectFileReply, ProjectFileRequests, ProjectFileStatus,
         };
         let timeout = std::time::Duration::from_secs(5);
         let (status, body) =
@@ -2007,7 +2013,14 @@ impl FileProxy {
             return Err(Error::other(format!("project files ({status}): {body}")));
         }
         let requests: ProjectFileRequests = serde_json::from_str(&body).map_err(Error::other)?;
-        // Another `run vr`'s session (or none yet): not ours to answer.
+        // No session: the app restarted and lost ours (only a load sets one).
+        if requests.session == 0 {
+            return Err(Error::other(
+                "the headset app restarted, so it no longer asks this machine for files — \
+restart `functor run vr`",
+            ));
+        }
+        // Another `run vr`'s session: not ours to answer.
         if requests.session != self.session {
             return Ok(false);
         }
@@ -2024,22 +2037,45 @@ impl FileProxy {
             let ready = !matches!(reply.status, ProjectFileStatus::Missing { .. });
             let body = encode_project_file_reply(&reply);
             let upload = std::time::Duration::from_secs(30);
-            match http_post_bytes(
+            let posted = http_post_bytes(
                 addr,
                 "/project-files",
                 "application/octet-stream",
                 &body,
                 upload,
-            )? {
-                (200, _) => {
+            );
+            match posted {
+                Ok((200, _)) => {
                     changed |= ready;
                     sent += (len > 0) as usize;
                     bytes += len;
                 }
                 // Stale or already answered: the device moved on.
-                (409, _) => {}
-                (status, body) => {
-                    return Err(Error::other(format!("project file ({status}): {body}")))
+                Ok((409, _)) => {}
+                // Refused (e.g. too big): say so instead, so it isn't asked
+                // for forever and later requests get their turn.
+                Ok((status, body)) => {
+                    let refused = ProjectFileReply {
+                        session: self.session,
+                        path: request.path.clone(),
+                        status: ProjectFileStatus::Missing {
+                            message: format!("the headset refused it ({status}: {body})"),
+                        },
+                    };
+                    let body = encode_project_file_reply(&refused);
+                    let _ = http_post_bytes(
+                        addr,
+                        "/project-files",
+                        "application/octet-stream",
+                        &body,
+                        timeout,
+                    );
+                }
+                // The reply may have landed with its response lost: reload
+                // anyway (harmless if not; it's asked for again).
+                Err(_) => {
+                    changed |= ready;
+                    break;
                 }
             }
         }
@@ -2055,13 +2091,30 @@ impl FileProxy {
     }
 
     /// Serve requests off the watch loop until the process ends; `fetched`
-    /// tells it to reload. Transport errors (cable, app restart) retry.
+    /// tells it to reload. Errors retry (a cable reconnect), warning once.
     fn spawn(self, addr: String, fetched: Arc<AtomicBool>) {
-        std::thread::spawn(move || loop {
-            if let Ok(true) = self.serve(&addr) {
-                fetched.store(true, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let mut warned = None;
+            loop {
+                match self.serve(&addr) {
+                    Ok(changed) => {
+                        warned = None;
+                        if changed {
+                            fetched.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        if warned.as_ref() != Some(&message) {
+                            emit(Event::Warning {
+                                message: format!("serving the headset's files: {message}"),
+                            });
+                            warned = Some(message);
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
         });
     }
 }
@@ -3166,10 +3219,10 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert_eq!(proxy.entry_dir, None);
         proxy.session = 11;
         let begin = |files: &DeviceFiles, id| {
-            files.begin(ProjectSession {
+            files.begin(Some(ProjectSession {
                 id,
                 entry_dir: String::new(),
-            })
+            }))
         };
 
         let files = device.lock().unwrap().clone();
@@ -3189,6 +3242,8 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
             1 << 20,
         ));
         *device.lock().unwrap() = files.clone();
+        let lost = proxy.serve(&addr).unwrap_err().to_string();
+        assert!(lost.contains("restart `functor run vr`"), "{lost}");
         begin(&files, 12);
         assert!(!files.exists("ss2/mesh/a.bin"));
         assert!(!proxy.serve(&addr).unwrap(), "another session's requests");
@@ -3207,7 +3262,7 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
     }
 
     #[test]
-    fn the_file_proxy_names_the_entry_folder_when_the_query_can_carry_it() {
+    fn the_file_proxy_names_the_entry_folder() {
         let files = || {
             let dir = std::env::temp_dir();
             project_files::Resolver::load(&dir, &dir, &[]).unwrap()
@@ -3217,15 +3272,11 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert_eq!(dir("./game.fun"), None);
         assert_eq!(dir("src/game.fun"), Some("src".to_string()));
         assert_eq!(dir("./src/v1.2/game.fun"), Some("src/v1.2".to_string()));
-        assert_eq!(
-            dir("my src/game.fun"),
-            None,
-            "a space doesn't fit the query"
-        );
-        let proxy = FileProxy::new(files(), "src/game.fun");
+        assert_eq!(dir("my src/game.fun"), Some("my src".to_string()));
+        let proxy = FileProxy::new(files(), "my src/game.fun");
         assert_eq!(
             proxy.load_query(),
-            format!("&session={}&dir=src", proxy.session)
+            format!("&session={}&dir=my%20src", proxy.session)
         );
     }
 

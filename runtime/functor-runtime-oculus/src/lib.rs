@@ -955,11 +955,9 @@ desktop runtime's --headless/--debug-port path"
             });
         }
         DebugRequest::LoadProject(files, role, host, response) => {
-            // Files the device lacks are asked of this host (before the load
-            // reads them).
-            if let Some(host) = host {
-                device_files.begin(host);
-            }
+            // Files the device lacks are asked of this host, if any (before
+            // the load reads them).
+            device_files.begin(host);
             // Waits: a successful load restarts the shell's clock.
             let mut result = sim.call(move |g| {
                 functor_runtime_common::protocol::load_with_role(g, role, |g| {
@@ -1005,6 +1003,7 @@ desktop runtime's --headless/--debug-port path"
             let result = device_files.accept(reply).map(|(status, locator)| {
                 // A texture that failed to load retries with the new bytes.
                 if let Some(locator) = locator {
+                    asset_cache.evict(&locator);
                     scene_context.evict_asset(&locator);
                 }
                 status

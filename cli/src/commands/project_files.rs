@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use functor_runtime_common::debug_protocol::{
     validate_project_asset_path, ProjectFileReply, ProjectFileRequest, ProjectFileStatus,
+    MAX_ASSET_BYTES,
 };
 use functor_runtime_common::runtime_settings::ExternalPrefix;
 use functor_runtime_common::storage::{self, ProjectReadError, ProjectReader};
@@ -160,11 +161,26 @@ impl Resolver {
     pub fn reply(&self, session: u64, request: &ProjectFileRequest) -> ProjectFileReply {
         let path = &request.path;
         let version = self.version(path);
+        // What the push never sends, the proxy doesn't either.
+        let unserved = path == LOCAL_CONFIG || path.split('/').any(|part| part.starts_with('.'));
         let status = match (&request.have, version) {
+            _ if unserved => ProjectFileStatus::Missing {
+                message: "hidden files and functor.local.json aren't sent to the headset"
+                    .to_string(),
+            },
             (Some(have), Some(version)) if *have == version => {
                 ProjectFileStatus::Current { version }
             }
             (_, version) => match self.read(path) {
+                // One upload's limit: a bigger file would be refused (413)
+                // and asked for forever.
+                Ok(bytes) if bytes.len() > MAX_ASSET_BYTES => ProjectFileStatus::Missing {
+                    message: format!(
+                        "it's {:.0} MB, over the {} MB a headset fetch carries",
+                        bytes.len() as f64 / 1048576.0,
+                        MAX_ASSET_BYTES >> 20
+                    ),
+                },
                 Ok(bytes) => ProjectFileStatus::Bytes {
                     version: version.unwrap_or_default(),
                     bytes: bytes.to_vec(),
@@ -862,6 +878,14 @@ mod tests {
             ask("data/none.bin", None),
             ProjectFileStatus::Missing { .. }
         ));
+        // Never sent, like the push: hidden files and the local config.
+        project.write(".env", b"secret");
+        for path in [".env", LOCAL_CONFIG] {
+            let ProjectFileStatus::Missing { message } = ask(path, None) else {
+                panic!("{path} sent");
+            };
+            assert!(message.contains("aren't sent"), "{message}");
+        }
     }
 
     #[test]
