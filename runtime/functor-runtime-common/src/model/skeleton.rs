@@ -47,11 +47,12 @@ impl JointPose {
 
 /// A skeleton-shaped set of local joint transforms in TRS form — what clip
 /// sampling produces and blending combines, before being applied back onto a
-/// [`Skeleton`] for skinning. Keyed by joint id (sparse, like `joint_info`).
-/// The blending/masking math over poses lives in [`crate::anim`].
+/// [`Skeleton`] for skinning. Indexed by joint slot (the skeleton's
+/// parents-first layout). The blending/masking math over poses lives in
+/// [`crate::anim`].
 #[derive(Clone, Debug)]
 pub struct Pose {
-    pub(crate) joints: HashMap<i32, JointPose>,
+    pub(crate) joints: Vec<JointPose>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +73,22 @@ pub struct Skeleton {
     array_index_to_joint_id: HashMap<usize, i32>,
 
     inverse_bind_matrices: Vec<Matrix4<f32>>,
+
+    // The evaluator's dense layout, built once in `build`: every joint has a
+    // slot, ordered parents-first so absolutes resolve in one forward pass.
+    slots: Vec<Slot>,
+    /// Joint id -> slot. Ids are glTF node indices, dense enough to index.
+    slot_by_id: Vec<Option<usize>>,
+    /// Skinning array index -> slot (`inverse_bind_matrices` order).
+    skin_slots: Vec<Option<usize>>,
+}
+
+#[derive(Clone, Debug)]
+struct Slot {
+    id: i32,
+    parent: Option<usize>,
+    /// The bind local transform, decomposed once at load.
+    bind: JointPose,
 }
 
 impl Skeleton {
@@ -82,6 +99,9 @@ impl Skeleton {
             joint_absolute_transform: HashMap::new(),
             inverse_bind_matrices: Vec::new(),
             array_index_to_joint_id: HashMap::new(),
+            slots: Vec::new(),
+            slot_by_id: Vec::new(),
+            skin_slots: Vec::new(),
         }
     }
 
@@ -91,11 +111,9 @@ impl Skeleton {
 
     /// The bind pose: every joint's local transform, decomposed to TRS.
     pub fn base_pose(&self) -> Pose {
-        let mut joints = HashMap::new();
-        for (&joint_index, joint) in &self.joint_info {
-            joints.insert(joint_index, JointPose::from_transform(joint.transform));
+        Pose {
+            joints: self.slots.iter().map(|slot| slot.bind).collect(),
         }
-        Pose { joints }
     }
 
     /// Sample one clip at `time`: the bind pose with each animated channel's
@@ -103,21 +121,27 @@ impl Skeleton {
     pub fn sample_pose(&self, animation: &Animation, time: f32) -> Pose {
         let mut pose = self.base_pose();
         for channel in &animation.channels {
-            let target_node_index = channel.target_node_index as i32;
+            let Some(slot) = self
+                .slot_by_id
+                .get(channel.target_node_index)
+                .copied()
+                .flatten()
+            else {
+                continue;
+            };
             if let Some(value) = interpolate_keyframes(&channel.keyframes, time) {
-                if let Some(jp) = pose.joints.get_mut(&target_node_index) {
-                    match value {
-                        AnimationValue::Translation(translation) => {
-                            jp.translation = translation;
-                        }
-                        AnimationValue::Rotation(rotation) => {
-                            jp.rotation = rotation;
-                        }
-                        AnimationValue::Scale(scale) => {
-                            jp.scale = scale;
-                        }
-                        _ => {}
+                let jp = &mut pose.joints[slot];
+                match value {
+                    AnimationValue::Translation(translation) => {
+                        jp.translation = translation;
                     }
+                    AnimationValue::Rotation(rotation) => {
+                        jp.rotation = rotation;
+                    }
+                    AnimationValue::Scale(scale) => {
+                        jp.scale = scale;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -125,18 +149,74 @@ impl Skeleton {
     }
 
     /// Rebuild a skeleton with each joint's local transform replaced by the
-    /// pose's TRS, and absolute transforms recomputed — the step between a
-    /// (possibly blended) pose and `get_skinning_transforms`.
+    /// pose's TRS, and absolute transforms recomputed. The render path uses
+    /// [`Skeleton::skinning_transforms_for`], which skips the rebuild.
     pub fn apply_pose(&self, pose: &Pose) -> Skeleton {
         let mut new_skeleton = self.clone();
-        for (&joint_index, joint) in new_skeleton.joint_info.iter_mut() {
-            if let Some(jp) = pose.joints.get(&joint_index) {
+        // The posed locals become the new skeleton's bind, as `joint_info` does.
+        for (slot, jp) in new_skeleton.slots.iter_mut().zip(&pose.joints) {
+            if let Some(joint) = new_skeleton.joint_info.get_mut(&slot.id) {
                 joint.transform = jp.transform();
+                slot.bind = JointPose::from_transform(joint.transform);
             }
         }
-        new_skeleton.joint_absolute_transform =
-            compute_absolute_transforms(&new_skeleton.joint_info);
+        new_skeleton.joint_absolute_transform = new_skeleton.absolute_transform_map();
         new_skeleton
+    }
+
+    /// The skinning matrices (`absolute * inverse_bind` per skin joint) for
+    /// `pose`, resolving absolutes in one parents-first pass.
+    pub fn skinning_transforms_for(&self, pose: &Pose) -> Vec<Matrix4<f32>> {
+        let absolutes = self.absolutes(|slot| pose.joints[slot].transform());
+        self.skin_slots
+            .iter()
+            .zip(&self.inverse_bind_matrices)
+            .map(|(slot, inverse_bind)| {
+                absolutes[slot.expect("skin joint has a slot")] * inverse_bind
+            })
+            .collect()
+    }
+
+    /// Absolute transforms by slot, from each slot's local transform.
+    fn absolutes(&self, local: impl Fn(usize) -> Matrix4<f32>) -> Vec<Matrix4<f32>> {
+        let mut absolutes: Vec<Matrix4<f32>> = Vec::with_capacity(self.slots.len());
+        for (index, slot) in self.slots.iter().enumerate() {
+            let local = local(index);
+            let absolute = match slot.parent {
+                Some(parent) => absolutes[parent] * local,
+                None => local,
+            };
+            absolutes.push(absolute);
+        }
+        absolutes
+    }
+
+    /// Absolutes of the joints' current local transforms, keyed by id.
+    fn absolute_transform_map(&self) -> HashMap<i32, Matrix4<f32>> {
+        let absolutes = self.absolutes(|slot| self.joint_info[&self.slots[slot].id].transform);
+        self.slots
+            .iter()
+            .map(|slot| slot.id)
+            .zip(absolutes)
+            .collect()
+    }
+
+    pub(crate) fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub(crate) fn slot_parent(&self, slot: usize) -> Option<usize> {
+        self.slots[slot].parent
+    }
+
+    pub(crate) fn slot_bind_pose(&self, slot: usize) -> JointPose {
+        self.slots[slot].bind
+    }
+
+    /// The slot of the joint named `name` (see [`Skeleton::joint_id_by_name`]).
+    pub(crate) fn slot_by_name(&self, name: &str) -> Option<usize> {
+        let id = self.joint_id_by_name(name)?;
+        self.slot_by_id[id as usize]
     }
 
     pub fn get_joint_count(&self) -> i32 {
@@ -154,24 +234,16 @@ impl Skeleton {
             .min()
     }
 
-    /// All joint ids whose self-or-ancestor's name is in `roots` — the
+    /// Per slot, whether its self-or-ancestor's name is in `roots` — the
     /// subtree semantics `Anim.mask` uses (naming a hand masks its fingers).
-    pub fn subtree_joint_ids(&self, roots: &[String]) -> HashSet<i32> {
-        let mut ids = HashSet::new();
-        for &joint_id in self.joint_info.keys() {
-            let mut current = Some(joint_id);
-            while let Some(id) = current {
-                let Some(joint) = self.joint_info.get(&id) else {
-                    break;
-                };
-                if roots.iter().any(|root| *root == joint.name) {
-                    ids.insert(joint_id);
-                    break;
-                }
-                current = joint.parent;
-            }
+    pub(crate) fn subtree_slots(&self, roots: &[String]) -> Vec<bool> {
+        let mut kept: Vec<bool> = Vec::with_capacity(self.slots.len());
+        for slot in &self.slots {
+            let name = &self.joint_info[&slot.id].name;
+            let inherited = slot.parent.is_some_and(|parent| kept[parent]);
+            kept.push(inherited || roots.iter().any(|root| root == name));
         }
-        ids
+        kept
     }
 
     pub fn get_joint_name(&self, idx: i32) -> Option<&str> {
@@ -183,16 +255,6 @@ impl Skeleton {
             .get(&idx)
             .map(|m| m.transform)
             .unwrap_or(Matrix4::identity())
-    }
-
-    pub(crate) fn get_joint_parent_id(&self, idx: i32) -> Option<i32> {
-        self.joint_info.get(&idx).and_then(|joint| joint.parent)
-    }
-
-    pub(crate) fn get_joint_bind_pose(&self, idx: i32) -> Option<JointPose> {
-        self.joint_info
-            .get(&idx)
-            .map(|joint| JointPose::from_transform(joint.transform))
     }
 
     pub fn get_joint_absolute_transform(&self, idx: i32) -> Matrix4<f32> {
@@ -341,6 +403,9 @@ impl SkeletonBuilder {
                 inverse_bind_matrices,
                 joint_info: HashMap::new(),
                 joint_absolute_transform: HashMap::new(),
+                slots: Vec::new(),
+                slot_by_id: Vec::new(),
+                skin_slots: Vec::new(),
             },
         }
     }
@@ -385,80 +450,77 @@ impl SkeletonBuilder {
     }
 
     pub fn build(mut self) -> Skeleton {
-        // Compute absolute transforms
-        let joint_absolute_transform = compute_absolute_transforms(&self.skeleton.joint_info);
-
-        // Update the skeleton with the computed absolute transforms
-        self.skeleton.joint_absolute_transform = joint_absolute_transform;
-
-        let num_joints = self.skeleton.joint_info.keys().max();
+        let skeleton = &mut self.skeleton;
+        let order = parents_first(&skeleton.joint_info);
+        assert!(
+            order.iter().all(|&id| id >= 0),
+            "joint ids are glTF node indices (non-negative)"
+        );
+        let max_id = order.iter().copied().max();
+        skeleton.slot_by_id = vec![None; max_id.map_or(0, |id| id as usize + 1)];
+        for (slot, &id) in order.iter().enumerate() {
+            skeleton.slot_by_id[id as usize] = Some(slot);
+        }
+        skeleton.slots = order
+            .iter()
+            .map(|id| {
+                let joint = &skeleton.joint_info[id];
+                Slot {
+                    id: *id,
+                    parent: joint
+                        .parent
+                        .map(|parent| skeleton.slot_by_id[parent as usize].unwrap()),
+                    bind: JointPose::from_transform(joint.transform),
+                }
+            })
+            .collect();
+        skeleton.skin_slots = (0..skeleton.inverse_bind_matrices.len())
+            .map(|index| {
+                let id = *skeleton.array_index_to_joint_id.get(&index)?;
+                skeleton.slot_by_id[id as usize]
+            })
+            .collect();
+        skeleton.joint_absolute_transform = skeleton.absolute_transform_map();
 
         // Return the built skeleton
         Skeleton {
-            num_joints: num_joints.map(|n| n + 1).unwrap_or(0),
+            num_joints: max_id.map(|n| n + 1).unwrap_or(0),
             ..self.skeleton
         }
     }
 }
 
-fn compute_absolute_transforms(joint_info: &HashMap<i32, Joint>) -> HashMap<i32, Matrix4<f32>> {
-    let mut joint_absolute_transform = HashMap::new();
-
-    for &joint_index in joint_info.keys() {
-        compute_joint_absolute_transform(
-            joint_index,
-            joint_info,
-            &mut joint_absolute_transform,
-            &mut HashSet::new(), // For cycle detection
-        );
+/// Joint ids ordered parents-first, unrelated chains by ascending id so the
+/// layout is deterministic. Panics on a cycle or a missing parent.
+fn parents_first(joint_info: &HashMap<i32, Joint>) -> Vec<i32> {
+    let mut ids: Vec<i32> = joint_info.keys().copied().collect();
+    ids.sort_unstable();
+    let mut placed = HashSet::new();
+    let mut order = Vec::with_capacity(ids.len());
+    let mut chain = Vec::new();
+    for id in ids {
+        // Walk up to the first placed ancestor, then place the chain root-first.
+        let mut current = Some(id);
+        while let Some(joint_id) = current {
+            if placed.contains(&joint_id) {
+                break;
+            }
+            if chain.contains(&joint_id) {
+                panic!("Cycle detected in joint hierarchy at joint {}", joint_id);
+            }
+            chain.push(joint_id);
+            current = joint_info.get(&joint_id).expect("Joint not found").parent;
+        }
+        for joint_id in chain.drain(..).rev() {
+            placed.insert(joint_id);
+            order.push(joint_id);
+        }
     }
-
-    joint_absolute_transform
+    order
 }
 
-fn compute_joint_absolute_transform(
-    joint_index: i32,
-    joint_info: &HashMap<i32, Joint>,
-    joint_absolute_transform: &mut HashMap<i32, Matrix4<f32>>,
-    visited: &mut HashSet<i32>,
-) -> Matrix4<f32> {
-    // Check for cycles
-    if !visited.insert(joint_index) {
-        panic!("Cycle detected in joint hierarchy at joint {}", joint_index);
-    }
-
-    // Return cached value if already computed
-    if let Some(&abs_transform) = joint_absolute_transform.get(&joint_index) {
-        visited.remove(&joint_index);
-        return abs_transform;
-    }
-
-    // Get the joint
-    let joint = joint_info.get(&joint_index).expect("Joint not found");
-
-    // Compute the absolute transform
-    let abs_transform = if let Some(parent_index) = joint.parent {
-        let parent_abs_transform = compute_joint_absolute_transform(
-            parent_index,
-            joint_info,
-            joint_absolute_transform,
-            visited,
-        );
-        parent_abs_transform * joint.transform
-    } else {
-        // No parent, so absolute transform is the joint's transform
-        joint.transform
-    };
-
-    // Store the computed absolute transform
-    joint_absolute_transform.insert(joint_index, abs_transform);
-
-    // Remove from visited set
-    visited.remove(&joint_index);
-
-    abs_transform
-}
-
+/// Keys must be in non-decreasing time order (glTF requires strictly
+/// increasing input), which the binary search below relies on.
 fn interpolate_keyframes(keyframes: &Vec<Keyframe>, time: f32) -> Option<AnimationValue> {
     if keyframes.is_empty() {
         return None;
@@ -471,16 +533,17 @@ fn interpolate_keyframes(keyframes: &Vec<Keyframe>, time: f32) -> Option<Animati
     if time >= keyframes[keyframes.len() - 1].time {
         return Some(keyframes[keyframes.len() - 1].value.clone());
     }
-    // Find the keyframes surrounding the given time
-    for i in 0..keyframes.len() - 1 {
-        let kf0 = &keyframes[i];
-        let kf1 = &keyframes[i + 1];
-        if time >= kf0.time && time <= kf1.time {
-            let t = (time - kf0.time) / (kf1.time - kf0.time);
-            return Some(interpolate_values(&kf0.value, &kf1.value, t));
-        }
+    // The surrounding pair: the first key at or after `time` and the one
+    // before it (an exact key time interpolates t = 1 from its predecessor).
+    let next = keyframes.partition_point(|kf| kf.time < time);
+    // A NaN `time` has no surrounding pair.
+    if next == 0 || next == keyframes.len() {
+        return None;
     }
-    None
+    let kf0 = &keyframes[next - 1];
+    let kf1 = &keyframes[next];
+    let t = (time - kf0.time) / (kf1.time - kf0.time);
+    Some(interpolate_values(&kf0.value, &kf1.value, t))
 }
 fn interpolate_values(v0: &AnimationValue, v1: &AnimationValue, t: f32) -> AnimationValue {
     match (v0, v1) {
