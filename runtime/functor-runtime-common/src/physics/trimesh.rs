@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 /// Validated triangle-mesh data, shared as `Arc<TriMeshData>`. The compiled
 /// BVH is built on first spawn and lives here, so every re-declaration,
 /// keyframe and rewind holding this `Arc` reuses it.
+// Deserialized only from the engine's own world snapshots, which hold data
+// `new` already validated.
 #[derive(Serialize, Deserialize)]
 pub struct TriMeshData {
     positions: Vec<[f32; 3]>,
@@ -67,14 +69,19 @@ impl TriMeshData {
     }
 }
 
-/// Zero-area: a repeated vertex, collinear vertices, or overflow. Rapier's
-/// edge fixing normalizes face normals, so these must not reach it.
+/// Zero-area: a repeated vertex, collinear vertices, or a normal f32 can't
+/// hold. Such a face has no normal, so it is dropped rather than left to
+/// produce contacts. In f64 the cross product of collinear points is exactly
+/// zero in any vertex order.
 fn degenerate([a, b, c]: [[f32; 3]; 3]) -> bool {
-    let (e1, e2) = (
-        Vector::new(b[0] - a[0], b[1] - a[1], b[2] - a[2]),
-        Vector::new(c[0] - a[0], c[1] - a[1], c[2] - a[2]),
-    );
-    !(e1.cross(e2).length() > 1e-6 * e1.length() * e2.length())
+    let edge = |p: [f32; 3]| [0, 1, 2].map(|i| p[i] as f64 - a[i] as f64);
+    let (u, v) = (edge(b), edge(c));
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    !((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) as f32).is_normal()
 }
 
 /// A trimesh shape with internal edges fixed, so a ball rolls over shared
@@ -142,7 +149,7 @@ mod tests {
         Arc::new(TriMeshData::new(positions, vec![[0, 2, 1], [0, 3, 2]]).unwrap())
     }
 
-    /// A closed box of half-extent `h`, 12 triangles facing inward.
+    /// A closed box of half-extent `h`, 12 triangles facing outward.
     fn closed_box(h: f32) -> Arc<TriMeshData> {
         let positions = (0..8)
             .map(|i| {
@@ -160,7 +167,7 @@ mod tests {
         ];
         let triangles = quads
             .iter()
-            .flat_map(|[a, b, c, d]| [[*a, *b, *c], [*a, *c, *d]])
+            .flat_map(|[a, b, c, d]| [[*a, *c, *b], [*a, *d, *c]])
             .collect();
         Arc::new(TriMeshData::new(positions, triangles).unwrap())
     }
@@ -329,6 +336,10 @@ mod tests {
         };
         assert!((rest(-9.81, 3.0) - 0.5).abs() < 0.02, "the front side holds");
         assert!(rest(9.81, -3.0) > 5.0, "the back side lets the ball through");
+        // An outward-wound closed box holds a ball on its top.
+        let w = stepped([0.0, -9.81, 0.0], vec![trimesh("box", &closed_box(1.0)), ball(3.0)], 240);
+        let y = w.body_transform("ball").unwrap().0[1];
+        assert!((y - 1.5).abs() < 0.02, "rests on the box: y={y}");
     }
 
     #[test]
@@ -353,5 +364,10 @@ mod tests {
         // Degenerate triangles beside a good one are dropped.
         let mesh = TriMeshData::new(tri, vec![[0, 1, 2], [0, 0, 1]]).unwrap();
         assert_eq!(mesh.triangles, vec![[0, 1, 2]]);
+        // A sliver is kept in every vertex order.
+        let sliver = vec![[0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [1000.0, 0.0, 0.0005]];
+        for order in [[0, 1, 2], [1, 2, 0], [2, 0, 1]] {
+            assert!(TriMeshData::new(sliver.clone(), vec![order]).is_ok(), "{order:?}");
+        }
     }
 }

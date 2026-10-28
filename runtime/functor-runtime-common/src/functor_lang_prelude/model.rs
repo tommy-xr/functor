@@ -121,21 +121,8 @@ fn packed<T: Copy, const N: usize>(
         &format!("Model.skinned: {what}"),
         span,
     )?;
-    let raw = bytes.0.as_slice();
-    let stride = size * N;
-    if raw.len() % stride != 0 {
-        return fail(
-            format!(
-                "{what}: {} bytes is not a whole number of {stride}-byte entries",
-                raw.len()
-            ),
-            span,
-        );
-    }
-    Ok(raw
-        .chunks_exact(stride)
-        .map(|entry| std::array::from_fn(|k| read(&entry[size * k..size * (k + 1)])))
-        .collect())
+    super::bytes::entries(bytes.0.as_slice(), size, read)
+        .or_else(|e| fail(format!("{what}: {e}"), span))
 }
 
 fn f32s<const N: usize>(value: &Value, what: &str, span: Span) -> Result<Vec<[f32; N]>, RunError> {

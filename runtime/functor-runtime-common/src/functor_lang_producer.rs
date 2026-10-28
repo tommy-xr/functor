@@ -3956,9 +3956,9 @@ Xr.passthroughEnabled(m.level > 0.0))\n"
         assert!(PhysicsHarness::reports().is_empty());
     }
 
-    /// A top-level `Physics.trimesh` re-declared by the hook every frame is
-    /// one value: the ball lands on it, and neither the frames nor a rewind
-    /// rebuild its collider.
+    /// A top-level `Physics.trimesh` re-declared by the hook every frame: the
+    /// ball lands on it, and neither the frames nor a rewind rebuild its
+    /// collider.
     #[test]
     fn a_trimesh_redeclared_every_frame_builds_once() {
         const SRC: &str = "\

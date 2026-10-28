@@ -2986,27 +2986,20 @@ fn register_physics(reg: &mut crate::host_registry::Registry) {
                 .ok_or_else(|| format!("Physics.trimesh: `{name}` must be Bytes"))
             };
             // Little-endian triples: f32 x, y, z per vertex; u32 indices.
-            fn triples<T>(
-                raw: &[u8],
-                name: &str,
-                read: fn([u8; 4]) -> T,
-            ) -> Result<Vec<[T; 3]>, String> {
-                if raw.len() % 12 != 0 {
-                    return Err(format!(
-                        "Physics.trimesh: {name}: {} bytes is not a whole number of \
-12-byte entries",
-                        raw.len()
-                    ));
-                }
-                Ok(raw
-                    .chunks_exact(12)
-                    .map(|e| std::array::from_fn(|k| read(e[4 * k..4 * k + 4].try_into().unwrap())))
-                    .collect())
-            }
-            let positions =
-                triples(field("positions")?.as_slice(), "positions", f32::from_le_bytes)?;
-            let triangles =
-                triples(field("triangles")?.as_slice(), "triangles", u32::from_le_bytes)?;
+            let triples = |name: &str| {
+                field(name).and_then(|raw| {
+                    bytes::entries::<[u8; 4], 3>(raw.as_slice(), 4, |b| b.try_into().unwrap())
+                        .map_err(|e| format!("Physics.trimesh: {name}: {e}"))
+                })
+            };
+            let positions = triples("positions")?
+                .into_iter()
+                .map(|v| v.map(f32::from_le_bytes))
+                .collect();
+            let triangles = triples("triangles")?
+                .into_iter()
+                .map(|t| t.map(u32::from_le_bytes))
+                .collect();
             physics::TriMeshData::new(positions, triangles)
                 .map(|mesh| {
                     FunctorLangShape(physics::Shape::TriMesh {

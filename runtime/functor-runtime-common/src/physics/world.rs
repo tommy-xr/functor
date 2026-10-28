@@ -1035,7 +1035,9 @@ fn collider_of(shape: &Shape) -> Option<ColliderBuilder> {
             half_height,
             radius,
         } => Some(ColliderBuilder::capsule_y(*half_height, *radius)),
-        Shape::TriMesh { mesh } => Some(ColliderBuilder::new(mesh.shape())),
+        // No density: an open mesh's volume-derived centre of mass is
+        // meaningless, and a kinematic body's contact velocities use it.
+        Shape::TriMesh { mesh } => Some(ColliderBuilder::new(mesh.shape()).density(0.0)),
         Shape::Heightfield { geometry, data } => data
             .as_deref()
             .map(|data| heightfield_collider(geometry, data)),
