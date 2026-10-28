@@ -1006,7 +1006,7 @@ The generated modules:
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
 | `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
-| `Model` | skinned models built from decoded data (`Model.skinned`), drawn with `Scene.modelOf` |
+| `Model` | models built from decoded data — skinned (`Model.skinned`) or static world geometry in textured groups (`Model.static`) — drawn with `Scene.modelOf` |
 | `Terrain` | finite asset-backed heightfield terrain shared by rendering and physics |
 | `Physics` | shapes, bodies, the `physics` hook's world, live reads, commands, raycasts, events |
 | `Effect` | one-shot commands returned beside a model (time, random, HTTP, net sends, sounds, preloads) |
@@ -1189,6 +1189,11 @@ channels do. `Model.pose(anim, m)` skins on the CPU (positions as `Bytes`) for
 `expect` tests; `Model.inspect(m)` lists joints and clips. `texture:
 Option.Some(Asset.texture("skin.gif"))` samples a base color at the uvs (v = 0 is
 the image top, as in glTF); `Option.None` draws white. See `examples/skinned`.
+`Model.static(data)` is the static counterpart for world geometry: the same
+packed positions/normals/uvs/triangles plus `uvs2` (a second UV set) and
+`groups` — consecutive triangle ranges, each with its own optional base
+texture (`Asset.texture` or `Texture.fromPixels`) and `unlit` flag. No skin,
+no clips; lit by the frame's lights.
 
 **The `Net` module is built in but not in the generated reference.** Its types
 need no declaration, and these are the variants to match:

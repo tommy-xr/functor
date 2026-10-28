@@ -21,7 +21,7 @@ use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::gpu_counters::gpu_counters;
 use functor_runtime_common::math::Angle;
 use functor_runtime_common::model::{
-    ClipSource, JointSource, SkinnedModelData, SkinnedModelSource, TrackSource,
+    ClipSource, JointSource, ModelData, ModelSource, TrackSource,
 };
 use functor_runtime_common::render::VertexPositionTextureSkinned;
 use functor_runtime_common::shadow::ShadowMap;
@@ -40,7 +40,7 @@ fn main() {
         return;
     }
     let mut harness = Harness::new();
-    let arm = Arc::new(SkinnedModelData::new(arm()).expect("valid model"));
+    let arm = Arc::new(ModelData::new(arm()).expect("valid model"));
     // Vertices, indices, and the 1×1 white base texture.
     let mesh_bytes = arm.source().positions.len()
         * std::mem::size_of::<VertexPositionTextureSkinned>()
@@ -110,7 +110,7 @@ fn main() {
     .expect("write gif");
     let skin = || {
         Arc::new(
-            SkinnedModelData::new(SkinnedModelSource {
+            ModelData::new(ModelSource {
                 uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
                 texture: Some(TextureDescription::File(gif.to_str().unwrap().to_string())),
                 ..self::arm()
@@ -163,7 +163,7 @@ fn rgb(pixels: &[u8], x: u32, y: u32) -> [u8; 3] {
 
 /// One node of `model` (instanced as a single copy when `instanced`) under
 /// full ambient light, so the albedo reads back unshaded.
-fn textured_frame(model: &Arc<SkinnedModelData>, instanced: bool) -> Frame {
+fn textured_frame(model: &Arc<ModelData>, instanced: bool) -> Frame {
     let node = Scene3D::model(ModelDescription {
         handle: ModelHandle::Data(model.clone()),
         overrides: vec![],
@@ -200,7 +200,7 @@ fn camera() -> Camera {
 
 /// A 0.4-wide, 2-tall quad: the bottom pair on `upper`, the top pair on
 /// `lower` (1 up); `bend` turns `lower` 90° about Z.
-fn arm() -> SkinnedModelSource {
+fn arm() -> ModelSource {
     let joint = |name: &str, parent, y| JointSource {
         name: name.to_string(),
         parent,
@@ -208,7 +208,7 @@ fn arm() -> SkinnedModelSource {
         rotation: [0.0, 0.0, 0.0, 1.0],
     };
     let s = std::f32::consts::FRAC_1_SQRT_2;
-    SkinnedModelSource {
+    ModelSource {
         positions: vec![
             [-0.2, 0.0, 0.0],
             [0.2, 0.0, 0.0],
@@ -217,9 +217,11 @@ fn arm() -> SkinnedModelSource {
         ],
         normals: vec![[0.0, 0.0, -1.0]; 4],
         uvs: vec![],
+        uvs2: vec![],
         joints: vec![[0, 0, 0, 0], [0, 0, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0]],
         weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
         triangles: vec![[0, 2, 1], [0, 3, 2]],
+        groups: vec![],
         skeleton: vec![joint("upper", None, 0.0), joint("lower", Some(0), 1.0)],
         texture: None,
         clips: vec![ClipSource {
@@ -238,7 +240,7 @@ fn arm() -> SkinnedModelSource {
 /// `count` plain nodes of `arm` (plus an instanced node of three when
 /// `instanced`), facing a camera 4 units back.
 fn frame(
-    arm: &Arc<SkinnedModelData>,
+    arm: &Arc<ModelData>,
     count: usize,
     instanced: bool,
     animation: Option<AnimExpr>,

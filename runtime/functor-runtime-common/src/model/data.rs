@@ -1,6 +1,6 @@
-//! Skinned models built from plain data (`Model.skinned`): validated once,
-//! then shared by the sim side (posing, inspection) and the render side,
-//! which hydrates a drawable [`Model`] on first draw.
+//! Models built from plain data (`Model.skinned`, `Model.static`): validated
+//! once, then shared by the sim side (posing, inspection) and the render
+//! side, which uploads them on first draw. A model with no joints is static.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -10,29 +10,54 @@ use serde::{Deserialize, Serialize};
 use super::{Model, ModelMesh, Skeleton, SkeletonBuilder, MAX_JOINTS};
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::geometry::IndexedMesh;
-use crate::render::VertexPositionTextureSkinned;
+use crate::render::{VertexPositionTextureLightmap, VertexPositionTextureSkinned};
 use crate::scene3d::TextureDescription;
 use crate::texture::{Texture2D, TextureData, TextureOptions};
 
-/// A skinned model's inputs, Y up. Quaternions are `[x, y, z, w]`.
+/// A model's inputs, Y up. Quaternions are `[x, y, z, w]`. Skinned models
+/// have joints, weights and a skeleton; static ones have none of the four
+/// skin fields (omitted on the wire) and may have `uvs2` and `groups`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SkinnedModelSource {
+pub struct ModelSource {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     /// Empty, or one per vertex.
     pub uvs: Vec<[f32; 2]>,
+    /// Static only: a second UV set (lightmaps); empty, or one per vertex.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uvs2: Vec<[f32; 2]>,
     /// Four skeleton indices per vertex; every slot must name a joint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub joints: Vec<[u8; 4]>,
     /// Four weights per vertex, normalized to sum to 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub weights: Vec<[f32; 4]>,
     pub triangles: Vec<[u32; 3]>,
+    /// Static only: consecutive triangle ranges, each drawn with its own
+    /// base texture. Empty draws every triangle untextured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupSource>,
     /// Parents before children.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skeleton: Vec<JointSource>,
+    #[serde(default)]
     pub clips: Vec<ClipSource>,
     /// The base color, sampled at `uvs`; `None` draws white. A locator, so
     /// the image loads (and is shared) through the asset cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<TextureDescription>,
+}
+
+/// `count` triangles from `first`, drawn with one base texture (`None` is
+/// white); `unlit` draws it fullbright.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupSource {
+    pub first: u32,
+    pub count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<TextureDescription>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unlit: bool,
 }
 
 /// A joint's rest pose, local to its parent (unit scale).
@@ -62,21 +87,22 @@ pub struct TrackSource {
     pub translations: Vec<[f32; 3]>,
 }
 
-/// A validated skinned model plus the engine skeleton and clips built from
-/// it. Immutable; equality is identity (the same `Model.skinned` value).
-pub struct SkinnedModelData {
+/// A validated model plus the engine skeleton and clips built from it.
+/// Immutable; equality is identity (the same `Model.skinned`/`Model.static`
+/// value).
+pub struct ModelData {
     id: u64,
     label: String,
-    source: SkinnedModelSource,
+    source: ModelSource,
     skeleton: Skeleton,
     animations: Vec<Animation>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-impl SkinnedModelData {
+impl ModelData {
     /// Validate `source` (errors name the field) and build the rig.
-    pub fn new(mut source: SkinnedModelSource) -> Result<SkinnedModelData, String> {
+    pub fn new(mut source: ModelSource) -> Result<ModelData, String> {
         validate(&mut source)?;
         let skeleton = build_skeleton(&source.skeleton);
         let animations = source
@@ -85,13 +111,16 @@ impl SkinnedModelData {
             .map(|clip| build_animation(clip, &source.skeleton))
             .collect();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        Ok(SkinnedModelData {
+        let mut data = ModelData {
             id,
-            label: format!("Model.skinned#{id}"),
+            label: String::new(),
             source,
             skeleton,
             animations,
-        })
+        };
+        let kind = if data.is_static() { "static" } else { "skinned" };
+        data.label = format!("Model.{kind}#{id}");
+        Ok(data)
     }
 
     /// Unique per built model, never reused: the render-side cache key.
@@ -104,8 +133,14 @@ impl SkinnedModelData {
         &self.label
     }
 
-    pub fn source(&self) -> &SkinnedModelSource {
+    pub fn source(&self) -> &ModelSource {
         &self.source
+    }
+
+    /// No skeleton (validation gives every skinned model a joint): drawn by
+    /// the static path, in groups.
+    pub fn is_static(&self) -> bool {
+        self.source.skeleton.is_empty()
     }
 
     pub fn skeleton(&self) -> &Skeleton {
@@ -158,6 +193,21 @@ impl SkinnedModelData {
         }
     }
 
+    /// A static model's mesh, one vertex per source vertex (white base
+    /// textures bind per group at draw time).
+    pub(crate) fn to_static_mesh(&self) -> IndexedMesh<VertexPositionTextureLightmap> {
+        let s = &self.source;
+        let vertices = (0..s.positions.len())
+            .map(|i| VertexPositionTextureLightmap {
+                position: s.positions[i].into(),
+                uv: s.uvs.get(i).copied().unwrap_or([0.0, 0.0]).into(),
+                normal: s.normals[i].into(),
+                uv2: s.uvs2.get(i).copied().unwrap_or([0.0, 0.0]).into(),
+            })
+            .collect();
+        IndexedMesh::create(vertices, s.triangles.iter().flatten().copied().collect())
+    }
+
     /// Bind-space positions skinned by `palette` (one matrix per joint), as
     /// the vertex shader blends them.
     pub fn skin_positions(&self, palette: &[Matrix4<f32>]) -> Vec<[f32; 3]> {
@@ -178,15 +228,15 @@ impl SkinnedModelData {
     }
 }
 
-impl PartialEq for SkinnedModelData {
+impl PartialEq for ModelData {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
     }
 }
 
-impl std::fmt::Debug for SkinnedModelData {
+impl std::fmt::Debug for ModelData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SkinnedModelData")
+        f.debug_struct("ModelData")
             .field("id", &self.id)
             .field("vertices", &self.source.positions.len())
             .field("joints", &self.source.skeleton.len())
@@ -197,16 +247,16 @@ impl std::fmt::Debug for SkinnedModelData {
 
 // The wire form is the source; reading it back validates and rebuilds (with
 // a fresh identity).
-impl Serialize for SkinnedModelData {
+impl Serialize for ModelData {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.source.serialize(serializer)
     }
 }
 
-impl<'de> Deserialize<'de> for SkinnedModelData {
+impl<'de> Deserialize<'de> for ModelData {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let source = SkinnedModelSource::deserialize(deserializer)?;
-        SkinnedModelData::new(source).map_err(serde::de::Error::custom)
+        let source = ModelSource::deserialize(deserializer)?;
+        ModelData::new(source).map_err(serde::de::Error::custom)
     }
 }
 
@@ -226,24 +276,21 @@ fn unit(q: &mut [f32; 4], what: impl Fn() -> String) -> Result<(), String> {
 
 /// Check every invariant the evaluator and shaders rely on; normalizes
 /// weights and quaternions in place.
-fn validate(s: &mut SkinnedModelSource) -> Result<(), String> {
+fn validate(s: &mut ModelSource) -> Result<(), String> {
     let count = s.positions.len();
-    for (field, len) in [
-        ("normals", s.normals.len()),
-        ("joints", s.joints.len()),
-        ("weights", s.weights.len()),
-    ] {
-        if len != count {
+    if s.normals.len() != count {
+        return Err(format!(
+            "normals: {} vertices, but positions has {count}",
+            s.normals.len()
+        ));
+    }
+    for (field, uvs) in [("uvs", &s.uvs), ("uvs2", &s.uvs2)] {
+        if !uvs.is_empty() && uvs.len() != count {
             return Err(format!(
-                "{field}: {len} vertices, but positions has {count}"
+                "{field}: {} vertices, but positions has {count} (or leave {field} empty)",
+                uvs.len()
             ));
         }
-    }
-    if !s.uvs.is_empty() && s.uvs.len() != count {
-        return Err(format!(
-            "uvs: {} vertices, but positions has {count} (or leave uvs empty)",
-            s.uvs.len()
-        ));
     }
     if s.texture.is_some() && s.uvs.is_empty() {
         return Err("texture: needs uvs (one per vertex)".to_string());
@@ -252,6 +299,7 @@ fn validate(s: &mut SkinnedModelSource) -> Result<(), String> {
         ("positions", finite(&s.positions)),
         ("normals", finite(&s.normals)),
         ("uvs", finite(&s.uvs)),
+        ("uvs2", finite(&s.uvs2)),
     ] {
         if !ok {
             return Err(format!("{field}: a value is not a finite number"));
@@ -262,6 +310,65 @@ fn validate(s: &mut SkinnedModelSource) -> Result<(), String> {
             return Err(format!(
                 "triangles: triangle {i} uses vertex {v}, but there are {count}"
             ));
+        }
+    }
+    if s.skeleton.is_empty() && s.joints.is_empty() {
+        validate_static(s)
+    } else {
+        validate_skin(s)
+    }
+}
+
+/// A static model: no skin, and groups that tile the triangles in order.
+fn validate_static(s: &ModelSource) -> Result<(), String> {
+    for (field, empty) in [
+        ("weights", s.weights.is_empty()),
+        ("clips", s.clips.is_empty()),
+        ("texture", s.texture.is_none()),
+    ] {
+        if !empty {
+            return Err(format!("{field}: a static model has none (it has no joints)"));
+        }
+    }
+    let mut next = 0u64;
+    for (i, group) in s.groups.iter().enumerate() {
+        if group.first as u64 != next {
+            return Err(format!(
+                "groups[{i}]: first is {}, but the previous group ends at {next} \
+(groups run in order, with no gaps)",
+                group.first
+            ));
+        }
+        if group.count == 0 {
+            return Err(format!("groups[{i}]: count must be at least 1"));
+        }
+        if group.texture.is_some() && s.uvs.is_empty() {
+            return Err(format!("groups[{i}]: texture needs uvs (one per vertex)"));
+        }
+        next += group.count as u64;
+    }
+    let triangles = s.triangles.len() as u64;
+    if !s.groups.is_empty() && next != triangles {
+        return Err(format!(
+            "groups: cover {next} triangles, but there are {triangles}"
+        ));
+    }
+    Ok(())
+}
+
+/// A skinned model: per-vertex joints and weights, a skeleton and clips.
+fn validate_skin(s: &mut ModelSource) -> Result<(), String> {
+    let count = s.positions.len();
+    for (field, len) in [("joints", s.joints.len()), ("weights", s.weights.len())] {
+        if len != count {
+            return Err(format!(
+                "{field}: {len} vertices, but positions has {count}"
+            ));
+        }
+    }
+    for (field, empty) in [("uvs2", s.uvs2.is_empty()), ("groups", s.groups.is_empty())] {
+        if !empty {
+            return Err(format!("{field}: only static models have them"));
         }
     }
 
@@ -482,25 +589,27 @@ mod tests {
     // Crosses the pipelined sim → render boundary inside `Arc<Frame>`.
     const _: fn() = || {
         fn send_sync<T: Send + Sync>() {}
-        send_sync::<SkinnedModelData>();
+        send_sync::<ModelData>();
         send_sync::<crate::Frame>();
     };
 
     /// Two joints, two vertices, one two-frame clip.
-    fn source() -> SkinnedModelSource {
+    fn source() -> ModelSource {
         let joint = |name: &str, parent| JointSource {
             name: name.to_string(),
             parent,
             translation: [0.0, 1.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
         };
-        SkinnedModelSource {
+        ModelSource {
             positions: vec![[0.0; 3], [0.0, 2.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 2],
             uvs: vec![],
+            uvs2: vec![],
             joints: vec![[0, 0, 0, 0], [1, 0, 0, 0]],
             weights: vec![[2.0, 0.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]],
             triangles: vec![],
+            groups: vec![],
             skeleton: vec![joint("a", None), joint("b", Some(0))],
             clips: vec![ClipSource {
                 name: "c".to_string(),
@@ -518,7 +627,7 @@ mod tests {
 
     #[test]
     fn builds_bind_pose_and_wrapped_clips() {
-        let data = SkinnedModelData::new(source()).unwrap();
+        let data = ModelData::new(source()).unwrap();
         // Rest skins to identity: the inverse binds undo the rest globals.
         let skeleton = data.skeleton();
         for m in skeleton.skinning_transforms_for(&skeleton.base_pose()) {
@@ -548,7 +657,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_data_naming_the_field() {
-        let cases: Vec<(fn(&mut SkinnedModelSource), &str)> = vec![
+        let cases: Vec<(fn(&mut ModelSource), &str)> = vec![
             (
                 |s| s.normals.truncate(1),
                 "normals: 1 vertices, but positions has 2",
@@ -571,6 +680,7 @@ mod tests {
             ),
             (|s| s.clips[0].fps = 1e-45, "clips[0] (\"c\"): fps 0.0"),
             (|s| s.skeleton.clear(), "skeleton: needs at least one joint"),
+            (|s| s.uvs2 = vec![[0.0; 2]; 2], "uvs2: only static models have them"),
             (
                 |s| s.texture = Some(TextureDescription::File("skin.png".into())),
                 "texture: needs uvs (one per vertex)",
@@ -625,8 +735,87 @@ mod tests {
         for (mutate, expected) in cases {
             let mut s = source();
             mutate(&mut s);
-            let err = SkinnedModelData::new(s).err().expect(expected);
+            let err = ModelData::new(s).err().expect(expected);
             assert!(err.starts_with(expected), "{err} != {expected}");
         }
+    }
+
+    /// A quad (two triangles) with no skin.
+    fn static_source() -> ModelSource {
+        ModelSource {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0; 2]; 4],
+            uvs2: vec![[0.5; 2]; 4],
+            joints: vec![],
+            weights: vec![],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            groups: vec![
+                GroupSource { first: 0, count: 1, texture: None, unlit: false },
+                GroupSource {
+                    first: 1,
+                    count: 1,
+                    texture: Some(TextureDescription::File("wall.png".into())),
+                    unlit: true,
+                },
+            ],
+            skeleton: vec![],
+            clips: vec![],
+            texture: None,
+        }
+    }
+
+    #[test]
+    fn static_models_have_no_rig_and_round_trip() {
+        let data = ModelData::new(static_source()).unwrap();
+        assert!(data.is_static());
+        assert!(data.label().starts_with("Model.static#"));
+        assert_eq!(data.skeleton().get_joint_count(), 0);
+        // The skin fields are omitted on the wire, and read back static.
+        let json = serde_json::to_string(&data).unwrap();
+        assert!(!json.contains("joints") && !json.contains("skeleton"), "{json}");
+        assert!(json.contains(r#""groups":[{"first":0,"count":1},"#), "{json}");
+        let back: ModelData = serde_json::from_str(&json).unwrap();
+        assert!(back.is_static());
+        assert_eq!(back.source(), data.source());
+    }
+
+    #[test]
+    fn rejects_invalid_static_data_naming_the_field() {
+        let cases: Vec<(fn(&mut ModelSource), &str)> = vec![
+            (
+                |s| s.uvs2.truncate(3),
+                "uvs2: 3 vertices, but positions has 4 (or leave uvs2 empty)",
+            ),
+            (|s| s.uvs2[1][0] = f32::INFINITY, "uvs2: a value is not a finite number"),
+            (
+                |s| s.groups[1].first = 2,
+                "groups[1]: first is 2, but the previous group ends at 1",
+            ),
+            (|s| s.groups[0].count = 0, "groups[0]: count must be at least 1"),
+            (|s| s.groups.truncate(1), "groups: cover 1 triangles, but there are 2"),
+            (
+                |s| s.uvs.clear(),
+                "groups[1]: texture needs uvs (one per vertex)",
+            ),
+            (
+                |s| s.weights = vec![[1.0, 0.0, 0.0, 0.0]; 4],
+                "weights: a static model has none",
+            ),
+            (
+                |s| s.texture = Some(TextureDescription::File("x.png".into())),
+                "texture: a static model has none",
+            ),
+        ];
+        for (mutate, expected) in cases {
+            let mut s = static_source();
+            mutate(&mut s);
+            let err = ModelData::new(s).err().expect(expected);
+            assert!(err.starts_with(expected), "{err} != {expected}");
+        }
+        // No groups draws everything as one untextured group.
+        let mut s = static_source();
+        s.groups.clear();
+        assert!(ModelData::new(s).is_ok());
     }
 }
