@@ -4,7 +4,8 @@
 //!   once, and steady frames upload nothing;
 //! - once no node draws it, its buffers, VAOs (including the instanced
 //!   renderer's) and texture are deleted;
-//! - it draws, and a pose moves its pixels.
+//! - it draws, and a pose moves its pixels;
+//! - a texture samples at its uvs, plain and instanced, uploaded once.
 //!
 //! Self-skipping like `stereo_shadow` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -25,8 +26,9 @@ use functor_runtime_common::model::{
 use functor_runtime_common::render::VertexPositionTextureSkinned;
 use functor_runtime_common::shadow::ShadowMap;
 use functor_runtime_common::{
-    render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, InstanceData,
-    ModelDescription, ModelHandle, Scene3D, SceneContext, SceneObject, Viewport,
+    render_frame_with_projection, Camera, DebugRenderMode, Frame, FrameTime, InstanceData, Light,
+    ModelDescription, ModelHandle, Scene3D, SceneContext, SceneObject, TextureDescription,
+    Viewport,
 };
 use glow::HasContext;
 
@@ -95,6 +97,105 @@ fn main() {
     assert!(bent != rest, "the clip did not move the model");
     assert!(shared != blank);
     println!("test draws_and_poses ... ok");
+
+    // A texture samples at the uvs (v = 0 is the image top), on the plain
+    // and the instanced path, from one load however many nodes draw it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let gif = dir.path().join("skin.gif");
+    image::RgbaImage::from_fn(1, 4, |_, y| match y {
+        0 | 1 => image::Rgba([255, 0, 0, 255]),
+        _ => image::Rgba([0, 0, 255, 255]),
+    })
+    .save(&gif)
+    .expect("write gif");
+    let skin = || {
+        Arc::new(
+            SkinnedModelData::new(SkinnedModelSource {
+                uvs: vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]],
+                texture: Some(TextureDescription::File(gif.to_str().unwrap().to_string())),
+                ..self::arm()
+            })
+            .expect("valid model"),
+        )
+    };
+    let textured = skin();
+    for instanced in [false, true] {
+        let frame = textured_frame(&textured, instanced);
+        gpu_counters().take_window();
+        // The file loads asynchronously; the checkerboard stands in until then.
+        for _ in 0..200 {
+            harness.render(&frame);
+            if harness.asset_cache.progress().loaded > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let pixels = harness.render(&frame);
+        let window = gpu_counters().take_window();
+        assert_eq!(window.instance_upload_bytes > 0, instanced, "instanced path ran");
+        // v = 0.25 (world y 1.5) is the red half, v = 0.75 (y 0.5) the blue.
+        let [r, g, b] = rgb(&pixels, 64, 78);
+        assert!(r > 200 && g < 40 && b < 40, "instanced {instanced}: top {r},{g},{b}");
+        let [r, g, b] = rgb(&pixels, 64, 50);
+        assert!(r < 40 && g < 40 && b > 200, "instanced {instanced}: bottom {r},{g},{b}");
+        if !instanced {
+            // Three more models with the same file add no texture.
+            let one = gpu_counters().live().textures;
+            let models = [textured.clone(), skin(), skin(), skin()];
+            harness.render(&lit_frame(
+                models
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| textured_frame(m, false).scene.translate_x(i as f32 * 0.5))
+                    .collect(),
+            ));
+            assert_eq!(gpu_counters().live().textures, one);
+        }
+    }
+    println!("test textured ... ok");
+}
+
+/// Pixel `(x, y)` of a read-back frame (row 0 at the bottom).
+fn rgb(pixels: &[u8], x: u32, y: u32) -> [u8; 3] {
+    let i = ((y * SIZE + x) * 4) as usize;
+    [pixels[i], pixels[i + 1], pixels[i + 2]]
+}
+
+/// One node of `model` (instanced as a single copy when `instanced`) under
+/// full ambient light, so the albedo reads back unshaded.
+fn textured_frame(model: &Arc<SkinnedModelData>, instanced: bool) -> Frame {
+    let node = Scene3D::model(ModelDescription {
+        handle: ModelHandle::Data(model.clone()),
+        overrides: vec![],
+        animation: Some(AnimExpr::Rest),
+        while_pending: vec![],
+    });
+    let node = match instanced {
+        true => Scene3D::instanced(node, vec![InstanceData::at([0.0, 0.0, 0.0])]),
+        false => node,
+    };
+    lit_frame(vec![node])
+}
+
+fn lit_frame(items: Vec<Scene3D>) -> Frame {
+    let mut frame = Frame::new(
+        camera(),
+        Scene3D {
+            obj: SceneObject::Group(items),
+            xform: cgmath::Matrix4::from_scale(1.0),
+        },
+    );
+    frame.lights = vec![Light::ambient(1.0, 1.0, 1.0)];
+    frame
+}
+
+fn camera() -> Camera {
+    Camera::look_at(
+        [0.0, 1.0, -4.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        Angle::from_degrees(60.0),
+    )
 }
 
 /// A 0.4-wide, 2-tall quad: the bottom pair on `upper`, the top pair on
@@ -120,6 +221,7 @@ fn arm() -> SkinnedModelSource {
         weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
         triangles: vec![[0, 2, 1], [0, 3, 2]],
         skeleton: vec![joint("upper", None, 0.0), joint("lower", Some(0), 1.0)],
+        texture: None,
         clips: vec![ClipSource {
             name: "bend".to_string(),
             fps: 2.0,
@@ -158,14 +260,8 @@ fn frame(
             .collect::<Vec<_>>();
         items.push(Scene3D::instanced(node(), copies));
     }
-    let camera = Camera::look_at(
-        [0.0, 1.0, -4.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 1.0, 0.0],
-        Angle::from_degrees(60.0),
-    );
     Frame::new(
-        camera,
+        camera(),
         Scene3D {
             obj: SceneObject::Group(items),
             xform: cgmath::Matrix4::from_scale(1.0),

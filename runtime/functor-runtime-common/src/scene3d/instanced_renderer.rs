@@ -792,6 +792,7 @@ impl InstancedRenderer {
         ctx: &RenderContext,
         key: &ModelKey,
         model: &Arc<Model>,
+        bind_base_color: &dyn Fn(&crate::model::ModelMesh),
         joints: &[Matrix4<f32>],
         local: &Matrix4<f32>,
         instances: &InstanceList,
@@ -852,7 +853,7 @@ impl InstancedRenderer {
                     view,
                 );
             } else {
-                mesh.base_color_texture.bind(0, ctx);
+                bind_base_color(mesh);
                 set_forward_uniforms(
                     &programs.forward,
                     &programs.forward_uniforms,

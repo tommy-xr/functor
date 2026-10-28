@@ -12358,7 +12358,8 @@ the game dir"
               { joint: \"upper\", rotations: none, translations: Bytes.fromF32le([0.0, 0.0, 1.0]) },\n\
               { joint: \"lower\", rotations: Bytes.fromF32le([0.0, 0.0, s, s]), translations: none }\n\
             ] }\n\
-          ]\n\
+          ],\n\
+          texture: Option.None\n\
         }\n\
         let arm = Model.skinned(armData)\n";
 
@@ -12497,6 +12498,51 @@ the game dir"
         };
         assert_eq!(a.source(), b.source());
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    /// A textured model carries its texture as a locator, through `GET
+    /// /scene` and back.
+    #[test]
+    fn skinned_model_textures_serialize_as_locators() {
+        let textured = |texture: &str| {
+            ARM.replace("uvs: none", "uvs: Bytes.fromF32le([0.0, 1.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0])")
+                .replace("texture: Option.None", &format!("texture: Option.Some({texture})"))
+        };
+        {
+            let src = format!("{}let main = Scene.modelOf(arm)\n", textured("Asset.texture(\"skin.gif\")"));
+            let Value::HostData(scene) = eval_with_prelude(&src).unwrap() else {
+                panic!("expected a Scene");
+            };
+            let scene = &scene.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+            let json = serde_json::to_string(scene).unwrap();
+            assert!(json.contains(r#""texture":{"File":"skin.gif"}"#), "{json}");
+            let back: Scene3D = serde_json::from_str(&json).unwrap();
+            let SceneObject::Model(model) = &back.obj else {
+                panic!("expected a model node");
+            };
+            let ModelHandle::Data(data) = &model.handle else {
+                panic!("expected a data handle");
+            };
+            assert_eq!(data.source().uvs[1], [0.0, 0.0]);
+            assert_eq!(serde_json::to_string(&back).unwrap(), json);
+        }
+        // Untextured models keep the v19 shape: no `texture` key.
+        let plain = eval_with_prelude(&format!("{ARM}let main = Scene.modelOf(arm)\n")).unwrap();
+        let Value::HostData(plain) = plain else { panic!("expected a Scene") };
+        let plain = &plain.as_any().downcast_ref::<FunctorLangScene>().unwrap().0;
+        assert!(!serde_json::to_string(plain).unwrap().contains("texture"));
+
+        let err = eval_with_prelude(&format!(
+            "{}let main = arm\n",
+            textured("Asset.texture(\"skin.gif\")").replace("uvs: Bytes.fromF32le([0.0, 1.0, 0.0, 0.0, 1.0, 0.5, 0.0, 0.0])", "uvs: none")
+        ))
+        .err()
+        .expect("should fail");
+        assert_eq!(err, "Model.skinned: texture: needs uvs (one per vertex)");
+        let err = eval_with_prelude(&format!("{}let main = arm\n", textured("\"skin.gif\"")))
+            .err()
+            .expect("should fail");
+        assert!(err.contains("expected Option.t<Asset.Texture>, got Option.t<string>"), "{err}");
     }
 
     /// Bad data is an error naming the field.

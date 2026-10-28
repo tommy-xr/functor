@@ -75,7 +75,8 @@
 /// model carried inline as its source data. Emitted only by `Scene.modelOf`,
 /// so frames without one keep their v18 shape. Each node carries its own
 /// copy, so N nodes sharing a model serialize it N times and read back as N
-/// separate models (a replay uploads each).
+/// separate models (a replay uploads each). A model's `texture` is a
+/// locator (`{"File": …}`), omitted when absent.
 ///
 /// v18: passthrough frames — `Frame.passthrough` (`Frame.withPassthrough`),
 /// defaulted and omitted when false, so every other frame keeps its v17 shape.

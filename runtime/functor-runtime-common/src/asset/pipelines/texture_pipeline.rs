@@ -3,7 +3,7 @@ use image::ImageFormat;
 use crate::{
     asset::{AssetCache, AssetPipeline},
     texture::{
-        Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, JPEG, PNG,
+        Texture2D, TextureData, TextureFormat, TextureOptions, TERRAIN_DETAIL_ANISOTROPY, GIF, JPEG, PNG,
     },
 };
 
@@ -17,6 +17,7 @@ fn decode(bytes: &Vec<u8>) -> Option<TextureData> {
     let decoded = match image::guess_format(bytes) {
         Ok(ImageFormat::Png) => PNG.load(bytes),
         Ok(ImageFormat::Jpeg) => JPEG.load(bytes),
+        Ok(ImageFormat::Gif) => GIF.load(bytes),
         other => Err(format!("unhandled format: {:?}", other)),
     };
     match decoded {
@@ -152,6 +153,17 @@ mod tests {
             &AssetCache::new(),
             AssetPipelineContext {},
         );
+    }
+
+    #[test]
+    fn decodes_gif() {
+        let mut gif = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 1, image::Rgba([10, 200, 30, 255]))
+            .write_to(&mut gif, ImageFormat::Gif)
+            .unwrap();
+        let data = decode(gif.get_ref()).expect("decodes");
+        assert_eq!((data.width, data.height), (2, 1));
+        assert_eq!(&data.bytes[..4], &[10, 200, 30, 255]);
     }
 
     #[test]

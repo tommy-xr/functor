@@ -276,7 +276,7 @@ fn bind_optional_texture(
 /// (the color/sRGB pipeline for albedo, the linear one for data maps such as
 /// normal maps), or a render target's read texture (last completed write). A
 /// target id no frame declares binds a 1x1 magenta fallback and warns once.
-fn bind_texture_description(
+pub(super) fn bind_texture_description(
     texture: &TextureDescription,
     unit: u32,
     sampling: SpriteSampling,

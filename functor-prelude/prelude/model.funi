@@ -19,7 +19,8 @@
 //!     { name: "upper", parent: Option.None, translation: Vec3.make(0.0, 0.0, 0.0), rotation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } },
 //!     { name: "lower", parent: Option.Some(0.0), translation: Vec3.make(0.0, 1.0, 0.0), rotation: { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }
 //!   ],
-//!   clips: []
+//!   clips: [],
+//!   texture: Option.None
 //! })
 //! let bent = Scene.modelOf(arm) |> Scene.animate(Anim.rotate("lower", 0deg, 0deg, 45deg, Anim.rest()))
 //! ```
@@ -47,11 +48,19 @@ type track = { joint: string, rotations: Bytes.t, translations: Bytes.t }
 type clip = { name: string, fps: float, frames: float, tracks: List<track> }
 
 /// Everything a skinned model is made of. Per vertex: `positions` and
-/// `normals` are f32 `x, y, z` in the bind pose; `uvs` f32 `u, v`, or empty;
+/// `normals` are f32 `x, y, z` in the bind pose; `uvs` f32 `u, v` (glTF's
+/// convention: `0, 0` is the image's top-left), or empty;
 /// `joints` four u8 joint indices and `weights` four f32 weights (normalized
 /// to sum to 1; every index must name a joint, even with zero weight).
 /// `triangles` is u32 vertex index triples, counter-clockwise. At most 200
-/// joints.
+/// joints. `texture` is the base color sampled at `uvs` (it needs them), lit
+/// by the frame's lights; `Option.None` draws white. It loads like any
+/// texture asset (PNG, JPEG or GIF), once however many nodes draw the model,
+/// and shows the checkerboard stand-in until it lands:
+///
+/// ```
+/// texture: Option.Some(Asset.texture("skins/hero.gif"))
+/// ```
 type data = {
   positions: Bytes.t,
   normals: Bytes.t,
@@ -60,7 +69,8 @@ type data = {
   weights: Bytes.t,
   triangles: Bytes.t,
   skeleton: List<joint>,
-  clips: List<clip>
+  clips: List<clip>,
+  texture: Option.t<Asset.Texture>
 }
 
 /// A clip's name and length in seconds.
@@ -70,8 +80,7 @@ type clipInfo = { name: string, duration: float }
 type info = { vertices: float, triangles: float, joints: List<string>, clips: List<clipInfo> }
 
 /// A model from `data`, validated once: bad data is an error naming the
-/// field (`Model.skinned: weights: vertex 3's weights sum to 0`). Untextured
-/// for now: it draws white under the frame's lights.
+/// field (`Model.skinned: weights: vertex 3's weights sum to 0`).
 let skinned : (data) => t
 /// The model's vertex positions under a pose, as f32 `x, y, z` per vertex —
 /// skinned on the CPU exactly as the GPU does, for tests and tools. What

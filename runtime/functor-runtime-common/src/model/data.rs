@@ -11,6 +11,7 @@ use super::{Model, ModelMesh, Skeleton, SkeletonBuilder, MAX_JOINTS};
 use crate::animation::{Animation, AnimationChannel, AnimationProperty, AnimationValue, Keyframe};
 use crate::geometry::IndexedMesh;
 use crate::render::VertexPositionTextureSkinned;
+use crate::scene3d::TextureDescription;
 use crate::texture::{Texture2D, TextureData, TextureOptions};
 
 /// A skinned model's inputs, Y up. Quaternions are `[x, y, z, w]`.
@@ -28,6 +29,10 @@ pub struct SkinnedModelSource {
     /// Parents before children.
     pub skeleton: Vec<JointSource>,
     pub clips: Vec<ClipSource>,
+    /// The base color, sampled at `uvs`; `None` draws white. A locator, so
+    /// the image loads (and is shared) through the asset cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<TextureDescription>,
 }
 
 /// A joint's rest pose, local to its parent (unit scale).
@@ -133,7 +138,8 @@ impl SkinnedModelData {
             })
             .collect();
         let indices = s.triangles.iter().flatten().copied().collect();
-        // Untextured: white, so lighting alone shades it.
+        // White, so lighting alone shades it; a `texture` binds over it at
+        // draw time (see `scene3d::bind_model_base_color`).
         let white = Texture2D::init_from_data(
             TextureData::solid_color([255; 4]),
             TextureOptions {
@@ -238,6 +244,9 @@ fn validate(s: &mut SkinnedModelSource) -> Result<(), String> {
             "uvs: {} vertices, but positions has {count} (or leave uvs empty)",
             s.uvs.len()
         ));
+    }
+    if s.texture.is_some() && s.uvs.is_empty() {
+        return Err("texture: needs uvs (one per vertex)".to_string());
     }
     for (field, ok) in [
         ("positions", finite(&s.positions)),
@@ -503,6 +512,7 @@ mod tests {
                     translations: vec![],
                 }],
             }],
+            texture: None,
         }
     }
 
@@ -561,6 +571,10 @@ mod tests {
             ),
             (|s| s.clips[0].fps = 1e-45, "clips[0] (\"c\"): fps 0.0"),
             (|s| s.skeleton.clear(), "skeleton: needs at least one joint"),
+            (
+                |s| s.texture = Some(TextureDescription::File("skin.png".into())),
+                "texture: needs uvs (one per vertex)",
+            ),
             (
                 |s| s.skeleton[1].name = "a".into(),
                 "skeleton[1]: joint name \"a\" repeats",
