@@ -1453,6 +1453,10 @@ pub struct FunctorLangShape(pub physics::Shape);
 /// A declared [`physics::Body`] as an opaque Functor Lang value.
 pub struct FunctorLangBody(pub physics::Body);
 
+/// A `Physics.memo` result: typed `body` in Functor Lang, but only
+/// `Physics.scene` accepts it.
+pub struct FunctorLangBodyGroup(pub physics::BodyGroup);
+
 /// A [`physics::PhysicsScene`] as an opaque Functor Lang value — what a Functor Lang `physics`
 /// hook returns.
 pub struct FunctorLangPhysicsScene(pub physics::PhysicsScene);
@@ -1469,6 +1473,15 @@ impl HostData for FunctorLangShape {
 impl HostData for FunctorLangBody {
     fn type_name(&self) -> &'static str {
         "Body"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HostData for FunctorLangBodyGroup {
+    fn type_name(&self) -> &'static str {
+        "Physics.memo group"
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -3260,13 +3273,24 @@ capsule for the moving body"
     reg.fn2(
         "Physics.scene",
         "Physics.scene(Vec3.make(gx, gy, gz), [body, …])",
-        |g: FunctorLangVec3, bodies: Vec<FunctorLangBody>| {
+        |g: FunctorLangVec3, entries: Vec<PhysicsEntry>| {
             let (gx, gy, gz) = g.0;
-            FunctorLangPhysicsScene(physics::PhysicsScene::create(
-                [gx, gy, gz],
-                bodies.into_iter().map(|b| b.0).collect(),
-            ))
+            let mut scene = physics::PhysicsScene::create([gx, gy, gz], Vec::new());
+            for entry in entries {
+                match entry {
+                    PhysicsEntry::Body(body) => scene.bodies.push(body),
+                    PhysicsEntry::Group(group) => scene.groups.push(group),
+                }
+            }
+            check_tag_owners(&scene.bodies, &scene.groups)?;
+            Ok(FunctorLangPhysicsScene(scene))
         },
+    );
+    // A memoized group of fixed/kinematic bodies (see `physics_memo`).
+    reg.fn3(
+        "Physics.memo",
+        "Physics.memo(key, deps, builder) — e.g. Physics.memo(\"statics\", model.rev, staticBodies)",
+        physics_memo,
     );
     // Reads of the LIVE stepped world (the singleton, world 0). Functor Lang
     // runs in the same process as the world the shell steps, so these are
@@ -4659,7 +4683,6 @@ handle_arg!(
     FunctorLangCamera => "a Camera3D",
     FunctorLangFrame => "a Frame",
     FunctorLangShape => "a Shape",
-    FunctorLangBody => "a Body",
     FunctorLangEffect => "an Effect",
     FunctorLangSub => "a Sub",
     FunctorLangView => "a View",
@@ -4668,6 +4691,114 @@ handle_arg!(
     FunctorLangStyle => "a Style",
     FunctorLangAudioSource => "an AudioSource",
 );
+
+/// The body in `value`; a `Physics.memo` group gets a teaching error, since
+/// only `Physics.scene` takes one.
+fn body_ref<'a>(value: &'a Value, path: &str) -> Result<&'a physics::Body, String> {
+    if let Value::HostData(data) = value {
+        if let Some(body) = data.as_any().downcast_ref::<FunctorLangBody>() {
+            return Ok(&body.0);
+        }
+        if let Some(group) = data.as_any().downcast_ref::<FunctorLangBodyGroup>() {
+            return Err(format!(
+                "{path}: Physics.memo(\"{}\") is a group, not one body — only \
+Physics.scene takes it; apply {path} to the bodies inside its builder",
+                group.0.key
+            ));
+        }
+    }
+    Err(format!(
+        "{path}: expected a Body, got {}",
+        value.kind_name()
+    ))
+}
+
+impl crate::host_registry::FromArg for FunctorLangBody {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        body_ref(value, path)
+            .map(|body| FunctorLangBody(body.clone()))
+            .map_err(|message| RunError { message, span })
+    }
+}
+
+/// One element of `Physics.scene`'s list: a body or a `Physics.memo` group.
+enum PhysicsEntry {
+    Body(physics::Body),
+    Group(physics::BodyGroup),
+}
+
+impl crate::host_registry::FromArg for PhysicsEntry {
+    fn from_arg(value: &Value, path: &str, span: Span) -> Result<Self, RunError> {
+        if let Value::HostData(data) = value {
+            if let Some(group) = data.as_any().downcast_ref::<FunctorLangBodyGroup>() {
+                return Ok(PhysicsEntry::Group(group.0.clone()));
+            }
+        }
+        FunctorLangBody::from_arg(value, path, span).map(|body| PhysicsEntry::Body(body.0))
+    }
+}
+
+thread_local! {
+    /// The groups `Physics.scene` last found disjoint. A group among them
+    /// is only checked again against groups new since then.
+    static CHECKED_GROUPS: std::cell::RefCell<Vec<std::sync::Arc<[physics::Body]>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `Physics.scene`'s tag ownership rule: a tag belongs to one flat body or
+/// one group. O(flat × groups) per frame, plus O(new group's bodies × groups)
+/// when a group is new or rebuilt.
+fn check_tag_owners(bodies: &[physics::Body], groups: &[physics::BodyGroup]) -> Result<(), String> {
+    for body in bodies {
+        if let Some(group) = groups.iter().find(|g| g.get(&body.tag).is_some()) {
+            return Err(format!(
+                "Physics.scene: tag \"{}\" is declared both flat and by Physics.memo(\"{}\") — \
+a tag belongs to one place; drop the flat body or take it out of the memo",
+                body.tag, group.key
+            ));
+        }
+    }
+    for (i, group) in groups.iter().enumerate() {
+        if groups[..i].iter().any(|g| g.key == group.key) {
+            return Err(format!(
+                "Physics.scene: Physics.memo(\"{}\") appears twice — give each site its own key",
+                group.key
+            ));
+        }
+    }
+    CHECKED_GROUPS.with(|checked| {
+        let mut checked = checked.borrow_mut();
+        for (i, group) in groups.iter().enumerate() {
+            // Two groups checked together before are still disjoint.
+            if checked
+                .iter()
+                .any(|c| std::sync::Arc::ptr_eq(c, &group.bodies))
+            {
+                continue;
+            }
+            for body in group.bodies.iter() {
+                let other = groups
+                    .iter()
+                    .enumerate()
+                    .find(|(j, g)| *j != i && g.get(&body.tag).is_some());
+                if let Some((j, other)) = other {
+                    let (first, second) = if j < i {
+                        (other, group)
+                    } else {
+                        (group, other)
+                    };
+                    return Err(format!(
+                        "Physics.scene: tag \"{}\" is declared by both Physics.memo(\"{}\") \
+and Physics.memo(\"{}\") — a tag belongs to one group",
+                        body.tag, first.key, second.key
+                    ));
+                }
+            }
+        }
+        *checked = groups.iter().map(|g| g.bodies.clone()).collect();
+        Ok(())
+    })
+}
 
 // After `handle_arg!`, which it uses.
 mod settings;
@@ -4795,11 +4926,16 @@ struct SceneMemos {
     frame: u64,
 }
 
+type MemoTable = std::thread::LocalKey<std::cell::RefCell<SceneMemos>>;
+
 thread_local! {
     /// Derived shell state, like the instance-list memo: it never reaches the
     /// model, and a hit returns what the pure builder would have rebuilt, so
     /// it cannot affect determinism, replay, or time travel.
     static SCENE_MEMOS: std::cell::RefCell<SceneMemos> =
+        std::cell::RefCell::new(SceneMemos::default());
+    /// `Physics.memo`'s sites: the same rules, its own keys.
+    static PHYSICS_MEMOS: std::cell::RefCell<SceneMemos> =
         std::cell::RefCell::new(SceneMemos::default());
 }
 
@@ -4808,23 +4944,124 @@ thread_local! {
 /// the SAME value, so the renderer's identity caches skip the upload too.
 /// Otherwise the interpreter runs the builder and the result is cached.
 fn scene_memo(key: Rc<str>, deps: Value, builder: Value) -> Result<HostReturn, String> {
+    memo_site(
+        &SCENE_MEMOS,
+        "Scene.memo",
+        "scene",
+        key,
+        deps,
+        builder,
+        |scene| {
+            let Some(built) = (match &scene {
+                Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangScene>(),
+                _ => None,
+            }) else {
+                return Err(format!(
+                    "Scene.memo: the builder must return a Scene, got {}",
+                    value_kind(&scene)
+                ));
+            };
+            // Cache it shared, so wrapping it each frame copies a pointer.
+            Ok(Value::HostData(Rc::new(FunctorLangScene(shared_scene(&built.0)))))
+        },
+    )
+}
+
+/// `Physics.memo(key, deps, builder)`: `Scene.memo` for physics. The bodies
+/// become one shared [`physics::BodyGroup`], so a hit hands reconcile the
+/// same `Arc` and it skips the group.
+fn physics_memo(key: Rc<str>, deps: Value, builder: Value) -> Result<HostReturn, String> {
+    let group_key = key.to_string();
+    let finish = move |built| body_group(group_key, built);
+    memo_site(
+        &PHYSICS_MEMOS,
+        "Physics.memo",
+        "bodies",
+        key,
+        deps,
+        builder,
+        finish,
+    )
+}
+
+/// A `Physics.memo` builder's bodies as a group: fixed/kinematic, ready
+/// shapes, unique tags, sorted by tag.
+fn body_group(key: String, built: Value) -> Result<Value, String> {
+    let Value::List(items) = &built else {
+        return Err(format!(
+            "Physics.memo: the builder must return a list of bodies, got {}",
+            value_kind(&built)
+        ));
+    };
+    let mut bodies = Vec::with_capacity(items.len());
+    for item in items.iter() {
+        if let Value::HostData(data) = item {
+            if data.as_any().is::<FunctorLangBodyGroup>() {
+                return Err(
+                    "Physics.memo: a memo can't contain another memo — list its bodies directly"
+                        .to_string(),
+                );
+            }
+        }
+        let body = body_ref(item, "Physics.memo")?.clone();
+        if body.kind == physics::BodyKind::Dynamic {
+            return Err(format!(
+                "Physics.memo: \"{}\" is dynamic — a memo holds fixed and kinematic \
+bodies only; declare dynamic bodies flat in Physics.scene",
+                body.tag
+            ));
+        }
+        if matches!(body.shape, physics::Shape::Heightfield { .. }) {
+            return Err(format!(
+                "Physics.memo: \"{}\" is a heightfield — declare it flat in Physics.scene",
+                body.tag
+            ));
+        }
+        bodies.push(body);
+    }
+    bodies.sort_by(|a, b| a.tag.cmp(&b.tag));
+    if let Some(pair) = bodies.windows(2).find(|pair| pair[0].tag == pair[1].tag) {
+        return Err(format!(
+            "Physics.memo(\"{key}\"): tag \"{}\" is declared twice",
+            pair[0].tag
+        ));
+    }
+    let group = physics::BodyGroup {
+        key,
+        bodies: bodies.into(),
+    };
+    Ok(Value::HostData(Rc::new(FunctorLangBodyGroup(group))))
+}
+
+/// The memo mechanism `Scene.memo` and `Physics.memo` share: a hit returns the
+/// cached value; a miss applies `builder(deps)`, checks it with `finish`, and
+/// caches it. `noun` names what the builder returns, for errors.
+fn memo_site(
+    table: &'static MemoTable,
+    via: &'static str,
+    noun: &'static str,
+    key: Rc<str>,
+    deps: Value,
+    builder: Value,
+    finish: impl FnOnce(Value) -> Result<Value, String> + 'static,
+) -> Result<HostReturn, String> {
     // A lambda (or a def), so its body identifies the code: a hot reload lowers
     // new bodies. Builtins and partials of them hold no such identity.
     let Some((lambda, applied)) = builder_lambda(&builder) else {
         return Err(format!(
-            "Scene.memo: the builder must be a lambda or def `(deps) => scene`, got {}",
+            "{via}: the builder must be a lambda or def `(deps) => {noun}`, got {}",
             value_kind(&builder)
         ));
     };
     if lambda.params.len() != applied + 1 {
         return Err(format!(
-            "Scene.memo: the builder takes the deps as its one argument — \
-`(deps) => scene` — got a function of {} argument(s)",
+            "{via}: the builder takes the deps as its one argument — \
+`(deps) => {noun}` — got a function of {} argument(s)",
             lambda.params.len() - applied
         ));
     }
     let code = lambda.body.clone();
-    let hit = SCENE_MEMOS.with(|memos| {
+    let hit = table.with(|memos| {
         let mut memos = memos.borrow_mut();
         let frame = memos.frame;
         let site = memos.sites.get_mut(&key)?;
@@ -4839,7 +5076,7 @@ fn scene_memo(key: Rc<str>, deps: Value, builder: Value) -> Result<HostReturn, S
     // Only a miss walks the deps: a hit compared equal to deps that passed.
     if let Err(found) = plain_data(&deps) {
         return Err(format!(
-            "Scene.memo: deps must be plain data — numbers, strings, bools, and lists, \
+            "{via}: deps must be plain data — numbers, strings, bools, and lists, \
 maps, tuples, records, or variants of those — so they can be compared; found {found}. \
 Pass the plain values the builder reads (e.g. `model.seed` or `model.trees`), not \
 functions or engine values"
@@ -4850,27 +5087,18 @@ functions or engine values"
     Ok(HostReturn::Apply(Box::new(HostApply {
         callee: builder,
         args,
-        via: "Scene.memo",
-        then: Box::new(move |scene| {
+        via,
+        then: Box::new(move |built| {
             if WORLD_READS.with(|reads| reads.get()) != reads_before {
-                return Err("Scene.memo: the builder read the live physics world \
-(Physics.position / linearVelocity / cast / transformed), which deps cannot capture, so \
-the cached scene would freeze — make that read outside the memo and pass the values the \
-builder needs in deps"
-                    .to_string());
-            }
-            let Some(built) = (match &scene {
-                Value::HostData(data) => data.as_any().downcast_ref::<FunctorLangScene>(),
-                _ => None,
-            }) else {
                 return Err(format!(
-                    "Scene.memo: the builder must return a Scene, got {}",
-                    value_kind(&scene)
+                    "{via}: the builder read the live physics world \
+(Physics.position / linearVelocity / cast / transformed), which deps cannot capture, so \
+the cached {noun} would freeze — make that read outside the memo and pass the values the \
+builder needs in deps"
                 ));
-            };
-            // Cache it shared, so wrapping it each frame copies a pointer.
-            let scene = Value::HostData(Rc::new(FunctorLangScene(shared_scene(&built.0))));
-            SCENE_MEMOS.with(|memos| {
+            }
+            let scene = finish(built)?;
+            table.with(|memos| {
                 let mut memos = memos.borrow_mut();
                 if memos.sites.len() >= SCENE_MEMO_CAP && !memos.sites.contains_key(&key) {
                     if let Some(oldest) = memos
@@ -5024,17 +5252,20 @@ fn same_plain_data(a: &Value, b: &Value) -> bool {
     true
 }
 
-/// Advance the `Scene.memo` frame clock and evict sites unused for more than
-/// [`SCENE_MEMO_IDLE_FRAMES`] frames. Producers call it once per `draw`.
+/// Advance the `Scene.memo` and `Physics.memo` frame clocks and evict sites
+/// unused for more than [`SCENE_MEMO_IDLE_FRAMES`] frames. Producers call it
+/// once per `draw`.
 pub fn sweep_scene_memos() {
-    SCENE_MEMOS.with(|memos| {
-        let mut memos = memos.borrow_mut();
-        memos.frame += 1;
-        let frame = memos.frame;
-        memos
-            .sites
-            .retain(|_, site| frame - site.last_used <= SCENE_MEMO_IDLE_FRAMES);
-    });
+    for table in [&SCENE_MEMOS, &PHYSICS_MEMOS] {
+        table.with(|memos| {
+            let mut memos = memos.borrow_mut();
+            memos.frame += 1;
+            let frame = memos.frame;
+            memos
+                .sites
+                .retain(|_, site| frame - site.last_used <= SCENE_MEMO_IDLE_FRAMES);
+        });
+    }
 }
 
 impl crate::host_registry::FromArg for FunctorLangAngle {
@@ -9040,6 +9271,186 @@ let frame = (n) => Scene.memo(\"memo-test\", { size: n, tags: [\"a\"] }, (d) => 
             sweep_scene_memos();
         }
         assert_ne!(scene_ptr(&kept), scene_ptr(&memo_frame(&session, 1.0).unwrap()));
+    }
+
+    const PHYSICS_MEMO_SOURCE: &str = "
+let tile = (i) => Physics.fixed(Physics.tag(Text.concat(\"s\", Text.fromFloat(i))), Physics.box(1.0, 1.0, 1.0))
+  |> Physics.at(Vec3.make(Math.mod(i, 30.0) - 15.0, 0.0, (i - Math.mod(i, 30.0)) / 30.0 - 25.0))
+let statics = (n) => List.map(tile, List.range(n))
+let door = (y) => Physics.kinematic(Physics.tag(\"door\"), Physics.sphere(0.5)) |> Physics.at(Vec3.make(0.0, y, 9.0))
+let physics = (doorY) => Physics.scene(Vec3.make(0.0, -9.81, 0.0), [
+  Physics.memo(\"pm-statics\", 1500.0, statics),
+  Physics.memo(\"pm-doors\", doorY, (y) => [door(y)]),
+  Physics.dynamic(Physics.tag(\"ball\"), Physics.sphere(0.25)) |> Physics.at(Vec3.make(0.5, 2.0, 0.5)),
+])
+";
+
+    /// A 1,500-body static group through the real drive: built once, skipped
+    /// by reconcile every frame after, rebuilt alone when its deps change,
+    /// kept (no rapier work) across a reload, and bit-exact under seek,
+    /// rewind and replay.
+    #[test]
+    fn physics_memo_builds_a_static_group_once_and_reconcile_skips_it() {
+        use crate::physics::{
+            remove_world, with_world, ReconcileStats, SteppedPhysics, DEFAULT_WORLD, FIXED_DT,
+        };
+        let declare = |session: &functor_lang::Session, door_y: f64| {
+            let value = session
+                .call("physics", vec![Value::Number(door_y)], &mut FunctorHost)
+                .unwrap_or_else(|e| panic!("physics: {}", e.message));
+            physics_scene_value(&value).expect("a PhysicsScene").clone()
+        };
+        let door_y = |frame: u32| if frame < 150 { 1.0 } else { 2.0 };
+        let stats = || with_world(DEFAULT_WORLD, |w| w.reconcile_stats()).unwrap();
+        let snapshot = || with_world(DEFAULT_WORLD, |w| w.snapshot()).unwrap();
+        let skipped = ReconcileStats {
+            compared: 1,
+            written: 0,
+            groups_skipped: 2,
+        };
+
+        remove_world(DEFAULT_WORLD);
+        let session = memo_session(PHYSICS_MEMO_SOURCE);
+        let mut sp = SteppedPhysics::new();
+        let first = declare(&session, 1.0);
+        sp.advance(&first, FIXED_DT);
+        assert_eq!(
+            stats(),
+            ReconcileStats {
+                compared: 1502,
+                written: 1502,
+                groups_skipped: 0
+            }
+        );
+        let (mut at_100, mut at_250) = (Vec::new(), Vec::new());
+        for frame in 1..300 {
+            let scene = declare(&session, door_y(frame));
+            assert!(std::sync::Arc::ptr_eq(
+                &scene.groups[0].bodies,
+                &first.groups[0].bodies
+            ));
+            sp.advance(&scene, FIXED_DT);
+            let expected = if frame == 150 {
+                // Only the doors group changed.
+                ReconcileStats {
+                    compared: 2,
+                    written: 1,
+                    groups_skipped: 1,
+                }
+            } else {
+                skipped
+            };
+            assert_eq!(stats(), expected, "frame {frame}");
+            match frame {
+                100 => at_100 = snapshot(),
+                250 => at_250 = snapshot(),
+                _ => {}
+            }
+        }
+
+        // A rendered frame's end state is the next fixed frame's pre-step.
+        sp.seek_to_frame(101);
+        assert!(snapshot() == at_100, "seek before the doors edit diverged");
+        sp.seek_to_frame(251);
+        assert!(
+            snapshot() == at_250,
+            "replay across the doors edit diverged"
+        );
+        sp.rewind_to_frame(101);
+        for frame in 101..=250 {
+            sp.advance(&declare(&session, door_y(frame)), FIXED_DT);
+        }
+        assert!(snapshot() == at_250, "re-living after a rewind diverged");
+
+        // A reload rebuilds both sites once into equal groups: no spawns.
+        let reloaded = memo_session(PHYSICS_MEMO_SOURCE);
+        let scene = declare(&reloaded, 2.0);
+        assert!(!std::sync::Arc::ptr_eq(
+            &scene.groups[0].bodies,
+            &first.groups[0].bodies
+        ));
+        sp.advance(&scene, FIXED_DT);
+        assert_eq!(
+            stats(),
+            ReconcileStats {
+                compared: 1502,
+                written: 0,
+                groups_skipped: 0
+            }
+        );
+        sp.advance(&declare(&reloaded, 2.0), FIXED_DT);
+        assert_eq!(stats(), skipped);
+        remove_world(DEFAULT_WORLD);
+    }
+
+    fn physics_memo_error(main: &str) -> String {
+        let source = format!(
+            "let box = Physics.box(1.0, 1.0, 1.0)\n\
+             let fixed = (name) => Physics.fixed(Physics.tag(name), box)\n\
+             let main = () => Physics.scene(Vec3.make(0.0, -9.81, 0.0), {main})\n"
+        );
+        eval_with_prelude(&source)
+            .err()
+            .unwrap_or_else(|| panic!("expected an error: {main}"))
+    }
+
+    #[test]
+    fn physics_memo_teaching_errors() {
+        let cases = [
+            (
+                "[Physics.memo(\"pm-e1\", 0.0, (d) => [Physics.dynamic(Physics.tag(\"a\"), box)])]",
+                "\"a\" is dynamic",
+            ),
+            (
+                "[Physics.memo(\"pm-e2\", Vec3.make(0.0, 0.0, 0.0), (d) => [fixed(\"a\")])]",
+                "Physics.memo: deps must be plain data",
+            ),
+            (
+                "[Physics.memo(\"pm-e3\", 0.0, (d) => [fixed(\"a\")]), fixed(\"a\")]",
+                "tag \"a\" is declared both flat and by Physics.memo(\"pm-e3\")",
+            ),
+            (
+                "[Physics.memo(\"pm-e4\", 0.0, (d) => [fixed(\"a\")]), \
+                  Physics.memo(\"pm-e5\", 0.0, (d) => [fixed(\"b\"), fixed(\"a\")])]",
+                "declared by both Physics.memo(\"pm-e4\") and Physics.memo(\"pm-e5\")",
+            ),
+            (
+                "[Physics.memo(\"pm-e6\", 0.0, (d) => [fixed(\"a\")]), \
+                  Physics.memo(\"pm-e6\", 0.0, (d) => [fixed(\"a\")])]",
+                "Physics.memo(\"pm-e6\") appears twice",
+            ),
+            (
+                "[Physics.memo(\"pm-e7\", 0.0, (d) => [fixed(\"a\"), fixed(\"a\")])]",
+                "tag \"a\" is declared twice",
+            ),
+            (
+                "[Physics.memo(\"pm-e8\", 0.0, (d) => [fixed(\"a\")]) \
+                  |> Physics.at(Vec3.make(0.0, 1.0, 0.0))]",
+                "Physics.at: Physics.memo(\"pm-e8\") is a group, not one body",
+            ),
+            (
+                "[Physics.memo(\"pm-e9\", 0.0, (d) => [Physics.memo(\"pm-e10\", 0.0, (e) => [])])]",
+                "a memo can't contain another memo",
+            ),
+            (
+                "[Physics.memo(\"pm-e11\", 0.0, (d) => \
+                  if Physics.cast(Vec3.make(0.0, 1.0, 0.0), Vec3.make(0.0, -1.0, 0.0), 2.0).hit \
+                  then [] else [fixed(\"a\")])]",
+                "Physics.memo: the builder read the live physics world",
+            ),
+            (
+                "[Physics.memo(\"pm-e12\", 0.0, (d) => [Physics.heightfield(Physics.tag(\"t\"), \
+                  Terrain.heightmap(Asset.texture(\"t.png\"), 10.0, 10.0, 0.0, 1.0))])]",
+                "\"t\" is a heightfield",
+            ),
+        ];
+        for (main, expected) in cases {
+            let error = physics_memo_error(main);
+            assert!(
+                error.contains(expected),
+                "{main}\n  expected: {expected}\n  got: {error}"
+            );
+        }
     }
 
     /// Deps that share structure (a 2^60-leaf tree in 60 nodes) validate and
