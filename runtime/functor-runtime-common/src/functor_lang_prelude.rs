@@ -13229,6 +13229,81 @@ supports), got 5000"
         );
     }
 
+    /// `Texture.atlas` packs pixels records into one `Data` texture; each
+    /// rect's UVs map back to its image's texels.
+    #[test]
+    fn atlas_rects_map_back_to_source_texels() {
+        let src = format!(
+            "{PIXELS}let px2 = {{ width: 1.0, height: 3.0, format: Texture.Rgba8, \
+colorSpace: Texture.Linear, pixels: Bytes.fromU8([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]) }}\n\
+let main = Texture.atlas({{ images: [{{ pixels: px, layers: [] }}, {{ pixels: px2, layers: [] }}], \
+padding: 1.0, maxSize: 64.0 }})\n"
+        );
+        let Value::Record(out) = eval_with_prelude(&src).unwrap() else {
+            panic!("expected a record");
+        };
+        let get = |name: &str| &out.iter().find(|(f, _)| f == name).unwrap().1;
+        let Value::HostData(texture) = get("texture") else {
+            panic!("expected a texture");
+        };
+        let texture = &texture.as_any().downcast_ref::<FunctorLangTexture>().unwrap().0;
+        let TextureDescription::Data(atlas) = texture else {
+            panic!("expected pixels, got {texture:?}");
+        };
+        let side = atlas.width();
+        let Value::List(rects) = get("rects") else {
+            panic!("expected rects");
+        };
+        let sources: [&[[u8; 4]]; 2] = [
+            &[[10, 20, 30, 255], [40, 50, 60, 255]],
+            &[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]],
+        ];
+        let sizes = [(2, 1), (1, 3)];
+        for ((rect, texels), (w, h)) in rects.iter().zip(sources).zip(sizes) {
+            let Value::Record(rect) = rect else { panic!("expected a rect") };
+            let n = |name: &str| match &rect.iter().find(|(f, _)| f == name).unwrap().1 {
+                Value::Number(n) => *n,
+                other => panic!("{name}: {}", other.kind_name()),
+            };
+            // Texel (i, j) sits at u0 + i/(w-1) of the way to u1 (centres).
+            for j in 0..h {
+                for i in 0..w {
+                    let lerp = |a: f64, b: f64, k: u32, n: u32| {
+                        if n == 1 { a } else { a + (b - a) * k as f64 / (n - 1) as f64 }
+                    };
+                    let u = lerp(n("u0"), n("u1"), i, w);
+                    let v = lerp(n("v0"), n("v1"), j, h);
+                    let (x, y) = ((u * side as f64) as u32, (v * side as f64) as u32);
+                    assert_eq!((x, y), (n("x") as u32 + i, n("y") as u32 + j));
+                    let at = ((y * side + x) * 4) as usize;
+                    assert_eq!(atlas.rgba8()[at..at + 4], texels[(j * w + i) as usize]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn atlas_errors_name_the_image() {
+        let atlas = |images: &str| {
+            eval_with_prelude(&format!(
+                "{PIXELS}let lit = {{ width: 1.0, height: 1.0, format: Texture.Rgb8, \
+colorSpace: Texture.Srgb, pixels: Bytes.fromU8([0.0, 0.0, 0.0]) }}\n\
+let main = Texture.atlas({{ images: {images}, padding: 1.0, maxSize: 64.0 }})\n"
+            ))
+            .err()
+            .expect("should fail")
+        };
+        assert_eq!(
+            atlas("[{ pixels: px, layers: [] }, { pixels: lit, layers: [] }]"),
+            "Texture.atlas: images[1] is Srgb, but images[0] is Linear; an atlas has one \
+colour space"
+        );
+        assert_eq!(
+            atlas("[{ pixels: { px with width: 3.0 }, layers: [] }]"),
+            "Texture.atlas: images[0].pixels: pixels: 6 bytes, but 3×1 Rgb8 needs 9 (3 per pixel)"
+        );
+    }
+
     /// The persistence spine on the REAL store: `Persistence.save` writes the
     /// project's slot file (atomically, as canonical plain-data JSON) and a
     /// later `Persistence.load` restores exactly the saved value into a fresh

@@ -35,6 +35,23 @@ type colorSpace =
 /// `Texture.file` (on `Scene.quad`, the bottom edge).
 type pixels = { width: float, height: float, format: format, colorSpace: colorSpace, pixels: Bytes.t }
 
+/// A switchable contribution to an atlas image (same size and format).
+type layer = { id: float, pixels: Bytes.t }
+
+/// One image to pack. `layers` must be `[]` for now.
+type image = { pixels: pixels, layers: List<layer> }
+
+/// Where an image landed: its top-left texel (`x`, `y`) and its UVs, inset
+/// half a texel so filtering stays inside it (`v0` is its first row).
+type rect = { x: float, y: float, u0: float, v0: float, u1: float, v1: float }
+
+/// What `atlas` packs: `padding` texels of edge copies around each image, in
+/// a square of at most `maxSize` texels a side.
+type atlasInput = { images: List<image>, padding: float, maxSize: float }
+
+/// The packed texture and one rect per image, in input order.
+type atlasOutput = { texture: Asset.Texture, rects: List<rect> }
+
 /// Load an image texture from a path relative to the game directory.
 let file : (string) => t
 /// A texture from decoded pixels, validated once: a size or byte-count
@@ -42,3 +59,7 @@ let file : (string) => t
 /// sprites, terrain, `Asset.whilePending` and `Effect.preload` need a file
 /// asset.
 let fromPixels : (pixels) => Asset.Texture
+/// Pack images into one texture (lightmaps): the smallest power-of-two
+/// square that fits, by a deterministic skyline packer. Every image must
+/// share the first's colour space; too much for `maxSize` is an error.
+let atlas : (atlasInput) => atlasOutput

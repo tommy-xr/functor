@@ -1002,7 +1002,7 @@ The generated modules:
 | `Vec3` | branded 3D vectors and their arithmetic |
 | `Angle` | branded angles (`degrees` / `radians`; suffixes `deg` / `rad`) |
 | `Time` | branded durations (`seconds` / `millis` / `micros` / `minutes` / `hours`; suffixes `s` / `ms` / `us` / `min` / `hr`) |
-| `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator); `Texture.fromPixels` — one from decoded pixels (`Rgba8`/`Rgb8`/`Rgb555le`, `Srgb` colour or `Linear` data such as lightmaps) |
+| `Texture` | `Texture.file` — a texture value from a path (a plain string, not an asset locator); `Texture.fromPixels` — one from decoded pixels (`Rgba8`/`Rgb8`/`Rgb555le`, `Srgb` colour or `Linear` data such as lightmaps); `Texture.atlas` — pack pixel images into one padded texture, returning UV rects |
 | `RenderTarget` | named offscreen targets for render-to-texture |
 | `Asset` | branded model / texture / sound locators, and `whilePending` placeholders |
 | `Anim` | animation poses: clips, blends, masks, additive layers, joint rotation, look-at |
