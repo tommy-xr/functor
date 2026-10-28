@@ -381,18 +381,18 @@ impl FunctorLangProject {
     /// The `external` folders (never pushed or bundled), relative to the
     /// project root: `"ss2/"`, or `"src/ss2/"` for an entry in `src/`.
     fn external_dirs(&self, working_directory: &str) -> Result<Vec<String>, Error> {
-        let entry_dir = Path::new(&self.entry).parent().unwrap_or(Path::new(""));
-        let files = project_files::Resolver::load(
-            Path::new(working_directory),
-            &Path::new(working_directory).join(entry_dir),
-        )?;
-        let base = entry_dir
-            .components()
-            .map(|part| part.as_os_str().to_string_lossy().into_owned() + "/")
-            .collect::<String>();
-        Ok(files
-            .external_prefixes()
-            .map(|prefix| format!("{base}{prefix}"))
+        let base: String = Path::new(&self.entry)
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .filter_map(|part| match part {
+                std::path::Component::Normal(name) => Some(name.to_string_lossy() + "/"),
+                _ => None,
+            })
+            .collect();
+        Ok(project_files::declared_in(Path::new(working_directory))?
+            .into_iter()
+            .map(|(prefix, _)| format!("{base}{prefix}"))
             .collect())
     }
 
@@ -418,6 +418,7 @@ impl FunctorLangProject {
         let files = project_files::Resolver::load(
             Path::new(working_directory),
             path.parent().unwrap_or(Path::new(".")),
+            &project_files::declared_in(Path::new(working_directory))?,
         )?;
         functor_runtime_common::storage::set_project_reader(Some(std::sync::Arc::new(files)));
         let display = path.display().to_string();
@@ -483,6 +484,7 @@ impl FunctorLangProject {
         let findings = crate::util::asset_verify::verify_assets(
             &project.module,
             Path::new(working_directory),
+            &self.external_dirs(working_directory)?,
             &mut crate::util::asset_verify::probe_url_live,
         );
         for (finding, severity) in findings
@@ -1559,22 +1561,21 @@ fn project_asset_files(root: &Path, external: &[String]) -> Result<ProjectFiles,
         root: &Path,
         canonical_root: &Path,
         directory: &Path,
-        is_root: bool,
+        external: &[String],
         out: &mut ProjectFiles,
     ) -> Result<(), Error> {
         for entry in std::fs::read_dir(directory)? {
             let entry = entry?;
-            let name = entry.file_name();
-            let name = name
-                .to_str()
-                .ok_or_else(|| Error::other(format!("non-UTF8 file name: {:?}", name)))?;
-            if is_unpushed(name, is_root) {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| Error::other(format!("asset escaped project: {}", path.display())))?;
+            if is_unpushed(relative, external) {
                 continue;
             }
-            let path = entry.path();
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                visit(root, canonical_root, &path, false, out)?;
+                visit(root, canonical_root, &path, external, out)?;
                 continue;
             }
             if path
@@ -1583,19 +1584,14 @@ fn project_asset_files(root: &Path, external: &[String]) -> Result<ProjectFiles,
             {
                 continue;
             }
-            let relative = path
-                .strip_prefix(root)
-                .map_err(|_| Error::other(format!("asset escaped project: {}", path.display())))?;
             // Follow symlinked files whose target is itself pushable, but
             // never recurse through symlinked directories.
             let metadata = if file_type.is_symlink() {
                 match (std::fs::metadata(&path), std::fs::canonicalize(&path)) {
                     (Ok(metadata), Ok(target)) if metadata.is_file() => {
-                        let pushable = target.strip_prefix(canonical_root).is_ok_and(|inside| {
-                            !inside.iter().enumerate().any(|(depth, name)| {
-                                name.to_str().map_or(true, |name| is_unpushed(name, depth == 0))
-                            })
-                        });
+                        let pushable = target
+                            .strip_prefix(canonical_root)
+                            .is_ok_and(|inside| !is_unpushed(inside, external));
                         if !pushable {
                             out.escaped.push(relative.display().to_string());
                             continue;
@@ -1639,22 +1635,39 @@ fn project_asset_files(root: &Path, external: &[String]) -> Result<ProjectFiles,
     }
 
     let mut out = ProjectFiles::default();
-    visit(root, &std::fs::canonicalize(root)?, root, true, &mut out)?;
-    let is_external = |locator: &str| external.iter().any(|dir| locator.starts_with(dir.as_str()));
-    out.files.retain(|file| !is_external(&file.locator));
-    out.escaped.retain(|link| !is_external(link));
+    visit(
+        root,
+        &std::fs::canonicalize(root)?,
+        root,
+        external,
+        &mut out,
+    )?;
     out.files.sort_by(|a, b| a.locator.cmp(&b.locator));
     out.escaped.sort();
     Ok(out)
 }
 
-/// Entries `run vr` never pushes: hidden ones, the generated root `dist/`,
-/// and build/dependency trees.
-fn is_unpushed(name: &str, is_root: bool) -> bool {
-    name.starts_with('.')
-        || (is_root && name == "dist")
-        || name == "target"
-        || name == "node_modules"
+/// Whether `run vr` never pushes this root-relative path: under a hidden
+/// entry, the generated root `dist/`, a build/dependency tree or an
+/// `external` folder (`"ss2/"`), or the machine-local `functor.local.json`.
+fn is_unpushed(relative: &Path, external: &[String]) -> bool {
+    let Some(names) = relative
+        .iter()
+        .map(|name| name.to_str())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return true; // a non-UTF8 name `File.bytes` can't ask for
+    };
+    let locator = names.join("/");
+    names.iter().enumerate().any(|(depth, name)| {
+        name.starts_with('.')
+            || (depth == 0 && *name == "dist")
+            || *name == "target"
+            || *name == "node_modules"
+    }) || locator == project_files::LOCAL_CONFIG
+        || external
+            .iter()
+            .any(|dir| format!("{locator}/").starts_with(dir.as_str()))
 }
 
 /// Refuse a push over `limits`, naming the file (or total) and the flag.
@@ -2691,6 +2704,36 @@ Vec3.make(0.0, 0.0, 0.0)), Scene.cube())\n\
         assert_eq!(locators, vec!["data.bin", "in.bin"]);
         assert_eq!(scan.escaped, vec!["hidden.txt", "out.bin"]);
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// `external` folders (from the entry's folder, `./` or not), the
+    /// machine-local config, and symlinks into either are never pushed.
+    #[cfg(unix)]
+    #[test]
+    fn vr_file_scan_skips_external_folders_and_local_config() {
+        let root = std::env::temp_dir().join(format!("functor-vr-ext-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/ss2/deep")).unwrap();
+        std::fs::write(
+            root.join("functor.json"),
+            r#"{"language": "functor-lang", "external": {"ss2/": "data"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("functor.local.json"), b"{}").unwrap();
+        std::fs::write(root.join("src/ss2/deep/a.bin"), b"external").unwrap();
+        std::fs::write(root.join("src/data.bin"), b"data").unwrap();
+        std::os::unix::fs::symlink(root.join("src/ss2/deep/a.bin"), root.join("alias.bin"))
+            .unwrap();
+        let wd = root.to_string_lossy().into_owned();
+        for entry in ["./src/game.fun", "src/game.fun"] {
+            let project = single(entry).select(None).unwrap();
+            assert_eq!(project.external_dirs(&wd).unwrap(), ["src/ss2/"], "{entry}");
+        }
+        let scan = project_asset_files(&root, &["src/ss2/".to_string()]).unwrap();
+        let locators: Vec<&str> = scan.files.iter().map(|f| f.locator.as_str()).collect();
+        assert_eq!(locators, ["functor.json", "src/data.bin"]);
+        assert_eq!(scan.escaped, ["alias.bin"]);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

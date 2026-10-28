@@ -117,7 +117,10 @@ name {RESERVED_ROOT:?} at the project root): {} — rename or move them",
         .collect();
 
     let mut stats = CopyStats::default();
-    let skip: Vec<PathBuf> = external.iter().map(|dir| root.join(dir)).collect();
+    let skip: Vec<PathBuf> = external
+        .iter()
+        .filter_map(|dir| std::fs::canonicalize(root.join(dir)).ok())
+        .collect();
     copy_project(root, &out, true, &skip, &mut stats)?;
 
     // The runtime files go in last so nothing in the project can shadow them.
@@ -158,7 +161,8 @@ struct CopyStats {
 /// copy through (`fs::copy` reads the target — a linked shared asset is a
 /// real workflow), but symlinked DIRECTORIES are skipped and reported:
 /// following one can recurse forever (a link to an ancestor) or vacuum an
-/// external tree into the bundle. `skip`: `external` folders, never bundled.
+/// external tree into the bundle. `skip`: canonical `external` folders, never
+/// bundled, not even through a symlinked file; nor is `functor.local.json`.
 fn copy_project(
     src: &Path,
     dst: &Path,
@@ -174,18 +178,23 @@ fn copy_project(
         if name_str.starts_with('.') {
             continue;
         }
-        if is_root && RESERVED_ROOT.contains(&name_str.as_ref()) {
+        if is_root
+            && (RESERVED_ROOT.contains(&name_str.as_ref())
+                || name_str == crate::commands::project_files::LOCAL_CONFIG)
+        {
             continue;
         }
         let from = entry.path();
-        if skip.contains(&from) {
-            continue;
-        }
+        let skipped = || {
+            std::fs::canonicalize(&from)
+                .is_ok_and(|target| skip.iter().any(|dir| target.starts_with(dir)))
+        };
         let to = dst.join(&name);
         // no-follow, so symlinks are decided here and never recursed into
         let file_type = entry.file_type()?;
         if file_type.is_symlink() {
             match std::fs::metadata(&from) {
+                Ok(_) if skipped() => {}
                 Ok(m) if m.is_file() => {
                     stats.bytes += std::fs::copy(&from, &to)?;
                     stats.files += 1;
@@ -194,7 +203,9 @@ fn copy_project(
                 _ => stats.skipped_symlinks.push(from.display().to_string()),
             }
         } else if file_type.is_dir() {
-            copy_project(&from, &to, false, skip, stats)?;
+            if !skipped() {
+                copy_project(&from, &to, false, skip, stats)?;
+            }
         } else {
             stats.bytes += std::fs::copy(&from, &to)?;
             stats.files += 1;
@@ -317,6 +328,13 @@ mod tests {
         dir.write(".DS_Store", "junk");
         dir.write("dist/web/stale.txt", "from a previous export");
         dir.write("ss2/mesh/a.bin", "external: never bundled");
+        dir.write("functor.local.json", "{\"external\": {}}");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.path().join("ss2/mesh/a.bin"),
+            dir.path().join("alias.bin"),
+        )
+        .unwrap();
 
         let wd = dir.path().to_string_lossy().to_string();
         let export = export_functor_lang_wasm(
@@ -332,6 +350,11 @@ mod tests {
 
         let out = &export.out_dir;
         assert!(!out.join("ss2").exists(), "external folders aren't bundled");
+        assert!(!out.join("alias.bin").exists(), "nor through a symlink");
+        assert!(
+            !out.join("functor.local.json").exists(),
+            "machine-local config"
+        );
         let index = fs::read_to_string(out.join("index.html")).unwrap();
         assert!(index.contains("window.__functorLangGamePath = \"game.fun\""));
         assert!(index.contains("window.__functorCursorPolicy = \"visible\""));

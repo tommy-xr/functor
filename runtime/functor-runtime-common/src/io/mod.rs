@@ -110,7 +110,9 @@ pub async fn load_bytes_async2(path: String) -> Result<Vec<u8>, String> {
 }
 
 /// A project-relative asset missing on disk, read through the project reader
-/// instead: an `external` prefix on desktop, or the headset's files.
+/// instead: an `external` prefix on desktop, or the headset's files. The
+/// reader takes `File.bytes` paths (from the entry's folder), which differ
+/// from renderer paths only for an entry in a subfolder.
 #[cfg(not(target_arch = "wasm32"))]
 fn read_through_project(path: &str, disk_error: std::io::Error) -> Result<Vec<u8>, String> {
     use crate::storage::ProjectReadError;

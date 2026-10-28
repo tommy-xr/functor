@@ -41,22 +41,63 @@ enum Mount {
     Zip(ZipMount),
 }
 
+/// `functor.json`'s `external` declarations, checked: `[("ss2/", "what it
+/// holds")]`. Prefixes are folder paths ending in `/`, none inside another.
+pub fn declared(json: &serde_json::Value) -> Result<Vec<(String, String)>, String> {
+    let declared = match json.get("external") {
+        None => return Ok(Vec::new()),
+        Some(serde_json::Value::Object(map)) => map,
+        Some(_) => return Err(EXTERNAL_SHAPE.replace("{file}", "functor.json")),
+    };
+    let mut out = Vec::new();
+    for (prefix, description) in declared {
+        let description = description.as_str().ok_or_else(|| {
+            format!(
+                "functor.json external {prefix:?} must describe what it holds, e.g. \
+\"player SS2 data\""
+            )
+        })?;
+        let valid = prefix
+            .strip_suffix('/')
+            .is_some_and(|dir| validate_project_asset_path(dir).is_ok());
+        if !valid {
+            return Err(format!(
+                "functor.json external {prefix:?} must be a folder path ending in `/`, like \
+\"ss2/\""
+            ));
+        }
+        if let Some(other) = declared
+            .keys()
+            .find(|other| *other != prefix && other.starts_with(prefix.as_str()))
+        {
+            return Err(format!(
+                "functor.json external {prefix:?} contains {other:?}; declare one or the other"
+            ));
+        }
+        out.push((prefix.clone(), description.to_string()));
+    }
+    Ok(out)
+}
+
+/// [`declared`] in `project_dir`'s `functor.json` (none without one).
+pub fn declared_in(project_dir: &Path) -> Result<Vec<(String, String)>, Error> {
+    match read_json(&project_dir.join("functor.json"))? {
+        Some(json) => declared(&json).map_err(Error::other),
+        None => Ok(Vec::new()),
+    }
+}
+
 impl Resolver {
-    /// Read the `external` declarations (`functor.json` in `project_dir`) and
-    /// this machine's mappings (`functor.local.json` beside it). `entry_dir`
-    /// is the entry file's folder.
-    pub fn load(project_dir: &Path, entry_dir: &Path) -> Result<Resolver, Error> {
+    /// The `declared` prefixes (see [`declared`]) with this machine's
+    /// mappings (`functor.local.json` in `project_dir`). `entry_dir` is the
+    /// entry file's folder.
+    pub fn load(
+        project_dir: &Path,
+        entry_dir: &Path,
+        declared: &[(String, String)],
+    ) -> Result<Resolver, Error> {
         let bad = |message: String| Error::other(message);
-        let declared = match read_json(&project_dir.join("functor.json"))? {
-            Some(json) => match json.get("external") {
-                None => serde_json::Map::new(),
-                Some(serde_json::Value::Object(map)) => map.clone(),
-                Some(_) => {
-                    return Err(bad(EXTERNAL_SHAPE.replace("{file}", "functor.json")));
-                }
-            },
-            None => serde_json::Map::new(),
-        };
+        let project_dir = std::path::absolute(project_dir)?;
         let mapped = match read_json(&project_dir.join(LOCAL_CONFIG))? {
             Some(json) => match json.get("external") {
                 None => serde_json::Map::new(),
@@ -65,41 +106,21 @@ impl Resolver {
             },
             None => serde_json::Map::new(),
         };
-        if let Some(prefix) = mapped.keys().find(|prefix| !declared.contains_key(*prefix)) {
+        if let Some(prefix) = mapped
+            .keys()
+            .find(|prefix| !declared.iter().any(|(declared, _)| declared == *prefix))
+        {
             return Err(bad(format!(
                 "{LOCAL_CONFIG} maps {prefix:?}, but functor.json doesn't declare it: add \
 \"external\": {{{prefix:?}: \"what it holds\"}} to functor.json"
             )));
         }
         let mut externals = Vec::new();
-        for (prefix, description) in &declared {
-            let description = description.as_str().ok_or_else(|| {
-                bad(format!(
-                    "functor.json external {prefix:?} must describe what it holds, e.g. \
-\"player SS2 data\""
-                ))
-            })?;
-            let valid = prefix
-                .strip_suffix('/')
-                .is_some_and(|dir| validate_project_asset_path(dir).is_ok());
-            if !valid {
-                return Err(bad(format!(
-                    "functor.json external {prefix:?} must be a folder path ending in `/`, \
-like \"ss2/\""
-                )));
-            }
-            if let Some(other) = declared
-                .keys()
-                .find(|other| *other != prefix && other.starts_with(prefix.as_str()))
-            {
-                return Err(bad(format!(
-                    "functor.json external {prefix:?} contains {other:?}; declare one or the other"
-                )));
-            }
+        for (prefix, description) in declared {
             let mount = match mapped.get(prefix) {
                 None => None,
                 Some(serde_json::Value::String(target)) => Some(
-                    Mount::parse(project_dir, target)
+                    Mount::parse(&project_dir, target)
                         .map_err(|e| bad(format!("{LOCAL_CONFIG} external {prefix:?}: {e}")))?,
                 ),
                 Some(_) => {
@@ -111,7 +132,7 @@ like \"ss2/\""
             };
             externals.push(External {
                 prefix: prefix.clone(),
-                description: description.to_string(),
+                description: description.clone(),
                 mount,
             });
         }
@@ -121,17 +142,19 @@ like \"ss2/\""
         })
     }
 
-    /// The declared prefixes (`"ss2/"`), relative to the entry's folder.
-    pub fn external_prefixes(&self) -> impl Iterator<Item = &str> {
-        self.externals
-            .iter()
-            .map(|external| external.prefix.as_str())
-    }
-
     fn external<'a>(&self, path: &'a str) -> Option<(&External, &'a str)> {
         self.externals.iter().find_map(|external| {
             path.strip_prefix(external.prefix.as_str())
                 .map(|rest| (external, rest))
+        })
+    }
+
+    /// A prefix `path` matches only ignoring case (`SS2/` for `ss2/`): on a
+    /// case-insensitive disk it would quietly read the project folder.
+    fn miscased(&self, path: &str) -> Option<&External> {
+        self.externals.iter().find(|external| {
+            path.get(..external.prefix.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(&external.prefix))
         })
     }
 }
@@ -164,7 +187,13 @@ impl External {
 impl ProjectReader for Resolver {
     fn read(&self, path: &str) -> Result<Arc<[u8]>, ProjectReadError> {
         match self.external(path) {
-            None => storage::read_confined(&self.root, path),
+            None => match self.miscased(path) {
+                Some(external) => Err(ProjectReadError::Unreadable(format!(
+                    "external prefixes are case-sensitive: {}?",
+                    external.prefix
+                ))),
+                None => storage::read_confined(&self.root, path),
+            },
             Some((external, rest)) => match &external.mount {
                 None => Err(ProjectReadError::Unreadable(external.unmapped())),
                 Some(Mount::Dir(dir)) => storage::read_confined(dir, rest),
@@ -177,7 +206,7 @@ impl ProjectReader for Resolver {
 
     fn exists(&self, path: &str) -> bool {
         match self.external(path) {
-            None => storage::is_file_confined(&self.root, path),
+            None => self.miscased(path).is_none() && storage::is_file_confined(&self.root, path),
             Some((external, rest)) => match &external.mount {
                 None => false,
                 Some(Mount::Dir(dir)) => storage::is_file_confined(dir, rest),
@@ -192,27 +221,30 @@ impl Mount {
     /// `data/res/` in a zip; `"~/game.zip"` alone is its root). Relative
     /// paths start at the project folder.
     fn parse(project_dir: &Path, target: &str) -> Result<Mount, String> {
-        let (path, inner) = match target.rsplit_once('!') {
-            Some((path, inner)) => (path, Some(inner)),
-            None => (target, None),
-        };
-        let path = match path.strip_prefix("~/") {
+        let resolve = |path: &str| match path.strip_prefix("~/") {
             Some(rest) => std::env::var_os("HOME")
                 .map(|home| PathBuf::from(home).join(rest))
-                .ok_or("`~` needs $HOME")?,
-            None => project_dir.join(path),
+                .ok_or("`~` needs $HOME"),
+            None => Ok(project_dir.join(path)),
         };
-        let is_dir = path.is_dir();
-        if inner.is_none() && is_dir {
-            return Ok(Mount::Dir(path));
-        }
-        if is_dir {
-            return Err(format!(
-                "{} is a folder; `!` only follows a zip archive",
-                path.display()
-            ));
-        }
-        let inner = inner.unwrap_or("").trim_end_matches('/');
+        // `!` separates an archive from its folder only after a file, so a
+        // folder named `Games!` still maps as a folder.
+        let split = target
+            .rsplit_once('!')
+            .map(|(archive, inner)| resolve(archive).map(|archive| (archive, inner)))
+            .transpose()?
+            .filter(|(archive, _)| archive.is_file());
+        let (path, inner) = match split {
+            Some((archive, inner)) => (archive, inner),
+            None => {
+                let path = resolve(target)?;
+                if path.is_dir() {
+                    return Ok(Mount::Dir(path));
+                }
+                (path, "")
+            }
+        };
+        let inner = inner.trim_end_matches('/');
         if !inner.is_empty() && validate_project_asset_path(inner).is_err() {
             return Err(format!(
                 "the folder after `!` must be a plain relative path like data/res/ (got {inner:?})"
@@ -232,8 +264,8 @@ impl Mount {
 }
 
 /// Entries under `inner` in a zip, read in place (never extracted). Names
-/// are case-sensitive; traversal, absolute and backslash names, symlinks and
-/// duplicated names are refused.
+/// are case-sensitive; traversal, absolute and backslash names and symlinks
+/// are refused, and an archive with duplicate names isn't read at all.
 struct ZipMount {
     archive: PathBuf,
     /// `""` or `"data/res/"`.
@@ -253,7 +285,7 @@ struct ZipIndex {
 
 enum Entry {
     File { index: usize, size: u64 },
-    Refused(&'static str),
+    Symlink,
 }
 
 impl ZipMount {
@@ -304,7 +336,7 @@ impl ZipMount {
                 }
                 Ok(bytes.into())
             }
-            Some(Entry::Refused(why)) => Err(format!("{archive} entry {name} is {why}; not read")),
+            Some(Entry::Symlink) => Err(format!("{archive} entry {name} is a symlink; not read")),
             None => {
                 let hint = index
                     .folded
@@ -333,8 +365,18 @@ impl ZipIndex {
         stamp: (u64, Option<std::time::SystemTime>),
         mut file: std::fs::File,
     ) -> Result<ZipIndex, String> {
-        let counts = central_directory_names(&mut file).map_err(|e| e.to_string())?;
+        let records = central_directory_records(&mut file).map_err(|e| e.to_string())?;
         let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+        // The zip reader keeps one entry per (decoded) name: fewer entries
+        // than records means two entries share a name, so which one a path
+        // reads would be arbitrary.
+        if zip.len() != records {
+            return Err(format!(
+                "it lists {records} entries under {} distinct names; duplicate names are \
+ambiguous, so it isn't read",
+                zip.len()
+            ));
+        }
         let mut entries = HashMap::new();
         let mut folded = HashMap::new();
         for index in 0..zip.len() {
@@ -344,10 +386,8 @@ impl ZipIndex {
             if entry.is_dir() || validate_project_asset_path(&name).is_err() {
                 continue;
             }
-            let state = if counts.get(entry.name_raw()).copied().unwrap_or(0) > 1 {
-                Entry::Refused("listed more than once (ambiguous)")
-            } else if entry.is_symlink() {
-                Entry::Refused("a symlink")
+            let state = if entry.is_symlink() {
+                Entry::Symlink
             } else {
                 Entry::File {
                     index,
@@ -366,9 +406,8 @@ impl ZipIndex {
     }
 }
 
-/// How often each raw name appears in the central directory. The zip reader
-/// keeps one entry per name, so duplicates are only visible here.
-fn central_directory_names(file: &mut std::fs::File) -> std::io::Result<HashMap<Vec<u8>, u32>> {
+/// How many entry records the central directory holds (duplicates included).
+fn central_directory_records(file: &mut std::fs::File) -> std::io::Result<usize> {
     let bad = || Error::other("not a zip archive (no end of central directory)");
     let len = file.seek(SeekFrom::End(0))?;
     // The end record (22 bytes) plus at most a 64 KiB comment.
@@ -383,7 +422,7 @@ fn central_directory_names(file: &mut std::fs::File) -> std::io::Result<HashMap<
     let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
     let u32_at = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
     let (size, offset) = (u32_at(&tail, end + 12), u32_at(&tail, end + 16));
-    if size == u32::MAX || offset == u32::MAX {
+    if size == u32::MAX || offset == u32::MAX || u16_at(&tail, end + 10) == 0xffff {
         return Err(Error::other("zip64 archives aren't supported"));
     }
     // A prefixed archive (e.g. a self-extractor) shifts every offset.
@@ -393,16 +432,16 @@ fn central_directory_names(file: &mut std::fs::File) -> std::io::Result<HashMap<
     file.seek(SeekFrom::Start(start))?;
     let mut directory = vec![0; size as usize];
     file.read_exact(&mut directory)?;
-    let mut counts = HashMap::new();
+    let mut records = 0;
     let mut at = 0;
     while at + 46 <= directory.len() && directory[at..at + 4] == [0x50, 0x4b, 0x01, 0x02] {
-        let name_len = u16_at(&directory, at + 28);
-        let skip = name_len + u16_at(&directory, at + 30) + u16_at(&directory, at + 32);
-        let name = directory.get(at + 46..at + 46 + name_len).ok_or_else(bad)?;
-        *counts.entry(name.to_vec()).or_insert(0) += 1;
-        at += 46 + skip;
+        records += 1;
+        at += 46
+            + u16_at(&directory, at + 28)
+            + u16_at(&directory, at + 30)
+            + u16_at(&directory, at + 32);
     }
-    Ok(counts)
+    Ok(records)
 }
 
 #[cfg(test)]
@@ -431,15 +470,24 @@ mod tests {
                 "functor.json",
                 format!("{{\"language\": \"functor-lang\", \"external\": {declared}}}").as_bytes(),
             );
-            if let Some(mapped) = mapped {
-                self.write(
+            match mapped {
+                Some(mapped) => self.write(
                     LOCAL_CONFIG,
                     format!("{{\"external\": {mapped}}}").as_bytes(),
-                );
+                ),
+                None => {
+                    let _ = std::fs::remove_file(self.0.join(LOCAL_CONFIG));
+                }
             }
         }
+        /// The resolver `build()` installs, or the config error.
+        fn load(&self) -> Result<Resolver, String> {
+            declared_in(&self.0)
+                .and_then(|declared| Resolver::load(&self.0, &self.0, &declared))
+                .map_err(|e| e.to_string())
+        }
         fn resolver(&self) -> Resolver {
-            Resolver::load(&self.0, &self.0).unwrap()
+            self.load().unwrap()
         }
     }
 
@@ -481,7 +529,6 @@ mod tests {
         let resolver = project.resolver();
         assert_eq!(read(&resolver, "data/a.bin"), Ok(vec![1, 2]));
         assert!(resolver.exists("data/a.bin") && !resolver.exists("data/b.bin"));
-        assert_eq!(resolver.external_prefixes().count(), 0);
     }
 
     /// An external prefix mapped to a folder reads from it, confined:
@@ -511,7 +558,10 @@ mod tests {
             Err("outside".to_string())
         );
         assert!(resolver.exists("ss2/mesh/a.bin") && !resolver.exists("ss2/mesh/out.bin"));
-        assert_eq!(resolver.external_prefixes().collect::<Vec<_>>(), ["ss2/"]);
+        // A miscased prefix doesn't fall through to the project's own ss2/.
+        let err = read(&resolver, "SS2/mesh/a.bin").unwrap_err();
+        assert!(err.contains("case-sensitive: ss2/?"), "{err}");
+        assert!(!resolver.exists("SS2/mesh/a.bin"));
         let _ = std::fs::remove_file(data.0.parent().unwrap().join("functor-files-secret.bin"));
     }
 
@@ -554,26 +604,49 @@ mod tests {
         assert_eq!(read(&whole, "ss2/data/other.bin"), Ok(vec![0]));
     }
 
-    /// Entries that could escape or alias are never served: traversal and
-    /// absolute names (unaskable), symlinks, and names listed twice.
+    /// Entries that could escape are never served: traversal and absolute
+    /// names (unaskable) and symlinks.
     #[test]
     fn unsafe_zip_entries_are_refused() {
         let project = TempProject::new("slip");
-        let archive = project.0.join("game.zip");
         write_zip(
-            &archive,
+            &project.0.join("game.zip"),
             &[
                 ("../evil.bin", Some(b"x")),
                 ("/abs.bin", Some(b"x")),
                 ("res/../../up.bin", Some(b"x")),
                 ("res/link.bin", None),
+                ("res/ok.bin", Some(b"ok")),
+            ],
+        );
+        project.config(r#"{"x/": "data"}"#, Some(r#"{"x/": "game.zip!res/"}"#));
+        let resolver = project.resolver();
+        assert_eq!(read(&resolver, "x/ok.bin"), Ok(b"ok".to_vec()));
+        let err = read(&resolver, "x/link.bin").unwrap_err();
+        assert!(err.contains("is a symlink"), "{err}");
+        assert!(!resolver.exists("x/link.bin"));
+        // No validated path names the escaping entries.
+        for path in ["x/../evil.bin", "x//abs.bin", "x/../../up.bin"] {
+            assert!(!resolver.exists(path), "{path}");
+        }
+    }
+
+    /// Two entries under one name: which one a path reads would be arbitrary,
+    /// so the archive isn't read at all.
+    #[test]
+    fn zips_with_duplicate_names_are_refused() {
+        let project = TempProject::new("dup");
+        let archive = project.0.join("game.zip");
+        write_zip(
+            &archive,
+            &[
                 ("res/dup-a.bin", Some(b"first")),
                 ("res/dup-b.bin", Some(b"second")),
                 ("res/ok.bin", Some(b"ok")),
             ],
         );
         // Rename the second entry onto the first (same length), in both the
-        // local header and the central directory: one name, two entries.
+        // local header and the central directory.
         let bytes = std::fs::read(&archive).unwrap();
         let (from, to) = (b"res/dup-b.bin", b"res/dup-a.bin");
         let mut patched = Vec::with_capacity(bytes.len());
@@ -590,18 +663,32 @@ mod tests {
         std::fs::write(&archive, patched).unwrap();
         project.config(r#"{"x/": "data"}"#, Some(r#"{"x/": "game.zip!res/"}"#));
         let resolver = project.resolver();
-        assert_eq!(read(&resolver, "x/ok.bin"), Ok(b"ok".to_vec()));
-        let err = read(&resolver, "x/link.bin").unwrap_err();
-        assert!(err.contains("is a symlink"), "{err}");
-        let err = read(&resolver, "x/dup-a.bin").unwrap_err();
-        assert!(err.contains("listed more than once"), "{err}");
-        assert!(!resolver.exists("x/link.bin") && !resolver.exists("x/dup-a.bin"));
-        // No validated path names the escaping entries.
-        for path in ["x/../evil.bin", "x//abs.bin", "x/../../up.bin"] {
-            assert!(!resolver.exists(path), "{path}");
+        for path in ["x/dup-a.bin", "x/ok.bin"] {
+            let err = read(&resolver, path).unwrap_err();
+            assert!(err.contains("3 entries under 2 distinct names"), "{err}");
+            assert!(!resolver.exists(path));
         }
-        let names = central_directory_names(&mut std::fs::File::open(&archive).unwrap()).unwrap();
-        assert_eq!(names.get(b"res/dup-a.bin".as_slice()), Some(&2));
+    }
+
+    /// Mappings resolve against the project folder once, at load: a relative
+    /// `-d` stays right after `run` changes directory. A `!` after a folder
+    /// is part of its name.
+    #[test]
+    fn relative_mappings_survive_a_directory_change() {
+        let project = TempProject::new("relative");
+        project.write("data!/a.bin", &[3]);
+        project.config(r#"{"x/": "data"}"#, Some(r#"{"x/": "data!/"}"#));
+        // The same folder, relative to the working directory.
+        let up = std::env::current_dir().unwrap().components().count() - 1;
+        let relative = PathBuf::from("../".repeat(up)).join(project.0.strip_prefix("/").unwrap());
+        assert!(relative.is_relative() && relative.is_dir());
+        let declared = declared_in(&project.0).unwrap();
+        let resolver = Resolver::load(&relative, &relative, &declared).unwrap();
+        let Some(Mount::Dir(dir)) = &resolver.externals[0].mount else {
+            panic!("a folder mount");
+        };
+        assert!(dir.is_absolute(), "{}", dir.display());
+        assert_eq!(read(&resolver, "x/a.bin"), Ok(vec![3]));
     }
 
     /// An entry unpacking past the cap is refused, whatever its header says.
@@ -647,12 +734,10 @@ mod tests {
     #[test]
     fn malformed_external_config_is_refused() {
         let project = TempProject::new("config");
+        project.write("a.zip", b"");
         let refused = |declared: &str, mapped: Option<&str>| {
             project.config(declared, mapped);
-            Resolver::load(&project.0, &project.0)
-                .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default()
+            project.load().err().unwrap_or_default()
         };
         assert!(refused(r#"{"ss2": "x"}"#, None).contains("ending in `/`"));
         assert!(refused(r#"{"../x/": "x"}"#, None).contains("ending in `/`"));
