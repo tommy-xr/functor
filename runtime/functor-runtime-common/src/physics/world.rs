@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 
+use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +115,9 @@ pub struct RayHit {
     pub normal: [f32; 3],
     /// World units from the ray origin (the direction is normalized).
     pub distance: f32,
+    /// The hit triangle's index in the `Physics.trimesh` source data; `None`
+    /// for any other shape.
+    pub triangle: Option<u32>,
 }
 
 /// One colored wireframe segment from [`World::debug_lines`], in world space.
@@ -456,13 +460,7 @@ impl World {
                 CollisionEvent::Started(h1, h2, flags) => (h1, h2, true, flags),
                 CollisionEvent::Stopped(h1, h2, flags) => (h1, h2, false, flags),
             };
-            let tag_of = |handle| {
-                self.tags
-                    .iter()
-                    .find(|(_, &(_, col))| col == handle)
-                    .map(|(tag, _)| tag.clone())
-            };
-            if let (Some(a), Some(b)) = (tag_of(h1), tag_of(h2)) {
+            if let (Some(a), Some(b)) = (self.collider_tag(h1), self.collider_tag(h2)) {
                 self.events.push(PhysicsEvent {
                     started,
                     a,
@@ -554,37 +552,110 @@ impl World {
             return None;
         }
         let ray = rapier3d::prelude::Ray::new(vec3(origin), d / len);
-        let mut filter = QueryFilter::default();
-        // Exclude the RIGID BODY, not the single collider the tag maps to: a
-        // tagged body owns exactly one collider today, but the moment one
-        // gains a second (a compound shape, or a separate sensor volume) a
-        // collider-level filter would quietly let the self-probe hit the
-        // character again. Excluding the body costs the same and carries no
-        // such invariant.
-        if let Some((body, _)) = exclude.and_then(|tag| self.tags.get(tag)) {
-            filter = filter.exclude_rigid_body(*body);
-        }
-        let pipeline = self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.bodies,
-            &self.colliders,
-            filter,
-        );
-        let (col_handle, hit) = pipeline.cast_ray_and_get_normal(&ray, max_dist, true)?;
-        // Reverse handle→tag lookup: scenes are small; a scan beats carrying
-        // a second map in every snapshot.
-        let tag = self
-            .tags
-            .iter()
-            .find(|(_, &(_, col))| col == col_handle)
-            .map(|(tag, _)| tag.clone())?;
+        let (col_handle, hit) = self
+            .queries(exclude)
+            .cast_ray_and_get_normal(&ray, max_dist, true)?;
+        let tag = self.collider_tag(col_handle)?;
+        let kept = match hit.feature {
+            FeatureId::Face(i) => Some(i),
+            _ => None,
+        };
         let point = ray.origin + ray.dir * hit.time_of_impact;
         Some(RayHit {
+            triangle: self.source_triangle(&tag, kept),
             tag,
             position: [point.x, point.y, point.z],
             normal: [hit.normal.x, hit.normal.y, hit.normal.z],
             distance: hit.time_of_impact,
         })
+    }
+
+    /// Sweep `shape` (a box, sphere or capsule, unrotated) from `origin` along
+    /// `dir` for up to `max_dist`: the first body it touches, ignoring
+    /// `exclude`'s. `distance` is how far the shape travelled, `position` the
+    /// contact point, `normal` the hit surface's outward normal. A shape that
+    /// starts overlapping something hits it at distance 0, with an approximate
+    /// point and normal, unless the sweep moves out of it. Answers as of the last
+    /// step, like [`Self::raycast`].
+    pub fn shape_cast(
+        &self,
+        shape: &Shape,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_dist: f32,
+        exclude: Option<&str>,
+    ) -> Option<RayHit> {
+        let d = vec3(dir);
+        let len = d.length();
+        if !(len.is_finite() && len > 0.0) {
+            return None;
+        }
+        let swept = collider_of(shape)?.shape;
+        let (col_handle, hit) = self.queries(exclude).cast_shape(
+            &Pose::from_translation(vec3(origin)),
+            d / len,
+            &*swept,
+            ShapeCastOptions {
+                max_time_of_impact: max_dist,
+                target_distance: 0.0,
+                // A start overlap is a hit at 0 unless the sweep moves out.
+                stop_at_penetration: false,
+                compute_impact_geometry_on_penetration: true,
+            },
+        )?;
+        let tag = self.collider_tag(col_handle)?;
+        // Shape casts report no feature, so find the triangle under the
+        // contact point (on a shared edge, either neighbour).
+        let collider = &self.colliders[col_handle];
+        let kept = collider.shape().as_trimesh().map(|mesh| {
+            let local = collider.position().inverse_transform_point(hit.witness1);
+            mesh.project_local_point_and_get_location(local, false).1 .0
+        });
+        // Witness and normal 1 are on the hit collider, in world space.
+        let (p, n) = (hit.witness1, hit.normal1);
+        Some(RayHit {
+            triangle: self.source_triangle(&tag, kept),
+            tag,
+            position: [p.x, p.y, p.z],
+            normal: [n.x, n.y, n.z],
+            distance: hit.time_of_impact,
+        })
+    }
+
+    /// Scene queries as of the last step, ignoring `exclude`'s whole rigid
+    /// body: a self-probe starting inside a character's capsule would
+    /// otherwise hit it at distance 0. A tag not in the world excludes
+    /// nothing, so a not-yet-spawned character probes cleanly.
+    fn queries(&self, exclude: Option<&str>) -> QueryPipeline<'_> {
+        let mut filter = QueryFilter::default();
+        // The rigid body, not the tag's one collider, so a body that later
+        // gains a second collider still can't hit itself.
+        if let Some((body, _)) = exclude.and_then(|tag| self.tags.get(tag)) {
+            filter = filter.exclude_rigid_body(*body);
+        }
+        self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.bodies,
+            &self.colliders,
+            filter,
+        )
+    }
+
+    /// Reverse handle→tag lookup: scenes are small; a scan beats carrying a
+    /// second map in every snapshot.
+    fn collider_tag(&self, handle: ColliderHandle) -> Option<String> {
+        self.tags
+            .iter()
+            .find(|(_, &(_, col))| col == handle)
+            .map(|(tag, _)| tag.clone())
+    }
+
+    /// The source index of rapier triangle `kept` on `tag`'s trimesh.
+    fn source_triangle(&self, tag: &str, kept: Option<u32>) -> Option<u32> {
+        match &self.declared.get(tag)?.shape {
+            Shape::TriMesh { mesh } => mesh.source_triangle(kept?),
+            _ => None,
+        }
     }
 
     /// The world as colored wireframe line segments, via Rapier's own debug

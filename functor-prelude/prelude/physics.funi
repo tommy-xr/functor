@@ -44,13 +44,16 @@ type position = { x: float, y: float, z: float }
 type velocity = { x: float, y: float, z: float }
 /// A raycast result with hit position, normal, distance, and body tag.
 ///
-/// For a miss, `hit` is false and the remaining fields are zeroed.
+/// `triangle` is the hit triangle's index in the `Physics.trimesh` data, or
+/// -1 off a trimesh. For a miss, `hit` is false, `triangle` is -1 and the
+/// remaining fields are zeroed.
 type rayHit = {
   hit: bool,
   x: float, y: float, z: float,
   nx: float, ny: float, nz: float,
   distance: float,
-  tag: tag
+  tag: tag,
+  triangle: float
 }
 /// A contact-begin or contact-end event between two bodies.
 type collisionEvent = { started: bool, a: tag, b: tag, sensor: bool }
@@ -201,6 +204,20 @@ let cast : (Vec3.t, Vec3.t, float) => rayHit
 /// capsule at distance 0 and report the character standing on itself. Excluding
 /// a tag that isn't in the world excludes nothing.
 let castExcluding : (tag, Vec3.t, Vec3.t, float) => rayHit
+
+/// Sweep a box, sphere or capsule and get the first body it touches.
+///
+/// The shape moves unrotated from `origin` along `dir`, up to `maxDist`.
+/// `distance` is how far it travelled, `x, y, z` the contact point and
+/// `nx, ny, nz` the hit surface's outward normal. A shape that starts
+/// overlapping something hits it at distance 0 unless it moves out of it.
+/// Like `Physics.cast` it answers in place from the last step, and hits both
+/// sides of a trimesh face.
+let shapeCast : (shape, Vec3.t, Vec3.t, float) => rayHit
+
+/// `Physics.shapeCast`, ignoring one body: a sweep from a character's own
+/// position would otherwise hit its own collider.
+let shapeCastExcluding : (tag, shape, Vec3.t, Vec3.t, float) => rayHit
 
 /// Apply a body's live transform to a scene node.
 ///
