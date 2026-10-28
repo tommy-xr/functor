@@ -144,7 +144,10 @@ impl Cells {
             {
                 return Err(format!("{what} isn't flat"));
             }
-            if !polygon.iter().all(|&p| inside_edges(&polygon, normal, p)) {
+            if !polygon
+                .iter()
+                .all(|&p| inside_edges(&portal.polygon, normal, p))
+            {
                 return Err(format!("{what} isn't convex"));
             }
             // On a face of both cells: corners on one of its planes, inside the rest.
@@ -214,9 +217,11 @@ impl Cells {
     /// each only through a portal. False when either end is outside every
     /// cell or the segment meets a wall.
     pub fn segment(&self, a: Vector3<f32>, b: Vector3<f32>) -> bool {
-        let Some(mut cell) = self.locate(a).map(|c| c as usize) else {
-            return false;
-        };
+        // On a shared face `a` is in several cells; any may start the walk.
+        (0..self.len()).any(|cell| self.contains(cell, a) && self.walk(cell, a, b))
+    }
+
+    fn walk(&self, mut cell: usize, a: Vector3<f32>, b: Vector3<f32>) -> bool {
         let dir = b - a;
         let mut t = 0.0f32;
         // A segment crosses each convex cell once, so this bounds the walk.
@@ -240,7 +245,7 @@ impl Cells {
                 let (face, normal) = &self.faces[k as usize];
                 v(face.n).dot(dir) < 0.0
                     && face.distance(x).abs() <= TOLERANCE
-                    && inside_edges(&self.polygon(k as usize), *normal, x)
+                    && inside_edges(&self.data.portals[k as usize].polygon, *normal, x)
             });
             let Some(&k) = through else {
                 return false;
@@ -250,22 +255,14 @@ impl Cells {
         }
         false
     }
-
-    fn polygon(&self, portal: usize) -> Vec<Vector3<f32>> {
-        self.data.portals[portal]
-            .polygon
-            .iter()
-            .map(|&p| v(p))
-            .collect()
-    }
 }
 
 /// Whether `p` is inside every edge of the convex `polygon` (wound about
 /// `normal`), within the tolerance. Ignores distance from its plane.
-fn inside_edges(polygon: &[Vector3<f32>], normal: Vector3<f32>, p: Vector3<f32>) -> bool {
+fn inside_edges(polygon: &[[f32; 3]], normal: Vector3<f32>, p: Vector3<f32>) -> bool {
     (0..polygon.len()).all(|i| {
-        let a = polygon[i];
-        let edge = polygon[(i + 1) % polygon.len()] - a;
+        let a = v(polygon[i]);
+        let edge = v(polygon[(i + 1) % polygon.len()]) - a;
         edge.cross(p - a).dot(normal) >= -TOLERANCE * edge.magnitude()
     })
 }
@@ -501,6 +498,57 @@ pub(crate) mod tests {
             portals: vec![]
         })
         .is_ok());
+    }
+
+    #[test]
+    fn segment_through_a_corner_where_four_rooms_meet() {
+        // A 2 × 2 grid of 4 × 4 rooms, every shared face fully open.
+        let at =
+            |i: f32, j: f32| room([4.0 * i, 0.0, 4.0 * j], [4.0 * i + 4.0, 3.0, 4.0 * j + 4.0]);
+        let x_face = |z: f32| {
+            vec![
+                [4.0, 0.0, z],
+                [4.0, 0.0, z + 4.0],
+                [4.0, 3.0, z + 4.0],
+                [4.0, 3.0, z],
+            ]
+        };
+        let z_face = |x: f32| {
+            vec![
+                [x, 0.0, 4.0],
+                [x + 4.0, 0.0, 4.0],
+                [x + 4.0, 3.0, 4.0],
+                [x, 3.0, 4.0],
+            ]
+        };
+        let mut portals = Vec::new();
+        portals.extend(door(0, 1, x_face(0.0)));
+        portals.extend(door(2, 3, x_face(4.0)));
+        portals.extend(door(0, 2, z_face(0.0)));
+        portals.extend(door(1, 3, z_face(4.0)));
+        let cells = Cells::new(CellsData {
+            cells: vec![at(0.0, 0.0), at(1.0, 0.0), at(0.0, 1.0), at(1.0, 1.0)],
+            portals,
+        })
+        .unwrap();
+        for off in [0.0, 0.0005] {
+            assert!(
+                cells.segment(p(2.0, 1.0, 2.0 + off), p(6.0, 1.0, 6.0)),
+                "{off}"
+            );
+            assert!(
+                cells.segment(p(6.0, 1.0, 6.0), p(2.0, 1.0, 2.0 + off)),
+                "{off}"
+            );
+        }
+    }
+
+    #[test]
+    fn segment_from_a_shared_wall_starts_in_either_room() {
+        // 0.5 mm into room 1, on the wall room 0 wins `locate` ties for.
+        let cells = three_rooms();
+        assert_eq!(cells.locate(p(4.0005, 1.0, 1.5)), Some(0));
+        assert!(cells.segment(p(4.0005, 1.0, 1.5), p(7.0, 1.0, 1.5)));
     }
 
     #[test]
