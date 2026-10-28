@@ -1008,7 +1008,10 @@ mod tests {
         let maps = game(STUB, &[], "let m = Map.");
         assert_eq!(
             labels(&maps),
-            vec!["empty", "fromList", "get", "insert", "member", "remove", "toList", "values"]
+            vec![
+                "empty", "fold", "fromList", "get", "insert", "keys", "member", "remove", "size",
+                "toList", "update", "values"
+            ]
         );
         assert_eq!(
             find(&maps, "insert").detail.as_deref(),

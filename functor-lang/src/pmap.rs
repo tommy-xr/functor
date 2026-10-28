@@ -297,6 +297,23 @@ impl<K: Clone, V: Clone> PMap<K, V> {
             .map_or(std::ptr::null(), |root| Rc::as_ptr(root) as *const ())
     }
 
+    /// The value a successful [`Search`] found.
+    pub fn get_at(&self, search: &Search) -> Option<&V> {
+        debug_assert!(search.origin == (self.root_ptr(), self.len), "stale Search");
+        let index = search.slot.ok()?;
+        let mut node = self.root.as_deref()?;
+        for &i in &search.path {
+            let Node::Internal { children, .. } = node else {
+                unreachable!("a search path ends at a leaf");
+            };
+            node = &children[i];
+        }
+        let Node::Leaf(entries) = node else {
+            unreachable!("a search path ends at a leaf");
+        };
+        Some(&entries[index].1)
+    }
+
     /// Insert at a [`Search`] position, replacing the value if the key was
     /// found. Returns work units (≤ `search.insert_units_ceiling()`).
     pub fn insert_at(&mut self, search: Search, key: K, value: V) -> u64 {

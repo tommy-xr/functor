@@ -660,6 +660,33 @@ pub fn builtin_signature(b: Builtin) -> Type {
             vec![List(Box::new(Tuple(vec![Var(0), Var(1)])))],
             Map(Box::new(Var(0)), Box::new(Var(1))),
         ),
+        // Subject-LAST. Map.update :
+        //   ('key, (Option.t<'value>) => Option.t<'value>, Map<'key, 'value>) => Map<'key, 'value>
+        Builtin::MapUpdate => func(
+            vec![
+                Var(0),
+                func(vec![option(Var(1))], option(Var(1))),
+                Map(Box::new(Var(0)), Box::new(Var(1))),
+            ],
+            Map(Box::new(Var(0)), Box::new(Var(1))),
+        ),
+        // Map.keys : (Map<'key, 'value>) => List<'key>
+        Builtin::MapKeys => func(
+            vec![Map(Box::new(Var(0)), Box::new(Var(1)))],
+            List(Box::new(Var(0))),
+        ),
+        // Map.size : (Map<'key, 'value>) => float
+        Builtin::MapSize => func(vec![Map(Box::new(Var(0)), Box::new(Var(1)))], Float),
+        // Subject-LAST. Map.fold :
+        //   (('acc, 'key, 'value) => 'acc, 'acc, Map<'key, 'value>) => 'acc
+        Builtin::MapFold => func(
+            vec![
+                func(vec![Var(2), Var(0), Var(1)], Var(2)),
+                Var(2),
+                Map(Box::new(Var(0)), Box::new(Var(1))),
+            ],
+            Var(2),
+        ),
         // Text.concat : (String, String) => String
         Builtin::TextConcat => func(vec![String, String], String),
         // Text.fromFloat : (Float) => String
@@ -1647,12 +1674,14 @@ unit-suffixed literal ({suffixes})"
             return;
         };
         let (key_ty, span) = match builtin {
-            Builtin::MapGet | Builtin::MapInsert | Builtin::MapRemove | Builtin::MapMember => {
-                match (params.first(), args.first()) {
-                    (Some(key), Some(arg)) => (self.zonk(key), arg.span),
-                    _ => return,
-                }
-            }
+            Builtin::MapGet
+            | Builtin::MapInsert
+            | Builtin::MapRemove
+            | Builtin::MapMember
+            | Builtin::MapUpdate => match (params.first(), args.first()) {
+                (Some(key), Some(arg)) => (self.zonk(key), arg.span),
+                _ => return,
+            },
             Builtin::MapFromList => match (params.first(), args.first()) {
                 (Some(Type::List(entries)), Some(arg)) => match entries.as_ref() {
                     Type::Tuple(pair) if pair.len() == 2 => (self.zonk(&pair[0]), arg.span),

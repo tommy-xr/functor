@@ -2844,6 +2844,81 @@ most 1000000 cells"
                     err("Map.fromList(entries) expects one list of (key, value) tuples".to_string())
                 }
             },
+            // `fn` maps the current binding (`Option.None` when absent) to
+            // the new one: `Option.Some(v)` stores v, `Option.None` removes
+            // the key. One search serves the read and the write.
+            Builtin::MapUpdate => match <[Value; 3]>::try_from(args) {
+                Ok([key, f, Value::Map(mut entries)]) => {
+                    let key = map_key_from_value(&key, builtin_name(b))
+                        .map_err(|message| RunError { message, span })?;
+                    let search = self.map_search(&entries, &key, span)?;
+                    let current = entries.get_at(&search).cloned();
+                    let label = format!("<{} function>", builtin_name(b));
+                    let next = self.call(
+                        f,
+                        vec![option_value(current)],
+                        label,
+                        span,
+                        Some(builtin_name(b)),
+                    )?;
+                    let usage = "Map.update function must return Option.Some(value) or Option.None";
+                    let Value::Variant { ctor, args } = &next else {
+                        return err(format!("{usage}, got {}", next.kind_name()));
+                    };
+                    match (&**ctor, args.as_slice()) {
+                        ("Option.Some", [value]) => {
+                            self.preflight_charge(search.insert_units_ceiling(), span)?;
+                            let units = entries.insert_at(search, key, value.clone());
+                            self.charge(units, span)?;
+                        }
+                        ("Option.None", []) => {
+                            if search.found() {
+                                self.preflight_charge(search.remove_units_ceiling(), span)?;
+                                let (_, units) = entries.remove_at(search);
+                                self.charge(units, span)?;
+                            }
+                        }
+                        _ => return err(format!("{usage}, got {ctor}")),
+                    }
+                    Ok(Value::Map(entries))
+                }
+                _ => {
+                    err("Map.update(key, fn, map) expects a key, a function, and a map".to_string())
+                }
+            },
+            Builtin::MapKeys => match args.as_slice() {
+                [Value::Map(entries)] => {
+                    self.charge(entries.len() as u64, span)?;
+                    let mut out = Vec::with_capacity(entries.len());
+                    entries.iter().for_each(|(key, _)| out.push(key.to_value()));
+                    Ok(Value::List(Rc::new(out)))
+                }
+                _ => err("Map.keys(map) expects one map".to_string()),
+            },
+            Builtin::MapSize => match args.as_slice() {
+                [Value::Map(entries)] => Ok(Value::Number(entries.len() as f64)),
+                _ => err("Map.size(map) expects one map".to_string()),
+            },
+            // Subject-LAST like List.fold: `fn(acc, key, value)` in key order.
+            Builtin::MapFold => match args.as_slice() {
+                [f, init, Value::Map(entries)] => {
+                    let mut acc = init.clone();
+                    for (i, (key, value)) in entries.iter().enumerate() {
+                        acc = self.call(
+                            f.clone(),
+                            vec![acc, key.to_value(), value.clone()],
+                            element_label(b, i),
+                            span,
+                            Some(builtin_name(b)),
+                        )?;
+                    }
+                    Ok(acc)
+                }
+                _ => err(
+                    "Map.fold(fn, init, map) expects a function, an initial value, and a map"
+                        .to_string(),
+                ),
+            },
             Builtin::TextConcat => match args.as_slice() {
                 [Value::String(a), Value::String(b)] => {
                     // Growth builtin: charge output BYTES (the List.append
@@ -3746,7 +3821,9 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::MathClamp
         | Builtin::MathLerp
         | Builtin::MathSmoothstep
-        | Builtin::MapInsert => 3,
+        | Builtin::MapInsert
+        | Builtin::MapUpdate
+        | Builtin::MapFold => 3,
         Builtin::ListMap
         | Builtin::ListFilter
         | Builtin::ListAppend
@@ -3810,7 +3887,9 @@ pub fn builtin_arity(b: Builtin) -> usize {
         | Builtin::MathSign
         | Builtin::MapValues
         | Builtin::MapToList
-        | Builtin::MapFromList => 1,
+        | Builtin::MapFromList
+        | Builtin::MapKeys
+        | Builtin::MapSize => 1,
         // `Math.pi` resolves straight to a number in `eval` (it's a constant,
         // never a callable value), so this arity is never consulted.
         Builtin::MathPi | Builtin::MapEmpty => 0,
@@ -3865,6 +3944,10 @@ pub enum Builtin {
     MapValues,
     MapToList,
     MapFromList,
+    MapUpdate,
+    MapKeys,
+    MapSize,
+    MapFold,
     TextConcat,
     TextFromFloat,
     TextFixed,
@@ -4003,7 +4086,7 @@ pub const BUILTIN_NAMESPACES: &[&str] = &["List", "Map", "Text", "Math", "Random
 /// [`builtin`] so the members the CHECKER knows about (for its
 /// unknown-member diagnostic and its suggestions) and the ones the
 /// interpreter DISPATCHES come from one place.
-pub const ALL_BUILTINS: [Builtin; 77] = [
+pub const ALL_BUILTINS: [Builtin; 81] = [
     Builtin::ListMap,
     Builtin::ListFilter,
     Builtin::ListFold,
@@ -4038,6 +4121,10 @@ pub const ALL_BUILTINS: [Builtin; 77] = [
     Builtin::MapValues,
     Builtin::MapToList,
     Builtin::MapFromList,
+    Builtin::MapUpdate,
+    Builtin::MapKeys,
+    Builtin::MapSize,
+    Builtin::MapFold,
     Builtin::MathSin,
     Builtin::MathCos,
     Builtin::MathSqrt,
@@ -4132,6 +4219,10 @@ pub fn builtin(path: &[String]) -> Option<Builtin> {
         "Map.values" => Builtin::MapValues,
         "Map.toList" => Builtin::MapToList,
         "Map.fromList" => Builtin::MapFromList,
+        "Map.update" => Builtin::MapUpdate,
+        "Map.keys" => Builtin::MapKeys,
+        "Map.size" => Builtin::MapSize,
+        "Map.fold" => Builtin::MapFold,
         "Text.concat" => Builtin::TextConcat,
         "Text.fromFloat" => Builtin::TextFromFloat,
         "Text.fixed" => Builtin::TextFixed,
@@ -4216,6 +4307,10 @@ pub fn builtin_name(b: Builtin) -> &'static str {
         Builtin::MapValues => "Map.values",
         Builtin::MapToList => "Map.toList",
         Builtin::MapFromList => "Map.fromList",
+        Builtin::MapUpdate => "Map.update",
+        Builtin::MapKeys => "Map.keys",
+        Builtin::MapSize => "Map.size",
+        Builtin::MapFold => "Map.fold",
         Builtin::TextConcat => "Text.concat",
         Builtin::TextFromFloat => "Text.fromFloat",
         Builtin::TextFixed => "Text.fixed",
@@ -4434,6 +4529,10 @@ mod builtin_registry_tests {
                 | Builtin::MapValues
                 | Builtin::MapToList
                 | Builtin::MapFromList
+                | Builtin::MapUpdate
+                | Builtin::MapKeys
+                | Builtin::MapSize
+                | Builtin::MapFold
                 | Builtin::MathSin
                 | Builtin::MathCos
                 | Builtin::MathSqrt
@@ -4479,7 +4578,11 @@ mod builtin_registry_tests {
                 | Builtin::DebugLog => {}
             }
         }
-        assert_eq!(ALL_BUILTINS.len(), 77, "ALL_BUILTINS must list every Builtin");
+        assert_eq!(
+            ALL_BUILTINS.len(),
+            81,
+            "ALL_BUILTINS must list every Builtin"
+        );
 
         // The length check alone would accept a DUPLICATE entry standing in
         // for a missing one.
