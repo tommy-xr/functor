@@ -1022,6 +1022,10 @@ const EMBEDDER_TRANSPORT_REQUIRED: &str =
     "this runtime is on the socket transport — start it with `--net-transport embedder` \
 for the host process to be its network";
 
+/// `/project-files` is how a headset gets files it lacks; desktop reads them.
+const DESKTOP_READS_FILES: &str =
+    "the desktop runtime reads project files from disk; nothing to fetch";
+
 /// Service one debug-server request. `capture` produces the PNG (or a
 /// `CaptureError`) for `POST /capture` — a framebuffer readback in the windowed
 /// loop, or `Unavailable` in headless.
@@ -1147,7 +1151,8 @@ fn service_debug_request(
                 ));
             });
         }
-        debug_server::DebugRequest::LoadProject(files, role, resp) => {
+        // Desktop reads the project (and `external` mappings) from disk.
+        debug_server::DebugRequest::LoadProject(files, role, _session, resp) => {
             // Waits: a successful load restarts the shell's clock.
             let result = sim.call(move |g| {
                 functor_runtime_common::protocol::load_with_role(g, role, |g| {
@@ -1203,6 +1208,12 @@ fn service_debug_request(
                 clock.rebase(tts as f32);
             }
             let _ = resp.send(result);
+        }
+        debug_server::DebugRequest::ProjectFileRequests(resp) => {
+            let _ = resp.send(Err(DESKTOP_READS_FILES.to_string()));
+        }
+        debug_server::DebugRequest::ProjectFileReply(_, resp) => {
+            let _ = resp.send(Err(DESKTOP_READS_FILES.to_string()));
         }
         debug_server::DebugRequest::DisplayRefreshRate(_, resp) => {
             let _ = resp.send(Err(
