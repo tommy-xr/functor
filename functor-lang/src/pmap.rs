@@ -10,8 +10,8 @@
 //! infallible `*_at` edit then replays it. A refused comparison therefore
 //! never leaves a half-edited map.
 //!
-//! Edits return work units: the summed size (entries or children) of every
-//! node they write. The count is the same whether a node was cloned or
+//! Edits return work units: the summed final size (entries or children) of
+//! every node they write. The count is the same whether a node was cloned or
 //! edited in place, so fuel never depends on reference counts. A map that
 //! fits one leaf charges exactly what a flat sorted vector would.
 
@@ -27,7 +27,8 @@ const MIN: usize = CAP / 2;
 enum Node<K, V> {
     Leaf(Vec<(K, V)>),
     /// `keys[i]` separates `children[i]` (all keys below it) from
-    /// `children[i + 1]` (all keys at or above it).
+    /// `children[i + 1]` (all keys at or above it). A separator can outlive
+    /// its removed key until the node is next rewritten.
     Internal {
         keys: Vec<K>,
         children: Vec<Rc<Node<K, V>>>,
@@ -73,6 +74,8 @@ pub struct Search {
     slot: Result<usize, usize>,
     /// Summed size of the nodes on the path.
     path_units: u64,
+    /// The searched map's (root, len), to catch a stale or foreign search.
+    origin: (*const (), usize),
 }
 
 impl Search {
@@ -80,15 +83,20 @@ impl Search {
         self.slot.is_ok()
     }
 
-    /// Upper bound on the units an insert or remove at this position
-    /// returns: the path nodes, plus per level one grown slot and one
-    /// sibling (rebalance), plus a new root. Lets callers refuse an edit
-    /// before it allocates.
-    pub fn edit_units_ceiling(&self) -> u64 {
+    /// Upper bound on [`PMap::insert_at`]'s units: each path node grows by
+    /// at most one slot, plus a new two-child root. Lets callers refuse an
+    /// edit before it allocates.
+    pub fn insert_units_ceiling(&self) -> u64 {
         let depth = self.path.len() as u64 + 1;
+        self.path_units.saturating_add(depth).saturating_add(2)
+    }
+
+    /// Upper bound on [`PMap::remove_at`]'s units: path nodes only shrink,
+    /// plus one borrowed-from sibling (< `CAP`) per internal level.
+    pub fn remove_units_ceiling(&self) -> u64 {
+        let levels = self.path.len() as u64;
         self.path_units
-            .saturating_add(depth.saturating_mul(CAP as u64 + 1))
-            .saturating_add(2)
+            .saturating_add(levels.saturating_mul(CAP as u64 - 1))
     }
 }
 
@@ -182,11 +190,13 @@ impl<K: Clone, V: Clone> PMap<K, V> {
     pub fn search<E>(&self, cmp: &mut impl FnMut(&K) -> Result<Ordering, E>) -> Result<Search, E> {
         let mut path = Vec::new();
         let mut path_units = 0u64;
+        let origin = (self.root_ptr(), self.len);
         let Some(mut node) = self.root.as_deref() else {
             return Ok(Search {
                 path,
                 slot: Err(0),
                 path_units,
+                origin,
             });
         };
         loop {
@@ -203,6 +213,7 @@ impl<K: Clone, V: Clone> PMap<K, V> {
                         path,
                         slot,
                         path_units,
+                        origin,
                     });
                 }
             }
@@ -224,9 +235,18 @@ impl<K: Clone, V: Clone> PMap<K, V> {
         }
     }
 
+    /// Identity of the root node (null when empty): equal pointers mean
+    /// equal maps.
+    pub fn root_ptr(&self) -> *const () {
+        self.root
+            .as_ref()
+            .map_or(std::ptr::null(), |root| Rc::as_ptr(root) as *const ())
+    }
+
     /// Insert at a [`Search`] position, replacing the value if the key was
-    /// found. Returns work units (≤ `search.edit_units_ceiling()`).
+    /// found. Returns work units (≤ `search.insert_units_ceiling()`).
     pub fn insert_at(&mut self, search: Search, key: K, value: V) -> u64 {
+        debug_assert!(search.origin == (self.root_ptr(), self.len), "stale Search");
         let Some(root) = &mut self.root else {
             self.root = Some(Rc::new(Node::Leaf(vec![(key, value)])));
             self.len = 1;
@@ -249,14 +269,16 @@ impl<K: Clone, V: Clone> PMap<K, V> {
     }
 
     /// Remove the entry a successful [`Search`] found. Returns the value and
-    /// work units (≤ `search.edit_units_ceiling()`).
+    /// work units (≤ `search.remove_units_ceiling()`).
     pub fn remove_at(&mut self, search: Search) -> (V, u64) {
+        debug_assert!(search.origin == (self.root_ptr(), self.len), "stale Search");
         let Ok(index) = search.slot else {
             panic!("remove_at needs a found key");
         };
         let root = self.root.as_mut().expect("a found key has a root");
         let mut units = 0u64;
         let value = remove_rec(root, &search.path, index, &mut units);
+        units += root.len() as u64;
         self.len -= 1;
         // Collapse a root left with one child, or drop an empty leaf root.
         let collapse = match self.root.as_deref() {
@@ -349,6 +371,8 @@ fn insert_rec<K: Clone, V: Clone>(
     }
 }
 
+/// Remove below `node`. Each written node is counted once, at its final
+/// size, by its parent (the root by [`PMap::remove_at`]).
 fn remove_rec<K: Clone, V: Clone>(
     node: &mut Rc<Node<K, V>>,
     path: &[usize],
@@ -356,31 +380,28 @@ fn remove_rec<K: Clone, V: Clone>(
     units: &mut u64,
 ) -> V {
     match Rc::make_mut(node) {
-        Node::Leaf(entries) => {
-            let (_, value) = entries.remove(index);
-            *units += entries.len() as u64;
-            value
-        }
+        Node::Leaf(entries) => entries.remove(index).1,
         Node::Internal { keys, children } => {
-            let i = path[0];
+            let mut i = path[0];
             let value = remove_rec(&mut children[i], &path[1..], index, units);
             if children[i].len() < MIN {
-                rebalance(keys, children, i, units);
+                i = rebalance(keys, children, i, units);
             }
-            *units += children.len() as u64;
+            *units += children[i].len() as u64;
             value
         }
     }
 }
 
 /// Refill underfull `children[i]`: borrow one from a sibling above `MIN`,
-/// else merge with a sibling. Adds the written sibling's size to `units`.
+/// else merge with a sibling. Adds a borrowed-from sibling's size to
+/// `units`; returns the refilled child's index.
 fn rebalance<K: Clone, V: Clone>(
     keys: &mut Vec<K>,
     children: &mut Vec<Rc<Node<K, V>>>,
     i: usize,
     units: &mut u64,
-) {
+) -> usize {
     if i > 0 && children[i - 1].len() > MIN {
         let (left, rest) = children.split_at_mut(i);
         let (left, child) = (Rc::make_mut(&mut left[i - 1]), Rc::make_mut(&mut rest[0]));
@@ -407,6 +428,7 @@ fn rebalance<K: Clone, V: Clone>(
             }
             _ => unreachable!("siblings share a level"),
         }
+        i
     } else if i + 1 < children.len() && children[i + 1].len() > MIN {
         let (rest, right) = children.split_at_mut(i + 1);
         let (child, right) = (Rc::make_mut(&mut rest[i]), Rc::make_mut(&mut right[0]));
@@ -432,6 +454,7 @@ fn rebalance<K: Clone, V: Clone>(
             }
             _ => unreachable!("siblings share a level"),
         }
+        i
     } else {
         // Merge the right node of the pair (i-1, i) or (i, i+1) into the left.
         let at = if i > 0 { i - 1 } else { i };
@@ -456,7 +479,7 @@ fn rebalance<K: Clone, V: Clone>(
             }
             _ => unreachable!("siblings share a level"),
         }
-        *units += children[at].len() as u64;
+        at
     }
 }
 
@@ -576,7 +599,7 @@ mod tests {
 
     fn insert(map: &mut Map, key: i64, value: i64) -> u64 {
         let search = map.search(&mut by(key)).unwrap();
-        let ceiling = search.edit_units_ceiling();
+        let ceiling = search.insert_units_ceiling();
         let units = map.insert_at(search, key, value);
         assert!(units <= ceiling, "insert units {units} > ceiling {ceiling}");
         units
@@ -587,7 +610,7 @@ mod tests {
         if !search.found() {
             return None;
         }
-        let ceiling = search.edit_units_ceiling();
+        let ceiling = search.remove_units_ceiling();
         let (value, units) = map.remove_at(search);
         assert!(units <= ceiling, "remove units {units} > ceiling {ceiling}");
         Some(value)
@@ -765,6 +788,55 @@ mod tests {
             assert_matches(&map, &model);
             assert_eq!(units == 0, n <= CAP as i64, "only multi-leaf builds charge");
         }
+    }
+
+    #[test]
+    fn remove_units_count_each_written_node_at_its_final_size() {
+        let sorted = |n: i64| Map::from_sorted((0..n).map(|k| (k, k)).collect()).0;
+        // Leaves 9 + 8. Removing 16 borrows from the left: 8 + 8 + root 2.
+        let mut map = sorted(17);
+        let search = map.search(&mut by(16)).unwrap();
+        assert_eq!(map.remove_at(search).1, 18);
+        // Leaves 8 + 8. Removing 0 merges into one leaf of 15 + root 1.
+        let mut map = sorted(16);
+        insert(&mut map, 16, 16); // split: leaves 8 + 9
+        remove(&mut map, 16); // borrow-free: leaves 8 + 8
+        let search = map.search(&mut by(0)).unwrap();
+        assert_eq!(map.remove_at(search).1, 16);
+        assert_eq!(depth(&map), 1, "the one-child root collapsed");
+    }
+
+    #[test]
+    fn edits_on_bulk_built_trees() {
+        // Bulk-built nodes sit at or near MIN, so the first removes go
+        // straight to borrows and merges.
+        let mut rng = Rng(7);
+        for n in [17, 257, 1500] {
+            let entries: Vec<(i64, i64)> = (0..n).map(|k| (k * 2, k)).collect();
+            let mut model: BTreeMap<i64, i64> = entries.iter().copied().collect();
+            let mut map = Map::from_sorted(entries).0;
+            for _ in 0..2000 {
+                let key = rng.below(n as u64 * 2) as i64;
+                if rng.below(3) == 0 {
+                    insert(&mut map, key, -key);
+                    model.insert(key, -key);
+                } else {
+                    assert_eq!(remove(&mut map, key), model.remove(&key));
+                }
+                check_invariants(&map);
+            }
+            assert_matches(&map, &model);
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale Search")]
+    fn a_stale_search_is_caught() {
+        let mut map = build(0..10);
+        let search = map.search(&mut by(50)).unwrap();
+        insert(&mut map, 20, 0);
+        map.insert_at(search, 50, 0);
     }
 
     #[test]
