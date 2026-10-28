@@ -2724,6 +2724,11 @@ fn register_light(reg: &mut crate::host_registry::Registry) {
         "Light.castShadows(light)",
         |light: FunctorLangLight| FunctorLangLight(light.0.cast_shadows()),
     );
+    reg.fn1(
+        "Light.baked",
+        "Light.baked(light)",
+        |light: FunctorLangLight| FunctorLangLight(light.0.baked()),
+    );
 }
 
 fn register_frame(reg: &mut crate::host_registry::Registry) {
@@ -13180,7 +13185,8 @@ colorSpace: Texture.Srgb, pixels: Bytes.fromU8([200.0, 100.0, 50.0]) })\n\
           groups: [\n\
             { first: 0.0, count: 1.0, texture: Option.Some(px), unlit: false },\n\
             { first: 1.0, count: 1.0, texture: Option.None, unlit: true }\n\
-          ]\n\
+          ],\n\
+          lightmap: Option.Some({ texture: px, scale: 2.0, floor: Color.rgb(0.1, 0.0, 0.0) })\n\
         }\n\
         let room = Model.static(roomData)\n";
 
@@ -13217,7 +13223,24 @@ colorSpace: Texture.Srgb, pixels: Bytes.fromU8([200.0, 100.0, 50.0]) })\n\
         };
         assert!(data.is_static());
         assert_eq!(data.source().uvs2[2], [0.5, 0.5]);
+        let lightmap = data.source().lightmap.as_ref().expect("a lightmap");
+        assert_eq!((lightmap.scale, lightmap.floor), (2.0, [0.1, 0.0, 0.0]));
+        assert!(json.contains(r#""lightmap":{"texture":{"Data":"#), "{json}");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    /// `Light.baked` marks a light on the frame's wire.
+    #[test]
+    fn baked_lights_reach_the_frame() {
+        let src = "let main = Frame.createLit(Camera3D.lookAt(Vec3.make(0.0, 0.0, 1.0), \
+Vec3.make(0.0, 0.0, 0.0)), Scene.cube(), [Light.ambient(Color.rgb(0.2, 0.2, 0.2)) |> Light.baked, \
+Light.point(Vec3.make(0.0, 1.0, 0.0), Color.rgb(1.0, 1.0, 1.0), 1.0, 5.0)])\n";
+        let Value::HostData(frame) = eval_with_prelude(src).unwrap() else {
+            panic!("expected a Frame");
+        };
+        let frame = &frame.as_any().downcast_ref::<FunctorLangFrame>().unwrap().0;
+        let baked: Vec<bool> = frame.lights.iter().map(Light::is_baked).collect();
+        assert_eq!(baked, [true, false]);
     }
 
     /// Bad static data is an error naming the field.
@@ -13258,6 +13281,14 @@ colorSpace: Texture.Srgb, pixels: Bytes.fromU8([200.0, 100.0, 50.0]) })\n\
             .replace("texture: Option.Some(px)", "texture: Option.None")
             .replace("uvs: Bytes.fromF32le([0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0])", "uvs: none");
         assert!(eval_with_prelude(&format!("{src}let main = room\n")).is_ok());
+        assert_eq!(
+            fail(("uvs2: Bytes.fromF32le([0.0, 0.0, 0.5, 0.0, 0.5, 0.5, 0.0, 0.5])", "uvs2: none")),
+            "Model.static: lightmap: needs uvs2 (one per vertex)"
+        );
+        assert_eq!(
+            fail(("scale: 2.0", "scale: 0.0 - 1.0")),
+            "Model.static: lightmap: scale must be a finite number from 0, got -1"
+        );
         let ungrouped = "Model.static({ roomData with groups: [] })";
         assert!(eval_with_prelude(&format!("{ROOM}let main = {ungrouped}\n")).is_ok());
     }

@@ -79,11 +79,30 @@ type data = {
 /// frame's lights.
 type group = { first: float, count: float, texture: Option.t<Asset.Texture>, unlit: bool }
 
+/// Baked light for a static model, sampled at `uvs2`. Lit groups draw
+/// `max(base × lightmap × scale, floor) + base × the frame's other lights`:
+/// the lightmap replaces every `Light.baked` light, so mark the lights it
+/// already holds. `floor` is a minimum colour (SS2-style ambient).
+///
+/// The texture's colour space says what its texels mean:
+/// - `Texture.Linear` (`Texture.fromPixels`): illumination stored as is —
+///   a linear bake, 0.5 is half the light.
+/// - `Texture.Srgb`, and any `Asset.texture` file (Blender saves bakes as
+///   sRGB by default): decoded first. That matches engines that multiply
+///   base and lightmap in gamma space, since decoding the product is
+///   (nearly) the product of the decodes.
+///
+/// Lightmaps are sampled clamped, without mipmaps, so atlas rects never
+/// bleed into each other. A Blender bake maps directly:
+/// `TEXCOORD_1` → `uvs2`, the baked image → `texture`, primitives → groups.
+type lightmap = { texture: Asset.Texture, scale: float, floor: Color.t }
+
 /// Everything a static model is made of. Per vertex: `positions` and
 /// `normals` f32 `x, y, z`; `uvs` (base textures) and `uvs2` (a second set,
 /// for lightmaps) f32 `u, v` each, or empty. `triangles` is u32 vertex index
 /// triples, counter-clockwise. `groups` run in order with no gaps and cover
 /// every triangle (one draw each); `[]` draws them all untextured.
+/// `lightmap` needs `uvs2`.
 ///
 /// ```
 /// let floor = Model.static({
@@ -92,7 +111,8 @@ type group = { first: float, count: float, texture: Option.t<Asset.Texture>, unl
 ///   uvs: Bytes.fromF32le([0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
 ///   uvs2: Bytes.fromF32le([]),
 ///   triangles: Bytes.fromU32le([0.0, 1.0, 2.0, 0.0, 2.0, 3.0]),
-///   groups: [{ first: 0.0, count: 2.0, texture: Option.Some(Asset.texture("tiles.png")), unlit: false }]
+///   groups: [{ first: 0.0, count: 2.0, texture: Option.Some(Asset.texture("tiles.png")), unlit: false }],
+///   lightmap: Option.None
 /// })
 /// ```
 type staticData = {
@@ -101,7 +121,8 @@ type staticData = {
   uvs: Bytes.t,
   uvs2: Bytes.t,
   triangles: Bytes.t,
-  groups: List<group>
+  groups: List<group>,
+  lightmap: Option.t<lightmap>
 }
 
 /// A clip's name and length in seconds.

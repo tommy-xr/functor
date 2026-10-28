@@ -1193,7 +1193,14 @@ the image top, as in glTF); `Option.None` draws white. See `examples/skinned`.
 packed positions/normals/uvs/triangles plus `uvs2` (a second UV set) and
 `groups` — consecutive triangle ranges, each with its own optional base
 texture (`Asset.texture` or `Texture.fromPixels`) and `unlit` flag. No skin,
-no clips; lit by the frame's lights.
+no clips; lit by the frame's lights. `lightmap: Option.Some({ texture, scale,
+floor })` adds baked light sampled at `uvs2`: lit groups draw `max(base ×
+lightmap × scale, floor) + base × unbaked lights`, so mark lights already in
+the lightmap with `Light.baked` (they still light everything else). A
+`Texture.Linear` lightmap is multiplied as stored; an `Srgb` one (or any
+file) is decoded first, which matches multiplying in gamma space. Pack
+per-surface lightmaps with `Texture.atlas` and point `uvs2` into its rects.
+See `examples/lightmap`.
 
 **The `Net` module is built in but not in the generated reference.** Its types
 need no declaration, and these are the variants to match:
