@@ -326,7 +326,9 @@ fn project(clip: &Matrix4<f32>, polygon: &[[f32; 3]]) -> Option<Rect> {
         f32::NEG_INFINITY,
     ];
     let mut add = |c: Vector4<f32>| {
-        let (x, y) = (c.x / c.w, c.y / c.w);
+        // A crossing point's w can round just below W_MIN.
+        let w = c.w.max(W_MIN);
+        let (x, y) = (c.x / w, c.y / w);
         rect = [
             rect[0].min(x),
             rect[1].min(y),

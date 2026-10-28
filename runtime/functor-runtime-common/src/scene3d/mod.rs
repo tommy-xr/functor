@@ -96,7 +96,10 @@ pub struct SceneContext {
     cull: Cell<bool>,
     // Inside `Scene.cells` in a forward pass: the cells this eye sees
     // (`None`: all). `portal_hidden` is set inside a `Scene.inCells` whose
-    // cells are all hidden; its leaves stay resident but draw nothing.
+    // cells are all hidden; its leaves stay resident but draw nothing:
+    // models and instanced nodes resolve (and acquire their buffer) then
+    // return, meshes mark `last_used` then `culled()` says yes, and
+    // primitives (shared, never swept) return at once. Terrain still draws.
     portal_visible: RefCell<Option<Vec<bool>>>,
     portal_hidden: Cell<bool>,
     // This frame's skinned poses, so the shadow pass, the forward pass and
@@ -3096,6 +3099,12 @@ impl Scene3D {
                             scene_context,
                             recognized.description,
                         );
+                        // Resolving kept it resident; portal-hidden, skip the pose.
+                        if scene_context.portal_hidden.get() {
+                            let mut renderer = scene_context.instanced_renderer(render_context);
+                            renderer.instance_extent(render_context.gl, instances);
+                            return;
+                        }
                         let key = instanced_renderer::ModelKey::of(&recognized.description.handle);
                         // Whether the model is rigid or skinned is only
                         // knowable now. A SKINNED model instances at the
